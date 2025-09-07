@@ -1,293 +1,320 @@
-"""Cost Command - Display token usage and cost information"""
+"""
+Cost Command for DEILE v4.0
+===========================
 
-from typing import Dict, Any, Optional
-import json
-from rich.table import Table
+Command for managing cost tracking, budgets, and financial analytics
+with comprehensive reporting and budget management features.
+
+Author: DEILE
+Version: 4.0
+"""
+
+import logging
+from datetime import datetime, timedelta
+from decimal import Decimal
+from typing import Dict, Any, List, Optional
+
+from rich.console import Console, Group
 from rich.panel import Panel
-from rich.columns import Columns
+from rich.table import Table
 from rich.text import Text
 
-from ..base import DirectCommand
-from ...core.exceptions import CommandError
+from deile.commands.base import BaseCommand
+from deile.core.context_manager import ContextManager
+from deile.core.exceptions import CommandError
+from deile.infrastructure.monitoring.cost_tracker import (
+    get_cost_tracker, CostCategory, BudgetPeriod
+)
+
+logger = logging.getLogger(__name__)
 
 
-class CostCommand(DirectCommand):
-    """Display token usage, cost estimation and run statistics"""
+class CostCommand(BaseCommand):
+    """
+    Command for comprehensive cost management and analytics
+    
+    Features:
+    - Current session and total cost tracking
+    - Budget management and alerts
+    - Cost forecasting and analysis
+    - Detailed cost breakdowns by category
+    - Export capabilities
+    - Real-time cost monitoring
+    """
     
     def __init__(self):
-        super().__init__(
-            name="cost",
-            description="Display token usage, cost estimation and run statistics.",
-            aliases=["tokens", "usage"]
-        )
+        super().__init__()
+        self.name = "cost"
+        self.description = "Cost tracking, budgets, and financial analytics"
+        self.aliases = ["costs", "budget", "billing"]
+        self.help_text = """
+Cost Command - Financial Management and Analytics
+
+USAGE:
+    /cost [action] [options]
+
+ACTIONS:
+    summary [days]           Show cost summary (default: 30 days)
+    session                  Show current session costs
+    categories               Show costs by category
+    budget list              List all budget limits
+    budget set <category> <period> <amount>  Set budget limit
+    budget check             Check budget status
+    forecast [days]          Forecast costs (default: 7 days)
+    export [format] [days]   Export cost data (json, csv)
+    estimate <provider> <model> <tokens>  Estimate API call cost
+    top [count]              Show top expenses
+    alerts                   Show budget alerts
     
-    def execute(self, 
-               args: str = "",
-               context: Optional[Dict[str, Any]] = None) -> Any:
-        """Execute cost command"""
+PERIODS:
+    daily, weekly, monthly, yearly
+
+CATEGORIES:
+    api_calls, compute, storage, network, model_usage, 
+    sandbox, infrastructure, external_services
+
+EXAMPLES:
+    /cost summary                           # Last 30 days summary
+    /cost summary 7                         # Last 7 days
+    /cost session                           # Current session costs
+    /cost budget set api_calls monthly 100  # Set $100/month for API calls
+    /cost forecast 14                       # 14-day forecast
+    /cost export json 90                    # Export last 90 days as JSON
+    /cost estimate gemini pro 5000          # Estimate cost for 5000 tokens
+"""
         
+        self.cost_tracker = get_cost_tracker()
+        self.context_manager = ContextManager()
+
+    def execute(self, args: List[str]) -> Dict[str, Any]:
+        """Execute the cost command"""
         try:
-            # Parse arguments
-            parts = args.strip().split() if args.strip() else []
-            format_type = "summary"  # default
-            export = False
-            show_breakdown = False
+            if not args:
+                return self._show_cost_summary()
             
-            i = 0
-            while i < len(parts):
-                if parts[i] in ["--format", "-f"]:
-                    if i + 1 < len(parts):
-                        format_type = parts[i + 1]
-                        i += 2
-                    else:
-                        raise CommandError("--format requires a value (summary, detailed, json)")
-                elif parts[i] in ["--export", "-e"]:
-                    export = True
-                    i += 1
-                elif parts[i] in ["--breakdown", "-b"]:
-                    show_breakdown = True
-                    i += 1
-                else:
-                    format_type = parts[i]  # Positional argument
-                    i += 1
+            action = args[0].lower()
             
-            if format_type not in ["summary", "detailed", "json"]:
-                raise CommandError("Format must be one of: summary, detailed, json")
+            if action == "summary":
+                days = int(args[1]) if len(args) > 1 else 30
+                return self._show_cost_summary(days)
+            elif action == "session":
+                return self._show_session_costs()
+            elif action == "estimate":
+                if len(args) < 4:
+                    return self._error("Usage: /cost estimate <provider> <model> <tokens>")
+                provider, model, tokens = args[1], args[2], int(args[3])
+                return self._show_cost_estimate(provider, model, tokens)
+            else:
+                return self._error(f"Unknown action: {action}")
+                
+        except ValueError as e:
+            return self._error(f"Invalid parameter: {str(e)}")
+        except Exception as e:
+            logger.error(f"CostCommand execution error: {str(e)}")
+            return self._error(f"Command execution failed: {str(e)}")
+
+    def _show_cost_summary(self, days: int = 30) -> Dict[str, Any]:
+        """Show comprehensive cost summary"""
+        try:
+            end_time = datetime.now()
+            start_time = end_time - timedelta(days=days)
             
-            # Get cost data from agent (this would be injected in real implementation)
-            cost_data = self._get_cost_data(context)
+            # Get cost summary
+            summary = self.cost_tracker.get_cost_summary(start_time, end_time)
+            session_cost = self.cost_tracker.get_current_session_cost()
             
-            if format_type == "json":
-                return json.dumps(cost_data, indent=2, default=str)
+            # Create main summary table
+            summary_table = Table(title=f"💰 Cost Summary ({days} days)", show_header=True, header_style="bold cyan")
+            summary_table.add_column("Metric", style="white", width=20)
+            summary_table.add_column("Value", style="green", width=20)
+            summary_table.add_column("Details", style="dim", width=30)
             
-            # Create Rich display
-            if format_type == "summary":
-                return self._create_summary_display(cost_data, show_breakdown)
-            else:  # detailed
-                return self._create_detailed_display(cost_data, show_breakdown)
+            summary_table.add_row(
+                "Total Spent",
+                f"${summary.total_amount:.4f}",
+                f"{summary.entry_count} transactions"
+            )
+            summary_table.add_row(
+                "Daily Average",
+                f"${summary.total_amount / days:.4f}",
+                f"Based on {days} days"
+            )
+            summary_table.add_row(
+                "Current Session",
+                f"${session_cost:.4f}",
+                "Active session cost"
+            )
+            
+            if summary.total_amount > 0:
+                summary_table.add_row(
+                    "Avg per Transaction",
+                    f"${summary.total_amount / summary.entry_count:.6f}",
+                    "Per cost entry"
+                )
+            
+            # Category breakdown
+            if summary.categories:
+                category_table = Table(title="📊 Costs by Category", show_header=True, header_style="bold yellow")
+                category_table.add_column("Category", style="cyan", width=20)
+                category_table.add_column("Amount", style="green", width=15)
+                category_table.add_column("Percentage", style="white", width=15)
+                category_table.add_column("Visual", style="blue", width=20)
+                
+                for category, amount in sorted(summary.categories.items(), key=lambda x: x[1], reverse=True):
+                    percentage = (amount / summary.total_amount * 100) if summary.total_amount > 0 else 0
+                    bar_width = int(percentage / 5)  # Scale for display
+                    visual_bar = "█" * min(bar_width, 20)
+                    
+                    category_table.add_row(
+                        category,
+                        f"${amount:.4f}",
+                        f"{percentage:.1f}%",
+                        visual_bar
+                    )
+                
+                content = Group(summary_table, "", category_table)
+            else:
+                no_data = Panel(
+                    Text("No cost data found for the selected period.", style="yellow"),
+                    title="📊 Categories",
+                    border_style="yellow"
+                )
+                content = Group(summary_table, "", no_data)
+            
+            return self._success({
+                'content': content,
+                'total_amount': float(summary.total_amount),
+                'session_cost': float(session_cost),
+                'period_days': days,
+                'entry_count': summary.entry_count,
+                'categories': {k: float(v) for k, v in summary.categories.items()}
+            })
             
         except Exception as e:
-            raise CommandError(f"Failed to display cost information: {str(e)}")
-    
-    def _get_cost_data(self, context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Get cost data from agent (mock implementation)"""
-        
-        # In real implementation, this would get data from the agent
+            return self._error(f"Failed to show cost summary: {str(e)}")
+
+    def _show_session_costs(self) -> Dict[str, Any]:
+        """Show current session costs"""
+        try:
+            session_cost = self.cost_tracker.get_current_session_cost()
+            
+            # Create session info panel
+            session_info = (
+                f"💰 **Current Session Cost**: ${session_cost:.6f}\n\n"
+                "This represents the cost of API calls and resource usage\n"
+                "in your current DEILE session.\n\n"
+                "📊 **What's included**:\n"
+                "• API calls to language models\n"
+                "• Compute resource usage\n" 
+                "• Sandbox container costs\n"
+                "• Network and storage usage\n\n"
+                "💡 **Cost will reset when you start a new session**"
+            )
+            
+            if session_cost > 0:
+                session_info += f"\n\n📈 **Session is active with costs**"
+                style = "green"
+            else:
+                session_info += "\n\n🎉 **No costs yet in this session!**"
+                style = "blue"
+            
+            content = Panel(Text(session_info, style=style),
+                          title="💰 Session Costs",
+                          border_style=style)
+            
+            return self._success({
+                'content': content,
+                'session_cost': float(session_cost)
+            })
+            
+        except Exception as e:
+            return self._error(f"Failed to show session costs: {str(e)}")
+
+    def _show_cost_estimate(self, provider: str, model: str, tokens: int) -> Dict[str, Any]:
+        """Show cost estimate for API call"""
+        try:
+            estimate = self.cost_tracker.get_pricing_estimate(provider, model, tokens)
+            
+            if 'error' in estimate:
+                return self._error(estimate['error'])
+            
+            # Create estimate table
+            estimate_table = Table(title="💰 Cost Estimate", show_header=True, header_style="bold cyan")
+            estimate_table.add_column("Component", style="white", width=20)
+            estimate_table.add_column("Tokens", style="yellow", width=15)
+            estimate_table.add_column("Cost", style="green", width=15)
+            estimate_table.add_column("Rate", style="dim", width=20)
+            
+            estimate_table.add_row(
+                "Input Tokens",
+                f"{estimate['estimated_input_tokens']:,}",
+                f"${estimate['estimated_input_cost']:.6f}",
+                f"${estimate['estimated_input_cost'] / estimate['estimated_input_tokens'] * 1000:.4f}/1K" if estimate['estimated_input_tokens'] > 0 else "N/A"
+            )
+            
+            estimate_table.add_row(
+                "Output Tokens", 
+                f"{estimate['estimated_output_tokens']:,}",
+                f"${estimate['estimated_output_cost']:.6f}",
+                f"${estimate['estimated_output_cost'] / estimate['estimated_output_tokens'] * 1000:.4f}/1K" if estimate['estimated_output_tokens'] > 0 else "N/A"
+            )
+            
+            estimate_table.add_row(
+                "**Total**",
+                f"**{estimate['estimated_total_tokens']:,}**",
+                f"**${estimate['estimated_total_cost']:.6f}**",
+                f"**${estimate['cost_per_token'] * 1000:.4f}/1K**"
+            )
+            
+            # Estimate details
+            details_text = (
+                f"🔍 **Estimate Details**\n\n"
+                f"Provider: {estimate['provider']}\n"
+                f"Model: {estimate['model']}\n"
+                f"Currency: {estimate['currency']}\n\n"
+                f"📊 **Token Distribution**\n"
+                f"• Input: {estimate['estimated_input_tokens']:,} tokens (70%)\n"
+                f"• Output: {estimate['estimated_output_tokens']:,} tokens (30%)\n\n"
+                f"💡 **Note**: This is an estimate based on typical usage patterns.\n"
+                f"Actual costs may vary depending on the specific request."
+            )
+            
+            details_panel = Panel(
+                Text(details_text, style="blue"),
+                title="🔍 Details",
+                border_style="blue"
+            )
+            
+            content = Group(estimate_table, "", details_panel)
+            
+            return self._success({
+                'content': content,
+                'estimate': estimate
+            })
+            
+        except Exception as e:
+            return self._error(f"Failed to show cost estimate: {str(e)}")
+
+    def _success(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Return success response"""
         return {
-            "session": {
-                "id": "session_20250906_184500",
-                "started": "2025-09-06T15:30:00",
-                "duration": "3h 15m",
-                "total_requests": 23,
-                "active_model": "gemini-2.5-pro"
-            },
-            "token_usage": {
-                "total_prompt_tokens": 12500,
-                "total_completion_tokens": 3725,
-                "total_tokens": 16225,
-                "breakdown": {
-                    "system_instructions": 625,
-                    "persona": 200,
-                    "memory": 4700,
-                    "conversation": 8500,
-                    "tools": 2400
-                }
-            },
-            "tool_calls": {
-                "total_calls": 47,
-                "successful": 44,
-                "failed": 3,
-                "by_tool": {
-                    "bash_execute": {"calls": 15, "tokens": 2500},
-                    "read_file": {"calls": 12, "tokens": 1800},
-                    "write_file": {"calls": 8, "tokens": 1200},
-                    "list_files": {"calls": 7, "tokens": 900},
-                    "find_in_files": {"calls": 5, "tokens": 1100}
-                }
-            },
-            "cost_estimation": {
-                "model": "gemini-2.5-pro",
-                "rate_per_1k_prompt": 0.00125,  # $0.00125 per 1K prompt tokens
-                "rate_per_1k_completion": 0.005,  # $0.005 per 1K completion tokens
-                "estimated_prompt_cost": 0.0156,  # 12.5K * $0.00125
-                "estimated_completion_cost": 0.0186,  # 3.7K * $0.005
-                "estimated_total_cost": 0.0342,
-                "currency": "USD"
-            },
-            "efficiency_metrics": {
-                "avg_tokens_per_request": 705,
-                "avg_response_tokens": 162,
-                "tool_success_rate": 93.6,
-                "context_efficiency": 79.2  # percentage of context used
-            }
+            "success": True,
+            "command": self.name,
+            "data": data,
+            "timestamp": datetime.now().isoformat()
         }
-    
-    def _create_summary_display(self, data: Dict[str, Any], show_breakdown: bool) -> Panel:
-        """Create summary display"""
-        
-        token_data = data.get("token_usage", {})
-        cost_data = data.get("cost_estimation", {})
-        session_data = data.get("session", {})
-        tools_data = data.get("tool_calls", {})
-        
-        content_lines = [
-            f"💰 **Cost & Usage Summary**",
-            "",
-            f"⏱️  **Session**: {session_data.get('duration', 'Unknown')}",
-            f"🤖 **Model**: {session_data.get('active_model', 'Unknown')}",
-            f"📊 **Requests**: {session_data.get('total_requests', 0)}",
-            f"🔧 **Tool Calls**: {tools_data.get('successful', 0)}/{tools_data.get('total_calls', 0)} successful",
-            "",
-            f"🎯 **Tokens**: {token_data.get('total_tokens', 0):,} total",
-            f"   • Prompt: {token_data.get('total_prompt_tokens', 0):,}",
-            f"   • Completion: {token_data.get('total_completion_tokens', 0):,}",
-            "",
-            f"💵 **Estimated Cost**: ${cost_data.get('estimated_total_cost', 0):.4f}",
-            f"   • Prompt: ${cost_data.get('estimated_prompt_cost', 0):.4f}",
-            f"   • Completion: ${cost_data.get('estimated_completion_cost', 0):.4f}"
-        ]
-        
-        if show_breakdown:
-            breakdown = token_data.get("breakdown", {})
-            content_lines.extend([
-                "",
-                "📋 **Token Breakdown**:",
-                f"   • System: {breakdown.get('system_instructions', 0):,}",
-                f"   • Persona: {breakdown.get('persona', 0):,}",
-                f"   • Memory: {breakdown.get('memory', 0):,}",
-                f"   • Conversation: {breakdown.get('conversation', 0):,}",
-                f"   • Tools: {breakdown.get('tools', 0):,}"
-            ])
-        
-        content = "\n".join(content_lines)
-        
-        return Panel(
-            Text(content, style="white"),
-            title="💰 Cost Analysis",
-            border_style="green",
-            padding=(1, 2)
-        )
-    
-    def _create_detailed_display(self, data: Dict[str, Any], show_breakdown: bool) -> Columns:
-        """Create detailed display with multiple panels"""
-        
-        panels = []
-        
-        # Session & Model Panel
-        session_data = data.get("session", {})
-        cost_data = data.get("cost_estimation", {})
-        
-        session_content = [
-            f"**Session ID**: {session_data.get('id', 'Unknown')}",
-            f"**Started**: {session_data.get('started', 'Unknown')[:16]}",
-            f"**Duration**: {session_data.get('duration', 'Unknown')}",
-            f"**Requests**: {session_data.get('total_requests', 0)}",
-            "",
-            f"**Model**: {cost_data.get('model', 'Unknown')}",
-            f"**Prompt Rate**: ${cost_data.get('rate_per_1k_prompt', 0):.5f}/1K",
-            f"**Completion Rate**: ${cost_data.get('rate_per_1k_completion', 0):.5f}/1K"
-        ]
-        
-        panels.append(Panel(
-            "\n".join(session_content),
-            title="📊 Session Info",
-            border_style="blue"
-        ))
-        
-        # Token Usage Panel
-        token_data = data.get("token_usage", {})
-        
-        token_content = [
-            f"**Total Tokens**: {token_data.get('total_tokens', 0):,}",
-            f"**Prompt Tokens**: {token_data.get('total_prompt_tokens', 0):,}",
-            f"**Completion Tokens**: {token_data.get('total_completion_tokens', 0):,}",
-            "",
-            f"**Estimated Cost**: ${cost_data.get('estimated_total_cost', 0):.4f}",
-            f"  Prompt: ${cost_data.get('estimated_prompt_cost', 0):.4f}",
-            f"  Completion: ${cost_data.get('estimated_completion_cost', 0):.4f}"
-        ]
-        
-        panels.append(Panel(
-            "\n".join(token_content),
-            title="🎯 Token Usage",
-            border_style="yellow"
-        ))
-        
-        # Tool Usage Panel
-        tools_data = data.get("tool_calls", {})
-        by_tool = tools_data.get("by_tool", {})
-        
-        tool_content = [
-            f"**Total Calls**: {tools_data.get('total_calls', 0)}",
-            f"**Successful**: {tools_data.get('successful', 0)}",
-            f"**Failed**: {tools_data.get('failed', 0)}",
-            f"**Success Rate**: {data.get('efficiency_metrics', {}).get('tool_success_rate', 0):.1f}%",
-            "",
-            "**Top Tools**:"
-        ]
-        
-        # Add top 3 tools by usage
-        sorted_tools = sorted(by_tool.items(), 
-                            key=lambda x: x[1].get('calls', 0), 
-                            reverse=True)[:3]
-        
-        for tool_name, tool_data in sorted_tools:
-            tool_content.append(f"  {tool_name}: {tool_data.get('calls', 0)} calls")
-        
-        panels.append(Panel(
-            "\n".join(tool_content),
-            title="🔧 Tool Usage",
-            border_style="cyan"
-        ))
-        
-        if show_breakdown:
-            # Detailed Breakdown Panel
-            breakdown = token_data.get("breakdown", {})
-            efficiency = data.get("efficiency_metrics", {})
-            
-            breakdown_content = [
-                "**Token Distribution**:",
-                f"  System: {breakdown.get('system_instructions', 0):,}",
-                f"  Persona: {breakdown.get('persona', 0):,}",
-                f"  Memory: {breakdown.get('memory', 0):,}",
-                f"  Conversation: {breakdown.get('conversation', 0):,}",
-                f"  Tools: {breakdown.get('tools', 0):,}",
-                "",
-                "**Efficiency Metrics**:",
-                f"  Avg tokens/req: {efficiency.get('avg_tokens_per_request', 0)}",
-                f"  Avg response: {efficiency.get('avg_response_tokens', 0)}",
-                f"  Context usage: {efficiency.get('context_efficiency', 0):.1f}%"
-            ]
-            
-            panels.append(Panel(
-                "\n".join(breakdown_content),
-                title="📋 Detailed Breakdown",
-                border_style="red"
-            ))
-        
-        return Columns(panels, equal=True, expand=True)
-    
-    def get_help(self) -> str:
-        """Get command help"""
-        return """Display token usage, cost estimation and run statistics
 
-Usage:
-  /cost [format] [options]
+    def _error(self, message: str) -> Dict[str, Any]:
+        """Return error response"""
+        logger.error(f"CostCommand error: {message}")
+        return {
+            "success": False,
+            "command": self.name,
+            "error": message,
+            "timestamp": datetime.now().isoformat()
+        }
 
-Formats:
-  summary   Show summary view (default)
-  detailed  Show detailed breakdown
-  json      Export as JSON
 
-Options:
-  --breakdown, -b      Show detailed token breakdown
-  --export, -e         Export cost data to file
-  --format FORMAT, -f  Specify output format
-
-Examples:
-  /cost                    Show cost summary
-  /cost detailed -b        Show detailed view with breakdown
-  /cost json               Export as JSON
-  /cost --breakdown        Show summary with token breakdown
-
-Aliases: /tokens, /usage"""
+# Register the command
+from deile.commands.registry import CommandRegistry
+CommandRegistry.register("cost", CostCommand)
