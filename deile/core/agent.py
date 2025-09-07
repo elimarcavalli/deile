@@ -17,6 +17,7 @@ from ..parsers.registry import ParserRegistry, get_parser_registry
 from ..parsers.base import ParseResult, ParseStatus, ParsedCommand
 from ..commands.registry import CommandRegistry, get_command_registry
 from ..commands.actions import CommandActions
+from ..ui.display_manager import DisplayManager
 from ..storage.logs import get_logger
 from ..config.settings import get_settings
 
@@ -102,6 +103,7 @@ class DeileAgent:
         parser_registry: Optional[ParserRegistry] = None,
         context_manager: Optional[ContextManager] = None,
         model_router: Optional[ModelRouter] = None,
+        display_manager: Optional[DisplayManager] = None,
         config_manager = None
     ):
         self.config_manager = config_manager
@@ -109,6 +111,14 @@ class DeileAgent:
         self.parser_registry = parser_registry or get_parser_registry()
         self.context_manager = context_manager or ContextManager()
         self.model_router = model_router or ModelRouter()
+        
+        # Initialize display system - requires Rich Console
+        if display_manager:
+            self.display_manager = display_manager
+        else:
+            from rich.console import Console
+            console = Console()
+            self.display_manager = DisplayManager(console)
         
         # Initialize command system
         self.command_registry = get_command_registry(config_manager)
@@ -438,6 +448,9 @@ class DeileAgent:
                 # Executa a tool
                 result = await self.tool_registry.execute_tool(tool_name, context)
                 tool_results.append(result)
+                
+                # Display tool result using DisplayManager - SOLVES SITUAÇÃO 2 & 3
+                self.display_manager.display_tool_result(tool_name, result)
                 
                 # self.logger.info(f"Tool {tool_name} executed: {result.status.value}")
                 

@@ -1,0 +1,180 @@
+# DEILE Display Configuration
+# Controls how tool outputs and UI elements are displayed
+
+# Console Settings
+console:
+  width: auto  # auto, or specific width (e.g., 120)
+  height: auto  # auto, or specific height
+  color_system: auto  # auto, standard, 256, truecolor, windows
+  force_terminal: false
+  legacy_windows: false
+  
+# Rich UI Theme
+theme:
+  primary_color: blue
+  success_color: green
+  warning_color: yellow
+  error_color: red
+  info_color: cyan
+  accent_color: magenta
+  
+  # Panel Styles
+  panel_border: rounded  # rounded, square, heavy, double
+  panel_padding: 1
+  
+  # Table Styles
+  table_border: simple  # simple, rounded, heavy, double
+  table_header_style: bold blue
+  table_show_lines: true
+  
+  # Tree Styles
+  tree_guide_style: blue
+  tree_expand_symbol: ▼
+  tree_collapse_symbol: ▶
+
+# Display Policies by Tool
+tool_display_policies:
+  list_files:
+    policy: system
+    show_cli_default: true
+    format: tree  # tree, table, list
+    max_items: 100
+    show_hidden: false
+    show_sizes: true
+    group_directories: true
+    
+  find_in_files:
+    policy: system
+    show_cli_default: true
+    format: detailed  # detailed, compact, table
+    max_matches_display: 20
+    max_context_display: 10
+    highlight_matches: true
+    show_file_headers: true
+    show_stats_footer: true
+    
+  bash_execute:
+    policy: both
+    show_cli_default: true
+    format: live  # live, buffered, summary
+    show_command: true
+    show_timing: true
+    buffer_size: 10000
+    
+  read_file:
+    policy: system
+    show_cli_default: false  # Usually for agent context
+    format: syntax  # raw, syntax, preview
+    max_lines_preview: 50
+    show_line_numbers: false
+    
+  write_file:
+    policy: system
+    show_cli_default: true
+    format: summary  # summary, diff, full
+    show_backup_info: true
+    
+  # Search and analysis tools
+  search_tools:
+    policy: system
+    show_cli_default: true
+    format: highlighted
+    
+  # Security tools
+  secrets_scanner:
+    policy: both
+    show_cli_default: true
+    format: secure  # secure (redacted), full, summary
+    show_patterns: false
+    show_confidence: true
+
+# Output Formatting
+formatting:
+  # File paths
+  paths:
+    style: relative  # relative, absolute, compact
+    highlight_extensions: true
+    color_by_type: true
+    
+  # Code syntax
+  syntax:
+    theme: monokai  # monokai, github, solarized-dark, solarized-light
+    line_numbers: false
+    highlight_search: true
+    
+  # Performance metrics
+  metrics:
+    show_execution_time: true
+    show_memory_usage: false
+    show_token_count: true
+    precision: 2  # decimal places
+    
+  # Progress indicators
+  progress:
+    style: bar  # bar, spinner, dots, percentage
+    show_eta: true
+    refresh_rate: 10  # Hz
+    
+# Tool Result Display Limits
+limits:
+  max_output_lines: 1000
+  max_output_chars: 50000
+  max_file_preview: 500  # lines
+  max_search_results: 50
+  max_context_lines: 50  # SITUAÇÃO 6 compliance
+  truncation_indicator: "... [truncated]"
+  
+# Interactive Features
+interaction:
+  confirm_destructive: true
+  show_help_hints: true
+  enable_paging: true
+  page_size: 20
+  
+  # Keybindings for paged output
+  keys:
+    next_page: space
+    prev_page: b
+    quit: q
+    help: h
+    
+# Error Display
+errors:
+  show_stack_trace: false  # Set to true for debugging
+  show_error_context: true
+  highlight_error_line: true
+  suggest_fixes: true
+  
+# Logging Integration
+logging:
+  show_log_level: true
+  timestamp_format: "%H:%M:%S"
+  show_logger_name: false
+  
+# Performance Optimizations
+performance:
+  lazy_load_large_outputs: true
+  cache_rendered_results: true
+  async_rendering: true
+  max_render_time_ms: 500
+  
+# Accessibility
+accessibility:
+  high_contrast: false
+  screen_reader_friendly: false
+  reduce_animations: false
+  simple_borders: false
+  
+# Export Options
+export:
+  default_format: json
+  include_metadata: true
+  include_timestamps: true
+  pretty_print: true
+  
+# Debug Options (for development)
+debug:
+  show_render_time: false
+  show_memory_usage: false
+  log_display_calls: false
+  validate_rich_markup: false

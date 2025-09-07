@@ -1,0 +1,190 @@
+# DEILE Permission Configuration
+# Defines security rules for tool access and resource protection
+
+default_permission: read
+auto_approve_low_risk: true
+require_approval_threshold: high
+
+# Permission Rules (evaluated by priority - lower number = higher priority)
+rules:
+  # Critical System Protection (Highest Priority)
+  - id: protect_system_dirs
+    name: System Directory Protection
+    description: Block access to critical system directories
+    resource_type: directory
+    resource_pattern: ^(/etc|/usr|/boot|/sys|/proc|C:\\Windows|C:\\Program Files).*
+    tool_names: ["*"]
+    permission_level: none
+    priority: 10
+    enabled: true
+    conditions:
+      enforce_strict: true
+  
+  # Git Directory Protection
+  - id: protect_git_dir
+    name: Git Directory Protection
+    description: Protect .git directories from accidental modification
+    resource_type: directory
+    resource_pattern: .*\.git(/.*)?$
+    tool_names: [write_file, delete_file, bash_execute]
+    permission_level: read
+    priority: 20
+    enabled: true
+    conditions:
+      allow_read: true
+      block_writes: true
+  
+  # Configuration File Protection
+  - id: protect_config_files
+    name: Configuration File Protection
+    description: Require elevated permission for sensitive config files
+    resource_type: file
+    resource_pattern: .*\.(env|config|conf|secrets|key|pem|crt)$
+    tool_names: [write_file, delete_file, read_file]
+    permission_level: write
+    priority: 30
+    enabled: true
+    conditions:
+      require_approval: true
+      audit_access: true
+  
+  # Development Config Files (Lower Risk)
+  - id: dev_config_files
+    name: Development Config Files
+    description: Allow access to development configuration files
+    resource_type: file
+    resource_pattern: .*\.(yaml|yml|json|ini|toml)$
+    tool_names: [read_file, write_file]
+    permission_level: write
+    priority: 40
+    enabled: true
+    conditions:
+      require_approval: false
+      audit_access: true
+  
+  # Python Cache and Temporary Files
+  - id: allow_python_cache
+    name: Python Cache Access
+    description: Allow full access to Python cache and temp directories
+    resource_type: directory
+    resource_pattern: .*(__pycache__|\.pytest_cache|\.mypy_cache|\.tox|node_modules|\.venv|venv)(/.*)?$
+    tool_names: ["*"]
+    permission_level: write
+    priority: 50
+    enabled: true
+    conditions:
+      auto_approve: true
+  
+  # Log Files Access
+  - id: allow_log_files
+    name: Log Files Access
+    description: Allow reading and writing log files
+    resource_type: file
+    resource_pattern: .*\.(log|logs)$
+    tool_names: [read_file, write_file, list_files]
+    permission_level: write
+    priority: 60
+    enabled: true
+    conditions:
+      auto_approve: true
+  
+  # Workspace Files (Default Allow)
+  - id: workspace_access
+    name: Workspace File Access
+    description: Allow full access to workspace files (excluding protected patterns)
+    resource_type: file
+    resource_pattern: ^\./((?!\.git|\.env).)*$
+    tool_names: ["*"]
+    permission_level: write
+    priority: 100
+    enabled: true
+    conditions:
+      auto_approve: true
+      audit_access: false
+      
+  # DEILE Internal Directories
+  - id: deile_dirs_access
+    name: DEILE Directories Access
+    description: Allow full access to DEILE operational directories
+    resource_type: directory
+    resource_pattern: ^(ARTIFACTS|PLANS|RUNS|LOGS|CACHE)(/.*)?$
+    tool_names: ["*"]
+    permission_level: admin
+    priority: 15
+    enabled: true
+    conditions:
+      auto_approve: true
+      audit_access: true
+
+# Network Access Rules
+network_rules:
+  - id: allow_local_network
+    name: Local Network Access
+    description: Allow local network connections
+    resource_pattern: ^(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[01])\.).*
+    permission_level: execute
+    enabled: true
+  
+  - id: require_approval_external
+    name: External Network Approval
+    description: Require approval for external network access
+    resource_pattern: .*
+    permission_level: execute
+    enabled: true
+    conditions:
+      require_approval: true
+      audit_access: true
+
+# Command Execution Rules
+command_rules:
+  - id: safe_commands
+    name: Safe Commands
+    description: Allow safe read-only commands
+    resource_pattern: ^(ls|cat|head|tail|find|grep|ps|pwd|whoami|id|date|uname)(\s.*)?$
+    permission_level: execute
+    enabled: true
+    conditions:
+      auto_approve: true
+  
+  - id: risky_commands
+    name: Risky Commands
+    description: Commands requiring approval
+    resource_pattern: ^(rm|rmdir|del|format|fdisk|mkfs|dd|shutdown|reboot|poweroff|halt|init|systemctl|service)(\s.*)?$
+    permission_level: none
+    enabled: true
+    conditions:
+      require_approval: true
+      audit_access: true
+  
+  - id: moderate_commands
+    name: Moderate Risk Commands
+    description: Commands with moderate risk
+    resource_pattern: ^(cp|mv|mkdir|chmod|chown|curl|wget|git|python|node|npm)(\s.*)?$
+    permission_level: write
+    enabled: true
+    conditions:
+      require_approval: false
+      audit_access: true
+
+# Approval Settings
+approval:
+  default_timeout: 300  # 5 minutes
+  escalation_timeout: 900  # 15 minutes
+  auto_deny_after: 1800  # 30 minutes
+  notification_channels:
+    - console
+    - log
+  
+# Audit Settings
+audit:
+  enabled: true
+  log_all_access: true
+  log_denied_access: true
+  retention_days: 90
+  export_format: json
+  
+# Emergency Settings
+emergency:
+  bypass_enabled: false
+  bypass_password_hash: null  # Set in production
+  emergency_contacts: []
