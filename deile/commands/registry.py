@@ -234,7 +234,9 @@ class CommandRegistry:
                 'deile.commands.builtin.patch_command',
                 'deile.commands.builtin.apply_command',
                 'deile.commands.builtin.memory_command',
-                'deile.commands.builtin.logs_command'
+                'deile.commands.builtin.logs_command',
+                'deile.commands.builtin.permissions_command',
+                'deile.commands.builtin.sandbox_command'
             ]
             
             for module_name in builtin_modules:
