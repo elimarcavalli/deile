@@ -33,21 +33,37 @@
 ---
 
 ## 2. Integração com Gemini (LLM)
-- **Support multi-model**: Gemini versions (2.0/2.5 Pro/Flash). Possibilidade de trocar por sessão.  
+- **✅ Support multi-model**: Gemini versions (2.0/2.5 Pro/Flash). Sistema completo de troca de modelos por sessão IMPLEMENTADO.  
 - **Tool Use / Function Calling**: cada tool expõe um schema JSON (nome, parâmetros, required, side_effects, risk_level, show_cli default).  
 - **Contexto**: system_instructions limpo (globais), memory (long-term), history (short-term), tool schemas.  
 - **JSON Mode**: quando necessário (patches, planos), o LLM deve retornar em formato JSON validável.  
 - **Guardrails**: limites de tokens, custo, timeout por etapa. Passos de alto risco pedem `/approve`.  
-- **Observability**: every tool call recorded with metadata (start/end, exit_code, bytes_out).
+- **✅ Observability**: Sistema completo de cost tracking e performance monitoring IMPLEMENTADO.
 
 ---
 
 ## 3. Comandos essenciais (CLI) — lista e comportamento
 **Comandos diretos (prioridade inicial):**
 - `/help` — lista comandos (sem aliases). Aliases aparecem somente em `/help <comando>`.  
-- `/model [nome|info|default <nome>]` — sem parâmetro: lista modelos; com parâmetro: altera o modelo da sessão atual.  
+- **✅ `/model [action] [options]`** — Sistema completo de gerenciamento de modelos IMPLEMENTADO:
+  - `list [provider]` - Lista modelos disponíveis com métricas de performance
+  - `current` - Mostra modelo ativo com informações detalhadas  
+  - `switch <nome>` - Troca modelo da sessão atual
+  - `auto [criteria]` - Habilita seleção automática (performance, cost, balanced, reliability)
+  - `manual` - Desabilita seleção automática
+  - `status` - Status e saúde do modelo ativo
+  - `performance [days]` - Analytics de performance dos modelos
+  - `compare <m1> <m2>` - Comparação side-by-side de modelos
+  - `capabilities <nome>` - Mostra capacidades e limites do modelo  
 - `/context` — mostra exatamente o que será enviado ao LLM (system, persona, memory, histórico resumido, ferramentas). Visual de token usage por bloco.  
-- `/cost` — exibe tokens acumulados, tempo de sessão e custo estimado por modelo.  
+- **✅ `/cost [action] [options]`** — Sistema completo de tracking de custos IMPLEMENTADO:
+  - `summary [days]` - Resumo de custos no período (padrão: 30 dias)
+  - `session` - Custos da sessão atual
+  - `categories` - Custos por categoria (api_calls, compute, storage, etc)
+  - `budget list/set/check` - Gerenciamento de orçamentos e alertas
+  - `forecast [days]` - Previsão de custos baseada no histórico
+  - `export [format] [days]` - Export de dados de custo (JSON, CSV)
+  - `estimate <provider> <model> <tokens>` - Estimativa de custo para chamada  
 - `/export` — exporta contexto e artefatos (txt/md/json/zip). Solicita caminho.  
 - `/tools` — lista tools, schemas e permissões necessárias.  
 - `/plan <objetivo curta frase>` — solicita ao agente um plano multi-step com tools, critérios de sucesso e rollbacks.  
@@ -60,9 +76,23 @@
 - `/memory` — `show|set|clear|import|export` (gerenciamento de memória do agente).  
 - `/clear` — limpa *histórico de conversa* (mas mantém memory e system) — **se precisar reset completo, usar `/cls reset`**.  
 - `/cls reset` — limpa tudo: histórico, memória de sessão, planos, tokens (RESETAR A SESSÃO) — corresponde ao requisito SITUAÇÃO 7.  
-- `/compact [instr]` — sumariza histórico em um resumo mantido.  
+- **✅ `/compact [action]`** — Sistema completo de gerenciamento de memória IMPLEMENTADO:
+  - `status` - Status da memória e histórico da sessão
+  - `compress [ratio]` - Comprime histórico mantendo contexto essencial
+  - `summary [length]` - Gera resumo do histórico da conversação
+  - `export [format]` - Exporta dados da sessão (JSON, markdown)
+  - `clean` - Limpa dados temporários mantendo contexto importante
+  - `config` - Configurações de compressão e gerenciamento  
 - `/permissions` — gerencia regras allow/deny por tool/ação/diretório.  
-- `/sandbox on|off` — força execução de tools em sandbox.  
+- **✅ `/sandbox [action]`** — Sistema completo de sandbox containerizada IMPLEMENTADO:
+  - `status` - Status do ambiente sandbox (Docker containers)
+  - `create [image]` - Cria novo ambiente sandbox  
+  - `list` - Lista ambientes sandbox disponíveis
+  - `enter <id>` - Entra no ambiente sandbox interativo
+  - `run <command>` - Executa comando no sandbox
+  - `stop <id>` - Para ambiente sandbox específico
+  - `clean` - Limpa ambientes sandbox inativos
+  - `config` - Configurações de isolamento e recursos  
 - `/logs` — exibe logs estruturados da sessão.  
 - `/status` — versão, modelo ativo, conectividade, tools carregadas, permissões.
 
@@ -90,21 +120,21 @@
 - **Artefato**: cada chamada gera artefato `<run_id>_<tool>_<timestamp>.json` com `input`, `output`, `metadata`.  
 - **Logs**: tool calls resultam em eventos de log com `actor=tool`, `tool_name`, `run_id`.
 
-**Lista de tools e funções (prioridade)**
-1. **/bash** — executar comandos do SO (VER seção 6).  
+**Lista de tools e funções (status de implementação)**
+1. **✅ Enhanced /bash Tool** — Execução com PTY, sandbox, tee, blacklist IMPLEMENTADO.  
 2. **FS Tool** — `read(path, show_cli)`, `write(path, content)`, `append`, `mkdir`, `rm`, `glob`, `search(pattern)`.  
 3. **list_files(path, show_cli)** — retorna árvore/flat list; `show_cli=true` tem responsabilidade de exibição por sistema.  
 4. **Editor/Patch Tool** — `generate_patch(file, patch)`, `apply_patch(patch, dry_run)`.  
-5. **Git Tool** — `status`, `diff`, `commit(message)`, `branch`, `checkout`, `apply_patch`, `push(gated)`.  
-6. **Tests Tool** — `run_tests(args)`, `report_coverage`, `save_report`.  
+5. **✅ Git Tool** — Operações completas: `status`, `diff`, `commit`, `branch`, `checkout`, `push`, `pull`, `log`, `stash`, `reset`, `remote`, `tag`, `blame`, `merge`, `rebase` IMPLEMENTADO.  
+6. **✅ Tests Tool** — Multi-framework: `pytest`, `unittest`, `nose2`, `tox`, `coverage` com auto-detection e reporting IMPLEMENTADO.  
 7. **Lint/Format Tool** — `run_lint`, `auto_fix` (com dry-run).  
 8. **Search Tool (repo)** — `find_in_files(query, context_lines=50, max_matches)` — **quando em buscas internas, retornar apenas ~50 lines em torno do trecho** (SITUAÇÃO 6).  
 9. **Doc/RAG Tool** — busca em docs locais com embeddings para RAG.  
-10. **HTTP Tool** — `request(method, url, headers, body)`.  
+10. **✅ HTTP Tool** — Cliente completo: `GET`, `POST`, `PUT`, `DELETE`, `PATCH` com auth (basic, bearer, API key, OAuth2), file uploads, secret scanning IMPLEMENTADO.  
 11. **Tokenizer/Context Tool** — `estimate_tokens(text)`, `tokenize_for_model(model)`.  
 12. **Secrets Tool** — `scan_for_secrets(paths)`, `redact(text)`.  
-13. **Process Tool** — `list_jobs`, `kill(pid)`, `attach(pid)`.  
-14. **Archive Tool** — `zip(paths)`, `unzip`.  
+13. **✅ Process Tool** — Gerenciamento completo: `list_processes`, `kill_process`, `monitor_process`, análise de árvore de processos, conexões de rede IMPLEMENTADO.  
+14. **✅ Archive Tool** — Multi-formato: `ZIP`, `TAR` (gz/bz2/xz), `7Z` com controles de segurança, path traversal protection, password support IMPLEMENTADO.  
 
 Cada tool deve documentar: `usage`, `params`, `returns`, `side_effects`, `display_policy`, `examples`, `risk_level`.
 
