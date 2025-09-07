@@ -128,13 +128,14 @@
 5. **✅ Git Tool** — Operações completas: `status`, `diff`, `commit`, `branch`, `checkout`, `push`, `pull`, `log`, `stash`, `reset`, `remote`, `tag`, `blame`, `merge`, `rebase` IMPLEMENTADO.  
 6. **✅ Tests Tool** — Multi-framework: `pytest`, `unittest`, `nose2`, `tox`, `coverage` com auto-detection e reporting IMPLEMENTADO.  
 7. **Lint/Format Tool** — `run_lint`, `auto_fix` (com dry-run).  
-8. **Search Tool (repo)** — `find_in_files(query, context_lines=50, max_matches)` — **quando em buscas internas, retornar apenas ~50 lines em torno do trecho** (SITUAÇÃO 6).  
+8. **✅ Search Tool (repo)** — SITUAÇÃO 6 COMPLIANT: `find_in_files` com context ≤ 50 linhas, alta performance, filtros inteligentes IMPLEMENTADO.  
 9. **Doc/RAG Tool** — busca em docs locais com embeddings para RAG.  
 10. **✅ HTTP Tool** — Cliente completo: `GET`, `POST`, `PUT`, `DELETE`, `PATCH` com auth (basic, bearer, API key, OAuth2), file uploads, secret scanning IMPLEMENTADO.  
-11. **Tokenizer/Context Tool** — `estimate_tokens(text)`, `tokenize_for_model(model)`.  
-12. **Secrets Tool** — `scan_for_secrets(paths)`, `redact(text)`.  
+11. **✅ Tokenizer/Context Tool** — Multi-model: `estimate_tokens`, `analyze_context`, `optimize_text` com smart truncation IMPLEMENTADO.  
+12. **✅ Secrets Tool** — Scanner avançado: `scan_for_secrets`, `redact_text`, multi-pattern detection, entropy analysis IMPLEMENTADO.  
 13. **✅ Process Tool** — Gerenciamento completo: `list_processes`, `kill_process`, `monitor_process`, análise de árvore de processos, conexões de rede IMPLEMENTADO.  
 14. **✅ Archive Tool** — Multi-formato: `ZIP`, `TAR` (gz/bz2/xz), `7Z` com controles de segurança, path traversal protection, password support IMPLEMENTADO.  
+15. **✅ Lint/Format Tool** — Multi-linguagem: `flake8`, `black`, `eslint`, `prettier`, `gofmt`, dry-run support, auto-fix capabilities IMPLEMENTADO.  
 
 Cada tool deve documentar: `usage`, `params`, `returns`, `side_effects`, `display_policy`, `examples`, `risk_level`.
 
