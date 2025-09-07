@@ -42,7 +42,7 @@ class DeileAgentCLI:
             # Carrega configurações
             self.config_manager.load_config()
             
-            with self.ui.show_loading("Inicializando DEILE v5.0..."):
+            with self.ui.show_loading("Inicializando DEILE v4.0..."):
                 if not self.settings.get_api_key("gemini"):
                     self.ui.display_error(
                         "Chave de API do Google não encontrada!",

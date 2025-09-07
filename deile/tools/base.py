@@ -41,6 +41,21 @@ class SecurityLevel(Enum):
     DANGEROUS = "dangerous"
 
 
+class DisplayPolicy(Enum):
+    """Políticas de exibição para output de tools"""
+    SYSTEM = "system"      # Sistema exibe o resultado
+    AGENT = "agent"        # Agente processa e responde  
+    BOTH = "both"          # Sistema exibe, agente responde sobre resultado
+    SILENT = "silent"      # Nenhum output visível (internal)
+
+
+class ShowCliPolicy(Enum):
+    """Controle granular de show_cli behavior"""
+    ALWAYS = "always"      # Sempre exibir independente do parâmetro
+    PARAMETER = "parameter" # Respeitar show_cli parameter
+    NEVER = "never"        # Nunca exibir (silent tools)
+
+
 @dataclass
 class ToolSchema:
     """Schema completo para Function Calling API"""
@@ -135,13 +150,17 @@ class ToolContext:
 
 @dataclass
 class ToolResult:
-    """Resultado da execução de uma tool"""
+    """Resultado estendido com display control"""
     status: ToolStatus
     data: Any = None
     message: str = ""
     error: Optional[Exception] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     execution_time: float = 0.0
+    display_policy: DisplayPolicy = DisplayPolicy.SYSTEM
+    show_cli: bool = True
+    artifact_path: Optional[str] = None
+    display_data: Optional[Dict[str, Any]] = None  # Data formatada para UI
     
     @property
     def is_success(self) -> bool:

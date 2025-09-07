@@ -1,0 +1,70 @@
+{
+  "name": "find_in_files",
+  "description": "Search for text patterns in files with context-limited results. Designed for efficient repository searching with token optimization.",
+  "parameters": {
+    "type": "OBJECT",
+    "properties": {
+      "query": {
+        "type": "STRING",
+        "description": "Search pattern (regex supported)"
+      },
+      "path": {
+        "type": "STRING", 
+        "description": "Directory or file path to search. Default: current directory"
+      },
+      "file_pattern": {
+        "type": "STRING",
+        "description": "File pattern filter (glob). Example: '*.py'"
+      },
+      "max_context_lines": {
+        "type": "NUMBER",
+        "description": "Maximum context lines per match. Default: 25, Max: 50"
+      },
+      "max_matches": {
+        "type": "NUMBER",
+        "description": "Maximum number of matches to return. Default: 20"
+      },
+      "case_sensitive": {
+        "type": "BOOLEAN",
+        "description": "Case sensitive search. Default: false"
+      },
+      "include_binary": {
+        "type": "BOOLEAN", 
+        "description": "Include binary files in search. Default: false"
+      },
+      "exclude_dirs": {
+        "type": "ARRAY",
+        "items": {"type": "STRING"},
+        "description": "Additional directories to exclude (e.g., .git, node_modules)"
+      },
+      "show_cli": {
+        "type": "BOOLEAN",
+        "description": "Display results in terminal. Default: true"
+      }
+    },
+    "required": ["query"]
+  },
+  "side_effects": "none",
+  "risk_level": "safe",
+  "display_policy": "system",
+  "show_cli_policy": "parameter",
+  "category": "search",
+  "examples": [
+    {
+      "description": "Search for function definitions in Python files",
+      "parameters": {
+        "query": "def \\w+\\(",
+        "file_pattern": "*.py",
+        "max_context_lines": 10
+      }
+    },
+    {
+      "description": "Find TODO comments",
+      "parameters": {
+        "query": "TODO|FIXME|HACK",
+        "case_sensitive": false,
+        "max_matches": 50
+      }
+    }
+  ]
+}

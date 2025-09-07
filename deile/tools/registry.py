@@ -288,8 +288,8 @@ class ToolRegistry:
             package_names = [
                 'deile.tools.file_tools',
                 'deile.tools.execution_tools',
-                'deile.tools.search_tools',
-                'deile.tools.test_tools',
+                'deile.tools.search_tool',
+                'deile.tools.bash_tool',
                 'deile.tools.slash_command_executor'
             ]
         
