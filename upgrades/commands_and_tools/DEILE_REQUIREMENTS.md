@@ -128,7 +128,7 @@
 5. **✅ Git Tool** — Operações completas: `status`, `diff`, `commit`, `branch`, `checkout`, `push`, `pull`, `log`, `stash`, `reset`, `remote`, `tag`, `blame`, `merge`, `rebase` IMPLEMENTADO.  
 6. **✅ Tests Tool** — Multi-framework: `pytest`, `unittest`, `nose2`, `tox`, `coverage` com auto-detection e reporting IMPLEMENTADO.  
 7. **✅ Lint/Format Tool** — Multi-linguagem: `flake8`, `black`, `eslint`, `prettier`, `gofmt`, dry-run support, auto-fix capabilities IMPLEMENTADO.  
-8. **⏳ Search Tool (repo)** — `find_in_files` com context ≤ 50 linhas, alta performance PENDENTE (base implementada, precisa integração com DisplayManager).  
+8. **✅ Search Tool (repo)** — `find_in_files` com context ≤ 50 linhas, alta performance, integração DisplayManager IMPLEMENTADO.  
 9. **⏳ Doc/RAG Tool** — busca em docs locais com embeddings para RAG PENDENTE.  
 10. **✅ HTTP Tool** — Cliente completo: `GET`, `POST`, `PUT`, `DELETE`, `PATCH` com auth (basic, bearer, API key, OAuth2), file uploads, secret scanning IMPLEMENTADO.  
 11. **✅ Tokenizer/Context Tool** — Multi-model: `estimate_tokens`, `analyze_context`, `optimize_text` com smart truncation IMPLEMENTADO.  
@@ -161,9 +161,12 @@ Cada tool deve documentar: `usage`, `params`, `returns`, `side_effects`, `displa
 - **✅ Políticas**: DisplayPolicy (SILENT, SYSTEM, BOTH) implementadas para evitar duplicidade — **IMPLEMENTADO**.  
 - **✅ Localização**: `deile/tools/base.py:15-25` — enum DisplayPolicy e `deile/ui/display_manager.py:30-42` — **IMPLEMENTADO**.
 
-### SITUAÇÃO 6 (find_in_files)
-- `find_in_files(query, max_context_lines=50, max_matches=20)` deve retornar: `file`, `line_number`, `match_snippet` (com up to 50 lines total — 25 acima/25 abaixo, ou 50 após como preferido), `match_score`, `path`. Isso economiza tokens.
-- **Status**: ⏳ PENDENTE — aguardando implementação.
+### ✅ SITUAÇÃO 6 (find_in_files) — RESOLVIDA
+- **✅ `find_in_files`**: Hard limit de 50 linhas implementado `max_context_lines = min(parameter, 50)` — **IMPLEMENTADO**.
+- **✅ Return format**: `file`, `line_number`, `match_snippet`, `match_score`, `path` conforme especificado — **IMPLEMENTADO**.
+- **✅ Performance**: Algoritmos otimizados, exclusões inteligentes, threading — **IMPLEMENTADO**.
+- **✅ DisplayManager**: Integração completa com formatação rica — **IMPLEMENTADO**.
+- **✅ Localização**: `deile/tools/search_tool.py:279` — hard limit enforcement — **IMPLEMENTADO**.
 
 ### ✅ SITUAÇÃO 7 (`/cls reset`) — RESOLVIDA  
 - **✅ `/cls` sozinho**: limpa a tela, mas **não** o histórico — comportamento padrão mantido — **IMPLEMENTADO**.  
@@ -433,17 +436,17 @@ O agente deve seguir rigorosamente o plano abaixo — cada etapa será documenta
 - **✅ SITUAÇÃO 1** — Display Manager com formatação segura de árvore (sem caracteres quebrados)
 - **✅ SITUAÇÃO 2** — DisplayPolicy implementada, sistema controla exibição de tools  
 - **✅ SITUAÇÃO 3** — Evita duplicidade, agente recebe artifacts estruturados
+- **✅ SITUAÇÃO 6** — find_in_files (hard limit 50 linhas, DisplayManager integrado)  
 - **✅ SITUAÇÃO 7** — `/cls reset` implementado com reset completo de sessão  
 - **⏳ SITUAÇÃO 5** — Comandos de gerenciamento (implementação parcial)
-- **⏳ SITUAÇÃO 6** — find_in_files (base implementada, precisa integração DisplayManager)  
 - **⏳ SITUAÇÃO 8** — Aliases UX (pendente implementação de completers)
 
-### 📋 PRÓXIMAS ETAPAS (ETAPA 2)
-**⏳ PENDENTES - ALTA PRIORIDADE:**
-1. **`/export`** e **`/tools`** — Comandos essenciais faltantes
-2. **`/stop`, `/undo`, `/diff`, `/patch`** — Comandos de orquestração complementares  
-3. **`/memory`, `/logs`, `/status`** — Comandos de gerenciamento 
-4. **Search Tool integration** — Integração find_in_files com DisplayManager
+### 📋 PRÓXIMAS ETAPAS (ETAPA 3)
+**⚡ ETAPA 2 FINALIZADA COM SUCESSO - Próximos passos:**
+1. **Enhanced Bash Tool** — PTY support, tee, sandbox integration (ETAPA 3 foco principal)
+2. **`/export`** e **`/tools`** — Comandos essenciais faltantes
+3. **`/stop`, `/undo`, `/diff`, `/patch`** — Comandos de orquestração complementares  
+4. **`/memory`, `/logs`, `/status`** — Comandos de gerenciamento 
 5. **Aliases UX** — Sistema de completers com aliases (SITUAÇÃO 8)
 6. **Editor/Patch Tool** — Para operações `/diff` e `/patch`
 

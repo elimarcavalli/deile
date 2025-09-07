@@ -1,0 +1,293 @@
+# DEILE Search Tool Configuration
+# Controls search behavior, performance, and SITUAÇÃO 6 compliance
+
+# Search Limits (SITUAÇÃO 6 COMPLIANCE)
+limits:
+  max_context_lines: 50          # Hard limit - never exceeded
+  max_matches_per_file: 10       # Prevent overwhelming results
+  max_total_matches: 100         # Global limit across all files
+  max_files_searched: 1000       # Performance protection
+  max_search_depth: 10           # Directory traversal depth
+  max_file_size_mb: 10           # Skip files larger than this
+  timeout_seconds: 30            # Search timeout
+  
+# Default Search Parameters
+defaults:
+  context_lines: 5               # Default context per match (≤ 50)
+  max_matches: 20                # Default match limit
+  case_sensitive: false
+  regex_mode: false
+  include_binary: false
+  show_cli: true
+  
+# File Filtering
+file_filters:
+  # Default exclusions
+  exclude_patterns:
+    - "*.log"
+    - "*.tmp"
+    - "*.cache"
+    - "*~"
+    - "*.bak"
+    - "*.swap"
+    - "*.DS_Store"
+    - "Thumbs.db"
+    
+  # Directory exclusions (performance optimization)
+  exclude_directories:
+    - ".git"
+    - ".svn" 
+    - ".hg"
+    - "node_modules"
+    - "__pycache__"
+    - ".pytest_cache"
+    - ".mypy_cache"
+    - ".tox"
+    - "venv"
+    - ".venv"
+    - "env"
+    - ".env"
+    - "build"
+    - "dist"
+    - "target"
+    - "bin"
+    - "obj"
+    - ".gradle"
+    - ".idea"
+    - ".vscode"
+    - ".cache"
+    - ".tmp"
+    
+  # Include patterns (when specified)
+  default_includes:
+    - "*.py"
+    - "*.js"
+    - "*.ts"
+    - "*.jsx"
+    - "*.tsx"
+    - "*.java"
+    - "*.c"
+    - "*.cpp"
+    - "*.h"
+    - "*.hpp"
+    - "*.cs"
+    - "*.php"
+    - "*.rb"
+    - "*.go"
+    - "*.rs"
+    - "*.scala"
+    - "*.kt"
+    - "*.swift"
+    - "*.md"
+    - "*.txt"
+    - "*.json"
+    - "*.yaml"
+    - "*.yml"
+    - "*.xml"
+    - "*.html"
+    - "*.css"
+    - "*.scss"
+    - "*.less"
+    - "*.sql"
+    - "*.sh"
+    - "*.bash"
+    - "*.zsh"
+    - "*.fish"
+    - "*.ps1"
+    - "*.bat"
+    - "*.cmd"
+    
+  # Binary file detection patterns
+  binary_extensions:
+    - ".exe"
+    - ".dll"
+    - ".so"
+    - ".dylib"
+    - ".a"
+    - ".lib"
+    - ".obj"
+    - ".o"
+    - ".pyc"
+    - ".pyo"
+    - ".class"
+    - ".jar"
+    - ".war"
+    - ".zip"
+    - ".tar"
+    - ".gz"
+    - ".7z"
+    - ".rar"
+    - ".pdf"
+    - ".doc"
+    - ".docx"
+    - ".xls"
+    - ".xlsx"
+    - ".ppt"
+    - ".pptx"
+    - ".png"
+    - ".jpg"
+    - ".jpeg"
+    - ".gif"
+    - ".bmp"
+    - ".ico"
+    - ".svg"
+    - ".mp3"
+    - ".mp4"
+    - ".avi"
+    - ".mov"
+    - ".wmv"
+    - ".flv"
+    
+# Performance Optimization
+performance:
+  # Multi-threading
+  max_threads: 4
+  thread_pool_timeout: 60
+  
+  # Memory management
+  max_memory_mb: 256
+  buffer_size: 8192
+  
+  # Caching
+  enable_result_cache: true
+  cache_ttl_seconds: 300
+  max_cache_entries: 100
+  
+  # Early termination
+  early_stop_enabled: true
+  early_stop_matches: 50
+  early_stop_files: 100
+  
+# Context Processing (SITUAÇÃO 6 SPECIFIC)
+context:
+  # Context line distribution
+  default_before: 2      # Lines before match
+  default_after: 3       # Lines after match  
+  max_before: 25         # Maximum before (when total ≤ 50)
+  max_after: 25          # Maximum after (when total ≤ 50)
+  
+  # Context optimization
+  remove_empty_lines: true
+  trim_whitespace: true
+  merge_adjacent_matches: true
+  context_separator: "---"
+  
+  # Smart context
+  expand_for_blocks: true      # Expand to include full code blocks
+  include_function_signatures: true
+  include_class_definitions: true
+  
+# Search Algorithms
+algorithms:
+  # Default algorithm
+  default: "boyer_moore"       # boyer_moore, kmp, regex, simple
+  
+  # Algorithm selection based on pattern
+  auto_select: true
+  
+  # Regex settings
+  regex:
+    engine: "re"              # re, regex (if available)
+    max_complexity: 1000      # Prevent ReDoS
+    timeout_ms: 1000          # Per-pattern timeout
+    
+  # Boyer-Moore optimization  
+  boyer_moore:
+    min_pattern_length: 3
+    case_sensitive_only: false
+    
+# Result Formatting
+formatting:
+  # Match highlighting
+  highlight_matches: true
+  highlight_style: "bold yellow on black"
+  
+  # Line numbers
+  show_line_numbers: true
+  line_number_style: "dim blue"
+  
+  # File headers
+  show_file_paths: true
+  file_path_style: "bold blue"
+  
+  # Context styling
+  context_style: "dim white"
+  separator_style: "dim cyan"
+  
+  # Statistics
+  show_stats: true
+  stats_format: "compact"    # compact, detailed, minimal
+  
+# Integration Settings
+integration:
+  # DisplayManager integration
+  use_display_manager: true
+  display_policy: "system"
+  
+  # Artifact generation
+  generate_artifacts: true
+  artifact_compression: true
+  
+  # Tool chaining
+  enable_tool_chaining: true
+  max_chain_length: 5
+  
+# Security Settings
+security:
+  # Path validation
+  validate_paths: true
+  allow_absolute_paths: false
+  allow_parent_traversal: false
+  
+  # Content filtering
+  redact_secrets: true
+  secret_patterns:
+    - "password"
+    - "api_key"
+    - "secret"
+    - "token"
+    - "credential"
+    
+  # Permission checking
+  check_permissions: true
+  respect_gitignore: true
+  
+# Debugging and Development
+debug:
+  enabled: false
+  log_search_patterns: false
+  log_file_processing: false
+  log_performance_metrics: false
+  verbose_errors: false
+  
+  # Performance profiling
+  profile_searches: false
+  profile_output_file: "search_profile.json"
+  
+# Presets for Common Use Cases
+presets:
+  quick:
+    max_matches: 10
+    max_files_searched: 100
+    context_lines: 2
+    
+  detailed:
+    max_matches: 50
+    max_files_searched: 500
+    context_lines: 10
+    
+  comprehensive:
+    max_matches: 100
+    max_files_searched: 1000
+    context_lines: 20
+    include_binary: true
+    
+  code_review:
+    file_patterns: ["*.py", "*.js", "*.ts", "*.java", "*.c", "*.cpp"]
+    context_lines: 8
+    max_matches: 30
+    
+  documentation:
+    file_patterns: ["*.md", "*.txt", "*.rst", "*.doc"]
+    context_lines: 5
+    max_matches: 25
