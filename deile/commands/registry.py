@@ -228,7 +228,13 @@ class CommandRegistry:
                 'deile.commands.builtin.cost_command',
                 'deile.commands.builtin.tools_command',
                 'deile.commands.builtin.model_command',
-                'deile.commands.builtin.export_command'
+                'deile.commands.builtin.export_command',
+                'deile.commands.builtin.stop_command',
+                'deile.commands.builtin.diff_command',
+                'deile.commands.builtin.patch_command',
+                'deile.commands.builtin.apply_command',
+                'deile.commands.builtin.memory_command',
+                'deile.commands.builtin.logs_command'
             ]
             
             for module_name in builtin_modules:
