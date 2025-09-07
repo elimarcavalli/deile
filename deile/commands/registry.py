@@ -374,7 +374,7 @@ def get_command_registry(config_manager=None) -> CommandRegistry:
     return _command_registry
 
 
-class CommandRegistry:
+class StaticCommandRegistry:
     """Simple static command registry for backward compatibility with builtin commands"""
     
     _commands: Dict[str, Any] = {}

@@ -740,5 +740,5 @@ EXAMPLES:
 
 
 # Register the command
-from deile.commands.registry import CommandRegistry
-CommandRegistry.register("compact", CompactCommand)
+from deile.commands.registry import StaticCommandRegistry
+StaticCommandRegistry.register("compact", CompactCommand)

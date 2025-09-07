@@ -4,8 +4,6 @@ import asyncio
 import logging
 import os
 import platform
-import pty
-import select
 import signal
 import subprocess
 import sys
@@ -24,6 +22,13 @@ if platform.system() == "Windows":
         import msvcrt
         import ctypes
         from ctypes import wintypes
+else:
+    try:
+        import pty
+        import select
+        UNIX_PTY_AVAILABLE = True
+    except ImportError:
+        UNIX_PTY_AVAILABLE = False
 
 from .base import SyncTool, AsyncTool, ToolContext, ToolResult, ToolStatus
 from ..core.exceptions import ToolError, ValidationError
@@ -108,6 +113,10 @@ class PTYSession:
     
     def _start_unix(self) -> bool:
         """Start PTY session on Unix-like systems"""
+        if not UNIX_PTY_AVAILABLE:
+            logger.warning("Unix PTY not available on this system")
+            return False
+            
         try:
             self.master_fd, self.slave_fd = pty.openpty()
             
@@ -186,6 +195,9 @@ class PTYSession:
     
     def _read_output_unix(self):
         """Read output from Unix PTY"""
+        if not UNIX_PTY_AVAILABLE:
+            return
+            
         try:
             while self.is_running:
                 try:

@@ -598,5 +598,5 @@ EXAMPLES:
 
 
 # Register the command
-from deile.commands.registry import CommandRegistry
-CommandRegistry.register("model", ModelCommand)
+from deile.commands.registry import StaticCommandRegistry
+StaticCommandRegistry.register("model", ModelCommand)

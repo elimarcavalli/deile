@@ -15,7 +15,7 @@ from rich.text import Text
 from rich import box
 
 from .base import CommandResult, CommandContext
-from ..tools.execution_tools import ExecutionTool
+from ..tools.execution_tools import EnhancedExecutionTool
 from ..tools.base import ToolContext
 from deile.config.settings import get_settings
 
@@ -33,7 +33,7 @@ class CommandActions:
         self.console = Console()
         
         # Tools que podem ser usadas pelas ações
-        self.execution_tool = ExecutionTool()
+        self.execution_tool = EnhancedExecutionTool()
     
     async def show_help(self, args: str, context: CommandContext) -> CommandResult:
         """Ação para /help - mostra ajuda dos comandos"""
