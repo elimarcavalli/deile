@@ -223,7 +223,12 @@ class CommandRegistry:
                 'deile.commands.builtin.debug_command',
                 'deile.commands.builtin.clear_command',
                 'deile.commands.builtin.status_command',
-                'deile.commands.builtin.config_command'
+                'deile.commands.builtin.config_command',
+                'deile.commands.builtin.context_command',
+                'deile.commands.builtin.cost_command',
+                'deile.commands.builtin.tools_command',
+                'deile.commands.builtin.model_command',
+                'deile.commands.builtin.export_command'
             ]
             
             for module_name in builtin_modules:
@@ -359,3 +364,30 @@ def get_command_registry(config_manager=None) -> CommandRegistry:
     if _command_registry is None:
         _command_registry = CommandRegistry(config_manager)
     return _command_registry
+
+
+class CommandRegistry:
+    """Simple static command registry for backward compatibility with builtin commands"""
+    
+    _commands: Dict[str, Any] = {}
+    
+    @classmethod
+    def register(cls, name: str, command_class: Type) -> None:
+        """Register a command class with a name"""
+        cls._commands[name] = command_class
+        logger.debug(f"Registered command class: {name}")
+    
+    @classmethod
+    def get_command_class(cls, name: str) -> Optional[Type]:
+        """Get a command class by name"""
+        return cls._commands.get(name)
+    
+    @classmethod
+    def get_all_command_names(cls) -> List[str]:
+        """Get all registered command names"""
+        return list(cls._commands.keys())
+    
+    @classmethod
+    def clear(cls) -> None:
+        """Clear all registered commands"""
+        cls._commands.clear()
