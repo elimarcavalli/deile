@@ -1,0 +1,26 @@
+{
+  "name": "list_files",
+  "description": "Lists files and directories in a specified path. Useful for exploring project structure and finding files.",
+  "parameters": {
+    "type": "OBJECT",
+    "properties": {
+      "path": {
+        "type": "STRING",
+        "description": "The directory path to list. Defaults to current directory if not specified."
+      },
+      "recursive": {
+        "type": "BOOLEAN",
+        "description": "Whether to list files recursively in subdirectories (or wants to get all system files list). Default is false."
+      },
+      "show_hidden": {
+        "type": "BOOLEAN",
+        "description": "Whether to show hidden files (files starting with '.'). Default is false."
+      },
+      "pattern": {
+        "type": "STRING",
+        "description": "Glob pattern to filter files (e.g., '*.py' for Python files). Optional."
+      }
+    },
+    "required": []
+  }
+}

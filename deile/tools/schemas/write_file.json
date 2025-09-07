@@ -1,0 +1,22 @@
+{
+  "name": "write_file",
+  "description": "Creates or modifies a file with the specified content. Use this when you need to save code, documentation, or any text content to a file.",
+  "parameters": {
+    "type": "OBJECT",
+    "properties": {
+      "file_path": {
+        "type": "STRING",
+        "description": "The path where the file should be created or modified. Can be relative to the working directory or absolute."
+      },
+      "content": {
+        "type": "STRING",
+        "description": "The complete content to write to the file. This will replace any existing content."
+      },
+      "overwrite": {
+        "type": "BOOLEAN",
+        "description": "Whether to overwrite the file if it already exists. Default is false for safety."
+      }
+    },
+    "required": ["file_path", "content"]
+  }
+}

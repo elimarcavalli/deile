@@ -1,0 +1,18 @@
+{
+  "name": "delete_file", 
+  "description": "Deletes a file or directory. Use with extreme caution as this action cannot be undone.",
+  "parameters": {
+    "type": "OBJECT",
+    "properties": {
+      "file_path": {
+        "type": "STRING",
+        "description": "The path to the file or directory to delete. Can be relative to the working directory or absolute."
+      },
+      "force": {
+        "type": "BOOLEAN", 
+        "description": "Force deletion even for potentially dangerous files. Default is false for safety."
+      }
+    },
+    "required": ["file_path"]
+  }
+}
