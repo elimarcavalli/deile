@@ -83,7 +83,7 @@
   - `export [format]` - Exporta dados da sessão (JSON, markdown)
   - `clean` - Limpa dados temporários mantendo contexto importante
   - `config` - Configurações de compressão e gerenciamento  
-- **⏳ `/permissions`** — gerencia regras allow/deny por tool/ação/diretório PENDENTE.  
+- **✅ `/permissions`** — gerencia regras allow/deny por tool/ação/diretório IMPLEMENTADO.  
 - **✅ `/sandbox [action]`** — Sistema completo de sandbox containerizada IMPLEMENTADO:
   - `status` - Status do ambiente sandbox (Docker containers)
   - `create [image]` - Cria novo ambiente sandbox  
@@ -310,10 +310,41 @@ Cada tool deve documentar: `usage`, `params`, `returns`, `side_effects`, `displa
   - Performance metrics em tempo real
   - **Localização**: `deile/commands/builtin/status_command.py` (451 linhas)
 
+**✅ Comandos de Segurança & Permissões (ETAPA 5) — IMPLEMENTADOS**
+- **✅ `/permissions [action]`** — Gerenciamento completo de permissões IMPLEMENTADO:
+  - `list [filter]` - Lista regras com filtros avançados por tipo/severidade
+  - `show <rule_id>` - Detalhes completos de regra específica
+  - `check <tool> <resource> <action>` - Teste de permissão em tempo real
+  - `enable/disable <rule_id>` - Controle de status de regras individuais
+  - `add/remove <rule_id>` - Gerenciamento dinâmico de regras
+  - `audit [limit]` - Logs de eventos de segurança relacionados
+  - `sandbox <on|off|status>` - Integração com modo sandbox
+  - **Localização**: `deile/commands/builtin/permissions_command.py` (550+ linhas)
+
+- **✅ `/sandbox [action]`** — Controle avançado de isolamento IMPLEMENTADO:
+  - `on/off/status` - Toggle e status do modo sandbox
+  - `create [image]` - Criação de ambientes Docker isolados
+  - `list` - Listagem de containers sandbox ativos
+  - `enter <id>` - Entrada interativa em ambiente sandbox
+  - `run <command>` - Execução segura em ambiente isolado
+  - `stop/clean` - Gerenciamento de lifecycle dos containers
+  - `config` - Configuração de políticas de isolamento
+  - **Docker Integration** completa com networking isolado
+  - **Localização**: `deile/commands/builtin/sandbox_command.py` (350+ linhas)
+
+- **✅ Sistema de Auditoria Estruturado** — IMPLEMENTADO:
+  - **12+ tipos de eventos** auditados (permissions, secrets, violations, etc.)
+  - **5 níveis de severidade** (DEBUG → CRITICAL)
+  - **Structured logging** em formato JSONL para análise
+  - **Real-time monitoring** de eventos de segurança
+  - **Export capabilities** para análise externa (JSON, CSV)
+  - **Session correlation** com IDs de sessão, plano e step
+  - **Localização**: `deile/security/audit_logger.py` (700+ linhas)
+
 **✅ Outros comandos base já implementados**  
 - ✅ `/plan`, `/run`, `/approve` — orquestração autônoma completa  
 - ✅ `/clear`, `/compact` — gerenciamento de memória e sessão  
-- ✅ `/sandbox` — sistema completo de containerização
+- ✅ `/logs` — sistema completo de logs de auditoria (expandido na ETAPA 5)
 
 ---
 
@@ -343,12 +374,15 @@ Cada tool deve documentar: `usage`, `params`, `returns`, `side_effects`, `displa
 
 ---
 
-## 9. Observability, security and privacy
-- **Logs estruturados** (JSONL): `timestamp`, `actor` (agent/system/tool), `run_id`, `tool`, `params_hash`, `exit_code`, `artifact_path`.  
-- **Redaction** automático de tokens/chaves (Secrets Tool). Registrar se houve redaction.  
-- **Permissões**: `/permissions` controla quem/que pode executar ferramentas perigosas (specially `bash`, `git push`, etc).  
-- **Opt-in telemetry**: se habilitada, enviar somente métricas agregadas e anonimadas.  
-- **Retention**: artefatos sensíveis expirarem (configurável).
+## 9. ✅ Observability, security and privacy — IMPLEMENTADO
+- **✅ Logs estruturados** (JSONL): `timestamp`, `actor` (agent/system/tool), `run_id`, `tool`, `params_hash`, `exit_code`, `artifact_path` IMPLEMENTADO.  
+- **✅ Redaction** automático de tokens/chaves (Secrets Tool). Registra se houve redaction IMPLEMENTADO.  
+- **✅ Permissões**: `/permissions` controla quem/que pode executar ferramentas perigosas (specially `bash`, `git push`, etc) IMPLEMENTADO.  
+- **✅ Sistema de Auditoria**: 12+ tipos de eventos com 5 níveis de severidade IMPLEMENTADO.
+- **✅ Sandbox isolation**: Docker containers com networking isolado IMPLEMENTADO.
+- **✅ Export capabilities**: JSON, CSV para análise externa IMPLEMENTADO.
+- **⏳ Opt-in telemetry**: se habilitada, enviar somente métricas agregadas e anonimadas PENDENTE.  
+- **⏳ Retention**: artefatos sensíveis expirarem (configurável) PENDENTE.
 
 ---
 
@@ -489,7 +523,7 @@ O agente deve seguir rigorosamente o plano abaixo — cada etapa será documenta
 
 ---
 
-## 14. ✅ STATUS DE IMPLEMENTAÇÃO ATUAL (ETAPA 4 CONCLUÍDA)
+## 14. ✅ STATUS DE IMPLEMENTAÇÃO ATUAL (ETAPA 5 CONCLUÍDA)
 
 ### 🎉 COMPONENTES CORE IMPLEMENTADOS
 **✅ Sistema de Orquestração Autônoma Completo:**
@@ -528,6 +562,13 @@ O agente deve seguir rigorosamente o plano abaixo — cada etapa será documenta
 - **`deile/commands/builtin/logs_command.py`** — `/logs` sistema completo de audit logs
 - **`deile/commands/builtin/status_command.py` (451 linhas)** — `/status` monitoring completo do sistema
 
+**✅ Sistema de Segurança & Permissões (ETAPA 5):**
+- **`deile/commands/builtin/permissions_command.py` (550+ linhas)** — `/permissions` gerenciamento completo de regras
+- **`deile/commands/builtin/sandbox_command.py` (350+ linhas)** — `/sandbox` Docker integration completa
+- **`deile/security/audit_logger.py` (700+ linhas)** — Sistema de auditoria estruturado
+- **Docker Integration** — Sandbox isolation com containers e networking isolado
+- **Structured Logging** — 12+ tipos de eventos com 5 níveis de severidade
+
 ### 🎉 SITUAÇÕES RESOLVIDAS
 - **✅ SITUAÇÃO 1** — Display Manager com formatação segura de árvore (sem caracteres quebrados)
 - **✅ SITUAÇÃO 2** — DisplayPolicy implementada, sistema controla exibição de tools  
@@ -538,14 +579,16 @@ O agente deve seguir rigorosamente o plano abaixo — cada etapa será documenta
 - **✅ SITUAÇÃO 7** — `/cls reset` implementado com reset completo de sessão  
 - **⏳ SITUAÇÃO 8** — Aliases UX (pendente implementação de completers)
 
-### 📋 PRÓXIMAS ETAPAS (ETAPA 5)
-**🎉 ETAPA 4 FINALIZADA COM SUCESSO - Próximos passos:**
-1. **`/undo`** — Sistema de rollback automático (único comando restante)
+- **✅ SITUAÇÃO 9** — Sistema completo de observabilidade, segurança e privacidade IMPLEMENTADO
+
+### 📋 PRÓXIMAS ETAPAS (ETAPA 6)
+**🎉 ETAPA 5 FINALIZADA COM SUCESSO - Próximos passos:**
+1. **`/undo`** — Sistema de rollback automático (último comando core restante)
 2. **Aliases UX** — Sistema de completers com aliases (SITUAÇÃO 8)
-3. **Permissions System** — `/permissions` para controle granular de acesso
-4. **Advanced Security** — Hardening e audit logs aprofundados  
-5. **Editor/Patch Tool integration** — Integração com IDEs e editores externos
-6. **Performance optimizations** — Otimizações de performance para large-scale
+3. **Advanced Security** — Hardening e telemetry opt-in  
+4. **Editor/Patch Tool integration** — Integração com IDEs e editores externos
+5. **Performance optimizations** — Otimizações de performance para large-scale
+6. **UX Polish** — Refinamentos de interface e usabilidade
 
 ### 🏗️ ARQUITETURA IMPLEMENTADA
 **✅ CLEAN ARCHITECTURE ENTERPRISE:**
@@ -560,14 +603,19 @@ O agente deve seguir rigorosamente o plano abaixo — cada etapa será documenta
 - ✅ **Cross-platform** PTY support (Windows ConPTY, Linux PTY)
 - ✅ **Security Controls** blacklists, sandbox isolation, secret scanning
 - ✅ **Performance Monitoring** cost tracking, token analytics, model switching
+- ✅ **Docker Integration** sandbox containers com networking isolado
+- ✅ **Structured Auditing** 12+ event types, 5 severity levels, JSONL export
+- ✅ **Granular Permissions** controle fine-grained por tool/resource/action
 
-### 🎯 STATUS FINAL ETAPA 4
-**💫 DEILE v4.0 COMPLETE ORCHESTRATION SYSTEM** está **100% implementada** com:
+### 🎯 STATUS FINAL ETAPA 5
+**💫 DEILE v4.0 SECURE ENTERPRISE SYSTEM** está **100% implementada** com:
 - ✅ **Enhanced Bash Tool** com PTY, sandbox, tee, security (SITUAÇÃO 4 resolvida)
 - ✅ **Management Commands** completos: `/context`, `/cost`, `/tools`, `/model`, `/export` (SITUAÇÃO 5 resolvida)  
 - ✅ **Orchestration Commands** completos: `/stop`, `/diff`, `/patch`, `/apply` (workflow completo)
 - ✅ **Advanced Management**: `/memory`, `/logs`, `/status` (monitoring e observabilidade)
-- ✅ **Sistema integrado** com registry, schemas, display policies
-- ✅ **4,000+ linhas** de código novo implementado conforme especificação ETAPA 4
-- ✅ **Enterprise-ready** com workflow completo **Plan → Run → Stop → Diff → Patch → Apply**
-- ✅ **Health monitoring** e audit trail completo para produção
+- ✅ **Security & Permissions**: `/permissions`, `/sandbox` com Docker integration (ETAPA 5)
+- ✅ **Structured Auditing**: Sistema completo de audit logging (SITUAÇÃO 9 resolvida)
+- ✅ **Sistema integrado** com registry, schemas, display policies, security layer
+- ✅ **6,000+ linhas** de código novo implementado conforme especificações ETAPA 1-5
+- ✅ **Production-ready** com workflow **Plan → Run → Approve → Stop → Audit → Secure**
+- ✅ **Enterprise security** com Docker isolation, permission management, audit trail
