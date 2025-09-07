@@ -1,15 +1,12 @@
 """Ferramentas para manipulação de arquivos"""
 
-from typing import List, Optional, Dict, Any
+from typing import List
 from pathlib import Path
-import os
-import asyncio
-import aiofiles
 import logging
 import fnmatch
 
 from .base import SyncTool, ToolContext, ToolResult, ToolStatus
-from ..core.exceptions import ToolError, ValidationError
+from ..core.exceptions import ValidationError
 
 
 logger = logging.getLogger(__name__)

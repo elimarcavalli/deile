@@ -3,27 +3,24 @@
 import os
 import sys
 import time
-import asyncio
 import subprocess
 import platform
 from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 import logging
-import tempfile
-import shlex
 import re
 
 # PTY imports with fallbacks
-try:
-    if platform.system() == 'Windows':
-        import winpty
-    else:
-        import pty
-        import select
-        import termios
-        import tty
-except ImportError as e:
-    logging.warning(f"PTY modules not available: {e}")
+# try:
+#     if platform.system() == 'Windows':
+#         import winpty
+#     else:
+#         import pty
+#         import select
+#         # import termios
+#         import tty
+# except ImportError as e:
+#     logging.warning(f"PTY modules not available: {e}")
 
 from .base import SyncTool, ToolContext, ToolResult, ToolStatus, DisplayPolicy
 from ..core.exceptions import ToolError

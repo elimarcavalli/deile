@@ -316,5 +316,5 @@ EXAMPLES:
 
 
 # Register the command
-from deile.commands.registry import CommandRegistry
-CommandRegistry.register("cost", CostCommand)
+from deile.commands.registry import StaticCommandRegistry
+StaticCommandRegistry.register("cost", CostCommand)
