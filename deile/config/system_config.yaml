@@ -1,0 +1,19 @@
+agent:
+  auto_discover_parsers: true
+  auto_discover_tools: true
+  context_optimization: true
+  max_context_tokens: 8000
+  rag_enabled: false
+system:
+  auto_save_sessions: true
+  debug_mode: false
+  log_level: INFO
+  log_requests: false
+  log_responses: false
+  session_timeout: 3600
+ui:
+  auto_complete: true
+  emoji_support: true
+  rich_formatting: true
+  show_timestamps: true
+  theme: default

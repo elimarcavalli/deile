@@ -1,0 +1,68 @@
+commands:
+  bash:
+    action: execute_bash
+    aliases:
+    - sh
+    - cmd
+    - run
+    - $
+    description: Executar comando bash no sistema
+    enabled: true
+    prompt_template: 'Execute o seguinte comando bash de forma segura: {args}. Mostre
+      o resultado da execução incluindo stdout, stderr e código de saída. Se houver
+      erro, explique o que pode ter causado.'
+  clear:
+    action: clear_session
+    aliases:
+    - cls
+    - clean
+    description: Limpar histórico da conversa e tela
+    enabled: true
+    prompt_template: null
+  config:
+    action: show_config
+    aliases:
+    - settings
+    - cfg
+    description: Mostrar configurações atuais do sistema
+    enabled: true
+    prompt_template: null
+  debug:
+    action: toggle_debug_mode
+    aliases:
+    - dbg
+    - verbose
+    description: Toggle do modo debug (logs detalhados + request/response files)
+    enabled: true
+    prompt_template: null
+  exit:
+    action: exit_application
+    aliases:
+    - quit
+    - bye
+    description: Sair do DEILE Agent
+    enabled: true
+    prompt_template: null
+  help:
+    action: show_help
+    aliases: []
+    description: Lista comandos disponíveis e exemplos de uso
+    enabled: true
+    prompt_template: null
+  model:
+    action: manage_models
+    aliases:
+    - ai
+    - llm
+    description: Trocar ou selecionar modelo de IA
+    enabled: true
+    prompt_template: 'Por favor, liste os modelos disponíveis e permita que eu escolha
+      qual usar. Configuração atual: {current_model}. Se argumentos foram fornecidos
+      ({args}), use-os para selecionar o modelo.'
+  status:
+    action: show_system_status
+    aliases:
+    - info
+    description: Mostra versão, modelo ativo, conectividade e diagnóstico
+    enabled: true
+    prompt_template: null

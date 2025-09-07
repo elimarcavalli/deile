@@ -1,0 +1,21 @@
+gemini:
+  generation_config:
+    candidate_count: 1
+    max_output_tokens: 8192
+    stop_sequences: []
+    temperature: 0.1
+    top_k: 32
+    top_p: 0.9
+  model_name: gemini-1.5-pro-latest
+  safety_settings:
+  - category: HARM_CATEGORY_HARASSMENT
+    threshold: BLOCK_MEDIUM_AND_ABOVE
+  - category: HARM_CATEGORY_HATE_SPEECH
+    threshold: BLOCK_MEDIUM_AND_ABOVE
+  - category: HARM_CATEGORY_SEXUALLY_EXPLICIT
+    threshold: BLOCK_MEDIUM_AND_ABOVE
+  - category: HARM_CATEGORY_DANGEROUS_CONTENT
+    threshold: BLOCK_MEDIUM_AND_ABOVE
+  tool_config:
+    function_calling_config:
+      mode: AUTO

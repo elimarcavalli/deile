@@ -1,0 +1,14 @@
+{
+  "name": "read_file",
+  "description": "Reads the content of a file and returns it. Use this when you need to examine existing files that weren't uploaded via @filename syntax.",
+  "parameters": {
+    "type": "OBJECT",
+    "properties": {
+      "file_path": {
+        "type": "STRING",
+        "description": "The path to the file to read. Relative to the working directory."
+      }
+    },
+    "required": ["file_path"]
+  }
+}
