@@ -42,12 +42,25 @@ class CommandActions:
             registry = get_command_registry(self.config_manager)
             
             if args.strip():
-                # Ajuda específica para um comando
+                # Ajuda específica para um comando - INCLUI aliases
                 command = registry.get_command(args.strip())
                 if command:
                     help_content = await command.get_help()
+                    
+                    # Adiciona informação de aliases se existirem
+                    aliases_info = ""
+                    if hasattr(command, 'aliases') and command.aliases:
+                        aliases_str = ", ".join([f"/{alias}" for alias in command.aliases])
+                        aliases_info = f"\n\n**Aliases:** {aliases_str}"
+                    elif hasattr(command.config, 'aliases') and command.config.aliases:
+                        aliases_str = ", ".join([f"/{alias}" for alias in command.config.aliases])
+                        aliases_info = f"\n\n**Aliases:** {aliases_str}"
+                    
+                    # Combina help original com aliases
+                    full_help = help_content + aliases_info
+                    
                     panel = Panel(
-                        help_content,
+                        full_help,
                         title=f"[bold cyan]Help: /{command.name}[/bold cyan]",
                         border_style="cyan"
                     )
@@ -55,8 +68,8 @@ class CommandActions:
                 else:
                     return CommandResult.error_result(f"Command '/{args.strip()}' not found")
             
-            # Help geral - lista todos os comandos
-            table = Table(title="📚 DEILE Commands", box=box.ROUNDED)
+            # Help geral - lista todos os comandos (SEM aliases)
+            table = Table(title="📚 DEILE Commands (Main Names Only)", box=box.ROUNDED)
             table.add_column("Command", style="cyan", width=15)
             table.add_column("Description", style="white", width=40)
             table.add_column("Type", style="yellow", width=10)
@@ -72,11 +85,13 @@ class CommandActions:
             # Adiciona informações extras
             footer_text = Text()
             footer_text.append("\n💡 ", style="yellow")
-            footer_text.append("Use '/help <comando>' para ajuda específica\n", style="dim")
+            footer_text.append("Use '/help <comando>' para ajuda específica e aliases\n", style="dim")
             footer_text.append("📝 ", style="blue")
             footer_text.append("Digite '@' para autocompletar arquivos\n", style="dim")
             footer_text.append("🔧 ", style="green") 
-            footer_text.append("Digite '/' para ver comandos disponíveis", style="dim")
+            footer_text.append("Digite '/' para ver comandos disponíveis\n", style="dim")
+            footer_text.append("🏷️ ", style="magenta")
+            footer_text.append("Apenas nomes principais mostrados (aliases via /help <cmd>)", style="dim")
             
             # Combina table e footer em um painel
             from rich.console import Group
@@ -179,24 +194,89 @@ class CommandActions:
             return CommandResult.error_result(f"Error getting status: {str(e)}", error=e)
     
     async def clear_session(self, args: str, context: CommandContext) -> CommandResult:
-        """Ação para /clear - limpa sessão e tela"""
+        """Ação para /clear - limpa sessão e tela, /cls reset para reset completo"""
         try:
-            # Limpa histórico da sessão se disponível
-            if context.session:
-                if hasattr(context.session, 'conversation_history'):
-                    context.session.conversation_history.clear()
-                if hasattr(context.session, 'context_data'):
-                    context.session.context_data.clear()
+            is_reset = args.strip().lower() == "reset"
             
-            # Limpa tela via UI manager
-            if self.ui_manager:
-                self.ui_manager.console.clear()
-                # Reexibe welcome se disponível
-                if hasattr(self.ui_manager, 'show_welcome'):
-                    self.ui_manager.show_welcome()
+            if is_reset:
+                # RESET COMPLETO da sessão
+                # Limpa histórico da sessão
+                if context.session:
+                    if hasattr(context.session, 'conversation_history'):
+                        context.session.conversation_history.clear()
+                    if hasattr(context.session, 'context_data'):
+                        context.session.context_data.clear()
+                    if hasattr(context.session, 'memory'):
+                        context.session.memory.clear()
+                    if hasattr(context.session, 'tokens'):
+                        context.session.tokens = 0
+                    if hasattr(context.session, 'cost'):
+                        context.session.cost = 0.0
+                
+                # Limpa planos ativos se disponível
+                try:
+                    from ..orchestration.plan_manager import get_plan_manager
+                    plan_manager = get_plan_manager()
+                    # Para todos os planos ativos
+                    for plan_id in list(plan_manager._active_plans.keys()):
+                        await plan_manager.stop_plan(plan_id)
+                    plan_manager._active_plans.clear()
+                    plan_manager._execution_locks.clear()
+                    plan_manager._stop_flags.clear()
+                except:
+                    pass  # Se não conseguir acessar plan manager, continua
+                
+                # Limpa logs de auditoria em memória
+                try:
+                    from ..security.audit_logger import get_audit_logger
+                    audit_logger = get_audit_logger()
+                    audit_logger.recent_events.clear()
+                except:
+                    pass
+                
+                # Limpa tela
+                if self.ui_manager:
+                    self.ui_manager.console.clear()
+                    if hasattr(self.ui_manager, 'show_welcome'):
+                        self.ui_manager.show_welcome()
+                else:
+                    os.system('cls' if os.name == 'nt' else 'clear')
+                
+                # Mensagem de reset completo
+                reset_panel = Panel(
+                    Text("🔄 **RESET COMPLETO REALIZADO**\n\n"
+                         "✅ Histórico de conversa limpo\n"
+                         "✅ Dados de contexto removidos\n"
+                         "✅ Memória de sessão resetada\n"
+                         "✅ Contadores de tokens zerados\n"
+                         "✅ Planos ativos parados\n"
+                         "✅ Logs de auditoria em memória limpos\n"
+                         "✅ Tela limpa\n\n"
+                         "🚀 **Sessão completamente reiniciada!**\n"
+                         "Digite '/' para ver comandos disponíveis.", 
+                         justify="left"),
+                    title="[bold green]Session Reset[/bold green]",
+                    border_style="green"
+                )
+                return CommandResult.success_result(reset_panel, "rich", session_reset=True)
+                
             else:
-                # Fallback: clear via console
-                os.system('cls' if os.name == 'nt' else 'clear')
+                # Clear normal (apenas histórico e tela)
+                if context.session:
+                    if hasattr(context.session, 'conversation_history'):
+                        context.session.conversation_history.clear()
+                    if hasattr(context.session, 'context_data'):
+                        context.session.context_data.clear()
+                
+                # Limpa tela via UI manager
+                if self.ui_manager:
+                    self.ui_manager.console.clear()
+                    # Reexibe welcome se disponível
+                    if hasattr(self.ui_manager, 'show_welcome'):
+                        self.ui_manager.show_welcome()
+                else:
+                    # Fallback: clear via console
+                    os.system('cls' if os.name == 'nt' else 'clear')
             
             # Mensagem de confirmação
             success_panel = Panel(

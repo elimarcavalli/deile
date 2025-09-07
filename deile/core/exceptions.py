@@ -104,3 +104,18 @@ class ValidationError(DEILEError):
             self.context["field_name"] = field_name
         if field_value is not None:
             self.context["field_value"] = str(field_value)[:50]  # Limit for logging
+
+
+class CommandError(DEILEError):
+    """Erro relacionado à execução de comandos slash"""
+    
+    def __init__(
+        self, 
+        message: str, 
+        command_name: Optional[str] = None,
+        **kwargs
+    ):
+        super().__init__(message, **kwargs)
+        self.command_name = command_name
+        if command_name:
+            self.context["command_name"] = command_name
