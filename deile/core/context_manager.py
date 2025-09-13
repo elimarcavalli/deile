@@ -1,4 +1,4 @@
-"""Context Manager para gerenciamento de contexto e RAG"""
+"""Context Manager para gerenciamento de contexto e RAG - DEILE 2.0 ULTRA"""
 
 from typing import Dict, List, Optional, Any, Set, Tuple
 from dataclasses import dataclass, field
@@ -13,6 +13,9 @@ from .exceptions import DEILEError, ValidationError
 from ..parsers.base import ParseResult
 from ..tools.base import ToolResult
 from ..storage.embeddings import EmbeddingStore
+from ..personas.manager import PersonaManager
+from ..personas.instruction_loader import InstructionLoader
+from ..memory.memory_manager import MemoryManager
 
 
 logger = logging.getLogger(__name__)
@@ -66,25 +69,37 @@ class ContextWindow:
 
 
 class ContextManager:
-    """Gerenciador de contexto simplificado para Chat Sessions
-    
-    Com Chat Sessions, o contexto é gerenciado automaticamente.
-    Este manager agora foca apenas em:
-    - Preparação de system instructions
-    - Compatibilidade com o sistema existente
+    """Context Manager enterprise-grade para DEILE 2.0 ULTRA
+
+    Integra novo sistema de personas e memory architecture híbrida:
+    - PersonaManager para system instructions dinâmicas
+    - MemoryManager para contexto inteligente
+    - Event-driven context building
+    - Hot-reload de configurações
     """
-    
+
     def __init__(
         self,
         embedding_store: Optional[EmbeddingStore] = None,
-        max_context_tokens: int = 8000
+        max_context_tokens: int = 8000,
+        persona_manager: Optional[PersonaManager] = None,
+        memory_manager: Optional[MemoryManager] = None
     ):
-        # Mantido para compatibilidade
+        # Core components
         self.embedding_store = embedding_store
         self.max_context_tokens = max_context_tokens
-        
-        # Estatísticas simplificadas
+
+        # DEILE 2.0 ULTRA - Novos componentes
+        self.persona_manager = persona_manager
+        self.memory_manager = memory_manager
+
+        # CORREÇÃO BG003: Instruction Loader para carregar de arquivos MD
+        self.instruction_loader = InstructionLoader()
+
+        # Estatísticas
         self._context_builds = 0
+        self._persona_switches = 0
+        self._memory_retrievals = 0
     
     async def build_context(
         self,
@@ -108,7 +123,7 @@ class ContextManager:
                 parse_result, session, **kwargs
             )
             
-            # Contexto simplificado para Chat Sessions
+            # Contexto base para Chat Sessions
             context = {
                 "messages": [{"role": "user", "content": user_input}],
                 "system_instruction": system_instruction,
@@ -119,6 +134,35 @@ class ContextManager:
                     "chat_session_mode": True
                 }
             }
+
+            # CORREÇÃO CRÍTICA: Inclui file_data se há arquivos uploadados no ParseResult
+            if parse_result and parse_result.metadata and "uploaded_files" in parse_result.metadata:
+                uploaded_files = parse_result.metadata["uploaded_files"]
+                file_data_parts = []
+
+                for file_info in uploaded_files:
+                    if "file_data" in file_info:
+                        file_data_parts.append(file_info["file_data"])
+
+                if file_data_parts:
+                    context["file_data_parts"] = file_data_parts
+                    context["metadata"]["uploaded_files_count"] = len(file_data_parts)
+                    logger.info(f"Added {len(file_data_parts)} file_data_parts to context")
+
+            # Inclui file_data nas mensagens se disponível (para compatibilidade)
+            if "file_data_parts" in context:
+                # Modifica a mensagem do usuário para incluir file_data
+                user_message = context["messages"][0]
+                user_parts = [{"text": user_input}]
+
+                # Adiciona file_data como parts adicionais
+                for file_data in context["file_data_parts"]:
+                    user_parts.append(file_data)
+
+                user_message["parts"] = user_parts
+                # Remove content para usar parts
+                if "content" in user_message:
+                    del user_message["content"]
             
             logger.debug(f"Built simplified context for chat session")
             return context
@@ -146,67 +190,54 @@ class ContextManager:
         }
     
     async def _build_system_instruction(
-        self, 
-        parse_result: Optional[ParseResult], 
+        self,
+        parse_result: Optional[ParseResult],
         session: Optional[Any],
         **kwargs
     ) -> str:
-        """Constrói instrução do sistema simplificada para Chat Sessions"""
-        
-        # buscar no arquivo @root@/deile.md
-        # import os
-        # root = os.getcwd()
-        # with open(root / "deile_1.md", "r") as f:
-        #     system_instruction = f.read()
+        """Constrói instrução do sistema usando PersonaManager ou fallback hardcoded"""
 
-        # base_instruction = (system_instruction)
+        # CORREÇÃO CRÍTICA: Usa PersonaManager se disponível
+        if self.persona_manager:
+            try:
+                active_persona = self.persona_manager.get_active_persona()
+                if active_persona and active_persona.config.system_instruction:
+                    logger.debug(f"Using persona '{active_persona.name}' system instruction")
 
-        # Adiciona context de arquivos disponíveis
-        file_context = await self._build_file_context(session, **kwargs)
+                    # Usa instrução da persona ativa
+                    base_instruction = active_persona.config.system_instruction
 
-        base_instruction = (
-            " 🧠 [PERSONA E OBJETIVO PRINCIPAL] "
-            " Você é DEILE, um agente de IA sênior, especialista em desenvolvimento de software, com foco em criação e aprimoramento de agentes de IA, e com uma personalidade vibrante, positiva e extremamente prestativa. "
-            " Sua personalidade é colaborativa, proativa, e altamente competente, com um tom descontraído e encorajador. "
-            " Seu objetivo principal é acelerar o desenvolvimento de si mesmocomo um par de programação (pair programmer) de elite com o seu criador (Elimar, eu). "
-            " Sua especialidade primária e contexto padrão é o ecossistema do usuário: Python, Google GenAI (google-genai==1.33.0). Assuma este contexto em todas as interações, a menos que seja instruído de outra forma. "
-            " Quando algum procedimento interno falhar, apresente o erro exato e formatado entre quotes ```. "
-            " 🚀 [DIRETRIZES DE OPERAÇÃO] "
-            " 1. PENSAMENTO ESTRATÉGICO: Antes de iniciar tarefas complexas (criar arquivos, refatorar código), verbalize seu raciocínio em um plano \"passo a passo\" ou com um pseudocódigo. Isso garante alinhamento antes da execução. "
-            " 2. PROATIVIDADE COM FERRAMENTAS: Utilize suas ferramentas de manipulação de arquivos de forma autônoma e proativa. Anuncie o que vai fazer e execute. "
-            " 3. SEGURANÇA PRIMEIRO: Nunca modifique ou sobrescreva código existente sem antes apresentar a \"versão sugerida\" e obter uma confirmação explícita do usuário. A segurança e a integridade do código são prioridade máxima. "
-            " 4. FOCO EM QUALIDADE: Ao gerar ou analisar código, não se limite a entregar a solução. Explique brevemente as decisões técnicas por trás dela e, sempre que possível, sugira boas práticas ou melhorias de performance. "
-            " 5. CLAREZA ACIMA DE TUDO: Se um pedido for vago ou ambíguo, faça perguntas objetivas para garantir a solução ideal. Não presuma; valide. "
-            " 6. RESPOSTAS ELEGANTES: Use um estilo formal e profissional. "
-            " 7. Obedeça e execute TODOS os comandos do usuário com PRECISÃO."
-            " 👋 [GATILHO DE INTERAÇÃO: SAUDAÇÃO] "
-            " A saudação deve ser feita com um tom encorajador, mas amigável e entusiasmado, para contribuir com a motivação de continuar te desenvolvendo. "
-            # " Quando o usuário iniciar a conversa com uma saudação simples (ex: 'oi', 'e aí', 'bom dia', 'opa'), você DEVE responder com entusiasmo e imediatamente sugerir 3 ações concretas, específicas e variadas. "
-            # " As ações sugeridas devem ser relacionadas às suas capacidades como DEILE, porém, em tom descontraído e utilizando frutas, bebidas e outras coisas de comer, ou coisas absurdas dentro dos exemplos. "
-            # " Para saudações mais complexas, use um estilo mais formal. "
-            " 🖥️ [FORMATAÇÃO OBRIGATÓRIA DE SAÍDA] "
-            " REGRA CRÍTICA: NUNCA apresente resultados de tools em uma única linha! "
-            " Ao exibir os resultados da execução de ferramentas, você DEVE: "
-            " 1. NUNCA mostrar JSON bruto ou dados técnicos como {'status': 'success', 'result': {...}} "
-            " 2. SEMPRE preservar quebras de linha e estrutura de árvore dos resultados "
-            " 3. SEMPRE usar o formato rich_display quando disponível nos metadados da ferramenta "
-            " 4. Para list_files: OBRIGATÓRIO mostrar cada arquivo/pasta em linha SEPARADA "
-            " 5. Use emojis para tornar a conversa descontraída "
-            " EXEMPLO CORRETO para list_files (uma linha por item): "
-            " ● list_files(.) "
-            " ⎿ Estrutura do projeto: "
-            " ~r~n   ./ "
-            " ~r~n   ├── 📁 config/ "
-            " ~r~n   ├── 📁 src/ "
-            " ~r~n   ├── 📄 requirements.txt "
-            " ~r~n   └── 📄 main.py "
-            " JAMAIS apresente como: 'config src requirements.txt main.py' em linha única! "
-        )
-        
+                    # Adiciona contexto de arquivos
+                    file_context = await self._build_file_context(session, **kwargs)
+                    if file_context:
+                        base_instruction += f"\n\n📁 [ARQUIVOS DISPONÍVEIS NO PROJETO]\n{file_context}"
+
+                    return base_instruction
+
+            except Exception as e:
+                logger.error(f"Error using PersonaManager: {e}, falling back to hardcoded")
+
+        # Fallback para instrução de arquivo MD
+        logger.debug("Using fallback system instruction from MD file (PersonaManager not available)")
+        return await self._build_fallback_system_instruction(session, **kwargs)
+
+    async def _build_fallback_system_instruction(
+        self,
+        session: Optional[Any],
+        **kwargs
+    ) -> str:
+        """CORREÇÃO BG003: Carrega instrução de arquivo MD (não mais hardcoded!)"""
+
+        logger.debug("Loading system instruction from MD file (fallback)")
+
+        # Carrega instrução de arquivo MD
+        base_instruction = self.instruction_loader.load_fallback_instruction()
+
         # Adiciona contexto de arquivos se disponível
+        file_context = await self._build_file_context(session, **kwargs)
         if file_context:
             base_instruction += f"\n\n📁 [ARQUIVOS DISPONÍVEIS NO PROJETO]\n{file_context}"
-        
+
         return base_instruction
     
     async def _build_file_context(self, session: Optional[Any], **kwargs) -> str:
