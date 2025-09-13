@@ -222,12 +222,17 @@ class ReadFileTool(SyncTool):
             file_patterns = [
                 r'(?:file|arquivo)\s+([^\s]+)',
                 r'([^\s]+\.(?:txt|py|md|json|js|html|css|xml|csv))',
-                r'@([^\s]+)'
+                r'@([^\s]+)',  # Remove @ e usa só o nome do arquivo
+                r'(?:ler|read|abrir|open)\s+(?:arquivo\s+)?(?:chamado\s+)?(?:@)?([^\s]+)',
+                r'(?:show|mostrar|exibir)\s+(?:arquivo\s+)?(?:@)?([^\s]+)'
             ]
             for pattern in file_patterns:
                 match = re.search(pattern, context.user_input, re.IGNORECASE)
                 if match:
                     file_path = match.group(1)
+                    # Remove @ se presente no início do nome do arquivo
+                    if file_path.startswith('@'):
+                        file_path = file_path[1:]
                     logger.debug(f"Extracted file_path from user_input: {file_path}")
                     break
         
