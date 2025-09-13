@@ -1,0 +1,43 @@
+.git/
+.github/
+.claude/
+venv/
+src/__pycache__/
+src/old/
+.env
+venv/
+__pycache__/
+*.pyc
+.vscode/
+.idea/
+.DS_Store
+*.egg-info/
+dist/
+build/
+.env
+
+logs/
+src/
+storage/
+# *.md
+upgrades/
+upgrades/done/
+requests/
+storage/
+old/
+logs/
+deile/tests/
+test_*.py
+teste_*.py
+run_agent.py
+# deile*.md
+readme.*md
+debug_instance.py
+validate_implementation.py
+validate_new_sdk_migration.py
+QUANDO TERMINAR.MD
+docs/2.md
+docs/v4/README_NEW_ARCHITECTURE.md
+claude.md
+reset_venv.bat
+docs/upgrades/done/file_manager/3_file_manager_1_story.md
