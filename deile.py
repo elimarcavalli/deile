@@ -62,7 +62,10 @@ class DeileAgentCLI:
                     parser_registry=parser_registry,
                     config_manager=self.config_manager
                 )
-                
+
+                # CORREÇÃO CRÍTICA: Inicializa PersonaManager
+                await self.agent.initialize()
+
                 # ROBUSTEZ: Cria sessão padrão persistente com working_directory correto
                 self.default_session = self.agent.create_session(
                     session_id="default_cli_session",

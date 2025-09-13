@@ -20,6 +20,7 @@ from ..commands.actions import CommandActions
 from ..ui.display_manager import DisplayManager
 from ..storage.logs import get_logger
 from ..config.settings import get_settings
+from ..personas.manager import PersonaManager
 
 
 logger = logging.getLogger(__name__)
@@ -129,14 +130,42 @@ class DeileAgent:
         
         self.settings = get_settings()
         self.logger = get_logger()
-        
+
         self._status = AgentStatus.IDLE
         self._sessions: Dict[str, AgentSession] = {}
         self._request_count = 0
-        
+
+        # Initialize PersonaManager - será inicializado via async initialize()
+        self.persona_manager: Optional[PersonaManager] = None
+
         # Auto-discover tools, parsers, and commands
         self._auto_discover_components()
-    
+
+        # CORREÇÃO: Registra model providers se não há nenhum
+        if len(self.model_router.providers) == 0:
+            self._register_default_providers()
+
+    async def initialize(self) -> None:
+        """Inicializa componentes assíncronos do agente"""
+        try:
+            # Inicializa PersonaManager
+            self.persona_manager = PersonaManager()
+            await self.persona_manager.initialize()
+
+            # Ativa persona padrão
+            await self.persona_manager.switch_persona("developer")
+
+            # Reconecta o context_manager com o PersonaManager
+            if hasattr(self.context_manager, 'persona_manager'):
+                self.context_manager.persona_manager = self.persona_manager
+
+            logger.info("Agent initialized successfully with PersonaManager")
+
+        except Exception as e:
+            logger.error(f"Error initializing agent: {e}")
+            # Continua funcionando sem PersonaManager se necessário
+            logger.warning("Continuing without PersonaManager")
+
     @property
     def status(self) -> AgentStatus:
         """Status atual do agente"""
@@ -344,6 +373,18 @@ class DeileAgent:
             "model_router": await self.model_router.get_stats() if hasattr(self.model_router, 'get_stats') else {}
         }
     
+    def clear_conversation_history(self) -> None:
+        """Limpa o histórico de conversas do agente"""
+        if hasattr(self.context_manager, 'clear'):
+            self.context_manager.clear()
+        
+        # Limpar histórico de todas as sessões ativas
+        for session in self._sessions.values():
+            if hasattr(session, 'messages'):
+                session.messages.clear()
+            if hasattr(session, 'clear_history'):
+                session.clear_history()
+    
     # Métodos privados
     
     def _get_or_create_session(self, session_id: str, **kwargs) -> AgentSession:
@@ -504,8 +545,33 @@ class DeileAgent:
                     system_instruction=system_instruction
                 )
                 
-                # Envia mensagem única - Chat Session gerencia automatic function calling
-                response = chat.send_message(user_input)
+                # Prepara mensagem - inclui file_data se disponível no contexto
+                message_content = user_input
+
+                # CORREÇÃO CRÍTICA: Verifica se há file_data_parts no contexto
+                if isinstance(context, dict) and "file_data_parts" in context:
+                    # Cria mensagem com texto + File objects
+                    message_parts = [user_input]  # Primeiro adiciona o texto
+
+                    # Adiciona cada arquivo como File object
+                    for file_data in context["file_data_parts"]:
+                        if "file_data" in file_data:
+                            file_uri = file_data["file_data"]["file_uri"]
+                            # Cria File object a partir do URI
+                            import google.genai.types as genai_types
+                            file_obj = genai_types.File(
+                                name=file_uri.split('/')[-1],  # Extrai nome do URI
+                                uri=file_uri,
+                                mime_type=file_data["file_data"].get("mime_type", "text/plain")
+                            )
+                            message_parts.append(file_obj)
+
+                    # Envia como lista com string + File objects
+                    response = chat.send_message(message_parts)
+                    logger.info(f"Sent message with {len(context['file_data_parts'])} file attachments")
+                else:
+                    # Envia mensagem simples sem anexos
+                    response = chat.send_message(user_input)
                 
                 # Chat Sessions gerenciam tools automaticamente, mas precisamos extrair tool results
                 # para compatibilidade com o resto do sistema
@@ -535,20 +601,102 @@ class DeileAgent:
 
     async def _extract_tool_results_from_chat_response(self, response) -> List[ToolResult]:
         """Extrai tool results de uma resposta de Chat Session"""
+        from ..tools.base import ToolResult, ToolStatus
         tool_results = []
-        
+
         try:
-            # Chat Sessions executam tools automaticamente e incluem resultados
-            # Precisamos extrair essas informações para compatibilidade
-            
-            # Por enquanto, retorna lista vazia pois Chat Sessions gerenciam internamente
-            # TODO: Implementar extração real de tool results do Chat Session response
             logger.debug("Extracting tool results from chat session response")
-            
+
+            # Analisa candidates para encontrar function calls
+            if hasattr(response, 'candidates') and response.candidates:
+                logger.debug(f"Found {len(response.candidates)} candidates in response")
+
+                for i, candidate in enumerate(response.candidates):
+                    if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+                        logger.debug(f"Candidate {i} has {len(candidate.content.parts)} parts")
+
+                        for j, part in enumerate(candidate.content.parts):
+                            if hasattr(part, 'function_call') and part.function_call:
+                                # Encontrou function call - criar ToolResult
+                                function_call = part.function_call
+
+                                # Proteção contra function_call None ou sem name
+                                if function_call and hasattr(function_call, 'name') and function_call.name:
+                                    logger.info(f"Found function call: {function_call.name}")
+
+                                    tool_result = ToolResult(
+                                        status=ToolStatus.SUCCESS,
+                                        message=f"Executed {function_call.name}",
+                                        data=dict(function_call.args) if hasattr(function_call, 'args') else {},
+                                        metadata={
+                                            "function_name": function_call.name,
+                                            "candidate_index": i,
+                                            "part_index": j
+                                        }
+                                    )
+                                    tool_results.append(tool_result)
+                                else:
+                                    logger.debug(f"Found function_call without name at candidate {i}, part {j}")
+
+                            elif hasattr(part, 'text'):
+                                logger.debug(f"Found text part with {len(part.text)} chars")
+
+            # CORREÇÃO CRÍTICA: Acessa automatic_function_calling_history
+            if not tool_results and hasattr(response, 'automatic_function_calling_history'):
+                logger.debug(f"Found automatic_function_calling_history with {len(response.automatic_function_calling_history)} entries")
+
+                for entry in response.automatic_function_calling_history:
+                    if hasattr(entry, 'parts'):
+                        for part in entry.parts:
+                            if hasattr(part, 'function_call') and part.function_call:
+                                function_call = part.function_call
+
+                                # Proteção contra function_call None ou sem name
+                                if function_call and hasattr(function_call, 'name') and function_call.name:
+                                    logger.info(f"Found function call in history: {function_call.name}")
+
+                                    tool_result = ToolResult(
+                                        status=ToolStatus.SUCCESS,
+                                        message=f"Executed {function_call.name}",
+                                        data=dict(function_call.args) if hasattr(function_call, 'args') else {},
+                                        metadata={"function_name": function_call.name, "from": "automatic_history"}
+                                    )
+                                    tool_results.append(tool_result)
+
+            # Fallback: tenta examinar outras propriedades do response
+            if not tool_results:
+                # Verifica se há informações de function calling em outras propriedades
+                if hasattr(response, 'function_calls') and response.function_calls:
+                    logger.debug(f"Found function_calls property with {len(response.function_calls)} calls")
+                    for fc in response.function_calls:
+                        tool_result = ToolResult(
+                            status=ToolStatus.SUCCESS,
+                            message=f"Executed {fc.name}",
+                            data=dict(fc.args) if hasattr(fc, 'args') else {},
+                            metadata={"function_name": fc.name}
+                        )
+                        tool_results.append(tool_result)
+
+                # Se ainda não encontrou, verifica response metadata
+                elif hasattr(response, 'usage') and response.usage:
+                    logger.debug("No explicit function calls found, checking usage metadata")
+                    # Se há usage mas sem function calls explícitos, pode indicar que tools foram executadas
+                    # mas não capturadas na estrutura padrão
+
+            logger.info(f"Extracted {len(tool_results)} tool results from chat response")
+
+            # Debug: mostra estrutura do response se não encontrou function calls
+            if not tool_results:
+                logger.debug(f"Response type: {type(response)}")
+                logger.debug(f"Response attributes: {dir(response)}")
+                if hasattr(response, 'candidates'):
+                    logger.debug(f"Candidates type: {type(response.candidates)}")
+
             return tool_results
-            
+
         except Exception as e:
             logger.error(f"Error extracting tool results from chat response: {e}")
+            logger.debug(f"Response object: {response}")
             return []
 
     async def _process_legacy_function_calling(
@@ -775,6 +923,29 @@ class DeileAgent:
             
         except Exception as e:
             self.logger.warning(f"Failed to register command actions: {e}")
+
+    def _register_default_providers(self) -> None:
+        """Registra model providers padrão se nenhum estiver configurado"""
+        try:
+            # Registra GeminiProvider se API key disponível
+            import os
+            if os.getenv("GOOGLE_API_KEY"):
+                from .models.gemini_provider import GeminiProvider
+                gemini_provider = GeminiProvider()
+                self.model_router.register_provider(
+                    provider=gemini_provider,
+                    priority=1,
+                    cost_per_token=0.000125  # Custo aproximado
+                )
+                logger.info("Registered GeminiProvider")
+
+            # Adicione outros providers aqui no futuro
+            # if os.getenv("OPENAI_API_KEY"):
+            #     from .models.openai_provider import OpenAIProvider
+            #     ...
+
+        except Exception as e:
+            logger.warning(f"Failed to register default model providers: {e}")
     
     def __str__(self) -> str:
         return f"DeileAgent(status={self._status.value}, sessions={len(self._sessions)})"
