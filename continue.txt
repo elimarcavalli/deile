@@ -1,3 +1,0 @@
-crie uma pasta testes/teste1/ e crie um programa em python para mostrar uma calculadora bem legal e funcional para o usuario no CLI. 
-
-voce devera criar a classe e sua estrutura, depois deverá implementar os métodos, e em uma terceira rodada deverá melhorar a interação com o usuario. depois fornecer o comando para o usuario de como testar o programa.
