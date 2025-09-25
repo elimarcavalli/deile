@@ -141,6 +141,7 @@ class DeileAgent:
 
         # Initialize PersonaManager - será inicializado via async initialize()
         self.persona_manager: Optional[PersonaManager] = None
+        self.persona_enhanced: bool = False
 
         # Initialize WorkflowExecutor for TODO list management
         self.workflow_executor = None
@@ -159,16 +160,25 @@ class DeileAgent:
     async def initialize(self) -> None:
         """Inicializa componentes assíncronos do agente"""
         try:
-            # Inicializa PersonaManager
-            self.persona_manager = PersonaManager()
+            # Inicializa PersonaManager com integração de memória
+            memory_manager = getattr(self, 'memory_manager', None)
+            self.persona_manager = PersonaManager(memory_manager=memory_manager)
             await self.persona_manager.initialize()
+
+            # Validate memory integration
+            if memory_manager and hasattr(self.persona_manager, 'validate_memory_integration'):
+                if self.persona_manager.validate_memory_integration():
+                    logger.info("PersonaManager memory integration validated successfully")
+                else:
+                    logger.warning("PersonaManager memory integration validation failed")
 
             # Ativa persona padrão
             await self.persona_manager.switch_persona("developer")
 
-            # Reconecta o context_manager com o PersonaManager
-            if hasattr(self.context_manager, 'persona_manager'):
-                self.context_manager.persona_manager = self.persona_manager
+            # Configura integração profunda com persona systems
+            await self._setup_persona_integration()
+
+            self.persona_enhanced = True
 
             # Inicializa WorkflowExecutor
             self.workflow_executor = get_workflow_executor()
@@ -1170,6 +1180,46 @@ class DeileAgent:
 
         except Exception as e:
             logger.warning(f"Failed to register default model providers: {e}")
+
+    async def _setup_persona_integration(self) -> None:
+        """Set up deep integration between agent and persona systems"""
+        if not self.persona_manager:
+            return
+
+        try:
+            # Integration with context manager
+            if hasattr(self.context_manager, 'set_persona_integration'):
+                self.context_manager.set_persona_integration(self.persona_manager)
+            else:
+                # Add persona manager reference to context manager
+                self.context_manager.persona_manager = self.persona_manager
+
+            # Integration with tool registry (for persona-specific tool preferences)
+            if hasattr(self.tool_registry, 'register_persona_tools'):
+                self.tool_registry.register_persona_tools(self.persona_manager)
+
+            # Integration with intent analyzer
+            if hasattr(self.intent_analyzer, 'set_persona_context'):
+                self.intent_analyzer.set_persona_context(self.persona_manager)
+
+            logger.info("Persona integration setup completed successfully")
+
+        except Exception as e:
+            logger.warning(f"Some persona integration features unavailable: {e}")
+
+    def enable_persona_enhancement(self, persona_manager: PersonaManager = None) -> None:
+        """Enable persona enhancement for this agent"""
+        if persona_manager:
+            self.persona_manager = persona_manager
+            self.persona_manager.set_memory_manager(getattr(self, 'memory_manager', None))
+
+        self.persona_enhanced = True
+        logger.info("Persona enhancement enabled")
+
+    def disable_persona_enhancement(self) -> None:
+        """Disable persona enhancement for this agent"""
+        self.persona_enhanced = False
+        logger.info("Persona enhancement disabled")
     
     def __str__(self) -> str:
         return f"DeileAgent(status={self._status.value}, sessions={len(self._sessions)})"
