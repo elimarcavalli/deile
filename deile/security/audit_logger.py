@@ -24,6 +24,15 @@ class AuditEventType(Enum):
     SECURITY_POLICY_CHANGED = "security_policy_changed"
     SUSPICIOUS_ACTIVITY = "suspicious_activity"
 
+    # Persona-specific audit events
+    PERSONA_ERROR = "persona_error"
+    PERSONA_LOAD = "persona_load"
+    PERSONA_SWITCH = "persona_switch"
+    PERSONA_CONFIG_ERROR = "persona_config_error"
+    PERSONA_EXECUTION_ERROR = "persona_execution_error"
+    PERSONA_RECOVERY_SUCCESS = "persona_recovery_success"
+    PERSONA_RECOVERY_FAILURE = "persona_recovery_failure"
+
 
 class SeverityLevel(Enum):
     """Security event severity levels"""
