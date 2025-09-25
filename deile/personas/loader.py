@@ -8,6 +8,7 @@ from typing import Dict, Any, Type, Optional
 import yaml
 
 from .base import BasePersona, PersonaConfig
+from .instruction_loader import InstructionLoader
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class PersonaLoader:
     def __init__(self):
         self._persona_classes: Dict[str, Type[BasePersona]] = {}
         self._class_cache: Dict[str, Type[BasePersona]] = {}
+        self.instruction_loader = InstructionLoader()
 
     async def load_persona(self, config: PersonaConfig) -> BasePersona:
         """Carrega uma persona baseada na configuração
@@ -160,7 +162,17 @@ class PersonaLoader:
 
             async def build_system_instruction(self, context: Dict[str, Any] = None) -> str:
                 """Constrói system instruction básica"""
-                base = self.config.system_instruction
+                # Tenta carregar instrução do arquivo MD correspondente
+                loader = InstructionLoader()
+                md_instruction = loader.load_instruction(self.config.persona_id)
+
+                # Se encontrou arquivo MD, usa ele; senão usa do YAML
+                if md_instruction:
+                    logger.info(f"Using MD instruction for persona {self.config.persona_id}")
+                    base = md_instruction
+                else:
+                    logger.info(f"Using YAML instruction for persona {self.config.persona_id}")
+                    base = self.config.system_instruction
 
                 # Adiciona contexto se disponível
                 if context:
