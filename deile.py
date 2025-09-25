@@ -42,7 +42,7 @@ class DeileAgentCLI:
             # Carrega configurações
             self.config_manager.load_config()
             
-            with self.ui.show_loading("Inicializando DEILE v4.0..."):
+            with self.ui.show_loading("Inicializando DEILE v5.0..."):
                 if not self.settings.get_api_key("gemini"):
                     self.ui.display_error(
                         "Chave de API do Google não encontrada!",
@@ -134,7 +134,7 @@ class DeileAgentCLI:
         """Obtém a lista de arquivos do projeto para autocompletar."""
         project_files = []
         working_dir = Path(self.settings.working_directory)
-        ignore_dirs = {'__pycache__', '.git', 'node_modules', '.venv', 'venv', 'requests', 'logs', 'dist', 'build', '.claude'}
+        ignore_dirs = {'__pycache__', '.git', 'node_modules', '.venv', 'venv', 'requests', 'logs', 'dist', 'build', '.deile'}
 
         for file_path in working_dir.rglob('*'):
             if file_path.is_file() and not any(ignore_dir in file_path.parts for ignore_dir in ignore_dirs):

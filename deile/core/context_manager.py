@@ -6,6 +6,7 @@ from pathlib import Path
 import asyncio
 import json
 import logging
+import os
 import time
 from collections import deque
 
@@ -201,11 +202,15 @@ class ContextManager:
         if self.persona_manager:
             try:
                 active_persona = self.persona_manager.get_active_persona()
-                if active_persona and active_persona.config.system_instruction:
+                if active_persona:
                     logger.debug(f"Using persona '{active_persona.name}' system instruction")
 
-                    # Usa instrução da persona ativa
-                    base_instruction = active_persona.config.system_instruction
+                    # Constrói instrução usando o método da persona (que carrega do MD)
+                    context = {
+                        'session': session,
+                        'working_directory': kwargs.get('working_directory', os.getcwd())
+                    }
+                    base_instruction = await active_persona.build_system_instruction(context)
 
                     # Adiciona contexto de arquivos
                     file_context = await self._build_file_context(session, **kwargs)

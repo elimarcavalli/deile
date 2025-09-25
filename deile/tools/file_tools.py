@@ -111,53 +111,178 @@ class ReadFileTool(SyncTool):
     def name(self) -> str:
         return "read_file"
     
-    def _read_file_with_encoding_detection(self, file_path: Path) -> str:
-        """Lê arquivo com detecção robusta de encoding"""
+    def _read_file_universal(self, file_path: Path) -> str:
+        """Lê qualquer tipo de arquivo com detecção robusta de encoding e verificação de tamanho"""
+        from ..config.settings import get_settings
         import chardet
-        
-        # Tenta detectar encoding automaticamente
+
+        settings = get_settings()
+
         try:
+            # Verifica tamanho do arquivo primeiro
+            file_size = file_path.stat().st_size
+            max_size = settings.max_file_size_bytes
+
+            if file_size > max_size:
+                size_mb = file_size / (1024 * 1024)
+                max_mb = max_size / (1024 * 1024)
+                raise ValueError(f"Arquivo muito grande ({size_mb:.2f}MB). Limite: {max_mb:.2f}MB")
+
+            # Lê o arquivo como bytes primeiro
             with open(file_path, 'rb') as f:
                 raw_data = f.read()
-                
-            # Detecta encoding
-            detected = chardet.detect(raw_data)
-            encoding = detected.get('encoding', 'utf-8')
-            confidence = detected.get('confidence', 0)
-            
-            logger.debug(f"Detected encoding for {file_path}: {encoding} (confidence: {confidence:.2f})")
-            
-            # Se confiança baixa, tenta encodings comuns
-            if confidence < 0.7:
-                encodings_to_try = ['utf-8', 'utf-16', 'latin-1', 'cp1252', 'iso-8859-1']
-            else:
-                encodings_to_try = [encoding, 'utf-8', 'utf-16', 'latin-1']
-            
-            # Tenta cada encoding
-            for enc in encodings_to_try:
+
+            # Verifica se é arquivo binário analisando os primeiros bytes
+            def is_binary_file(data):
+                # Verifica presença de bytes nulos nos primeiros 1024 bytes
+                sample = data[:1024]
+                return b'\x00' in sample
+
+            # Se é arquivo binário, tenta interpretação especial
+            if is_binary_file(raw_data):
+                return self._handle_binary_file(file_path, raw_data)
+
+            # Para arquivos de texto, detecta encoding automaticamente
+            if settings.file_encoding_detection:
                 try:
-                    content = raw_data.decode(enc)
-                    # Remove BOM se presente
-                    if content.startswith('\ufeff'):
-                        content = content[1:]
-                    logger.debug(f"Successfully read {file_path} with encoding: {enc}")
+                    detected = chardet.detect(raw_data)
+                    encoding = detected.get('encoding', 'utf-8')
+                    confidence = detected.get('confidence', 0)
+
+                    logger.debug(f"Detected encoding for {file_path}: {encoding} (confidence: {confidence:.2f})")
+
+                    # Se confiança baixa, tenta encodings comuns
+                    if confidence < 0.7:
+                        encodings_to_try = ['utf-8', 'utf-16', 'latin-1', 'cp1252', 'iso-8859-1']
+                    else:
+                        encodings_to_try = [encoding, 'utf-8', 'utf-16', 'latin-1']
+
+                    # Tenta cada encoding
+                    for enc in encodings_to_try:
+                        try:
+                            content = raw_data.decode(enc)
+                            # Remove BOM se presente
+                            if content.startswith('\ufeff'):
+                                content = content[1:]
+                            logger.debug(f"Successfully read {file_path} with encoding: {enc}")
+                            return content
+                        except (UnicodeDecodeError, UnicodeError):
+                            continue
+
+                    # Fallback final - força utf-8 com errors='replace'
+                    content = raw_data.decode('utf-8', errors='replace')
+                    logger.warning(f"Used fallback utf-8 with errors='replace' for {file_path}")
                     return content
-                except (UnicodeDecodeError, UnicodeError):
-                    continue
-            
-            # Fallback final - força utf-8 com errors='replace'
-            content = raw_data.decode('utf-8', errors='replace')
-            logger.warning(f"Used fallback utf-8 with errors='replace' for {file_path}")
-            return content
-            
-        except ImportError:
-            # Se chardet não disponível, usa fallbacks manuais
-            logger.debug("chardet not available, using manual encoding detection")
-            return self._read_file_manual_encoding(file_path)
+
+                except ImportError:
+                    # Se chardet não disponível, usa fallbacks manuais
+                    logger.debug("chardet not available, using manual encoding detection")
+                    return self._read_file_manual_encoding(file_path)
+            else:
+                # Se detecção automática desabilitada, força UTF-8
+                return raw_data.decode('utf-8', errors='replace')
+
         except Exception as e:
-            logger.error(f"Error in encoding detection for {file_path}: {e}")
-            # Fallback final
-            return file_path.read_text(encoding='utf-8', errors='replace')
+            logger.error(f"Error in universal file reading for {file_path}: {e}")
+            # Fallback final mais seguro
+            try:
+                return file_path.read_text(encoding='utf-8', errors='replace')
+            except:
+                return f"[ERRO: Não foi possível ler o arquivo {file_path}: {str(e)}]"
+
+    def _handle_binary_file(self, file_path: Path, raw_data: bytes) -> str:
+        """Lida com arquivos binários fornecendo informações úteis"""
+        file_extension = file_path.suffix.lower()
+        file_size = len(raw_data)
+
+        # Detecta tipo de arquivo baseado na extensão e magic numbers
+        magic_signatures = {
+            b'\x89PNG\r\n\x1a\n': 'PNG Image',
+            b'\xff\xd8\xff': 'JPEG Image',
+            b'GIF8': 'GIF Image',
+            b'%PDF': 'PDF Document',
+            b'PK\x03\x04': 'ZIP Archive (or Office Document)',
+            b'\x50\x4b\x05\x06': 'ZIP Archive (empty)',
+            b'\x50\x4b\x07\x08': 'ZIP Archive (spanned)',
+            b'RIFF': 'RIFF Media File (WAV/AVI)',
+            b'\x00\x00\x01\x00': 'ICO Icon',
+            b'BM': 'Bitmap Image',
+            b'\x1f\x8b': 'GZIP Archive',
+            b'7z\xbc\xaf\x27\x1c': '7-Zip Archive'
+        }
+
+        # Verifica magic numbers
+        file_type = "Binary File"
+        for signature, type_name in magic_signatures.items():
+            if raw_data.startswith(signature):
+                file_type = type_name
+                break
+
+        # Formatação especial para tipos conhecidos
+        if 'image' in file_type.lower():
+            return f"""[ARQUIVO DE IMAGEM]
+Tipo: {file_type}
+Tamanho: {file_size:,} bytes ({file_size / 1024:.1f} KB)
+Extensão: {file_extension}
+Caminho: {file_path}
+
+Este é um arquivo de imagem binário. Para visualizar:
+- Use um visualizador de imagens
+- Converta para base64 se necessário para incorporação
+- Primeira linha de bytes: {raw_data[:32].hex()}
+"""
+
+        elif 'pdf' in file_type.lower():
+            return f"""[DOCUMENTO PDF]
+Tipo: {file_type}
+Tamanho: {file_size:,} bytes ({file_size / 1024:.1f} KB)
+Caminho: {file_path}
+
+Este é um documento PDF. Para extrair texto:
+- Use bibliotecas como PyPDF2, pdfplumber ou pdfminer
+- Primeira linha de bytes: {raw_data[:64].decode('ascii', errors='replace')}
+"""
+
+        elif 'archive' in file_type.lower() or 'zip' in file_type.lower():
+            return f"""[ARQUIVO COMPACTADO]
+Tipo: {file_type}
+Tamanho: {file_size:,} bytes ({file_size / 1024:.1f} KB)
+Extensão: {file_extension}
+Caminho: {file_path}
+
+Este é um arquivo compactado. Para extrair:
+- Use bibliotecas como zipfile, tarfile, ou 7z
+- Primeira linha de bytes: {raw_data[:32].hex()}
+"""
+
+        else:
+            # Tenta ver se há algum texto legível no arquivo
+            sample_text = raw_data[:512].decode('utf-8', errors='replace')
+            readable_chars = sum(1 for c in sample_text if c.isprintable())
+
+            if readable_chars > len(sample_text) * 0.7:  # Se 70%+ são legíveis
+                return f"""[ARQUIVO MISTO/BINÁRIO COM TEXTO]
+Tipo: {file_type}
+Tamanho: {file_size:,} bytes ({file_size / 1024:.1f} KB)
+Extensão: {file_extension}
+Caminho: {file_path}
+
+Amostra de texto encontrada:
+{sample_text[:200]}...
+
+[Resto do arquivo contém dados binários]
+"""
+            else:
+                return f"""[ARQUIVO BINÁRIO]
+Tipo: {file_type}
+Tamanho: {file_size:,} bytes ({file_size / 1024:.1f} KB)
+Extensão: {file_extension}
+Caminho: {file_path}
+
+Este arquivo contém dados binários não-texto.
+Primeira linha de bytes (hex): {raw_data[:32].hex()}
+Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace')}
+"""
     
     def _read_file_manual_encoding(self, file_path: Path) -> str:
         """Detecção manual de encoding sem chardet"""
@@ -270,9 +395,22 @@ class ReadFileTool(SyncTool):
                     message=f"Path is not a file: {file_path}",
                     error=ValueError(f"'{file_path}' is not a file")
                 )
+
+            # Verifica configurações de segurança (se habilitadas)
+            from ..config.settings import get_settings
+            settings = get_settings()
+
+            if settings.enable_file_safety_checks and not settings.allow_all_file_types:
+                file_extension = full_path.suffix.lower()
+                if file_extension and file_extension not in settings.allowed_file_extensions:
+                    return ToolResult(
+                        status=ToolStatus.ERROR,
+                        message=f"File type not allowed: {file_extension}. Allowed types: {settings.allowed_file_extensions}",
+                        error=PermissionError(f"File extension '{file_extension}' not in allowed list")
+                    )
             
-            # Lê conteúdo do arquivo com detecção robusta de encoding
-            content = self._read_file_with_encoding_detection(full_path)
+            # Lê conteúdo do arquivo com sistema universal
+            content = self._read_file_universal(full_path)
             
             # Prepara display rico
             lines = content.splitlines()

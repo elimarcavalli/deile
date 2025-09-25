@@ -27,7 +27,7 @@ class Settings:
     
     # Configurações básicas
     app_name: str = "DEILE"
-    version: str = "4.0.0"
+    version: str = "5.0.0"
     debug: bool = False
     
     # Configurações de diretórios
@@ -66,7 +66,7 @@ class Settings:
     
     # Configurações de performance
     max_concurrent_requests: int = 10
-    request_timeout: int = 30
+    request_timeout: int = 120
     enable_caching: bool = True
     cache_ttl: int = 3600  # 1 hora
     
@@ -78,6 +78,11 @@ class Settings:
     blocked_directories: List[str] = field(default_factory=lambda: [
         ".git", "__pycache__", "node_modules", ".env"
     ])
+
+    # Configurações de leitura de arquivos
+    max_file_size_bytes: int = 1024 * 1024  # 1MB padrão
+    allow_all_file_types: bool = True  # Permite qualquer tipo de arquivo
+    file_encoding_detection: bool = True  # Detecta encoding automaticamente
     
     # Configurações específicas do ambiente
     environment: str = "development"  # development, staging, production
@@ -160,16 +165,20 @@ class Settings:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 config_dict = json.load(f)
-            
+
+            if 'api_keys' in config_dict:
+                logger.warning("API keys found in config file. Ignoring them for security.")
+                del config_dict['api_keys']
+
             # Converte paths de volta para Path objects
             for key in ['working_directory', 'config_directory', 'logs_directory', 'cache_directory']:
                 if key in config_dict:
                     config_dict[key] = Path(config_dict[key])
-            
+
             # Converte log_level de volta para enum
             if 'log_level' in config_dict:
                 config_dict['log_level'] = LogLevel(config_dict['log_level'])
-            
+
             settings = cls(**config_dict)
             logger.info(f"Settings loaded from {file_path}")
             return settings
@@ -179,18 +188,26 @@ class Settings:
             logger.info("Using default settings")
             return cls()
     
-    def to_dict(self) -> Dict[str, Any]:
-        """Converte configurações para dicionário"""
+    def to_dict(self, exclude_api_keys: bool = True) -> Dict[str, Any]:
+        """Converte configurações para dicionário
+
+        Args:
+            exclude_api_keys: Se True, exclui API keys do dicionário (padrão para salvar em arquivo)
+        """
         result = {}
-        
+
         for key, value in self.__dict__.items():
+            # SEGURANÇA: Nunca salva API keys em arquivo por padrão
+            if exclude_api_keys and key == 'api_keys':
+                continue
+
             if isinstance(value, Path):
                 result[key] = str(value)
             elif isinstance(value, LogLevel):
                 result[key] = value.value
             else:
                 result[key] = value
-        
+
         return result
     
     def update(self, **kwargs) -> None:

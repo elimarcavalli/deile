@@ -87,7 +87,7 @@ class ConsoleUIManager(UIManager):
     def show_welcome(self):
         """Mostra a tela de boas-vindas formatada."""
         self.console.clear()
-        title = Text.from_markup("[bold #4285F4]DEILE[/][bold #7B68EE] AI AGENT[/] [cyan]v4.0[/]")
+        title = Text.from_markup("[bold #4285F4]DEILE[/][bold #7B68EE] AI AGENT[/] [cyan]v5.0[/]")
         
         info_lines = [
             ":sparkles: [bold]Estou pronto para analisar e otimizar o seu código![/bold]",
@@ -122,7 +122,7 @@ class ConsoleUIManager(UIManager):
                 # Fallback final - texto simples
                 try:
                     print("\n" + "="*30)
-                    print("DEILE AI AGENT v4.0")
+                    print("DEILE AI AGENT v5.0")
                     print("="*30)
                     for line in safe_info_lines:
                         # Remove markup Rich completamente
@@ -135,7 +135,7 @@ class ConsoleUIManager(UIManager):
                         print(clean_line.strip())
                     print("="*30 + "\n")
                 except:
-                    print("DEILE AI AGENT v4.0 - Ready")
+                    print("DEILE AI AGENT v5.0 - Ready")
 
     def get_user_input(self, prompt: str = "\n [bold green]>[/bold] ") -> str:
         """Obtém a entrada do usuário de forma interativa."""

@@ -26,7 +26,7 @@ class CLI:
     
     def print_header(self) -> None:
         """Imprime cabeçalho da aplicação"""
-        self.console.rule("[bold #4285F4]DEILE[/][bold #7B68EE] AI AGENT[/] [cyan]v4.0[/]", style="#4285F4")
+        self.console.rule("[bold #4285F4]DEILE[/][bold #7B68EE] AI AGENT[/] [cyan]v5.0[/]", style="#4285F4")
         self.console.print("✨ [bold]Agente de IA modular e extensível![/bold]", justify="center")
         self.console.print("Digite 'help' para comandos disponíveis ou 'exit' para sair.", justify="center")
         self.console.rule(style="#4285F4")

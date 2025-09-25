@@ -1,4 +1,4 @@
-"""Clear Command for DEILE v4.0 - Resolves SITUAÇÃO 7"""
+"""Clear Command for DEILE v5.0"""
 
 import logging
 from typing import Optional

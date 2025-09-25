@@ -452,3 +452,13 @@ def log_tool_execution(tool_name: str, resource: str, success: bool, **kwargs) -
 def log_sandbox_violation(tool_name: str, violated_resource: str, violation_type: str, blocked: bool = True) -> None:
     """Convenience function for logging sandbox violations"""
     get_audit_logger().log_sandbox_violation(tool_name, violated_resource, violation_type, blocked)
+
+
+def log_plan_execution(plan_id: str, action: str, result: str, step_count: int = 0, duration_ms: int = 0, **kwargs) -> None:
+    """Convenience function for logging plan execution"""
+    get_audit_logger().log_plan_execution(plan_id, action, result, step_count, duration_ms)
+
+
+def log_approval_event(plan_id: str, step_id: str, approval_action: str, tool_name: str, risk_level: str, **kwargs) -> None:
+    """Convenience function for logging approval events"""
+    get_audit_logger().log_approval_event(plan_id, step_id, approval_action, tool_name, risk_level)

@@ -1,8 +1,8 @@
-"""DEILE - Sistema de Agente de IA Modular e Extensível"""
+"""DEILE AI AGENT"""
 
-__version__ = "4.0.0"
-__author__ = "DEILE Team"
-__description__ = "Agente de IA CLI para desenvolvimento de software"
+__version__ = "5.0.0"
+__author__ = "@elimarcavalli"
+__description__ = "Agente de IA CLI para desenvolvimento autônomo de software."
 
 from .core.agent import DeileAgent
 from .core.exceptions import DEILEError
