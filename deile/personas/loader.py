@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Dict, Any, Type, Optional
 import yaml
 
-from .base import BasePersona, PersonaConfig
+from .base import BaseAutonomousPersona
+from .config import PersonaConfig  # Use unified configuration
 from .instruction_loader import InstructionLoader
 
 logger = logging.getLogger(__name__)
@@ -23,12 +24,15 @@ class PersonaLoader:
     - Cache de classes carregadas
     """
 
-    def __init__(self):
-        self._persona_classes: Dict[str, Type[BasePersona]] = {}
-        self._class_cache: Dict[str, Type[BasePersona]] = {}
+    def __init__(self, config_manager=None):
+        self._persona_classes: Dict[str, Type[BaseAutonomousPersona]] = {}
+        self._class_cache: Dict[str, Type[BaseAutonomousPersona]] = {}
         self.instruction_loader = InstructionLoader()
 
-    async def load_persona(self, config: PersonaConfig) -> BasePersona:
+        # Unified configuration support
+        self.config_manager = config_manager
+
+    async def load_persona(self, config: PersonaConfig) -> BaseAutonomousPersona:
         """Carrega uma persona baseada na configuração
 
         Args:
@@ -93,7 +97,7 @@ class PersonaLoader:
         class_name = ''.join(word.capitalize() for word in words) + 'Persona'
         return class_name
 
-    async def _load_persona_class_by_name(self, class_name: str) -> Type[BasePersona]:
+    async def _load_persona_class_by_name(self, class_name: str) -> Type[BaseAutonomousPersona]:
         """Carrega classe de persona por nome
 
         Args:
@@ -125,7 +129,7 @@ class PersonaLoader:
 
         raise ImportError(f"Classe {class_name} não encontrada nos módulos disponíveis")
 
-    async def _load_custom_class(self, class_path: str) -> Type[BasePersona]:
+    async def _load_custom_class(self, class_path: str) -> Type[BaseAutonomousPersona]:
         """Carrega classe customizada especificada por caminho
 
         Args:
@@ -151,13 +155,13 @@ class PersonaLoader:
         except (ImportError, AttributeError, ValueError) as e:
             raise ImportError(f"Erro ao carregar classe customizada {class_path}: {e}")
 
-    async def _get_generic_persona_class(self) -> Type[BasePersona]:
+    async def _get_generic_persona_class(self) -> Type[BaseAutonomousPersona]:
         """Retorna classe de persona genérica como fallback"""
         if 'GenericPersona' in self._class_cache:
             return self._class_cache['GenericPersona']
 
         # Cria classe genérica dinamicamente
-        class GenericPersona(BasePersona):
+        class GenericPersona(BaseAutonomousPersona):
             """Persona genérica que implementa comportamento básico"""
 
             async def build_system_instruction(self, context: Dict[str, Any] = None) -> str:
@@ -206,8 +210,8 @@ class PersonaLoader:
             bool: True se é uma persona válida
         """
         try:
-            # Verifica se herda de BasePersona
-            if not issubclass(persona_class, BasePersona):
+            # Verifica se herda de BaseAutonomousPersona
+            if not issubclass(persona_class, BaseAutonomousPersona):
                 return False
 
             # Verifica se implementa métodos abstratos
@@ -226,7 +230,7 @@ class PersonaLoader:
             # Não é uma classe válida
             return False
 
-    def register_persona_class(self, persona_id: str, persona_class: Type[BasePersona]) -> None:
+    def register_persona_class(self, persona_id: str, persona_class: Type[BaseAutonomousPersona]) -> None:
         """Registra uma classe de persona manualmente
 
         Args:
@@ -285,8 +289,8 @@ class PersonaLoader:
 
                     # Procura por classes de persona no módulo
                     for name, obj in inspect.getmembers(module, inspect.isclass):
-                        if (name != 'BasePersona' and
-                            issubclass(obj, BasePersona) and
+                        if (name != 'BaseAutonomousPersona' and
+                            issubclass(obj, BaseAutonomousPersona) and
                             not inspect.isabstract(obj)):
 
                             # Gera persona_id baseado no nome da classe
@@ -321,3 +325,43 @@ class PersonaLoader:
             result.append(char.lower())
 
         return ''.join(result)
+
+    async def load_persona_instructions(self, persona_id: str) -> str:
+        """Load persona instructions by persona ID for unified configuration
+
+        Args:
+            persona_id: ID of the persona
+
+        Returns:
+            str: Persona instructions text
+        """
+        try:
+            # Try to load instruction from MD file first
+            md_instruction = self.instruction_loader.load_instruction(persona_id)
+
+            if md_instruction:
+                logger.debug(f"Loaded MD instruction for persona {persona_id}")
+                return md_instruction
+
+            # If no MD file found, create basic instruction from persona ID
+            basic_instruction = self._generate_basic_instruction(persona_id)
+            logger.debug(f"Generated basic instruction for persona {persona_id}")
+            return basic_instruction
+
+        except Exception as e:
+            logger.warning(f"Failed to load instructions for persona {persona_id}: {e}")
+            # Return fallback instruction
+            return f"You are a {persona_id} assistant. Help the user with {persona_id}-related tasks."
+
+    def _generate_basic_instruction(self, persona_id: str) -> str:
+        """Generate basic instruction based on persona ID"""
+        persona_templates = {
+            'developer': "You are a software developer assistant. You help with coding, debugging, testing, and development tasks. Be technical, precise, and provide code examples when appropriate.",
+            'architect': "You are a software architect assistant. You help with system design, architecture patterns, scalability, and high-level technical decisions. Focus on structure, patterns, and best practices.",
+            'debugger': "You are a debugging specialist assistant. You help identify, analyze, and solve software issues. Be methodical, analytical, and provide step-by-step troubleshooting guidance.",
+        }
+
+        return persona_templates.get(
+            persona_id,
+            f"You are a {persona_id} assistant. Provide helpful assistance in your area of expertise."
+        )

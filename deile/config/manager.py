@@ -1,12 +1,23 @@
 """Gerenciador central de configurações do DEILE"""
 
 from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, List, Union
+from typing import Dict, Any, Optional, List, Union, Callable
 from pathlib import Path
 import yaml
 import json
 import logging
+import asyncio
 from enum import Enum
+from datetime import datetime
+
+try:
+    from ..core.exceptions import ValidationError, DEILEError
+except ImportError:
+    # Fallback if exceptions module doesn't exist
+    class ValidationError(Exception):
+        pass
+    class DEILEError(Exception):
+        pass
 
 logger = logging.getLogger(__name__)
 
@@ -165,13 +176,22 @@ class ConfigManager:
             config_dir = Path("deile/config")
         self.config_dir = Path(config_dir)
         self.config_dir.mkdir(parents=True, exist_ok=True)
-        
+
         self._config: Optional[DeileConfig] = None
         self._config_files = {
             "api_config": self.config_dir / "api_config.yaml",
-            "system_config": self.config_dir / "system_config.yaml", 
-            "commands": self.config_dir / "commands.yaml"
+            "system_config": self.config_dir / "system_config.yaml",
+            "commands": self.config_dir / "commands.yaml",
+            "persona_config": self.config_dir / "persona_config.yaml"
         }
+
+        # Persona configuration support
+        self._persona_observers: List[Callable[[str, Dict[str, Any], str], None]] = []
+        self._persona_config_cache: Dict[str, Any] = {}
+
+        # Hot-reload observer for unified configuration
+        self._observer: Optional[object] = None  # Will be watchdog Observer
+        self.logger = logger
     
     def get_config(self) -> DeileConfig:
         """Obtém configuração atual (carrega se necessário)"""
@@ -442,6 +462,424 @@ class ConfigManager:
         """Retorna lista de comandos habilitados"""
         config = self.get_config()
         return [cmd for cmd in config.commands.values() if cmd.enabled]
+
+    # ========== PERSONA CONFIGURATION METHODS ==========
+
+    async def load_persona_configuration(self) -> Dict[str, Any]:
+        """Load persona configuration from unified structure"""
+        persona_config_file = self._config_files["persona_config"]
+
+        if not persona_config_file.exists():
+            # Create default persona configuration
+            await self._create_default_persona_config(persona_config_file)
+
+        try:
+            with open(persona_config_file, 'r', encoding='utf-8') as f:
+                persona_config = yaml.safe_load(f) or {}
+
+            # Validate persona configuration
+            await self._validate_persona_config(persona_config)
+
+            self._persona_config_cache = persona_config
+            self.logger.debug(f"Loaded persona configuration from {persona_config_file}")
+            return persona_config.get('personas', {})
+
+        except Exception as e:
+            self.logger.error(f"Failed to load persona configuration: {e}")
+            return {}
+
+    async def _create_default_persona_config(self, config_file: Path) -> None:
+        """Create default persona configuration file"""
+        default_config = {
+            'personas': {
+                'enabled': True,
+                'default_persona': 'developer',
+                'hot_reload': True,
+                'personas_directory': 'deile/personas/instructions',
+                'persona_configs': {
+                    'developer': {
+                        'capabilities': [
+                            'code_generation', 'debugging', 'code_analysis',
+                            'file_operations', 'git_operations'
+                        ],
+                        'communication_style': 'technical',
+                        'model_preferences': {
+                            'temperature': 0.3,
+                            'max_tokens': 6000,
+                            'top_p': 0.9
+                        },
+                        'behavior_settings': {
+                            'verbosity_level': 'detailed',
+                            'code_explanation': True,
+                            'suggest_improvements': True
+                        },
+                        'tool_preferences': {
+                            'preferred_tools': ['file_tools', 'git_tool', 'bash_tool'],
+                            'avoid_tools': [],
+                            'tool_timeout': 30
+                        }
+                    },
+                    'architect': {
+                        'capabilities': [
+                            'system_design', 'architecture_analysis', 'documentation',
+                            'code_review', 'performance_optimization'
+                        ],
+                        'communication_style': 'strategic',
+                        'model_preferences': {
+                            'temperature': 0.5,
+                            'max_tokens': 8000,
+                            'top_p': 0.95
+                        },
+                        'behavior_settings': {
+                            'verbosity_level': 'comprehensive',
+                            'focus_on_patterns': True,
+                            'include_trade_offs': True
+                        },
+                        'tool_preferences': {
+                            'preferred_tools': ['search_tool', 'file_tools', 'analysis_tools'],
+                            'avoid_tools': ['bash_tool'],
+                            'tool_timeout': 60
+                        }
+                    },
+                    'debugger': {
+                        'capabilities': [
+                            'debugging', 'error_analysis', 'performance_analysis',
+                            'log_analysis', 'troubleshooting'
+                        ],
+                        'communication_style': 'analytical',
+                        'model_preferences': {
+                            'temperature': 0.2,
+                            'max_tokens': 5000,
+                            'top_p': 0.8
+                        },
+                        'behavior_settings': {
+                            'verbosity_level': 'focused',
+                            'step_by_step': True,
+                            'ask_clarifying_questions': True
+                        },
+                        'tool_preferences': {
+                            'preferred_tools': ['search_tool', 'file_tools', 'analysis_tools'],
+                            'avoid_tools': [],
+                            'tool_timeout': 45
+                        }
+                    }
+                }
+            }
+        }
+
+        # Create config directory if needed
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write default configuration
+        with open(config_file, 'w', encoding='utf-8') as f:
+            yaml.dump(default_config, f, default_flow_style=False, indent=2)
+
+        self.logger.info(f"Created default persona configuration at {config_file}")
+
+    async def _validate_persona_config(self, config: Dict[str, Any]) -> None:
+        """Validate persona configuration structure"""
+        if not isinstance(config, dict):
+            raise ValidationError("Configuration must be a dictionary")
+
+        if 'personas' not in config:
+            # Empty config is allowed, will create default
+            return
+
+        personas_config = config['personas']
+        if not isinstance(personas_config, dict):
+            raise ValidationError("personas configuration must be a dictionary")
+
+        # Validate persona configs
+        if 'persona_configs' in personas_config:
+            await self._validate_persona_configs(personas_config['persona_configs'])
+
+    async def _validate_persona_configs(self, persona_configs: Dict[str, Any]) -> None:
+        """Validate individual persona configurations"""
+        for persona_id, persona_config in persona_configs.items():
+            if not isinstance(persona_config, dict):
+                raise ValidationError(f"Persona {persona_id} configuration must be a dictionary")
+
+            # Validate required persona fields
+            required_fields = ['capabilities', 'communication_style']
+            for field in required_fields:
+                if field not in persona_config:
+                    self.logger.warning(f"Persona {persona_id} missing recommended field: {field}")
+
+            # Validate capabilities
+            if 'capabilities' in persona_config:
+                capabilities = persona_config['capabilities']
+                if not isinstance(capabilities, list):
+                    raise ValidationError(f"Persona {persona_id} capabilities must be a list")
+
+    async def get_persona_config(self, persona_id: str) -> Dict[str, Any]:
+        """Get configuration for specific persona"""
+        try:
+            persona_configs = await self._get_config_value('personas.persona_configs', {})
+            return persona_configs.get(persona_id, {})
+        except Exception as e:
+            self.logger.error(f"Error getting persona config for {persona_id}: {e}")
+            return {}
+
+    async def _get_config_value(self, config_path: str, default_value: Any = None) -> Any:
+        """Get nested configuration value by dot notation path"""
+        if not self._persona_config_cache:
+            await self.load_persona_configuration()
+
+        keys = config_path.split('.')
+        value = self._persona_config_cache
+
+        try:
+            for key in keys:
+                if isinstance(value, dict) and key in value:
+                    value = value[key]
+                else:
+                    return default_value
+            return value
+        except Exception:
+            return default_value
+
+    async def update_persona_config(
+        self,
+        persona_id: str,
+        config_updates: Dict[str, Any]
+    ) -> None:
+        """Update persona configuration with unified validation and persistence"""
+        try:
+            # Get current configuration
+            current_config = await self.get_persona_config(persona_id)
+
+            # Merge updates
+            updated_config = {**current_config, **config_updates}
+
+            # Validate updated configuration
+            await self._validate_persona_configs({persona_id: updated_config})
+
+            # Update in memory
+            await self._update_config_value(f'personas.persona_configs.{persona_id}', updated_config)
+
+            # Persist to file
+            await self._persist_persona_config_change(persona_id, updated_config)
+
+            # Notify observers
+            await self._notify_persona_observers(persona_id, updated_config)
+
+            self.logger.info(f"Updated configuration for persona {persona_id}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to update persona {persona_id} configuration: {e}")
+            raise
+
+    async def _update_config_value(self, config_path: str, new_value: Any) -> None:
+        """Update nested configuration value by dot notation path"""
+        keys = config_path.split('.')
+
+        # Ensure persona config cache exists
+        if not self._persona_config_cache:
+            self._persona_config_cache = {}
+
+        # Navigate and create nested structure
+        current = self._persona_config_cache
+        for key in keys[:-1]:
+            if key not in current:
+                current[key] = {}
+            current = current[key]
+
+        # Set the final value
+        current[keys[-1]] = new_value
+
+    async def _persist_persona_config_change(
+        self,
+        persona_id: str,
+        updated_config: Dict[str, Any]
+    ) -> None:
+        """Persist persona configuration change to file"""
+        config_file = self._config_files["persona_config"]
+
+        try:
+            # Read current file
+            with open(config_file, 'r', encoding='utf-8') as f:
+                file_config = yaml.safe_load(f) or {}
+
+            # Ensure structure exists
+            if 'personas' not in file_config:
+                file_config['personas'] = {'persona_configs': {}}
+            if 'persona_configs' not in file_config['personas']:
+                file_config['personas']['persona_configs'] = {}
+
+            # Update specific persona
+            file_config['personas']['persona_configs'][persona_id] = updated_config
+
+            # Write back to file
+            with open(config_file, 'w', encoding='utf-8') as f:
+                yaml.dump(file_config, f, default_flow_style=False, indent=2)
+
+        except Exception as e:
+            self.logger.error(f"Failed to persist persona config change: {e}")
+            raise
+
+    async def add_persona(
+        self,
+        persona_id: str,
+        persona_config: Dict[str, Any]
+    ) -> None:
+        """Add new persona configuration"""
+        # Validate new persona configuration
+        await self._validate_persona_configs({persona_id: persona_config})
+
+        # Add to in-memory configuration
+        personas_config = await self._get_config_value('personas.persona_configs', {})
+        personas_config[persona_id] = persona_config
+
+        await self._update_config_value('personas.persona_configs', personas_config)
+
+        # Persist to file
+        await self._persist_persona_config_change(persona_id, persona_config)
+
+        # Notify observers
+        await self._notify_persona_observers(persona_id, persona_config, event_type='added')
+
+        self.logger.info(f"Added new persona: {persona_id}")
+
+    async def remove_persona(self, persona_id: str) -> None:
+        """Remove persona configuration"""
+        personas_config = await self._get_config_value('personas.persona_configs', {})
+
+        if persona_id not in personas_config:
+            raise ValidationError(f"Persona {persona_id} not found")
+
+        # Remove from in-memory configuration
+        del personas_config[persona_id]
+        await self._update_config_value('personas.persona_configs', personas_config)
+
+        # Update file
+        config_file = self._config_files["persona_config"]
+        with open(config_file, 'r', encoding='utf-8') as f:
+            file_config = yaml.safe_load(f) or {}
+
+        if 'personas' in file_config and 'persona_configs' in file_config['personas']:
+            if persona_id in file_config['personas']['persona_configs']:
+                del file_config['personas']['persona_configs'][persona_id]
+
+                with open(config_file, 'w', encoding='utf-8') as f:
+                    yaml.dump(file_config, f, default_flow_style=False, indent=2)
+
+        # Notify observers
+        await self._notify_persona_observers(persona_id, {}, event_type='removed')
+
+        self.logger.info(f"Removed persona: {persona_id}")
+
+    # ========== OBSERVER PATTERN FOR PERSONA CHANGES ==========
+
+    def add_persona_observer(self, observer: Callable[[str, Dict[str, Any], str], None]) -> None:
+        """Add observer for persona configuration changes"""
+        self._persona_observers.append(observer)
+
+    def remove_persona_observer(self, observer: Callable) -> None:
+        """Remove persona configuration observer"""
+        if observer in self._persona_observers:
+            self._persona_observers.remove(observer)
+
+    async def _notify_persona_observers(
+        self,
+        persona_id: str,
+        config: Dict[str, Any],
+        event_type: str = 'updated'
+    ) -> None:
+        """Notify all persona observers of configuration changes"""
+        for observer in self._persona_observers:
+            try:
+                if asyncio.iscoroutinefunction(observer):
+                    await observer(persona_id, config, event_type)
+                else:
+                    observer(persona_id, config, event_type)
+            except Exception as e:
+                self.logger.error(f"Error notifying persona observer: {e}")
+
+    # ========== HOT-RELOAD ENHANCEMENT FOR PERSONA CONFIGS ==========
+
+    async def setup_hot_reload(self) -> None:
+        """Setup unified hot-reload for all configuration including personas"""
+        try:
+            from watchdog.observers import Observer
+            from watchdog.events import FileSystemEventHandler
+        except ImportError:
+            self.logger.warning("Hot-reload disabled: watchdog not available")
+            return
+
+        class UnifiedConfigChangeHandler(FileSystemEventHandler):
+            def __init__(self, config_manager: 'ConfigManager'):
+                self.config_manager = config_manager
+
+            def on_modified(self, event):
+                if event.src_path.endswith('.yaml') or event.src_path.endswith('.yml'):
+                    file_name = Path(event.src_path).name
+
+                    if file_name == 'persona_config.yaml':
+                        # Persona configuration changed
+                        asyncio.create_task(self.config_manager._reload_persona_config())
+                    else:
+                        # General configuration changed
+                        asyncio.create_task(self.config_manager.reload_config())
+
+        if not self._observer:
+            self._observer = Observer()
+            handler = UnifiedConfigChangeHandler(self)
+            self._observer.schedule(handler, str(self.config_dir), recursive=True)
+            self._observer.start()
+
+            self.logger.info("Unified hot-reload setup completed")
+
+    async def _reload_persona_config(self) -> None:
+        """Reload persona configuration and notify observers"""
+        try:
+            old_persona_config = self._persona_config_cache.copy()
+            new_persona_config = await self.load_persona_configuration()
+
+            if new_persona_config != old_persona_config.get('personas', {}):
+                # Find changes and notify observers
+                await self._detect_and_notify_persona_changes(
+                    old_persona_config.get('personas', {}),
+                    new_persona_config
+                )
+
+                self.logger.info("Persona configuration reloaded successfully")
+
+        except Exception as e:
+            self.logger.error(f"Failed to reload persona configuration: {e}")
+
+    async def _detect_and_notify_persona_changes(
+        self,
+        old_config: Dict[str, Any],
+        new_config: Dict[str, Any]
+    ) -> None:
+        """Detect changes in persona configuration and notify observers"""
+        old_personas = old_config.get('persona_configs', {})
+        new_personas = new_config.get('persona_configs', {})
+
+        # Detect added personas
+        for persona_id in set(new_personas.keys()) - set(old_personas.keys()):
+            await self._notify_persona_observers(
+                persona_id, new_personas[persona_id], 'added'
+            )
+
+        # Detect removed personas
+        for persona_id in set(old_personas.keys()) - set(new_personas.keys()):
+            await self._notify_persona_observers(persona_id, {}, 'removed')
+
+        # Detect modified personas
+        for persona_id in set(old_personas.keys()) & set(new_personas.keys()):
+            if old_personas[persona_id] != new_personas[persona_id]:
+                await self._notify_persona_observers(
+                    persona_id, new_personas[persona_id], 'updated'
+                )
+
+    def stop_hot_reload(self) -> None:
+        """Stop hot-reload observer"""
+        if self._observer:
+            self._observer.stop()
+            self._observer.join()
+            self._observer = None
+            self.logger.info("Hot-reload stopped")
 
 
 # Singleton instance
