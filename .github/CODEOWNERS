@@ -1,0 +1,17 @@
+# Global code ownership
+* @elimarcavalli
+
+# Core components
+/deile/core/ @elimarcavalli
+/deile/security/ @elimarcavalli
+
+# Configuration and settings
+/config/ @elimarcavalli
+/deile/config/ @elimarcavalli
+
+# Documentation
+/docs/ @elimarcavalli
+README.md @elimarcavalli
+
+# CI/CD
+/.github/ @elimarcavalli
