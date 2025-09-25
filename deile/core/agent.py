@@ -5,12 +5,15 @@ from dataclasses import dataclass, field
 from enum import Enum
 import asyncio
 import logging
+import re
 import time
 from pathlib import Path
+from datetime import timedelta
 
 from .exceptions import DEILEError, ToolError, ParserError, ModelError
 from .context_manager import ContextManager
 from .models.router import ModelRouter
+from .intent_analyzer import IntentAnalyzer, get_intent_analyzer
 from ..tools.registry import ToolRegistry, get_tool_registry
 from ..tools.base import ToolContext, ToolResult, ToolStatus
 from ..parsers.registry import ParserRegistry, get_parser_registry
@@ -21,6 +24,7 @@ from ..ui.display_manager import DisplayManager
 from ..storage.logs import get_logger
 from ..config.settings import get_settings
 from ..personas.manager import PersonaManager
+from ..orchestration.workflow_executor import get_workflow_executor
 
 
 logger = logging.getLogger(__name__)
@@ -138,6 +142,13 @@ class DeileAgent:
         # Initialize PersonaManager - será inicializado via async initialize()
         self.persona_manager: Optional[PersonaManager] = None
 
+        # Initialize WorkflowExecutor for TODO list management
+        self.workflow_executor = None
+
+        # Initialize IntentAnalyzer for intelligent workflow detection
+        intent_config_path = Path(__file__).parent.parent / "config" / "intent_patterns.yaml"
+        self.intent_analyzer = get_intent_analyzer(intent_config_path)
+
         # Auto-discover tools, parsers, and commands
         self._auto_discover_components()
 
@@ -159,7 +170,10 @@ class DeileAgent:
             if hasattr(self.context_manager, 'persona_manager'):
                 self.context_manager.persona_manager = self.persona_manager
 
-            logger.info("Agent initialized successfully with PersonaManager")
+            # Inicializa WorkflowExecutor
+            self.workflow_executor = get_workflow_executor()
+
+            logger.info("Agent initialized successfully with PersonaManager and WorkflowExecutor")
 
         except Exception as e:
             logger.error(f"Error initializing agent: {e}")
@@ -210,11 +224,20 @@ class DeileAgent:
             
             # Fase 1: Parsing da entrada
             parse_result = await self._parse_input(user_input, session)
-            
-            # Fase 2: Execução iterativa de tools e Function Calling
-            response_content, tool_results = await self._process_iterative_function_calling(
-                user_input, parse_result, session
-            )
+
+            # NOVA FUNCIONALIDADE: Detecta se precisa criar workflow automático
+            workflow_needed = await self._should_create_workflow(user_input, parse_result)
+
+            if workflow_needed and self.workflow_executor:
+                # Cria e executa workflow automaticamente
+                response_content, tool_results = await self._process_with_workflow(
+                    user_input, parse_result, session
+                )
+            else:
+                # Fase 2: Execução iterativa de tools e Function Calling
+                response_content, tool_results = await self._process_iterative_function_calling(
+                    user_input, parse_result, session
+                )
             
             # Cria resposta
             response = AgentResponse(
@@ -370,7 +393,8 @@ class DeileAgent:
             "tools": self.tool_registry.get_stats(),
             "parsers": self.parser_registry.get_stats(),
             "context_manager": await self.context_manager.get_stats() if hasattr(self.context_manager, 'get_stats') else {},
-            "model_router": await self.model_router.get_stats() if hasattr(self.model_router, 'get_stats') else {}
+            "model_router": await self.model_router.get_stats() if hasattr(self.model_router, 'get_stats') else {},
+            "intent_analyzer": self.intent_analyzer.get_metrics() if hasattr(self.intent_analyzer, 'get_metrics') else {}
         }
     
     def clear_conversation_history(self) -> None:
@@ -742,6 +766,206 @@ class DeileAgent:
         except Exception as e:
             self.logger.error(f"Legacy function calling failed: {e}")
             return f"I encountered an error during processing: {str(e)}", []
+
+    async def _should_create_workflow(self, user_input: str, parse_result: Optional[ParseResult]) -> bool:
+        """Determina se deve criar workflow automaticamente usando análise de intenção avançada
+
+        Esta versão refatorada usa o sistema IntentAnalyzer que implementa:
+        - Análise léxica com word boundaries (evita falsos positivos)
+        - Análise sintática com padrões regex otimizados
+        - Análise semântica com embeddings
+        - Sistema de confiança probabilística
+        - Cache e métricas de performance
+        """
+        try:
+            # Prepara contexto da sessão para análise mais precisa
+            session_context = await self._prepare_session_context_for_intent_analysis()
+
+            # Executa análise de intenção multi-camada
+            intent_result = await self.intent_analyzer.analyze(
+                user_input=user_input,
+                parse_result=parse_result,
+                session_context=session_context
+            )
+
+            # Log da análise para debugging e métricas
+            logger.debug(f"Intent analysis result: {intent_result}")
+            logger.debug(f"Matched patterns: {intent_result.detected_patterns}")
+            logger.debug(f"Matched keywords: {intent_result.matched_keywords}")
+
+            # Determina se requer workflow baseado em thresholds OTIMIZADOS 2025
+            # Passa configurações globais do analisador para thresholds dinâmicos
+            requires_workflow = intent_result.requires_workflow(
+                confidence_threshold=0.50,  # Reduzido para ser mais inclusivo
+                complexity_threshold=0.35,  # Reduzido para detectar mais casos
+                global_settings=getattr(self.intent_analyzer, 'global_settings', {})
+            )
+
+            # Log da decisão final
+            if requires_workflow:
+                logger.info(
+                    f"Workflow creation triggered - Intent: {intent_result.intent_type.value}, "
+                    f"Confidence: {intent_result.confidence:.2f}, "
+                    f"Complexity: {intent_result.complexity_score:.2f}"
+                )
+            else:
+                logger.debug(
+                    f"Standard processing selected - Intent: {intent_result.intent_type.value}, "
+                    f"Confidence: {intent_result.confidence:.2f}, "
+                    f"Complexity: {intent_result.complexity_score:.2f}"
+                )
+
+            return requires_workflow
+
+        except Exception as e:
+            logger.error(f"Error in intent analysis for workflow detection: {e}")
+            logger.warning("Falling back to legacy workflow detection logic")
+
+            # Fallback para lógica legacy simplificada em caso de erro
+            return await self._legacy_workflow_detection(user_input, parse_result)
+
+    async def _prepare_session_context_for_intent_analysis(self) -> Dict[str, Any]:
+        """Prepara contexto da sessão para análise de intenção mais precisa"""
+        try:
+            # Obtém sessão ativa (assume sessão default se não especificada)
+            session = self._sessions.get("default")
+
+            if not session:
+                return {}
+
+            # Prepara dados contextuais
+            context = {
+                'conversation_length': len(session.conversation_history),
+                'previous_tool_usage': sum(
+                    1 for entry in session.conversation_history[-5:]  # últimas 5 entradas
+                    if entry.get('metadata', {}).get('tool_results', 0) > 0
+                ),
+                'session_age': time.time() - session.created_at,
+                'working_directory': str(session.working_directory),
+                'recent_topics': self._extract_recent_topics(session.conversation_history[-3:])
+            }
+
+            return context
+
+        except Exception as e:
+            logger.warning(f"Error preparing session context for intent analysis: {e}")
+            return {}
+
+    def _extract_recent_topics(self, recent_history: List[Dict]) -> List[str]:
+        """Extrai tópicos recentes do histórico para contexto"""
+        topics = []
+
+        for entry in recent_history:
+            content = entry.get('content', '').lower()
+
+            # Extrai palavras-chave técnicas simples
+            technical_words = re.findall(r'\b(?:function|class|method|api|database|file|code|system|error|bug|feature|implement|create|analyze|fix|debug)\b', content)
+            topics.extend(technical_words)
+
+        # Remove duplicatas mantendo ordem
+        return list(dict.fromkeys(topics))
+
+    async def _legacy_workflow_detection(self, user_input: str, parse_result: Optional[ParseResult]) -> bool:
+        """Lógica legacy simplificada para detecção de workflow (fallback)"""
+        try:
+            user_input_lower = user_input.lower()
+
+            # Palavras-chave críticas que sempre indicam workflow
+            critical_keywords = ['implementar', 'implement', 'criar sistema', 'create system', 'desenvolver']
+            has_critical_keyword = any(keyword in user_input_lower for keyword in critical_keywords)
+
+            # Múltiplas tools sempre indicam workflow
+            multiple_tools = parse_result and len(parse_result.tool_requests or []) > 1
+
+            # Complexidade básica
+            is_complex = len(user_input.split()) > 15
+
+            return has_critical_keyword or multiple_tools or is_complex
+
+        except Exception as e:
+            logger.error(f"Error in legacy workflow detection: {e}")
+            return False  # Default conservador
+
+    async def _process_with_workflow(
+        self,
+        user_input: str,
+        parse_result: Optional[ParseResult],
+        session: AgentSession
+    ) -> tuple[str, List[ToolResult]]:
+        """Processa solicitação criando workflow automático"""
+
+        try:
+            logger.info("Creating automatic workflow for user request")
+
+            # Prepara contexto para workflow
+            context = {
+                'user_input': user_input,
+                'session_id': session.session_id,
+                'working_directory': str(session.working_directory)
+            }
+
+            # Se há parse result, usa informações dele
+            if parse_result:
+                context['tool_requests'] = parse_result.tool_requests
+                context['file_references'] = parse_result.file_references
+                if parse_result.commands:
+                    context['parsed_commands'] = [cmd.action for cmd in parse_result.commands]
+
+            # Cria e inicia workflow
+            workflow_result = await self.workflow_executor.start_workflow_execution(
+                objective=user_input,
+                context=context
+            )
+
+            workflow_id = workflow_result['workflow_id']
+
+            # Aguarda conclusão do workflow
+            completion_result = await self.workflow_executor.wait_for_workflow_completion(
+                workflow_id=workflow_id,
+                timeout=timedelta(minutes=10)  # Timeout de 10 minutos
+            )
+
+            # Prepara resposta baseada no resultado
+            if completion_result['success']:
+                response_content = f"✅ **Workflow concluído com sucesso!**\n\n"
+                response_content += f"**Objetivo:** {user_input}\n"
+                response_content += f"**Total de etapas:** {workflow_result['total_steps']}\n"
+                response_content += f"**Status:** {completion_result['status']}\n\n"
+                response_content += "Todos os passos foram executados sequencialmente e validados com sucesso."
+
+                # Cria tool results sintéticos para compatibilidade
+                tool_results = [ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    message=f"Workflow {workflow_id} completed successfully",
+                    output=completion_result['final_stats'],
+                    metadata={'workflow_id': workflow_id, 'type': 'workflow_completion'}
+                )]
+
+            else:
+                response_content = f"❌ **Workflow falhou durante execução**\n\n"
+                response_content += f"**Objetivo:** {user_input}\n"
+                response_content += f"**Status:** {completion_result['status']}\n"
+                response_content += f"**Erro:** {completion_result.get('message', 'Erro desconhecido')}\n\n"
+                response_content += "Verifique os logs para mais detalhes sobre o erro."
+
+                tool_results = [ToolResult(
+                    status=ToolStatus.ERROR,
+                    message=f"Workflow {workflow_id} failed",
+                    error_message=completion_result.get('message', 'Workflow execution failed'),
+                    metadata={'workflow_id': workflow_id, 'type': 'workflow_failure'}
+                )]
+
+            return response_content, tool_results
+
+        except Exception as e:
+            logger.error(f"Workflow execution failed: {e}")
+
+            error_response = f"❌ **Erro na execução do workflow**\n\n"
+            error_response += f"**Erro:** {str(e)}\n"
+            error_response += "Executando fallback para processamento tradicional..."
+
+            # Fallback para processamento tradicional
+            return await self._process_iterative_function_calling(user_input, parse_result, session)
 
     async def _generate_response_with_function_calling_legacy(
         self,

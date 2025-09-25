@@ -1,11 +1,11 @@
 {
   "app_name": "DEILE",
-  "version": "4.0.0",
+  "version": "5.0.0",
   "debug": false,
   "working_directory": ".",
-  "config_directory": ".\\config",
-  "logs_directory": ".\\logs",
-  "cache_directory": ".\\cache",
+  "config_directory": "config",
+  "logs_directory": "logs",
+  "cache_directory": "cache",
   "log_level": "DEBUG",
   "log_to_file": true,
   "log_file_max_size": 10485760,
@@ -28,7 +28,7 @@
   "semantic_search_enabled": false,
   "embedding_model": "text-embedding-ada-002",
   "max_concurrent_requests": 10,
-  "request_timeout": 30,
+  "request_timeout": 120,
   "enable_caching": true,
   "cache_ttl": 3600,
   "enable_file_safety_checks": true,
@@ -50,6 +50,8 @@
     "node_modules",
     ".env"
   ],
-  "environment": "development",
-  "api_keys": {}
+  "max_file_size_bytes": 1048576,
+  "allow_all_file_types": true,
+  "file_encoding_detection": true,
+  "environment": "development"
 }

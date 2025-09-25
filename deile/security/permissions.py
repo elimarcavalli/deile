@@ -308,3 +308,15 @@ class PermissionManager:
             "default_permission": self.default_permission.value,
             "resource_types": list(set(r.resource_type.value for r in self.rules))
         }
+
+
+# Singleton instance
+_permission_manager: Optional[PermissionManager] = None
+
+
+def get_permission_manager() -> PermissionManager:
+    """Returns singleton instance of PermissionManager"""
+    global _permission_manager
+    if _permission_manager is None:
+        _permission_manager = PermissionManager()
+    return _permission_manager
