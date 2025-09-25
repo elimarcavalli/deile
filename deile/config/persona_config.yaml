@@ -1,0 +1,76 @@
+personas:
+  enabled: true
+  default_persona: developer
+  hot_reload: true
+  personas_directory: deile/personas/instructions
+  persona_configs:
+    developer:
+      capabilities:
+      - code_generation
+      - debugging
+      - code_analysis
+      - file_operations
+      - git_operations
+      communication_style: technical
+      model_preferences:
+        temperature: 0.3
+        max_tokens: 6000
+        top_p: 0.9
+      behavior_settings:
+        verbosity_level: detailed
+        code_explanation: true
+        suggest_improvements: true
+      tool_preferences:
+        preferred_tools:
+        - file_tools
+        - git_tool
+        - bash_tool
+        avoid_tools: []
+        tool_timeout: 30
+    architect:
+      capabilities:
+      - system_design
+      - architecture_analysis
+      - documentation
+      - code_review
+      - performance_optimization
+      communication_style: strategic
+      model_preferences:
+        temperature: 0.5
+        max_tokens: 8000
+        top_p: 0.95
+      behavior_settings:
+        verbosity_level: comprehensive
+        focus_on_patterns: true
+        include_trade_offs: true
+      tool_preferences:
+        preferred_tools:
+        - search_tool
+        - file_tools
+        - analysis_tools
+        avoid_tools:
+        - bash_tool
+        tool_timeout: 60
+    debugger:
+      capabilities:
+      - debugging
+      - error_analysis
+      - performance_analysis
+      - log_analysis
+      - troubleshooting
+      communication_style: analytical
+      model_preferences:
+        temperature: 0.2
+        max_tokens: 5000
+        top_p: 0.8
+      behavior_settings:
+        verbosity_level: focused
+        step_by_step: true
+        ask_clarifying_questions: true
+      tool_preferences:
+        preferred_tools:
+        - search_tool
+        - file_tools
+        - analysis_tools
+        avoid_tools: []
+        tool_timeout: 45
