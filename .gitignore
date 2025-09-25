@@ -1,0 +1,40 @@
+# DEILE Agent Project
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+.coverage
+.pytest_cache/
+
+# Virtual Environment
+venv/
+.env
+
+# IDEs
+.vscode/
+.idea/
+.DS_Store
+
+# Build
+dist/
+build/
+*.egg-info/
+
+# Logs
+logs/
+*.log
+
+# Project specific
+work_items/
+storage/
+upgrades/
+tasks/
+test_*tasks/
+old/
+deile/tests/
+test_*.py
+teste_*.py
+*claude*
+.ignore/
+*.db
