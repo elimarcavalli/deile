@@ -11,14 +11,16 @@ from .config import PersonaConfig  # ← Use unified configuration
 from .loader import PersonaLoader
 from .context import PersonaContext
 from .memory.integration import PersonaMemoryLayer
-from ..core.exceptions import DEILEError
+from .error_context import ErrorContext, ErrorSeverity
+from .error_recovery import ErrorRecoveryManager
+from .audit_integration import get_persona_audit_logger
+from ..core.exceptions import (
+    PersonaError, PersonaLoadError, PersonaSwitchError,
+    PersonaConfigError, PersonaExecutionError, PersonaInitializationError,
+    PersonaIntegrationError
+)
 
 logger = logging.getLogger(__name__)
-
-
-class PersonaError(DEILEError):
-    """Exceções específicas do sistema de personas"""
-    pass
 
 
 class PersonaManager:
@@ -65,11 +67,15 @@ class PersonaManager:
         # Loader para carregar personas dinamicamente (still needed for instruction files)
         self.loader = PersonaLoader(self.config_manager)
 
+        # Error handling components - unified error handling system
+        self.error_recovery_manager = ErrorRecoveryManager()
+        self.persona_audit_logger = get_persona_audit_logger()
+
         # Métricas do manager
         self._total_switches = 0
         self._last_reload_time = 0.0
 
-        logger.info(f"PersonaManager initialized with unified configuration system")
+        logger.info(f"PersonaManager initialized with unified configuration and error handling systems")
 
     async def initialize(self, enable_hot_reload: bool = True) -> None:
         """Initialize persona manager with unified configuration"""
@@ -98,7 +104,25 @@ class PersonaManager:
 
         except Exception as e:
             logger.error(f"Error initializing PersonaManager: {e}")
-            raise PersonaError(f"Initialization failure: {e}")
+
+            # Create error context
+            context = ErrorContext(
+                operation="initialize_persona_manager",
+                severity=ErrorSeverity.CRITICAL,
+                error_type="PersonaInitializationError"
+            )
+
+            # Create proper PersonaInitializationError
+            error = PersonaInitializationError(
+                f"PersonaManager initialization failed: {e}",
+                persona_id="system",
+                initialization_step="manager_init"
+            )
+
+            # Log to audit system
+            await self.persona_audit_logger.log_persona_error(error, context)
+
+            raise error
 
     async def _load_available_personas(self) -> None:
         """Load all available personas from unified configuration"""
@@ -119,6 +143,28 @@ class PersonaManager:
 
             except Exception as e:
                 logger.error(f"Failed to load persona {persona_id}: {e}")
+
+                # Create error context for failed persona load
+                context = ErrorContext(
+                    operation="load_persona",
+                    persona_id=persona_id,
+                    severity=ErrorSeverity.HIGH,
+                    error_type="PersonaLoadError"
+                )
+                context.capture_stack_trace()
+
+                # Create proper PersonaLoadError
+                load_error = PersonaLoadError(
+                    f"Failed to load persona {persona_id}: {str(e)}",
+                    persona_id=persona_id,
+                    recovery_suggestion="Check persona configuration and dependencies"
+                )
+
+                # Log to audit system (don't raise to continue loading other personas)
+                try:
+                    await self.persona_audit_logger.log_persona_error(load_error, context)
+                except Exception as audit_error:
+                    logger.warning(f"Failed to log persona load error to audit: {audit_error}")
 
     async def _create_persona_from_config(
         self,
@@ -275,27 +321,67 @@ class PersonaManager:
             return self._personas.get(self._active_persona)
         return None
 
-    async def switch_persona(self, persona_id: str, session_id: str = "default") -> bool:
-        """Muda para uma persona específica usando sistema de memória unificado
+    async def switch_persona(
+        self,
+        persona_id: str,
+        session_id: str = "default",
+        user_context: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """Switch to a specific persona with comprehensive error handling
 
         Args:
-            persona_id: ID da persona para ativar
-            session_id: ID da sessão atual
+            persona_id: ID of the persona to activate
+            session_id: Current session ID
+            user_context: Optional user context information
 
         Returns:
-            bool: True se a mudança foi bem-sucedida
+            bool: True if switch was successful
         """
-        if persona_id not in self._personas:
-            logger.error(f"Persona '{persona_id}' não encontrada")
-            return False
+        current_persona_name = self._active_persona or "none"
+
+        # Create error context
+        context = ErrorContext(
+            operation="switch_persona",
+            persona_id=persona_id,
+            session_id=session_id,
+            user_id=user_context.get("user_id") if user_context else None,
+            operation_parameters={
+                "from_persona": current_persona_name,
+                "to_persona": persona_id,
+                "session_id": session_id
+            }
+        )
 
         try:
+            # Validate target persona exists
+            if persona_id not in self._personas:
+                error = PersonaSwitchError(
+                    f"Target persona '{persona_id}' not found",
+                    from_persona=current_persona_name,
+                    to_persona=persona_id,
+                    recovery_suggestion="Use /persona list to see available personas"
+                )
+
+                context.severity = ErrorSeverity.MEDIUM
+                await self.persona_audit_logger.log_persona_error(error, context)
+
+                # Log switch attempt
+                await self.persona_audit_logger.log_persona_switch(
+                    from_persona=current_persona_name,
+                    to_persona=persona_id,
+                    success=False,
+                    session_id=session_id,
+                    switch_reason="persona_not_found"
+                )
+
+                return False
+
             # Save current persona context if exists and memory manager is available
             if self._current_context and self._memory_integrated and self.memory_manager:
                 await self._current_context.save_state()
                 logger.debug(f"Saved current persona context for session {session_id}")
 
-            # Desativa persona atual se houver
+            # Deactivate current persona if exists
             if self._active_persona:
                 current_persona = self._personas.get(self._active_persona)
                 if current_persona:
@@ -325,18 +411,97 @@ class PersonaManager:
             else:
                 logger.warning(f"Memory integration not available for persona switch")
 
-            # Ativa nova persona
+            # Activate new persona
             new_persona = self._personas[persona_id]
-            new_persona.activate()
+            new_persona.activate(session_id=session_id)
             self._active_persona = persona_id
             self._total_switches += 1
 
-            logger.info(f"Mudança para persona '{new_persona.name}' ({persona_id})")
+            # Log successful switch
+            await self.persona_audit_logger.log_persona_switch(
+                from_persona=current_persona_name,
+                to_persona=persona_id,
+                success=True,
+                session_id=session_id
+            )
+
+            logger.info(f"Successfully switched from '{current_persona_name}' to '{new_persona.name}' ({persona_id})")
             return True
 
-        except Exception as e:
-            logger.error(f"Erro ao mudar para persona {persona_id}: {e}")
-            return False
+        except PersonaError as persona_error:
+            logger.error(f"Persona error during switch: {persona_error}")
+
+            context.severity = self._assess_error_severity(persona_error)
+            await self.persona_audit_logger.log_persona_error(persona_error, context)
+
+            # Attempt recovery
+            recovery_success = await self.error_recovery_manager.attempt_recovery(
+                persona_error, context
+            )
+
+            if recovery_success:
+                logger.info(f"Recovery successful for persona switch to {persona_id}")
+                # Log successful recovery
+                await self.persona_audit_logger.log_recovery_attempt(
+                    persona_error, context, "fallback", True
+                )
+                return False  # Switch failed but recovery handled it gracefully
+            else:
+                # Log failed recovery
+                await self.persona_audit_logger.log_recovery_attempt(
+                    persona_error, context, "fallback", False
+                )
+                # Log failed switch
+                await self.persona_audit_logger.log_persona_switch(
+                    from_persona=current_persona_name,
+                    to_persona=persona_id,
+                    success=False,
+                    session_id=session_id,
+                    switch_reason="persona_error"
+                )
+                raise persona_error
+
+        except Exception as unexpected_error:
+            logger.error(f"Unexpected error during persona switch: {unexpected_error}")
+
+            # Wrap in PersonaSwitchError
+            switch_error = PersonaSwitchError(
+                f"Unexpected error switching persona: {str(unexpected_error)}",
+                from_persona=current_persona_name,
+                to_persona=persona_id,
+                recovery_suggestion="Check system logs and retry"
+            )
+
+            context.severity = ErrorSeverity.HIGH
+            await self.persona_audit_logger.log_persona_error(switch_error, context)
+
+            # Log failed switch
+            await self.persona_audit_logger.log_persona_switch(
+                from_persona=current_persona_name,
+                to_persona=persona_id,
+                success=False,
+                session_id=session_id,
+                switch_reason="unexpected_error"
+            )
+
+            raise switch_error
+
+    def _assess_error_severity(self, error: PersonaError) -> ErrorSeverity:
+        """Assess error severity based on error type and context"""
+        if isinstance(error, PersonaConfigError):
+            return ErrorSeverity.HIGH  # Config errors are serious
+        elif isinstance(error, PersonaInitializationError):
+            return ErrorSeverity.HIGH  # Init errors are serious
+        elif isinstance(error, PersonaIntegrationError):
+            return ErrorSeverity.HIGH  # Integration errors are serious
+        elif isinstance(error, PersonaLoadError):
+            return ErrorSeverity.MEDIUM  # Load errors are manageable
+        elif isinstance(error, PersonaSwitchError):
+            return ErrorSeverity.MEDIUM  # Switch errors are manageable
+        elif isinstance(error, PersonaExecutionError):
+            return ErrorSeverity.LOW  # Execution errors are often recoverable
+        else:
+            return ErrorSeverity.MEDIUM  # Default severity
 
     def list_personas(self) -> List[Dict[str, Any]]:
         """Lista todas as personas disponíveis"""
