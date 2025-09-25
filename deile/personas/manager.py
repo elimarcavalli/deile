@@ -57,8 +57,12 @@ class PersonaManager:
         self.personas_dir = personas_dir or Path("deile/personas/library")
         self.personas_dir.mkdir(parents=True, exist_ok=True)
 
-        # Memory integration - will be set by the agent that owns this manager
+        # Memory integration - unified memory system integration
         self.memory_manager = memory_manager
+        self._memory_integrated = memory_manager is not None
+
+        if self._memory_integrated:
+            logger.info(f"PersonaManager initialized with unified memory system integration")
 
         # Storage de personas ativas
         self._personas: Dict[str, BasePersona] = {}
@@ -207,17 +211,19 @@ class PersonaManager:
 
         try:
             # Save current persona context if exists and memory manager is available
-            if self._current_context and self.memory_manager:
+            if self._current_context and self._memory_integrated and self.memory_manager:
                 await self._current_context.save_state()
+                logger.debug(f"Saved current persona context for session {session_id}")
 
             # Desativa persona atual se houver
             if self._active_persona:
                 current_persona = self._personas.get(self._active_persona)
                 if current_persona:
                     current_persona.deactivate()
+                    logger.debug(f"Deactivated previous persona: {self._active_persona}")
 
             # Create new persona context with unified memory if available
-            if self.memory_manager:
+            if self._memory_integrated and self.memory_manager:
                 new_context = await PersonaContext.create(
                     persona_id=persona_id,
                     session_id=session_id,
@@ -235,6 +241,9 @@ class PersonaManager:
                         'timestamp': datetime.now().isoformat()
                     }
                 )
+                logger.debug(f"Stored persona switch event in unified memory")
+            else:
+                logger.warning(f"Memory integration not available for persona switch")
 
             # Ativa nova persona
             new_persona = self._personas[persona_id]
@@ -387,7 +396,89 @@ class PersonaManager:
     def set_memory_manager(self, memory_manager) -> None:
         """Set the memory manager for unified memory integration"""
         self.memory_manager = memory_manager
-        logger.info("Memory manager set for persona manager")
+        self._memory_integrated = memory_manager is not None
+
+        if self._memory_integrated:
+            logger.info("Memory manager set for persona manager - unified memory integration enabled")
+        else:
+            logger.warning("Memory manager set to None - unified memory integration disabled")
+
+    def validate_memory_integration(self) -> bool:
+        """Validate that memory integration is working correctly"""
+        if not self._memory_integrated or not self.memory_manager:
+            logger.warning("Memory integration validation failed: no memory manager")
+            return False
+
+        try:
+            # Check if memory manager has required components
+            required_components = ['semantic_memory', 'episodic_memory', 'working_memory']
+            for component in required_components:
+                if not hasattr(self.memory_manager, component):
+                    logger.error(f"Memory manager missing component: {component}")
+                    return False
+
+            logger.info("Memory integration validation successful")
+            return True
+
+        except Exception as e:
+            logger.error(f"Memory integration validation failed: {e}")
+            return False
+
+    def has_active_persona(self) -> bool:
+        """Check if there's an active persona"""
+        return self._active_persona is not None
+
+    def get_current_persona(self) -> Optional[BasePersona]:
+        """Get the currently active persona (alias for get_active_persona)"""
+        return self.get_active_persona()
+
+    async def store_interaction(
+        self,
+        user_input: str,
+        response: str,
+        session_id: str,
+        metadata: Dict[str, Any] = None
+    ) -> None:
+        """Store interaction in persona memory"""
+        if not self._current_context:
+            return
+
+        try:
+            interaction_data = {
+                'user_input': user_input,
+                'response': response,
+                'timestamp': datetime.now().isoformat(),
+                'session_id': session_id,
+                'persona_id': self._active_persona,
+                'metadata': metadata or {}
+            }
+
+            await self._current_context.memory_layer.store_conversation_context(
+                session_id, interaction_data
+            )
+
+        except Exception as e:
+            logger.error(f"Error storing interaction: {e}")
+
+    async def get_persona_system_instructions(self) -> Optional[str]:
+        """Get system instructions from current active persona"""
+        if not self._active_persona:
+            return None
+
+        try:
+            persona = self._personas[self._active_persona]
+            if not persona:
+                return None
+
+            # Create minimal context for instruction building
+            from .base import AgentContext
+            context = AgentContext(session_id=self._current_context.session_id if self._current_context else "default")
+
+            return await persona.build_system_instruction(context)
+
+        except Exception as e:
+            logger.error(f"Error getting persona system instructions: {e}")
+            return None
 
     async def get_manager_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas do manager"""
