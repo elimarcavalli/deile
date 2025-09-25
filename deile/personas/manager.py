@@ -12,6 +12,8 @@ from datetime import datetime
 
 from .base import BasePersona, PersonaConfig, PersonaCapability
 from .loader import PersonaLoader
+from .context import PersonaContext
+from .memory.integration import PersonaMemoryLayer
 from ..core.exceptions import DEILEError
 
 logger = logging.getLogger(__name__)
@@ -48,16 +50,21 @@ class PersonaManager:
     - Validação e verificação de integridade
     - Métricas e monitoramento
     - Auto-discovery de personas
+    - Integração com sistema de memória unificado DEILE
     """
 
-    def __init__(self, personas_dir: Optional[Path] = None):
+    def __init__(self, memory_manager=None, personas_dir: Optional[Path] = None):
         self.personas_dir = personas_dir or Path("deile/personas/library")
         self.personas_dir.mkdir(parents=True, exist_ok=True)
+
+        # Memory integration - will be set by the agent that owns this manager
+        self.memory_manager = memory_manager
 
         # Storage de personas ativas
         self._personas: Dict[str, BasePersona] = {}
         self._persona_configs: Dict[str, PersonaConfig] = {}
         self._active_persona: Optional[str] = None
+        self._current_context: Optional[PersonaContext] = None
 
         # Hot-reload setup
         self._observer: Optional[Observer] = None
@@ -184,11 +191,12 @@ class PersonaManager:
             return self._personas.get(self._active_persona)
         return None
 
-    async def switch_persona(self, persona_id: str) -> bool:
-        """Muda para uma persona específica
+    async def switch_persona(self, persona_id: str, session_id: str = "default") -> bool:
+        """Muda para uma persona específica usando sistema de memória unificado
 
         Args:
             persona_id: ID da persona para ativar
+            session_id: ID da sessão atual
 
         Returns:
             bool: True se a mudança foi bem-sucedida
@@ -198,11 +206,35 @@ class PersonaManager:
             return False
 
         try:
+            # Save current persona context if exists and memory manager is available
+            if self._current_context and self.memory_manager:
+                await self._current_context.save_state()
+
             # Desativa persona atual se houver
             if self._active_persona:
                 current_persona = self._personas.get(self._active_persona)
                 if current_persona:
                     current_persona.deactivate()
+
+            # Create new persona context with unified memory if available
+            if self.memory_manager:
+                new_context = await PersonaContext.create(
+                    persona_id=persona_id,
+                    session_id=session_id,
+                    memory_manager=self.memory_manager
+                )
+                self._current_context = new_context
+
+                # Store persona switch event in episodic memory
+                await self.memory_manager.episodic_memory.record_event(
+                    event_type="persona_switch",
+                    session_id=session_id,
+                    details={
+                        'from_persona': self._active_persona,
+                        'to_persona': persona_id,
+                        'timestamp': datetime.now().isoformat()
+                    }
+                )
 
             # Ativa nova persona
             new_persona = self._personas[persona_id]
@@ -282,9 +314,84 @@ class PersonaManager:
 
         return validation_results
 
+    async def enhance_context(self, base_context: Dict[str, Any]) -> Dict[str, Any]:
+        """Enhance base context with persona information from unified memory"""
+        if not self._active_persona or not self._current_context:
+            return base_context
+
+        try:
+            # Get persona-specific context from unified memory
+            conversation_history = await self._current_context.memory_layer.get_conversation_history(
+                self._current_context.session_id,
+                limit=5
+            )
+
+            # Get learned patterns
+            learned_patterns = await self._current_context.memory_layer.get_learned_patterns(
+                "conversation_style"
+            )
+
+            enhanced_context = {
+                **base_context,
+                'persona_id': self._active_persona,
+                'persona_state': self._current_context.current_state,
+                'persona_preferences': self._current_context.preferences,
+                'conversation_history': conversation_history,
+                'learned_patterns': learned_patterns
+            }
+
+            return enhanced_context
+
+        except Exception as e:
+            logger.error(f"Error enhancing context: {e}")
+            return base_context
+
+    async def process_interaction_feedback(
+        self,
+        interaction_data: Dict[str, Any],
+        success_metrics: Dict[str, float]
+    ) -> None:
+        """Process interaction feedback for learning"""
+        if not self._current_context:
+            return
+
+        try:
+            # Update context with interaction
+            await self._current_context.update_from_interaction(interaction_data)
+
+            # Learn from successful patterns
+            if success_metrics.get('success_rate', 0) > 0.7:
+                await self._current_context.memory_layer.learn_pattern(
+                    pattern_type="successful_interaction",
+                    pattern_data=interaction_data,
+                    success_rate=success_metrics['success_rate']
+                )
+
+        except Exception as e:
+            logger.error(f"Error processing interaction feedback: {e}")
+
+    async def cleanup_persona_memory(self, persona_id: str) -> None:
+        """Cleanup memory for specific persona"""
+        if not self.memory_manager:
+            logger.warning("No memory manager available for cleanup")
+            return
+
+        try:
+            memory_layer = PersonaMemoryLayer(self.memory_manager, persona_id)
+            await memory_layer.cleanup_persona_memory()
+            logger.info(f"Cleaned up memory for persona {persona_id}")
+
+        except Exception as e:
+            logger.error(f"Error cleaning up persona memory: {e}")
+
+    def set_memory_manager(self, memory_manager) -> None:
+        """Set the memory manager for unified memory integration"""
+        self.memory_manager = memory_manager
+        logger.info("Memory manager set for persona manager")
+
     async def get_manager_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas do manager"""
-        return {
+        stats = {
             "total_personas": len(self._personas),
             "active_persona": self._active_persona,
             "total_switches": self._total_switches,
@@ -294,8 +401,16 @@ class PersonaManager:
                 cap.value: len(self.list_by_capability(cap))
                 for cap in PersonaCapability
             },
-            "directory": str(self.personas_dir)
+            "directory": str(self.personas_dir),
+            "memory_integration_enabled": self.memory_manager is not None
         }
+
+        # Add current context info if available
+        if self._current_context:
+            stats['current_session'] = self._current_context.session_id
+            stats['interaction_count'] = self._current_context.current_state.get('interaction_count', 0)
+
+        return stats
 
     async def create_default_personas(self) -> None:
         """Cria personas padrão se nenhuma existir"""
@@ -348,19 +463,28 @@ class PersonaManager:
         """Finaliza o manager e limpa recursos"""
         logger.info("Finalizando PersonaManager...")
 
-        # Desabilita hot-reload
-        await self.disable_hot_reload()
+        try:
+            # Save current context if exists
+            if self._current_context and self.memory_manager:
+                await self._current_context.save_state()
 
-        # Desativa todas as personas
-        for persona in self._personas.values():
-            persona.deactivate()
+            # Desabilita hot-reload
+            await self.disable_hot_reload()
 
-        # Limpa storage
-        self._personas.clear()
-        self._persona_configs.clear()
-        self._active_persona = None
+            # Desativa todas as personas
+            for persona in self._personas.values():
+                persona.deactivate()
 
-        logger.info("PersonaManager finalizado")
+            # Limpa storage
+            self._personas.clear()
+            self._persona_configs.clear()
+            self._active_persona = None
+            self._current_context = None
+
+            logger.info("PersonaManager finalizado")
+
+        except Exception as e:
+            logger.error(f"Error during PersonaManager shutdown: {e}")
 
     def __del__(self):
         """Destructor que garante limpeza dos recursos"""
