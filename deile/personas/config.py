@@ -322,7 +322,8 @@ class PersonaConfig:
 
 
 # Alias for backward compatibility
-PersonaCapability = CommunicationStyle  # Temporary alias
+# PersonaCapability alias - will be set after imports resolve
+PersonaCapability = None  # Set in __init__.py
 
 
 def validate_persona_config(config_data: Dict[str, Any]) -> List[str]:

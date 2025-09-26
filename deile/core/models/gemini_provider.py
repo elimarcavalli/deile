@@ -108,14 +108,14 @@ class GeminiProvider(ModelProvider):
         function_declarations = self._get_tools_for_generate_content()
         
         # Configura automatic function calling apenas se há tools disponíveis
-        # DESABILITADO: vamos usar nosso próprio loop manual para ter controle total
+        # HABILITADO: permite que o Gemini execute funções automaticamente
         afc_config = None
         tools_wrapper = None
         if function_declarations:
-            # afc_config = AutomaticFunctionCallingConfig(
-            #     disable=False,
-            #     maximum_remote_calls=10
-            # )
+            afc_config = AutomaticFunctionCallingConfig(
+                disable=False,
+                maximum_remote_calls=10
+            )
             
             tools_wrapper = [{"function_declarations": function_declarations}]
         
@@ -398,9 +398,17 @@ class GeminiProvider(ModelProvider):
                         python_func = self._create_tool_wrapper(tool_instance, tool_name)
                         python_tools.append(python_func)
             
-            # Configuração do chat
+            # Configuração do chat com automatic function calling
+            afc_config = None
+            if python_tools:
+                afc_config = AutomaticFunctionCallingConfig(
+                    disable=False,
+                    maximum_remote_calls=10
+                )
+
             config = types.GenerateContentConfig(
                 tools=python_tools,  # Funções Python para automatic calling
+                automatic_function_calling=afc_config,  # Habilita execução automática
                 system_instruction=system_instruction,
                 temperature=self.generation_config.get('temperature', 0.1),
                 max_output_tokens=self.generation_config.get('max_output_tokens', 8192)
@@ -422,14 +430,60 @@ class GeminiProvider(ModelProvider):
             raise ModelError(f"[CHAT_SESSION_ERROR] Failed to create chat session: {str(e)}") from e
 
     def _create_tool_wrapper(self, tool_instance, tool_name: str):
-        """Cria wrapper function SINCRÓNA para tool que o Gemini pode chamar automaticamente"""
+        """Cria wrapper function com type hints para automatic function calling"""
         import inspect
         import asyncio
         from ...tools.base import ToolContext
-        
+
+        # Cria wrapper function específica baseada no tool_name
+        if tool_name == "write_file":
+            def write_file(file_path: str, content: str) -> str:
+                """Writes content to a file.
+
+                Args:
+                    file_path: The path to the file to write
+                    content: The text content to write to the file
+
+                Returns:
+                    str: Success message or error description
+                """
+                try:
+                    # DEBUG: Log dos parâmetros recebidos
+                    logger.info(f"Tool {tool_name} called with file_path='{file_path}', content='{content[:50]}...'")
+
+                    # Cria contexto para a tool
+                    context = ToolContext(
+                        user_input="",
+                        parsed_args={"file_path": file_path, "content": content},
+                        session_data={},
+                        working_directory=".",
+                        file_list=[]
+                    )
+
+                    # Executa a tool
+                    if hasattr(tool_instance, 'execute_sync'):
+                        result = tool_instance.execute_sync(context)
+                    else:
+                        result = asyncio.run(tool_instance.execute(context))
+
+                    if result.is_success:
+                        return f"File '{file_path}' written successfully"
+                    else:
+                        return f"Error writing file: {result.message}"
+
+                except Exception as e:
+                    logger.error(f"Tool wrapper error for {tool_name}: {e}")
+                    return f"Error: {str(e)}"
+
+            return write_file
+
+        # Generic wrapper for other tools (fallback)
         def tool_wrapper(**kwargs):
-            """Wrapper SÍNCRONO que executa a tool e retorna resultado formatado"""
+            """Generic wrapper SÍNCRONO que executa a tool e retorna resultado formatado"""
             try:
+                # DEBUG: Log dos parâmetros recebidos
+                logger.info(f"Tool {tool_name} called with parameters: {kwargs}")
+
                 # Cria contexto para a tool
                 context = ToolContext(
                     user_input="",  # Chat session não precisa disso
@@ -438,7 +492,7 @@ class GeminiProvider(ModelProvider):
                     working_directory=".",  # TODO: pegar do contexto real
                     file_list=[]
                 )
-                
+
                 # Executa a tool de forma síncrona
                 if hasattr(tool_instance, 'execute_sync'):
                     # Tool já é síncrona
@@ -452,14 +506,14 @@ class GeminiProvider(ModelProvider):
                             # Se já existe um loop rodando, usa asyncio.create_task
                             import concurrent.futures
                             with concurrent.futures.ThreadPoolExecutor() as executor:
-                                future = executor.submit(asyncio.run, tool_instance.execute_async(context))
+                                future = executor.submit(asyncio.run, tool_instance.execute(context))
                                 result = future.result(timeout=30)  # 30 segundos timeout
                         else:
-                            result = loop.run_until_complete(tool_instance.execute_async(context))
+                            result = loop.run_until_complete(tool_instance.execute(context))
                     except RuntimeError:
                         # Fallback - cria novo event loop
-                        result = asyncio.run(tool_instance.execute_async(context))
-                
+                        result = asyncio.run(tool_instance.execute(context))
+
                 if result.is_success:
                     # Retorna dados + rich display se disponível
                     if result.metadata and "rich_display" in result.metadata:
@@ -472,22 +526,15 @@ class GeminiProvider(ModelProvider):
                         return {"result": str(result.data), "status": "success"}
                 else:
                     return {"error": result.message, "status": "error"}
-                    
+
             except Exception as e:
                 logger.error(f"Tool wrapper error for {tool_name}: {e}")
                 return {"error": str(e), "status": "error"}
-        
+
         # Configura metadados da função para o Gemini entender
         tool_wrapper.__name__ = tool_name
         tool_wrapper.__doc__ = tool_instance.description
-        
-        # Adiciona annotations baseadas no schema da tool
-        if hasattr(tool_instance, 'get_schema'):
-            schema = tool_instance.get_schema()
-            if schema and hasattr(schema, 'parameters'):
-                # TODO: Converter JSON Schema parameters para Python annotations
-                pass
-        
+
         return tool_wrapper
 
     def estimate_cost(self, usage: ModelUsage) -> float:

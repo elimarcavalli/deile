@@ -72,12 +72,47 @@ class ToolSchema:
     def to_gemini_function(self):
         """Converte para FunctionDeclaration do novo Google GenAI SDK"""
         from google.genai.types import FunctionDeclaration
-        
+
+        # Converte tipos do formato antigo para JSON Schema padrão
+        converted_params = self._convert_parameters_to_json_schema(self.parameters)
+
         return FunctionDeclaration(
             name=self.name,
             description=self.description,
-            parameters=self.parameters
+            parameters=converted_params
         )
+
+    def _convert_parameters_to_json_schema(self, params):
+        """Converte tipos de schema antigo para JSON Schema padrão"""
+        if not isinstance(params, dict):
+            return params
+
+        converted = {}
+        for key, value in params.items():
+            if key == 'type' and isinstance(value, str):
+                # Converte tipos em maiúscula para minúscula
+                type_map = {
+                    'STRING': 'string',
+                    'OBJECT': 'object',
+                    'ARRAY': 'array',
+                    'BOOLEAN': 'boolean',
+                    'INTEGER': 'integer',
+                    'NUMBER': 'number'
+                }
+                converted[key] = type_map.get(value, value.lower())
+            elif isinstance(value, dict):
+                # Recursivamente converte objetos aninhados
+                converted[key] = self._convert_parameters_to_json_schema(value)
+            elif isinstance(value, list):
+                # Converte listas
+                converted[key] = [
+                    self._convert_parameters_to_json_schema(item) if isinstance(item, dict) else item
+                    for item in value
+                ]
+            else:
+                converted[key] = value
+
+        return converted
     
     def to_dict(self) -> Dict[str, Any]:
         """Converte para dicionário completo"""

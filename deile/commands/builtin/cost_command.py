@@ -19,7 +19,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from deile.commands.base import BaseCommand
+from deile.commands.base import DirectCommand
 from deile.core.context_manager import ContextManager
 from deile.core.exceptions import CommandError
 from deile.infrastructure.monitoring.cost_tracker import (
@@ -29,7 +29,7 @@ from deile.infrastructure.monitoring.cost_tracker import (
 logger = logging.getLogger(__name__)
 
 
-class CostCommand(BaseCommand):
+class CostCommand(DirectCommand):
     """
     Command for comprehensive cost management and analytics
     

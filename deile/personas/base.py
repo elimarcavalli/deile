@@ -13,7 +13,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Set, Tuple, Callable, Union
 from enum import Enum, auto
-from pydantic import BaseModel, Field, validator, root_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 import logging
 import time
 import hashlib
@@ -217,7 +217,7 @@ class PersonaConfig(BaseModel):
     expertise_level: int = Field(default=7, ge=1, le=10)
 
     # LLM Configuration
-    model_preferences: Dict[str, Any] = Field(default_factory=lambda: {
+    llm_preferences: Dict[str, Any] = Field(default_factory=lambda: {
         "primary_model": "gemini-1.5-pro",
         "fallback_models": ["gemini-1.5-flash", "claude-3"],
         "temperature": 0.1,
@@ -278,14 +278,16 @@ class PersonaConfig(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     last_modified: datetime = Field(default_factory=datetime.now)
 
-    @validator('capabilities')
+    @field_validator('capabilities')
+    @classmethod
     def validate_capabilities(cls, v):
         """Ensure capabilities are valid and non-empty"""
         if not v:
             raise ValueError("Agent must have at least one capability")
         return list(set(v))  # Remove duplicates
 
-    @root_validator
+    @model_validator(mode='before')
+    @classmethod
     def validate_config_consistency(cls, values):
         """Validate configuration consistency"""
         # If secure_mode is on, ensure safety features are enabled
@@ -295,7 +297,7 @@ class PersonaConfig(BaseModel):
             values['audit_logging'] = True
 
         # Adjust token limits based on model
-        model = values.get('model_preferences', {}).get('primary_model')
+        model = values.get('llm_preferences', {}).get('primary_model')
         if model and 'gemini' in model.lower():
             max_context = 1000000 if 'pro' in model.lower() else 128000
             values['context_window_size'] = min(values.get('context_window_size', 128000), max_context)
@@ -526,17 +528,37 @@ class AgentContext:
 
 
 # ============================================================
-# BASE AUTONOMOUS AGENT PERSONA
+# BASE PERSONA CLASSES
 # ============================================================
 
-class BaseAutonomousPersona(ABC):
+class BasePersona(ABC):
+    """Base abstract class for all personas in DEILE system"""
+
+    def __init__(self, config: PersonaConfig):
+        """Initialize base persona with configuration"""
+        self.config = config
+        self.name = config.name
+        self.persona_id = config.persona_id
+
+    @abstractmethod
+    def get_persona_instructions(self) -> str:
+        """Get persona-specific instructions"""
+        pass
+
+    @abstractmethod
+    def get_capabilities(self) -> List[str]:
+        """Get list of persona capabilities"""
+        pass
+
+
+class BaseAutonomousPersona(BasePersona):
     """
     Base class for autonomous AI agent personas.
     Implements core functionality for LLM-based agents with tool orchestration.
     """
 
     def __init__(self, config: PersonaConfig):
-        self.config = config
+        super().__init__(config)
         self.metrics = AgentMetrics()
         self.context = None  # Set when activated with session
         self._is_active = False
@@ -552,7 +574,7 @@ class BaseAutonomousPersona(ABC):
 
         logger.info(f"Autonomous Persona '{self.config.name}' initialized")
         logger.info(f"Capabilities: {[c.value for c in self.config.capabilities]}")
-        logger.info(f"Model: {self.config.model_preferences['primary_model']}")
+        logger.info(f"Model: {self.config.llm_preferences['primary_model']}")
 
     # ========== PROPERTIES ==========
 
@@ -571,6 +593,19 @@ class BaseAutonomousPersona(ABC):
     @property
     def uptime(self) -> float:
         return time.time() - self._start_time
+
+    # ========== ABSTRACT METHOD IMPLEMENTATIONS ==========
+
+    def get_persona_instructions(self) -> str:
+        """Get persona-specific instructions"""
+        return f"""You are {self.config.name}, an autonomous AI agent.
+Communication Style: {self.config.communication_style.value}
+Capabilities: {[cap.value for cap in self.config.capabilities]}
+"""
+
+    def get_capabilities(self) -> List[str]:
+        """Get list of persona capabilities"""
+        return [cap.value for cap in self.config.capabilities]
 
     # ========== ACTIVATION & LIFECYCLE ==========
 
@@ -869,7 +904,7 @@ After completing the task:
         if 'speed_vs_quality' in feedback:
             # Adjust temperature and timeout based on preference
             preference = feedback['speed_vs_quality']  # -1 (speed) to 1 (quality)
-            self.config.model_preferences['temperature'] = 0.1 + (preference * 0.4)
+            self.config.llm_preferences['temperature'] = 0.1 + (preference * 0.4)
             self.config.tool_timeout_seconds = 30 + int(preference * 30)
 
     def _update_tool_preferences(self, feedback: Dict[str, Any]):
@@ -893,7 +928,7 @@ After completing the task:
                 "version": self.config.version
             },
             "configuration": {
-                "model": self.config.model_preferences['primary_model'],
+                "model": self.config.llm_preferences['primary_model'],
                 "capabilities": len(self.config.capabilities),
                 "communication_style": self.config.communication_style,
                 "execution_strategy": self.config.tool_execution_strategy
@@ -912,4 +947,4 @@ After completing the task:
         }
 
     def __repr__(self) -> str:
-        return f"<AutonomousPersona: {self.name} [{self.persona_id}] - {self.config.model_preferences['primary_model']}>"
+        return f"<AutonomousPersona: {self.name} [{self.persona_id}] - {self.config.llm_preferences['primary_model']}>"

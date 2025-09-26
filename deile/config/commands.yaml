@@ -49,16 +49,6 @@ commands:
     description: Lista comandos disponíveis e exemplos de uso
     enabled: true
     prompt_template: null
-  model:
-    action: manage_models
-    aliases:
-    - ai
-    - llm
-    description: Trocar ou selecionar modelo de IA
-    enabled: true
-    prompt_template: 'Por favor, liste os modelos disponíveis e permita que eu escolha
-      qual usar. Configuração atual: {current_model}. Se argumentos foram fornecidos
-      ({args}), use-os para selecionar o modelo.'
   status:
     action: show_system_status
     aliases:

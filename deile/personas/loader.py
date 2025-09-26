@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Dict, Any, Type, Optional
 import yaml
 
-from .base import BaseAutonomousPersona
+from .base import BasePersona, BaseAutonomousPersona
 from .config import PersonaConfig  # Use unified configuration
 from .instruction_loader import InstructionLoader
 

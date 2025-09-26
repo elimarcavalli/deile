@@ -48,4 +48,3 @@ wcwidth==0.2.13
 psutil==6.1.0
 docker==7.1.0
 chardet==5.2.0
-pywinpty==3.0.0

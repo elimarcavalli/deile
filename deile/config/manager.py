@@ -32,7 +32,7 @@ class FunctionCallingMode(Enum):
 @dataclass
 class GeminiConfig:
     """Configurações específicas do modelo Gemini"""
-    model_name: str = "gemini-1.5-pro-latest"
+    model_name: str = "gemini-2.5-flash-lite"
     
     # Tool configuration
     tool_config: Dict[str, Any] = field(default_factory=lambda: {
@@ -405,13 +405,6 @@ class ConfigManager:
                 description="Mostra versão, modelo ativo, conectividade e diagnóstico",
                 action="show_system_status",
                 aliases=["info"]
-            ),
-            "model": CommandConfig(
-                name="model",
-                description="Trocar ou selecionar modelo de IA",
-                prompt_template="Por favor, liste os modelos disponíveis e permita que eu escolha qual usar. Configuração atual: {current_model}. Se argumentos foram fornecidos ({args}), use-os para selecionar o modelo.",
-                action="manage_models",
-                aliases=["ai", "llm"]
             ),
             "clear": CommandConfig(
                 name="clear",

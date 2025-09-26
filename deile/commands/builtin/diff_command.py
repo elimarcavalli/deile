@@ -1,6 +1,6 @@
 """Diff Command - Show differences and changes from plan execution"""
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import json
 from pathlib import Path
 from rich.panel import Panel
