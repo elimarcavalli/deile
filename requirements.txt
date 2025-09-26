@@ -44,7 +44,7 @@ typing-inspection==0.4.1
 typing_extensions==4.15.0
 uritemplate==4.2.0
 urllib3==2.5.0
-wcwidth==0.2.13
+wcwidth==0.2.14
 psutil==6.1.0
 docker==7.1.0
 chardet==5.2.0
