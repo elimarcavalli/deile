@@ -20,7 +20,7 @@ from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
 
-from deile.commands.base import BaseCommand
+from deile.commands.base import DirectCommand
 from deile.core.context_manager import ContextManager
 from deile.core.exceptions import CommandError
 from deile.ui.display_manager import DisplayManager
@@ -28,7 +28,7 @@ from deile.ui.display_manager import DisplayManager
 logger = logging.getLogger(__name__)
 
 
-class CompactCommand(BaseCommand):
+class CompactCommand(DirectCommand):
     """
     Command for managing conversation history and memory optimization
     

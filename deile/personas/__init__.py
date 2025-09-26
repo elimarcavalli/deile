@@ -10,18 +10,22 @@ de agentes AI enterprise-grade de 2025, incluindo:
 - Suporte a configuração YAML
 """
 
-from .base import BasePersona, PersonaConfig, PersonaCapability, BaseAutonomousPersona, AgentContext
+from .base import BasePersona, PersonaConfig, AgentCapability, BaseAutonomousPersona, AgentContext
 from .manager import PersonaManager
 from .builder import PersonaBuilder
 from .loader import PersonaLoader
 from .context import PersonaContext
 from .memory.integration import PersonaMemoryLayer
 
+# Set alias for backward compatibility
+from . import config
+config.PersonaCapability = AgentCapability
+
 __all__ = [
     "BasePersona",
     "BaseAutonomousPersona",
     "PersonaConfig",
-    "PersonaCapability",
+    "AgentCapability",
     "AgentContext",
     "PersonaManager",
     "PersonaBuilder",

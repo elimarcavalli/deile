@@ -81,8 +81,25 @@ class IntentAnalysisResult:
 
         # Usa configurações globais se disponíveis
         if global_settings:
-            confidence_threshold = global_settings.get('default_confidence_threshold', confidence_threshold)
-            complexity_threshold = global_settings.get('default_complexity_threshold', complexity_threshold)
+            # Verifica se é um dicionário ou objeto Settings
+            if hasattr(global_settings, 'get') and callable(getattr(global_settings, 'get')):
+                # É um dicionário
+                confidence_threshold = global_settings.get('default_confidence_threshold', confidence_threshold)
+                complexity_threshold = global_settings.get('default_complexity_threshold', complexity_threshold)
+            elif hasattr(global_settings, 'default_confidence_threshold'):
+                # É um objeto Settings com atributos
+                confidence_threshold = getattr(global_settings, 'default_confidence_threshold', confidence_threshold)
+                complexity_threshold = getattr(global_settings, 'default_complexity_threshold', complexity_threshold)
+            else:
+                # Fallback: converte para dict se possível
+                try:
+                    if hasattr(global_settings, '__dict__'):
+                        settings_dict = global_settings.__dict__
+                        confidence_threshold = settings_dict.get('default_confidence_threshold', confidence_threshold)
+                        complexity_threshold = settings_dict.get('default_complexity_threshold', complexity_threshold)
+                except Exception:
+                    # Se tudo falhar, usa valores padrão
+                    pass
 
         # Thresholds reduzidos para ser mais inclusivo
         adjusted_confidence_threshold = confidence_threshold
@@ -422,7 +439,13 @@ class IntentAnalyzer:
         # Boost baseado na categoria primária (usando configurações globais)
         category_boost = 0.0
         if category_scores and hasattr(self, 'global_settings'):
-            category_settings = self.global_settings.get('category_settings', {})
+            # Acesso seguro ao global_settings
+            if hasattr(self.global_settings, 'get') and callable(getattr(self.global_settings, 'get')):
+                category_settings = self.global_settings.get('category_settings', {})
+            elif isinstance(self.global_settings, dict):
+                category_settings = self.global_settings.get('category_settings', {})
+            else:
+                category_settings = {}
             primary_cat_str = primary_category.value
             if primary_cat_str in category_settings:
                 cat_config = category_settings[primary_cat_str]

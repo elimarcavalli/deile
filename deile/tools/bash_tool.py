@@ -10,17 +10,15 @@ from pathlib import Path
 import logging
 import re
 
-# PTY imports with fallbacks
-# try:
-#     if platform.system() == 'Windows':
-#         import winpty
-#     else:
-#         import pty
-#         import select
-#         # import termios
-#         import tty
-# except ImportError as e:
-#     logging.warning(f"PTY modules not available: {e}")
+# PTY imports for Unix-like systems
+try:
+    import pty
+    import select
+    import tty
+    PTY_AVAILABLE = True
+except ImportError as e:
+    logging.warning(f"PTY modules not available: {e}")
+    PTY_AVAILABLE = False
 
 from .base import SyncTool, ToolContext, ToolResult, ToolStatus, DisplayPolicy
 from ..core.exceptions import ToolError
@@ -264,43 +262,14 @@ class BashExecuteTool(SyncTool):
         """Execute command with PTY on Windows systems"""
         
         try:
-            import winpty
-            
-            # Create PTY process
-            pty_process = winpty.PtyProcess.spawn(
-                f'cmd.exe /c {command}',
-                cwd=str(working_dir),
-                env=env,
-                dimensions=(80, 24)
-            )
-            
-            output_buffer = []
-            start_time = time.time()
-            
-            while pty_process.isalive():
-                # Check timeout
-                if time.time() - start_time > timeout:
-                    pty_process.terminate()
-                    raise TimeoutError(f"Command timed out after {timeout} seconds")
-                
-                try:
-                    # Read with timeout
-                    data = pty_process.read(timeout=1000)  # 1 second timeout
-                    if data:
-                        output_buffer.append(data)
-                        # Real-time output (tee functionality)  
-                        if self._should_show_output():
-                            print(data, end='', flush=True)
-                except winpty.WinptyError:
-                    break
-            
-            exit_code = pty_process.exitstatus if pty_process.exitstatus is not None else 0
-            output = ''.join(output_buffer)
-            
-            return output, "", exit_code, True  # PTY used
-            
+            # Use standard subprocess for Windows compatibility
+            logger.info("Using standard subprocess for Windows command execution")
+
+            # Fallback to regular subprocess for better compatibility
+            return self._execute_with_subprocess(command, working_dir, env, timeout)
+
         except Exception as e:
-            logger.error(f"Windows PTY execution failed: {e}")
+            logger.error(f"Windows command execution failed: {e}")
             # Fallback to regular subprocess
             return self._execute_with_subprocess(command, working_dir, env, timeout)
     

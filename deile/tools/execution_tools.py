@@ -14,14 +14,10 @@ from pathlib import Path
 from typing import List, Optional, Dict, Any, Callable, Union
 
 if platform.system() == "Windows":
-    try:
-        import winpty
-        WINDOWS_PTY_AVAILABLE = True
-    except ImportError:
-        WINDOWS_PTY_AVAILABLE = False
-        import msvcrt
-        import ctypes
-        from ctypes import wintypes
+    WINDOWS_PTY_AVAILABLE = False
+    import msvcrt
+    import ctypes
+    from ctypes import wintypes
 else:
     try:
         import pty
@@ -68,18 +64,9 @@ class PTYSession:
     
     def _start_windows(self) -> bool:
         """Start PTY session on Windows"""
+        # Use standard subprocess for Windows compatibility
         if WINDOWS_PTY_AVAILABLE:
-            try:
-                # Use winpty for proper PTY support
-                self.pty_process = winpty.PTY(cols=80, rows=24)
-                self.process = self.pty_process.spawn(self.command, cwd=self.working_dir, env=self.env)
-                self.is_running = True
-                self.thread = threading.Thread(target=self._read_output_windows)
-                self.thread.daemon = True
-                self.thread.start()
-                return True
-            except Exception as e:
-                logger.warning(f"winpty failed, falling back to ConPTY: {e}")
+            logger.info("Using standard subprocess on Windows")
         
         # Fallback to ConPTY or basic subprocess
         try:
@@ -154,7 +141,7 @@ class PTYSession:
                         output = self.pty_process.read(timeout=100)  # 100ms timeout
                         if output:
                             self.output_buffer.append(output)
-                    except winpty.WinptyError:
+                    except Exception:
                         break
                     except Exception as e:
                         if self.is_running:

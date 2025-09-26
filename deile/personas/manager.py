@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Set
 from datetime import datetime
 
-from .base import BaseAutonomousPersona, PersonaCapability
+from .base import BasePersona, BaseAutonomousPersona, AgentCapability
 from .config import PersonaConfig  # ← Use unified configuration
 from .loader import PersonaLoader
 from .context import PersonaContext
@@ -518,14 +518,14 @@ class PersonaManager:
             for persona_id, persona in self._personas.items()
         ]
 
-    def list_by_capability(self, capability: PersonaCapability) -> List[str]:
+    def list_by_capability(self, capability: AgentCapability) -> List[str]:
         """Lista personas que possuem uma capacidade específica"""
         return [
             persona_id for persona_id, persona in self._personas.items()
             if capability in persona.capabilities
         ]
 
-    async def find_best_persona_for_task(self, task_description: str, required_capabilities: List[PersonaCapability] = None) -> Optional[str]:
+    async def find_best_persona_for_task(self, task_description: str, required_capabilities: List[AgentCapability] = None) -> Optional[str]:
         """Encontra a melhor persona para uma tarefa específica
 
         Args:
@@ -794,7 +794,7 @@ class PersonaManager:
             "last_reload_time": self._last_reload_time,
             "personas_by_capability": {
                 cap.value: len(self.list_by_capability(cap))
-                for cap in PersonaCapability
+                for cap in AgentCapability
             },
             "configuration_system": "unified",
             "memory_integration_enabled": self.memory_manager is not None

@@ -9,6 +9,16 @@ from typing import List
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
+# Carrega variáveis de ambiente do arquivo .env
+try:
+    from dotenv import load_dotenv
+    env_path = project_root / '.env'
+    if env_path.exists():
+        load_dotenv(env_path)
+except ImportError:
+    # python-dotenv não instalado, ignora silenciosamente
+    pass
+
 try:
     from deile.config.settings import get_settings
     from deile.config.manager import ConfigManager
@@ -115,7 +125,7 @@ class DeileAgentCLI:
                 self.ui.display_response(response.content, {"execution_time": response.execution_time})
                 
                 # Opcionalmente, mostra tool executions como parte da conversa (modo debug ou verbose)
-                if response.tool_results and self.settings.get("show_tool_details", False):
+                if response.tool_results and getattr(self.settings, "show_tool_details", False):
                     self.ui.console.print("\n[dim]Tool executions:[/dim]")
                     for result in response.tool_results:
                         if result.metadata and "rich_display" in result.metadata:

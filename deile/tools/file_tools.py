@@ -483,7 +483,11 @@ class WriteFileTool(SyncTool):
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Executa escrita de arquivo"""
         import re
-        
+
+        # DEBUG: Log dos argumentos recebidos
+        logger.debug(f"WriteFileTool - parsed_args: {context.parsed_args}")
+        logger.debug(f"WriteFileTool - user_input: {context.user_input}")
+
         # Extração robusta dos argumentos com fallbacks múltiplos
         file_path = None
         content = None

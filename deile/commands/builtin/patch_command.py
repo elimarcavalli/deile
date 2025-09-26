@@ -1,6 +1,6 @@
 """Patch Command - Generate patch files from plan changes"""
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import json
 from pathlib import Path
 from datetime import datetime

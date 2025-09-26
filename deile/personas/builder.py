@@ -5,7 +5,7 @@ from typing import Dict, List, Optional, Any
 from pathlib import Path
 import yaml
 
-from .base import BasePersona, PersonaConfig, PersonaCapability, PersonaStyle
+from .base import BasePersona, PersonaConfig, AgentCapability, CommunicationStyle
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +21,8 @@ class PersonaBuilder:
         config = (builder
             .with_name("MyPersona")
             .with_description("Custom persona for specific tasks")
-            .add_capability(PersonaCapability.CODE_GENERATION)
-            .with_communication_style(PersonaStyle.TECHNICAL)
+            .add_capability(AgentCapability.CODE_GENERATION)
+            .with_communication_style(CommunicationStyle.TECHNICAL)
             .with_system_instruction("You are a specialized assistant...")
             .build())
     """
@@ -39,7 +39,7 @@ class PersonaBuilder:
             "capabilities": [],
             "specializations": [],
             "expertise_level": 5,
-            "communication_style": PersonaStyle.FRIENDLY,
+            "communication_style": CommunicationStyle.FRIENDLY,
             "formality_level": 5,
             "verbosity_level": 5,
             "system_instruction": "",
@@ -80,19 +80,19 @@ class PersonaBuilder:
         self._config_data["version"] = version
         return self
 
-    def add_capability(self, capability: PersonaCapability) -> 'PersonaBuilder':
+    def add_capability(self, capability: AgentCapability) -> 'PersonaBuilder':
         """Adiciona uma capacidade à persona"""
         if capability not in self._config_data["capabilities"]:
             self._config_data["capabilities"].append(capability)
         return self
 
-    def add_capabilities(self, capabilities: List[PersonaCapability]) -> 'PersonaBuilder':
+    def add_capabilities(self, capabilities: List[AgentCapability]) -> 'PersonaBuilder':
         """Adiciona múltiplas capacidades à persona"""
         for capability in capabilities:
             self.add_capability(capability)
         return self
 
-    def remove_capability(self, capability: PersonaCapability) -> 'PersonaBuilder':
+    def remove_capability(self, capability: AgentCapability) -> 'PersonaBuilder':
         """Remove uma capacidade da persona"""
         if capability in self._config_data["capabilities"]:
             self._config_data["capabilities"].remove(capability)
@@ -117,7 +117,7 @@ class PersonaBuilder:
         self._config_data["expertise_level"] = level
         return self
 
-    def with_communication_style(self, style: PersonaStyle) -> 'PersonaBuilder':
+    def with_communication_style(self, style: CommunicationStyle) -> 'PersonaBuilder':
         """Define o estilo de comunicação"""
         self._config_data["communication_style"] = style
         return self
@@ -191,13 +191,13 @@ class PersonaBuilder:
         """Configura como persona de desenvolvedor (preset)"""
         return (self
             .add_capabilities([
-                PersonaCapability.CODE_GENERATION,
-                PersonaCapability.DEBUGGING,
-                PersonaCapability.CODE_REVIEW,
-                PersonaCapability.TESTING
+                AgentCapability.CODE_GENERATION,
+                AgentCapability.DEBUGGING,
+                AgentCapability.CODE_REVIEW,
+                AgentCapability.TESTING
             ])
             .add_specializations(["Python", "JavaScript", "API Development", "Database Design"])
-            .with_communication_style(PersonaStyle.TECHNICAL)
+            .with_communication_style(CommunicationStyle.TECHNICAL)
             .with_expertise_level(8)
             .add_tags(["developer", "programming", "technical"]))
 
@@ -205,13 +205,13 @@ class PersonaBuilder:
         """Configura como persona de arquiteto (preset)"""
         return (self
             .add_capabilities([
-                PersonaCapability.ARCHITECTURE_DESIGN,
-                PersonaCapability.CODE_REVIEW,
-                PersonaCapability.OPTIMIZATION,
-                PersonaCapability.DOCUMENTATION
+                AgentCapability.ARCHITECTURE_DESIGN,
+                AgentCapability.CODE_REVIEW,
+                AgentCapability.OPTIMIZATION,
+                AgentCapability.DOCUMENTATION
             ])
             .add_specializations(["System Architecture", "Design Patterns", "Scalability", "Clean Code"])
-            .with_communication_style(PersonaStyle.EXPERT)
+            .with_communication_style(CommunicationStyle.EXPERT)
             .with_expertise_level(9)
             .add_tags(["architect", "design", "patterns"]))
 
@@ -219,13 +219,13 @@ class PersonaBuilder:
         """Configura como persona de debugger (preset)"""
         return (self
             .add_capabilities([
-                PersonaCapability.DEBUGGING,
-                PersonaCapability.PROBLEM_SOLVING,
-                PersonaCapability.TESTING,
-                PersonaCapability.CODE_REVIEW
+                AgentCapability.DEBUGGING,
+                AgentCapability.PROBLEM_SOLVING,
+                AgentCapability.TESTING,
+                AgentCapability.CODE_REVIEW
             ])
             .add_specializations(["Error Analysis", "Performance Debugging", "Test Debugging", "Log Analysis"])
-            .with_communication_style(PersonaStyle.TECHNICAL)
+            .with_communication_style(CommunicationStyle.TECHNICAL)
             .with_expertise_level(8)
             .add_tags(["debugging", "troubleshooting", "analysis"]))
 
@@ -233,13 +233,13 @@ class PersonaBuilder:
         """Configura como persona de mentor (preset)"""
         return (self
             .add_capabilities([
-                PersonaCapability.MENTORING,
-                PersonaCapability.DOCUMENTATION,
-                PersonaCapability.CODE_REVIEW,
-                PersonaCapability.PROBLEM_SOLVING
+                AgentCapability.MENTORING,
+                AgentCapability.DOCUMENTATION,
+                AgentCapability.CODE_REVIEW,
+                AgentCapability.PROBLEM_SOLVING
             ])
             .add_specializations(["Teaching", "Code Reviews", "Best Practices", "Career Guidance"])
-            .with_communication_style(PersonaStyle.MENTOR)
+            .with_communication_style(CommunicationStyle.MENTOR)
             .with_expertise_level(9)
             .with_verbosity_level(7)
             .add_tags(["mentor", "teaching", "guidance"]))
@@ -248,13 +248,13 @@ class PersonaBuilder:
         """Configura como persona de especialista em segurança (preset)"""
         return (self
             .add_capabilities([
-                PersonaCapability.SECURITY_ANALYSIS,
-                PersonaCapability.CODE_REVIEW,
-                PersonaCapability.TESTING,
-                PersonaCapability.DOCUMENTATION
+                AgentCapability.SECURITY_ANALYSIS,
+                AgentCapability.CODE_REVIEW,
+                AgentCapability.TESTING,
+                AgentCapability.DOCUMENTATION
             ])
             .add_specializations(["Security Analysis", "Vulnerability Assessment", "Secure Coding", "Penetration Testing"])
-            .with_communication_style(PersonaStyle.EXPERT)
+            .with_communication_style(CommunicationStyle.EXPERT)
             .with_expertise_level(9)
             .add_tags(["security", "vulnerability", "analysis"]))
 
@@ -379,7 +379,7 @@ def create_debugger_persona(name: str = "Debugger") -> PersonaConfig:
         .build())
 
 
-def create_custom_persona(name: str, description: str, capabilities: List[PersonaCapability],
+def create_custom_persona(name: str, description: str, capabilities: List[AgentCapability],
                          specializations: List[str] = None, **kwargs) -> PersonaConfig:
     """Função helper para criar persona customizada rapidamente"""
     builder = (PersonaBuilder()
