@@ -12,7 +12,7 @@ google-auth-httplib2==0.2.0
 google-genai==1.33.0
 googleapis-common-protos==1.70.0
 grpcio==1.74.0
-grpcio-status==1.71.2
+grpcio-status==1.75.1
 httplib2==0.30.0
 idna==3.10
 iniconfig==2.1.0
