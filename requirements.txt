@@ -31,8 +31,8 @@ pyasn1_modules==0.4.2
 pydantic==2.12.3
 pydantic_core==2.33.2
 Pygments==2.19.2
+coverage==7.11.0
 pyparsing==3.2.5
-coverage==7.10.6
 isort==6.0.1
 radon==6.0.1
 python-dotenv==1.1.1
