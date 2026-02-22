@@ -76,6 +76,10 @@ class ToolSchema:
         # Converte tipos do formato antigo para JSON Schema padrão
         converted_params = self._convert_parameters_to_json_schema(self.parameters)
 
+        # Adiciona required fields ao schema se existir
+        if self.required:
+            converted_params['required'] = self.required
+
         return FunctionDeclaration(
             name=self.name,
             description=self.description,
@@ -139,7 +143,7 @@ class ToolSchema:
                 name=data['name'],
                 description=data['description'],
                 parameters=data['parameters'],
-                required=data['parameters'].get('required', []),
+                required=data.get('required', []),
                 examples=data.get('examples', []),
                 security_level=SecurityLevel(data.get('security_level', 'moderate')),
                 category=ToolCategory(data.get('category', 'other')),
