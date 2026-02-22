@@ -6,4 +6,4 @@ pytest-xdist==3.8.0
 pytest-benchmark==5.1.0
 safety==3.6.1
 bandit==1.8.6
-black==25.1.0
+black==25.9.0
