@@ -361,6 +361,61 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
                     logger.debug(f"Extracted file_path from user_input: {file_path}")
                     break
         
+        # NOVO: Smart File Resolution - último fallback antes do erro
+        if not file_path and context.user_input:
+            try:
+                from ..core.file_resolver import get_file_resolver
+
+                # Extrai termos que podem ser referências de arquivo do user_input
+                import re
+
+                # Padrões para extrair referências naturais a arquivos
+                query_patterns = [
+                    r'(?:leia?|read|examine?|show|mostrar|abrir|open)\s+(?:o\s+)?(?:arquivo\s+)?(?:chamado\s+)?(?:@)?([^\s,\.!?]+)',
+                    r'(?:arquivo|file)\s+([^\s,\.!?]+)',
+                    r'([a-zA-Z0-9_\-]+(?:\.[a-zA-Z0-9]+)?)\s*(?:file|arquivo)?',
+                    r'@([a-zA-Z0-9_\-\.]+)',  # Referencias com @
+                ]
+
+                potential_query = None
+                for pattern in query_patterns:
+                    match = re.search(pattern, context.user_input, re.IGNORECASE)
+                    if match:
+                        potential_query = match.group(1).strip()
+                        # Remove caracteres especiais comuns
+                        potential_query = re.sub(r'[^\w\-\.]', '', potential_query)
+                        if len(potential_query) > 1:  # Só aceita queries com pelo menos 2 chars
+                            break
+
+                if potential_query:
+                    logger.debug(f"Attempting smart file resolution for query: '{potential_query}'")
+
+                    # Usa o file resolver para encontrar o arquivo
+                    file_resolver = get_file_resolver(Path(context.working_directory))
+                    best_match = file_resolver.get_best_match(potential_query, min_confidence=0.6)
+
+                    if best_match:
+                        file_path = str(best_match.path)
+                        logger.info(f"✅ Smart resolution: '{potential_query}' → '{best_match.path.name}' (confidence: {best_match.confidence:.1%})")
+                    else:
+                        # Se não encontrou match bom, tenta obter sugestões
+                        suggestions = file_resolver.suggest_alternatives(potential_query, max_suggestions=3)
+                        if suggestions:
+                            suggestion_names = [s.path.name for s in suggestions[:3]]
+                            error_msg = (
+                                f"Arquivo '{potential_query}' não encontrado. Sugestões: {', '.join(suggestion_names)}. "
+                                f"Para usar um destes arquivos, tente: 'leia o arquivo {suggestion_names[0]}'"
+                            )
+                            return ToolResult(
+                                status=ToolStatus.ERROR,
+                                message=error_msg,
+                                error=ValidationError("file not found with suggestions")
+                            )
+
+            except Exception as e:
+                logger.debug(f"Smart file resolution failed: {e}")
+                # Continua para o erro padrão
+
         if not file_path:
             error_msg = (
                 f"No file path provided. Please specify a file to read. "

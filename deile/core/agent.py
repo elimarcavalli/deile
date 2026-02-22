@@ -14,6 +14,8 @@ from .exceptions import DEILEError, ToolError, ParserError, ModelError
 from .context_manager import ContextManager
 from .models.router import ModelRouter
 from .intent_analyzer import IntentAnalyzer, get_intent_analyzer
+from .proactive_analyzer import ProactiveAnalyzer, get_proactive_analyzer, ProactiveAction
+from .file_resolver import get_file_resolver
 from ..tools.registry import ToolRegistry, get_tool_registry
 from ..tools.base import ToolContext, ToolResult, ToolStatus
 from ..parsers.registry import ParserRegistry, get_parser_registry
@@ -150,6 +152,9 @@ class DeileAgent:
         intent_config_path = Path(__file__).parent.parent / "config" / "intent_patterns.yaml"
         self.intent_analyzer = get_intent_analyzer(intent_config_path)
 
+        # Initialize ProactiveAnalyzer for automatic tool execution
+        self.proactive_analyzer: Optional[ProactiveAnalyzer] = None
+
         # Auto-discover tools, parsers, and commands
         self._auto_discover_components()
 
@@ -174,6 +179,9 @@ class DeileAgent:
 
             # Ativa persona padrão
             await self.persona_manager.switch_persona("developer")
+
+            # Inicializa ProactiveAnalyzer
+            self.proactive_analyzer = get_proactive_analyzer(str(self.settings.working_directory))
 
             # Configura integração profunda com persona systems
             await self._setup_persona_integration()
@@ -232,8 +240,29 @@ class DeileAgent:
             if user_input.strip().startswith('/'):
                 return await self._process_slash_command(user_input.strip(), session, start_time)
             
+            # AUTONOMY PHASE: Try autonomous processing first
+            autonomous_result = await self.process_autonomous_request(user_input, session)
+            if autonomous_result:
+                # If autonomous processing succeeded, return early
+                response = AgentResponse(
+                    content=autonomous_result,
+                    status=AgentStatus.IDLE,
+                    tool_results=[],
+                    parse_result=None,
+                    execution_time=time.time() - start_time
+                )
+                session.add_to_history("assistant", autonomous_result, {
+                    "autonomous": True,
+                    "execution_time": time.time() - start_time
+                })
+                logger.info(f"✅ Autonomous processing successful for: '{user_input[:50]}...'")
+                return response
+
             # Fase 1: Parsing da entrada
             parse_result = await self._parse_input(user_input, session)
+
+            # NOVA FUNCIONALIDADE: Execução proativa de ferramentas contextuais
+            proactive_results = await self._execute_proactive_tools(user_input, session)
 
             # NOVA FUNCIONALIDADE: Detecta se precisa criar workflow automático
             workflow_needed = await self._should_create_workflow(user_input, parse_result)
@@ -249,18 +278,22 @@ class DeileAgent:
                     user_input, parse_result, session
                 )
             
+            # Combina resultados proativos com resultados normais
+            all_tool_results = proactive_results + tool_results
+
             # Cria resposta
             response = AgentResponse(
                 content=response_content,
                 status=AgentStatus.IDLE,
-                tool_results=tool_results,
+                tool_results=all_tool_results,
                 parse_result=parse_result,
                 execution_time=time.time() - start_time
             )
             
             # Adiciona resposta ao histórico
             session.add_to_history("assistant", response_content, {
-                "tool_results": len(tool_results),
+                "tool_results": len(all_tool_results),
+                "proactive_results": len(proactive_results),
                 "parse_status": parse_result.status.value if parse_result else None,
                 "function_calling_enabled": True
             })
@@ -1181,6 +1214,101 @@ class DeileAgent:
         except Exception as e:
             logger.warning(f"Failed to register default model providers: {e}")
 
+    async def _execute_proactive_tools(self, user_input: str, session: AgentSession) -> List[ToolResult]:
+        """Executa ferramentas proativamente baseado na análise da entrada do usuário"""
+        if not self.proactive_analyzer:
+            return []
+
+        try:
+            # Atualiza working directory do analisador proativo
+            self.proactive_analyzer.working_directory = session.working_directory
+
+            # Analisa entrada do usuário para detectar intenções proativas
+            intents = self.proactive_analyzer.analyze_input(user_input, session.context_data)
+
+            if not intents:
+                return []
+
+            proactive_results = []
+            executed_tools = set()  # Para evitar execução duplicada
+
+            for intent in intents:
+                # Verifica se deve executar proativamente
+                if not self.proactive_analyzer.should_execute_proactively(intent):
+                    self.logger.debug(f"Skipping proactive intent {intent.action.value} - low confidence ({intent.confidence:.2f})")
+                    continue
+
+                # Evita execução duplicada
+                tool_key = (intent.action.value, intent.target)
+                if tool_key in executed_tools:
+                    continue
+                executed_tools.add(tool_key)
+
+                # Mapeia ação proativa para nome da ferramenta
+                tool_name = self._map_proactive_action_to_tool(intent.action)
+                if not tool_name:
+                    continue
+
+                # Verifica se a ferramenta está disponível
+                if tool_name not in self.tool_registry._tools:
+                    self.logger.warning(f"Proactive tool {tool_name} not available")
+                    continue
+
+                try:
+                    # Cria contexto para execução proativa
+                    context = self.proactive_analyzer.create_proactive_context(intent, session.context_data)
+
+                    # Executa a ferramenta
+                    result = await self.tool_registry.execute_tool(tool_name, context)
+
+                    # Adiciona metadados sobre execução proativa
+                    result.metadata.update({
+                        "proactive_execution": True,
+                        "proactive_confidence": intent.confidence,
+                        "proactive_reason": intent.context
+                    })
+
+                    proactive_results.append(result)
+
+                    # Log da execução proativa (só em debug para não ser verboso)
+                    self.logger.debug(f"Proactive execution: {tool_name} with confidence {intent.confidence:.2f}")
+
+                except Exception as e:
+                    # Falhas proativas não devem quebrar o fluxo principal
+                    self.logger.warning(f"Proactive tool execution failed: {tool_name} - {e}")
+
+                    # Adiciona resultado de erro se necessário
+                    error_result = ToolResult(
+                        status=ToolStatus.ERROR,
+                        error=e,
+                        message=f"Proactive execution failed: {str(e)}",
+                        metadata={
+                            "proactive_execution": True,
+                            "proactive_failed": True
+                        }
+                    )
+                    proactive_results.append(error_result)
+
+            return proactive_results
+
+        except Exception as e:
+            # Falhas no analisador proativo não devem quebrar o sistema
+            self.logger.warning(f"Proactive analysis failed: {e}")
+            return []
+
+    def _map_proactive_action_to_tool(self, action: ProactiveAction) -> Optional[str]:
+        """Mapeia ação proativa para nome da ferramenta correspondente"""
+        mapping = {
+            ProactiveAction.READ_FILE: "read_file",
+            ProactiveAction.LIST_FILES: "list_files",
+            ProactiveAction.LIST_DIRECTORY: "list_files",
+            ProactiveAction.CHECK_FILE_EXISTS: "check_file_exists",
+            # New autonomous actions
+            ProactiveAction.SUGGEST_ALTERNATIVES: "list_files",  # Fallback to listing
+            ProactiveAction.CHAIN_LIST_AND_READ: "list_files"   # Start with listing
+        }
+        return mapping.get(action)
+
     async def _setup_persona_integration(self) -> None:
         """Set up deep integration between agent and persona systems"""
         if not self.persona_manager:
@@ -1206,6 +1334,157 @@ class DeileAgent:
 
         except Exception as e:
             logger.warning(f"Some persona integration features unavailable: {e}")
+
+    # =============================================
+    # AUTONOMOUS FUNCTIONALITY (PHASE 4)
+    # =============================================
+
+    async def process_autonomous_request(self, user_input: str, session: 'AgentSession') -> Optional[str]:
+        """
+        Process autonomous requests with intelligent file resolution
+
+        This is the main entry point for autonomous functionality that enables
+        DEILE to handle natural language file references like "read the readme"
+        without requiring exact filenames from the user.
+        """
+        if not self.proactive_analyzer:
+            return None
+
+        try:
+            # Analyze if this requires autonomous processing
+            intents = await self.proactive_analyzer.analyze_enhanced(user_input)
+
+            if not intents:
+                return None
+
+            # Filter for autonomous-eligible intents
+            autonomous_intents = [intent for intent in intents if intent.autonomous_eligible]
+
+            if not autonomous_intents:
+                return None
+
+            logger.info(f"Found {len(autonomous_intents)} autonomous intent(s)")
+
+            # Execute the highest priority autonomous intent
+            highest_priority = max(autonomous_intents, key=lambda x: x.priority)
+
+            return await self._execute_autonomous_intent(highest_priority, session)
+
+        except Exception as e:
+            logger.error(f"Error in autonomous processing: {e}")
+            return None
+
+    async def _execute_autonomous_intent(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
+        """Execute an autonomous intent with intelligent error recovery"""
+        try:
+            if intent.action == ProactiveAction.READ_FILE and intent.resolved_file:
+                return await self._autonomous_read_file(intent, session)
+
+            elif intent.action == ProactiveAction.CHAIN_LIST_AND_READ:
+                return await self._autonomous_chain_list_and_read(intent, session)
+
+            elif intent.action == ProactiveAction.SUGGEST_ALTERNATIVES:
+                return await self._autonomous_suggest_alternatives(intent, session)
+
+            else:
+                # Fallback to regular proactive execution
+                tool_name = self._map_proactive_action_to_tool(intent.action)
+                if tool_name:
+                    return await self._execute_proactive_tool(tool_name, intent.target, session)
+
+        except Exception as e:
+            logger.error(f"Error executing autonomous intent {intent.action}: {e}")
+
+            # Try alternative resolution if available
+            if intent.chained_actions:
+                for fallback_intent in intent.chained_actions:
+                    result = await self._execute_autonomous_intent(fallback_intent, session)
+                    if result:
+                        return result
+
+        return None
+
+    async def _autonomous_read_file(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
+        """Autonomously read a file using resolved file match"""
+        if not intent.resolved_file:
+            return None
+
+        try:
+            # Execute read_file tool with resolved path
+            file_path = str(intent.resolved_file.path)
+            result = await self._execute_proactive_tool("read_file", file_path, session)
+
+            if result and intent.resolved_file.confidence < 1.0:
+                # Add context about the resolution for transparency
+                confidence_msg = f"\n\n*Autonomously resolved '{intent.target}' → '{intent.resolved_file.path.name}' (confidence: {intent.resolved_file.confidence:.1%})*"
+                result = result + confidence_msg
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error in autonomous read: {e}")
+            return None
+
+    async def _autonomous_suggest_alternatives(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
+        """Provide intelligent alternatives when file resolution fails"""
+        try:
+            # Get file resolver instance
+            from .file_resolver import get_file_resolver
+            file_resolver = get_file_resolver(Path.cwd())
+
+            # Get alternative suggestions
+            suggestions = file_resolver.suggest_alternatives(intent.target, max_suggestions=5)
+
+            if not suggestions:
+                return f"❌ No files matching '{intent.target}' found in current directory."
+
+            # Format suggestions nicely
+            suggestion_text = f"🔍 Couldn't find exact match for '{intent.target}'. Here are some alternatives:\n\n"
+
+            for i, match in enumerate(suggestions, 1):
+                confidence = f"({match.confidence:.1%})" if match.confidence < 1.0 else ""
+                suggestion_text += f"{i}. **{match.path.name}** {confidence}\n   └─ {match.reason}\n\n"
+
+            suggestion_text += "💡 *Tip: Try being more specific, or ask me to read one of these files directly.*"
+
+            return suggestion_text
+
+        except Exception as e:
+            logger.error(f"Error generating alternatives: {e}")
+            return None
+
+    async def _autonomous_chain_list_and_read(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
+        """Chain list files → resolve → read operations autonomously"""
+        try:
+            # First, list files to help with resolution
+            list_result = await self._execute_proactive_tool("list_files", ".", session)
+
+            if not list_result:
+                return None
+
+            # Get file resolver and try to find the best match
+            from .file_resolver import get_file_resolver
+            file_resolver = get_file_resolver(Path.cwd())
+
+            best_match = file_resolver.get_best_match(intent.target, min_confidence=0.7)
+
+            if best_match:
+                # Found a good match, read it
+                read_result = await self._execute_proactive_tool("read_file", str(best_match.path), session)
+
+                if read_result:
+                    # Combine list + read results with resolution context
+                    resolution_context = f"🎯 *Found and read '{best_match.path.name}' (confidence: {best_match.confidence:.1%})*\n\n"
+                    return list_result + "\n\n" + resolution_context + read_result
+
+            else:
+                # No good match, provide alternatives
+                alternatives = await self._autonomous_suggest_alternatives(intent, session)
+                return list_result + "\n\n" + (alternatives or "❌ No matching files found.")
+
+        except Exception as e:
+            logger.error(f"Error in chain operation: {e}")
+            return None
 
     def enable_persona_enhancement(self, persona_manager: PersonaManager = None) -> None:
         """Enable persona enhancement for this agent"""
