@@ -20,7 +20,7 @@ iniconfig==2.1.0
 markdown-it-py==3.0.0
 mdurl==0.1.2
 numpy==2.2.6
-packaging==25.0
+packaging==26.0
 pathspec==0.12.1
 pluggy==1.6.0
 prompt_toolkit==3.0.52
