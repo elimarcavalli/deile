@@ -5,5 +5,5 @@ pytest-cov==6.3.0
 pytest-xdist==3.8.0
 pytest-benchmark==5.1.0
 safety==3.6.1
-bandit==1.8.6
+bandit==1.9.3
 black==25.9.0
