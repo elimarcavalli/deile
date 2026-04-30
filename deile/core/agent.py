@@ -679,17 +679,20 @@ class DeileAgent:
                     ):
                         model_provider = p
                         break
-                # Exact match not found — fall back to ANY provider with the requested provider_id
+                # Exact match not found — DO NOT silently substitute the flagship.
+                # The user explicitly chose this model; substituting could 10x their cost.
+                # Instead, raise a clear error listing what IS available for that provider.
                 if model_provider is None:
-                    for p in self.model_router.providers.values():
-                        if getattr(p, "provider_id", None) == forced_provider_id:
-                            logger.warning(
-                                "Forced model %s:%s not registered; using flagship %s for that provider",
-                                forced_provider_id, forced_model_id,
-                                getattr(p, "model_name", "unknown"),
-                            )
-                            model_provider = p
-                            break
+                    available = sorted({
+                        getattr(p, "model_name", "?") for p in self.model_router.providers.values()
+                        if getattr(p, "provider_id", None) == forced_provider_id
+                    })
+                    raise ModelError(
+                        f"Forced model '{forced}' is not registered. "
+                        f"Available {forced_provider_id} models: {available or '(none)'}. "
+                        f"Use /model use auto to clear the override.",
+                        error_code="FORCED_MODEL_NOT_REGISTERED",
+                    )
             if model_provider is None:
                 model_provider = await self.model_router.select_provider(
                     context=context,
@@ -851,7 +854,16 @@ class DeileAgent:
                 # Cascade retry loop: on provider failure, mark CB and try next tier provider.
                 # We pass `skip_provider_ids` to TierRouter.select so a single in-request
                 # failure short-circuits the cascade even before the CB threshold trips.
-                MAX_CASCADE_ATTEMPTS = 3
+                # Cap is the cascade length so we never silently truncate longer cascades.
+                MAX_CASCADE_ATTEMPTS = 3  # safe default for tier=None (no cascade) path
+                if model_tier is not None:
+                    try:
+                        from deile.core.models.tier_router import get_tier_router as _gtr_init
+                        cascade_len = len(_gtr_init().policy().cascade_for_tier(model_tier))
+                        if cascade_len > 0:
+                            MAX_CASCADE_ATTEMPTS = max(cascade_len, 1)
+                    except Exception:
+                        pass
                 attempt = 0
                 last_error: Optional[Exception] = None
                 tried_providers: set = set()

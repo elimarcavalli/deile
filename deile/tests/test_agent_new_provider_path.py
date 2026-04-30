@@ -235,6 +235,42 @@ async def test_forced_model_routes_to_specific_provider():
 
 
 @pytest.mark.asyncio
+async def test_forced_model_unregistered_raises_instead_of_silent_swap():
+    """R7-H2: when the forced model is NOT registered, do NOT silently substitute
+    the flagship — that would surprise users with up to 10x the cost. Raise instead."""
+    from deile.core.exceptions import ModelError
+
+    flagship = _CapturingProvider()
+    flagship.provider_id = "anthropic"
+    flagship.model_name = "claude-opus-4-7"
+
+    agent = _build_minimal_agent_with_mock_provider(flagship)
+    # Only the flagship is registered; the user-requested haiku is NOT
+    agent.model_router.providers = {"anthropic:claude-opus-4-7": flagship}
+
+    from deile.core.agent import AgentSession
+
+    session = AgentSession(
+        session_id="forced-unregistered-test",
+        working_directory=Path("/tmp"),
+        context_data={"forced_model": "anthropic:claude-haiku-4-5"},
+    )
+
+    # process_input should catch the ModelError and return an ERROR response (no silent swap)
+    content, _ = await agent._process_iterative_function_calling(
+        user_input="hi",
+        parse_result=None,
+        session=session,
+    )
+    # The agent's outer except catches the ModelError → returns generic error string
+    # Crucially, the FLAGSHIP must NOT have been called
+    assert not flagship.captured_messages, (
+        "Flagship was silently called despite forced_model selecting an unregistered model"
+    )
+    assert "FORCED_MODEL_NOT_REGISTERED" in content or "not registered" in content.lower()
+
+
+@pytest.mark.asyncio
 async def test_forced_model_id_picks_exact_instance_not_flagship():
     """R4-H1: when /model use anthropic:claude-haiku-4-5 is set AND multiple anthropic
     instances are registered, agent must pick the haiku one, NOT the (flagship) opus."""

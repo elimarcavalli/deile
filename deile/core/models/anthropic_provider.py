@@ -245,9 +245,26 @@ class AnthropicProvider(ModelProvider):
             try:
                 response = await self._client.messages.create(**create_kwargs)
             except anthropic.APIError as exc:
-                raise ProviderInvocationError(
-                    _make_envelope(exc, self.provider_id, self.model_name)
-                ) from exc
+                env = _make_envelope(exc, self.provider_id, self.model_name)
+                # Record failed usage so cost reports and dashboards see the error
+                _err_usage = ModelUsage(
+                    prompt_tokens=total_input,
+                    completion_tokens=total_output,
+                    total_tokens=total_input + total_output,
+                    cached_tokens=total_cached,
+                    request_time=time.time() - start,
+                )
+                try:
+                    await self._record_usage(
+                        session_id=kwargs.get("session_id", "default"),
+                        usage=_err_usage,
+                        latency_ms=int((time.time() - start) * 1000),
+                        success=False,
+                        error_envelope=env,
+                    )
+                except Exception:
+                    pass
+                raise ProviderInvocationError(env) from exc
 
             total_input += response.usage.input_tokens
             total_output += response.usage.output_tokens

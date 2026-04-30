@@ -321,6 +321,19 @@ class BudgetGuard:
         self.check_provider_daily(provider_id, estimated_cost)
         self.check_provider_monthly(provider_id, estimated_cost)
 
+    def snapshot(self) -> Dict[str, Any]:
+        """Return a public read-only view of the configured limits.
+
+        Use this from /model budget rather than reaching into private attributes.
+        """
+        return {
+            "enabled": self._enabled,
+            "per_session_usd": self._per_session,
+            "per_provider_daily_usd": dict(self._daily),
+            "per_provider_monthly_usd": dict(self._monthly),
+            "alert_threshold_pct": int(self._alert_threshold * 100),
+        }
+
 
 # ---------------------------------------------------------------------------
 # Singleton factory
