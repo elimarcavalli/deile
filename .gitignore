@@ -28,6 +28,7 @@ logs/
 # Project specific
 work_items/
 storage/
+!deile/storage/
 upgrades/
 tasks/
 old/
