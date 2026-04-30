@@ -19,7 +19,10 @@ from .diff_command import DiffCommand
 from .patch_command import PatchCommand
 from .apply_command import ApplyCommand
 from .permissions_command import PermissionsCommand
-from .sandbox_command import SandboxCommand
+try:
+    from .sandbox_command import SandboxCommand
+except ImportError:
+    SandboxCommand = None  # type: ignore[assignment,misc]
 from .logs_command import LogsCommand
 from .memory_command import MemoryCommand
 from .welcome_command import WelcomeCommand
