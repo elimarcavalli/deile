@@ -6,9 +6,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional, Tuple
 from enum import Enum
+import logging
 import time
 
 from deile.core.models.tier import ModelTier
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from deile.core.models.catalog import ModelPricing
@@ -306,8 +309,13 @@ class ModelProvider(ABC):
                 success=success,
                 error_envelope=error_envelope,
             )
-        except (ImportError, Exception):
-            pass
+        except Exception as exc:
+            # Telemetry must fail open — but at DEBUG level so DB corruption / disk-full
+            # / schema drift can be diagnosed when the operator turns on debug logging.
+            logger.debug(
+                "usage record failed (provider=%s, session=%s): %s",
+                getattr(self, "provider_id", "?"), session_id, exc,
+            )
     
     def _update_stats(self, usage: ModelUsage) -> None:
         """Atualiza estatísticas internas"""
