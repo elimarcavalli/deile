@@ -38,17 +38,27 @@ class BashSecurityLevel:
 
 class BashExecuteTool(SyncTool):
     """Enhanced bash execution with PTY, tee, security and artifacts"""
-    
-    def __init__(self, 
+
+    @property
+    def name(self) -> str:
+        return "bash_execute"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Execute bash commands with PTY support, output tee, security "
+            "controls and artifact generation"
+        )
+
+    @property
+    def category(self) -> str:
+        return "execution"
+
+    def __init__(self,
                  permission_manager: Optional[PermissionManager] = None,
                  artifact_manager: Optional[ArtifactManager] = None):
-        super().__init__(
-            name="bash_execute",
-            description="Execute bash commands with PTY support, output tee, security controls and artifact generation",
-            category="execution",
-            security_level="variable"
-        )
-        
+        super().__init__()
+
         self.permission_manager = permission_manager
         self.artifact_manager = artifact_manager
         self.platform = platform.system()
@@ -466,15 +476,16 @@ class BashExecuteTool(SyncTool):
         
         try:
             # Extract parameters
-            command = context.get_parameter("command")
-            working_directory = context.get_parameter("working_directory", ".")
-            timeout = context.get_parameter("timeout", 60.0)
-            use_pty = context.get_parameter("use_pty")
-            sandbox = context.get_parameter("sandbox", False)
-            show_cli = context.get_parameter("show_cli", True)
-            capture_output = context.get_parameter("capture_output", True)
-            environment = context.get_parameter("environment", {})
-            security_level = context.get_parameter("security_level", "moderate")
+            args = context.parsed_args
+            command = args.get("command")
+            working_directory = args.get("working_directory") or context.working_directory or "."
+            timeout = args.get("timeout", 60.0)
+            use_pty = args.get("use_pty")
+            sandbox = args.get("sandbox", False)
+            show_cli = args.get("show_cli", True)
+            capture_output = args.get("capture_output", True)
+            environment = args.get("environment") or {}
+            security_level = args.get("security_level", "moderate")
             
             if not command or not command.strip():
                 raise ToolError("Command cannot be empty")
@@ -539,7 +550,7 @@ class BashExecuteTool(SyncTool):
             }
             
             # Store artifact
-            run_id = context.get_metadata("run_id", f"bash_{int(time.time())}")
+            run_id = (context.metadata or {}).get("run_id", f"bash_{int(time.time())}")
             artifact_path = None
             
             if capture_output:
