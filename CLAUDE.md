@@ -12,11 +12,18 @@ The authoritative project knowledge lives in `claude_dev/`. Three files are auto
 @claude_dev/1_agent_persona.md
 @claude_dev/8_system_specific_guidelines.md
 
-Docs 2–7 are **read-on-demand**. Open them with the `Read` tool only when the trigger described in `0_deile-agent.md` fires; do not preemptively read them.
+Docs 2–7 are **read-on-demand**. Open them with the `Read` tool only when a trigger in `0_deile-agent.md` fires; do not preemptively read them.
 
-## Minimum reading rule (mandatory)
+## Mandatory protocol (run before every non-trivial turn)
 
-Before any non-trivial change (new class/function, refactor, feature, bugfix that touches more than one file), open the docs whose triggers apply per `0_deile-agent.md`. Typo fixes and one-line tweaks are exempt.
+`claude_dev/0_deile-agent.md` defines a **three-table decision protocol** (Action × Path × Keyword). Before the first `Write`, `Edit`, or mutating `Bash` of each turn:
+
+1. Classify the action, the target file paths, and the user's keywords against the three tables in doc 0.
+2. Take the **union** of docs the tables point to.
+3. `Read` every unread doc in that union — **before** the first mutation, never after.
+4. If scope grows mid-task, **stop and re-run the protocol** with the expanded scope.
+
+Exemptions are listed in doc 0 (typos, whitespace, read-only operations, lockfiles). When uncertain, the action is **not** exempt — run the protocol.
 
 ## Operational quick reference
 

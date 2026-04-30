@@ -1,5 +1,26 @@
 ## ⚙️ Code Generation Directives - CURRENT SYSTEM STANDARDS
 
+### Snippet picker — go straight to the right section
+
+| You are creating / editing… | Use section |
+|---|---|
+| New file in `deile/tools/**/*.py` | **Tool Development Standards** |
+| New file in `deile/commands/**/*.py` | **Command Implementation Pattern** |
+| New file in `deile/parsers/**/*.py` | **Parser Development Guidelines** |
+| Storing / retrieving state across turns or sessions | **Memory System Integration** |
+| Permission check, audit log, input sanitization | **Security Implementation Requirements** |
+| Adding or changing intent patterns / regex | **Intent Analysis Integration** |
+| New exception class or non-trivial `except` block | **Error Handling Best Practices** |
+| New `test_*.py` or pytest marker | **Testing Requirements** |
+| New config key, env var, or settings field | **Configuration Management** |
+| Repeated, long-running, or pooled operation | **Performance Optimization Patterns** |
+| Any code emitting log lines | **Logging Standards** |
+| Any function with I/O | **Async-First Development** (always) + the row above that matches |
+
+If multiple rows match, apply each. If your file matches none and you are still writing inside `deile/`, default to: **Async-First** + **Registry Pattern** + the snippet for the nearest analog. Each snippet section ends with a ❌ line listing the most common deviation — read it before copying the snippet.
+
+---
+
 ### Async-First Development (Critical Requirement)
 - **Always Async**: Every function that performs I/O MUST be async
 - **Await Properly**: Never forget to await async operations
@@ -39,6 +60,8 @@ class CustomTool(BaseTool):
             return ToolResult(success=False, error=str(e))
 ```
 
+❌ Never: hard-code parameter validation inside `execute()` (use `get_schema()`); return raw data or raise out of `execute()` (always wrap in `ToolResult`); omit `security_level`; perform sync I/O inside `execute()`; instantiate the tool manually instead of registering it.
+
 ### Command Implementation Pattern
 ```python
 class CustomCommand(SlashCommand):
@@ -72,6 +95,8 @@ class CustomCommand(SlashCommand):
             )
 ```
 
+❌ Never: print directly to stdout (use `CommandResult.display_type`); duplicate tool logic inside a command — call the tool through the registry; skip `aliases` if the command has a natural shorthand; mutate global state instead of returning data via `CommandResult`.
+
 ### Parser Development Guidelines
 ```python
 class CustomParser(BaseParser):
@@ -97,35 +122,34 @@ class CustomParser(BaseParser):
             )
 ```
 
+❌ Never: do heavy work inside `can_parse()` (it runs for every parser on every input — keep it a fast pattern check); set `priority` arbitrarily without checking neighbors; return `ParseResult` with success and no `data`; let exceptions escape `parse()`.
+
 ### Memory System Integration
+
+The canonical entry point is `MemoryManager` in `deile/memory/memory_manager.py`. Each layer has its own module under `deile/memory/`. Method names below match the real public API; **always confirm exact parameter shapes against the source file** — this snippet is a routing guide, not a frozen signature spec.
+
 ```python
-# Working Memory Usage
-async def store_in_working_memory(self, key: str, value: Any):
-    await self.memory_manager.working_memory.set(
-        key=key,
-        value=value,
-        ttl=300  # 5 minutes TTL
-    )
+# Top-level convenience (covers most cases)
+await memory_manager.store_interaction(...)
 
-# Episodic Memory Entry
-async def record_episode(self, event: str, context: dict):
-    await self.memory_manager.episodic_memory.append(
-        EpisodicEntry(
-            timestamp=datetime.now(),
-            event=event,
-            context=context,
-            session_id=self.session_id
-        )
-    )
+# Working Memory  (deile/memory/working_memory.py)
+await memory_manager.working_memory.store(...)
+await memory_manager.working_memory.store_interaction(...)
 
-# Semantic Memory Storage
-async def store_knowledge(self, concept: str, data: dict):
-    await self.memory_manager.semantic_memory.store(
-        concept=concept,
-        data=data,
-        embeddings=await self._generate_embeddings(concept)
-    )
+# Episodic Memory  (deile/memory/episodic_memory.py)
+await memory_manager.episodic_memory.store_episode(...)
+
+# Semantic Memory  (deile/memory/semantic_memory.py)
+await memory_manager.semantic_memory.store_knowledge(knowledge_dict)
+await memory_manager.semantic_memory.store_correction(interaction_id, correction_data)
+
+# Procedural Memory  (deile/memory/procedural_memory.py)
+patterns = await memory_manager.procedural_memory.get_relevant_patterns(query)
 ```
+
+❌ Never: cache cross-turn state in module globals or class attributes — use the layer that fits (working = TTL'd transient, episodic = session events, semantic = facts/knowledge, procedural = learned skills); store secrets/PII in episodic memory; write to memory without `await`; invent method names — open the layer's module to confirm before calling.
+
+❌ Never: cache cross-turn state in module globals or class attributes — use the appropriate layer; store secrets/PII in episodic memory; write to memory without `await`; pick a layer by convenience (working = TTL'd transient, episodic = session events, semantic = facts/knowledge, procedural = learned skills).
 
 ### Security Implementation Requirements
 ```python
@@ -158,6 +182,8 @@ def sanitize_input(self, user_input: str) -> str:
         raise ValidationError("Invalid input pattern")
     return sanitized
 ```
+
+❌ Never: trust user input to reach a shell, SQL, or filesystem call without sanitization; perform a privileged action without `check_permission()` first; log secrets or full request bodies; write your own audit format — use `AuditEvent` so events stay queryable.
 
 ### Intent Analysis Integration
 ```python
@@ -207,6 +233,8 @@ except Exception as e:
     logger.error(f"Unexpected error: {e}", exc_info=True)
     return ErrorResponse(code="INTERNAL_ERROR", message="An unexpected error occurred")
 ```
+
+❌ Never: bare `except:` or silent `except Exception: pass`; catch `asyncio.CancelledError` without re-raising; return generic `Exception` strings to users — map to a typed `DEILEError` subclass with a code.
 
 ### Testing Requirements
 ```python
