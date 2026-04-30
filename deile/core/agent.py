@@ -1020,40 +1020,59 @@ class DeileAgent:
         tool_results: List[ToolResult],
         session: AgentSession
     ) -> AsyncIterator[str]:
-        """Geração de resposta em streaming"""
+        """Geração de resposta em streaming — consome UnifiedStreamEvent de qualquer provider."""
+        from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
+
         try:
-            # Similar ao método anterior, mas com streaming
             context = await self.context_manager.build_context(
                 user_input=user_input,
                 parse_result=parse_result,
                 tool_results=tool_results,
                 session=session
             )
-            
+
             model_provider = await self.model_router.select_provider(
                 context=context,
                 session=session
             )
-            
-            # Corrigido: trata context como dict
+
             if isinstance(context, dict):
                 messages = context.get("messages", [])
                 system_instruction = context.get("system_instruction")
             else:
                 messages = []
                 system_instruction = "You are DEILE, a helpful AI assistant."
-            
+
             async for event in model_provider.generate_stream(
                 messages=messages,
                 system_instruction=system_instruction
             ):
-                from deile.core.models.stream_events import StreamEventType
-                if hasattr(event, "type") and hasattr(StreamEventType, "TEXT_DELTA"):
-                    if event.type == StreamEventType.TEXT_DELTA and event.text:
+                if not isinstance(event, UnifiedStreamEvent):
+                    # Legacy provider yields raw str — pass through
+                    if isinstance(event, str):
+                        yield event
+                    continue
+
+                if event.type == StreamEventType.TEXT_DELTA:
+                    if event.text:
                         yield event.text
-                else:
-                    yield event
-                
+
+                elif event.type == StreamEventType.TOOL_USE_START:
+                    if event.tool_name:
+                        yield f"\n[tool: {event.tool_name}]\n"
+
+                elif event.type == StreamEventType.TOOL_USE_END:
+                    yield "\n"
+
+                elif event.type == StreamEventType.USAGE_FINAL:
+                    # Consumed silently — usage recording handled elsewhere
+                    pass
+
+                elif event.type == StreamEventType.ERROR:
+                    env = event.error_envelope
+                    msg = str(env) if env else "unknown streaming error"
+                    yield f"\n[error: {msg}]\n"
+
         except Exception as e:
             yield f"Error in streaming response: {str(e)}"
     
