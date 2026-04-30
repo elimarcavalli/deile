@@ -44,7 +44,7 @@ def test_provider_invocation_error_carries_envelope(envelope):
 def test_envelope_default_timestamp_is_recent():
     env = ProviderErrorEnvelope(
         provider_id="openai",
-        model_id="gpt-4o",
+        model_id="gpt-5.4",
         error_type="server",
         message="Internal server error",
     )
@@ -54,7 +54,7 @@ def test_envelope_default_timestamp_is_recent():
 def test_envelope_optional_fields_default_none():
     env = ProviderErrorEnvelope(
         provider_id="deepseek",
-        model_id="deepseek-chat",
+        model_id="deepseek-v4-pro",
         error_type="unknown",
         message="Mystery error",
     )
