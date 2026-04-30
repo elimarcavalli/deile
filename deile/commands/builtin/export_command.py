@@ -20,7 +20,6 @@ class ExportCommand(DirectCommand):
         super().__init__(
             name="export",
             description="Export conversation history, artifacts, plans and session data in various formats.",
-            aliases=["save", "backup"]
         )
     
     def execute(self, 
@@ -541,6 +540,4 @@ Examples:
   /export json --path ./backups     Export JSON to custom path
   /export md --no-artifacts         Export without artifacts
   
-Default path: ./EXPORTS/deile_export_TIMESTAMP/
-
-Aliases: /save, /backup"""
+Default path: ./EXPORTS/deile_export_TIMESTAMP/"""

@@ -18,7 +18,6 @@ class ApproveCommand(DirectCommand):
         config = CommandConfig(
             name="approve",
             description="Approve or reject plan steps that require manual approval.",
-            aliases=["a", "approval"]
         )
         super().__init__(config)
         self.plan_manager = get_plan_manager()
@@ -286,6 +285,4 @@ Plan Status:
 Related Commands:
   • /run <plan_id> - Execute plan
   • /plan show <plan_id> - Show plan details
-  • /stop <plan_id> - Stop plan execution
-
-Aliases: /a, /approval"""
+  • /stop <plan_id> - Stop plan execution"""

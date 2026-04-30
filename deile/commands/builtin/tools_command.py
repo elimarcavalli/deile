@@ -19,7 +19,6 @@ class ToolsCommand(DirectCommand):
         super().__init__(
             name="tools",
             description="Display available tools, their schemas and usage statistics.",
-            aliases=["tool", "schemas"]
         )
     
     def execute(self, 
@@ -389,6 +388,4 @@ Examples:
   /tools                     List all tools
   /tools bash_execute        Show details for bash_execute tool
   /tools detailed --schema   Show detailed view with schemas
-  /tools read_file -s -e     Show read_file with schema and examples
-
-Aliases: /tool, /schemas"""
+  /tools read_file -s -e     Show read_file with schema and examples"""

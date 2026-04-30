@@ -13,7 +13,6 @@ class HelpCommand(DirectCommand):
             name="help",
             description="Lista comandos disponíveis e exemplos de uso",
             action="show_help",
-            aliases=["h", "?"],
         )
         super().__init__(config)
         self.category = "system"

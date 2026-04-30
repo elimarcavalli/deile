@@ -1,11 +1,7 @@
 commands:
   bash:
     action: execute_bash
-    aliases:
-    - sh
-    - cmd
-    - run
-    - $
+    aliases: []
     description: Executar comando bash no sistema
     enabled: true
     prompt_template: 'Execute o seguinte comando bash de forma segura: {args}. Mostre
@@ -13,33 +9,25 @@ commands:
       erro, explique o que pode ter causado.'
   clear:
     action: clear_session
-    aliases:
-    - cls
-    - clean
+    aliases: []
     description: Limpar histórico da conversa e tela
     enabled: true
     prompt_template: null
   config:
     action: show_config
-    aliases:
-    - settings
-    - cfg
+    aliases: []
     description: Mostrar configurações atuais do sistema
     enabled: true
     prompt_template: null
   debug:
     action: toggle_debug_mode
-    aliases:
-    - dbg
-    - verbose
+    aliases: []
     description: Toggle do modo debug (logs detalhados + request/response files)
     enabled: true
     prompt_template: null
   exit:
     action: exit_application
-    aliases:
-    - quit
-    - bye
+    aliases: []
     description: Sair do DEILE Agent
     enabled: true
     prompt_template: null
@@ -51,8 +39,7 @@ commands:
     prompt_template: null
   status:
     action: show_system_status
-    aliases:
-    - info
+    aliases: []
     description: Mostra versão, modelo ativo, conectividade e diagnóstico
     enabled: true
     prompt_template: null

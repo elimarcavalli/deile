@@ -19,9 +19,8 @@ class PatchCommand(DirectCommand):
     def __init__(self):
         from ...config.manager import CommandConfig
         config = CommandConfig(
-            name="patch",
+            name="patch-generate",
             description="Generate patch files from plan execution changes.",
-            aliases=["export-patch", "generate-patch"]
         )
         super().__init__(config)
         self.plan_manager = get_plan_manager()
@@ -79,7 +78,7 @@ class PatchCommand(DirectCommand):
         if not patch_files:
             return CommandResult.success_result(
                 Panel(
-                    Text("No patch files found.\n\nGenerate patches with '/patch <plan_id>' after executing plans.", 
+                    Text("No patch files found.\n\nGenerate patches with '/patch-generate <plan_id>' after executing plans.", 
                          style="yellow"),
                     title="📦 No Patches Available",
                     border_style="yellow"
@@ -107,7 +106,7 @@ class PatchCommand(DirectCommand):
             size = f"{stat.st_size:,}B"
             
             # Action
-            action_text = f"/apply {patch_file.name}"
+            action_text = f"/patch-apply {patch_file.name}"
             
             table.add_row(
                 patch_file.name,
@@ -121,10 +120,10 @@ class PatchCommand(DirectCommand):
         usage_panel = Panel(
             Text(
                 "Usage:\n"
-                "• /patch <plan_id>                  - Generate patch for plan\n"
-                "• /patch <plan_id> --git            - Generate Git-format patch\n"
-                "• /patch <plan_id> --output=<path>  - Save to specific location\n"
-                "• /apply <patch_file>               - Apply patch to current directory\n\n"
+                "• /patch-generate <plan_id>                  - Generate patch for plan\n"
+                "• /patch-generate <plan_id> --git            - Generate Git-format patch\n"
+                "• /patch-generate <plan_id> --output=<path>  - Save to specific location\n"
+                "• /patch-apply <patch_file>               - Apply patch to current directory\n\n"
                 "Patches are saved to PATCHES/ directory by default.",
                 style="dim"
             ),
@@ -417,7 +416,7 @@ class PatchCommand(DirectCommand):
         # Usage instructions
         content_lines.extend([
             "**Apply Patch:**",
-            f"  • `/apply {output_path.name}` - Apply to current directory",
+            f"  • `/patch-apply {output_path.name}` - Apply to current directory",
             f"  • `git apply {output_path}` - Apply using Git (if git format)",
             f"  • Manual review recommended before applying",
             "",
@@ -442,12 +441,12 @@ class PatchCommand(DirectCommand):
         return """Generate patch files from plan execution changes
 
 Usage:
-  /patch                          List available patch files
-  /patch <plan_id>                Generate unified patch for plan
-  /patch <plan_id> --git          Generate Git-format patch
-  /patch <plan_id> --simple       Generate simple text patch
-  /patch <plan_id> --artifacts    Include artifact references
-  /patch <plan_id> --output=<path> Save to specific location
+  /patch-generate                          List available patch files
+  /patch-generate <plan_id>                Generate unified patch for plan
+  /patch-generate <plan_id> --git          Generate Git-format patch
+  /patch-generate <plan_id> --simple       Generate simple text patch
+  /patch-generate <plan_id> --artifacts    Include artifact references
+  /patch-generate <plan_id> --output=<path> Save to specific location
 
 Format Options:
   --git           Generate Git-compatible patch format
@@ -456,11 +455,11 @@ Format Options:
   --output=<path> Specify output file path
 
 Examples:
-  /patch                          List all available patches
-  /patch abc123                   Generate patch for plan abc123
-  /patch abc123 --git             Generate Git patch for plan abc123
-  /patch abc123 --output=my.patch Save patch to specific file
-  /patch abc123 --artifacts       Include artifact file references
+  /patch-generate                          List all available patches
+  /patch-generate abc123                   Generate patch for plan abc123
+  /patch-generate abc123 --git             Generate Git patch for plan abc123
+  /patch-generate abc123 --output=my.patch Save patch to specific file
+  /patch-generate abc123 --artifacts       Include artifact file references
 
 Patch Formats:
   • unified (default) - Standard unified diff format
@@ -472,8 +471,6 @@ File Locations:
   • Custom: Specified with --output option
 
 Related Commands:
-  • /apply <patch_file> - Apply patch to directory
+  • /patch-apply <patch_file> - Apply patch to directory
   • /diff <plan_id> - Show changes without creating patch
-  • /plan show <plan_id> - Show plan details
-
-Aliases: /export-patch, /generate-patch"""
+  • /plan show <plan_id> - Show plan details"""

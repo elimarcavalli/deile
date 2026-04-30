@@ -19,7 +19,6 @@ class ContextCommand(DirectCommand):
         config = CommandConfig(
             name="context",
             description="Display complete LLM context: system instructions, memory, history, tools and token usage breakdown.",
-            aliases=["ctx", "info"]
         )
         super().__init__(config)
     
@@ -283,6 +282,4 @@ Examples:
   /context                    Show summary
   /context detailed -t        Show detailed view with tokens
   /context json               Export as JSON
-  /context --show-tokens      Show summary with token breakdown
-
-Aliases: /ctx, /info"""
+  /context --show-tokens      Show summary with token breakdown"""

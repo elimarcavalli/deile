@@ -377,7 +377,6 @@ class SandboxCommand(DirectCommand):
         config = CommandConfig(
             name="sandbox",
             description="Advanced sandbox execution with Docker isolation",
-            aliases=["sb", "isolation", "docker"]
         )
         super().__init__(config)
         
@@ -1016,6 +1015,4 @@ Environment Variables:
 Examples:
   /sandbox on                  Enable full protection
   /sandbox config              Show all configuration
-  /run myplan --no-sandbox     Run plan without sandbox
-
-Aliases: /sb, /isolation"""
+  /run myplan --no-sandbox     Run plan without sandbox"""

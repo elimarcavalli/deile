@@ -18,7 +18,6 @@ class StopCommand(DirectCommand):
         config = CommandConfig(
             name="stop",
             description="Stop running plan execution.",
-            aliases=["halt", "cancel"]
         )
         super().__init__(config)
         self.plan_manager = get_plan_manager()
@@ -248,6 +247,4 @@ Related Commands:
   • /run <plan_id> - Start plan execution
   • /plan show <plan_id> - View plan details
   • /plan list - Show all plans
-  • /plan delete <plan_id> - Remove plan
-
-Aliases: /halt, /cancel"""
+  • /plan delete <plan_id> - Remove plan"""

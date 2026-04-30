@@ -23,7 +23,6 @@ class LogsCommand(DirectCommand):
         config = CommandConfig(
             name="logs",
             description="View security audit logs and system events.",
-            aliases=["log", "audit"]
         )
         super().__init__(config)
         self.audit_logger = get_audit_logger()
@@ -745,6 +744,4 @@ Related Commands:
   • /permissions - Manage security rules
   • /sandbox - Control execution isolation
   • /tools - List available tools
-  • /status - System status overview
-
-Aliases: /log, /audit"""
+  • /status - System status overview"""

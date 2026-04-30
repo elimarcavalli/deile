@@ -23,7 +23,6 @@ class PermissionsCommand(DirectCommand):
         config = CommandConfig(
             name="permissions",
             description="Manage security rules and permissions for tools and resources.",
-            aliases=["perms", "security"]
         )
         super().__init__(config)
         self.permission_manager = get_permission_manager()
@@ -529,6 +528,4 @@ Related Commands:
   • /sandbox - Quick sandbox toggle
   • /tools - List available tools and their requirements
   • /run - Execute plans with permission enforcement
-  • /approve - Manual approval for high-risk operations
-
-Aliases: /perms, /security"""
+  • /approve - Manual approval for high-risk operations"""

@@ -18,7 +18,6 @@ class WelcomeCommand(DirectCommand):
         config = CommandConfig(
             name="welcome",
             description="Show welcome message and getting started guide.",
-            aliases=["hello", "start", "intro"]
         )
         super().__init__(config)
     
@@ -114,10 +113,10 @@ class WelcomeCommand(DirectCommand):
         # Pro tips
         tips_text = Text()
         tips_text.append("💡 ", style="yellow")
-        tips_text.append("Use '/help <command>' to see detailed help and aliases\n", style="dim")
-        
+        tips_text.append("Use '/help <command>' to see detailed help for a command\n", style="dim")
+
         tips_text.append("🎯 ", style="blue")
-        tips_text.append("Type '/' to see available commands (aliases hidden)\n", style="dim")
+        tips_text.append("Type '/' to see all available commands\n", style="dim")
         
         tips_text.append("📝 ", style="green")
         tips_text.append("Use '@' to autocomplete file paths in commands\n", style="dim")
@@ -204,6 +203,4 @@ Related Commands:
   • /help - List all commands
   • /status - System status  
   • /memory - Session management
-  • /context - Current context info
-
-Aliases: /hello, /start, /intro"""
+  • /context - Current context info"""

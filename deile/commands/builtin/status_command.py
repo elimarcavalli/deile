@@ -23,7 +23,6 @@ class StatusCommand(DirectCommand):
         config = CommandConfig(
             name="status",
             description="Complete system status, health monitoring and connectivity information.",
-            aliases=["info", "stat", "sys", "health"]
         )
         super().__init__(config)
     
@@ -380,9 +379,7 @@ Examples:
   /status                     Complete system overview
   /status system              Detailed system specs
   /status models              AI model status and performance
-  /status tools               Tools availability and stats
-
-Aliases: /info, /stat, /sys, /health"""
+  /status tools               Tools availability and stats"""
     
     async def _show_models_status(self) -> CommandResult:
         """Show detailed models status - placeholder"""

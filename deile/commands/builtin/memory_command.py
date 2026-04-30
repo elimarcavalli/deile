@@ -19,7 +19,6 @@ class MemoryCommand(DirectCommand):
         config = CommandConfig(
             name="memory",
             description="Advanced memory and session state management with detailed controls.",
-            aliases=["mem", "session"]
         )
         super().__init__(config)
     
@@ -505,6 +504,4 @@ Related Commands:
   • /cls reset - Complete session reset
   • /export - Export session data
   • /context - View current context
-  • /status - System status overview
-
-Aliases: /mem, /session"""
+  • /status - System status overview"""

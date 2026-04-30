@@ -20,7 +20,6 @@ class PlanCommand(DirectCommand):
         config = CommandConfig(
             name="plan",
             description="Create and manage autonomous execution plans.",
-            aliases=["p"]
         )
         super().__init__(config)
         self.plan_manager = get_plan_manager()

@@ -21,7 +21,6 @@ class RunCommand(DirectCommand):
         config = CommandConfig(
             name="run",
             description="Execute execution plans autonomously.",
-            aliases=["r", "execute"]
         )
         super().__init__(config)
         self.plan_manager = get_plan_manager()
@@ -438,6 +437,4 @@ Plan Execution:
 Related Commands:
   • /plan create <objective> - Create a new plan
   • /approve <plan_id> <step_id> - Approve pending steps
-  • /stop <plan_id> - Stop running plan
-
-Aliases: /r, /execute"""
+  • /stop <plan_id> - Stop running plan"""

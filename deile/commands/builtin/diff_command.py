@@ -21,7 +21,6 @@ class DiffCommand(DirectCommand):
         config = CommandConfig(
             name="diff",
             description="Show differences and changes from plan execution.",
-            aliases=["changes", "delta"]
         )
         super().__init__(config)
         self.plan_manager = get_plan_manager()
@@ -133,7 +132,7 @@ class DiffCommand(DirectCommand):
                 "• /diff <file_path>         - Show changes for specific file\n"
                 "• /diff <plan_id> --unified - Show unified diff format\n"
                 "• /diff <plan_id> --content - Include file content changes\n\n"
-                "Use '/patch <plan_id>' to generate patch files.",
+                "Use '/patch-generate <plan_id>' to generate patch files.",
                 style="dim"
             ),
             title="Usage Instructions",
@@ -319,7 +318,7 @@ class DiffCommand(DirectCommand):
             "**View Details:**",
             f"  • `/diff {plan.id} --detailed` - Detailed file-by-file changes",
             f"  • `/diff {plan.id} --unified` - Unified diff format",
-            f"  • `/patch {plan.id}` - Generate patch files"
+            f"  • `/patch-generate {plan.id}` - Generate patch files"
         ])
         
         content = "\n".join(content_lines)
@@ -474,8 +473,6 @@ Change Types:
   📄 Artifacts - Generated output files
 
 Related Commands:
-  • /patch <plan_id> - Generate patch files for changes
-  • /apply <patch_file> - Apply patch to current directory
-  • /plan show <plan_id> - Show plan execution details
-
-Aliases: /changes, /delta"""
+  • /patch-generate <plan_id> - Generate patch files for changes
+  • /patch-apply <patch_file> - Apply patch to current directory
+  • /plan show <plan_id> - Show plan execution details"""

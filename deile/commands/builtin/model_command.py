@@ -24,7 +24,6 @@ class ModelCommand(DirectCommand):
         config = CommandConfig(
             name="model",
             description="Manage AI models — list, switch, show cost/budget",
-            aliases=["models", "m"],
         )
         super().__init__(config)
         self.category = "ai"

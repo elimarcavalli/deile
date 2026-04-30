@@ -21,7 +21,6 @@ class ClearCommand(DirectCommand):
         config = CommandConfig(
             name="cls",
             description="Clear conversation history and screen. Use 'cls reset' for complete session reset.",
-            aliases=["clear"]
         )
         super().__init__(config)
     
