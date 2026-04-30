@@ -140,11 +140,13 @@ class DeileAgentCLI:
             while True:
                 user_input = await asyncio.to_thread(self.ui.get_user_input, "\n > ")
                 user_input = user_input.strip()
-                ## pausar por 1 segundo para evitar processamento excessivo
-                await asyncio.sleep(0.5)
 
                 if not user_input:
+                    import sys
+                    sys.stdout.write("\033[A\033[2K\r")
+                    sys.stdout.flush()
                     continue
+                await asyncio.sleep(0.5)
                 if user_input.lower() in ['exit', 'quit', 'q']:
                     self.ui.display_message(UIMessage(content="\n[bold yellow]DEILE se despedindo. Até a próxima! :wave:[/bold yellow]", message_type=MessageType.SYSTEM))
                     break

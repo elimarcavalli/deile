@@ -438,19 +438,19 @@ class AsyncTool(Tool):
 
 class SyncTool(Tool):
     """Tool base para operações síncronas"""
-    
+
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Método síncrono que deve ser implementado pelas tools síncronas"""
         raise NotImplementedError("SyncTool must implement execute_sync method")
-    
+
     async def execute(self, context: ToolContext) -> ToolResult:
-        """Wrapper assíncrono para tools síncronas"""
+        """Wrapper assíncrono para tools síncronas — executa em thread pool para não bloquear o event loop."""
         import time
         start_time = time.time()
-        
+
         try:
             self._execution_count += 1
-            result = self.execute_sync(context)
+            result = await asyncio.to_thread(self.execute_sync, context)
             result.execution_time = time.time() - start_time
             return result
         except Exception as e:

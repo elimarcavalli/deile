@@ -217,7 +217,7 @@ class ConfigManager:
             
             # Aplica configurações da API
             if api_config:
-                config.default_model = api_config.get("default_model") or None
+                config.default_model = api_config.get("default_model")
                 if "gemini" in api_config:
                     config.gemini = GeminiConfig(**api_config["gemini"])
             

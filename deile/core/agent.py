@@ -41,6 +41,26 @@ from ..orchestration.workflow_executor import get_workflow_executor
 logger = logging.getLogger(__name__)
 
 
+def _record_model_used(session: Any, provider: Any) -> None:
+    """Store the provider:model key used by the current turn into session context."""
+    session.context_data["_last_model_used"] = (
+        f"{provider.provider_id}:{provider.model_name}"
+    )
+
+
+def _is_permanent_provider_error(exc: Exception) -> bool:
+    """Return True for errors that retrying a different provider cannot fix.
+
+    Permanent errors (auth, invalid_request/model_not_found) should bubble up to the
+    user so they can correct their configuration instead of silently cascading.
+    Transient errors (rate_limit, server) may be retried via cascade.
+    """
+    from deile.core.models.errors import ProviderInvocationError  # noqa: PLC0415
+    if not isinstance(exc, ProviderInvocationError):
+        return False
+    return exc.envelope.error_type in ("auth", "invalid_request")
+
+
 def _self_record_circuit(provider_id: str, *, success: bool) -> None:
     """Notify TierRouter's CircuitBreaker of a provider call outcome."""
     try:
@@ -841,9 +861,7 @@ class DeileAgent:
                     pass
 
                 logger.info("Chat session completed with %d tool execution(s)", len(tool_results))
-                session.context_data["_last_model_used"] = (
-                    f"{model_provider.provider_id}:{model_provider.model_name}"
-                )
+                _record_model_used(session, model_provider)
                 return content, tool_results
 
             # ── New providers: Anthropic / OpenAI / DeepSeek via chat_with_tools ─
@@ -936,6 +954,11 @@ class DeileAgent:
                         # this exact provider — the user chose it, we should not silently swap.
                         if model_tier is None or forced:
                             raise
+                        # Permanent errors (auth / model-not-found) for a user-configured
+                        # default_model must bubble up: cascading to another provider masks
+                        # a misconfiguration the user needs to fix.
+                        if config_default and _is_permanent_provider_error(_chat_err):
+                            raise
                         try:
                             from deile.core.models.tier_router import get_tier_router as _gtr
                             next_provider = _gtr().select(
@@ -945,9 +968,12 @@ class DeileAgent:
                             raise _chat_err  # cascade exhausted
 
                         model_provider = next_provider
-                        logger.info(
-                            "Cascade fallback (attempt=%d): switched to provider=%s",
-                            attempt, model_provider.provider_id,
+                        logger.warning(
+                            "config_default '%s' failed (%s) — cascading to %s (attempt=%d)",
+                            config_default,
+                            str(_chat_err)[:120],
+                            model_provider.provider_id,
+                            attempt,
                         )
                         # Re-run budget check against the new provider — daily/monthly
                         # limits are per-provider, not session-wide.
@@ -987,11 +1013,8 @@ class DeileAgent:
                     model_provider.provider_id,
                     len(tool_results),
                 )
-                session.context_data["_last_model_used"] = (
-                    f"{model_provider.provider_id}:{model_provider.model_name}"
-                )
-                # Persist reasoning_content so next turn can pass it back to the API
-                _rc = getattr(_usage, "extra", {}).get("reasoning_content")
+                _record_model_used(session, model_provider)
+                _rc = _usage.extra.get("reasoning_content")
                 if _rc:
                     session.context_data["_last_reasoning_content"] = _rc
                 return content, tool_results

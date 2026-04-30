@@ -144,7 +144,7 @@ class OpenAIProvider(ModelProvider):
         for m in messages:
             msg_dict: Dict[str, Any] = {"role": m.role, "content": m.content}
             # Restore reasoning_content for providers that require it (e.g. DeepSeek)
-            rc = (m.metadata or {}).get("reasoning_content")
+            rc = m.metadata.get("reasoning_content")
             if rc and m.role == "assistant":
                 msg_dict["reasoning_content"] = rc
             result.append(msg_dict)
@@ -167,7 +167,7 @@ class OpenAIProvider(ModelProvider):
             response = await self._client.chat.completions.create(
                 model=self.model_name,
                 messages=oai_msgs,
-                max_tokens=kwargs.pop("max_tokens", _DEFAULT_MAX_TOKENS),
+                max_completion_tokens=kwargs.pop("max_tokens", _DEFAULT_MAX_TOKENS),
                 **kwargs,
             )
         except openai.APIError as exc:
@@ -218,7 +218,7 @@ class OpenAIProvider(ModelProvider):
             create_kwargs: Dict[str, Any] = {
                 "model": self.model_name,
                 "messages": oai_msgs,
-                "max_tokens": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+                "max_completion_tokens": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
             }
             if oai_tools:
                 create_kwargs["tools"] = oai_tools
@@ -255,7 +255,7 @@ class OpenAIProvider(ModelProvider):
             msg = response.choices[0].message
             if msg.content:
                 final_text += msg.content
-            last_reasoning_content = getattr(msg, "reasoning_content", None) or None
+            last_reasoning_content = getattr(msg, "reasoning_content", None)
 
             finish_reason = response.choices[0].finish_reason
             if finish_reason != "tool_calls" or not msg.tool_calls:
@@ -274,11 +274,9 @@ class OpenAIProvider(ModelProvider):
                     for tc in msg.tool_calls
                 ],
             }
-            # DeepSeek reasoning models return reasoning_content that must be
-            # echoed back verbatim in the next request or the API raises 400.
-            _reasoning = getattr(msg, "reasoning_content", None)
-            if _reasoning:
-                assistant_turn["reasoning_content"] = _reasoning
+            # DeepSeek reasoning models require reasoning_content echoed back verbatim.
+            if last_reasoning_content:
+                assistant_turn["reasoning_content"] = last_reasoning_content
             oai_msgs.append(assistant_turn)
 
             # Execute each tool call
@@ -332,7 +330,7 @@ class OpenAIProvider(ModelProvider):
             async with self._client.chat.completions.stream(
                 model=self.model_name,
                 messages=oai_msgs,
-                max_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+                max_completion_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
             ) as stream:
                 async for event in stream:
                     if event.type == "content.delta":

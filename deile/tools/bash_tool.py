@@ -286,78 +286,41 @@ class BashExecuteTool(SyncTool):
     def _execute_with_subprocess(self,
                                command: str,
                                working_dir: Path,
-                               env: Dict[str, str], 
+                               env: Dict[str, str],
                                timeout: float) -> Tuple[str, str, int, bool]:
         """Execute command with regular subprocess (fallback)"""
-        
+
+        if self.platform == 'Windows':
+            shell_cmd = ['cmd.exe', '/c', command]
+        else:
+            shell_cmd = ['/bin/bash', '-c', command]
+
         try:
-            # Determine shell based on platform
-            if self.platform == 'Windows':
-                shell_cmd = ['cmd.exe', '/c', command]
-            else:
-                shell_cmd = ['/bin/bash', '-c', command]
-            
-            process = subprocess.Popen(
+            result = subprocess.run(
                 shell_cmd,
                 cwd=working_dir,
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                bufsize=1,  # Line buffered
-                universal_newlines=True
+                timeout=timeout,
             )
-            
-            # Read output with real-time display (tee functionality)
-            stdout_lines = []
-            stderr_lines = []
-            
-            while True:
-                poll_result = process.poll()
-                
-                # Read available stdout
-                if process.stdout:
-                    line = process.stdout.readline()
-                    if line:
-                        stdout_lines.append(line)
-                        if self._should_show_output():
-                            print(line, end='', flush=True)
-                
-                # Read available stderr
-                if process.stderr:
-                    line = process.stderr.readline()
-                    if line:
-                        stderr_lines.append(line)
-                        if self._should_show_output():
-                            print(line, end='', file=sys.stderr, flush=True)
-                
-                # Process finished
-                if poll_result is not None:
-                    break
-                    
-                # Check timeout
-                try:
-                    process.wait(timeout=0.1)
-                    break
-                except subprocess.TimeoutExpired:
-                    pass
-            
-            # Wait for final completion with timeout
-            try:
-                exit_code = process.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                process.terminate()
-                process.wait(timeout=5)
-                raise TimeoutError(f"Command timed out after {timeout} seconds")
-            
-            stdout = ''.join(stdout_lines)
-            stderr = ''.join(stderr_lines)
-            
-            return stdout, stderr, exit_code, False  # PTY not used
-            
+        except subprocess.TimeoutExpired:
+            raise TimeoutError(f"Command timed out after {timeout} seconds")
         except Exception as e:
             logger.error(f"Subprocess execution failed: {e}")
             raise ToolError(f"Command execution failed: {str(e)}")
+
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
+
+        if self._should_show_output():
+            if stdout:
+                print(stdout, end='', flush=True)
+            if stderr:
+                print(stderr, end='', file=sys.stderr, flush=True)
+
+        return stdout, stderr, result.returncode, False
     
     def _should_show_output(self) -> bool:
         """Determine if output should be shown in real-time"""

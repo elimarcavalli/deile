@@ -1,5 +1,8 @@
 import time
+from pathlib import Path
 from typing import List, Optional, Dict, Any
+
+import yaml
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -96,12 +99,9 @@ class ConsoleUIManager(UIManager):
                 if _cfg.default_model:
                     routing_label = _cfg.default_model
                 else:
-                    from pathlib import Path
-                    import yaml as _yaml
                     _yaml_path = Path(__file__).parents[1] / "config" / "model_providers.yaml"
                     with open(_yaml_path) as _f:
-                        _data = _yaml.safe_load(_f)
-                    _strategy = _data.get("default_strategy", "task_optimized")
+                        _strategy = yaml.safe_load(_f).get("default_strategy", "task_optimized")
                     routing_label = f"automático ({_strategy})"
         except Exception:
             pass
@@ -158,19 +158,15 @@ class ConsoleUIManager(UIManager):
     def get_user_input(self, prompt: str = "\n [bold green]>[/bold] ") -> str:
         """Obtém a entrada do usuário de forma interativa."""
         if not self.session:
-            # Fallback para input simples removendo markup
             clean_prompt = prompt.replace("[bold green]", "").replace("[/bold]", "").replace("[/]", "")
-            
             if not clean_prompt.startswith("\n"):
                 clean_prompt = "\n" + clean_prompt
-
             return input(clean_prompt)
-        
+
         try:
-            return self.session.prompt([('class:prompt', "\n> ")])
+            return self.session.prompt([('class:prompt', '> ')])
         except Exception:
-            # Se prompt_toolkit falhar, usa input simples
-            return input("\n> ")
+            return input('> ')
 
     def display_response(self, content, metadata: Optional[Dict] = None):
         """Exibe a resposta do agente com metadados."""
