@@ -75,14 +75,99 @@ class ConsoleUIManager(UIManager):
             )
             
             # Tenta configuração mais compatível com Windows
+            import asyncio
             from prompt_toolkit import PromptSession
             from prompt_toolkit.output import ColorDepth
-            
+            from prompt_toolkit.key_binding import KeyBindings
+            from prompt_toolkit.formatted_text import FormattedText
+            from prompt_toolkit.application import get_app
+            from prompt_toolkit.layout.containers import Window, ConditionalContainer
+            from prompt_toolkit.layout.controls import FormattedTextControl
+            from prompt_toolkit.filters import Condition
+
+            kb = KeyBindings()
+            _esc = {'active': False, 'task': None}
+
+            def _hide_esc_hint(event):
+                _esc['active'] = False
+                if _esc['task']:
+                    _esc['task'].cancel()
+                    _esc['task'] = None
+                event.app.invalidate()
+
+            def _insert_newline(event):
+                _hide_esc_hint(event)
+                event.current_buffer.insert_text("\n")
+
+            @kb.add("escape", "enter", eager=True)
+            @kb.add("escape", "c-j", eager=True)
+            def _on_alt_enter(event):
+                _insert_newline(event)
+
+            @kb.add("escape")
+            def _on_esc(event):
+                if not event.current_buffer.text:
+                    _hide_esc_hint(event)
+                    return
+
+                if _esc['active']:
+                    event.current_buffer.reset()
+                    _hide_esc_hint(event)
+                    return
+
+                _esc['active'] = True
+                event.app.invalidate()
+
+                async def _auto_hide():
+                    await asyncio.sleep(1.5)
+                    _esc['active'] = False
+                    _esc['task'] = None
+                    event.app.invalidate()
+
+                if _esc['task']:
+                    _esc['task'].cancel()
+                _esc['task'] = event.app.create_background_task(_auto_hide())
+
+            def _get_cols():
+                try:
+                    return get_app().output.get_size().columns
+                except Exception:
+                    return 80
+
+            def _prompt_message():
+                return FormattedText([('', '─' * _get_cols() + '\n'), ('', '> ')])
+
             self.session = PromptSession(
+                message=_prompt_message,
                 completer=hybrid_completer,
-                complete_while_typing=True,  # Desabilita para evitar problemas
-                color_depth=ColorDepth.DEPTH_1_BIT  # Cores básicas apenas
+                complete_while_typing=True,
+                color_depth=ColorDepth.DEPTH_1_BIT,
+                key_bindings=kb,
             )
+
+            # Inject ESC hint directly below the input area.
+            # The top separator (from _prompt_message) is the only divider — a bottom
+            # separator would persist in scrollback after submission because
+            # prompt_toolkit reserves the row for ConditionalContainer even when the
+            # filter collapses to false on is_done.
+            hint_win = ConditionalContainer(
+                content=Window(
+                    height=1,
+                    content=FormattedTextControl(
+                        lambda: FormattedText([('fg:ansibrightblack', ' Esc novamente para limpar')])
+                    ),
+                    dont_extend_height=True,
+                ),
+                filter=Condition(lambda: _esc['active']),
+            )
+            root = self.session.app.layout.container
+            if hasattr(root, 'children') and isinstance(root.children, list):
+                root.children.insert(1, hint_win)
+
+            # sleep(0) = next event-loop tick — instant ESC flush with no perceptible delay.
+            # ANSI sequences (arrows etc.) arrive as a burst in one read(), so they're safe.
+            self.session.app.ttimeoutlen = 0
+            self.session.app.timeoutlen = 0
             
         except Exception as e:
             # Fallback completo - sem prompt_toolkit 
@@ -205,7 +290,7 @@ class ConsoleUIManager(UIManager):
             return input(clean_prompt)
 
         try:
-            return self.session.prompt([('class:prompt', '> ')])
+            return self.session.prompt()
         except Exception:
             return input('> ')
 
@@ -228,7 +313,6 @@ class ConsoleUIManager(UIManager):
             model_used = metadata.get("model_used") or ""
             model_suffix = f"  [dim]({model_used})[/dim]" if model_used else ""
             self.console.print(f"\n:hourglass: [dim]{exec_time:.2f}s[/dim]{model_suffix}")
-        self.console.print("---"*20)
 
     def display_message(self, message: UIMessage):
         """Exibe uma mensagem simples com base no seu tipo."""
