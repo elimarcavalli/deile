@@ -34,6 +34,37 @@ except ImportError as e:
     print("\nCertifique-se de que você está executando o script a partir do diretório raiz do projeto.")
     sys.exit(1)
 
+_MODEL_PROVIDERS_YAML = Path(__file__).parent / "deile" / "config" / "model_providers.yaml"
+
+
+def _use_legacy_gemini_only() -> bool:
+    """Return True when model_providers.yaml sets feature_flags.use_legacy_gemini_only=true."""
+    try:
+        import yaml
+        with open(_MODEL_PROVIDERS_YAML) as f:
+            data = yaml.safe_load(f)
+        return bool(data.get("feature_flags", {}).get("use_legacy_gemini_only", False))
+    except Exception:
+        return False
+
+
+def _bootstrap_legacy_gemini(router) -> list:
+    """Register only GeminiProvider via the legacy path.
+
+    Returns a list with the single provider_id registered, or an empty list on failure.
+    """
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        return []
+    try:
+        from deile.core.models.gemini_provider import GeminiProvider  # type: ignore
+        provider = GeminiProvider()
+        router.register_provider(provider, priority=1)
+        return ["gemini"]
+    except Exception as exc:
+        logging.getLogger(__name__).error("Legacy Gemini bootstrap failed: %s", exc)
+        return []
+
 
 class DeileAgentCLI:
     """Classe principal para a Interface de Linha de Comando do Agente."""
@@ -55,7 +86,10 @@ class DeileAgentCLI:
             with self.ui.show_loading("Inicializando DEILE v5.1..."):
                 model_router = get_model_router()
 
-                registered = bootstrap_providers(router=model_router)
+                if _use_legacy_gemini_only():
+                    registered = _bootstrap_legacy_gemini(model_router)
+                else:
+                    registered = bootstrap_providers(router=model_router)
                 if not registered:
                     self.ui.display_error(
                         "Nenhum provider configurado.",

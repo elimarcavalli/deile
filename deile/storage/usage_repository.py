@@ -266,6 +266,23 @@ class BudgetGuard:
                 limit_type="daily",
             )
 
+    def check_provider_monthly(self, provider_id: str, estimated_cost: float = 0.0) -> None:
+        """Raise BudgetExceeded if provider's 30-day spend would exceed monthly limit."""
+        if not self._enabled:
+            return
+        limit = self._monthly.get(provider_id)
+        if limit is None:
+            return
+        thirty_days_ago = time.time() - 30 * 86_400
+        current = self._repo.cost_for_provider_since(provider_id, thirty_days_ago)
+        if current + estimated_cost > limit:
+            raise BudgetExceeded(
+                f"Provider {provider_id} would exceed monthly limit "
+                f"${limit:.2f} (current=${current:.4f}, est=${estimated_cost:.4f})",
+                provider_id=provider_id,
+                limit_type="monthly",
+            )
+
     def check_all(
         self,
         session_id: str,
@@ -275,6 +292,7 @@ class BudgetGuard:
         """Run all budget checks for one call."""
         self.check_session(session_id, estimated_cost)
         self.check_provider_daily(provider_id, estimated_cost)
+        self.check_provider_monthly(provider_id, estimated_cost)
 
 
 # ---------------------------------------------------------------------------
