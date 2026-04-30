@@ -316,10 +316,21 @@ class ModelRouter:
                         self._circuit_breaker_status[provider_key] = True
                         logger.warning(f"Circuit breaker opened for {provider_key} (error rate: {error_rate:.2%})")
         
-        # Todas as tentativas falharam
+        # Todas as tentativas falharam — raise with structured envelopes
+        from deile.core.models.errors import ProviderInvocationError
+        errors_by_handle: Dict[str, Any] = {}
+        if isinstance(last_error, ProviderInvocationError):
+            env = last_error.envelope
+            errors_by_handle[env.provider_id] = {
+                "error_type": env.error_type,
+                "message": env.message,
+                "http_status": env.http_status,
+                "raw_json": env.raw_json,
+            }
         raise ModelError(
             f"All model providers failed after {max_retries} attempts. Last error: {str(last_error)}",
-            error_code="ALL_PROVIDERS_FAILED"
+            error_code="ALL_TIER_PROVIDERS_FAILED",
+            context={"errors_by_handle": errors_by_handle},
         ) from last_error
     
     def add_custom_routing_function(self, func: Callable[[RoutingContext, List[ModelProvider]], Optional[ModelProvider]]) -> None:
