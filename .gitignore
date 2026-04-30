@@ -30,13 +30,7 @@ work_items/
 storage/
 upgrades/
 tasks/
-test_*tasks/
 old/
-deile/tests/
-test_*.py
-teste_*.py
-*claude*
+.claude/
 .ignore/
 *.db
-INIT.txt
-IMPLEMENTATION_FINAL_REPORT.md
