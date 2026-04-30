@@ -335,11 +335,7 @@ class DeileAgent:
         except Exception as e:
             self._status = AgentStatus.ERROR
             # BudgetExceeded gets a structured, user-actionable response (no stack-trace dump)
-            try:
-                from deile.storage.usage_repository import BudgetExceeded as _BE
-            except Exception:
-                _BE = ()  # type: ignore[assignment]
-            if isinstance(e, _BE):
+            if isinstance(e, _BudgetExceeded):
                 friendly = (
                     f"Budget limit reached ({getattr(e, 'limit_type', 'unknown')}): {str(e)}\n"
                     f"Use /model budget to view limits, or wait for the next window."
@@ -415,11 +411,7 @@ class DeileAgent:
             
         except Exception as e:
             self._status = AgentStatus.ERROR
-            try:
-                from deile.storage.usage_repository import BudgetExceeded as _BE
-            except Exception:
-                _BE = ()  # type: ignore[assignment]
-            if isinstance(e, _BE):
+            if isinstance(e, _BudgetExceeded):
                 yield (
                     f"\n[Budget limit reached ({getattr(e, 'limit_type', 'unknown')}): {str(e)}\n"
                     f"Use /model budget to view limits.]\n"
@@ -888,6 +880,9 @@ class DeileAgent:
                         pass
                 attempt = 0
                 last_error: Optional[Exception] = None
+                # tried_providers tracks failed provider_ids (not model_ids). A 401/auth or
+                # network error on anthropic:opus implies anthropic:haiku will fail the same
+                # way — so we skip the entire provider, not just the failing model.
                 tried_providers: set = set()
                 content = ""
                 tool_results_raw: List[Any] = []
@@ -981,8 +976,7 @@ class DeileAgent:
 
         except Exception as e:
             # BudgetExceeded and structured ModelErrors must reach the caller — they carry
-            # context the CLI uses to render Rich panels.
-            from deile.storage.usage_repository import BudgetExceeded as _BudgetExceeded
+            # context the CLI uses to render Rich panels. _BudgetExceeded is module-level (line 18).
             if isinstance(e, _BudgetExceeded):
                 # Emit observability event then propagate
                 try:

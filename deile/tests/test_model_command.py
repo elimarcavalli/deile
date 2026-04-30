@@ -139,6 +139,43 @@ class TestModelUse:
         assert result.success
         assert result.metadata.get("forced_model") == "openai:gpt-4o"
 
+    @pytest.mark.asyncio
+    async def test_use_rejects_unregistered_model_when_real_agent_present(self):
+        """R9-M1: when context.agent has a real providers dict and the forced model
+        is NOT in it, /model use must reject immediately with a red Rich panel."""
+        cmd = ModelCommand()
+        ctx = _make_context("use anthropic:nonexistent-model")
+        # Wire a real providers dict containing only the flagship
+        flagship = SimpleNamespace(
+            provider_id="anthropic",
+            model_name="claude-opus-4-7",
+            provider_name="anthropic",
+        )
+        ctx.agent = SimpleNamespace(
+            model_router=SimpleNamespace(providers={"anthropic:claude-opus-4-7": flagship})
+        )
+        result = await cmd.execute(ctx)
+        assert result.success is False
+        # session.context_data['forced_model'] must NOT have been written
+        assert "forced_model" not in ctx.session.context_data
+
+    @pytest.mark.asyncio
+    async def test_use_accepts_registered_model_when_real_agent_present(self):
+        """R9-M1: positive case — when the model IS registered, /model use accepts it."""
+        cmd = ModelCommand()
+        ctx = _make_context("use anthropic:claude-haiku-4-5")
+        haiku = SimpleNamespace(
+            provider_id="anthropic",
+            model_name="claude-haiku-4-5",
+            provider_name="anthropic",
+        )
+        ctx.agent = SimpleNamespace(
+            model_router=SimpleNamespace(providers={"anthropic:claude-haiku-4-5": haiku})
+        )
+        result = await cmd.execute(ctx)
+        assert result.success is True
+        assert ctx.session.context_data.get("forced_model") == "anthropic:claude-haiku-4-5"
+
 
 # ---------------------------------------------------------------------------
 # /model strategy
