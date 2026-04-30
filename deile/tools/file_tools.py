@@ -869,7 +869,13 @@ class ListFilesTool(SyncTool):
                 match = re.search(pattern_regex, user_input)
                 if match:
                     extracted_path = match.group(1).strip()
-                    if extracted_path not in ["files", "file", "directory", "folder"]:
+                    # Reject regex-capture artifacts: lazy `[^'"]+?` can match a
+                    # single letter from a downstream word (e.g. "f" from "for").
+                    # Real paths are either explicit (./, /, ~) or have length>1.
+                    is_explicit_root = extracted_path in {".", "/", "~"}
+                    is_too_short = len(extracted_path) < 2 and not is_explicit_root
+                    is_filler_word = extracted_path.lower() in {"files", "file", "directory", "folder"}
+                    if not (is_too_short or is_filler_word):
                         target_path = extracted_path
                         logger.debug(f"ListFilesTool: Extracted path from user_input: {target_path}")
                         break
