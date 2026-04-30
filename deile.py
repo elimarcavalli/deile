@@ -24,8 +24,8 @@ try:
     from deile.config.manager import ConfigManager
     from deile.storage.logs import get_logger
     from deile.core.agent import DeileAgent
-    from deile.core.models.gemini_provider import GeminiProvider
     from deile.core.models.router import get_model_router
+    from deile.core.models.bootstrap import bootstrap_providers
     from deile.tools.registry import get_tool_registry
     from deile.parsers.registry import get_parser_registry
     from deile.ui import ConsoleUIManager, UITheme, UIMessage, MessageType
@@ -33,6 +33,37 @@ except ImportError as e:
     print(f"❌ ERRO: Falha ao importar módulos do DEILE: {e}")
     print("\nCertifique-se de que você está executando o script a partir do diretório raiz do projeto.")
     sys.exit(1)
+
+_MODEL_PROVIDERS_YAML = Path(__file__).parent / "deile" / "config" / "model_providers.yaml"
+
+
+def _use_legacy_gemini_only() -> bool:
+    """Return True when model_providers.yaml sets feature_flags.use_legacy_gemini_only=true."""
+    try:
+        import yaml
+        with open(_MODEL_PROVIDERS_YAML) as f:
+            data = yaml.safe_load(f)
+        return bool(data.get("feature_flags", {}).get("use_legacy_gemini_only", False))
+    except Exception:
+        return False
+
+
+def _bootstrap_legacy_gemini(router) -> list:
+    """Register only GeminiProvider via the legacy path.
+
+    Returns a list with the single provider_id registered, or an empty list on failure.
+    """
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        return []
+    try:
+        from deile.core.models.gemini_provider import GeminiProvider  # type: ignore
+        provider = GeminiProvider()
+        router.register_provider(provider, priority=1)
+        return ["gemini"]
+    except Exception as exc:
+        logging.getLogger(__name__).error("Legacy Gemini bootstrap failed: %s", exc)
+        return []
 
 
 class DeileAgentCLI:
@@ -52,16 +83,20 @@ class DeileAgentCLI:
             # Carrega configurações
             self.config_manager.load_config()
             
-            with self.ui.show_loading("Inicializando DEILE v5.0..."):
-                if not self.settings.get_api_key("gemini"):
+            with self.ui.show_loading("Inicializando DEILE v5.1..."):
+                model_router = get_model_router()
+
+                if _use_legacy_gemini_only():
+                    registered = _bootstrap_legacy_gemini(model_router)
+                else:
+                    registered = bootstrap_providers(router=model_router)
+                if not registered:
                     self.ui.display_error(
-                        "Chave de API do Google não encontrada!",
-                        "Por favor, configure a variável de ambiente GOOGLE_API_KEY."
+                        "Nenhum provider configurado.",
+                        "Defina ao menos uma variável de ambiente: "
+                        "ANTHROPIC_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, GOOGLE_API_KEY.",
                     )
                     return False
-
-                model_router = get_model_router()
-                model_router.register_provider(GeminiProvider(), priority=1)
                 
                 tool_registry = get_tool_registry()
                 parser_registry = get_parser_registry()
@@ -120,9 +155,37 @@ class DeileAgentCLI:
                         session_id=self.default_session.session_id
                     )
                 
-                # Com Chat Sessions, tool executions estão integradas na resposta conversacional
-                # A response.content já inclui informações sobre tools executadas automaticamente
-                self.ui.display_response(response.content, {"execution_time": response.execution_time})
+                # Surface structured-error responses with a Rich panel instead of a plain
+                # text blob. The agent sets explicit metadata flags for these cases.
+                meta = response.metadata or {}
+                if meta.get("budget_exceeded"):
+                    from rich.panel import Panel
+                    from rich.text import Text
+                    self.ui.console.print(
+                        Panel(
+                            Text(f"{response.content}", style="yellow"),
+                            title="[bold red]Budget Limit Reached[/bold red]",
+                            border_style="red",
+                            subtitle=(
+                                f"provider={meta.get('provider_id', 'n/a')} • "
+                                f"limit={meta.get('limit_type', 'n/a')}"
+                            ),
+                        )
+                    )
+                elif meta.get("forced_model_not_registered"):
+                    from rich.panel import Panel
+                    from rich.text import Text
+                    self.ui.console.print(
+                        Panel(
+                            Text(f"{response.content}", style="yellow"),
+                            title="[bold red]Forced Model Not Registered[/bold red]",
+                            border_style="red",
+                            subtitle="Use /model use auto to clear the override",
+                        )
+                    )
+                else:
+                    # Com Chat Sessions, tool executions estão integradas na resposta conversacional
+                    self.ui.display_response(response.content, {"execution_time": response.execution_time})
                 
                 # Opcionalmente, mostra tool executions como parte da conversa (modo debug ou verbose)
                 if response.tool_results and getattr(self.settings, "show_tool_details", False):

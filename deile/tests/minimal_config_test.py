@@ -6,7 +6,7 @@ Minimal Configuration Test
 Tests the unified configuration system without external dependencies.
 
 Author: DEILE Team
-Version: 5.0.0 ULTRA
+Version: 5.1.0 ULTRA
 """
 
 import sys

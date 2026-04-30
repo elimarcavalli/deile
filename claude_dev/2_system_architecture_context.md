@@ -20,7 +20,7 @@
                       │ Model & External APIs
 ┌─────────────────────▼───────────────────────────────────────────┐
 │                 INTEGRATION LAYER                              │
-│  Google Gemini API + Function Calling + File Support          │
+│  Multi-Provider Router (Anthropic/OpenAI/DeepSeek/Gemini)     │
 │  SQLite Storage + Security System + Audit Logging             │
 └─────────────────────────────────────────────────────────────────┘
 
@@ -37,7 +37,7 @@
 | Component | Technology | Version/Module | Purpose |
 |-----------|------------|----------------|----------|
 | **Language** | Python | 3.9+ | Primary development language with async support |
-| **LLM Provider** | Google Gemini | see `deile/config/manager.py` & `deile/config/settings.py` for current default | Advanced language model with function calling |
+| **LLM Providers** | Anthropic, OpenAI, DeepSeek, Gemini | `deile/config/model_providers.yaml` | Multi-provider with tier routing; at least one API key required |
 | **CLI Framework** | Rich | Latest | Terminal UI with themes and components |
 | **Storage** | SQLite | Built-in | Task persistence and memory storage |
 | **Configuration** | YAML/JSON | PyYAML/json | Configuration and pattern management |
@@ -54,7 +54,12 @@
 - **ContextManager** (`context_manager.py`) - Conversation context and state management
 - **IntentAnalyzer** (`intent_analyzer.py`) - Advanced pattern-driven intent detection
 - **IntentMetrics** (`intent_metrics.py`) - Performance tracking for intent analysis
-- **ModelRouter** (`models/router.py`) - Intelligent provider selection with fallback
+- **ModelRouter** (`models/router.py`) - Legacy provider selection with fallback (backward compat)
+- **TierRouter** (`models/tier_router.py`) - Tier-aware cascade router: `ModelCatalog` + `RoutingPolicy` + `CircuitBreaker`
+- **ModelCatalog** (`models/catalog.py`) - Immutable model registry from `model_providers.yaml`
+- **bootstrap** (`models/bootstrap.py`) - Conditional provider registration at startup
+- **UsageRepository** (`storage/usage_repository.py`) - SQLite usage + cost tracking
+- **BudgetGuard** (`storage/usage_repository.py`) - Per-session and daily spend limits
 
 #### Tool System (`deile/tools/`)
 - **ToolRegistry** (`registry.py`) - Auto-discovery with function calling generation

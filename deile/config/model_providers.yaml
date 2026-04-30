@@ -1,0 +1,155 @@
+# Multi-Provider Model Router configuration.
+# API keys are NEVER stored here — only the name of the environment variable.
+
+version: 1
+default_strategy: task_optimized   # task_optimized | cost_optimized
+
+providers:
+  anthropic:
+    api_key_env: ANTHROPIC_API_KEY
+    base_url: null                  # SDK default
+    enabled: true
+    timeout_seconds: 120
+    sdk_kwargs:
+      default_headers:
+        anthropic-beta: prompt-caching-2024-07-31
+
+  openai:
+    api_key_env: OPENAI_API_KEY
+    base_url: null
+    enabled: true
+    timeout_seconds: 120
+    sdk_kwargs: {}
+
+  deepseek:
+    api_key_env: DEEPSEEK_API_KEY
+    base_url: https://api.deepseek.com/v1
+    enabled: true
+    timeout_seconds: 120
+    sdk_kwargs: {}
+
+  gemini:                           # legacy optional (RNF-001)
+    api_key_env: GOOGLE_API_KEY
+    base_url: null
+    enabled: false                  # disabled by default
+    timeout_seconds: 120
+    sdk_kwargs: {}
+
+models:
+  # === ANTHROPIC ===
+  - provider_id: anthropic
+    model_id: claude-opus-4-7
+    tier: tier_1
+    label: flagship
+    display_name: Claude Opus 4.7
+    pricing: { input_per_1m_usd: 5.00, output_per_1m_usd: 25.00, cached_input_per_1m_usd: 0.50 }
+    context_window: 200000
+    capabilities: [function_calling, streaming, caching, vision]
+
+  - provider_id: anthropic
+    model_id: claude-sonnet-4-6
+    tier: tier_2
+    label: balanced
+    display_name: Claude Sonnet 4.6
+    pricing: { input_per_1m_usd: 3.00, output_per_1m_usd: 15.00, cached_input_per_1m_usd: 0.30 }
+    context_window: 200000
+    capabilities: [function_calling, streaming, caching, vision]
+
+  - provider_id: anthropic
+    model_id: claude-haiku-4-5
+    tier: tier_3
+    label: fast
+    display_name: Claude Haiku 4.5
+    pricing: { input_per_1m_usd: 1.00, output_per_1m_usd: 5.00, cached_input_per_1m_usd: 0.10 }
+    context_window: 200000
+    capabilities: [function_calling, streaming, caching]
+
+  # === OPENAI ===
+  - provider_id: openai
+    model_id: gpt-5.3-codex
+    tier: tier_1
+    label: code-specialist
+    display_name: GPT-5.3 Codex
+    pricing: { input_per_1m_usd: 1.75, output_per_1m_usd: 14.00 }
+    context_window: 200000
+    capabilities: [function_calling, streaming, caching]
+
+  - provider_id: openai
+    model_id: gpt-5.4
+    tier: tier_2
+    label: balanced
+    display_name: GPT-5.4
+    pricing: { input_per_1m_usd: 2.50, output_per_1m_usd: 15.00 }
+    context_window: 200000
+    capabilities: [function_calling, streaming, caching, vision]
+
+  - provider_id: openai
+    model_id: gpt-5.4-mini
+    tier: tier_3
+    label: fast
+    display_name: GPT-5.4 Mini
+    pricing: { input_per_1m_usd: 0.75, output_per_1m_usd: 4.50 }
+    context_window: 128000
+    capabilities: [function_calling, streaming, caching]
+
+  # === DEEPSEEK ===
+  - provider_id: deepseek
+    model_id: deepseek-v4-pro
+    tier: tier_1
+    label: flagship-cheap
+    display_name: DeepSeek V4 Pro
+    pricing: { input_per_1m_usd: 1.74, output_per_1m_usd: 3.48 }
+    context_window: 128000
+    capabilities: [function_calling, streaming, caching]
+
+  - provider_id: deepseek
+    model_id: deepseek-v4-flash
+    tier: tier_3
+    label: ultra-cheap
+    display_name: DeepSeek V4 Flash
+    pricing: { input_per_1m_usd: 0.14, output_per_1m_usd: 0.28 }
+    context_window: 128000
+    capabilities: [function_calling, streaming, caching]
+
+  - provider_id: deepseek
+    model_id: deepseek-reasoner
+    tier: tier_3
+    label: reasoning-cheap
+    display_name: DeepSeek Reasoner
+    pricing: { input_per_1m_usd: 0.14, output_per_1m_usd: 0.28 }
+    context_window: 128000
+    capabilities: [streaming, caching]
+
+policies:
+  task_optimized:
+    tier_1: [anthropic:claude-opus-4-7, openai:gpt-5.3-codex, deepseek:deepseek-v4-pro]
+    tier_2: [anthropic:claude-sonnet-4-6, openai:gpt-5.4, deepseek:deepseek-v4-pro]
+    tier_3: [anthropic:claude-haiku-4-5, openai:gpt-5.4-mini, deepseek:deepseek-v4-flash]
+    tier_4: [deepseek:deepseek-v4-flash, openai:gpt-5.4-mini]
+
+  cost_optimized:
+    tier_1: [deepseek:deepseek-v4-pro, openai:gpt-5.4]
+    tier_2: [deepseek:deepseek-v4-pro, openai:gpt-5.4-mini]
+    tier_3: [deepseek:deepseek-v4-flash, openai:gpt-5.4-mini]
+    tier_4: [deepseek:deepseek-v4-flash, openai:gpt-5.4-mini]
+
+circuit_breaker:
+  consecutive_failures_threshold: 3
+  cooldown_seconds: 60
+  half_open_test_requests: 1
+
+budget:
+  enabled: true
+  per_session_usd: 5.00
+  per_provider_daily_usd:
+    anthropic: 50.00
+    openai: 50.00
+    deepseek: 10.00
+  per_provider_monthly_usd:
+    anthropic: 500.00
+    openai: 500.00
+    deepseek: 100.00
+  alert_threshold_pct: 80
+
+feature_flags:
+  use_legacy_gemini_only: false

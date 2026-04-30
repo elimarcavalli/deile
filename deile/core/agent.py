@@ -11,6 +11,15 @@ from pathlib import Path
 from datetime import timedelta
 
 from .exceptions import DEILEError, ToolError, ParserError, ModelError
+
+# Module-level import so that `except _BudgetExceeded:` clauses don't NameError
+# if the import inside a try block ever raises (extremely rare but possible).
+try:
+    from deile.storage.usage_repository import BudgetExceeded as _BudgetExceeded
+except Exception:  # pragma: no cover — defensive only
+    class _BudgetExceeded(Exception):  # type: ignore[no-redef]
+        provider_id = None
+        limit_type = None
 from .context_manager import ContextManager
 from .models.router import ModelRouter
 from .intent_analyzer import IntentAnalyzer, get_intent_analyzer
@@ -30,6 +39,28 @@ from ..orchestration.workflow_executor import get_workflow_executor
 
 
 logger = logging.getLogger(__name__)
+
+
+def _self_record_circuit(provider_id: str, *, success: bool) -> None:
+    """Notify TierRouter's CircuitBreaker of a provider call outcome."""
+    try:
+        from deile.core.models.tier_router import get_tier_router  # noqa: PLC0415
+        tr = get_tier_router()
+        if success:
+            tr.record_success(provider_id)
+        else:
+            tr.record_failure(provider_id)
+    except Exception as exc:
+        logger.debug("circuit-record failed for %s (success=%s): %s", provider_id, success, exc)
+
+
+async def _emit_router_event(event_type: str, payload: dict) -> None:
+    """Best-effort observability emit; never raises."""
+    try:
+        from deile.storage.debug_logger import get_debug_logger  # noqa: PLC0415
+        await get_debug_logger().log_router_event(event_type, payload)
+    except Exception:
+        pass
 
 
 class AgentStatus(Enum):
@@ -303,16 +334,47 @@ class DeileAgent:
             
         except Exception as e:
             self._status = AgentStatus.ERROR
+            # BudgetExceeded gets a structured, user-actionable response (no stack-trace dump)
+            if isinstance(e, _BudgetExceeded):
+                friendly = (
+                    f"Budget limit reached ({getattr(e, 'limit_type', 'unknown')}): {str(e)}\n"
+                    f"Use /model budget to view limits, or wait for the next window."
+                )
+                self.logger.warning("BudgetExceeded surfaced to user: %s", e)
+                return AgentResponse(
+                    content=friendly,
+                    status=AgentStatus.ERROR,
+                    error=e,
+                    metadata={
+                        "budget_exceeded": True,
+                        "provider_id": getattr(e, "provider_id", None),
+                        "limit_type": getattr(e, "limit_type", None),
+                    },
+                    execution_time=time.time() - start_time,
+                )
+            # FORCED_MODEL_NOT_REGISTERED gets the same structured treatment
+            if isinstance(e, ModelError) and getattr(e, "error_code", "") == "FORCED_MODEL_NOT_REGISTERED":
+                self.logger.warning("Forced model not registered surfaced to user: %s", e)
+                return AgentResponse(
+                    content=str(e),
+                    status=AgentStatus.ERROR,
+                    error=e,
+                    metadata={
+                        "forced_model_not_registered": True,
+                        "error_code": "FORCED_MODEL_NOT_REGISTERED",
+                    },
+                    execution_time=time.time() - start_time,
+                )
             error_msg = f"Error processing input: {str(e)}"
             self.logger.error(error_msg, exc_info=True)
-            
+
             return AgentResponse(
                 content=error_msg,
                 status=AgentStatus.ERROR,
                 error=e,
                 execution_time=time.time() - start_time
             )
-    
+
     async def process_stream(
         self,
         user_input: str,
@@ -349,7 +411,13 @@ class DeileAgent:
             
         except Exception as e:
             self._status = AgentStatus.ERROR
-            yield f"Error: {str(e)}"
+            if isinstance(e, _BudgetExceeded):
+                yield (
+                    f"\n[Budget limit reached ({getattr(e, 'limit_type', 'unknown')}): {str(e)}\n"
+                    f"Use /model budget to view limits.]\n"
+                )
+            else:
+                yield f"Error: {str(e)}"
         finally:
             self._status = AgentStatus.IDLE
     
@@ -579,9 +647,9 @@ class DeileAgent:
         parse_result: Optional[ParseResult],
         session: AgentSession
     ) -> tuple[str, List[ToolResult]]:
-        """Processa function calling usando Chat Sessions - versão simplificada"""
+        """Processa function calling — Gemini via Chat Session; outros providers via chat_with_tools."""
         self._status = AgentStatus.GENERATING_RESPONSE
-        
+
         try:
             # Prepara contexto inicial
             context = await self.context_manager.build_context(
@@ -590,31 +658,121 @@ class DeileAgent:
                 tool_results=[],
                 session=session
             )
-            
-            # Seleciona modelo apropriado
-            model_provider = await self.model_router.select_provider(
-                context=context,
-                session=session
-            )
-            
-            # Verifica se é GeminiProvider com suporte a Chat Sessions
-            if hasattr(model_provider, 'create_chat_session') and hasattr(
-                model_provider, 'chat_with_tools'
-            ):
-                logger.debug("Using Chat Session with manual function calling")
 
-                # Obtém system instruction do contexto
+            # Classify intent tier and store in session for routing hints
+            model_tier: Optional[Any] = None
+            try:
+                from deile.core.intent_tier_mapper import classify_tier
+                intent_result = await self.intent_analyzer.analyze(
+                    user_input=user_input,
+                    parse_result=parse_result,
+                    session_context={},
+                )
+                model_tier = classify_tier(intent_result)
+                session.context_data["_current_tier"] = model_tier.value
+            except Exception:
+                model_tier = None
+
+            # Honor /model use <provider:model_id> override stored on the session
+            forced = None
+            try:
+                forced = session.context_data.get("forced_model")
+            except AttributeError:
+                forced = None
+
+            # Seleciona modelo apropriado (tier-aware quando classificado)
+            model_provider = None
+            if forced and isinstance(forced, str) and ":" in forced:
+                forced_provider_id, forced_model_id = forced.split(":", 1)
+                # Try exact match (provider_id:model_id) first — this works when bootstrap
+                # registered one instance per catalog handle.
+                for p in self.model_router.providers.values():
+                    if (
+                        getattr(p, "provider_id", None) == forced_provider_id
+                        and getattr(p, "model_name", None) == forced_model_id
+                    ):
+                        model_provider = p
+                        break
+                # Exact match not found — DO NOT silently substitute the flagship.
+                # The user explicitly chose this model; substituting could 10x their cost.
+                # Instead, raise a clear error listing what IS available for that provider.
+                if model_provider is None:
+                    available = sorted({
+                        getattr(p, "model_name", "?") for p in self.model_router.providers.values()
+                        if getattr(p, "provider_id", None) == forced_provider_id
+                    })
+                    raise ModelError(
+                        f"Forced model '{forced}' is not registered. "
+                        f"Available {forced_provider_id} models: {available or '(none)'}. "
+                        f"Use /model use auto to clear the override.",
+                        error_code="FORCED_MODEL_NOT_REGISTERED",
+                    )
+            if model_provider is None:
+                model_provider = await self.model_router.select_provider(
+                    context=context,
+                    session=session,
+                    tier=model_tier,
+                )
+
+            # Budget enforcement — BudgetExceeded must propagate; other errors fail open
+            try:
+                from deile.storage.usage_repository import (
+                    get_usage_repository,
+                    BudgetGuard,
+                    BudgetExceeded,
+                )
+                _guard: Any = getattr(self, "_budget_guard_singleton", None)
+                if _guard is None:
+                    # YAML lives at deile/config/model_providers.yaml; agent.py is at deile/core/agent.py
+                    _yaml = Path(__file__).resolve().parents[1] / "config" / "model_providers.yaml"
+                    try:
+                        self._budget_guard_singleton = BudgetGuard.from_yaml(_yaml, get_usage_repository())
+                        _guard = self._budget_guard_singleton
+                    except Exception as _init_err:
+                        logger.debug("BudgetGuard init failed (%s) — checks disabled this session", _init_err)
+                        self._budget_guard_singleton = False  # sentinel: tried and failed
+                if _guard:
+                    _guard.check_all(
+                        session_id=session.session_id,
+                        provider_id=model_provider.provider_id,
+                    )
+            except BudgetExceeded:
+                raise  # propagate to caller; caller decides what to surface to user
+            except Exception as _budget_err:
+                logger.debug("BudgetGuard non-fatal: %s", _budget_err)
+
+            # Observability: log provider selection
+            try:
+                from deile.storage.debug_logger import get_debug_logger
+                await get_debug_logger().log_router_event(
+                    "provider_selected",
+                    {
+                        "provider_id": model_provider.provider_id,
+                        "model_id": getattr(model_provider, "model_name", "unknown"),
+                        "tier": getattr(model_tier, "value", "unknown"),
+                        "session_id": session.session_id,
+                    },
+                )
+            except Exception:
+                pass
+
+            _t0 = time.time()
+
+            # ── Gemini path: Chat Session with _gemini_chat_with_tools ──────────
+            if hasattr(model_provider, 'create_chat_session') and hasattr(
+                model_provider, '_gemini_chat_with_tools'
+            ):
+                logger.debug("Using Chat Session with manual function calling (Gemini)")
+
                 system_instruction = None
                 if isinstance(context, dict):
                     system_instruction = context.get("system_instruction")
 
-                # Cria ou obtém chat session
                 chat = await model_provider.create_chat_session(
                     session_id=session.session_id,
                     system_instruction=system_instruction
                 )
 
-                # Monta mensagem (texto + anexos opcionais).
                 message_content: Any = user_input
                 if isinstance(context, dict) and "file_data_parts" in context:
                     message_parts: List[Any] = [user_input]
@@ -629,32 +787,215 @@ class DeileAgent:
                             )
                             message_parts.append(file_obj)
                     message_content = message_parts
-                    logger.info(
-                        "Sent message with %d file attachments",
-                        len(context["file_data_parts"]),
+                    logger.info("Sent message with %d file attachments", len(context["file_data_parts"]))
+
+                try:
+                    content, tool_results = await model_provider._gemini_chat_with_tools(
+                        chat=chat,
+                        message=message_content,
+                        working_directory=str(session.working_directory),
+                        session_data=session.context_data,
                     )
+                    _self_record_circuit(model_provider.provider_id, success=True)
+                except Exception as _gemini_err:
+                    _self_record_circuit(model_provider.provider_id, success=False)
+                    await _emit_router_event(
+                        "cascade_fallback",
+                        {
+                            "provider_id": model_provider.provider_id,
+                            "error": str(_gemini_err),
+                            "latency_ms": int((time.time() - _t0) * 1000),
+                        },
+                    )
+                    raise
 
-                # Roda o loop manual: função declarada → chamada → execução →
-                # function_response → resposta final. Erros em tools viram
-                # function_response normais, então o histórico é preservado.
-                content, tool_results = await model_provider.chat_with_tools(
-                    chat=chat,
-                    message=message_content,
-                    working_directory=str(session.working_directory),
-                    session_data=session.context_data,
-                )
+                # Observability — completion event for Gemini path too
+                try:
+                    from deile.storage.debug_logger import get_debug_logger
+                    await get_debug_logger().log_router_event(
+                        "provider_call_completed",
+                        {
+                            "provider_id": model_provider.provider_id,
+                            "tool_calls": len(tool_results),
+                            "latency_ms": int((time.time() - _t0) * 1000),
+                        },
+                    )
+                except Exception:
+                    pass
 
+                logger.info("Chat session completed with %d tool execution(s)", len(tool_results))
+                return content, tool_results
+
+            # ── New providers: Anthropic / OpenAI / DeepSeek via chat_with_tools ─
+            elif hasattr(model_provider, 'chat_with_tools'):
+                from deile.core.models.base import ModelMessage  # local import to avoid cycle
+                logger.debug("Using chat_with_tools for provider=%s", model_provider.provider_id)
+
+                system_instruction = None
+                raw_messages: List[Any] = []
+                if isinstance(context, dict):
+                    system_instruction = context.get("system_instruction")
+                    raw_messages = context.get("messages", [])
+
+                # Convert plain dict messages to ModelMessage objects (providers expect attrs, not keys)
+                messages_for_provider: List[ModelMessage] = []
+                for m in raw_messages:
+                    if isinstance(m, ModelMessage):
+                        messages_for_provider.append(m)
+                    elif isinstance(m, dict):
+                        role = str(m.get("role", "user"))
+                        content_raw = m.get("content", "")
+                        # Preserve string-typed content; for non-string (list/dict for multi-modal),
+                        # keep the original object so providers that support structured content can handle it.
+                        # ModelMessage.content is typed as str, but providers may pass it through as-is.
+                        if isinstance(content_raw, str):
+                            content = content_raw
+                        else:
+                            content = content_raw  # type: ignore[assignment]
+                        msg_metadata = m.get("metadata", {}) or {}
+                        messages_for_provider.append(
+                            ModelMessage(role=role, content=content, metadata=msg_metadata)  # type: ignore[arg-type]
+                        )
+                # If context produced no messages, fall back to the raw user_input
+                if not messages_for_provider:
+                    messages_for_provider = [ModelMessage(role="user", content=user_input)]
+
+                # Get ToolSchema objects from registered, enabled tools
+                tools = [
+                    t.schema for t in get_tool_registry().list_enabled() if getattr(t, "schema", None) is not None
+                ]
+
+                # Cascade retry loop: on provider failure, mark CB and try next tier provider.
+                # We pass `skip_provider_ids` to TierRouter.select so a single in-request
+                # failure short-circuits the cascade even before the CB threshold trips.
+                # Cap is the cascade length so we never silently truncate longer cascades.
+                MAX_CASCADE_ATTEMPTS = 3  # safe default for tier=None (no cascade) path
+                if model_tier is not None:
+                    try:
+                        from deile.core.models.tier_router import get_tier_router as _gtr_init
+                        cascade_len = len(_gtr_init().policy().cascade_for_tier(model_tier))
+                        if cascade_len > 0:
+                            MAX_CASCADE_ATTEMPTS = max(cascade_len, 1)
+                    except Exception:
+                        pass
+                attempt = 0
+                last_error: Optional[Exception] = None
+                # tried_providers tracks failed provider_ids (not model_ids). A 401/auth or
+                # network error on anthropic:opus implies anthropic:haiku will fail the same
+                # way — so we skip the entire provider, not just the failing model.
+                tried_providers: set = set()
+                content = ""
+                tool_results_raw: List[Any] = []
+                while attempt < MAX_CASCADE_ATTEMPTS:
+                    attempt += 1
+                    tried_providers.add(model_provider.provider_id)
+                    try:
+                        # Provider records its own usage internally via _record_usage()
+                        content, tool_results_raw, _ = await model_provider.chat_with_tools(
+                            messages=messages_for_provider,
+                            tools=tools,
+                            system_instruction=system_instruction,
+                            session_id=session.session_id,
+                        )
+                        _self_record_circuit(model_provider.provider_id, success=True)
+                        last_error = None
+                        break
+                    except Exception as _chat_err:
+                        last_error = _chat_err
+                        _self_record_circuit(model_provider.provider_id, success=False)
+                        await _emit_router_event(
+                            "cascade_fallback",
+                            {
+                                "provider_id": model_provider.provider_id,
+                                "attempt": attempt,
+                                "error": str(_chat_err),
+                                "latency_ms": int((time.time() - _t0) * 1000),
+                            },
+                        )
+                        # No retry path when tier wasn't classified or user explicitly forced
+                        # this exact provider — the user chose it, we should not silently swap.
+                        if model_tier is None or forced:
+                            raise
+                        try:
+                            from deile.core.models.tier_router import get_tier_router as _gtr
+                            next_provider = _gtr().select(
+                                model_tier, skip_provider_ids=tried_providers
+                            )
+                        except Exception:
+                            raise _chat_err  # cascade exhausted
+
+                        model_provider = next_provider
+                        logger.info(
+                            "Cascade fallback (attempt=%d): switched to provider=%s",
+                            attempt, model_provider.provider_id,
+                        )
+                        # Re-run budget check against the new provider — daily/monthly
+                        # limits are per-provider, not session-wide.
+                        _guard_local: Any = getattr(self, "_budget_guard_singleton", None)
+                        if _guard_local:
+                            # _BudgetExceeded is module-level; if check_all raises it, propagate.
+                            _guard_local.check_all(
+                                session_id=session.session_id,
+                                provider_id=model_provider.provider_id,
+                            )
+                        continue
+                if last_error is not None:
+                    raise last_error
+
+                # Note: providers persist usage internally via _record_usage(); we do NOT re-record here.
+                latency_ms = int((time.time() - _t0) * 1000)
+
+                # Observability — completion event
+                try:
+                    from deile.storage.debug_logger import get_debug_logger
+                    await get_debug_logger().log_router_event(
+                        "provider_call_completed",
+                        {
+                            "provider_id": model_provider.provider_id,
+                            "tool_calls": len(tool_results_raw),
+                            "latency_ms": latency_ms,
+                        },
+                    )
+                except Exception:
+                    pass
+
+                tool_results: List[ToolResult] = [
+                    tr for tr in tool_results_raw if isinstance(tr, ToolResult)
+                ]
                 logger.info(
-                    "Chat session completed with %d tool execution(s)", len(tool_results)
+                    "chat_with_tools completed (%s): %d tool call(s)",
+                    model_provider.provider_id,
+                    len(tool_results),
                 )
                 return content, tool_results
 
             else:
-                # Fallback para providers sem Chat Session support
+                # Fallback para providers sem suporte a tools
                 logger.debug("Using legacy function calling approach")
                 return await self._process_legacy_function_calling(user_input, parse_result, session)
 
         except Exception as e:
+            # BudgetExceeded and structured ModelErrors must reach the caller — they carry
+            # context the CLI uses to render Rich panels. _BudgetExceeded is module-level (line 18).
+            if isinstance(e, _BudgetExceeded):
+                # Emit observability event then propagate
+                try:
+                    from deile.storage.debug_logger import get_debug_logger
+                    await get_debug_logger().log_router_event(
+                        "budget_exceeded",
+                        {
+                            "session_id": session.session_id,
+                            "provider_id": getattr(e, "provider_id", "unknown"),
+                            "limit_type": getattr(e, "limit_type", "unknown"),
+                            "message": str(e),
+                        },
+                    )
+                except Exception:
+                    pass
+                raise
+            # FORCED_MODEL_NOT_REGISTERED also propagates so process_input can build a structured response
+            if isinstance(e, ModelError) and getattr(e, "error_code", "") == "FORCED_MODEL_NOT_REGISTERED":
+                raise
             self.logger.error(f"Chat session function calling failed: {e}", exc_info=True)
             return f"I encountered an error during function calling: {str(e)}", []
 
@@ -1020,35 +1361,59 @@ class DeileAgent:
         tool_results: List[ToolResult],
         session: AgentSession
     ) -> AsyncIterator[str]:
-        """Geração de resposta em streaming"""
+        """Geração de resposta em streaming — consome UnifiedStreamEvent de qualquer provider."""
+        from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
+
         try:
-            # Similar ao método anterior, mas com streaming
             context = await self.context_manager.build_context(
                 user_input=user_input,
                 parse_result=parse_result,
                 tool_results=tool_results,
                 session=session
             )
-            
+
             model_provider = await self.model_router.select_provider(
                 context=context,
                 session=session
             )
-            
-            # Corrigido: trata context como dict
+
             if isinstance(context, dict):
                 messages = context.get("messages", [])
                 system_instruction = context.get("system_instruction")
             else:
                 messages = []
                 system_instruction = "You are DEILE, a helpful AI assistant."
-            
-            async for chunk in model_provider.generate_stream(
+
+            async for event in model_provider.generate_stream(
                 messages=messages,
                 system_instruction=system_instruction
             ):
-                yield chunk
-                
+                if not isinstance(event, UnifiedStreamEvent):
+                    # Legacy provider yields raw str — pass through
+                    if isinstance(event, str):
+                        yield event
+                    continue
+
+                if event.type == StreamEventType.TEXT_DELTA:
+                    if event.text:
+                        yield event.text
+
+                elif event.type == StreamEventType.TOOL_USE_START:
+                    if event.tool_name:
+                        yield f"\n[tool: {event.tool_name}]\n"
+
+                elif event.type == StreamEventType.TOOL_USE_END:
+                    yield "\n"
+
+                elif event.type == StreamEventType.USAGE_FINAL:
+                    # Consumed silently — usage recording handled elsewhere
+                    pass
+
+                elif event.type == StreamEventType.ERROR:
+                    env = event.error_envelope
+                    msg = str(env) if env else "unknown streaming error"
+                    yield f"\n[error: {msg}]\n"
+
         except Exception as e:
             yield f"Error in streaming response: {str(e)}"
     

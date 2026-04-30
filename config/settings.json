@@ -1,6 +1,6 @@
 {
   "app_name": "DEILE",
-  "version": "5.0.0",
+  "version": "5.1.0",
   "debug": false,
   "working_directory": ".",
   "config_directory": "config",

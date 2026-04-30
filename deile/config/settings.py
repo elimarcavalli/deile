@@ -27,7 +27,7 @@ class Settings:
     
     # Configurações básicas
     app_name: str = "DEILE"
-    version: str = "5.0.0"
+    version: str = "5.1.0"
     debug: bool = False
     
     # Configurações de diretórios
@@ -114,9 +114,10 @@ class Settings:
         # Lista de API keys conhecidas
         known_keys = [
             "GOOGLE_API_KEY",
-            "OPENAI_API_KEY", 
+            "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",
-            "AZURE_API_KEY"
+            "AZURE_API_KEY",
+            "DEEPSEEK_API_KEY",
         ]
         
         for key in known_keys:
@@ -227,7 +228,8 @@ class Settings:
             "gpt": "OPENAI_API_KEY",
             "anthropic": "ANTHROPIC_API_KEY",
             "claude": "ANTHROPIC_API_KEY",
-            "azure": "AZURE_API_KEY"
+            "azure": "AZURE_API_KEY",
+            "deepseek": "DEEPSEEK_API_KEY",
         }
         
         key_name = key_mapping.get(provider.lower())

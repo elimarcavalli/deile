@@ -1,7 +1,7 @@
 """Provedor Gemini para o sistema de modelos"""
 
 import logging
-from typing import List, Optional, AsyncIterator, Dict, Any
+from typing import List, Optional, AsyncIterator, Dict, Any, Tuple
 import os
 import asyncio
 import time
@@ -322,20 +322,34 @@ class GeminiProvider(ModelProvider):
         self,
         messages: List[ModelMessage],
         system_instruction: Optional[str] = None,
-        **kwargs
-    ) -> AsyncIterator[str]:
-        """Gera resposta em streaming (Gemini não suporta nativamente)"""
-        # Gemini não tem streaming nativo, então simula
+        **kwargs,
+    ) -> AsyncIterator[Any]:
+        """Stream response as UnifiedStreamEvent (simulated — Gemini has no native streaming)."""
+        from deile.core.models.stream_events import (
+            ModelUsageSnapshot,
+            StreamEventType,
+            UnifiedStreamEvent,
+        )
+
         response = await self.generate(messages, system_instruction, **kwargs)
-        
-        # Simula streaming dividindo a resposta
+
         words = response.content.split()
-        for i in range(0, len(words), 5):  # 5 palavras por chunk
-            chunk = " ".join(words[i:i+5])
+        for i in range(0, len(words), 5):
+            chunk = " ".join(words[i:i + 5])
             if i + 5 < len(words):
                 chunk += " "
-            yield chunk
-            await asyncio.sleep(0.05)  # Simula delay de streaming
+            yield UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text=chunk)
+            await asyncio.sleep(0.05)
+
+        yield UnifiedStreamEvent(
+            type=StreamEventType.USAGE_FINAL,
+            usage=ModelUsageSnapshot(
+                input_tokens=response.usage.prompt_tokens,
+                output_tokens=response.usage.completion_tokens,
+                cached_tokens=response.usage.cached_tokens,
+                cost_usd=response.usage.cost_estimate,
+            ),
+        )
     
     async def validate_config(self) -> bool:
         """Valida configuração do provedor"""
@@ -581,6 +595,57 @@ class GeminiProvider(ModelProvider):
         }
 
     async def chat_with_tools(
+        self,
+        messages: List[ModelMessage],
+        tools: List[Any],
+        system_instruction: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Tuple[str, List[Any], "ModelUsage"]:
+        """Unified multi-provider interface: run the Gemini tool loop and return (text, results, usage).
+
+        Creates an ephemeral in-process chat session (not cached in _chat_sessions) so
+        the unified router can call this without needing to manage session lifecycle.
+        """
+        import time as _time
+
+        start = _time.time()
+        sys_instr = self._extract_system(messages, system_instruction)
+        user_msg = self._messages_to_gemini_user_input(messages)
+
+        chat = await self.create_chat_session(
+            session_id=f"_unified_{id(messages)}",
+            system_instruction=sys_instr,
+        )
+        text, tool_results = await self._gemini_chat_with_tools(
+            chat=chat,
+            message=user_msg,
+            working_directory=kwargs.get("working_directory", "."),
+            session_data=kwargs.get("session_data"),
+        )
+        # Clean up the ephemeral session entry
+        self._chat_sessions.pop(f"_unified_{id(messages)}", None)
+
+        usage = ModelUsage(
+            prompt_tokens=0,
+            completion_tokens=0,
+            total_tokens=0,
+            request_time=_time.time() - start,
+        )
+        return text, tool_results, usage
+
+    @staticmethod
+    def _extract_system(
+        messages: List[ModelMessage], system_instruction: Optional[str]
+    ) -> Optional[str]:
+        sys_from_msgs = next((m.content for m in messages if m.role == "system"), None)
+        return system_instruction or sys_from_msgs
+
+    def _messages_to_gemini_user_input(self, messages: List[ModelMessage]) -> str:
+        """Flatten the last user message to a plain string for Gemini chat."""
+        user_parts = [m.content for m in messages if m.role == "user"]
+        return user_parts[-1] if user_parts else ""
+
+    async def _gemini_chat_with_tools(
         self,
         chat: Any,
         message: Any,
