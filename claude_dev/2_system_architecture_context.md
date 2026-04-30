@@ -26,10 +26,10 @@
 
               ┌─────────────────────────────────────────┐
               │       EXTENSION ECOSYSTEM               │
-              │  • 15+ Built-in Tools                  │
-              │  • 23 Slash Commands                   │  
-              │  • Dynamic Personas                    │
-              │  • Custom Parsers                      │
+              │  • Built-in Tools  (deile/tools/*.py)   │
+              │  • Slash Commands  (deile/commands/)    │
+              │  • Dynamic Personas                     │
+              │  • Custom Parsers                       │
               └─────────────────────────────────────────┘
 ```
 
@@ -37,7 +37,7 @@
 | Component | Technology | Version/Module | Purpose |
 |-----------|------------|----------------|----------|
 | **Language** | Python | 3.9+ | Primary development language with async support |
-| **LLM Provider** | Google Gemini | 1.5-pro-latest | Advanced language model with function calling |
+| **LLM Provider** | Google Gemini | see `deile/config/manager.py` & `deile/config/settings.py` for current default | Advanced language model with function calling |
 | **CLI Framework** | Rich | Latest | Terminal UI with themes and components |
 | **Storage** | SQLite | Built-in | Task persistence and memory storage |
 | **Configuration** | YAML/JSON | PyYAML/json | Configuration and pattern management |
@@ -45,53 +45,51 @@
 | **Validation** | Pydantic | v2+ | Data validation and schema enforcement |
 | **Testing** | Pytest | Latest | Comprehensive test framework |
 
-### 🧠 Core Components Architecture (12 Specialized Modules)
+### 🧠 Core Components Architecture (organized by subpackage)
+
+> Authoritative source is the directory listing of `deile/`. The sections below describe responsibilities; do not rely on file-level line counts here — they rot quickly and the code is the source of truth.
 
 #### Agent System (`deile/core/`)
-- **DeileAgent** (agent.py) - Central orchestrator with Mediator Pattern implementation
-- **ContextManager** (context_manager.py) - Conversation context and state management
-- **IntentAnalyzer** (intent_analyzer.py) - 833 lines of advanced intent detection logic
-- **IntentMetrics** (intent_metrics.py) - 657 lines of performance tracking
-- **ModelRouter** (models/router.py) - Intelligent provider selection with fallback
+- **DeileAgent** (`agent.py`) - Central orchestrator with Mediator Pattern implementation
+- **ContextManager** (`context_manager.py`) - Conversation context and state management
+- **IntentAnalyzer** (`intent_analyzer.py`) - Advanced pattern-driven intent detection
+- **IntentMetrics** (`intent_metrics.py`) - Performance tracking for intent analysis
+- **ModelRouter** (`models/router.py`) - Intelligent provider selection with fallback
 
 #### Tool System (`deile/tools/`)
-- **ToolRegistry** (registry.py) - Auto-discovery with function calling generation
-- **BaseTool** (base.py) - Tool interface with security levels
-- **FileTools** (file_tools.py) - Advanced file manipulation with encoding detection
-- **BashTools** (bash_tools.py) - Secure command execution with sandboxing
-- **SearchTools** (search_tools.py) - Intelligent code and content search
-- **GitTools** (git_tools.py) - Version control integration
-- **HttpTools** (http_tools.py) - Network operations with retry logic
+- **ToolRegistry** (`registry.py`) - Auto-discovery with function calling generation
+- **BaseTool** (`base.py`) - Tool interface with security levels
+- Built-in tools live as siblings inside `deile/tools/` (e.g. `file_tools.py`, `bash_tools.py`, `search_tools.py`, `git_tools.py`, `http_tools.py`, `tokenizer_tool.py`, …). Run `ls deile/tools/*.py` for the current set — there is no `deile/tools/builtin/` folder.
 
 #### Orchestration System (`deile/orchestration/`)
-- **PlanManager** (plan_manager.py) - Autonomous workflow generation
-- **WorkflowExecutor** (workflow_executor.py) - 404 lines of execution logic
-- **SQLiteTaskManager** (sqlite_task_manager.py) - 574 lines of task persistence
-- **TaskManager** (task_manager.py) - 570 lines of base task management
+- **PlanManager** (`plan_manager.py`) - Autonomous workflow generation
+- **WorkflowExecutor** (`workflow_executor.py`) - Step execution with rollback
+- **TaskManager** (`task_manager.py`) - Base task lifecycle management
+- **SQLiteTaskManager** (`sqlite_task_manager.py`) - Task persistence layer
 
 #### Command System (`deile/commands/`)
-- **CommandRegistry** (registry.py) - Auto-discovery of 23+ commands
-- **SlashCommand** (base.py) - Command interface and execution pattern
-- **Built-in Commands** (builtin/) - help, plan, run, debug, config, etc.
+- **CommandRegistry** (`registry.py`) - Auto-discovery of slash commands
+- **SlashCommand** (`base.py`) - Command interface and execution pattern
+- **Built-in Commands** (`builtin/`) - help, plan, run, debug, config, status, etc.
 
 #### Parser System (`deile/parsers/`)
-- **ParserRegistry** (registry.py) - Dynamic parser discovery
+- **ParserRegistry** (`registry.py`) - Dynamic parser discovery
 - **CommandParser** - Slash command processing
 - **FileParser** - File reference analysis
 - **DiffParser** - Patch and diff handling
 - **IntelligentFileParser** - Context-aware parsing
 
 #### UI System (`deile/ui/`)
-- **ConsoleUIManager** (console_ui.py) - Main UI orchestrator
-- **DisplayManager** (display_manager.py) - Rich output formatting
-- **AutocompleteManager** (autocomplete.py) - Hybrid autocompletion
-- **ThemeManager** (themes.py) - Configurable color themes
+- **ConsoleUIManager** (`console_ui.py`) - Main UI orchestrator
+- **DisplayManager** (`display_manager.py`) - Rich output formatting
+- **AutocompleteManager** (`autocomplete.py`) - Hybrid autocompletion
+- **ThemeManager** (`themes.py`) - Configurable color themes
 
 #### Personas System (`deile/personas/`)
-- **BaseAutonomousPersona** (base.py) - 915 lines of persona logic
-- **PersonaLoader** (loader.py) - Markdown-based instruction loading
-- **PersonaManager** (manager.py) - Hot-reload and capability management
-- **Instructions** (instructions/) - Markdown persona definitions
+- **BaseAutonomousPersona** (`base.py`) - Persona contract and lifecycle
+- **PersonaLoader** (`loader.py`) - Markdown-based instruction loading
+- **PersonaManager** (`manager.py`) - Hot-reload and capability management
+- **Instructions** (`instructions/*.md`) - Markdown persona definitions (e.g. `developer.md`, `fallback.md`)
 
 #### Memory System (`deile/memory/`)
 - **MemoryManager** (memory_manager.py) - Multi-layer coordination
@@ -107,10 +105,17 @@
 - **SandboxExecutor** - Isolated execution environment
 
 #### Configuration System (`deile/config/`)
-- **ConfigManager** (manager.py) - YAML/JSON configuration management
-- **Settings** (settings.py) - Global settings with validation
-- **IntentPatterns** (intent_patterns.yaml) - 436 lines of patterns
+- **ConfigManager** (`manager.py`) - YAML/JSON configuration management
+- **Settings** (`settings.py`) - Global settings singleton (`get_settings()`); never instantiate `Settings()` directly
+- **IntentPatterns** (`intent_patterns.yaml`) - Regex/keyword catalog for intent detection
 - **EnvironmentLoader** - Environment variable management
+
+#### Supporting subpackages
+- **Events** (`deile/events/`) - Event bus / observer wiring used for hot-reload and progress emission
+- **Infrastructure** (`deile/infrastructure/`) - Adapters for external integrations (the hexagonal "right side")
+- **Storage** (`deile/storage/`) - Persistence primitives (SQLite, file system) shared by orchestration and memory
+- **Plugins** (`deile/plugins/`) - Third-party extension surface
+- **Evolution** (`deile/evolution/`) - Long-term learning / feedback-loop machinery
 
 ### Key Dependencies & Integration Points
 - **google-generativeai**: Gemini API integration with function calling

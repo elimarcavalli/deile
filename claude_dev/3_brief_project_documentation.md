@@ -4,19 +4,19 @@
 
 **Current Status:** DEILE is a fully-implemented autonomous AI agent for software development, featuring advanced intent analysis, workflow orchestration, and multi-layer memory systems. Built with Python 3.9+ and Google Gemini integration, it provides intelligent code assistance, automated task execution, and comprehensive development support through a rich CLI interface.
 
-**System Architecture:** Modular architecture with 12 specialized subsystems, 15+ integrated tools, 23 slash commands, and dynamic persona system. The agent uses Mediator Pattern for component orchestration, Registry Pattern for extensibility, and async/await throughout for non-blocking operations.
+**System Architecture:** Modular architecture organized as subpackages under `deile/` (core, tools, commands, parsers, orchestration, memory, security, personas, ui, config, events, infrastructure, storage, plugins, evolution). The agent uses Mediator Pattern for component orchestration, Registry Pattern for extensibility, and async/await throughout for non-blocking operations. Concrete counts of tools/commands/parsers are intentionally omitted — `ls deile/tools/*.py` and `ls deile/commands/builtin/*.py` are the source of truth.
 
 ### Core Capabilities (Currently Implemented & Operational)
 
 #### Autonomous Agent Intelligence
-* **Intent Analysis System**: 833 lines of advanced NLP for understanding developer intentions
+* **Intent Analysis System**: Pattern-driven NLP for understanding developer intentions (`deile/core/intent_analyzer.py`)
 * **Workflow Orchestration**: Automatic task decomposition and step-by-step execution
 * **Context Management**: Sophisticated conversation state with file handling and persistence
-* **Model Routing**: Intelligent provider selection with Gemini 1.5 Pro integration
+* **Model Routing**: Intelligent provider selection with Google Gemini integration (current default model in `deile/config/manager.py`)
 
 #### Tool Ecosystem & Extensibility
 * **Auto-Discovery Registry**: Dynamic tool loading with automatic function calling generation
-* **15+ Built-in Tools**: File operations, bash execution, search, Git, HTTP, and more
+* **Built-in Tools** (in `deile/tools/*.py`): file operations, bash execution, search, Git, HTTP, tokenizer, and more
 * **Security Sandboxing**: Permission-based execution with comprehensive audit logging
 * **Plugin Architecture**: Extensible design for custom tool development
 
@@ -29,16 +29,16 @@
 #### Developer Experience Excellence
 * **Rich CLI Interface**: Beautiful terminal UI with themes, status bars, and progress tracking
 * **Hybrid Autocompletion**: Intelligent command and file path completion
-* **23 Slash Commands**: Comprehensive command system for all operations
+* **Slash Command System**: Comprehensive command surface (`deile/commands/builtin/*.py`)
 * **Hot-Reload System**: Automatic configuration and persona updates without restart
 
 ### Innovative Features (Currently Implemented)
 
 #### Advanced Intent Understanding
-* **Pattern-Based Detection**: 436 lines of YAML patterns for intent recognition
+* **Pattern-Based Detection**: YAML pattern catalog at `deile/config/intent_patterns.yaml`
 * **Confidence Scoring**: Probabilistic analysis with threshold-based activation
 * **Workflow Detection**: Automatic identification of multi-step development tasks
-* **Performance Metrics**: 657 lines of metrics tracking for optimization
+* **Performance Metrics**: Tracking module at `deile/core/intent_metrics.py`
 
 #### Autonomous Orchestration
 * **Plan Generation**: AI-driven task decomposition with dependency analysis
@@ -67,16 +67,16 @@
 * **Resource Management**: Proper cleanup and disposal patterns
 
 #### Integration Capabilities
-* **Google Gemini API**: Native function calling with file support
+* **Google Gemini API**: Native function calling with file support (model selection lives in `deile/config/`)
 * **SQLite Persistence**: Task and memory storage with ACID compliance
 * **File System Monitoring**: Watchdog integration for hot-reload
 * **External APIs**: HTTP tools with retry and circuit breaker patterns
 
 #### Quality Assurance
-* **292 Test Files**: 8,500+ lines of comprehensive testing
-* **92% Code Coverage**: Extensive unit and integration tests
-* **Security Testing**: Dedicated security test suite
-* **Performance Testing**: Load and stress testing capabilities
+* **Pytest Suite**: Tests live in `deile/tests/` (mix of pytest-collected `test_*.py` and standalone scripts — see `CLAUDE.md` gotchas)
+* **Coverage Gate**: `pytest.ini` enforces a minimum coverage threshold via `--cov-fail-under` — see the file for the current value
+* **Security Testing**: Dedicated security test markers (`pytest -m security`)
+* **Performance Testing**: Load/stress markers available via `pytest -m`
 
 #### Configuration Management
 * **Environment-Based**: Development, staging, production configurations

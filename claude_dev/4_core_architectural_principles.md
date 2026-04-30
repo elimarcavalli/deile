@@ -1,5 +1,28 @@
 ## 🛏️ Core Architectural Principles (Non-negotiable) - CURRENT IMPLEMENTATION
 
+### How to use this doc
+
+Below is the full principles catalog. Use the **trigger index** below to jump to the section that fires for the situation in front of you. If a row matches what you are about to write, read the linked section before the first Write/Edit.
+
+### Triggers & anti-patterns index
+
+| Code situation (what you are about to write) | Apply section | ❌ Never |
+|---|---|---|
+| New class extending `BaseTool`, `SlashCommand`, or `BaseParser` | Registry Pattern Excellence + Tool System Design | Manual instantiation without going through the registry; missing `@register_*` decorator or explicit `registry.register(...)` |
+| Function that performs file/network/DB I/O | Asynchronous by Design | `time.sleep`, blocking `open()`/`requests` in async path, missing `await`, sync call inside `async def` |
+| New third-party dependency wired into `deile/core/` or `deile/orchestration/` | Clean Architecture Implementation | Importing the lib directly inside core/orchestration — route it through an adapter in `deile/infrastructure/` |
+| Code that reads a user-supplied path, command, or query | Security-First Development | Skipping permission check, raw input into shell/SQL, missing audit log entry |
+| State that must survive across turns or sessions | Memory System Architecture | Module-global dicts as cache; pick a layer (working / episodic / semantic / procedural) |
+| `try: … except Exception:` block | Error Handling Philosophy | Silent except, generic catch without re-raise/log, swallowing `asyncio.CancelledError` |
+| New config key being read | Configuration Management | Reading `os.environ` or YAML directly — go through the `settings.py` singleton |
+| Component meant to be plugged in / discovered | Extensibility Principles + Registry Pattern | `if isinstance(...)` chains branching on plugin types instead of dispatching via the registry |
+| Public method on a new module | Documentation Standards | Public symbol without docstring or type hints |
+| Multi-step operation that can fail partway | Orchestration Principles | No rollback strategy / no progress emission |
+
+If multiple rows match, apply all matching sections. If your situation is not in the table but you are writing inside `deile/`, default to: **Asynchronous by Design** + **Registry Pattern** + the section nearest your subpackage's responsibility.
+
+---
+
 ### Agent Autonomy (Primary Principle)
 - **Intent-Driven Execution**: All operations begin with intent analysis to understand user goals
 - **Workflow Orchestration**: Complex tasks automatically decomposed into executable steps
@@ -65,7 +88,7 @@
 
 ### Testing & Quality Principles
 - **Test-Driven Development**: Tests written before implementation
-- **Comprehensive Coverage**: 92%+ code coverage maintained
+- **Comprehensive Coverage**: minimum gate enforced by `pytest.ini` (`--cov-fail-under`); aim well above the floor
 - **Integration Testing**: Full system integration tests
 - **Security Testing**: Dedicated security test suite
 - **Performance Testing**: Load and stress testing

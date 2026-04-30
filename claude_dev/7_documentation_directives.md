@@ -1,6 +1,10 @@
 ## 📋 Documentation Directives
 
-When generating documentation for DEILE features, create comprehensive technical documentation that serves as both implementation record and architectural reference.
+**Scope**: this doc is the template for **feature documentation** that lives in `docs/` (the dated `docs/YYMMDD_HHMM_FEATURE_TITLE.md` files generated in Phase 6 of doc 5), and for top-level deliverables in the repo root (`README.md`, `CHANGELOG.md`).
+
+**Out of scope**: `CLAUDE.md` and `claude_dev/*.md` are **meta-instructions for Claude itself**, not feature docs — do **not** apply the 14-section template below to them. Edit those as agent configuration: keep them tight, trigger-driven, and free of vanity sections.
+
+When generating feature documentation, create comprehensive technical content that serves as both implementation record and architectural reference.
 
 ### 1. Overview
 - Clear description of the feature's purpose and problem it solves
