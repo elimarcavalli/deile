@@ -62,14 +62,17 @@ class TestPersonaManagerMemoryIntegration:
             'test_persona': mock_persona
         }
 
-        with patch.object(PersonaContext, 'create') as mock_create:
+        with patch.object(PersonaContext, 'create', new_callable=AsyncMock) as mock_create:
             mock_context = Mock(spec=PersonaContext)
             mock_context.save_state = AsyncMock()
             mock_create.return_value = mock_context
 
-            # Mock current context
-            persona_manager._current_context = Mock(spec=PersonaContext)
-            persona_manager._current_context.save_state = AsyncMock()
+            # Mock current context — switch_persona reassigns
+            # ``persona_manager._current_context`` to the newly-created context, so
+            # we must hold a reference to the original one to assert against it.
+            old_context = Mock(spec=PersonaContext)
+            old_context.save_state = AsyncMock()
+            persona_manager._current_context = old_context
 
             # Act
             result = await persona_manager.switch_persona('test_persona', 'test_session')
@@ -78,7 +81,7 @@ class TestPersonaManagerMemoryIntegration:
             assert result is True
 
             # Assert - old context saved
-            persona_manager._current_context.save_state.assert_called_once()
+            old_context.save_state.assert_called_once()
 
             # Assert - new context created with memory manager
             mock_create.assert_called_once_with(
