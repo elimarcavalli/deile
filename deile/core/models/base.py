@@ -1,10 +1,18 @@
 """Interface base para provedores de modelos de IA"""
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional, Tuple
 from enum import Enum
 import time
+
+from deile.core.models.tier import ModelTier
+
+if TYPE_CHECKING:
+    from deile.core.models.catalog import ModelPricing
+    from deile.core.models.stream_events import UnifiedStreamEvent
 
 
 class ModelType(Enum):
@@ -17,10 +25,21 @@ class ModelType(Enum):
 
 
 class ModelSize(Enum):
-    """Tamanhos de modelo para routing inteligente"""
+    """Tamanhos de modelo para routing inteligente (legado — use ModelTier em código novo)."""
     SMALL = "small"    # Para tarefas rápidas e simples
     MEDIUM = "medium"  # Para tarefas balanceadas
     LARGE = "large"    # Para tarefas complexas e críticas
+
+
+def tier_to_model_size(tier: ModelTier) -> ModelSize:
+    """Backward-compat mapping from new ModelTier to legacy ModelSize."""
+    _map = {
+        ModelTier.TIER_1: ModelSize.LARGE,
+        ModelTier.TIER_2: ModelSize.MEDIUM,
+        ModelTier.TIER_3: ModelSize.SMALL,
+        ModelTier.TIER_4: ModelSize.SMALL,
+    }
+    return _map[tier]
 
 
 @dataclass
@@ -29,6 +48,7 @@ class ModelUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    cached_tokens: int = 0
     request_time: float = 0.0
     cost_estimate: float = 0.0
 
@@ -80,20 +100,46 @@ class ModelProvider(ABC):
     @property
     @abstractmethod
     def provider_name(self) -> str:
-        """Nome do provedor (ex: 'gemini', 'openai')"""
+        """Nome do provedor (ex: 'gemini', 'openai') — legado, use provider_id em código novo."""
         pass
-    
+
+    @property
+    def provider_id(self) -> str:
+        """Canonical provider identifier used by the router ('anthropic', 'openai', etc.).
+
+        Defaults to provider_name for backward compat; override in new providers.
+        """
+        return self.provider_name
+
     @property
     @abstractmethod
     def supported_types(self) -> List[ModelType]:
         """Tipos de modelo suportados por este provedor"""
         pass
-    
+
     @property
     @abstractmethod
     def model_size(self) -> ModelSize:
-        """Tamanho/categoria do modelo para routing"""
+        """Tamanho/categoria do modelo para routing (legado — use tier em código novo)."""
         pass
+
+    @property
+    def tier(self) -> ModelTier:
+        """Model tier used by the new router.
+
+        Defaults to a backward-compat mapping from model_size; override in new providers.
+        """
+        size_to_tier = {
+            ModelSize.LARGE: ModelTier.TIER_1,
+            ModelSize.MEDIUM: ModelTier.TIER_2,
+            ModelSize.SMALL: ModelTier.TIER_3,
+        }
+        return size_to_tier.get(self.model_size, ModelTier.TIER_2)
+
+    @property
+    def pricing(self) -> Optional["ModelPricing"]:
+        """Pricing info for this model; None until the provider is catalog-aware."""
+        return None
     
     @property
     def is_available(self) -> bool:
@@ -132,27 +178,54 @@ class ModelProvider(ABC):
         """
         pass
     
+    async def chat_with_tools(
+        self,
+        messages: List[ModelMessage],
+        tools: List[Any],
+        system_instruction: Optional[str] = None,
+        **kwargs,
+    ) -> Tuple[str, List[Any], ModelUsage]:
+        """Run a multi-turn tool-use loop and return (text, tool_results, usage).
+
+        Providers that support function calling should override this.
+        The default falls back to a plain generate() call with no tools.
+        """
+        response = await self.generate(messages, system_instruction, **kwargs)
+        return response.content, [], response.usage
+
     @abstractmethod
     async def generate_stream(
         self,
-        messages: List[ModelMessage], 
+        messages: List[ModelMessage],
         system_instruction: Optional[str] = None,
-        **kwargs
-    ) -> AsyncIterator[str]:
-        """Gera resposta em streaming
-        
-        Args:
-            messages: Lista de mensagens da conversa
-            system_instruction: Instrução do sistema (opcional)
-            **kwargs: Parâmetros específicos do modelo
-            
+        **kwargs,
+    ) -> AsyncIterator["UnifiedStreamEvent"]:
+        """Stream response as UnifiedStreamEvent objects.
+
         Yields:
-            str: Chunks da resposta conforme gerada
+            UnifiedStreamEvent: typed events (TEXT_DELTA, TOOL_USE_*, USAGE_FINAL, ERROR)
+
+        Legacy providers that yield raw strings should be updated to emit
+        TEXT_DELTA events; until then the router wraps them.
         """
-        # Fallback para modelos que não suportam streaming
+        # Default: wrap generate() into a single TEXT_DELTA + USAGE_FINAL
+        from deile.core.models.stream_events import (
+            StreamEventType,
+            UnifiedStreamEvent,
+            ModelUsageSnapshot,
+        )
         response = await self.generate(messages, system_instruction, **kwargs)
-        yield response.content
-    
+        yield UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text=response.content)
+        yield UnifiedStreamEvent(
+            type=StreamEventType.USAGE_FINAL,
+            usage=ModelUsageSnapshot(
+                input_tokens=response.usage.prompt_tokens,
+                output_tokens=response.usage.completion_tokens,
+                cached_tokens=response.usage.cached_tokens,
+                cost_usd=response.usage.cost_estimate,
+            ),
+        )
+
     async def validate_config(self) -> bool:
         """Valida a configuração do provedor
         
@@ -197,16 +270,44 @@ class ModelProvider(ABC):
         return len(text) // 4
     
     def estimate_cost(self, usage: ModelUsage) -> float:
-        """Estima custo da requisição
-        
-        Args:
-            usage: Informações de uso
-            
-        Returns:
-            float: Custo estimado em USD
+        """Estimate request cost in USD using catalog pricing when available."""
+        p = self.pricing
+        if p is None:
+            return 0.0
+        input_cost = (usage.prompt_tokens / 1_000_000) * p.input_per_1m_usd
+        output_cost = (usage.completion_tokens / 1_000_000) * p.output_per_1m_usd
+        cached_cost = 0.0
+        if usage.cached_tokens and p.cached_input_per_1m_usd is not None:
+            cached_cost = (usage.cached_tokens / 1_000_000) * p.cached_input_per_1m_usd
+        return round(input_cost + output_cost + cached_cost, 8)
+
+    async def _record_usage(
+        self,
+        session_id: str,
+        usage: ModelUsage,
+        latency_ms: int,
+        success: bool,
+        error_envelope: Optional[Any] = None,
+    ) -> None:
+        """Persist usage to UsageRepository (wired up in Phase 11).
+
+        No-op until UsageRepository is available; safe to call from all providers.
         """
-        # Implementação básica - deve ser sobrescrita por cada provedor
-        return 0.0
+        try:
+            from deile.storage.usage_repository import get_usage_repository  # noqa: PLC0415
+            repo = get_usage_repository()
+            await repo.record_from_provider(
+                provider_id=self.provider_id,
+                model_id=self.model_name,
+                tier=self.tier,
+                session_id=session_id,
+                usage=usage,
+                latency_ms=latency_ms,
+                success=success,
+                error_envelope=error_envelope,
+            )
+        except (ImportError, Exception):
+            pass
     
     def _update_stats(self, usage: ModelUsage) -> None:
         """Atualiza estatísticas internas"""
