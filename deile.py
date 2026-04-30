@@ -24,8 +24,8 @@ try:
     from deile.config.manager import ConfigManager
     from deile.storage.logs import get_logger
     from deile.core.agent import DeileAgent
-    from deile.core.models.gemini_provider import GeminiProvider
     from deile.core.models.router import get_model_router
+    from deile.core.models.bootstrap import bootstrap_providers
     from deile.tools.registry import get_tool_registry
     from deile.parsers.registry import get_parser_registry
     from deile.ui import ConsoleUIManager, UITheme, UIMessage, MessageType
@@ -52,16 +52,17 @@ class DeileAgentCLI:
             # Carrega configurações
             self.config_manager.load_config()
             
-            with self.ui.show_loading("Inicializando DEILE v5.0..."):
-                if not self.settings.get_api_key("gemini"):
+            with self.ui.show_loading("Inicializando DEILE v5.1..."):
+                model_router = get_model_router()
+
+                registered = bootstrap_providers(router=model_router)
+                if not registered:
                     self.ui.display_error(
-                        "Chave de API do Google não encontrada!",
-                        "Por favor, configure a variável de ambiente GOOGLE_API_KEY."
+                        "Nenhum provider configurado.",
+                        "Defina ao menos uma variável de ambiente: "
+                        "ANTHROPIC_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, GOOGLE_API_KEY.",
                     )
                     return False
-
-                model_router = get_model_router()
-                model_router.register_provider(GeminiProvider(), priority=1)
                 
                 tool_registry = get_tool_registry()
                 parser_registry = get_parser_registry()
