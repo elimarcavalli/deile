@@ -36,3 +36,4 @@ old/
 .claude/
 .ignore/
 *.db
+.*-profile.json
