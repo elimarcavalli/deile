@@ -155,23 +155,32 @@ class DeileAgentCLI:
                         session_id=self.default_session.session_id
                     )
                 
-                # Surface budget-exceeded responses with a structured panel instead of a plain
-                # error blob. The agent sets metadata["budget_exceeded"]=True for these.
-                if response.metadata and response.metadata.get("budget_exceeded"):
+                # Surface structured-error responses with a Rich panel instead of a plain
+                # text blob. The agent sets explicit metadata flags for these cases.
+                meta = response.metadata or {}
+                if meta.get("budget_exceeded"):
                     from rich.panel import Panel
                     from rich.text import Text
                     self.ui.console.print(
                         Panel(
-                            Text(
-                                f"{response.content}",
-                                style="yellow",
-                            ),
+                            Text(f"{response.content}", style="yellow"),
                             title="[bold red]Budget Limit Reached[/bold red]",
                             border_style="red",
                             subtitle=(
-                                f"provider={response.metadata.get('provider_id', 'n/a')} • "
-                                f"limit={response.metadata.get('limit_type', 'n/a')}"
+                                f"provider={meta.get('provider_id', 'n/a')} • "
+                                f"limit={meta.get('limit_type', 'n/a')}"
                             ),
+                        )
+                    )
+                elif meta.get("forced_model_not_registered"):
+                    from rich.panel import Panel
+                    from rich.text import Text
+                    self.ui.console.print(
+                        Panel(
+                            Text(f"{response.content}", style="yellow"),
+                            title="[bold red]Forced Model Not Registered[/bold red]",
+                            border_style="red",
+                            subtitle="Use /model use auto to clear the override",
                         )
                     )
                 else:
