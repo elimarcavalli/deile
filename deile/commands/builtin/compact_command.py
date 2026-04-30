@@ -1,12 +1,11 @@
 """
-Compact Command for DEILE v4.0
+Compact Command for DEILE
 ==============================
 
 Command for managing conversation history compression and memory optimization.
 Implements intelligent conversation summarization with context preservation.
 
 Author: DEILE
-Version: 4.0
 """
 
 import json

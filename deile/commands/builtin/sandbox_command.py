@@ -1,4 +1,4 @@
-"""Enhanced Sandbox Command with Docker Integration for DEILE v4.0"""
+"""Enhanced Sandbox Command with Docker Integration for DEILE"""
 
 import asyncio
 import logging

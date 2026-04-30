@@ -1,12 +1,11 @@
 """
-Cost Tracking System for DEILE v4.0
+Cost Tracking System for DEILE
 ===================================
 
 Comprehensive cost tracking and monitoring system for API calls, resource usage,
 and operational expenses with detailed analytics and budget management.
 
 Author: DEILE
-Version: 4.0
 """
 
 import json

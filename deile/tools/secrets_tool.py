@@ -1,12 +1,11 @@
 """
-Secrets Detection Tool for DEILE v4.0
+Secrets Detection Tool for DEILE
 =====================================
 
 Advanced secrets scanning and redaction tool with support for multiple
 secret types, custom patterns, and safe handling of sensitive data.
 
 Author: DEILE
-Version: 4.0
 """
 
 import logging

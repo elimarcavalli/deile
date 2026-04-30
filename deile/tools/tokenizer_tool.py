@@ -1,12 +1,11 @@
 """
-Tokenizer/Context Tool for DEILE v4.0
+Tokenizer/Context Tool for DEILE
 =====================================
 
 Token estimation and context management tool for efficient
 LLM token usage tracking and optimization.
 
 Author: DEILE
-Version: 4.0
 """
 
 import logging

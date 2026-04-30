@@ -30,7 +30,7 @@ class WelcomeCommand(DirectCommand):
         welcome_text.append("🚀 ", style="bright_blue")
         welcome_text.append("Welcome to ", style="white")
         welcome_text.append("D.E.I.L.E. ", style="bold cyan")
-        welcome_text.append("v4.0", style="bright_green")
+        welcome_text.append("v5.1 ULTRA", style="bright_green")
         welcome_text.append("\n\n")
         welcome_text.append("Your AI-powered development assistant with autonomous execution capabilities!", style="dim")
         

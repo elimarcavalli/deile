@@ -1,12 +1,11 @@
 """
-Run Manager for DEILE v4.0
+Run Manager for DEILE
 ==========================
 
 Manages execution runs with real-time monitoring, artifact generation
 and comprehensive logging for autonomous plan execution.
 
 Author: DEILE
-Version: 4.0
 """
 
 import logging

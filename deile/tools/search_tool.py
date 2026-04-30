@@ -1,12 +1,11 @@
 """
-Search Tool for DEILE v4.0 - SITUAÇÃO 6 COMPLIANT
+Search Tool for DEILE
 ==================================================
 
 High-performance repository search tool with strict context limits
 for optimal token usage (≤ 50 lines total per match).
 
 Author: DEILE
-Version: 4.0
 Features: Context-limited search, performance optimization, smart filtering
 """
 

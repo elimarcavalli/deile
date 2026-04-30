@@ -1,4 +1,4 @@
-"""Enhanced Execution Tools for DEILE v4.0 - Advanced PTY Support"""
+"""Enhanced Execution Tools for DEILE - Advanced PTY Support"""
 
 import asyncio
 import logging

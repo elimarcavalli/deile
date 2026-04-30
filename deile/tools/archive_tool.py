@@ -1,12 +1,11 @@
 """
-Archive Tool for DEILE v4.0
+Archive Tool for DEILE
 ===========================
 
 Comprehensive archive management tool for creating, extracting, and manipulating
 compressed archives with security controls and cross-format support.
 
 Author: DEILE
-Version: 4.0
 """
 
 import json

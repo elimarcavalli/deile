@@ -1,12 +1,11 @@
 """
-Process Management Tool for DEILE v4.0
+Process Management Tool for DEILE
 ======================================
 
 Comprehensive process management tool for listing, monitoring, and managing
 system processes with security controls and cross-platform compatibility.
 
 Author: DEILE
-Version: 4.0
 """
 
 import json

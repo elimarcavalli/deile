@@ -1,12 +1,11 @@
 """
-Cost Command for DEILE v4.0
+Cost Command for DEILE
 ===========================
 
 Command for managing cost tracking, budgets, and financial analytics
 with comprehensive reporting and budget management features.
 
 Author: DEILE
-Version: 4.0
 """
 
 import logging

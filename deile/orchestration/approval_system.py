@@ -1,12 +1,11 @@
 """
-Approval System for DEILE v4.0
+Approval System for DEILE
 ==============================
 
 Manages approval workflows for high-risk operations with timeout,
 escalation and audit trail capabilities.
 
 Author: DEILE
-Version: 4.0
 """
 
 import logging

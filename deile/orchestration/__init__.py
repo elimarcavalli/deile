@@ -1,12 +1,11 @@
 """
-Orchestration Module for DEILE v4.0
+Orchestration Module for DEILE
 ===================================
 
 Autonomous plan creation, execution and approval workflow
 for multi-step LLM-driven development tasks.
 
 Author: DEILE
-Version: 4.0
 """
 
 from .plan_manager import PlanManager, ExecutionPlan, PlanStep

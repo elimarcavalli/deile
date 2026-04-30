@@ -1,12 +1,11 @@
 """
-Lint/Format Tool for DEILE v4.0
+Lint/Format Tool for DEILE
 ===============================
 
 Multi-language code quality tool with linting, formatting, and auto-fixing
 capabilities with dry-run support for safe code modifications.
 
 Author: DEILE
-Version: 4.0
 """
 
 import logging
