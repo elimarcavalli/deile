@@ -13,7 +13,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import yaml
 
@@ -209,15 +209,20 @@ class TierRouter:
     def register_provider(self, provider: ModelProvider) -> None:
         provider_id = provider.provider_id
         model_id = getattr(provider, "model_name", None)
-        # Always store under provider_id for fallback lookup
-        self._providers_by_id[provider_id] = provider
-        # If model_name is a real string, also store under the full key
-        if isinstance(model_id, str) and model_id:
-            full_key = f"{provider_id}:{model_id}"
-            self._providers[full_key] = provider
-            logger.debug("TierRouter: registered %s", full_key)
-        else:
+        # Provider_id-only fallback: keep the FIRST registered (assume bootstrap registers
+        # the flagship/most-capable model first) for deterministic fallback behavior.
+        # If a test calls register_provider(MagicMock()) without a model_name, store unconditionally.
+        if not isinstance(model_id, str) or not model_id:
+            # Non-string model_name (e.g. MagicMock) — overwrite is fine since this is test-only
+            self._providers_by_id[provider_id] = provider
             logger.debug("TierRouter: registered %s (no model_name)", provider_id)
+            return
+        if provider_id not in self._providers_by_id:
+            self._providers_by_id[provider_id] = provider
+        # Always store under the full key
+        full_key = f"{provider_id}:{model_id}"
+        self._providers[full_key] = provider
+        logger.debug("TierRouter: registered %s", full_key)
 
     def unregister_provider(self, provider_id: str) -> None:
         # Remove the provider_id-only entry and any matching full-key entries
@@ -226,13 +231,24 @@ class TierRouter:
         for k in keys_to_drop:
             self._providers.pop(k, None)
 
-    def select(self, tier: ModelTier) -> ModelProvider:
+    def select(
+        self,
+        tier: ModelTier,
+        skip_provider_ids: Optional[Iterable[str]] = None,
+    ) -> ModelProvider:
         """Select the first available provider in the tier cascade.
 
         For each cascade entry "provider_id:model_id":
+        - Skip if provider_id is in *skip_provider_ids* (in-request fallback).
         - Skip if circuit breaker for provider_id is open.
         - Look up the exact full-key match first; if found, return it.
         - Otherwise fall back to any registered provider with that provider_id.
+
+        Args:
+            tier: requested model tier
+            skip_provider_ids: provider_ids to bypass even though their CB is closed
+                (used by the agent's cascade retry to skip a provider that just
+                failed within the current request, before the CB threshold trips).
 
         Raises NoProviderAvailable if nothing is usable.
         """
@@ -240,8 +256,13 @@ class TierRouter:
         if not cascade:
             raise NoProviderAvailable(f"No cascade configured for tier={tier.value}")
 
+        skip_set = set(skip_provider_ids or ())
+
         for key in cascade:
             provider_id = key.split(":", 1)[0]
+            if provider_id in skip_set:
+                logger.debug("TierRouter: skipping %s (in skip_provider_ids)", key)
+                continue
             if self._circuit_breaker.is_open(provider_id):
                 logger.debug("TierRouter: skipping %s (circuit open)", key)
                 continue
@@ -261,6 +282,7 @@ class TierRouter:
         raise NoProviderAvailable(
             f"All providers exhausted for tier={tier.value}. "
             f"Cascade: {cascade}. "
+            f"Skipped: {sorted(skip_set)}. "
             f"Registered: {list(self._providers) or list(self._providers_by_id)}."
         )
 

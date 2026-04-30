@@ -393,7 +393,17 @@ class DeileAgent:
             
         except Exception as e:
             self._status = AgentStatus.ERROR
-            yield f"Error: {str(e)}"
+            try:
+                from deile.storage.usage_repository import BudgetExceeded as _BE
+            except Exception:
+                _BE = ()  # type: ignore[assignment]
+            if isinstance(e, _BE):
+                yield (
+                    f"\n[Budget limit reached ({getattr(e, 'limit_type', 'unknown')}): {str(e)}\n"
+                    f"Use /model budget to view limits.]\n"
+                )
+            else:
+                yield f"Error: {str(e)}"
         finally:
             self._status = AgentStatus.IDLE
     
@@ -838,7 +848,9 @@ class DeileAgent:
                     t.schema for t in get_tool_registry().list_enabled() if getattr(t, "schema", None) is not None
                 ]
 
-                # Cascade retry loop: on provider failure, mark CB and try next tier provider
+                # Cascade retry loop: on provider failure, mark CB and try next tier provider.
+                # We pass `skip_provider_ids` to TierRouter.select so a single in-request
+                # failure short-circuits the cascade even before the CB threshold trips.
                 MAX_CASCADE_ATTEMPTS = 3
                 attempt = 0
                 last_error: Optional[Exception] = None
@@ -871,23 +883,38 @@ class DeileAgent:
                                 "latency_ms": int((time.time() - _t0) * 1000),
                             },
                         )
-                        # Try next cascade entry only if tier is set; budget+CB still respected
-                        if model_tier is None:
+                        # No retry path when tier wasn't classified or user explicitly forced
+                        # this exact provider — the user chose it, we should not silently swap.
+                        if model_tier is None or forced:
                             raise
                         try:
                             from deile.core.models.tier_router import get_tier_router as _gtr
-                            next_provider = _gtr().select(model_tier)
-                            # Prevent infinite loop if the same provider keeps being selected
-                            if next_provider.provider_id in tried_providers:
-                                raise _chat_err  # cascade exhausted
-                            model_provider = next_provider
-                            logger.info(
-                                "Cascade fallback: now trying provider=%s",
-                                model_provider.provider_id,
+                            next_provider = _gtr().select(
+                                model_tier, skip_provider_ids=tried_providers
                             )
-                            continue
                         except Exception:
-                            raise _chat_err
+                            raise _chat_err  # cascade exhausted
+
+                        model_provider = next_provider
+                        logger.info(
+                            "Cascade fallback (attempt=%d): switched to provider=%s",
+                            attempt, model_provider.provider_id,
+                        )
+                        # Re-run budget check against the new provider — daily/monthly
+                        # limits are per-provider, not session-wide.
+                        try:
+                            from deile.storage.usage_repository import (
+                                BudgetExceeded as _BudgetExceeded,
+                            )
+                            _guard_local: Any = getattr(self, "_budget_guard_singleton", None)
+                            if _guard_local:
+                                _guard_local.check_all(
+                                    session_id=session.session_id,
+                                    provider_id=model_provider.provider_id,
+                                )
+                        except _BudgetExceeded:
+                            raise  # propagate to outer handler
+                        continue
                 if last_error is not None:
                     raise last_error
 

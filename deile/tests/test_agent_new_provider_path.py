@@ -303,3 +303,118 @@ async def test_budget_exceeded_propagates_to_caller():
             parse_result=None,
             session=session,
         )
+
+
+@pytest.mark.asyncio
+async def test_cascade_retry_succeeds_after_first_provider_fails():
+    """R6-C1: when provider 1 raises, agent must call TierRouter.select with skip
+    and the second provider must serve the request — within ONE request, not after
+    accumulated CB failures."""
+
+    # Provider 1: always fails (use a real async function so the await works)
+    class _FailingProvider:
+        provider_id = "anthropic"
+        model_name = "claude-haiku-4-5"
+        async def chat_with_tools(self, **kwargs):
+            raise RuntimeError("simulated 401")
+        async def _record_usage(self, **kwargs):
+            return None
+    failing = _FailingProvider()
+
+    # Provider 2: always succeeds
+    succeeding = _CapturingProvider()
+    succeeding.provider_id = "openai"
+    succeeding.model_name = "gpt-5.4-mini"
+
+    agent = _build_minimal_agent_with_mock_provider(failing)
+    agent.model_router.providers = {
+        "anthropic:claude-haiku-4-5": failing,
+        "openai:gpt-5.4-mini": succeeding,
+    }
+
+    # Patch get_tier_router so the cascade retry sees both providers, with skip semantics
+    from unittest.mock import patch
+
+    fake_tier_router = MagicMock()
+
+    def _select(tier, skip_provider_ids=None):
+        skip_set = set(skip_provider_ids or ())
+        if "anthropic" not in skip_set:
+            return failing
+        return succeeding
+
+    fake_tier_router.select = MagicMock(side_effect=_select)
+    fake_tier_router.record_success = MagicMock()
+    fake_tier_router.record_failure = MagicMock()
+
+    from deile.core.agent import AgentSession
+
+    session = AgentSession(
+        session_id="cascade-test",
+        working_directory=Path("/tmp"),
+        context_data={},
+    )
+
+    with patch("deile.core.models.tier_router.get_tier_router", return_value=fake_tier_router):
+        content, _ = await agent._process_iterative_function_calling(
+            user_input="trigger cascade",
+            parse_result=None,
+            session=session,
+        )
+
+    # Provider 2 must have served the request
+    assert content == "OK"
+    assert succeeding.captured_messages, "second provider was never called — cascade retry failed"
+
+
+@pytest.mark.asyncio
+async def test_process_input_returns_structured_budget_exceeded_metadata():
+    """R6-H4: process_input must surface BudgetExceeded with metadata flag the CLI can read."""
+    from deile.storage.usage_repository import BudgetExceeded
+    from deile.core.agent import DeileAgent, AgentStatus
+
+    # Build a minimal agent to call process_input
+    agent = DeileAgent.__new__(DeileAgent)
+    agent.logger = MagicMock()
+    agent._sessions = {}
+    agent._status = AgentStatus.IDLE
+    agent._request_count = 0
+    agent._total_tokens = 0
+    agent._success_count = 0
+    agent._error_count = 0
+    agent._start_time = 0.0
+    agent.proactive_analyzer = None  # process_input checks `if not self.proactive_analyzer`
+    agent.intent_analyzer = MagicMock()
+    agent.intent_analyzer.analyze = AsyncMock()
+
+    # Make _get_or_create_session return a usable session
+    from deile.core.agent import AgentSession
+
+    sess = AgentSession(
+        session_id="budget-cli-test",
+        working_directory=Path("/tmp"),
+        context_data={},
+    )
+    sess.update_activity = MagicMock()
+    sess.add_to_history = MagicMock()
+    agent._sessions[sess.session_id] = sess
+    agent._get_or_create_session = MagicMock(return_value=sess)
+
+    # Make _parse_input/_should_create_workflow side-effect-free
+    agent._parse_input = AsyncMock(return_value=None)
+    agent._should_create_workflow = AsyncMock(return_value=False)
+
+    # Inject a _process_iterative_function_calling that raises BudgetExceeded
+    async def _raise_budget(*args, **kwargs):
+        raise BudgetExceeded("month exceeded", provider_id="openai", limit_type="monthly")
+    agent._process_iterative_function_calling = _raise_budget
+
+    response = await agent.process_input("anything", session_id="budget-cli-test")
+
+    # Structured signals the CLI consumes
+    assert response.status == AgentStatus.ERROR
+    assert response.metadata.get("budget_exceeded") is True
+    assert response.metadata.get("provider_id") == "openai"
+    assert response.metadata.get("limit_type") == "monthly"
+    assert "/model budget" in response.content  # actionable user hint
+    assert isinstance(response.error, BudgetExceeded)

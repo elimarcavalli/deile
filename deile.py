@@ -155,9 +155,28 @@ class DeileAgentCLI:
                         session_id=self.default_session.session_id
                     )
                 
-                # Com Chat Sessions, tool executions estão integradas na resposta conversacional
-                # A response.content já inclui informações sobre tools executadas automaticamente
-                self.ui.display_response(response.content, {"execution_time": response.execution_time})
+                # Surface budget-exceeded responses with a structured panel instead of a plain
+                # error blob. The agent sets metadata["budget_exceeded"]=True for these.
+                if response.metadata and response.metadata.get("budget_exceeded"):
+                    from rich.panel import Panel
+                    from rich.text import Text
+                    self.ui.console.print(
+                        Panel(
+                            Text(
+                                f"{response.content}",
+                                style="yellow",
+                            ),
+                            title="[bold red]Budget Limit Reached[/bold red]",
+                            border_style="red",
+                            subtitle=(
+                                f"provider={response.metadata.get('provider_id', 'n/a')} • "
+                                f"limit={response.metadata.get('limit_type', 'n/a')}"
+                            ),
+                        )
+                    )
+                else:
+                    # Com Chat Sessions, tool executions estão integradas na resposta conversacional
+                    self.ui.display_response(response.content, {"execution_time": response.execution_time})
                 
                 # Opcionalmente, mostra tool executions como parte da conversa (modo debug ou verbose)
                 if response.tool_results and getattr(self.settings, "show_tool_details", False):
