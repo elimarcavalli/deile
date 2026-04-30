@@ -103,7 +103,7 @@ class ToolsCommand(DirectCommand):
                 },
                 "examples": [
                     {"command": "ls -la", "description": "List files with details"},
-                    {"command": "python script.py", "description": "Run Python script"}
+                    {"command": "python3 script.py", "description": "Run Python script"}
                 ],
                 "usage_stats": {"total_calls": 15, "success_rate": 93.3, "avg_duration": 2.4}
             },

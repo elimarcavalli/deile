@@ -45,7 +45,7 @@ pip install -r requirements.txt
 export GOOGLE_API_KEY="sua_chave_api_aqui"
 
 # Execute o DEILE
-python deile.py
+python3 deile.py
 ```
 
 ## 🎯 Como Usar
@@ -53,7 +53,7 @@ python deile.py
 ### Execução Básica
 ```bash
 # Iniciar sessão interativa
-python deile.py
+python3 deile.py
 
 # Verificar versão e status
 python -c "from deile import get_version_info; print(get_version_info())"
