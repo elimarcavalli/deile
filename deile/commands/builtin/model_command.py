@@ -186,9 +186,49 @@ EXAMPLES:
                 ),
             )
 
+        # Validate against registered providers BEFORE accepting the override —
+        # otherwise we'd return a green "OK" panel and only fail on the next message.
+        # We only validate when context.agent is a *real* agent with a real providers
+        # dict; MagicMock-based test contexts skip validation (they don't bootstrap
+        # any providers anyway).
+        forced_provider_id, forced_model_id = target.split(":", 1)
+        agent_obj = getattr(context, "agent", None)
+        registered: Optional[dict] = None
+        if agent_obj is not None and hasattr(agent_obj, "model_router"):
+            providers_attr = getattr(agent_obj.model_router, "providers", None)
+            if isinstance(providers_attr, dict):
+                registered = providers_attr
+        if registered is not None:
+            exact_match = any(
+                getattr(p, "provider_id", None) == forced_provider_id
+                and getattr(p, "model_name", None) == forced_model_id
+                for p in registered.values()
+            )
+            if not exact_match:
+                available = sorted({
+                    f"{getattr(p, 'provider_id', '?')}:{getattr(p, 'model_name', '?')}"
+                    for p in registered.values()
+                    if getattr(p, "provider_id", None) == forced_provider_id
+                })
+                return CommandResult(
+                    success=False,
+                    content=Panel(
+                        Text(
+                            f"Model '{target}' is not registered.\n"
+                            f"Available {forced_provider_id} models: "
+                            f"{available or '(none — provider not registered)'}",
+                            style="yellow",
+                        ),
+                        title="[bold red]Forced Model Not Registered[/bold red]",
+                        border_style="red",
+                        subtitle="Use /model list to see all options",
+                    ),
+                )
+
         if hasattr(context, "session") and context.session is not None:
-            ctx_data = getattr(context.session, "context_data", {})
-            ctx_data["forced_model"] = target
+            if not hasattr(context.session, "context_data") or context.session.context_data is None:
+                context.session.context_data = {}
+            context.session.context_data["forced_model"] = target
         return CommandResult(
             success=True,
             content=Panel(
