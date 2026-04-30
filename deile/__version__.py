@@ -1,7 +1,7 @@
 """DEILE Version Information"""
 
 __version__ = "5.1.0"
-__version_info__ = (5, 0, 0)
+__version_info__ = (5, 1, 0)
 
 # Release Information
 __title__ = "DEILE"
@@ -54,7 +54,7 @@ METRICS = {
 
 # Release Notes
 RELEASE_NOTES = """
-DEILE v5.1.0 - Production Release
+DEILE v5.0.0 - Production Release
 ==================================
 
 🎉 Major Release - Complete System Transformation

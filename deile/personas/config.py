@@ -1,5 +1,5 @@
 """
-Unified Persona Configuration Models for DEILE v5.0 ULTRA
+Unified Persona Configuration Models for DEILE
 ========================================================
 
 This module provides persona configuration models that integrate with DEILE's

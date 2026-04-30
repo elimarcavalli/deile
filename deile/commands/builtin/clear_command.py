@@ -1,4 +1,4 @@
-"""Clear Command for DEILE v5.0"""
+"""Clear Command for DEILE"""
 
 import logging
 from typing import Optional
