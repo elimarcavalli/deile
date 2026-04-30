@@ -42,10 +42,16 @@ class ProactiveIntent:
     chained_actions: List['ProactiveIntent'] = field(default_factory=list)
     autonomous_eligible: bool = False
 
-    def resolve_target(self) -> Optional[FileMatch]:
-        """Resolve the target using SmartFileResolver"""
+    def resolve_target(self, resolver=None) -> Optional[FileMatch]:
+        """Resolve the target using SmartFileResolver.
+
+        ``resolver`` may be passed by the caller so resolution happens against
+        the analyzer's configured workspace; otherwise a CWD-default resolver
+        is used as a fallback.
+        """
         if self.resolved_file is None and self.action in [ProactiveAction.READ_FILE, ProactiveAction.CHECK_FILE_EXISTS]:
-            resolver = get_file_resolver()
+            if resolver is None:
+                resolver = get_file_resolver()
             self.resolved_file = resolver.get_best_match(self.target)
         return self.resolved_file
 
@@ -123,6 +129,19 @@ class ProactiveAnalyzer:
         self.autonomous_threshold = 0.7
         self.file_resolution_threshold = 0.8
 
+    async def analyze(self, user_input: str, session_context: Dict = None) -> List[ProactiveIntent]:
+        """Async alias for ``analyze_input``.
+
+        Provided so callers can ``await`` the analyzer without depending on the
+        sync entry point.
+        """
+        return self.analyze_input(user_input, session_context)
+
+    async def analyze_enhanced(self, user_input: str, session_context: Dict = None) -> List[ProactiveIntent]:
+        """Async alias for ``analyze_input`` (enhanced semantics are already
+        included in the sync implementation)."""
+        return self.analyze_input(user_input, session_context)
+
     def analyze_input(self, user_input: str, session_context: Dict = None) -> List[ProactiveIntent]:
         """Enhanced analysis with smart file resolution and action chaining"""
         if session_context is None:
@@ -145,7 +164,7 @@ class ProactiveAnalyzer:
 
         # 4. Resolve targets and determine autonomy eligibility
         for intent in intents:
-            intent.resolve_target()
+            intent.resolve_target(self.file_resolver)
             intent.autonomous_eligible = self._is_autonomous_eligible(intent)
 
         # 5. Generate chained actions for ambiguous requests

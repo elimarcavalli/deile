@@ -343,13 +343,18 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
         # NOVO: Fallback para user_input se contém referência a arquivo
         if not file_path and context.user_input:
             import re
+            # Filler tokens (articles, pronouns) that may appear between a verb
+            # and the actual file reference, e.g. "read the readme",
+            # "show me the README". Skipping them lets the capture group land
+            # on the real file reference.
+            _FILLERS = r'(?:(?:the|a|an|me|my|this|that|o|a|os|as|um|uma|este|esta|esse|essa)\s+)*'
             # Procura por padrões de arquivo no user_input
             file_patterns = [
                 r'(?:file|arquivo)\s+([^\s]+)',
-                r'([^\s]+\.(?:txt|py|md|json|js|html|css|xml|csv))',
+                r'([^\s]+\.(?:txt|py|md|json|js|html|css|xml|csv|ya?ml|toml|conf|cfg|ini|sh|rst))',
                 r'@([^\s]+)',  # Remove @ e usa só o nome do arquivo
-                r'(?:ler|read|abrir|open)\s+(?:arquivo\s+)?(?:chamado\s+)?(?:@)?([^\s]+)',
-                r'(?:show|mostrar|exibir)\s+(?:arquivo\s+)?(?:@)?([^\s]+)'
+                rf'(?:ler|read|abrir|open|examine)\s+{_FILLERS}(?:arquivo\s+)?(?:chamado\s+)?(?:@)?([^\s]+)',
+                rf'(?:show|mostrar|exibir)\s+{_FILLERS}(?:arquivo\s+)?(?:@)?([^\s]+)'
             ]
             for pattern in file_patterns:
                 match = re.search(pattern, context.user_input, re.IGNORECASE)
@@ -360,7 +365,20 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
                         file_path = file_path[1:]
                     logger.debug(f"Extracted file_path from user_input: {file_path}")
                     break
-        
+
+            # If the regex extracted a candidate that does not exist as-is,
+            # discard it so the smart resolver below can handle case
+            # variations (e.g. "readme" → README.md) and partial names.
+            if file_path and context.working_directory:
+                from pathlib import Path as _Path
+                candidate = _Path(context.working_directory) / file_path
+                if not candidate.exists() and not _Path(file_path).is_absolute():
+                    logger.debug(
+                        f"Regex-extracted path '{file_path}' does not exist; "
+                        f"deferring to smart file resolution."
+                    )
+                    file_path = None
+
         # NOVO: Smart File Resolution - último fallback antes do erro
         if not file_path and context.user_input:
             try:
@@ -369,9 +387,11 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
                 # Extrai termos que podem ser referências de arquivo do user_input
                 import re
 
+                # Filler tokens to skip between verb and file reference
+                _Q_FILLERS = r'(?:(?:the|a|an|me|my|this|that|o|a|os|as|um|uma|este|esta|esse|essa)\s+)*'
                 # Padrões para extrair referências naturais a arquivos
                 query_patterns = [
-                    r'(?:leia?|read|examine?|show|mostrar|abrir|open)\s+(?:o\s+)?(?:arquivo\s+)?(?:chamado\s+)?(?:@)?([^\s,\.!?]+)',
+                    rf'(?:leia?|read|examine?|show|mostrar|abrir|open)\s+{_Q_FILLERS}(?:arquivo\s+)?(?:chamado\s+)?(?:@)?([^\s,\.!?]+)',
                     r'(?:arquivo|file)\s+([^\s,\.!?]+)',
                     r'([a-zA-Z0-9_\-]+(?:\.[a-zA-Z0-9]+)?)\s*(?:file|arquivo)?',
                     r'@([a-zA-Z0-9_\-\.]+)',  # Referencias com @
@@ -381,10 +401,11 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
                 for pattern in query_patterns:
                     match = re.search(pattern, context.user_input, re.IGNORECASE)
                     if match:
-                        potential_query = match.group(1).strip()
-                        # Remove caracteres especiais comuns
-                        potential_query = re.sub(r'[^\w\-\.]', '', potential_query)
-                        if len(potential_query) > 1:  # Só aceita queries com pelo menos 2 chars
+                        candidate = re.sub(r'[^\w\-\.]', '', match.group(1).strip())
+                        # Skip 1-char captures (e.g. "I" from "I want to ..."):
+                        # they fuzz-match arbitrary files at high confidence.
+                        if len(candidate) > 1:
+                            potential_query = candidate
                             break
 
                 if potential_query:
@@ -411,6 +432,14 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
                                 message=error_msg,
                                 error=ValidationError("file not found with suggestions")
                             )
+                        # No match and no suggestions: still surface a clear
+                        # "not found" message rather than the generic
+                        # "no file path provided" error below.
+                        return ToolResult(
+                            status=ToolStatus.ERROR,
+                            message=f"File '{potential_query}' not found in working directory.",
+                            error=FileNotFoundError(f"File '{potential_query}' not found"),
+                        )
 
             except Exception as e:
                 logger.debug(f"Smart file resolution failed: {e}")
