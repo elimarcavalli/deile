@@ -62,8 +62,8 @@ class _DebugLogger:
         """Append a structured router event to logs/router_events.jsonl.
 
         Valid event_type values:
-            provider_selected, cascade_fallback, circuit_breaker_opened,
-            circuit_breaker_closed, budget_exceeded
+            provider_selected, provider_call_completed, cascade_fallback,
+            circuit_breaker_opened, circuit_breaker_closed, budget_exceeded
         """
         record: Dict[str, Any] = {
             "ts": time.time(),

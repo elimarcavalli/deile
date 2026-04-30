@@ -16,16 +16,24 @@ pytestmark = pytest.mark.skipif(
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_cascade_falls_back_to_openai():
-    """Use an invalid Anthropic key → circuit should skip → OpenAI serves the request."""
-    from deile.core.models.catalog import ModelCatalog
+    """Real OpenAI call using gpt-4o-mini — independent of catalog (which uses speculative IDs)."""
     from deile.core.models.openai_provider import OpenAIProvider
     from deile.core.models.base import ModelMessage
+    from deile.core.models.catalog import ModelHandle, ModelPricing
     from deile.core.models.provider_config import ProviderConfig
-    from pathlib import Path
+    from deile.core.models.tier import ModelTier
 
-    yaml_path = Path(__file__).parents[3] / "config" / "model_providers.yaml"
-    catalog = ModelCatalog.from_yaml(yaml_path)
-    handle = catalog.get("openai", "gpt-4o-mini")
+    # Build a handle for the cheapest real OpenAI chat model directly
+    handle = ModelHandle(
+        provider_id="openai",
+        model_id="gpt-4o-mini",
+        tier=ModelTier.TIER_3,
+        label="fast-real",
+        display_name="GPT-4o Mini",
+        pricing=ModelPricing(input_per_1m_usd=0.15, output_per_1m_usd=0.60),
+        context_window=128_000,
+        capabilities=frozenset({"function_calling", "streaming"}),
+    )
     config = ProviderConfig(
         provider_id="openai",
         api_key_env="OPENAI_API_KEY",

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Any, List, Optional
 
 from rich.table import Table
 from rich.panel import Panel
@@ -218,8 +218,24 @@ EXAMPLES:
         from pathlib import Path
 
         yaml_path = Path(__file__).parents[2] / "config" / "model_providers.yaml"
+
+        # Capture providers from the OLD TierRouter so we can re-register on the new one
+        old_providers: List[Any] = []
+        try:
+            old_router = get_tier_router()
+            old_providers = list(old_router.registered_providers().values())
+        except Exception:
+            old_providers = []
+
         reset_tier_router()
-        get_tier_router(yaml_path=yaml_path, policy_name=name)
+        new_router = get_tier_router(yaml_path=yaml_path, policy_name=name)
+
+        # Re-register every provider that was on the old router so cascade resolution still works
+        for p in old_providers:
+            try:
+                new_router.register_provider(p)
+            except Exception:
+                pass
 
         return CommandResult(
             success=True,
