@@ -9,7 +9,7 @@ This integration layer uses the PersonaMemoryLayer from the unified memory syste
 to ensure all persona operations work through DEILE's core memory infrastructure.
 
 Author: DEILE Team
-Version: 5.0.0 ULTRA
+Version: 5.1.0 ULTRA
 """
 
 import logging
@@ -273,7 +273,7 @@ class PersonaEnhancedAgent:
                 'persona_enhanced': True,
                 'persona_id': current_persona.persona_id,
                 'persona_name': current_persona.name,
-                'integration_version': '5.0.0'
+                'integration_version': '5.1.0'
             })
 
             # Store interaction in persona memory if available
