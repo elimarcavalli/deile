@@ -22,6 +22,23 @@ from ...storage.debug_logger import get_debug_logger, is_debug_enabled
 
 logger = logging.getLogger(__name__)
 
+
+def _stringify_for_model(value: Any) -> Any:
+    """Converte ``ToolResult.data`` em algo JSON-serializável para function_response.
+
+    Mantém dict/list/primitivos como estão (preservando estrutura para o modelo)
+    e força ``str()`` em qualquer objeto custom — evita falhas de serialização
+    do Protobuf na borda do SDK.
+    """
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _stringify_for_model(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_stringify_for_model(v) for v in value]
+    return str(value)
+
+
 class GeminiProvider(ModelProvider):
     """Provedor para modelos Google Gemini"""
     
@@ -374,168 +391,314 @@ class GeminiProvider(ModelProvider):
             logger.warning(f"Health check failed: {e}")
             return False
     
+    # Limite de iterações do loop de function calling manual.
+    # Why: cap defensivo contra loops infinitos quando o modelo encadeia chamadas
+    # sem convergir para uma resposta final.
+    MAX_TOOL_ITERATIONS = 10
+
     async def create_chat_session(self, session_id: str, system_instruction: Optional[str] = None) -> Any:
-        """Cria ou retorna chat session existente para session_id"""
+        """Cria ou retorna chat session existente para session_id.
+
+        Usa function calling MANUAL: o SDK recebe FunctionDeclarations completos
+        (com schemas dos parâmetros) e a execução de cada call é feita por
+        :meth:`chat_with_tools`. AFC nativa é desativada para que erros de
+        execução sejam capturados como function_response e o histórico do chat
+        seja preservado mesmo em falhas.
+        """
         if session_id in self._chat_sessions:
             return self._chat_sessions[session_id]
-        
+
         try:
-            # Obtém ferramentas disponíveis
-            function_declarations = self._get_tools_for_generate_content()
-            
-            # Prepara tools Python functions para automatic function calling
-            python_tools = []
-            if function_declarations:
-                # Converte function declarations para Python functions
-                from ...tools.registry import get_tool_registry
-                tool_registry = get_tool_registry()
-                
-                for func_decl in function_declarations:
-                    tool_name = func_decl.name
-                    if hasattr(tool_registry, '_tools') and tool_name in tool_registry._tools:
-                        # Cria wrapper function que o Gemini pode chamar automaticamente
-                        tool_instance = tool_registry._tools[tool_name]
-                        python_func = self._create_tool_wrapper(tool_instance, tool_name)
-                        python_tools.append(python_func)
-            
-            # Configuração do chat com automatic function calling
-            afc_config = None
-            if python_tools:
-                afc_config = AutomaticFunctionCallingConfig(
-                    disable=False,
-                    maximum_remote_calls=10
-                )
+            function_declarations = self._get_tools_for_generate_content() or []
+
+            tools_param = (
+                [Tool(function_declarations=function_declarations)]
+                if function_declarations
+                else None
+            )
+
+            # AFC desligada: o controle do loop fica em chat_with_tools.
+            afc_config = AutomaticFunctionCallingConfig(disable=True)
 
             config = types.GenerateContentConfig(
-                tools=python_tools,  # Funções Python para automatic calling
-                automatic_function_calling=afc_config,  # Habilita execução automática
+                tools=tools_param,
+                automatic_function_calling=afc_config,
                 system_instruction=system_instruction,
                 temperature=self.generation_config.get('temperature', 0.1),
                 max_output_tokens=self.generation_config.get('max_output_tokens', 8192)
             )
-            
-            # Cria chat session
+
             chat = self.client.chats.create(
                 model=self.model_name,
                 config=config
             )
-            
+
             self._chat_sessions[session_id] = chat
-            logger.info(f"Created chat session for session_id: {session_id} with {len(python_tools)} tools")
-            
+            logger.info(
+                "Created chat session for session_id=%s with %d function declarations (manual function calling)",
+                session_id,
+                len(function_declarations),
+            )
+
             return chat
-            
+
         except Exception as e:
             logger.error(f"Error creating chat session for {session_id}: {e}")
             raise ModelError(f"[CHAT_SESSION_ERROR] Failed to create chat session: {str(e)}") from e
 
-    def _create_tool_wrapper(self, tool_instance, tool_name: str):
-        """Cria wrapper function com type hints para automatic function calling"""
-        import inspect
-        import asyncio
-        from ...tools.base import ToolContext
+    async def execute_function_call(
+        self,
+        function_name: str,
+        arguments: Dict[str, Any],
+        working_directory: str = ".",
+        session_data: Optional[Dict[str, Any]] = None,
+    ) -> tuple[Any, Dict[str, Any]]:
+        """Executa uma function call resolvida via ToolRegistry.
 
-        # Cria wrapper function específica baseada no tool_name
-        if tool_name == "write_file":
-            def write_file(file_path: str, content: str) -> str:
-                """Writes content to a file.
+        Returns:
+            Tupla ``(tool_result, function_response_payload)`` onde:
+            - ``tool_result`` é um :class:`ToolResult` (ou ``None`` se a tool
+              não foi encontrada / execução falhou na borda) — usado pelo
+              orquestrador para display/auditoria.
+            - ``function_response_payload`` é um dict serializável JSON pronto
+              para ser embrulhado em ``types.Part.from_function_response``.
+              Sempre presente; em caso de erro, contém ``{"error": "..."}``
+              numa forma que o modelo consegue ler e se recuperar.
+        """
+        from ...tools.registry import get_tool_registry
+        from ...tools.base import ToolContext, ToolResult, ToolStatus
 
-                Args:
-                    file_path: The path to the file to write
-                    content: The text content to write to the file
+        registry = get_tool_registry()
+        tool = registry.get(function_name) if hasattr(registry, "get") else None
 
-                Returns:
-                    str: Success message or error description
-                """
-                try:
-                    # DEBUG: Log dos parâmetros recebidos
-                    logger.info(f"Tool {tool_name} called with file_path='{file_path}', content='{content[:50]}...'")
+        # Tool inexistente (ex.: nome alucinado pelo modelo). Devolvemos um
+        # erro estruturado em vez de levantar — o modelo aprende e tenta de
+        # novo com nome correto na próxima iteração.
+        if tool is None:
+            available = sorted(registry._tools.keys()) if hasattr(registry, "_tools") else []
+            logger.warning(
+                "Function call '%s' not found in registry. Available tools: %s",
+                function_name,
+                available,
+            )
+            error_payload = {
+                "error": (
+                    f"Function '{function_name}' is not registered in this agent. "
+                    f"Available tools: {', '.join(available) if available else '(none)'}."
+                ),
+                "status": "error",
+                "error_code": "FUNCTION_NOT_FOUND",
+            }
+            tool_result = ToolResult(
+                status=ToolStatus.ERROR,
+                message=error_payload["error"],
+                metadata={
+                    "function_name": function_name,
+                    "arguments": arguments,
+                    "error_code": "FUNCTION_NOT_FOUND",
+                },
+            )
+            return tool_result, error_payload
 
-                    # Cria contexto para a tool
-                    context = ToolContext(
-                        user_input="",
-                        parsed_args={"file_path": file_path, "content": content},
-                        session_data={},
-                        working_directory=".",
-                        file_list=[]
-                    )
+        context = ToolContext(
+            user_input="",
+            parsed_args=dict(arguments or {}),
+            session_data=dict(session_data or {}),
+            working_directory=working_directory or ".",
+            file_list=[],
+            metadata={
+                "execution_method": "function_call",
+                "function_name": function_name,
+                "tool_name": tool.name,
+            },
+        )
 
-                    # Executa a tool
-                    if hasattr(tool_instance, 'execute_sync'):
-                        result = tool_instance.execute_sync(context)
-                    else:
-                        result = asyncio.run(tool_instance.execute(context))
+        logger.info(
+            "Executing function call '%s' with args=%s (cwd=%s)",
+            function_name,
+            list(context.parsed_args.keys()),
+            context.working_directory,
+        )
 
-                    if result.is_success:
-                        return f"File '{file_path}' written successfully"
-                    else:
-                        return f"Error writing file: {result.message}"
+        try:
+            tool_result = await tool.execute(context)
+        except Exception as exc:  # pylint: disable=broad-except
+            # Falha não-tratada na tool: capturamos para que o modelo veja o
+            # erro como function_response em vez de quebrar o turno inteiro.
+            logger.error(
+                "Tool '%s' raised an unhandled exception: %s",
+                function_name,
+                exc,
+                exc_info=True,
+            )
+            tool_result = ToolResult(
+                status=ToolStatus.ERROR,
+                message=f"Unhandled exception in {function_name}: {exc}",
+                error=exc,
+                metadata={"function_name": function_name},
+            )
+            return tool_result, {
+                "error": str(exc),
+                "status": "error",
+                "error_code": "EXECUTION_EXCEPTION",
+            }
 
-                except Exception as e:
-                    logger.error(f"Tool wrapper error for {tool_name}: {e}")
-                    return f"Error: {str(e)}"
+        # Carimba o nome da função no metadata para observabilidade downstream
+        # (display_manager, smoke tests, telemetria) sem sobrescrever metadata
+        # que a própria tool já populou.
+        if tool_result.metadata is None:
+            tool_result.metadata = {}
+        tool_result.metadata.setdefault("function_name", function_name)
 
-            return write_file
+        return tool_result, self._tool_result_to_function_response(tool_result, function_name)
 
-        # Generic wrapper for other tools (fallback)
-        def tool_wrapper(**kwargs):
-            """Generic wrapper SÍNCRONO que executa a tool e retorna resultado formatado"""
-            try:
-                # DEBUG: Log dos parâmetros recebidos
-                logger.info(f"Tool {tool_name} called with parameters: {kwargs}")
+    @staticmethod
+    def _tool_result_to_function_response(tool_result: Any, function_name: str) -> Dict[str, Any]:
+        """Converte ``ToolResult`` em payload JSON-serializable para function_response.
 
-                # Cria contexto para a tool
-                context = ToolContext(
-                    user_input="",  # Chat session não precisa disso
-                    parsed_args=kwargs,
-                    session_data={},
-                    working_directory=".",  # TODO: pegar do contexto real
-                    file_list=[]
+        O Gemini exige que o ``response`` da Part seja um dict serializável.
+        Mantemos apenas chaves estáveis e seguras (sem objetos custom, sem
+        tracebacks) para evitar erros de serialização do Protobuf.
+        """
+        from ...tools.base import ToolStatus
+
+        if tool_result.status == ToolStatus.SUCCESS:
+            data = tool_result.data
+            payload: Dict[str, Any] = {
+                "status": "success",
+                "result": _stringify_for_model(data),
+            }
+            if tool_result.message:
+                payload["message"] = tool_result.message
+            return payload
+
+        return {
+            "status": "error",
+            "error": tool_result.message or f"{function_name} failed",
+            "error_code": tool_result.metadata.get("error_code", "EXECUTION_ERROR")
+            if tool_result.metadata
+            else "EXECUTION_ERROR",
+        }
+
+    async def chat_with_tools(
+        self,
+        chat: Any,
+        message: Any,
+        working_directory: str = ".",
+        max_iterations: Optional[int] = None,
+        session_data: Optional[Dict[str, Any]] = None,
+    ) -> tuple[str, list]:
+        """Envia ``message`` ao chat e roda o loop manual de function calling.
+
+        Substitui o uso de AFC do SDK por um loop controlado:
+
+        1. ``chat.send_message(message)`` envia o input do usuário.
+        2. Se a resposta contém ``function_call`` parts, cada uma é executada
+           via :meth:`execute_function_call` e o resultado é devolvido ao chat
+           como ``Part.from_function_response``.
+        3. O loop repete até a resposta não ter mais function_calls ou até
+           ``max_iterations`` ser atingido.
+
+        O método garante que o histórico do chat (``_curated_history``) reflita
+        sempre o turno completo — incluindo a entrada do usuário — mesmo
+        quando uma function call falha, porque o erro vira function_response e
+        ``send_message`` retorna normalmente.
+
+        Returns:
+            Tupla ``(text, tool_results)``: texto final agregado do modelo e
+            a lista de :class:`ToolResult` de cada call executada (na ordem).
+        """
+        from ...tools.base import ToolResult, ToolStatus
+
+        cap = max_iterations if max_iterations is not None else self.MAX_TOOL_ITERATIONS
+        tool_results: list = []
+        text_chunks: list[str] = []
+
+        # send_message é síncrono no SDK — usamos to_thread para não bloquear o loop.
+        response = await asyncio.to_thread(chat.send_message, message)
+
+        for iteration in range(cap):
+            function_calls = self._extract_function_calls(response)
+            text = self._extract_response_text(response)
+            if text:
+                text_chunks.append(text)
+
+            if not function_calls:
+                logger.debug(
+                    "Manual function calling loop finished after %d iteration(s)", iteration
+                )
+                break
+
+            function_response_parts = []
+            for call in function_calls:
+                tool_result, payload = await self.execute_function_call(
+                    function_name=call["name"],
+                    arguments=call["args"],
+                    working_directory=working_directory,
+                    session_data=session_data,
+                )
+                tool_results.append(tool_result)
+                function_response_parts.append(
+                    types.Part.from_function_response(name=call["name"], response=payload)
                 )
 
-                # Executa a tool de forma síncrona
-                if hasattr(tool_instance, 'execute_sync'):
-                    # Tool já é síncrona
-                    result = tool_instance.execute_sync(context)
-                else:
-                    # Tool é async - executa de forma síncrona usando event loop
-                    try:
-                        # Tenta obter event loop existente
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            # Se já existe um loop rodando, usa asyncio.create_task
-                            import concurrent.futures
-                            with concurrent.futures.ThreadPoolExecutor() as executor:
-                                future = executor.submit(asyncio.run, tool_instance.execute(context))
-                                result = future.result(timeout=30)  # 30 segundos timeout
-                        else:
-                            result = loop.run_until_complete(tool_instance.execute(context))
-                    except RuntimeError:
-                        # Fallback - cria novo event loop
-                        result = asyncio.run(tool_instance.execute(context))
+            response = await asyncio.to_thread(chat.send_message, function_response_parts)
+        else:
+            # Loop esgotou o cap sem terminar — o modelo continua querendo chamar tools.
+            logger.warning(
+                "Manual function calling loop hit max_iterations=%d without convergence", cap
+            )
+            tail_text = self._extract_response_text(response)
+            if tail_text:
+                text_chunks.append(tail_text)
+            tool_results.append(
+                ToolResult(
+                    status=ToolStatus.ERROR,
+                    message=(
+                        f"Tool calling loop exceeded max_iterations={cap}. "
+                        "The model did not produce a final answer."
+                    ),
+                    metadata={"error_code": "MAX_ITERATIONS_EXCEEDED"},
+                )
+            )
 
-                if result.is_success:
-                    # Retorna dados + rich display se disponível
-                    if result.metadata and "rich_display" in result.metadata:
-                        return {
-                            "result": str(result.data),
-                            "display": result.metadata["rich_display"],
-                            "status": "success"
+        final_text = "\n".join(t for t in text_chunks if t).strip()
+        return final_text, tool_results
+
+    @staticmethod
+    def _extract_function_calls(response: Any) -> list[Dict[str, Any]]:
+        """Coleta todos os function_calls da resposta atual em ordem."""
+        calls: list[Dict[str, Any]] = []
+        candidates = getattr(response, "candidates", None) or []
+        for candidate in candidates:
+            content = getattr(candidate, "content", None)
+            parts = getattr(content, "parts", None) or []
+            for part in parts:
+                fc = getattr(part, "function_call", None)
+                if fc and getattr(fc, "name", None):
+                    calls.append(
+                        {
+                            "name": fc.name,
+                            "args": dict(getattr(fc, "args", {}) or {}),
                         }
-                    else:
-                        return {"result": str(result.data), "status": "success"}
-                else:
-                    return {"error": result.message, "status": "error"}
+                    )
+        return calls
 
-            except Exception as e:
-                logger.error(f"Tool wrapper error for {tool_name}: {e}")
-                return {"error": str(e), "status": "error"}
-
-        # Configura metadados da função para o Gemini entender
-        tool_wrapper.__name__ = tool_name
-        tool_wrapper.__doc__ = tool_instance.description
-
-        return tool_wrapper
+    @staticmethod
+    def _extract_response_text(response: Any) -> str:
+        """Extrai texto agregado da resposta, tolerando ausência do helper ``.text``."""
+        # ``response.text`` lança quando a resposta é só function_calls; por isso
+        # iteramos manualmente.
+        chunks: list[str] = []
+        candidates = getattr(response, "candidates", None) or []
+        for candidate in candidates:
+            content = getattr(candidate, "content", None)
+            parts = getattr(content, "parts", None) or []
+            for part in parts:
+                txt = getattr(part, "text", None)
+                if txt:
+                    chunks.append(txt)
+        return "".join(chunks)
 
     def estimate_cost(self, usage: ModelUsage) -> float:
         """Estima custo baseado no uso (valores aproximados)"""

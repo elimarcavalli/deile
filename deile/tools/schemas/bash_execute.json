@@ -34,8 +34,7 @@
       },
       "environment": {
         "type": "OBJECT",
-        "description": "Additional environment variables",
-        "additionalProperties": {"type": "STRING"}
+        "description": "Additional environment variables as key/value pairs (string values only)"
       },
       "security_level": {
         "type": "STRING",

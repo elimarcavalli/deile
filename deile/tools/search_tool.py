@@ -65,14 +65,24 @@ class SearchTool(SyncTool):
     - Repository-aware exclusions
     """
     
-    def __init__(self):
-        super().__init__(
-            name="find_in_files",
-            description="Search for text patterns in repository files with context limits (SITUAÇÃO 6 compliant - max 50 lines per match)",
-            category="search",
-            security_level="safe"
+    @property
+    def name(self) -> str:
+        return "find_in_files"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Search for text patterns in repository files with context limits "
+            "(SITUAÇÃO 6 compliant - max 50 lines per match)"
         )
-        
+
+    @property
+    def category(self) -> str:
+        return "search"
+
+    def __init__(self):
+        super().__init__()
+
         # Enhanced exclude patterns for better performance
         self.default_excludes = [
             '.git/*', '.svn/*', '.hg/*', '.bzr/*',

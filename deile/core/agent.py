@@ -598,173 +598,66 @@ class DeileAgent:
             )
             
             # Verifica se é GeminiProvider com suporte a Chat Sessions
-            if hasattr(model_provider, 'create_chat_session'):
-                logger.debug("Using Chat Session for automatic function calling")
-                
+            if hasattr(model_provider, 'create_chat_session') and hasattr(
+                model_provider, 'chat_with_tools'
+            ):
+                logger.debug("Using Chat Session with manual function calling")
+
                 # Obtém system instruction do contexto
                 system_instruction = None
                 if isinstance(context, dict):
                     system_instruction = context.get("system_instruction")
-                
+
                 # Cria ou obtém chat session
                 chat = await model_provider.create_chat_session(
                     session_id=session.session_id,
                     system_instruction=system_instruction
                 )
-                
-                # Prepara mensagem - inclui file_data se disponível no contexto
-                message_content = user_input
 
-                # CORREÇÃO CRÍTICA: Verifica se há file_data_parts no contexto
+                # Monta mensagem (texto + anexos opcionais).
+                message_content: Any = user_input
                 if isinstance(context, dict) and "file_data_parts" in context:
-                    # Cria mensagem com texto + File objects
-                    message_parts = [user_input]  # Primeiro adiciona o texto
-
-                    # Adiciona cada arquivo como File object
+                    message_parts: List[Any] = [user_input]
                     for file_data in context["file_data_parts"]:
                         if "file_data" in file_data:
                             file_uri = file_data["file_data"]["file_uri"]
-                            # Cria File object a partir do URI
                             import google.genai.types as genai_types
                             file_obj = genai_types.File(
-                                name=file_uri.split('/')[-1],  # Extrai nome do URI
+                                name=file_uri.split('/')[-1],
                                 uri=file_uri,
-                                mime_type=file_data["file_data"].get("mime_type", "text/plain")
+                                mime_type=file_data["file_data"].get("mime_type", "text/plain"),
                             )
                             message_parts.append(file_obj)
+                    message_content = message_parts
+                    logger.info(
+                        "Sent message with %d file attachments",
+                        len(context["file_data_parts"]),
+                    )
 
-                    # Envia como lista com string + File objects
-                    response = chat.send_message(message_parts)
-                    logger.info(f"Sent message with {len(context['file_data_parts'])} file attachments")
-                else:
-                    # Envia mensagem simples sem anexos
-                    response = chat.send_message(user_input)
-                
-                # Chat Sessions gerenciam tools automaticamente, mas precisamos extrair tool results
-                # para compatibilidade com o resto do sistema
-                tool_results = await self._extract_tool_results_from_chat_response(response)
-                
-                # Extrai conteúdo da resposta
-                content = ""
-                if hasattr(response, 'text'):
-                    content = response.text
-                elif hasattr(response, 'content'):
-                    content = response.content
-                else:
-                    content = str(response)
-                
-                logger.info(f"Chat session completed with {len(tool_results)} tool executions")
+                # Roda o loop manual: função declarada → chamada → execução →
+                # function_response → resposta final. Erros em tools viram
+                # function_response normais, então o histórico é preservado.
+                content, tool_results = await model_provider.chat_with_tools(
+                    chat=chat,
+                    message=message_content,
+                    working_directory=str(session.working_directory),
+                    session_data=session.context_data,
+                )
+
+                logger.info(
+                    "Chat session completed with %d tool execution(s)", len(tool_results)
+                )
                 return content, tool_results
-            
+
             else:
                 # Fallback para providers sem Chat Session support
                 logger.debug("Using legacy function calling approach")
                 return await self._process_legacy_function_calling(user_input, parse_result, session)
-                
+
         except Exception as e:
-            self.logger.error(f"Chat session function calling failed: {e}")
+            self.logger.error(f"Chat session function calling failed: {e}", exc_info=True)
             return f"I encountered an error during function calling: {str(e)}", []
 
-
-    async def _extract_tool_results_from_chat_response(self, response) -> List[ToolResult]:
-        """Extrai tool results de uma resposta de Chat Session"""
-        from ..tools.base import ToolResult, ToolStatus
-        tool_results = []
-
-        try:
-            logger.debug("Extracting tool results from chat session response")
-
-            # Analisa candidates para encontrar function calls
-            if hasattr(response, 'candidates') and response.candidates:
-                logger.debug(f"Found {len(response.candidates)} candidates in response")
-
-                for i, candidate in enumerate(response.candidates):
-                    if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
-                        logger.debug(f"Candidate {i} has {len(candidate.content.parts)} parts")
-
-                        for j, part in enumerate(candidate.content.parts):
-                            if hasattr(part, 'function_call') and part.function_call:
-                                # Encontrou function call - criar ToolResult
-                                function_call = part.function_call
-
-                                # Proteção contra function_call None ou sem name
-                                if function_call and hasattr(function_call, 'name') and function_call.name:
-                                    logger.info(f"Found function call: {function_call.name}")
-
-                                    tool_result = ToolResult(
-                                        status=ToolStatus.SUCCESS,
-                                        message=f"Executed {function_call.name}",
-                                        data=dict(function_call.args) if hasattr(function_call, 'args') else {},
-                                        metadata={
-                                            "function_name": function_call.name,
-                                            "candidate_index": i,
-                                            "part_index": j
-                                        }
-                                    )
-                                    tool_results.append(tool_result)
-                                else:
-                                    logger.debug(f"Found function_call without name at candidate {i}, part {j}")
-
-                            elif hasattr(part, 'text'):
-                                logger.debug(f"Found text part with {len(part.text)} chars")
-
-            # CORREÇÃO CRÍTICA: Acessa automatic_function_calling_history
-            if not tool_results and hasattr(response, 'automatic_function_calling_history'):
-                logger.debug(f"Found automatic_function_calling_history with {len(response.automatic_function_calling_history)} entries")
-
-                for entry in response.automatic_function_calling_history:
-                    if hasattr(entry, 'parts'):
-                        for part in entry.parts:
-                            if hasattr(part, 'function_call') and part.function_call:
-                                function_call = part.function_call
-
-                                # Proteção contra function_call None ou sem name
-                                if function_call and hasattr(function_call, 'name') and function_call.name:
-                                    logger.info(f"Found function call in history: {function_call.name}")
-
-                                    tool_result = ToolResult(
-                                        status=ToolStatus.SUCCESS,
-                                        message=f"Executed {function_call.name}",
-                                        data=dict(function_call.args) if hasattr(function_call, 'args') else {},
-                                        metadata={"function_name": function_call.name, "from": "automatic_history"}
-                                    )
-                                    tool_results.append(tool_result)
-
-            # Fallback: tenta examinar outras propriedades do response
-            if not tool_results:
-                # Verifica se há informações de function calling em outras propriedades
-                if hasattr(response, 'function_calls') and response.function_calls:
-                    logger.debug(f"Found function_calls property with {len(response.function_calls)} calls")
-                    for fc in response.function_calls:
-                        tool_result = ToolResult(
-                            status=ToolStatus.SUCCESS,
-                            message=f"Executed {fc.name}",
-                            data=dict(fc.args) if hasattr(fc, 'args') else {},
-                            metadata={"function_name": fc.name}
-                        )
-                        tool_results.append(tool_result)
-
-                # Se ainda não encontrou, verifica response metadata
-                elif hasattr(response, 'usage') and response.usage:
-                    logger.debug("No explicit function calls found, checking usage metadata")
-                    # Se há usage mas sem function calls explícitos, pode indicar que tools foram executadas
-                    # mas não capturadas na estrutura padrão
-
-            logger.info(f"Extracted {len(tool_results)} tool results from chat response")
-
-            # Debug: mostra estrutura do response se não encontrou function calls
-            if not tool_results:
-                logger.debug(f"Response type: {type(response)}")
-                logger.debug(f"Response attributes: {dir(response)}")
-                if hasattr(response, 'candidates'):
-                    logger.debug(f"Candidates type: {type(response.candidates)}")
-
-            return tool_results
-
-        except Exception as e:
-            logger.error(f"Error extracting tool results from chat response: {e}")
-            logger.debug(f"Response object: {response}")
-            return []
 
     async def _process_legacy_function_calling(
         self,
