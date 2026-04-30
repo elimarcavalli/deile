@@ -179,7 +179,7 @@ O arquivo `config/settings.json` controla comportamentos avançados:
 ```json
 {
   "app_name": "DEILE",
-  "version": "5.0.0",
+  "version": "5.1.0",
   "default_model_name": "gemini-1.5-pro-latest",
   "max_context_tokens": 8000,
   "request_timeout": 120,

@@ -6,7 +6,7 @@ Hot-Reload Functionality Test
 Tests the hot-reload file watching mechanism for configuration changes.
 
 Author: DEILE Team
-Version: 5.0.0 ULTRA
+Version: 5.1.0 ULTRA
 """
 
 import asyncio

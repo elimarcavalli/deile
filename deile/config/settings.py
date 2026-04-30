@@ -27,7 +27,7 @@ class Settings:
     
     # Configurações básicas
     app_name: str = "DEILE"
-    version: str = "5.0.0"
+    version: str = "5.1.0"
     debug: bool = False
     
     # Configurações de diretórios

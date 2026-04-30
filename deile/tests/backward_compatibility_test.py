@@ -7,7 +7,7 @@ Tests that all existing API interfaces are preserved and work correctly
 with the unified configuration system.
 
 Author: DEILE Team
-Version: 5.0.0 ULTRA
+Version: 5.1.0 ULTRA
 """
 
 import asyncio
