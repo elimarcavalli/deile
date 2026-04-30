@@ -19,6 +19,7 @@ intent_patterns:
   # === IMPLEMENTAÇÃO E DESENVOLVIMENTO ===
   implementation_complex:
     category: "implementation"
+    tier: "tier_1"
     description: "Implementação complexa que requer workflow"
     keywords:
       - "implementar"
@@ -48,6 +49,7 @@ intent_patterns:
 
   implementation_simple:
     category: "implementation"
+    tier: "tier_2"
     description: "Implementação simples"
     keywords:
       - "adicionar"
@@ -67,6 +69,7 @@ intent_patterns:
   # === ANÁLISE E INVESTIGAÇÃO ===
   analysis_comprehensive:
     category: "analysis"
+    tier: "tier_1"
     description: "Análise abrangente que requer workflow"
     keywords:
       - "analisar"
@@ -99,6 +102,7 @@ intent_patterns:
 
   analysis_simple:
     category: "analysis"
+    tier: "tier_3"
     description: "Análise simples"
     keywords:
       - "verificar"
@@ -118,6 +122,7 @@ intent_patterns:
   # === MODIFICAÇÃO E OTIMIZAÇÃO ===
   modification_major:
     category: "modification"
+    tier: "tier_2"
     description: "Modificação significativa"
     keywords:
       - "melhorar"
@@ -144,6 +149,7 @@ intent_patterns:
 
   modification_minor:
     category: "modification"
+    tier: "tier_3"
     description: "Modificação menor"
     keywords:
       - "ajustar"
@@ -165,6 +171,7 @@ intent_patterns:
   # === RESOLUÇÃO DE PROBLEMAS ===
   troubleshooting_complex:
     category: "troubleshooting"
+    tier: "tier_1"
     description: "Resolução complexa de problemas"
     keywords:
       - "corrigir"
@@ -189,6 +196,7 @@ intent_patterns:
   # === INFORMAÇÃO E CONSULTA ===
   information_query:
     category: "information"
+    tier: "tier_3"
     description: "Consulta de informação"
     keywords:
       - "explicar"
@@ -225,6 +233,7 @@ intent_patterns:
   # === WORKFLOW E AUTOMAÇÃO ===
   workflow_explicit:
     category: "workflow"
+    tier: "tier_1"
     description: "Solicitação explícita de workflow"
     keywords:
       - "automatizar"
@@ -250,6 +259,7 @@ intent_patterns:
   # === SELF-AWARENESS - Perguntas sobre o próprio sistema ===
   self_awareness:
     category: "information"
+    tier: "tier_3"
     description: "Perguntas sobre o DEILE ou o próprio sistema"
     keywords:
       - "deile"
@@ -281,6 +291,7 @@ intent_patterns:
   # === CASOS ESPECÍFICOS DOS TESTES (NOVOS) ===
   test_cases_specific:
     category: "implementation"
+    tier: "tier_2"
     description: "Casos específicos identificados nos testes de falha"
     keywords:
       - "implementar"
