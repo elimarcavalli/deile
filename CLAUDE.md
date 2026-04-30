@@ -41,7 +41,7 @@ Entry point: `python3 deile.py` (CLI shell in `DeileAgentCLI`; all logic lives i
 
 ## Gotchas (not in claude_dev)
 
-- **`GOOGLE_API_KEY` is required at startup** — agent exits if missing. Loaded from `.env` via `python-dotenv`.
+- **At least one provider API key is required at startup** — the agent exits if none are set. Configure any of: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, or `GOOGLE_API_KEY` in `.env` (loaded via `python-dotenv`). The `bootstrap_providers()` function in `deile/core/models/bootstrap.py` handles conditional registration.
 - **Two `config/` directories**: `./config/` (runtime YAML/JSON) vs `./deile/config/` (package code + `settings.py` + YAML configs like `intent_patterns.yaml`). Don't conflate.
 - **`deile/tests/` mixes two kinds of tests**:
   - *Pytest tests* (`test_*.py`) — collected automatically by `pytest`.
