@@ -22,9 +22,9 @@ async def test_anthropic_simple_generate():
     from deile.core.models.provider_config import ProviderConfig
     from pathlib import Path
 
-    yaml_path = Path(__file__).parents[3] / "config" / "model_providers.yaml"
+    yaml_path = Path(__file__).parents[3] / "deile" / "config" / "model_providers.yaml"
     catalog = ModelCatalog.from_yaml(yaml_path)
-    handle = catalog.get("anthropic", "claude-haiku-4-5-20251001")
+    handle = catalog.get("anthropic", "claude-haiku-4-5")
     config = ProviderConfig(
         provider_id="anthropic",
         api_key_env="ANTHROPIC_API_KEY",

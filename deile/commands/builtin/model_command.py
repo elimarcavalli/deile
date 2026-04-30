@@ -303,6 +303,16 @@ EXAMPLES:
             for pid, limit in guard._daily.items():
                 lines.append(f"  {pid}: ${limit:.2f}")
 
+        if guard._monthly:
+            lines.append("")
+            lines.append("Monthly limits:")
+            for pid, limit in guard._monthly.items():
+                lines.append(f"  {pid}: ${limit:.2f}")
+
+        alert_pct = int(getattr(guard, "_alert_threshold", 0.8) * 100)
+        lines.append("")
+        lines.append(f"Alert threshold   : {alert_pct}%")
+
         return CommandResult(
             success=True,
             content=Panel(Text("\n".join(lines)), title="Budget", border_style="blue"),
