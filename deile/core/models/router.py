@@ -9,6 +9,8 @@ import time
 from collections import defaultdict
 
 from .base import ModelProvider, ModelType, ModelSize, ModelMessage, ModelResponse
+from .tier import ModelTier
+from .tier_router import get_tier_router
 from ..exceptions import ModelError, ConfigurationError
 
 
@@ -165,10 +167,11 @@ class ModelRouter:
         return False
     
     async def select_provider(
-        self, 
+        self,
         context: Optional[Dict[str, Any]] = None,
         session: Optional[Any] = None,
-        routing_context: Optional[RoutingContext] = None
+        routing_context: Optional[RoutingContext] = None,
+        tier: Optional[ModelTier] = None,
     ) -> ModelProvider:
         """Seleciona o melhor provedor para o contexto dado
         
@@ -185,7 +188,22 @@ class ModelRouter:
         """
         # Verifica saúde dos provedores periodicamente
         await self._health_check_if_needed()
-        
+
+        # Tier-aware routing: delegate to TierRouter when a tier is specified
+        if tier is not None:
+            try:
+                tier_router = get_tier_router()
+                # Register any providers that aren't yet known to the TierRouter
+                for provider in self.providers.values():
+                    if provider.provider_id not in tier_router.registered_providers():
+                        tier_router.register_provider(provider)
+                selected = tier_router.select(tier)
+                logger.debug("TierRouter selected provider_id=%s for tier=%s", selected.provider_id, tier.value)
+                return selected
+            except Exception as exc:
+                logger.warning("TierRouter.select failed (%s), falling back to legacy routing", exc)
+                # Fall through to legacy routing below
+
         # Obtém provedores disponíveis
         available_providers = await self._get_available_providers()
         
