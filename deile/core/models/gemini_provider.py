@@ -43,11 +43,26 @@ class GeminiProvider(ModelProvider):
     """Provedor para modelos Google Gemini"""
     
     def __init__(
-        self, 
+        self,
         gemini_config=None,
         api_key: Optional[str] = None,
         **config
     ):
+        # Multi-provider bootstrap path: bootstrap calls cls(ModelHandle, ProviderConfig)
+        from deile.core.models.catalog import ModelHandle
+        from deile.core.models.provider_config import ProviderConfig as _PC
+        if isinstance(gemini_config, ModelHandle):
+            handle = gemini_config
+            provider_cfg = api_key  # second positional arg is ProviderConfig in bootstrap
+            api_key = os.getenv(provider_cfg.api_key_env) if isinstance(provider_cfg, _PC) else None
+            self._handle = handle
+            from types import SimpleNamespace
+            gemini_config = SimpleNamespace(
+                model_name=handle.model_id,
+                generation_config={},
+                tool_config=None,
+            )
+
         # Carrega configuração dinâmica - ConfigManager é fonte única da verdade
         if gemini_config is None:
             try:
@@ -63,7 +78,7 @@ class GeminiProvider(ModelProvider):
                 gemini_config = GeminiConfig()
                 import logging
                 logging.warning(f"Failed to load ConfigManager, using defaults: {e}")
-        
+
         super().__init__(gemini_config.model_name, **config)
         
         # Armazena configuração
@@ -218,11 +233,29 @@ class GeminiProvider(ModelProvider):
     @property
     def provider_name(self) -> str:
         return "gemini"
-    
+
+    @property
+    def provider_id(self) -> str:
+        return "gemini"
+
+    @property
+    def tier(self):
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            return handle.tier
+        return super().tier
+
+    @property
+    def pricing(self):
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            return handle.pricing
+        return None
+
     @property
     def supported_types(self) -> List[ModelType]:
         return [ModelType.CHAT, ModelType.VISION, ModelType.CODE]
-    
+
     @property
     def model_size(self) -> ModelSize:
         # Identifica tamanho baseado no nome do modelo

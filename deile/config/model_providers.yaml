@@ -28,10 +28,10 @@ providers:
     timeout_seconds: 120
     sdk_kwargs: {}
 
-  gemini:                           # legacy optional (RNF-001)
+  gemini:
     api_key_env: GOOGLE_API_KEY
     base_url: null
-    enabled: false                  # disabled by default
+    enabled: true
     timeout_seconds: 120
     sdk_kwargs: {}
 
@@ -92,6 +92,43 @@ models:
     context_window: 128000
     capabilities: [function_calling, streaming, caching]
 
+  # === GEMINI ===
+  - provider_id: gemini
+    model_id: gemini-3.1-pro-preview
+    tier: tier_1
+    label: flagship
+    display_name: Gemini 3.1 Pro Preview
+    pricing: { input_per_1m_usd: 2.00, output_per_1m_usd: 12.00, cached_input_per_1m_usd: 0.20 }
+    context_window: 200000
+    capabilities: [function_calling, streaming, caching, vision]
+
+  - provider_id: gemini
+    model_id: gemini-3-flash-preview
+    tier: tier_2
+    label: balanced
+    display_name: Gemini 3 Flash Preview
+    pricing: { input_per_1m_usd: 0.50, output_per_1m_usd: 3.00, cached_input_per_1m_usd: 0.05 }
+    context_window: 200000
+    capabilities: [function_calling, streaming, caching, vision]
+
+  - provider_id: gemini
+    model_id: gemini-3.1-flash-lite-preview
+    tier: tier_3
+    label: fast
+    display_name: Gemini 3.1 Flash-Lite Preview
+    pricing: { input_per_1m_usd: 0.25, output_per_1m_usd: 1.50, cached_input_per_1m_usd: 0.025 }
+    context_window: 1000000
+    capabilities: [function_calling, streaming, caching, vision]
+
+  - provider_id: gemini
+    model_id: gemini-2.5-flash-lite
+    tier: tier_3
+    label: ultra-fast
+    display_name: Gemini 2.5 Flash-Lite
+    pricing: { input_per_1m_usd: 0.10, output_per_1m_usd: 0.40, cached_input_per_1m_usd: 0.01 }
+    context_window: 1000000
+    capabilities: [function_calling, streaming, caching, vision]
+
   # === DEEPSEEK ===
   - provider_id: deepseek
     model_id: deepseek-v4-pro
@@ -122,15 +159,15 @@ models:
 
 policies:
   task_optimized:
-    tier_1: [anthropic:claude-opus-4-7, openai:gpt-5.3-codex, deepseek:deepseek-v4-pro]
-    tier_2: [anthropic:claude-sonnet-4-6, openai:gpt-5.4, deepseek:deepseek-v4-pro]
-    tier_3: [anthropic:claude-haiku-4-5, openai:gpt-5.4-mini, deepseek:deepseek-v4-flash]
+    tier_1: [anthropic:claude-opus-4-7, gemini:gemini-3.1-pro-preview, openai:gpt-5.3-codex, deepseek:deepseek-v4-pro]
+    tier_2: [anthropic:claude-sonnet-4-6, gemini:gemini-3-flash-preview, openai:gpt-5.4, deepseek:deepseek-v4-pro]
+    tier_3: [gemini:gemini-3.1-flash-lite-preview, gemini:gemini-2.5-flash-lite, anthropic:claude-haiku-4-5, openai:gpt-5.4-mini, deepseek:deepseek-v4-flash]
     tier_4: [deepseek:deepseek-v4-flash, openai:gpt-5.4-mini]
 
   cost_optimized:
-    tier_1: [deepseek:deepseek-v4-pro, openai:gpt-5.4]
-    tier_2: [deepseek:deepseek-v4-pro, openai:gpt-5.4-mini]
-    tier_3: [deepseek:deepseek-v4-flash, openai:gpt-5.4-mini]
+    tier_1: [deepseek:deepseek-v4-pro, gemini:gemini-3.1-pro-preview, openai:gpt-5.4]
+    tier_2: [gemini:gemini-3-flash-preview, deepseek:deepseek-v4-pro, openai:gpt-5.4-mini]
+    tier_3: [gemini:gemini-2.5-flash-lite, gemini:gemini-3.1-flash-lite-preview, deepseek:deepseek-v4-flash, openai:gpt-5.4-mini]
     tier_4: [deepseek:deepseek-v4-flash, openai:gpt-5.4-mini]
 
 circuit_breaker:

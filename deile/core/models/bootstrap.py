@@ -20,6 +20,7 @@ _PROVIDER_CLASSES = {
     "anthropic": "deile.core.models.anthropic_provider.AnthropicProvider",
     "openai": "deile.core.models.openai_provider.OpenAIProvider",
     "deepseek": "deile.core.models.deepseek_provider.DeepSeekProvider",
+    "gemini": "deile.core.models.gemini_provider.GeminiProvider",
 }
 
 

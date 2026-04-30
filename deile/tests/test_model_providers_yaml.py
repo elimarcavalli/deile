@@ -32,9 +32,9 @@ def test_four_providers_defined(cfg):
         assert pid in providers, f"Provider '{pid}' missing"
 
 
-def test_nine_models_defined(cfg):
+def test_thirteen_models_defined(cfg):
     models = cfg["models"]
-    assert len(models) == 9, f"Expected 9 models, got {len(models)}"
+    assert len(models) == 13, f"Expected 13 models, got {len(models)}"
 
 
 def test_all_four_tiers_present(cfg):
