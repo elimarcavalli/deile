@@ -362,7 +362,49 @@ class ToolRegistry:
         
         logger.debug(f"Generated {len(functions)} function definitions for Gemini API")
         return functions
-    
+
+    def get_anthropic_tools(
+        self,
+        authorized_only: bool = True,
+        security_level: Optional[SecurityLevel] = None,
+    ) -> List[Dict]:
+        """Return tools in Anthropic tool_use format.
+
+        Returns:
+            List of dicts compatible with anthropic.types.ToolParam
+        """
+        result = []
+        for tool_name, tool in self._tools.items():
+            if authorized_only and tool_name not in self._enabled_tools:
+                continue
+            if security_level and tool.schema:
+                if not self._is_security_level_allowed(tool.schema.security_level, security_level):
+                    continue
+            if tool.schema:
+                result.append(tool.schema.to_anthropic_tool())
+        return result
+
+    def get_openai_functions(
+        self,
+        authorized_only: bool = True,
+        security_level: Optional[SecurityLevel] = None,
+    ) -> List[Dict]:
+        """Return tools in OpenAI / DeepSeek function_call format.
+
+        Returns:
+            List of dicts compatible with openai.types.chat.ChatCompletionToolParam
+        """
+        result = []
+        for tool_name, tool in self._tools.items():
+            if authorized_only and tool_name not in self._enabled_tools:
+                continue
+            if security_level and tool.schema:
+                if not self._is_security_level_allowed(tool.schema.security_level, security_level):
+                    continue
+            if tool.schema:
+                result.append(tool.schema.to_openai_function())
+        return result
+
     def load_schemas_from_directory(self, schemas_dir: Path) -> int:
         """Carrega schemas de tools de um diretório
         
