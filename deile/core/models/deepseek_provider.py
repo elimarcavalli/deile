@@ -32,3 +32,11 @@ class DeepSeekProvider(OpenAIProvider):
     @property
     def supported_types(self) -> List[ModelType]:
         return [ModelType.CHAT, ModelType.CODE]
+
+    @staticmethod
+    def _extract_cached_tokens(response: Any) -> int:
+        """DeepSeek exposes prompt_cache_hit_tokens instead of prompt_tokens_details."""
+        try:
+            return getattr(response.usage, "prompt_cache_hit_tokens", None) or 0
+        except AttributeError:
+            return 0
