@@ -232,3 +232,74 @@ async def test_forced_model_routes_to_specific_provider():
     # (it's only called as a fallback when the forced provider isn't found)
     # Either way, the right provider must have served the request.
     assert forced_provider.captured_messages, "forced provider was not called"
+
+
+@pytest.mark.asyncio
+async def test_forced_model_id_picks_exact_instance_not_flagship():
+    """R4-H1: when /model use anthropic:claude-haiku-4-5 is set AND multiple anthropic
+    instances are registered, agent must pick the haiku one, NOT the (flagship) opus."""
+    flagship = _CapturingProvider()
+    flagship.provider_id = "anthropic"
+    flagship.model_name = "claude-opus-4-7"  # the cascade flagship
+
+    haiku = _CapturingProvider()
+    haiku.provider_id = "anthropic"
+    haiku.model_name = "claude-haiku-4-5"  # the cheap model the user explicitly picked
+
+    agent = _build_minimal_agent_with_mock_provider(flagship)
+    agent.model_router.providers = {
+        "anthropic:claude-opus-4-7": flagship,
+        "anthropic:claude-haiku-4-5": haiku,
+    }
+
+    from deile.core.agent import AgentSession
+
+    session = AgentSession(
+        session_id="forced-haiku-test",
+        working_directory=Path("/tmp"),
+        context_data={"forced_model": "anthropic:claude-haiku-4-5"},
+    )
+
+    content, _ = await agent._process_iterative_function_calling(
+        user_input="hi",
+        parse_result=None,
+        session=session,
+    )
+    assert content == "OK"
+    # Haiku must have been the one called — flagship must NOT have been called
+    assert haiku.captured_messages, "the haiku instance was NOT used"
+    assert not flagship.captured_messages, "the flagship was used despite forced_model selecting haiku"
+
+
+@pytest.mark.asyncio
+async def test_budget_exceeded_propagates_to_caller():
+    """R4-H2: BudgetExceeded must reach the caller (not be swallowed by catch-all)."""
+    from deile.storage.usage_repository import BudgetExceeded
+
+    provider = _CapturingProvider()
+    agent = _build_minimal_agent_with_mock_provider(provider)
+
+    # Wire a budget guard that always raises
+    class _BlockingGuard:
+        def check_all(self, **kwargs):
+            raise BudgetExceeded(
+                "session over limit",
+                provider_id="anthropic",
+                limit_type="per_session",
+            )
+    agent._budget_guard_singleton = _BlockingGuard()
+
+    from deile.core.agent import AgentSession
+
+    session = AgentSession(
+        session_id="budget-test",
+        working_directory=Path("/tmp"),
+        context_data={},
+    )
+
+    with pytest.raises(BudgetExceeded):
+        await agent._process_iterative_function_calling(
+            user_input="hi",
+            parse_result=None,
+            session=session,
+        )
