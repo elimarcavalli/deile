@@ -22,6 +22,10 @@ from unittest.mock import Mock, AsyncMock, patch
 # Add the deile package to sys.path
 sys.path.insert(0, str(Path(__file__).parent))
 
+from deile.config.manager import ConfigManager
+from deile.personas.config import PersonaConfig, CommunicationStyle
+from deile.personas.manager import PersonaManager
+
 print("🧪 COMPREHENSIVE INTEGRATION TEST SUITE")
 print("=" * 60)
 
@@ -38,11 +42,15 @@ class MockAgent:
 
 
 class MockMemoryManager:
-    """Mock memory manager with required components"""
+    """Mock memory manager with required components.
+
+    Memory subcomponents are accessed via ``await`` in production code, so they
+    need to be ``AsyncMock`` to be awaitable.
+    """
     def __init__(self):
-        self.semantic_memory = Mock()
-        self.episodic_memory = Mock()
-        self.working_memory = Mock()
+        self.semantic_memory = AsyncMock()
+        self.episodic_memory = AsyncMock()
+        self.working_memory = AsyncMock()
 
 
 class ComprehensiveIntegrationTestSuite:
@@ -291,9 +299,14 @@ class ComprehensiveIntegrationTestSuite:
         print("\n📋 Testing error handling scenarios...")
 
         try:
-            # Test 1: Invalid configuration data
+            # Test 1: Invalid configuration data.
+            # Contract: a dict without a top-level "personas" key is treated as
+            # an empty default; rejection only kicks in when "personas" is
+            # malformed. Use a malformed personas section to trigger validation.
             try:
-                await self.config_manager._validate_persona_config({'invalid': 'structure'})
+                await self.config_manager._validate_persona_config(
+                    {'personas': 'not-a-dict'}
+                )
                 validation_failed = False
             except Exception:
                 validation_failed = True  # Expected
@@ -445,9 +458,10 @@ class ComprehensiveIntegrationTestSuite:
                 f"Methods working, {len(available_personas)} personas available"
             )
 
-            # Test persona switching if personas are loaded
+            # Test persona switching if personas are loaded.
+            # list_personas() returns a list of dicts; pull the persona_id field.
             if len(available_personas) > 0:
-                first_persona_id = available_personas[0]
+                first_persona_id = available_personas[0]['persona_id']
                 switch_result = await self.persona_manager.switch_persona(first_persona_id)
 
                 switch_worked = isinstance(switch_result, bool)
