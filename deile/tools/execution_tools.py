@@ -779,8 +779,8 @@ class TestRunnerTool(SyncTool):
         
         # Comandos de teste baseado no tipo
         test_commands = {
-            "pytest": ["python", "-m", "pytest"],
-            "unittest": ["python", "-m", "unittest"],
+            "pytest": ["python3", "-m", "pytest"],
+            "unittest": ["python3", "-m", "unittest"],
             "nose": ["nosetests"]
         }
         
