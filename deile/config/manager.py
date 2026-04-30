@@ -815,8 +815,8 @@ class ConfigManager:
                             self.config_manager._reload_persona_config(), self._loop
                         )
                     else:
-                        asyncio.run_coroutine_threadsafe(
-                            self.config_manager.reload_config(), self._loop
+                        self._loop.call_soon_threadsafe(
+                            self.config_manager.reload_config
                         )
 
         if not self._observer:
