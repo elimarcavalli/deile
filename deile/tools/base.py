@@ -69,6 +69,42 @@ class ToolSchema:
     enabled: bool = True
     max_execution_time: int = 30
     
+    def to_anthropic_tool(self) -> Dict[str, Any]:
+        """Converte para o formato de tool do SDK Anthropic.
+
+        Returns:
+            Dict compatible with anthropic.types.ToolParam
+        """
+        params = self._convert_parameters_to_json_schema(self.parameters)
+        if self.required:
+            params["required"] = self.required
+
+        return {
+            "name": self.name,
+            "description": self.description,
+            "input_schema": params,
+        }
+
+    def to_openai_function(self) -> Dict[str, Any]:
+        """Converte para o formato de function do SDK OpenAI (e DeepSeek).
+
+        Returns:
+            Dict compatible with openai.types.chat.ChatCompletionToolParam
+        """
+        params = self._convert_parameters_to_json_schema(self.parameters)
+        if self.required:
+            params["required"] = self.required
+
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": params,
+                "strict": False,
+            },
+        }
+
     def to_gemini_function(self):
         """Converte para FunctionDeclaration do novo Google GenAI SDK"""
         from google.genai.types import FunctionDeclaration
