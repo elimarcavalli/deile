@@ -10,10 +10,10 @@ class HelpCommand(DirectCommand):
     def __init__(self):
         from ...config.manager import CommandConfig
         config = CommandConfig(
-            name="?",
+            name="help",
             description="Lista comandos disponíveis e exemplos de uso",
             action="show_help",
-            # aliases=["h", "?"]
+            aliases=["h", "?"],
         )
         super().__init__(config)
         self.category = "system"
