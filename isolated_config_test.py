@@ -327,9 +327,14 @@ class IsolatedConfigTestSuite:
 
             config_manager = ConfigManager(config_dir=self.temp_dir)
 
-            # Test invalid configuration validation
+            # Test invalid configuration validation.
+            # Contract: a dict without a top-level "personas" key is treated as
+            # an empty default; rejection only kicks in when "personas" is
+            # malformed. Use a malformed personas section to trigger validation.
             try:
-                await config_manager._validate_persona_config({'invalid': 'structure'})
+                await config_manager._validate_persona_config(
+                    {'personas': 'not-a-dict'}
+                )
                 validation_failed = False
             except Exception:
                 validation_failed = True  # Expected
