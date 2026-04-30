@@ -215,12 +215,14 @@ class BudgetGuard:
         per_provider_daily: Optional[Dict[str, float]] = None,
         per_provider_monthly: Optional[Dict[str, float]] = None,
         enabled: bool = True,
+        alert_threshold: float = 0.8,
     ) -> None:
         self._repo = repository
         self._per_session = per_session_usd
         self._daily = per_provider_daily or {}
         self._monthly = per_provider_monthly or {}
         self._enabled = enabled
+        self._alert_threshold = alert_threshold
 
     @classmethod
     def from_yaml(cls, yaml_path: Path, repository: UsageRepository) -> "BudgetGuard":
@@ -234,6 +236,7 @@ class BudgetGuard:
             per_provider_daily=budget.get("per_provider_daily_usd", {}),
             per_provider_monthly=budget.get("per_provider_monthly_usd", {}),
             enabled=bool(budget.get("enabled", True)),
+            alert_threshold=float(budget.get("alert_threshold_pct", 80)) / 100.0,
         )
 
     def check_session(self, session_id: str, estimated_cost: float = 0.0) -> None:
@@ -241,12 +244,20 @@ class BudgetGuard:
         if not self._enabled:
             return
         current = self._repo.cost_for_session(session_id)
-        if current + estimated_cost > self._per_session:
+        projected = current + estimated_cost
+        if projected > self._per_session:
             raise BudgetExceeded(
                 f"Session {session_id} would exceed per-session limit "
                 f"${self._per_session:.4f} (current=${current:.4f}, est=${estimated_cost:.4f})",
                 provider_id="(session)",
                 limit_type="per_session",
+            )
+        if self._per_session > 0 and projected / self._per_session >= self._alert_threshold:
+            logger.warning(
+                "Budget alert: session %s at %.0f%% of $%.2f limit",
+                session_id,
+                projected / self._per_session * 100,
+                self._per_session,
             )
 
     def check_provider_daily(self, provider_id: str, estimated_cost: float = 0.0) -> None:
@@ -258,12 +269,20 @@ class BudgetGuard:
             return
         day_ago = time.time() - 86_400
         current = self._repo.cost_for_provider_since(provider_id, day_ago)
-        if current + estimated_cost > limit:
+        projected = current + estimated_cost
+        if projected > limit:
             raise BudgetExceeded(
                 f"Provider {provider_id} would exceed daily limit "
                 f"${limit:.2f} (current=${current:.4f}, est=${estimated_cost:.4f})",
                 provider_id=provider_id,
                 limit_type="daily",
+            )
+        if limit > 0 and projected / limit >= self._alert_threshold:
+            logger.warning(
+                "Budget alert: provider %s daily at %.0f%% of $%.2f limit",
+                provider_id,
+                projected / limit * 100,
+                limit,
             )
 
     def check_provider_monthly(self, provider_id: str, estimated_cost: float = 0.0) -> None:

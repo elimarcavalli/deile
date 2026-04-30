@@ -66,48 +66,48 @@ models:
 
   # === OPENAI ===
   - provider_id: openai
-    model_id: gpt-5.3-codex
+    model_id: gpt-4o
     tier: tier_1
-    label: code-specialist
-    display_name: GPT-5.3 Codex
-    pricing: { input_per_1m_usd: 1.75, output_per_1m_usd: 14.00 }
-    context_window: 200000
-    capabilities: [function_calling, streaming, caching]
-
-  - provider_id: openai
-    model_id: gpt-5.4
-    tier: tier_2
-    label: balanced
-    display_name: GPT-5.4
-    pricing: { input_per_1m_usd: 2.50, output_per_1m_usd: 15.00 }
-    context_window: 200000
+    label: flagship
+    display_name: GPT-4o
+    pricing: { input_per_1m_usd: 2.50, output_per_1m_usd: 10.00, cached_input_per_1m_usd: 1.25 }
+    context_window: 128000
     capabilities: [function_calling, streaming, caching, vision]
 
   - provider_id: openai
-    model_id: gpt-5.4-mini
+    model_id: gpt-4o
+    tier: tier_2
+    label: balanced
+    display_name: GPT-4o
+    pricing: { input_per_1m_usd: 2.50, output_per_1m_usd: 10.00, cached_input_per_1m_usd: 1.25 }
+    context_window: 128000
+    capabilities: [function_calling, streaming, caching, vision]
+
+  - provider_id: openai
+    model_id: gpt-4o-mini
     tier: tier_3
     label: fast
-    display_name: GPT-5.4 Mini
-    pricing: { input_per_1m_usd: 0.75, output_per_1m_usd: 4.50 }
+    display_name: GPT-4o Mini
+    pricing: { input_per_1m_usd: 0.15, output_per_1m_usd: 0.60, cached_input_per_1m_usd: 0.075 }
     context_window: 128000
     capabilities: [function_calling, streaming, caching]
 
   # === DEEPSEEK ===
   - provider_id: deepseek
-    model_id: deepseek-v4-pro
+    model_id: deepseek-chat
     tier: tier_1
     label: flagship-cheap
-    display_name: DeepSeek V4 Pro
-    pricing: { input_per_1m_usd: 1.74, output_per_1m_usd: 3.48 }
+    display_name: DeepSeek Chat
+    pricing: { input_per_1m_usd: 0.27, output_per_1m_usd: 1.10 }
     context_window: 128000
     capabilities: [function_calling, streaming, caching]
 
   - provider_id: deepseek
-    model_id: deepseek-v4-flash
+    model_id: deepseek-chat
     tier: tier_3
     label: ultra-cheap
-    display_name: DeepSeek V4 Flash
-    pricing: { input_per_1m_usd: 0.14, output_per_1m_usd: 0.28 }
+    display_name: DeepSeek Chat
+    pricing: { input_per_1m_usd: 0.27, output_per_1m_usd: 1.10 }
     context_window: 128000
     capabilities: [function_calling, streaming, caching]
 
@@ -122,16 +122,16 @@ models:
 
 policies:
   task_optimized:
-    tier_1: [anthropic:claude-opus-4-7, openai:gpt-5.3-codex, deepseek:deepseek-v4-pro]
-    tier_2: [anthropic:claude-sonnet-4-6, openai:gpt-5.4, deepseek:deepseek-v4-pro]
-    tier_3: [anthropic:claude-haiku-4-5, openai:gpt-5.4-mini, deepseek:deepseek-v4-flash]
-    tier_4: [deepseek:deepseek-v4-flash, openai:gpt-5.4-mini]
+    tier_1: [anthropic:claude-opus-4-7, openai:gpt-4o, deepseek:deepseek-chat]
+    tier_2: [anthropic:claude-sonnet-4-6, openai:gpt-4o, deepseek:deepseek-chat]
+    tier_3: [anthropic:claude-haiku-4-5, openai:gpt-4o-mini, deepseek:deepseek-chat]
+    tier_4: [deepseek:deepseek-chat, openai:gpt-4o-mini]
 
   cost_optimized:
-    tier_1: [deepseek:deepseek-v4-pro, openai:gpt-5.4]
-    tier_2: [deepseek:deepseek-v4-pro, openai:gpt-5.4-mini]
-    tier_3: [deepseek:deepseek-v4-flash, openai:gpt-5.4-mini]
-    tier_4: [deepseek:deepseek-v4-flash, openai:gpt-5.4-mini]
+    tier_1: [deepseek:deepseek-chat, openai:gpt-4o]
+    tier_2: [deepseek:deepseek-chat, openai:gpt-4o-mini]
+    tier_3: [deepseek:deepseek-chat, openai:gpt-4o-mini]
+    tier_4: [deepseek:deepseek-chat, openai:gpt-4o-mini]
 
 circuit_breaker:
   consecutive_failures_threshold: 3

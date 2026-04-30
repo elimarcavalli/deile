@@ -296,6 +296,13 @@ class AnthropicProvider(ModelProvider):
         )
         usage.cost_estimate = self.estimate_cost(usage)
         self._update_stats(usage)
+        latency_ms = int((time.time() - start) * 1000)
+        await self._record_usage(
+            session_id=kwargs.get("session_id", "default"),
+            usage=usage,
+            latency_ms=latency_ms,
+            success=True,
+        )
         return final_text.strip(), tool_results, usage
 
     # ------------------------------------------------------------------

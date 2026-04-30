@@ -32,6 +32,19 @@ from ..orchestration.workflow_executor import get_workflow_executor
 logger = logging.getLogger(__name__)
 
 
+def _self_record_circuit(provider_id: str, *, success: bool) -> None:
+    """Notify TierRouter's CircuitBreaker of a provider call outcome."""
+    try:
+        from deile.core.models.tier_router import get_tier_router  # noqa: PLC0415
+        tr = get_tier_router()
+        if success:
+            tr.record_success(provider_id)
+        else:
+            tr.record_failure(provider_id)
+    except Exception:
+        pass
+
+
 class AgentStatus(Enum):
     """Status do agente"""
     IDLE = "idle"
@@ -579,9 +592,9 @@ class DeileAgent:
         parse_result: Optional[ParseResult],
         session: AgentSession
     ) -> tuple[str, List[ToolResult]]:
-        """Processa function calling usando Chat Sessions - versão simplificada"""
+        """Processa function calling — Gemini via Chat Session; outros providers via chat_with_tools."""
         self._status = AgentStatus.GENERATING_RESPONSE
-        
+
         try:
             # Prepara contexto inicial
             context = await self.context_manager.build_context(
@@ -590,31 +603,78 @@ class DeileAgent:
                 tool_results=[],
                 session=session
             )
-            
+
+            # Classify intent tier and store in session for routing hints
+            try:
+                from deile.core.intent_tier_mapper import classify_tier
+                intent_result = await self.intent_analyzer.analyze(
+                    user_input=user_input,
+                    parse_result=parse_result,
+                    session_context={},
+                )
+                model_tier = classify_tier(intent_result)
+                session.context_data["_current_tier"] = model_tier.value
+            except Exception:
+                model_tier = None
+
             # Seleciona modelo apropriado
             model_provider = await self.model_router.select_provider(
                 context=context,
                 session=session
             )
-            
-            # Verifica se é GeminiProvider com suporte a Chat Sessions
-            if hasattr(model_provider, 'create_chat_session') and hasattr(
-                model_provider, 'chat_with_tools'
-            ):
-                logger.debug("Using Chat Session with manual function calling")
 
-                # Obtém system instruction do contexto
+            # Budget enforcement (non-blocking — warn only if check fails unexpectedly)
+            try:
+                from deile.storage.usage_repository import get_usage_repository, BudgetGuard
+                _guard: Any = getattr(self, "_budget_guard_singleton", None)
+                if _guard is None:
+                    _yaml = Path(__file__).parents[2] / "config" / "model_providers.yaml"
+                    try:
+                        self._budget_guard_singleton = BudgetGuard.from_yaml(_yaml, get_usage_repository())
+                        _guard = self._budget_guard_singleton
+                    except Exception:
+                        self._budget_guard_singleton = False  # sentinel: tried and failed
+                if _guard:
+                    _guard.check_all(
+                        session_id=session.session_id,
+                        provider_id=model_provider.provider_id,
+                    )
+            except Exception as _budget_err:
+                logger.warning("BudgetGuard: %s", _budget_err)
+                raise  # BudgetExceeded should propagate; other errors are swallowed above
+
+            # Observability: log provider selection
+            try:
+                from deile.storage.debug_logger import get_debug_logger
+                await get_debug_logger().log_router_event(
+                    "provider_selected",
+                    {
+                        "provider_id": model_provider.provider_id,
+                        "model_id": getattr(model_provider, "model_name", "unknown"),
+                        "tier": getattr(model_tier, "value", "unknown"),
+                        "session_id": session.session_id,
+                    },
+                )
+            except Exception:
+                pass
+
+            _t0 = time.time()
+
+            # ── Gemini path: Chat Session with _gemini_chat_with_tools ──────────
+            if hasattr(model_provider, 'create_chat_session') and hasattr(
+                model_provider, '_gemini_chat_with_tools'
+            ):
+                logger.debug("Using Chat Session with manual function calling (Gemini)")
+
                 system_instruction = None
                 if isinstance(context, dict):
                     system_instruction = context.get("system_instruction")
 
-                # Cria ou obtém chat session
                 chat = await model_provider.create_chat_session(
                     session_id=session.session_id,
                     system_instruction=system_instruction
                 )
 
-                # Monta mensagem (texto + anexos opcionais).
                 message_content: Any = user_input
                 if isinstance(context, dict) and "file_data_parts" in context:
                     message_parts: List[Any] = [user_input]
@@ -629,28 +689,85 @@ class DeileAgent:
                             )
                             message_parts.append(file_obj)
                     message_content = message_parts
-                    logger.info(
-                        "Sent message with %d file attachments",
-                        len(context["file_data_parts"]),
+                    logger.info("Sent message with %d file attachments", len(context["file_data_parts"]))
+
+                try:
+                    content, tool_results = await model_provider._gemini_chat_with_tools(
+                        chat=chat,
+                        message=message_content,
+                        working_directory=str(session.working_directory),
+                        session_data=session.context_data,
                     )
+                    _self_record_circuit(model_provider.provider_id, success=True)
+                except Exception:
+                    _self_record_circuit(model_provider.provider_id, success=False)
+                    raise
 
-                # Roda o loop manual: função declarada → chamada → execução →
-                # function_response → resposta final. Erros em tools viram
-                # function_response normais, então o histórico é preservado.
-                content, tool_results = await model_provider._gemini_chat_with_tools(
-                    chat=chat,
-                    message=message_content,
-                    working_directory=str(session.working_directory),
-                    session_data=session.context_data,
-                )
+                logger.info("Chat session completed with %d tool execution(s)", len(tool_results))
+                return content, tool_results
 
+            # ── New providers: Anthropic / OpenAI / DeepSeek via chat_with_tools ─
+            elif hasattr(model_provider, 'chat_with_tools'):
+                logger.debug("Using chat_with_tools for provider=%s", model_provider.provider_id)
+
+                system_instruction = None
+                messages_for_provider: List[Any] = []
+                if isinstance(context, dict):
+                    system_instruction = context.get("system_instruction")
+                    messages_for_provider = context.get("messages", [])
+
+                tools = list(get_tool_registry().get_tools().values())
+
+                try:
+                    content, tool_results_raw, usage = await model_provider.chat_with_tools(
+                        messages=messages_for_provider,
+                        tools=tools,
+                        system_instruction=system_instruction,
+                        session_id=session.session_id,
+                    )
+                    _self_record_circuit(model_provider.provider_id, success=True)
+                except Exception:
+                    _self_record_circuit(model_provider.provider_id, success=False)
+                    raise
+
+                # Persist usage record
+                latency_ms = int((time.time() - _t0) * 1000)
+                try:
+                    await model_provider._record_usage(
+                        session_id=session.session_id,
+                        usage=usage,
+                        latency_ms=latency_ms,
+                        success=True,
+                    )
+                except Exception:
+                    pass
+
+                # Observability
+                try:
+                    from deile.storage.debug_logger import get_debug_logger
+                    await get_debug_logger().log_router_event(
+                        "provider_selected",
+                        {
+                            "provider_id": model_provider.provider_id,
+                            "tool_calls": len(tool_results_raw),
+                            "latency_ms": latency_ms,
+                        },
+                    )
+                except Exception:
+                    pass
+
+                tool_results: List[ToolResult] = [
+                    tr for tr in tool_results_raw if isinstance(tr, ToolResult)
+                ]
                 logger.info(
-                    "Chat session completed with %d tool execution(s)", len(tool_results)
+                    "chat_with_tools completed (%s): %d tool call(s)",
+                    model_provider.provider_id,
+                    len(tool_results),
                 )
                 return content, tool_results
 
             else:
-                # Fallback para providers sem Chat Session support
+                # Fallback para providers sem suporte a tools
                 logger.debug("Using legacy function calling approach")
                 return await self._process_legacy_function_calling(user_input, parse_result, session)
 

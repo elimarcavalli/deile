@@ -95,3 +95,7 @@ class ModelCatalog:
     def list_all(self) -> List[ModelHandle]:
         """All models in YAML order."""
         return list(self._handles)
+
+    def list_by_provider(self, provider_id: str) -> List[ModelHandle]:
+        """All models for a given provider_id, preserving YAML order."""
+        return [h for h in self._handles if h.provider_id == provider_id]
