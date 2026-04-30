@@ -799,24 +799,29 @@ class ConfigManager:
             self.logger.warning("Hot-reload disabled: watchdog not available")
             return
 
+        loop = asyncio.get_event_loop()
+
         class UnifiedConfigChangeHandler(FileSystemEventHandler):
-            def __init__(self, config_manager: 'ConfigManager'):
+            def __init__(self, config_manager: 'ConfigManager', event_loop):
                 self.config_manager = config_manager
+                self._loop = event_loop
 
             def on_modified(self, event):
                 if event.src_path.endswith('.yaml') or event.src_path.endswith('.yml'):
                     file_name = Path(event.src_path).name
 
                     if file_name == 'persona_config.yaml':
-                        # Persona configuration changed
-                        asyncio.create_task(self.config_manager._reload_persona_config())
+                        asyncio.run_coroutine_threadsafe(
+                            self.config_manager._reload_persona_config(), self._loop
+                        )
                     else:
-                        # General configuration changed
-                        asyncio.create_task(self.config_manager.reload_config())
+                        asyncio.run_coroutine_threadsafe(
+                            self.config_manager.reload_config(), self._loop
+                        )
 
         if not self._observer:
             self._observer = Observer()
-            handler = UnifiedConfigChangeHandler(self)
+            handler = UnifiedConfigChangeHandler(self, loop)
             self._observer.schedule(handler, str(self.config_dir), recursive=True)
             self._observer.start()
 
