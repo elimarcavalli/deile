@@ -48,6 +48,37 @@ def _record_model_used(session: Any, provider: Any) -> None:
     )
 
 
+def _normalize_history_content(content: Any) -> str:
+    """Coerce arbitrary content into a plain-text string suitable for replay.
+
+    Slash commands and some tools return Rich renderables (Panel, Table, Text)
+    as their response content. Those objects can't survive JSON serialization
+    when the conversation history is sent back to the provider on the next
+    turn, so we render them to plain text once at write time. Pure str inputs
+    pass through unchanged; everything else falls back through Rich rendering
+    and finally `str()` if Rich is unavailable.
+    """
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ""
+    try:
+        from io import StringIO
+        from rich.console import Console
+        buf = StringIO()
+        Console(
+            file=buf,
+            force_terminal=False,
+            no_color=True,
+            width=120,
+            highlight=False,
+            soft_wrap=False,
+        ).print(content)
+        return buf.getvalue().strip()
+    except Exception:
+        return str(content)
+
+
 def _is_permanent_provider_error(exc: Exception) -> bool:
     """Return True for errors that retrying a different provider cannot fix.
 
@@ -115,11 +146,18 @@ class AgentSession:
         """Define valor no contexto da sessão"""
         self.context_data[key] = value
     
-    def add_to_history(self, role: str, content: str, metadata: Optional[Dict] = None) -> None:
-        """Adiciona entrada ao histórico da conversa"""
+    def add_to_history(self, role: str, content: Any, metadata: Optional[Dict] = None) -> None:
+        """Adiciona entrada ao histórico da conversa.
+
+        Coerces `content` to plain text. Slash-command handlers (and some tools)
+        produce Rich renderables (Panel, Table, Text) as response content; the
+        provider HTTP path JSON-serializes message content, so non-string
+        objects must be normalized at the boundary or they break subsequent
+        turns once the history is replayed to the model.
+        """
         entry = {
             "role": role,
-            "content": content,
+            "content": _normalize_history_content(content),
             "timestamp": time.time(),
             "metadata": metadata or {}
         }

@@ -110,28 +110,46 @@ class ContextManager:
         session: Optional[Any] = None,  # AgentSession
         **kwargs
     ) -> Dict[str, Any]:
-        """Constrói contexto simplificado para Chat Sessions
-        
-        Chat Sessions gerenciam contexto automaticamente, então este método
-        agora apenas prepara system instruction e informações básicas.
+        """Constrói contexto para a próxima invocação do provider.
+
+        Inclui o histórico completo da sessão em `messages` para providers
+        non-Gemini (OpenAI / DeepSeek / Anthropic), que não mantêm chat
+        session interna. Gemini usa create_chat_session e ignora `messages`.
         """
         self._context_builds += 1
         start_time = time.time()
-        
+
         try:
             # Prepara system instruction
             system_instruction = await self._build_system_instruction(
                 parse_result, session, **kwargs
             )
-            
-            # Contexto base para Chat Sessions
+
+            # Reconstrói messages a partir do histórico da sessão. O agente já
+            # adicionou a entrada "user" do turno corrente em add_to_history()
+            # antes de chamar build_context, então conversation_history sempre
+            # termina com a mensagem atual do usuário.
+            messages: List[Dict[str, Any]] = []
+            if session is not None and getattr(session, "conversation_history", None):
+                for entry in session.conversation_history:
+                    role = entry.get("role", "user")
+                    content = entry.get("content", "")
+                    msg_dict: Dict[str, Any] = {"role": role, "content": content}
+                    entry_meta = entry.get("metadata") or {}
+                    if entry_meta:
+                        msg_dict["metadata"] = entry_meta
+                    messages.append(msg_dict)
+            if not messages:
+                messages = [{"role": "user", "content": user_input}]
+
             context = {
-                "messages": [{"role": "user", "content": user_input}],
+                "messages": messages,
                 "system_instruction": system_instruction,
                 "metadata": {
                     "build_time": time.time() - start_time,
                     "user_input_length": len(user_input),
                     "tool_results_count": len(tool_results) if tool_results else 0,
+                    "history_length": len(messages),
                     "chat_session_mode": True
                 }
             }
@@ -150,27 +168,23 @@ class ContextManager:
                     context["metadata"]["uploaded_files_count"] = len(file_data_parts)
                     logger.info(f"Added {len(file_data_parts)} file_data_parts to context")
 
-            # Inclui file_data nas mensagens se disponível (para compatibilidade)
+            # Inclui file_data na ÚLTIMA mensagem (turno atual) — Gemini-style parts
             if "file_data_parts" in context:
-                # Modifica a mensagem do usuário para incluir file_data
-                user_message = context["messages"][0]
+                user_message = context["messages"][-1]
                 user_parts = [{"text": user_input}]
 
-                # Adiciona file_data como parts adicionais
                 for file_data in context["file_data_parts"]:
                     user_parts.append(file_data)
 
                 user_message["parts"] = user_parts
-                # Remove content para usar parts
                 if "content" in user_message:
                     del user_message["content"]
-            
-            logger.debug(f"Built simplified context for chat session")
+
+            logger.debug("Built context: %d message(s) in history", len(messages))
             return context
-            
+
         except Exception as e:
             logger.error(f"Error building context: {e}")
-            # Contexto mínimo de fallback
             return {
                 "messages": [{"role": "user", "content": user_input}],
                 "system_instruction": "You are DEILE, a helpful AI assistant.",
