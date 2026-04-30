@@ -219,6 +219,18 @@ class PersonaManager:
                 self.instructions = instructions
                 self._is_active = False
 
+            @property
+            def capabilities(self):
+                return list(self.config.capabilities)
+
+            @property
+            def expertise_areas(self):
+                return list(getattr(self.config, "expertise_areas", []) or [])
+
+            @property
+            def is_active(self) -> bool:
+                return self._is_active
+
             async def initialize(self):
                 """Initialize the persona"""
                 pass
@@ -505,25 +517,42 @@ class PersonaManager:
 
     def list_personas(self) -> List[Dict[str, Any]]:
         """Lista todas as personas disponíveis"""
-        return [
-            {
-                "persona_id": persona_id,
-                "name": persona.name,
-                "capabilities": [cap.value for cap in persona.capabilities],
-                "expertise_areas": persona.expertise_areas,
-                "is_active": persona.is_active,
-                "communication_style": persona.config.communication_style.value,
-                "expertise_level": persona.config.expertise_level
-            }
-            for persona_id, persona in self._personas.items()
-        ]
+        result: List[Dict[str, Any]] = []
+        for persona_id, persona in self._personas.items():
+            communication_style = getattr(persona.config, "communication_style", None)
+            comm_value = (
+                communication_style.value
+                if communication_style is not None and hasattr(communication_style, "value")
+                else communication_style
+            )
+            result.append(
+                {
+                    "persona_id": persona_id,
+                    "name": persona.name,
+                    "capabilities": [
+                        cap.value if hasattr(cap, "value") else cap
+                        for cap in getattr(persona, "capabilities", [])
+                    ],
+                    "expertise_areas": list(getattr(persona, "expertise_areas", []) or []),
+                    "is_active": persona.is_active,
+                    "communication_style": comm_value,
+                    "expertise_level": getattr(persona.config, "expertise_level", None),
+                }
+            )
+        return result
 
     def list_by_capability(self, capability: AgentCapability) -> List[str]:
         """Lista personas que possuem uma capacidade específica"""
-        return [
-            persona_id for persona_id, persona in self._personas.items()
-            if capability in persona.capabilities
-        ]
+        target = capability.value if hasattr(capability, "value") else capability
+        result: List[str] = []
+        for persona_id, persona in self._personas.items():
+            persona_caps = [
+                cap.value if hasattr(cap, "value") else cap
+                for cap in getattr(persona, "capabilities", [])
+            ]
+            if target in persona_caps or capability in getattr(persona, "capabilities", []):
+                result.append(persona_id)
+        return result
 
     async def find_best_persona_for_task(self, task_description: str, required_capabilities: List[AgentCapability] = None) -> Optional[str]:
         """Encontra a melhor persona para uma tarefa específica
