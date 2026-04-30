@@ -3,14 +3,21 @@
 The full DEILE distribution ships a richer debug pipeline; this stub honours
 the API surface (`is_debug_enabled`, `get_debug_logger().log_request/response/error`)
 so the rest of the system runs without it.
+
+Router events are written as newline-delimited JSON to `logs/router_events.jsonl`.
 """
 
 from __future__ import annotations
 
+import json
 import os
-from typing import Any, Iterable, Optional
+import time
+from pathlib import Path
+from typing import Any, Dict, Iterable, Optional
 
 from .logs import get_logger
+
+_EVENTS_LOG = Path(__file__).parents[2] / "logs" / "router_events.jsonl"
 
 
 def is_debug_enabled() -> bool:
@@ -25,7 +32,7 @@ class _DebugLogger:
     async def log_request(
         self,
         messages: Iterable[Any],
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         config: Optional[Any] = None,
     ) -> None:
         self.request_count += 1
@@ -48,8 +55,28 @@ class _DebugLogger:
             execution_time,
         )
 
-    async def log_error(self, error: Exception, context: Optional[dict[str, Any]] = None) -> None:
+    async def log_error(self, error: Exception, context: Optional[Dict[str, Any]] = None) -> None:
         self._logger.debug("error=%s context=%s", error, context)
+
+    async def log_router_event(self, event_type: str, payload: Dict[str, Any]) -> None:
+        """Append a structured router event to logs/router_events.jsonl.
+
+        Valid event_type values:
+            provider_selected, cascade_fallback, circuit_breaker_opened,
+            circuit_breaker_closed, budget_exceeded
+        """
+        record: Dict[str, Any] = {
+            "ts": time.time(),
+            "event": event_type,
+            **payload,
+        }
+        try:
+            _EVENTS_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with _EVENTS_LOG.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(record) + "\n")
+        except OSError:
+            self._logger.debug("router_event write failed: %s %s", event_type, payload)
+        self._logger.debug("router_event: %s %s", event_type, payload)
 
 
 _singleton: Optional[_DebugLogger] = None
