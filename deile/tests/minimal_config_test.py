@@ -12,8 +12,8 @@ Version: 5.0.0 ULTRA
 import sys
 from pathlib import Path
 
-# Add the deile package to sys.path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add the deile package to sys.path (file lives at scripts/tests/, project root is two parents up)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 print("🧪 MINIMAL CONFIGURATION TEST")
 print("=" * 40)
