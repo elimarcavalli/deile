@@ -29,6 +29,13 @@ class MockMemoryManager:
         self.procedural_memory = AsyncMock()
 
 
+TEST_SYSTEM_INSTRUCTION = (
+    "You are a test persona for integration testing purposes. You help "
+    "with automated test scenarios and validate system behavior in "
+    "controlled environments."
+)
+
+
 class MockBasePersona:
     """Mock persona for testing"""
 
@@ -40,11 +47,11 @@ class MockBasePersona:
             persona_id=persona_id,
             description="Test persona for integration testing",
             capabilities=[AgentCapability.CODE_GENERATION],
-            system_instruction="You are a test persona"
+            system_instruction=TEST_SYSTEM_INSTRUCTION,
         )
         self._is_active = False
 
-    def activate(self):
+    def activate(self, session_id: str = "default", context=None):
         self._is_active = True
 
     def deactivate(self):
@@ -167,18 +174,18 @@ class TestPersonaEnhancedAgent:
     @pytest.mark.asyncio
     async def test_persona_enhanced_agent_initialization(self, mock_deile_agent, temp_personas_dir):
         """Test PersonaEnhancedAgent initialization"""
-        with patch('deile.personas.manager.PersonaManager') as MockPersonaManager:
-            mock_pm = AsyncMock()
-            mock_pm.initialize = AsyncMock()
-            MockPersonaManager.return_value = mock_pm
+        # spec=PersonaManager so hasattr(mock_pm, '_initialized') returns False,
+        # ensuring the production code calls initialize() rather than skipping it.
+        mock_pm = AsyncMock(spec=PersonaManager)
+        mock_pm.initialize = AsyncMock()
 
-            enhanced_agent = PersonaEnhancedAgent(mock_deile_agent, mock_pm)
-            await enhanced_agent.initialize()
+        enhanced_agent = PersonaEnhancedAgent(mock_deile_agent, mock_pm)
+        await enhanced_agent.initialize()
 
-            # Verify initialization
-            mock_deile_agent.initialize.assert_called_once()
-            mock_pm.initialize.assert_called_once()
-            assert enhanced_agent.integration_context is not None
+        # Verify initialization
+        mock_deile_agent.initialize.assert_called_once()
+        mock_pm.initialize.assert_called_once()
+        assert enhanced_agent.integration_context is not None
 
     @pytest.mark.asyncio
     async def test_process_input_without_persona(self, mock_deile_agent):
@@ -332,7 +339,7 @@ class TestPersonaManagerIntegration:
     async def test_persona_manager_with_memory_manager(self, mock_memory_manager, temp_personas_dir):
         """Test PersonaManager with memory manager integration"""
         # Create PersonaManager with memory integration
-        pm = PersonaManager(memory_manager=mock_memory_manager, personas_dir=temp_personas_dir)
+        pm = PersonaManager(memory_manager=mock_memory_manager)
 
         assert pm.memory_manager == mock_memory_manager
 
@@ -419,10 +426,7 @@ class TestEndToEndIntegration:
     async def test_full_integration_workflow(self, mock_deile_agent, temp_personas_dir):
         """Test complete integration workflow"""
         # 1. Create PersonaManager with memory
-        pm = PersonaManager(
-            memory_manager=mock_deile_agent.memory_manager,
-            personas_dir=temp_personas_dir
-        )
+        pm = PersonaManager(memory_manager=mock_deile_agent.memory_manager)
 
         # 2. Create PersonaEnhancedAgent
         enhanced_agent = PersonaEnhancedAgent(mock_deile_agent, pm)
@@ -520,11 +524,13 @@ class TestIntegrationValidation:
             persona_id="test_persona",
             description="Test description for integration",
             capabilities=[AgentCapability.CODE_GENERATION],
-            system_instruction="Test system instruction"
+            system_instruction=TEST_SYSTEM_INSTRUCTION,
         )
 
         assert config.name == "Test Persona"
-        assert config.capabilities == [AgentCapability.CODE_GENERATION]
+        # PersonaConfig has use_enum_values=True, so typed enum-list fields are
+        # coerced to their string values during validation.
+        assert config.capabilities == [AgentCapability.CODE_GENERATION.value]
 
     @pytest.mark.asyncio
     async def test_integration_context_validation(self, mock_deile_agent):

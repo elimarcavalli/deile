@@ -28,6 +28,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _enum_value(item: Any) -> Any:
+    """Return ``item.value`` when ``item`` is an enum, otherwise ``item``.
+
+    PersonaConfig sets ``use_enum_values=True``: typed enum-list fields
+    (e.g. ``capabilities``) are coerced to strings during validation, while
+    scalar enum fields keep their enum identity if left at their default.
+    Consumers must therefore handle both shapes.
+    """
+    return item.value if hasattr(item, "value") else item
+
+
 @dataclass
 class PersonaIntegrationContext:
     """Context for persona integration with DeileAgent"""
@@ -221,20 +232,23 @@ class PersonaEnhancedAgent:
         try:
             current_persona = self.integration_context.current_persona
 
+            # PersonaConfig has use_enum_values=True, so list-typed enum fields
+            # (capabilities) are stored as strings while default scalar enum fields
+            # may remain as enums. Coerce both shapes uniformly via _enum_value.
             # Add persona context to kwargs
             persona_context = {
                 'persona_id': current_persona.persona_id if current_persona else None,
                 'persona_name': current_persona.name if current_persona else None,
                 'persona_capabilities': (
-                    [cap.value for cap in current_persona.config.capabilities]
+                    [_enum_value(cap) for cap in current_persona.config.capabilities]
                     if current_persona else []
                 ),
                 'communication_style': (
-                    current_persona.config.communication_style.value
+                    _enum_value(current_persona.config.communication_style)
                     if current_persona else None
                 ),
                 'response_mode': (
-                    current_persona.config.response_mode.value
+                    _enum_value(current_persona.config.response_mode)
                     if current_persona else None
                 )
             }
@@ -407,9 +421,9 @@ class PersonaIntegrationLayer:
             enhanced_context.update({
                 'persona_id': current_persona.persona_id,
                 'personality_traits': getattr(current_persona, 'traits', []),
-                'communication_style': current_persona.config.communication_style.value,
-                'specialized_capabilities': [cap.value for cap in current_persona.config.capabilities],
-                'response_mode': current_persona.config.response_mode.value,
+                'communication_style': _enum_value(current_persona.config.communication_style),
+                'specialized_capabilities': [_enum_value(cap) for cap in current_persona.config.capabilities],
+                'response_mode': _enum_value(current_persona.config.response_mode),
                 'expertise_level': current_persona.config.expertise_level
             })
 
