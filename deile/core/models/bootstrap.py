@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import yaml
 
@@ -92,11 +92,12 @@ def bootstrap_providers(
             logger.error("bootstrap: failed to import %s: %s", provider_id, exc)
             continue
 
-        # Register ONE provider instance per (provider_id, model_id) handle in the legacy
-        # ModelRouter (so /model use can resolve any model the user picks). The TierRouter
-        # gets only the flagship instance — its cascade routes by provider_id, not by model.
+        # Register ONE provider instance per (provider_id, model_id) handle in BOTH
+        # the legacy ModelRouter and the TierRouter. The TierRouter is now keyed by
+        # full provider:model_id, so each tier cascade can resolve to the right model
+        # (haiku for tier_3, opus for tier_1, etc.) within the same provider.
         registered_models = 0
-        flagship_instance = None
+        instances: List[Any] = []
         for idx, handle in enumerate(handles):
             try:
                 inst = cls(handle, provider_config)
@@ -105,8 +106,7 @@ def bootstrap_providers(
                     "bootstrap: failed to instantiate %s:%s: %s", provider_id, handle.model_id, exc
                 )
                 continue
-            if idx == 0:
-                flagship_instance = inst
+            instances.append(inst)
             if router is not None:
                 try:
                     router.register_provider(inst, priority=1 if idx == 0 else 0)
@@ -117,12 +117,13 @@ def bootstrap_providers(
                     )
             registered_models += 1
 
-        # Register the flagship in TierRouter — cascade routes by provider_id
-        if router is not None and flagship_instance is not None:
+        # Register every instance in TierRouter under its full provider:model key
+        if router is not None and instances:
             try:
                 from deile.core.models.tier_router import get_tier_router
                 tier_router = get_tier_router(yaml_path=path)
-                tier_router.register_provider(flagship_instance)
+                for inst in instances:
+                    tier_router.register_provider(inst)
             except Exception as exc:
                 logger.debug(
                     "bootstrap: TierRouter registration skipped for %s: %s", provider_id, exc

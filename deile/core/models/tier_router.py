@@ -198,22 +198,41 @@ class TierRouter:
         self._catalog = catalog
         self._policy = policy
         self._circuit_breaker = circuit_breaker
-        # provider_id → ModelProvider (last registration wins)
+        # Two indexes:
+        #   _providers: full key "provider_id:model_id" → ModelProvider (cascade match)
+        #   _providers_by_id: provider_id → ModelProvider (compat fallback when a
+        #     cascade entry's model_id isn't registered, or when callers register
+        #     a provider whose model_name isn't a meaningful string e.g. MagicMock)
         self._providers: Dict[str, ModelProvider] = {}
+        self._providers_by_id: Dict[str, ModelProvider] = {}
 
     def register_provider(self, provider: ModelProvider) -> None:
-        self._providers[provider.provider_id] = provider
-        logger.debug("TierRouter: registered provider_id=%s", provider.provider_id)
+        provider_id = provider.provider_id
+        model_id = getattr(provider, "model_name", None)
+        # Always store under provider_id for fallback lookup
+        self._providers_by_id[provider_id] = provider
+        # If model_name is a real string, also store under the full key
+        if isinstance(model_id, str) and model_id:
+            full_key = f"{provider_id}:{model_id}"
+            self._providers[full_key] = provider
+            logger.debug("TierRouter: registered %s", full_key)
+        else:
+            logger.debug("TierRouter: registered %s (no model_name)", provider_id)
 
     def unregister_provider(self, provider_id: str) -> None:
-        self._providers.pop(provider_id, None)
+        # Remove the provider_id-only entry and any matching full-key entries
+        self._providers_by_id.pop(provider_id, None)
+        keys_to_drop = [k for k in self._providers if k.split(":", 1)[0] == provider_id]
+        for k in keys_to_drop:
+            self._providers.pop(k, None)
 
     def select(self, tier: ModelTier) -> ModelProvider:
         """Select the first available provider in the tier cascade.
 
-        Skips entries whose:
-        - circuit breaker is open
-        - provider_id is not registered
+        For each cascade entry "provider_id:model_id":
+        - Skip if circuit breaker for provider_id is open.
+        - Look up the exact full-key match first; if found, return it.
+        - Otherwise fall back to any registered provider with that provider_id.
 
         Raises NoProviderAvailable if nothing is usable.
         """
@@ -222,19 +241,27 @@ class TierRouter:
             raise NoProviderAvailable(f"No cascade configured for tier={tier.value}")
 
         for key in cascade:
-            provider_id = key.split(":")[0]
+            provider_id = key.split(":", 1)[0]
             if self._circuit_breaker.is_open(provider_id):
-                logger.debug("TierRouter: skipping %s (circuit open)", provider_id)
+                logger.debug("TierRouter: skipping %s (circuit open)", key)
                 continue
-            if provider_id not in self._providers:
-                logger.debug("TierRouter: skipping %s (not registered)", provider_id)
-                continue
-            return self._providers[provider_id]
+            # Prefer exact provider:model_id match (lets cascade pick the right cheap/expensive variant)
+            if key in self._providers:
+                logger.debug("TierRouter: selected %s (exact match)", key)
+                return self._providers[key]
+            # Fall back to any registered instance for this provider
+            if provider_id in self._providers_by_id:
+                logger.debug(
+                    "TierRouter: selected %s (provider_id fallback — exact model not registered)",
+                    provider_id,
+                )
+                return self._providers_by_id[provider_id]
+            logger.debug("TierRouter: skipping %s (not registered)", key)
 
         raise NoProviderAvailable(
             f"All providers exhausted for tier={tier.value}. "
             f"Cascade: {cascade}. "
-            f"Registered: {list(self._providers)}."
+            f"Registered: {list(self._providers) or list(self._providers_by_id)}."
         )
 
     def record_success(self, provider_id: str) -> None:
@@ -244,7 +271,15 @@ class TierRouter:
         self._circuit_breaker.record_failure(provider_id)
 
     def registered_providers(self) -> Dict[str, ModelProvider]:
-        return dict(self._providers)
+        """Return the full-key index. For backward compatibility, when a provider
+        was registered without a meaningful ``model_name`` (e.g. test mocks), the
+        provider_id-only fallback dict is merged in so ``"anthropic" in registered_providers()``
+        keeps working in older tests.
+        """
+        merged: Dict[str, ModelProvider] = {}
+        merged.update(self._providers_by_id)  # provider_id → provider
+        merged.update(self._providers)  # full key takes precedence
+        return merged
 
     def circuit_breaker(self) -> CircuitBreaker:
         return self._circuit_breaker

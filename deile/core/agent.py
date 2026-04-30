@@ -325,16 +325,38 @@ class DeileAgent:
             
         except Exception as e:
             self._status = AgentStatus.ERROR
+            # BudgetExceeded gets a structured, user-actionable response (no stack-trace dump)
+            try:
+                from deile.storage.usage_repository import BudgetExceeded as _BE
+            except Exception:
+                _BE = ()  # type: ignore[assignment]
+            if isinstance(e, _BE):
+                friendly = (
+                    f"Budget limit reached ({getattr(e, 'limit_type', 'unknown')}): {str(e)}\n"
+                    f"Use /model budget to view limits, or wait for the next window."
+                )
+                self.logger.warning("BudgetExceeded surfaced to user: %s", e)
+                return AgentResponse(
+                    content=friendly,
+                    status=AgentStatus.ERROR,
+                    error=e,
+                    metadata={
+                        "budget_exceeded": True,
+                        "provider_id": getattr(e, "provider_id", None),
+                        "limit_type": getattr(e, "limit_type", None),
+                    },
+                    execution_time=time.time() - start_time,
+                )
             error_msg = f"Error processing input: {str(e)}"
             self.logger.error(error_msg, exc_info=True)
-            
+
             return AgentResponse(
                 content=error_msg,
                 status=AgentStatus.ERROR,
                 error=e,
                 execution_time=time.time() - start_time
             )
-    
+
     async def process_stream(
         self,
         user_input: str,
@@ -816,25 +838,58 @@ class DeileAgent:
                     t.schema for t in get_tool_registry().list_enabled() if getattr(t, "schema", None) is not None
                 ]
 
-                try:
-                    content, tool_results_raw, usage = await model_provider.chat_with_tools(
-                        messages=messages_for_provider,
-                        tools=tools,
-                        system_instruction=system_instruction,
-                        session_id=session.session_id,
-                    )
-                    _self_record_circuit(model_provider.provider_id, success=True)
-                except Exception as _chat_err:
-                    _self_record_circuit(model_provider.provider_id, success=False)
-                    await _emit_router_event(
-                        "cascade_fallback",
-                        {
-                            "provider_id": model_provider.provider_id,
-                            "error": str(_chat_err),
-                            "latency_ms": int((time.time() - _t0) * 1000),
-                        },
-                    )
-                    raise
+                # Cascade retry loop: on provider failure, mark CB and try next tier provider
+                MAX_CASCADE_ATTEMPTS = 3
+                attempt = 0
+                last_error: Optional[Exception] = None
+                tried_providers: set = set()
+                content = ""
+                tool_results_raw: List[Any] = []
+                usage = None  # type: ignore[assignment]
+                while attempt < MAX_CASCADE_ATTEMPTS:
+                    attempt += 1
+                    tried_providers.add(model_provider.provider_id)
+                    try:
+                        content, tool_results_raw, usage = await model_provider.chat_with_tools(
+                            messages=messages_for_provider,
+                            tools=tools,
+                            system_instruction=system_instruction,
+                            session_id=session.session_id,
+                        )
+                        _self_record_circuit(model_provider.provider_id, success=True)
+                        last_error = None
+                        break
+                    except Exception as _chat_err:
+                        last_error = _chat_err
+                        _self_record_circuit(model_provider.provider_id, success=False)
+                        await _emit_router_event(
+                            "cascade_fallback",
+                            {
+                                "provider_id": model_provider.provider_id,
+                                "attempt": attempt,
+                                "error": str(_chat_err),
+                                "latency_ms": int((time.time() - _t0) * 1000),
+                            },
+                        )
+                        # Try next cascade entry only if tier is set; budget+CB still respected
+                        if model_tier is None:
+                            raise
+                        try:
+                            from deile.core.models.tier_router import get_tier_router as _gtr
+                            next_provider = _gtr().select(model_tier)
+                            # Prevent infinite loop if the same provider keeps being selected
+                            if next_provider.provider_id in tried_providers:
+                                raise _chat_err  # cascade exhausted
+                            model_provider = next_provider
+                            logger.info(
+                                "Cascade fallback: now trying provider=%s",
+                                model_provider.provider_id,
+                            )
+                            continue
+                        except Exception:
+                            raise _chat_err
+                if last_error is not None:
+                    raise last_error
 
                 # Note: providers persist usage internally via _record_usage(); we do NOT re-record here.
                 latency_ms = int((time.time() - _t0) * 1000)
