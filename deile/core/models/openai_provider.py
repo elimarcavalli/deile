@@ -142,7 +142,12 @@ class OpenAIProvider(ModelProvider):
         if system_instruction:
             result.append({"role": "system", "content": system_instruction})
         for m in messages:
-            result.append({"role": m.role, "content": m.content})
+            msg_dict: Dict[str, Any] = {"role": m.role, "content": m.content}
+            # Restore reasoning_content for providers that require it (e.g. DeepSeek)
+            rc = (m.metadata or {}).get("reasoning_content")
+            if rc and m.role == "assistant":
+                msg_dict["reasoning_content"] = rc
+            result.append(msg_dict)
         return result
 
     # ------------------------------------------------------------------
@@ -207,6 +212,7 @@ class OpenAIProvider(ModelProvider):
         total_prompt = total_completion = total_cached = 0
         tool_results: List[Any] = []
         final_text = ""
+        last_reasoning_content: Optional[str] = None
 
         for _ in range(_MAX_TOOL_ITERATIONS):
             create_kwargs: Dict[str, Any] = {
@@ -249,26 +255,31 @@ class OpenAIProvider(ModelProvider):
             msg = response.choices[0].message
             if msg.content:
                 final_text += msg.content
+            last_reasoning_content = getattr(msg, "reasoning_content", None) or None
 
             finish_reason = response.choices[0].finish_reason
             if finish_reason != "tool_calls" or not msg.tool_calls:
                 break
 
             # Append assistant turn
-            oai_msgs.append(
-                {
-                    "role": "assistant",
-                    "content": msg.content,
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                        }
-                        for tc in msg.tool_calls
-                    ],
-                }
-            )
+            assistant_turn: Dict[str, Any] = {
+                "role": "assistant",
+                "content": msg.content,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                    }
+                    for tc in msg.tool_calls
+                ],
+            }
+            # DeepSeek reasoning models return reasoning_content that must be
+            # echoed back verbatim in the next request or the API raises 400.
+            _reasoning = getattr(msg, "reasoning_content", None)
+            if _reasoning:
+                assistant_turn["reasoning_content"] = _reasoning
+            oai_msgs.append(assistant_turn)
 
             # Execute each tool call
             for tc in msg.tool_calls:
@@ -292,6 +303,8 @@ class OpenAIProvider(ModelProvider):
             cached_tokens=total_cached,
             request_time=time.time() - start,
         )
+        if last_reasoning_content:
+            usage.extra["reasoning_content"] = last_reasoning_content
         usage.cost_estimate = self.estimate_cost(usage)
         self._update_stats(usage)
         latency_ms = int((time.time() - start) * 1000)

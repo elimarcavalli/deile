@@ -318,16 +318,21 @@ class DeileAgent:
                 status=AgentStatus.IDLE,
                 tool_results=all_tool_results,
                 parse_result=parse_result,
-                execution_time=time.time() - start_time
+                execution_time=time.time() - start_time,
+                metadata={"model_used": session.context_data.get("_last_model_used")},
             )
             
             # Adiciona resposta ao histórico
-            session.add_to_history("assistant", response_content, {
+            _history_meta: Dict[str, Any] = {
                 "tool_results": len(all_tool_results),
                 "proactive_results": len(proactive_results),
                 "parse_status": parse_result.status.value if parse_result else None,
-                "function_calling_enabled": True
-            })
+                "function_calling_enabled": True,
+            }
+            _pending_rc = session.context_data.pop("_last_reasoning_content", None)
+            if _pending_rc:
+                _history_meta["reasoning_content"] = _pending_rc
+            session.add_to_history("assistant", response_content, _history_meta)
             
             self._status = AgentStatus.IDLE
             return response
@@ -674,38 +679,50 @@ class DeileAgent:
                 model_tier = None
 
             # Honor /model use <provider:model_id> override stored on the session
-            forced = None
+            forced = None  # session-level override (hard error if not registered)
             try:
                 forced = session.context_data.get("forced_model")
             except AttributeError:
                 forced = None
 
+            # Persistent default_model from api_config.yaml (soft preference — falls
+            # back to router if the provider is not registered, e.g. missing API key).
+            config_default: Optional[str] = None
+            if not forced:
+                try:
+                    from deile.config.manager import get_config_manager
+                    config_default = get_config_manager().get_config().default_model or None
+                except Exception:
+                    pass
+
             # Seleciona modelo apropriado (tier-aware quando classificado)
             model_provider = None
-            if forced and isinstance(forced, str) and ":" in forced:
-                forced_provider_id, forced_model_id = forced.split(":", 1)
-                # Try exact match (provider_id:model_id) first — this works when bootstrap
-                # registered one instance per catalog handle.
+            _active_forced = forced or config_default
+            if _active_forced and isinstance(_active_forced, str) and ":" in _active_forced:
+                _fp_id, _fm_id = _active_forced.split(":", 1)
                 for p in self.model_router.providers.values():
                     if (
-                        getattr(p, "provider_id", None) == forced_provider_id
-                        and getattr(p, "model_name", None) == forced_model_id
+                        getattr(p, "provider_id", None) == _fp_id
+                        and getattr(p, "model_name", None) == _fm_id
                     ):
                         model_provider = p
                         break
-                # Exact match not found — DO NOT silently substitute the flagship.
-                # The user explicitly chose this model; substituting could 10x their cost.
-                # Instead, raise a clear error listing what IS available for that provider.
                 if model_provider is None:
-                    available = sorted({
-                        getattr(p, "model_name", "?") for p in self.model_router.providers.values()
-                        if getattr(p, "provider_id", None) == forced_provider_id
-                    })
-                    raise ModelError(
-                        f"Forced model '{forced}' is not registered. "
-                        f"Available {forced_provider_id} models: {available or '(none)'}. "
-                        f"Use /model use auto to clear the override.",
-                        error_code="FORCED_MODEL_NOT_REGISTERED",
+                    if forced:
+                        # Session-level /model use — hard error, user chose this explicitly
+                        available = sorted({
+                            getattr(p, "model_name", "?") for p in self.model_router.providers.values()
+                            if getattr(p, "provider_id", None) == _fp_id
+                        })
+                        raise ModelError(
+                            f"Forced model '{forced}' is not registered. "
+                            f"Available {_fp_id} models: {available or '(none)'}. "
+                            f"Use /model use auto to clear the override.",
+                            error_code="FORCED_MODEL_NOT_REGISTERED",
+                        )
+                    # config default not registered — fall through to router silently
+                    logger.debug(
+                        "default_model '%s' not registered, falling back to router", config_default
                     )
             if model_provider is None:
                 model_provider = await self.model_router.select_provider(
@@ -824,6 +841,9 @@ class DeileAgent:
                     pass
 
                 logger.info("Chat session completed with %d tool execution(s)", len(tool_results))
+                session.context_data["_last_model_used"] = (
+                    f"{model_provider.provider_id}:{model_provider.model_name}"
+                )
                 return content, tool_results
 
             # ── New providers: Anthropic / OpenAI / DeepSeek via chat_with_tools ─
@@ -891,7 +911,7 @@ class DeileAgent:
                     tried_providers.add(model_provider.provider_id)
                     try:
                         # Provider records its own usage internally via _record_usage()
-                        content, tool_results_raw, _ = await model_provider.chat_with_tools(
+                        content, tool_results_raw, _usage = await model_provider.chat_with_tools(
                             messages=messages_for_provider,
                             tools=tools,
                             system_instruction=system_instruction,
@@ -967,6 +987,13 @@ class DeileAgent:
                     model_provider.provider_id,
                     len(tool_results),
                 )
+                session.context_data["_last_model_used"] = (
+                    f"{model_provider.provider_id}:{model_provider.model_name}"
+                )
+                # Persist reasoning_content so next turn can pass it back to the API
+                _rc = getattr(_usage, "extra", {}).get("reasoning_content")
+                if _rc:
+                    session.context_data["_last_reasoning_content"] = _rc
                 return content, tool_results
 
             else:

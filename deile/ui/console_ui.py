@@ -88,14 +88,32 @@ class ConsoleUIManager(UIManager):
         """Mostra a tela de boas-vindas formatada."""
         self.console.clear()
         title = Text.from_markup("[bold #4285F4]DEILE[/][bold #7B68EE] AI AGENT[/] [cyan]v5.1[/]")
-        
+
+        routing_label = "automático (task_optimized)"
+        try:
+            if self.config_manager:
+                _cfg = self.config_manager.get_config()
+                if _cfg.default_model:
+                    routing_label = _cfg.default_model
+                else:
+                    from pathlib import Path
+                    import yaml as _yaml
+                    _yaml_path = Path(__file__).parents[1] / "config" / "model_providers.yaml"
+                    with open(_yaml_path) as _f:
+                        _data = _yaml.safe_load(_f)
+                    _strategy = _data.get("default_strategy", "task_optimized")
+                    routing_label = f"automático ({_strategy})"
+        except Exception:
+            pass
+
         info_lines = [
             ":sparkles: [bold]Estou pronto para analisar e otimizar o seu código![/bold]",
             "\n[yellow]@[/yellow] para pesquisar arquivos do projeto.",
             "[cyan]/[/cyan] para acessar comandos especiais ([cyan]/help[/cyan], [cyan]/clear[/cyan], [cyan]/status[/cyan], etc.)",
             "Verbos como [green]'altere'[/green], [green]'crie'[/green] ou [green]'refatore'[/green] para modificar ou criar arquivos.",
             "\nAtalhos úteis: [bold]Ctrl+W[/bold] (apaga palavra) e [bold]Ctrl+_[/bold] (desfaz a digitação).",
-            "Digite '[bold]sair[/bold]' ou '[bold]exit[/bold]' para encerrar a sessão."
+            "Digite '[bold]sair[/bold]' ou '[bold]exit[/bold]' para encerrar a sessão.",
+            f"\n:robot: Roteamento: [bold cyan]{routing_label}[/bold cyan]",
         ]
         
         # CORREÇÃO ROBUSTA: Implementação com fallback completo
@@ -117,7 +135,7 @@ class ConsoleUIManager(UIManager):
         # Tenta com emojis primeiro
         if not safe_print_panel(info_lines):
             # Fallback sem emojis
-            safe_info_lines = [line.replace(":sparkles:", "* ").strip() for line in info_lines]
+            safe_info_lines = [line.replace(":robot:", "[>>]").replace(":sparkles:", "* ").strip() for line in info_lines]
             if not safe_print_panel(safe_info_lines):
                 # Fallback final - texto simples
                 try:
@@ -170,7 +188,9 @@ class ConsoleUIManager(UIManager):
             self.console.print(str(content))
         
         if metadata and (exec_time := metadata.get("execution_time")) is not None:
-            self.console.print(f"\n:hourglass: [dim]{exec_time:.2f}s[/dim]")
+            model_used = metadata.get("model_used") or ""
+            model_suffix = f"  [dim]({model_used})[/dim]" if model_used else ""
+            self.console.print(f"\n:hourglass: [dim]{exec_time:.2f}s[/dim]{model_suffix}")
         self.console.print("---"*20)
 
     def display_message(self, message: UIMessage):

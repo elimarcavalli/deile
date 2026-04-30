@@ -144,6 +144,7 @@ class CommandConfig:
 @dataclass
 class DeileConfig:
     """Configuração completa do DEILE"""
+    default_model: Optional[str] = None  # e.g. "deepseek:deepseek-v4-flash"; None = routing automático
     gemini: GeminiConfig = field(default_factory=GeminiConfig)
     system: SystemConfig = field(default_factory=SystemConfig)
     ui: UIConfig = field(default_factory=UIConfig)
@@ -215,8 +216,10 @@ class ConfigManager:
             config = DeileConfig()
             
             # Aplica configurações da API
-            if api_config and "gemini" in api_config:
-                config.gemini = GeminiConfig(**api_config["gemini"])
+            if api_config:
+                config.default_model = api_config.get("default_model") or None
+                if "gemini" in api_config:
+                    config.gemini = GeminiConfig(**api_config["gemini"])
             
             # Aplica configurações do sistema
             if system_config:
@@ -256,6 +259,7 @@ class ConfigManager:
         try:
             # Salva configuração da API
             api_data = {
+                "default_model": config.default_model,
                 "gemini": {
                     "model_name": config.gemini.model_name,
                     "tool_config": config.gemini.tool_config,
@@ -352,14 +356,11 @@ class ConfigManager:
         self.get_config()
     
     def create_default_configs(self) -> None:
-        """Cria arquivos de configuração padrão se não existem"""
-        default_config = self._create_default_config()
-        
-        for config_file in self._config_files.values():
-            if not config_file.exists():
-                logger.info(f"Creating default config file: {config_file}")
-        
-        self.save_config(default_config)
+        """Cria arquivos de configuração padrão apenas se não existem."""
+        if self._config_files["api_config"].exists():
+            return
+        logger.info("Creating default config files (first run)")
+        self.save_config(self._create_default_config())
     
     def _load_yaml(self, config_name: str) -> Optional[Dict[str, Any]]:
         """Carrega arquivo YAML específico"""

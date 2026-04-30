@@ -54,6 +54,8 @@ class ModelUsage:
     cached_tokens: int = 0
     request_time: float = 0.0
     cost_estimate: float = 0.0
+    # Provider-specific extras (e.g. reasoning_content for DeepSeek reasoning models)
+    extra: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

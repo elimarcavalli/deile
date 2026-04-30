@@ -163,7 +163,7 @@ async def test_deepseek_tool_calling():
     # DeepSeekProvider inherits _execute_tool from OpenAIProvider,
     # which calls get_tool_registry from deile.core.models.openai_provider.
     with patch(
-        "deile.core.models.openai_provider.get_tool_registry",
+        "deile.tools.registry.get_tool_registry",
         return_value=fake_registry,
     ):
         _text, tool_results, usage = await provider.chat_with_tools(

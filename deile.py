@@ -185,7 +185,10 @@ class DeileAgentCLI:
                     )
                 else:
                     # Com Chat Sessions, tool executions estão integradas na resposta conversacional
-                    self.ui.display_response(response.content, {"execution_time": response.execution_time})
+                    self.ui.display_response(response.content, {
+                        "execution_time": response.execution_time,
+                        "model_used": response.metadata.get("model_used"),
+                    })
                 
                 # Opcionalmente, mostra tool executions como parte da conversa (modo debug ou verbose)
                 if response.tool_results and getattr(self.settings, "show_tool_details", False):
