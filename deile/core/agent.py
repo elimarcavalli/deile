@@ -637,7 +637,7 @@ class DeileAgent:
                 # Roda o loop manual: função declarada → chamada → execução →
                 # function_response → resposta final. Erros em tools viram
                 # function_response normais, então o histórico é preservado.
-                content, tool_results = await model_provider.chat_with_tools(
+                content, tool_results = await model_provider._gemini_chat_with_tools(
                     chat=chat,
                     message=message_content,
                     working_directory=str(session.working_directory),
@@ -1043,11 +1043,16 @@ class DeileAgent:
                 messages = []
                 system_instruction = "You are DEILE, a helpful AI assistant."
             
-            async for chunk in model_provider.generate_stream(
+            async for event in model_provider.generate_stream(
                 messages=messages,
                 system_instruction=system_instruction
             ):
-                yield chunk
+                from deile.core.models.stream_events import StreamEventType
+                if hasattr(event, "type") and hasattr(StreamEventType, "TEXT_DELTA"):
+                    if event.type == StreamEventType.TEXT_DELTA and event.text:
+                        yield event.text
+                else:
+                    yield event
                 
         except Exception as e:
             yield f"Error in streaming response: {str(e)}"
