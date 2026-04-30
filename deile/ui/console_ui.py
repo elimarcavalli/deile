@@ -1,3 +1,4 @@
+import random
 import time
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -87,73 +88,113 @@ class ConsoleUIManager(UIManager):
             # Fallback completo - sem prompt_toolkit 
             self.session = None
 
+    _DEILE_ASCII = r"""
+ ██████╗  ███████╗ ██╗ ██╗      ███████╗
+ ██╔══██╗ ██╔════╝ ██║ ██║      ██╔════╝
+ ██║  ██║ █████╗   ██║ ██║      █████╗
+ ██║  ██║ ██╔══╝   ██║ ██║      ██╔══╝
+ ██████╔╝ ███████╗ ██║ ███████╗ ███████╗
+ ╚═════╝  ╚══════╝ ╚═╝ ╚══════╝ ╚══════╝"""
+
+    _SLOGAN_FIXED = "I don't sleep. I don't hesitate."
+    _SLOGAN_POOL = [
+        "You dream it. I code it.",
+        "You dream it. I build it.",
+        "You imagine. I execute.",
+        "No sleep. No doubt. Just code.",
+        "You bring the vision. I bring the code.",
+        "You dream. I compile reality.",
+        "Ideas in. Code out.",
+        "Think it. Prompt it. Ship it.",
+    ]
+
+    _PROVIDER_LABELS = {
+        "deepseek": "DeepSeek",
+        "anthropic": "Anthropic",
+        "openai": "OpenAI",
+        "gemini": "Gemini",
+        "google": "Gemini",
+    }
+
+    def _resolve_provider_model(self) -> tuple[str, str]:
+        """Lê provider/modelo correntes a partir do config_manager."""
+        try:
+            if self.config_manager:
+                cfg = self.config_manager.get_config()
+                default_model = getattr(cfg, "default_model", None)
+                if default_model and ":" in default_model:
+                    provider_id, model_id = default_model.split(":", 1)
+                    label = self._PROVIDER_LABELS.get(provider_id.lower(), provider_id)
+                    return label, model_id
+                if default_model:
+                    return "—", default_model
+                try:
+                    yaml_path = Path(__file__).parents[1] / "config" / "model_providers.yaml"
+                    with open(yaml_path) as f:
+                        strategy = yaml.safe_load(f).get("default_strategy", "task_optimized")
+                    return "Auto", f"routing ({strategy})"
+                except Exception:
+                    return "Auto", "routing"
+        except Exception:
+            pass
+        return "—", "—"
+
     def show_welcome(self):
         """Mostra a tela de boas-vindas formatada."""
         self.console.clear()
-        title = Text.from_markup("[bold #4285F4]DEILE[/][bold #7B68EE] AI AGENT[/] [cyan]v5.1[/]")
 
-        routing_label = "automático (task_optimized)"
+        provider_label, model_label = self._resolve_provider_model()
+        slogan_random = random.choice(self._SLOGAN_POOL)
+
         try:
-            if self.config_manager:
-                _cfg = self.config_manager.get_config()
-                if _cfg.default_model:
-                    routing_label = _cfg.default_model
-                else:
-                    _yaml_path = Path(__file__).parents[1] / "config" / "model_providers.yaml"
-                    with open(_yaml_path) as _f:
-                        _strategy = yaml.safe_load(_f).get("default_strategy", "task_optimized")
-                    routing_label = f"automático ({_strategy})"
-        except Exception:
-            pass
+            self.console.print(
+                Text(self._DEILE_ASCII, style="bold #4285F4"),
+                highlight=False,
+            )
+            self.console.print(
+                Text.from_markup(f"\n  [bold #FFD166]✦[/] [italic]{self._SLOGAN_FIXED}[/italic]")
+            )
+            self.console.print(
+                Text.from_markup(f"  [bold #FFD166]✦[/] [italic]{slogan_random}[/italic]\n")
+            )
 
-        info_lines = [
-            ":sparkles: [bold]Estou pronto para analisar e otimizar o seu código![/bold]",
-            "\n[yellow]@[/yellow] para pesquisar arquivos do projeto.",
-            "[cyan]/[/cyan] para acessar comandos especiais ([cyan]/help[/cyan], [cyan]/clear[/cyan], [cyan]/status[/cyan], etc.)",
-            "Verbos como [green]'altere'[/green], [green]'crie'[/green] ou [green]'refatore'[/green] para modificar ou criar arquivos.",
-            "\nAtalhos úteis: [bold]Ctrl+W[/bold] (apaga palavra) e [bold]Ctrl+_[/bold] (desfaz a digitação).",
-            "Digite '[bold]sair[/bold]' ou '[bold]exit[/bold]' para encerrar a sessão.",
-            f"\n:robot: Roteamento: [bold cyan]{routing_label}[/bold cyan]",
-        ]
-        
-        # CORREÇÃO ROBUSTA: Implementação com fallback completo
-        def safe_print_panel(lines_to_try):
-            try:
-                info_panel = Text.from_markup("\n".join(lines_to_try), justify="left")
-                panel = Panel(
-                    info_panel,
-                    title=title,
-                    title_align="center",
-                    border_style="#4285F4",
-                    padding=(1, 2)
-                )
-                self.console.print(panel)
-                return True
-            except (UnicodeEncodeError, Exception):
-                return False
-        
-        # Tenta com emojis primeiro
-        if not safe_print_panel(info_lines):
-            # Fallback sem emojis
-            safe_info_lines = [line.replace(":robot:", "[>>]").replace(":sparkles:", "* ").strip() for line in info_lines]
-            if not safe_print_panel(safe_info_lines):
-                # Fallback final - texto simples
-                try:
-                    print("\n" + "="*30)
-                    print("DEILE AI AGENT v5.1")
-                    print("="*30)
-                    for line in safe_info_lines:
-                        # Remove markup Rich completamente
-                        clean_line = line
-                        clean_line = clean_line.replace("[bold]", "").replace("[/bold]", "")
-                        clean_line = clean_line.replace("[yellow]", "").replace("[/yellow]", "")
-                        clean_line = clean_line.replace("[cyan]", "").replace("[/cyan]", "")
-                        clean_line = clean_line.replace("[green]", "").replace("[/green]", "")
-                        clean_line = clean_line.replace("[/]", "")
-                        print(clean_line.strip())
-                    print("="*30 + "\n")
-                except:
-                    print("DEILE AI AGENT v5.1 - Ready")
+            border = "#4285F4"
+
+            prov_label = f"Provider  {provider_label}"
+            model_label_line = f"Model     {model_label}"
+            status_plain = f"● DEILE   Pronto — digite /help para começar"
+
+            inner_w = max(len(prov_label), len(model_label_line), len(status_plain)) + 2
+
+            def _row(content_markup: str, visible_len: int) -> Text:
+                pad = " " * max(0, inner_w - 1 - visible_len)
+                line = Text()
+                line.append("║", style=border)
+                line.append_text(Text.from_markup(" " + content_markup + pad))
+                line.append("║", style=border)
+                return line
+
+            top = Text("╔" + "═" * inner_w + "╗", style=border)
+            mid = Text("╠" + "═" * inner_w + "╣", style=border)
+            bot = Text("╚" + "═" * inner_w + "╝", style=border)
+
+            prov_markup = f"[bold cyan]Provider[/bold cyan]  [white]{provider_label}[/white]"
+            model_markup = f"[bold cyan]Model[/bold cyan]     [white]{model_label}[/white]"
+            status_markup = "[bold green]●[/bold green] [bold]DEILE[/bold]   Pronto — digite [cyan]/help[/cyan] para começar"
+
+            self.console.print(top)
+            self.console.print(_row(prov_markup, len(prov_label)))
+            self.console.print(_row(model_markup, len(model_label_line)))
+            self.console.print(mid)
+            self.console.print(_row(status_markup, len(status_plain)))
+            self.console.print(bot)
+            self.console.print("  [dim]DEILE v5.1 ULTRA[/dim]\n")
+        except Exception:
+            print("DEILE v5.1 ULTRA")
+            print(f"  ✦ {self._SLOGAN_FIXED}")
+            print(f"  ✦ {slogan_random}")
+            print(f"Provider: {provider_label} | Model: {model_label}")
+            print("Pronto — digite /help para começar")
 
     def get_user_input(self, prompt: str = "\n [bold green]>[/bold] ") -> str:
         """Obtém a entrada do usuário de forma interativa."""
