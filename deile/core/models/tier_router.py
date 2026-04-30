@@ -251,3 +251,65 @@ class TierRouter:
 
     def policy(self) -> RoutingPolicy:
         return self._policy
+
+
+# ---------------------------------------------------------------------------
+# Singleton factory
+# ---------------------------------------------------------------------------
+
+_tier_router_singleton: Optional[TierRouter] = None
+
+_DEFAULT_YAML = Path(__file__).parents[2] / "config" / "model_providers.yaml"
+
+
+def get_tier_router(
+    yaml_path: Optional[Path] = None,
+    *,
+    policy_name: Optional[str] = None,
+    force_new: bool = False,
+) -> TierRouter:
+    """Return the singleton TierRouter, bootstrapped from *yaml_path*.
+
+    On first call (or when *force_new* is True) the factory:
+    1. Loads ``ModelCatalog`` from the YAML.
+    2. Reads ``default_strategy`` (or uses *policy_name*) to pick a ``RoutingPolicy``.
+    3. Reads ``circuit_breaker`` config to build a ``CircuitBreaker``.
+    4. Constructs and returns a ``TierRouter``.
+
+    Providers must still be registered explicitly via ``router.register_provider()``.
+    """
+    global _tier_router_singleton
+
+    if _tier_router_singleton is not None and not force_new:
+        return _tier_router_singleton
+
+    path = yaml_path or _DEFAULT_YAML
+
+    with open(path) as f:
+        data = yaml.safe_load(f)
+
+    # Strategy / policy name
+    resolved_policy = policy_name or data.get("default_strategy", "task_optimized")
+
+    catalog = ModelCatalog.from_yaml(path)
+    policy = RoutingPolicy.from_yaml(path, resolved_policy)
+
+    cb_cfg = data.get("circuit_breaker", {})
+    circuit_breaker = CircuitBreaker(
+        failure_threshold=int(cb_cfg.get("consecutive_failures_threshold", 3)),
+        cooldown_seconds=float(cb_cfg.get("cooldown_seconds", 60.0)),
+    )
+
+    _tier_router_singleton = TierRouter(catalog, policy, circuit_breaker)
+    logger.info(
+        "TierRouter bootstrapped: policy=%s, models=%d",
+        resolved_policy,
+        len(catalog.list_all()),
+    )
+    return _tier_router_singleton
+
+
+def reset_tier_router() -> None:
+    """Reset the singleton (test helper)."""
+    global _tier_router_singleton
+    _tier_router_singleton = None
