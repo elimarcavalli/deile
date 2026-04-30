@@ -236,8 +236,9 @@ async def test_forced_model_routes_to_specific_provider():
 
 @pytest.mark.asyncio
 async def test_forced_model_unregistered_raises_instead_of_silent_swap():
-    """R7-H2: when the forced model is NOT registered, do NOT silently substitute
-    the flagship — that would surprise users with up to 10x the cost. Raise instead."""
+    """R7-H2 + R8-M1: when the forced model is NOT registered, do NOT silently substitute
+    the flagship — that would surprise users with up to 10x the cost.
+    The structured ModelError propagates so process_input can build a Rich panel."""
     from deile.core.exceptions import ModelError
 
     flagship = _CapturingProvider()
@@ -256,18 +257,19 @@ async def test_forced_model_unregistered_raises_instead_of_silent_swap():
         context_data={"forced_model": "anthropic:claude-haiku-4-5"},
     )
 
-    # process_input should catch the ModelError and return an ERROR response (no silent swap)
-    content, _ = await agent._process_iterative_function_calling(
-        user_input="hi",
-        parse_result=None,
-        session=session,
-    )
-    # The agent's outer except catches the ModelError → returns generic error string
-    # Crucially, the FLAGSHIP must NOT have been called
+    # The structured ModelError now PROPAGATES from _process_iterative_function_calling
+    # so process_input can return a Rich-panel-able AgentResponse. Crucially, the
+    # FLAGSHIP must NOT have been called — that was the whole point of the fix.
+    with pytest.raises(ModelError) as exc_info:
+        await agent._process_iterative_function_calling(
+            user_input="hi",
+            parse_result=None,
+            session=session,
+        )
+    assert getattr(exc_info.value, "error_code", "") == "FORCED_MODEL_NOT_REGISTERED"
     assert not flagship.captured_messages, (
         "Flagship was silently called despite forced_model selecting an unregistered model"
     )
-    assert "FORCED_MODEL_NOT_REGISTERED" in content or "not registered" in content.lower()
 
 
 @pytest.mark.asyncio
@@ -454,3 +456,50 @@ async def test_process_input_returns_structured_budget_exceeded_metadata():
     assert response.metadata.get("limit_type") == "monthly"
     assert "/model budget" in response.content  # actionable user hint
     assert isinstance(response.error, BudgetExceeded)
+
+
+@pytest.mark.asyncio
+async def test_process_input_returns_structured_forced_model_metadata():
+    """R8-M1: process_input must surface FORCED_MODEL_NOT_REGISTERED with metadata flag
+    the CLI uses to render a Rich panel — same pattern as BudgetExceeded."""
+    from deile.core.exceptions import ModelError
+    from deile.core.agent import DeileAgent, AgentStatus, AgentSession
+
+    agent = DeileAgent.__new__(DeileAgent)
+    agent.logger = MagicMock()
+    agent._sessions = {}
+    agent._status = AgentStatus.IDLE
+    agent._request_count = 0
+    agent._total_tokens = 0
+    agent._success_count = 0
+    agent._error_count = 0
+    agent._start_time = 0.0
+    agent.proactive_analyzer = None
+    agent.intent_analyzer = MagicMock()
+    agent.intent_analyzer.analyze = AsyncMock()
+
+    sess = AgentSession(
+        session_id="forced-cli-test",
+        working_directory=Path("/tmp"),
+        context_data={},
+    )
+    sess.update_activity = MagicMock()
+    sess.add_to_history = MagicMock()
+    agent._sessions[sess.session_id] = sess
+    agent._get_or_create_session = MagicMock(return_value=sess)
+    agent._parse_input = AsyncMock(return_value=None)
+    agent._should_create_workflow = AsyncMock(return_value=False)
+
+    async def _raise_forced(*args, **kwargs):
+        raise ModelError(
+            "Forced model 'anthropic:nonexistent' is not registered. Available: ['claude-opus-4-7']. Use /model use auto to clear.",
+            error_code="FORCED_MODEL_NOT_REGISTERED",
+        )
+    agent._process_iterative_function_calling = _raise_forced
+
+    response = await agent.process_input("anything", session_id="forced-cli-test")
+    assert response.status == AgentStatus.ERROR
+    assert response.metadata.get("forced_model_not_registered") is True
+    assert response.metadata.get("error_code") == "FORCED_MODEL_NOT_REGISTERED"
+    assert "not registered" in response.content.lower()
+    assert "/model use auto" in response.content

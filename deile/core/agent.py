@@ -11,6 +11,15 @@ from pathlib import Path
 from datetime import timedelta
 
 from .exceptions import DEILEError, ToolError, ParserError, ModelError
+
+# Module-level import so that `except _BudgetExceeded:` clauses don't NameError
+# if the import inside a try block ever raises (extremely rare but possible).
+try:
+    from deile.storage.usage_repository import BudgetExceeded as _BudgetExceeded
+except Exception:  # pragma: no cover — defensive only
+    class _BudgetExceeded(Exception):  # type: ignore[no-redef]
+        provider_id = None
+        limit_type = None
 from .context_manager import ContextManager
 from .models.router import ModelRouter
 from .intent_analyzer import IntentAnalyzer, get_intent_analyzer
@@ -344,6 +353,19 @@ class DeileAgent:
                         "budget_exceeded": True,
                         "provider_id": getattr(e, "provider_id", None),
                         "limit_type": getattr(e, "limit_type", None),
+                    },
+                    execution_time=time.time() - start_time,
+                )
+            # FORCED_MODEL_NOT_REGISTERED gets the same structured treatment
+            if isinstance(e, ModelError) and getattr(e, "error_code", "") == "FORCED_MODEL_NOT_REGISTERED":
+                self.logger.warning("Forced model not registered surfaced to user: %s", e)
+                return AgentResponse(
+                    content=str(e),
+                    status=AgentStatus.ERROR,
+                    error=e,
+                    metadata={
+                        "forced_model_not_registered": True,
+                        "error_code": "FORCED_MODEL_NOT_REGISTERED",
                     },
                     execution_time=time.time() - start_time,
                 )
@@ -869,12 +891,12 @@ class DeileAgent:
                 tried_providers: set = set()
                 content = ""
                 tool_results_raw: List[Any] = []
-                usage = None  # type: ignore[assignment]
                 while attempt < MAX_CASCADE_ATTEMPTS:
                     attempt += 1
                     tried_providers.add(model_provider.provider_id)
                     try:
-                        content, tool_results_raw, usage = await model_provider.chat_with_tools(
+                        # Provider records its own usage internally via _record_usage()
+                        content, tool_results_raw, _ = await model_provider.chat_with_tools(
                             messages=messages_for_provider,
                             tools=tools,
                             system_instruction=system_instruction,
@@ -914,18 +936,13 @@ class DeileAgent:
                         )
                         # Re-run budget check against the new provider — daily/monthly
                         # limits are per-provider, not session-wide.
-                        try:
-                            from deile.storage.usage_repository import (
-                                BudgetExceeded as _BudgetExceeded,
+                        _guard_local: Any = getattr(self, "_budget_guard_singleton", None)
+                        if _guard_local:
+                            # _BudgetExceeded is module-level; if check_all raises it, propagate.
+                            _guard_local.check_all(
+                                session_id=session.session_id,
+                                provider_id=model_provider.provider_id,
                             )
-                            _guard_local: Any = getattr(self, "_budget_guard_singleton", None)
-                            if _guard_local:
-                                _guard_local.check_all(
-                                    session_id=session.session_id,
-                                    provider_id=model_provider.provider_id,
-                                )
-                        except _BudgetExceeded:
-                            raise  # propagate to outer handler
                         continue
                 if last_error is not None:
                     raise last_error
@@ -963,7 +980,8 @@ class DeileAgent:
                 return await self._process_legacy_function_calling(user_input, parse_result, session)
 
         except Exception as e:
-            # BudgetExceeded must reach the caller — it carries structured info the UI shows
+            # BudgetExceeded and structured ModelErrors must reach the caller — they carry
+            # context the CLI uses to render Rich panels.
             from deile.storage.usage_repository import BudgetExceeded as _BudgetExceeded
             if isinstance(e, _BudgetExceeded):
                 # Emit observability event then propagate
@@ -980,6 +998,9 @@ class DeileAgent:
                     )
                 except Exception:
                     pass
+                raise
+            # FORCED_MODEL_NOT_REGISTERED also propagates so process_input can build a structured response
+            if isinstance(e, ModelError) and getattr(e, "error_code", "") == "FORCED_MODEL_NOT_REGISTERED":
                 raise
             self.logger.error(f"Chat session function calling failed: {e}", exc_info=True)
             return f"I encountered an error during function calling: {str(e)}", []
