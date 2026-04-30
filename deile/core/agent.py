@@ -605,6 +605,7 @@ class DeileAgent:
             )
 
             # Classify intent tier and store in session for routing hints
+            model_tier: Optional[Any] = None
             try:
                 from deile.core.intent_tier_mapper import classify_tier
                 intent_result = await self.intent_analyzer.analyze(
@@ -617,31 +618,62 @@ class DeileAgent:
             except Exception:
                 model_tier = None
 
-            # Seleciona modelo apropriado
-            model_provider = await self.model_router.select_provider(
-                context=context,
-                session=session
-            )
-
-            # Budget enforcement (non-blocking — warn only if check fails unexpectedly)
+            # Honor /model use <provider:model_id> override stored on the session
+            forced = None
             try:
-                from deile.storage.usage_repository import get_usage_repository, BudgetGuard
+                forced = session.context_data.get("forced_model")
+            except AttributeError:
+                forced = None
+
+            # Seleciona modelo apropriado (tier-aware quando classificado)
+            if forced and isinstance(forced, str) and ":" in forced:
+                forced_provider_id, _ = forced.split(":", 1)
+                # Look up the provider by id directly
+                model_provider = None
+                for p in self.model_router.providers.values():
+                    if getattr(p, "provider_id", None) == forced_provider_id:
+                        model_provider = p
+                        break
+                if model_provider is None:
+                    # Forced provider not registered — fall back to normal selection
+                    model_provider = await self.model_router.select_provider(
+                        context=context,
+                        session=session,
+                        tier=model_tier,
+                    )
+            else:
+                model_provider = await self.model_router.select_provider(
+                    context=context,
+                    session=session,
+                    tier=model_tier,
+                )
+
+            # Budget enforcement — BudgetExceeded must propagate; other errors fail open
+            try:
+                from deile.storage.usage_repository import (
+                    get_usage_repository,
+                    BudgetGuard,
+                    BudgetExceeded,
+                )
                 _guard: Any = getattr(self, "_budget_guard_singleton", None)
                 if _guard is None:
-                    _yaml = Path(__file__).parents[2] / "config" / "model_providers.yaml"
+                    # YAML lives at deile/config/model_providers.yaml; agent.py is at deile/core/agent.py
+                    _yaml = Path(__file__).resolve().parents[1] / "config" / "model_providers.yaml"
                     try:
                         self._budget_guard_singleton = BudgetGuard.from_yaml(_yaml, get_usage_repository())
                         _guard = self._budget_guard_singleton
-                    except Exception:
+                    except Exception as _init_err:
+                        logger.debug("BudgetGuard init failed (%s) — checks disabled this session", _init_err)
                         self._budget_guard_singleton = False  # sentinel: tried and failed
                 if _guard:
                     _guard.check_all(
                         session_id=session.session_id,
                         provider_id=model_provider.provider_id,
                     )
+            except BudgetExceeded:
+                raise  # propagate to caller; caller decides what to surface to user
             except Exception as _budget_err:
-                logger.warning("BudgetGuard: %s", _budget_err)
-                raise  # BudgetExceeded should propagate; other errors are swallowed above
+                logger.debug("BudgetGuard non-fatal: %s", _budget_err)
 
             # Observability: log provider selection
             try:
@@ -703,20 +735,54 @@ class DeileAgent:
                     _self_record_circuit(model_provider.provider_id, success=False)
                     raise
 
+                # Observability — completion event for Gemini path too
+                try:
+                    from deile.storage.debug_logger import get_debug_logger
+                    await get_debug_logger().log_router_event(
+                        "provider_call_completed",
+                        {
+                            "provider_id": model_provider.provider_id,
+                            "tool_calls": len(tool_results),
+                            "latency_ms": int((time.time() - _t0) * 1000),
+                        },
+                    )
+                except Exception:
+                    pass
+
                 logger.info("Chat session completed with %d tool execution(s)", len(tool_results))
                 return content, tool_results
 
             # ── New providers: Anthropic / OpenAI / DeepSeek via chat_with_tools ─
             elif hasattr(model_provider, 'chat_with_tools'):
+                from deile.core.models.base import ModelMessage  # local import to avoid cycle
                 logger.debug("Using chat_with_tools for provider=%s", model_provider.provider_id)
 
                 system_instruction = None
-                messages_for_provider: List[Any] = []
+                raw_messages: List[Any] = []
                 if isinstance(context, dict):
                     system_instruction = context.get("system_instruction")
-                    messages_for_provider = context.get("messages", [])
+                    raw_messages = context.get("messages", [])
 
-                tools = list(get_tool_registry().get_tools().values())
+                # Convert plain dict messages to ModelMessage objects (providers expect attrs, not keys)
+                messages_for_provider: List[ModelMessage] = []
+                for m in raw_messages:
+                    if isinstance(m, ModelMessage):
+                        messages_for_provider.append(m)
+                    elif isinstance(m, dict):
+                        messages_for_provider.append(
+                            ModelMessage(
+                                role=str(m.get("role", "user")),
+                                content=str(m.get("content", "")),
+                            )
+                        )
+                # If context produced no messages, fall back to the raw user_input
+                if not messages_for_provider:
+                    messages_for_provider = [ModelMessage(role="user", content=user_input)]
+
+                # Get ToolSchema objects from registered, enabled tools
+                tools = [
+                    t.schema for t in get_tool_registry().list_enabled() if getattr(t, "schema", None) is not None
+                ]
 
                 try:
                     content, tool_results_raw, usage = await model_provider.chat_with_tools(
@@ -730,23 +796,14 @@ class DeileAgent:
                     _self_record_circuit(model_provider.provider_id, success=False)
                     raise
 
-                # Persist usage record
+                # Note: providers persist usage internally via _record_usage(); we do NOT re-record here.
                 latency_ms = int((time.time() - _t0) * 1000)
-                try:
-                    await model_provider._record_usage(
-                        session_id=session.session_id,
-                        usage=usage,
-                        latency_ms=latency_ms,
-                        success=True,
-                    )
-                except Exception:
-                    pass
 
-                # Observability
+                # Observability — completion event
                 try:
                     from deile.storage.debug_logger import get_debug_logger
                     await get_debug_logger().log_router_event(
-                        "provider_selected",
+                        "provider_call_completed",
                         {
                             "provider_id": model_provider.provider_id,
                             "tool_calls": len(tool_results_raw),

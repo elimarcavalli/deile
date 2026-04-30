@@ -294,12 +294,20 @@ class BudgetGuard:
             return
         thirty_days_ago = time.time() - 30 * 86_400
         current = self._repo.cost_for_provider_since(provider_id, thirty_days_ago)
-        if current + estimated_cost > limit:
+        projected = current + estimated_cost
+        if projected > limit:
             raise BudgetExceeded(
                 f"Provider {provider_id} would exceed monthly limit "
                 f"${limit:.2f} (current=${current:.4f}, est=${estimated_cost:.4f})",
                 provider_id=provider_id,
                 limit_type="monthly",
+            )
+        if limit > 0 and projected / limit >= self._alert_threshold:
+            logger.warning(
+                "Budget alert: provider %s monthly at %.0f%% of $%.2f limit",
+                provider_id,
+                projected / limit * 100,
+                limit,
             )
 
     def check_all(
