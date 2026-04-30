@@ -427,8 +427,13 @@ class ProactiveAnalyzer:
         elif intent.action in [ProactiveAction.LIST_FILES, ProactiveAction.LIST_DIRECTORY]:
             parsed_args = {"directory": intent.target if intent.target != "." else str(self.working_directory)}
 
+        # Why: tools fall back to parsing ``user_input`` with regex when their
+        # named args are unset. A synthetic natural-language string here would
+        # accidentally trip those fallbacks (e.g. ListFilesTool's `directory\s+`
+        # pattern captured "f" from "directory for ."). Pass empty string so
+        # the parsed_args we built are the only input source.
         return ToolContext(
-            user_input=f"Proactive execution: {intent.action.value} for {intent.target}",
+            user_input="",
             parsed_args=parsed_args,
             session_data=context_data,
             working_directory=str(self.working_directory),
