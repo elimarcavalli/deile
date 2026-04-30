@@ -237,6 +237,18 @@ EXAMPLES:
             except Exception:
                 pass
 
+        # Sync the legacy ModelRouter.strategy (consulted when tier classification fails)
+        try:
+            from deile.core.models.router import RoutingStrategy as _RS
+            agent_obj = getattr(context, "agent", None)
+            if agent_obj is None:
+                # Fall back: try common aliases on the context
+                agent_obj = getattr(context, "deile_agent", None)
+            if agent_obj is not None and hasattr(agent_obj, "model_router"):
+                agent_obj.model_router.strategy = _RS(name)
+        except Exception as exc:
+            logger.debug("could not sync legacy ModelRouter.strategy: %s", exc)
+
         return CommandResult(
             success=True,
             content=Panel(Text(f"Strategy set to '{name}'."), title="Strategy", border_style="green"),
@@ -305,29 +317,30 @@ EXAMPLES:
 
         session_id = self._session_id(context)
         session_spent = repo.cost_for_session(session_id)
+        snap = guard.snapshot()
+        per_session = snap["per_session_usd"]
 
         lines = [
-            f"Per-session limit : ${guard._per_session:.2f}",
+            f"Per-session limit : ${per_session:.2f}",
             f"Session spent     : ${session_spent:.4f}",
-            f"Remaining         : ${max(0.0, guard._per_session - session_spent):.4f}",
+            f"Remaining         : ${max(0.0, per_session - session_spent):.4f}",
             "",
-            f"Guard enabled     : {guard._enabled}",
+            f"Guard enabled     : {snap['enabled']}",
         ]
-        if guard._daily:
+        if snap["per_provider_daily_usd"]:
             lines.append("")
             lines.append("Daily limits:")
-            for pid, limit in guard._daily.items():
+            for pid, limit in snap["per_provider_daily_usd"].items():
                 lines.append(f"  {pid}: ${limit:.2f}")
 
-        if guard._monthly:
+        if snap["per_provider_monthly_usd"]:
             lines.append("")
             lines.append("Monthly limits:")
-            for pid, limit in guard._monthly.items():
+            for pid, limit in snap["per_provider_monthly_usd"].items():
                 lines.append(f"  {pid}: ${limit:.2f}")
 
-        alert_pct = int(getattr(guard, "_alert_threshold", 0.8) * 100)
         lines.append("")
-        lines.append(f"Alert threshold   : {alert_pct}%")
+        lines.append(f"Alert threshold   : {snap['alert_threshold_pct']}%")
 
         return CommandResult(
             success=True,
