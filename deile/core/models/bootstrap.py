@@ -88,28 +88,53 @@ def bootstrap_providers(
 
         try:
             cls = _import_provider_class(cls_path)
-            # Use the first (flagship) handle for the provider instance
-            primary_handle = handles[0]
-            provider_instance = cls(primary_handle, provider_config)
         except Exception as exc:
-            logger.error("bootstrap: failed to instantiate %s: %s", provider_id, exc)
+            logger.error("bootstrap: failed to import %s: %s", provider_id, exc)
             continue
 
-        if router is not None:
+        # Register ONE provider instance per (provider_id, model_id) handle in the legacy
+        # ModelRouter (so /model use can resolve any model the user picks). The TierRouter
+        # gets only the flagship instance — its cascade routes by provider_id, not by model.
+        registered_models = 0
+        flagship_instance = None
+        for idx, handle in enumerate(handles):
             try:
-                router.register_provider(provider_instance, priority=1)
+                inst = cls(handle, provider_config)
             except Exception as exc:
-                logger.warning("bootstrap: could not register %s in legacy router: %s", provider_id, exc)
+                logger.error(
+                    "bootstrap: failed to instantiate %s:%s: %s", provider_id, handle.model_id, exc
+                )
+                continue
+            if idx == 0:
+                flagship_instance = inst
+            if router is not None:
+                try:
+                    router.register_provider(inst, priority=1 if idx == 0 else 0)
+                except Exception as exc:
+                    logger.warning(
+                        "bootstrap: could not register %s:%s in legacy router: %s",
+                        provider_id, handle.model_id, exc,
+                    )
+            registered_models += 1
 
-            # Also register in TierRouter
+        # Register the flagship in TierRouter — cascade routes by provider_id
+        if router is not None and flagship_instance is not None:
             try:
                 from deile.core.models.tier_router import get_tier_router
                 tier_router = get_tier_router(yaml_path=path)
-                tier_router.register_provider(provider_instance)
+                tier_router.register_provider(flagship_instance)
             except Exception as exc:
-                logger.debug("bootstrap: TierRouter registration skipped for %s: %s", provider_id, exc)
+                logger.debug(
+                    "bootstrap: TierRouter registration skipped for %s: %s", provider_id, exc
+                )
+
+        if registered_models == 0:
+            continue
 
         registered.append(provider_id)
-        logger.info("bootstrap: registered provider %s (%d model(s))", provider_id, len(handles))
+        logger.info(
+            "bootstrap: registered provider %s (%d model instance(s))",
+            provider_id, registered_models,
+        )
 
     return registered

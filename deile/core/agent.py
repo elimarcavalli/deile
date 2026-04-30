@@ -41,6 +41,15 @@ def _self_record_circuit(provider_id: str, *, success: bool) -> None:
             tr.record_success(provider_id)
         else:
             tr.record_failure(provider_id)
+    except Exception as exc:
+        logger.debug("circuit-record failed for %s (success=%s): %s", provider_id, success, exc)
+
+
+async def _emit_router_event(event_type: str, payload: dict) -> None:
+    """Best-effort observability emit; never raises."""
+    try:
+        from deile.storage.debug_logger import get_debug_logger  # noqa: PLC0415
+        await get_debug_logger().log_router_event(event_type, payload)
     except Exception:
         pass
 
@@ -626,22 +635,30 @@ class DeileAgent:
                 forced = None
 
             # Seleciona modelo apropriado (tier-aware quando classificado)
+            model_provider = None
             if forced and isinstance(forced, str) and ":" in forced:
-                forced_provider_id, _ = forced.split(":", 1)
-                # Look up the provider by id directly
-                model_provider = None
+                forced_provider_id, forced_model_id = forced.split(":", 1)
+                # Try exact match (provider_id:model_id) first — this works when bootstrap
+                # registered one instance per catalog handle.
                 for p in self.model_router.providers.values():
-                    if getattr(p, "provider_id", None) == forced_provider_id:
+                    if (
+                        getattr(p, "provider_id", None) == forced_provider_id
+                        and getattr(p, "model_name", None) == forced_model_id
+                    ):
                         model_provider = p
                         break
+                # Exact match not found — fall back to ANY provider with the requested provider_id
                 if model_provider is None:
-                    # Forced provider not registered — fall back to normal selection
-                    model_provider = await self.model_router.select_provider(
-                        context=context,
-                        session=session,
-                        tier=model_tier,
-                    )
-            else:
+                    for p in self.model_router.providers.values():
+                        if getattr(p, "provider_id", None) == forced_provider_id:
+                            logger.warning(
+                                "Forced model %s:%s not registered; using flagship %s for that provider",
+                                forced_provider_id, forced_model_id,
+                                getattr(p, "model_name", "unknown"),
+                            )
+                            model_provider = p
+                            break
+            if model_provider is None:
                 model_provider = await self.model_router.select_provider(
                     context=context,
                     session=session,
@@ -731,8 +748,16 @@ class DeileAgent:
                         session_data=session.context_data,
                     )
                     _self_record_circuit(model_provider.provider_id, success=True)
-                except Exception:
+                except Exception as _gemini_err:
                     _self_record_circuit(model_provider.provider_id, success=False)
+                    await _emit_router_event(
+                        "cascade_fallback",
+                        {
+                            "provider_id": model_provider.provider_id,
+                            "error": str(_gemini_err),
+                            "latency_ms": int((time.time() - _t0) * 1000),
+                        },
+                    )
                     raise
 
                 # Observability — completion event for Gemini path too
@@ -769,11 +794,18 @@ class DeileAgent:
                     if isinstance(m, ModelMessage):
                         messages_for_provider.append(m)
                     elif isinstance(m, dict):
+                        role = str(m.get("role", "user"))
+                        content_raw = m.get("content", "")
+                        # Preserve string-typed content; for non-string (list/dict for multi-modal),
+                        # keep the original object so providers that support structured content can handle it.
+                        # ModelMessage.content is typed as str, but providers may pass it through as-is.
+                        if isinstance(content_raw, str):
+                            content = content_raw
+                        else:
+                            content = content_raw  # type: ignore[assignment]
+                        msg_metadata = m.get("metadata", {}) or {}
                         messages_for_provider.append(
-                            ModelMessage(
-                                role=str(m.get("role", "user")),
-                                content=str(m.get("content", "")),
-                            )
+                            ModelMessage(role=role, content=content, metadata=msg_metadata)  # type: ignore[arg-type]
                         )
                 # If context produced no messages, fall back to the raw user_input
                 if not messages_for_provider:
@@ -792,8 +824,16 @@ class DeileAgent:
                         session_id=session.session_id,
                     )
                     _self_record_circuit(model_provider.provider_id, success=True)
-                except Exception:
+                except Exception as _chat_err:
                     _self_record_circuit(model_provider.provider_id, success=False)
+                    await _emit_router_event(
+                        "cascade_fallback",
+                        {
+                            "provider_id": model_provider.provider_id,
+                            "error": str(_chat_err),
+                            "latency_ms": int((time.time() - _t0) * 1000),
+                        },
+                    )
                     raise
 
                 # Note: providers persist usage internally via _record_usage(); we do NOT re-record here.
@@ -829,6 +869,24 @@ class DeileAgent:
                 return await self._process_legacy_function_calling(user_input, parse_result, session)
 
         except Exception as e:
+            # BudgetExceeded must reach the caller — it carries structured info the UI shows
+            from deile.storage.usage_repository import BudgetExceeded as _BudgetExceeded
+            if isinstance(e, _BudgetExceeded):
+                # Emit observability event then propagate
+                try:
+                    from deile.storage.debug_logger import get_debug_logger
+                    await get_debug_logger().log_router_event(
+                        "budget_exceeded",
+                        {
+                            "session_id": session.session_id,
+                            "provider_id": getattr(e, "provider_id", "unknown"),
+                            "limit_type": getattr(e, "limit_type", "unknown"),
+                            "message": str(e),
+                        },
+                    )
+                except Exception:
+                    pass
+                raise
             self.logger.error(f"Chat session function calling failed: {e}", exc_info=True)
             return f"I encountered an error during function calling: {str(e)}", []
 
