@@ -25,10 +25,25 @@ DEILE v5.0 ULTRA é um agente de IA autônomo, projetado para apoiar no desenvol
 - 🛠️ **15+ Ferramentas Integradas** - Análise de código, execução, busca e automação
 - 📊 **23 Comandos Especializados** - Interface completa para desenvolvimento
 
+## 🌐 Multi-Provider Support (v5.1)
+
+DEILE routes requests across Anthropic, OpenAI, DeepSeek, and Gemini automatically.
+Set **at least one** of these environment variables:
+
+| Provider | Env Variable | Tiers |
+|---|---|---|
+| Anthropic | `ANTHROPIC_API_KEY` | tier_1 (Opus), tier_2 (Sonnet), tier_3 (Haiku) |
+| OpenAI | `OPENAI_API_KEY` | tier_1 (GPT-4o), tier_2 (GPT-4o-mini), tier_3 (o1-mini) |
+| DeepSeek | `DEEPSEEK_API_KEY` | tier_2 (deepseek-chat), tier_3 (deepseek-coder) |
+| Gemini | `GOOGLE_API_KEY` | tier_2/3 (2.5 Flash, 2.5 Flash-Lite) |
+
+Available routing strategies: `task_optimized` (default) or `cost_optimized`.  
+Switch at runtime: `/model strategy cost_optimized`.
+
 ## 📋 Pré-requisitos
 
 - **Python 3.9+**
-- **Chave API do Google Gemini** (configurar `GOOGLE_API_KEY`)
+- **Ao menos uma chave de API** — veja tabela Multi-Provider acima
 - **Windows/Linux/macOS** (testado em múltiplos OS)
 
 ## ⚡ Instalação Rápida
@@ -41,8 +56,11 @@ cd deile
 # Instale as dependências
 pip install -r requirements.txt
 
-# Configure a chave API do Google
-export GOOGLE_API_KEY="sua_chave_api_aqui"
+# Configure ao menos uma chave de API (exemplo com Anthropic)
+export ANTHROPIC_API_KEY="sk-ant-..."
+# ou: export OPENAI_API_KEY="sk-..."
+# ou: export DEEPSEEK_API_KEY="sk-..."
+# ou: export GOOGLE_API_KEY="..."
 
 # Execute o DEILE
 python3 deile.py

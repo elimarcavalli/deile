@@ -5,6 +5,34 @@ All notable changes to the DEILE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [5.1.0] — Multi-Provider Model Router
+
+### Added
+- **Multi-Provider Support**: Anthropic, OpenAI, DeepSeek providers alongside the existing Gemini integration.
+- **ModelCatalog**: Immutable model registry loaded from `deile/config/model_providers.yaml` with pricing, context window, and capability data for 9+ models.
+- **TierRouter + RoutingPolicy**: Tier-aware cascade routing (tier_1→flagship, tier_2→balanced, tier_3→fast, tier_4→ultra-fast) with `task_optimized` and `cost_optimized` strategies.
+- **CircuitBreaker**: Per-provider consecutive-failure threshold with configurable cooldown (CLOSED→OPEN→HALF_OPEN→CLOSED).
+- **UnifiedStreamEvent**: Typed streaming events (`TEXT_DELTA`, `TOOL_USE_START/END`, `USAGE_FINAL`, `ERROR`) across all providers.
+- **UsageRepository**: SQLite-backed append-only usage store (`data/usage.db`) with per-session and per-provider-daily cost aggregation.
+- **BudgetGuard**: Per-session and per-provider-daily spend limits with `BudgetExceeded` exception.
+- **Intent tier classification**: `classify_tier(IntentAnalysisResult) → ModelTier` mapper + `tier:` field on all 11 intent patterns in YAML.
+- **Prompt caching**: Anthropic `cache_control: ephemeral` on system prompt; OpenAI automatic caching extraction; DeepSeek `prompt_cache_hit_tokens`.
+- **JSONL observability**: `debug_logger.log_router_event()` appends structured events to `logs/router_events.jsonl`.
+- **`/model` command rewrite**: subcommands `list`, `current`, `use <provider:model>`, `use auto`, `strategy`, `cost`, `budget`.
+- **Conditional bootstrap**: `bootstrap_providers()` in `deile/core/models/bootstrap.py` — registers only providers whose API key env var is set; zero providers → clear error.
+- **Performance benchmarks**: router `select()` < 1ms avg; schema translation < 10ms for 10 tools.
+- **Integration test stubs**: E2E tests for Anthropic and OpenAI fallback (skipped without real API keys).
+
+### Changed
+- `deile.py` entry point no longer requires `GOOGLE_API_KEY` — any of `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `GOOGLE_API_KEY` is sufficient.
+- `GeminiProvider.chat_with_tools` now implements unified contract `(messages, tools, system_instruction) → (str, list, ModelUsage)`.
+- `_generate_response_stream` in `agent.py` consumes `UnifiedStreamEvent` from all providers; legacy str-yielding providers remain backward compatible.
+- `pytest.ini` section corrected from `[tool:pytest]` to `[pytest]`; `perf` and `integration` markers registered.
+
+### Fixed
+- `deile/storage/` package was blocked by `.gitignore` `storage/` rule — added `!deile/storage/` negation.
+- `SandboxCommand` import in `deile/commands/builtin/__init__.py` wrapped in try/except to avoid crash when `deile.infrastructure.security` is absent.
+
 ## [Unreleased]
 
 ### Added
