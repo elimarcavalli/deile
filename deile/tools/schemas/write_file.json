@@ -14,7 +14,7 @@
       },
       "overwrite": {
         "type": "BOOLEAN",
-        "description": "Whether to overwrite the file if it already exists. Default is false for safety."
+        "description": "Replace the file if it already exists. Defaults to true — the tool always writes the exact content you supply and validates it byte-for-byte after writing. Set to false only when you explicitly want to fail on collision."
       }
     },
     "required": ["file_path", "content"]

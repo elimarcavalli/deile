@@ -546,7 +546,10 @@ class WriteFileTool(SyncTool):
         # Extração robusta dos argumentos com fallbacks múltiplos
         file_path = None
         content = None
-        overwrite = context.parsed_args.get("overwrite", False)
+        # Default permissivo: quando o usuário pede para alterar/criar um
+        # arquivo, a tool não pergunta — apenas garante fidelidade total via
+        # escrita atômica + read-back (ver _atomic_write_text abaixo).
+        overwrite = context.parsed_args.get("overwrite", True)
         
         # 1. Tenta argumentos nomeados primeiro
         if 'file_path' in context.parsed_args:
@@ -639,9 +642,13 @@ class WriteFileTool(SyncTool):
             
             # Cria diretório pai se necessário
             full_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Escreve conteúdo
-            full_path.write_text(content, encoding='utf-8')
+
+            # Escreve atomicamente: garante que o destino só é substituído
+            # depois que o conteúdo está completo no disco e que os bytes
+            # gravados batem byte-a-byte com o que o caller pediu. Em caso
+            # de qualquer falha no caminho, o arquivo original (se existia)
+            # permanece íntegro.
+            self._atomic_write_text(full_path, content)
             
             # Prepara display rico
             lines = content.splitlines()
@@ -686,6 +693,57 @@ class WriteFileTool(SyncTool):
                 error=e
             )
     
+    @staticmethod
+    def _atomic_write_text(target: Path, content: str) -> None:
+        """Escreve ``content`` em ``target`` de forma atômica e fiel.
+
+        Garantias:
+
+        * **Atomicidade**: o conteúdo é gravado primeiro num arquivo temporário
+          no mesmo diretório (mesmo filesystem) e só então renomeado para o
+          destino via ``os.replace``. Se algo falhar no meio, o arquivo
+          original permanece intacto e o temporário é removido.
+
+        * **Fidelidade**: o ``content`` é codificado como UTF-8 sem BOM e sem
+          tradução de newlines, e os bytes do arquivo final são re-lidos e
+          comparados byte-a-byte com o que foi pedido. Qualquer divergência
+          aborta a operação com :class:`IOError` antes do arquivo final ser
+          publicado.
+
+        * **Durabilidade**: ``fsync`` é chamado no temporário antes do rename,
+          então um crash de SO pós-rename não deixa o arquivo zero-byte.
+        """
+        import os
+        import tempfile
+
+        payload = content.encode("utf-8")
+        target_dir = target.parent
+        fd, tmp_name = tempfile.mkstemp(
+            dir=str(target_dir), prefix=f".{target.name}.", suffix=".tmp"
+        )
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(payload)
+                fh.flush()
+                os.fsync(fh.fileno())
+            # Read-back validation antes do replace: o temporário é descartável
+            # e o original ainda existe se falharmos aqui.
+            with open(tmp_path, "rb") as fh:
+                written = fh.read()
+            if written != payload:
+                raise IOError(
+                    f"Atomic write integrity check failed for {target}: "
+                    f"requested {len(payload)} bytes, found {len(written)} on disk"
+                )
+            os.replace(str(tmp_path), str(target))
+        except BaseException:
+            try:
+                tmp_path.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+
     async def can_handle(self, user_input: str) -> bool:
         """Verifica se pode processar a entrada"""
         input_lower = user_input.lower()
