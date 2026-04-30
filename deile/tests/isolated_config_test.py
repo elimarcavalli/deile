@@ -18,8 +18,9 @@ import yaml
 from pathlib import Path
 from typing import Dict, Any
 
-# Add the deile package to sys.path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add the deile package to sys.path (file lives at scripts/tests/, project root is two parents up)
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
 
 print("🧪 ISOLATED CONFIGURATION TEST SUITE")
 print("=" * 50)
@@ -58,7 +59,7 @@ class IsolatedConfigTestSuite:
 
         try:
             # Import just the ConfigManager components we need
-            sys.path.insert(0, str(Path(__file__).parent / 'deile'))
+            sys.path.insert(0, str(PROJECT_ROOT / 'deile'))
 
             # Create a minimal ConfigManager test
             from deile.config.manager import ConfigManager
