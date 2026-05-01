@@ -1,0 +1,37 @@
+{
+  "name": "python_execute",
+  "description": "Executes a Python snippet in a subprocess and returns stdout, stderr, and exit_code. The snippet runs with the project's interpreter and the session's working directory as cwd. Use this for quick import checks ('import X'), small probes, or running short scripts without writing them to disk. For multi-step programs already on disk, prefer bash_execute with 'python <file>'.",
+  "parameters": {
+    "type": "OBJECT",
+    "properties": {
+      "code": {
+        "type": "STRING",
+        "description": "Python source to execute. Multi-line strings are fine. The snippet runs in a fresh subprocess — no state is shared between calls."
+      },
+      "timeout": {
+        "type": "NUMBER",
+        "description": "Maximum seconds to wait. Default: 30."
+      }
+    },
+    "required": ["code"]
+  },
+  "side_effects": "code_execution",
+  "risk_level": "moderate",
+  "display_policy": "system",
+  "show_cli_policy": "parameter",
+  "category": "execution",
+  "examples": [
+    {
+      "description": "Validate that an import resolves before running a longer program",
+      "parameters": {
+        "code": "import requests; print(requests.__version__)"
+      }
+    },
+    {
+      "description": "Quick numerical probe",
+      "parameters": {
+        "code": "import math; print(math.factorial(20))"
+      }
+    }
+  ]
+}

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import os
 import platform
+import re
 import signal
 import subprocess
 import sys
@@ -642,118 +643,293 @@ class EnhancedExecutionTool(SyncTool):
 
 
 class PythonExecutionTool(SyncTool):
-    """Ferramenta para execução segura de código Python"""
-    
+    """Run a Python snippet in a subprocess with timeout.
+
+    Isolation: subprocess + cwd bound to the session's working directory + timeout.
+    """
+
     @property
     def name(self) -> str:
         return "python_execute"
-    
+
     @property
     def description(self) -> str:
-        return "Executes Python code in a controlled environment"
-    
+        return "Executes a Python snippet in a subprocess and returns stdout/stderr/exit_code"
+
     @property
     def category(self) -> str:
         return "execution"
-    
+
     def execute_sync(self, context: ToolContext) -> ToolResult:
-        """Executa código Python"""
+        """Executa código Python via subprocess."""
         code = context.parsed_args.get("code")
         timeout = context.parsed_args.get("timeout", 30)
-        
+
         if not code:
             return ToolResult(
                 status=ToolStatus.ERROR,
                 message="No Python code provided",
-                error=ValidationError("code is required")
+                error=ValidationError("code is required"),
             )
-        
-        # Lista de imports/módulos perigosos
-        dangerous_imports = [
-            "os.system", "subprocess", "shutil.rmtree", "open(",
-            "__import__", "exec", "eval", "compile",
-            "file", "input", "raw_input"
-        ]
-        
-        # Verifica código perigoso
-        code_lines = code.lower()
-        dangerous_found = [d for d in dangerous_imports if d in code_lines]
-        if dangerous_found:
-            return ToolResult(
-                status=ToolStatus.ERROR,
-                message=f"Dangerous code patterns detected: {', '.join(dangerous_found)}",
-                error=PermissionError("Unsafe code blocked")
-            )
-        
+
         try:
-            # Cria arquivo temporário
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            with tempfile.NamedTemporaryFile(
+                mode="w", suffix=".py", delete=False, encoding="utf-8"
+            ) as f:
                 f.write(code)
                 temp_file = f.name
-            
+
             try:
-                # Executa Python com timeout
-                result = subprocess.run([
-                    sys.executable, temp_file
-                ], 
-                capture_output=True, 
-                text=True, 
-                timeout=timeout,
-                cwd=context.working_directory
+                result = subprocess.run(
+                    [sys.executable, temp_file],
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    cwd=context.working_directory,
                 )
-                
-                output = result.stdout.strip() if result.stdout else ""
-                error_output = result.stderr.strip() if result.stderr else ""
-                
+
+                stdout = result.stdout or ""
+                stderr = result.stderr or ""
+
                 if result.returncode == 0:
                     return ToolResult(
                         status=ToolStatus.SUCCESS,
-                        data=output,
-                        message="Python code executed successfully",
+                        data=stdout.strip(),
+                        message=stdout.strip() or "Python executed successfully (no stdout)",
                         metadata={
                             "exit_code": result.returncode,
-                            "stdout": output,
-                            "stderr": error_output
-                        }
+                            "stdout": stdout,
+                            "stderr": stderr,
+                        },
                     )
-                else:
-                    return ToolResult(
-                        status=ToolStatus.ERROR,
-                        data=error_output,
-                        message=f"Python code failed with exit code {result.returncode}",
-                        metadata={
-                            "exit_code": result.returncode,
-                            "stdout": output,
-                            "stderr": error_output
-                        }
-                    )
-                    
+                return ToolResult(
+                    status=ToolStatus.ERROR,
+                    data=stderr.strip(),
+                    message=(
+                        f"Python failed with exit code {result.returncode}.\n"
+                        f"stderr:\n{stderr.strip()}"
+                    ),
+                    metadata={
+                        "exit_code": result.returncode,
+                        "stdout": stdout,
+                        "stderr": stderr,
+                    },
+                )
+
             finally:
-                # Limpa arquivo temporário
                 try:
                     os.unlink(temp_file)
-                except:
+                except OSError:
                     pass
-                    
+
         except subprocess.TimeoutExpired:
             return ToolResult(
                 status=ToolStatus.ERROR,
                 message=f"Python code timed out after {timeout} seconds",
-                error=TimeoutError(f"Execution timeout: {timeout}s")
+                error=TimeoutError(f"Execution timeout: {timeout}s"),
             )
         except Exception as e:
             return ToolResult(
                 status=ToolStatus.ERROR,
                 message=f"Error executing Python code: {str(e)}",
-                error=e
+                error=e,
             )
-    
+
     async def can_handle(self, user_input: str) -> bool:
         """Verifica se pode processar a entrada"""
         input_lower = user_input.lower()
         return any(keyword in input_lower for keyword in [
             "python", "run code", "execute code", "script"
         ])
+
+
+class PipInstallTool(SyncTool):
+    """Install a Python package via pip and (optionally) persist it to requirements.txt.
+
+    The agent's primary recovery for ModuleNotFoundError. Validates the
+    package spec to block shell injection, runs `pip install` in a
+    subprocess, and updates requirements.txt by appending the spec if no
+    line for that package already exists (case-insensitive PEP 503 name
+    normalization). Idempotent: running twice does not duplicate lines.
+    """
+
+    _SPEC_RE = re.compile(
+        r"^[A-Za-z0-9][A-Za-z0-9._\-]*"
+        r"(?:\[[A-Za-z0-9._,\-]+\])?"
+        r"(?:[<>=!~]=?[A-Za-z0-9._\-+*]+(?:,[<>=!~]=?[A-Za-z0-9._\-+*]+)*)?$"
+    )
+
+    @property
+    def name(self) -> str:
+        return "pip_install"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Installs a Python package via pip and (by default) appends it to "
+            "requirements.txt if not already present. Use this in response to "
+            "ModuleNotFoundError or when adding a new third-party dependency."
+        )
+
+    @property
+    def category(self) -> str:
+        return "execution"
+
+    @staticmethod
+    def _normalize_pkg_name(spec: str) -> str:
+        """Return the canonical PEP 503 name from a spec like 'requests>=2.0[extras]'."""
+        from packaging.utils import canonicalize_name
+        bare = re.sub(r"\[.*?\]", "", spec)
+        bare = re.split(r"[<>=!~]", bare, maxsplit=1)[0]
+        return canonicalize_name(bare.strip())
+
+    @classmethod
+    def _requirements_already_lists(cls, req_path: Path, package_spec: str) -> bool:
+        """True if requirements.txt has a line for the same normalized package name."""
+        if not req_path.exists():
+            return False
+        target = cls._normalize_pkg_name(package_spec)
+        try:
+            for raw in req_path.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or line.startswith("-"):
+                    continue
+                # strip inline comments
+                if "#" in line:
+                    line = line.split("#", 1)[0].strip()
+                if cls._normalize_pkg_name(line) == target:
+                    return True
+        except OSError:
+            return False
+        return False
+
+    @staticmethod
+    def _append_to_requirements(req_path: Path, package_spec: str) -> None:
+        """Append a spec to requirements.txt, creating the file if needed."""
+        existing = ""
+        if req_path.exists():
+            try:
+                existing = req_path.read_text(encoding="utf-8")
+            except OSError:
+                existing = ""
+        sep = "" if (not existing or existing.endswith("\n")) else "\n"
+        req_path.write_text(existing + sep + package_spec + "\n", encoding="utf-8")
+
+    def execute_sync(self, context: ToolContext) -> ToolResult:
+        package = context.parsed_args.get("package")
+        version = context.parsed_args.get("version")
+        update_requirements = context.parsed_args.get("update_requirements", True)
+        requirements_file = context.parsed_args.get("requirements_file", "requirements.txt")
+        upgrade = context.parsed_args.get("upgrade", False)
+        timeout = context.parsed_args.get("timeout", 120)
+
+        if not package:
+            return ToolResult(
+                status=ToolStatus.ERROR,
+                message="No package provided",
+                error=ValidationError("package is required"),
+            )
+
+        spec = f"{package}=={version}" if version else package
+
+        if not self._SPEC_RE.match(spec):
+            return ToolResult(
+                status=ToolStatus.ERROR,
+                message=(
+                    f"Refused to install: {spec!r} does not match PEP 508 package "
+                    "spec format. Allowed: name + optional [extras] + optional "
+                    "version specifier (no whitespace, no shell metachars)."
+                ),
+                error=ValidationError("invalid package spec"),
+            )
+
+        cmd = [sys.executable, "-m", "pip", "install"]
+        if upgrade:
+            cmd.append("--upgrade")
+        cmd.append(spec)
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=context.working_directory,
+            )
+        except subprocess.TimeoutExpired:
+            return ToolResult(
+                status=ToolStatus.ERROR,
+                message=f"pip install {spec} timed out after {timeout} seconds",
+                error=TimeoutError(f"pip timeout: {timeout}s"),
+            )
+        except Exception as e:
+            return ToolResult(
+                status=ToolStatus.ERROR,
+                message=f"Failed to invoke pip: {e}",
+                error=e,
+            )
+
+        stdout = result.stdout or ""
+        stderr = result.stderr or ""
+
+        if result.returncode != 0:
+            return ToolResult(
+                status=ToolStatus.ERROR,
+                data=stderr.strip(),
+                message=(
+                    f"pip install {spec} failed with exit code {result.returncode}.\n"
+                    f"stderr:\n{stderr.strip()}"
+                ),
+                metadata={
+                    "exit_code": result.returncode,
+                    "spec": spec,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                    "requirements_updated": False,
+                },
+            )
+
+        # Success — handle requirements.txt
+        requirements_updated = False
+        requirements_note = ""
+        if update_requirements:
+            req_path = Path(context.working_directory) / requirements_file
+            if self._requirements_already_lists(req_path, spec):
+                requirements_note = (
+                    f"{requirements_file} already lists {self._normalize_pkg_name(spec)} "
+                    "(no change)."
+                )
+            else:
+                try:
+                    self._append_to_requirements(req_path, spec)
+                    requirements_updated = True
+                    requirements_note = f"Appended {spec!r} to {requirements_file}."
+                except OSError as e:
+                    requirements_note = f"WARNING: could not update {requirements_file}: {e}"
+
+        msg = f"Installed {spec}."
+        if requirements_note:
+            msg += f" {requirements_note}"
+
+        return ToolResult(
+            status=ToolStatus.SUCCESS,
+            data=stdout.strip(),
+            message=msg,
+            metadata={
+                "exit_code": 0,
+                "spec": spec,
+                "stdout": stdout,
+                "stderr": stderr,
+                "requirements_updated": requirements_updated,
+                "requirements_file": requirements_file,
+            },
+        )
+
+    async def can_handle(self, user_input: str) -> bool:
+        return any(
+            kw in user_input.lower()
+            for kw in ["pip install", "install package", "install dependency", "instalar dependência"]
+        )
 
 
 class TestRunnerTool(SyncTool):

@@ -1,0 +1,68 @@
+{
+  "name": "pip_install",
+  "description": "Installs a Python package via pip in the project's interpreter and (by default) appends it to requirements.txt if not already listed. Use this whenever ModuleNotFoundError appears or when adding a new third-party dependency. Idempotent: if the package is already in requirements.txt, the file is not modified.",
+  "parameters": {
+    "type": "OBJECT",
+    "properties": {
+      "package": {
+        "type": "STRING",
+        "description": "Package name (e.g. 'requests') or full PEP 508 spec (e.g. 'requests>=2.0', 'pillow[webp]==10.0.0'). Whitespace and shell metachars are rejected."
+      },
+      "version": {
+        "type": "STRING",
+        "description": "Optional exact version (e.g. '2.31.0'). When provided, joined as 'package==version'. If 'package' already contains a version specifier, leave this empty."
+      },
+      "update_requirements": {
+        "type": "BOOLEAN",
+        "description": "If true (default), append the spec to requirements.txt when the package is not already listed there."
+      },
+      "requirements_file": {
+        "type": "STRING",
+        "description": "Path to requirements file relative to the working directory. Defaults to 'requirements.txt'."
+      },
+      "upgrade": {
+        "type": "BOOLEAN",
+        "description": "If true, pass --upgrade to pip to force reinstall to the latest matching version. Default: false."
+      },
+      "timeout": {
+        "type": "NUMBER",
+        "description": "Maximum seconds to wait for pip to complete. Default: 120."
+      }
+    },
+    "required": ["package"]
+  },
+  "side_effects": "installs_package_modifies_requirements",
+  "risk_level": "moderate",
+  "display_policy": "system",
+  "show_cli_policy": "parameter",
+  "category": "execution",
+  "examples": [
+    {
+      "description": "React to ModuleNotFoundError: install requests and persist it",
+      "parameters": {
+        "package": "requests"
+      }
+    },
+    {
+      "description": "Install with pinned version",
+      "parameters": {
+        "package": "pydantic",
+        "version": "2.6.0"
+      }
+    },
+    {
+      "description": "Upgrade an existing dep to its latest matching version",
+      "parameters": {
+        "package": "rich",
+        "upgrade": true
+      }
+    },
+    {
+      "description": "Install without touching requirements.txt (one-off scratch test)",
+      "parameters": {
+        "package": "ipython",
+        "update_requirements": false
+      }
+    }
+  ]
+}
