@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, Optional
 
@@ -12,8 +12,17 @@ class StreamEventType(Enum):
     TOOL_USE_START = "tool_use_start"
     TOOL_USE_DELTA = "tool_use_delta"
     TOOL_USE_END = "tool_use_end"
+    TOOL_RESULT = "tool_result"
     USAGE_FINAL = "usage_final"
     ERROR = "error"
+    # Pre-stream stage indicator. The agent emits these before the first
+    # provider chunk so the UI can replace its opaque "aguardando…" spinner
+    # with a live description of what's actually running (parse, proactive
+    # tools, intent analysis, provider selection, etc.). STAGE events do NOT
+    # cancel the spinner — only a real content event (TEXT_DELTA, TOOL_USE_*,
+    # USAGE_FINAL, ERROR) does. They're advisory and may be dropped by
+    # consumers that don't care about progress.
+    STAGE = "stage"
 
 
 @dataclass
@@ -37,12 +46,37 @@ class UnifiedStreamEvent:
 
     # TOOL_USE_*
     tool_call_id: Optional[str] = None
-    tool_name: Optional[str] = None                    # TOOL_USE_START
+    tool_name: Optional[str] = None                    # TOOL_USE_START, TOOL_RESULT
     arguments_json_delta: Optional[str] = None         # TOOL_USE_DELTA
     arguments: Optional[Dict[str, Any]] = None         # TOOL_USE_END (parsed)
+
+    # TOOL_RESULT
+    tool_status: Optional[str] = None                  # "success" | "error" | "running"
+    tool_result_summary: Optional[str] = None          # short preview (≤ 200 chars)
+    tool_result_data: Optional[Any] = None             # raw payload for rich display
+    tool_metadata: Optional[Dict[str, Any]] = None     # full ToolResult.metadata copy — carries
+                                                        # post_write_validation_required, file_path,
+                                                        # etc. so downstream gates that inspect
+                                                        # metadata keep working after the streaming
+                                                        # reconstruction round-trip
 
     # USAGE_FINAL
     usage: Optional[ModelUsageSnapshot] = None
 
     # ERROR
     error_envelope: Optional[Any] = None               # ProviderErrorEnvelope (avoids circular import)
+
+    # Tool-loop iteration (set by the agent's tool-loop executor)
+    iteration: Optional[int] = None
+
+    # Source marker for downstream UI (e.g. "validation_gate")
+    source: Optional[str] = None
+
+    # Provider-specific reasoning/thinking content (e.g. DeepSeek reasoning models).
+    # Must be echoed verbatim in the next API call's assistant message.
+    reasoning_content: Optional[str] = None
+
+    # STAGE — short label describing what the agent is currently doing
+    # before the LLM starts streaming (e.g. "Analyzing intent",
+    # "Connecting to deepseek-v4-pro", "Awaiting first token").
+    stage: Optional[str] = None

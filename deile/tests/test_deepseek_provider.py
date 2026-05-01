@@ -150,30 +150,36 @@ async def test_generate_auth_error_raises_envelope(provider):
 
 @pytest.mark.asyncio
 async def test_generate_stream_events(provider):
-    ev1 = MagicMock()
-    ev1.type = "content.delta"
-    ev1.content = "Hello from DeepSeek"
+    """generate_stream uses ``await chat.completions.create(stream=True)`` after
+    the streaming-UI refactor; the mock must reflect the new SDK shape."""
+    from types import SimpleNamespace
 
-    final_usage = MagicMock()
-    final_usage.prompt_tokens = 5
-    final_usage.completion_tokens = 8
-    details = MagicMock()
-    details.cached_tokens = 0
-    final_usage.prompt_tokens_details = details
+    text = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(content="Hello from DeepSeek", tool_calls=None),
+                finish_reason=None,
+            )
+        ],
+        usage=None,
+    )
+    final = SimpleNamespace(
+        choices=[SimpleNamespace(delta=None, finish_reason="stop")],
+        usage=SimpleNamespace(
+            prompt_tokens=5,
+            completion_tokens=8,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+        ),
+    )
 
-    final_completion = MagicMock()
-    final_completion.usage = final_usage
+    async def _replay(chunks):
+        for c in chunks:
+            yield c
 
-    async def _aiter(self_):
-        yield ev1
+    async def _fake_create(**kw):
+        return _replay([text, final])
 
-    stream_cm = MagicMock()
-    stream_cm.__aenter__ = AsyncMock(return_value=stream_cm)
-    stream_cm.__aexit__ = AsyncMock(return_value=False)
-    stream_cm.__aiter__ = _aiter
-    stream_cm.get_final_completion = AsyncMock(return_value=final_completion)
-
-    provider._client.chat.completions.stream = MagicMock(return_value=stream_cm)
+    provider._client.chat.completions.create = AsyncMock(side_effect=_fake_create)
 
     events = []
     async for ev in provider.generate_stream([ModelMessage(role="user", content="hi")]):

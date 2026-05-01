@@ -152,12 +152,28 @@ class DeileAgentCLI:
                     self.ui.display_message(UIMessage(content="\n[bold yellow]DEILE se despedindo. Até a próxima! :wave:[/bold yellow]", message_type=MessageType.SYSTEM))
                     break
 
+                # Streaming path: events render as they arrive — no global
+                # show_loading wrapper because Rich Live needs the screen.
+                streaming_enabled = getattr(self.settings, "streaming_enabled", True)
+                if streaming_enabled:
+                    event_stream = self.agent.process_input_stream(
+                        user_input=user_input,
+                        session_id=self.default_session.session_id,
+                    )
+                    try:
+                        await self.ui.display_streaming_turn(event_stream)
+                    except KeyboardInterrupt:
+                        self.ui.console.print(
+                            "\n[yellow](turn interrupted)[/yellow]"
+                        )
+                    continue
+
                 with self.ui.show_loading("Processando sua solicitação..."):
                     response = await self.agent.process_input(
                         user_input=user_input,
                         session_id=self.default_session.session_id
                     )
-                
+
                 # Surface structured-error responses with a Rich panel instead of a plain
                 # text blob. The agent sets explicit metadata flags for these cases.
                 meta = response.metadata or {}
@@ -192,7 +208,7 @@ class DeileAgentCLI:
                         "execution_time": response.execution_time,
                         "model_used": response.metadata.get("model_used"),
                     })
-                
+
                 # Opcionalmente, mostra tool executions como parte da conversa (modo debug ou verbose)
                 if response.tool_results and getattr(self.settings, "show_tool_details", False):
                     self.ui.console.print("\n[dim]Tool executions:[/dim]")

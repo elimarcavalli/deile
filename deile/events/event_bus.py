@@ -50,6 +50,11 @@ class EventType(Enum):
     ERROR_OCCURRED = "error.occurred"
     CRITICAL_ERROR = "error.critical"
 
+    # Tool lifecycle (emitted by ToolLoopExecutor for audit / metrics subscribers)
+    TOOL_INVOKED = "tool.invoked"
+    TOOL_COMPLETED = "tool.completed"
+    TOOL_FAILED = "tool.failed"
+
 
 class EventPriority(Enum):
     """Prioridades de eventos"""
@@ -426,3 +431,30 @@ class EventBus:
                 return await self.publish(dead_event)
 
         return False
+
+
+# ----------------------------------------------------------------------
+# Singleton accessor — used by ToolLoopExecutor publisher and other
+# subscribers that want to react to tool lifecycle events.
+# ----------------------------------------------------------------------
+
+_event_bus_singleton: Optional["EventBus"] = None
+
+
+def get_event_bus() -> "EventBus":
+    """Return the process-wide EventBus singleton.
+
+    The bus is created lazily on first access. Callers that need the bus to
+    actively dispatch events must ``await get_event_bus().start()`` once at
+    startup; until then ``publish()`` warns and drops the event.
+    """
+    global _event_bus_singleton
+    if _event_bus_singleton is None:
+        _event_bus_singleton = EventBus()
+    return _event_bus_singleton
+
+
+def reset_event_bus() -> None:
+    """Reset the singleton — for tests."""
+    global _event_bus_singleton
+    _event_bus_singleton = None

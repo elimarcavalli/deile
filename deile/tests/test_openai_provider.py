@@ -257,37 +257,45 @@ def test_extract_cached_tokens_missing(provider):
 
 @pytest.mark.asyncio
 async def test_generate_stream_events(provider):
-    """generate_stream yields TEXT_DELTA events and ends with USAGE_FINAL."""
+    """generate_stream yields TEXT_DELTA events and ends with USAGE_FINAL.
 
-    ev1 = MagicMock()
-    ev1.type = "content.delta"
-    ev1.content = "Hello"
+    The provider now drives streaming via ``await chat.completions.create(stream=True)``
+    which returns an async iterator of ChatCompletionChunk objects (each with a
+    ``choices[0].delta`` and an optional ``usage``).
+    """
+    from types import SimpleNamespace
 
-    ev2 = MagicMock()
-    ev2.type = "content.delta"
-    ev2.content = " World"
+    def _text_chunk(text: str):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content=text, tool_calls=None),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+        )
 
-    final_usage = MagicMock()
-    final_usage.prompt_tokens = 5
-    final_usage.completion_tokens = 10
-    details = MagicMock()
-    details.cached_tokens = 0
-    final_usage.prompt_tokens_details = details
+    def _final_chunk(prompt=5, completion=10):
+        return SimpleNamespace(
+            choices=[SimpleNamespace(delta=None, finish_reason="stop")],
+            usage=SimpleNamespace(
+                prompt_tokens=prompt,
+                completion_tokens=completion,
+                prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+            ),
+        )
 
-    final_completion = MagicMock()
-    final_completion.usage = final_usage
+    chunks = [_text_chunk("Hello"), _text_chunk(" World"), _final_chunk()]
 
-    async def _aiter(self_):
-        for e in [ev1, ev2]:
-            yield e
+    async def _replay(_chunks):
+        for c in _chunks:
+            yield c
 
-    stream_cm = MagicMock()
-    stream_cm.__aenter__ = AsyncMock(return_value=stream_cm)
-    stream_cm.__aexit__ = AsyncMock(return_value=False)
-    stream_cm.__aiter__ = _aiter
-    stream_cm.get_final_completion = AsyncMock(return_value=final_completion)
+    async def _fake_create(**kw):
+        return _replay(chunks)
 
-    provider._client.chat.completions.stream = MagicMock(return_value=stream_cm)
+    provider._client.chat.completions.create = AsyncMock(side_effect=_fake_create)
 
     events = []
     async for ev in provider.generate_stream([ModelMessage(role="user", content="hi")]):

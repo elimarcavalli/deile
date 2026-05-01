@@ -7,7 +7,6 @@ import asyncio
 import time
 from google import genai
 from google.genai.types import (
-    FunctionDeclaration,
     GenerateContentConfig,
     Tool,
     HttpOptions,
@@ -355,15 +354,77 @@ class GeminiProvider(ModelProvider):
         self,
         messages: List[ModelMessage],
         system_instruction: Optional[str] = None,
+        tools: Optional[List[Any]] = None,
         **kwargs,
     ) -> AsyncIterator[Any]:
-        """Stream response as UnifiedStreamEvent (simulated — Gemini has no native streaming)."""
+        """Stream response as UnifiedStreamEvent.
+
+        Gemini's chat.send_message is awaitable but not natively chunked the
+        same way Anthropic/OpenAI streams are; when ``tools`` is provided, we
+        emit a "lumpy" stream — function_call blocks surface as TOOL_USE_*
+        events on the round-trip boundary, while plain text emits as a single
+        TEXT_DELTA after the response completes. This is the documented
+        degraded path called out in the streaming-UI design doc.
+        """
         from deile.core.models.stream_events import (
             ModelUsageSnapshot,
             StreamEventType,
             UnifiedStreamEvent,
         )
 
+        if tools:
+            # Tool-aware path: build a one-shot chat session with the supplied
+            # tools, send the last user message, and translate the response.
+            sys_instr = self._extract_system(messages, system_instruction)
+            user_msg = self._messages_to_gemini_user_input(messages)
+
+            chat = await self.create_chat_session(
+                session_id=f"_stream_{id(messages)}",
+                system_instruction=sys_instr,
+            )
+            try:
+                response = await asyncio.to_thread(chat.send_message, user_msg)
+            except Exception as exc:  # pylint: disable=broad-except
+                yield UnifiedStreamEvent(
+                    type=StreamEventType.ERROR,
+                    error_envelope={"provider_id": self.provider_id, "message": str(exc)},
+                )
+                self._chat_sessions.pop(f"_stream_{id(messages)}", None)
+                return
+
+            text = self._extract_response_text(response)
+            if text:
+                yield UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text=text)
+
+            calls = self._extract_function_calls(response)
+            for idx, call in enumerate(calls):
+                tool_call_id = f"gemini-{id(response)}-{idx}"
+                yield UnifiedStreamEvent(
+                    type=StreamEventType.TOOL_USE_START,
+                    tool_call_id=tool_call_id,
+                    tool_name=call["name"],
+                )
+                yield UnifiedStreamEvent(
+                    type=StreamEventType.TOOL_USE_END,
+                    tool_call_id=tool_call_id,
+                    tool_name=call["name"],
+                    arguments=dict(call.get("args") or {}),
+                )
+
+            usage_metadata = getattr(response, "usage_metadata", None)
+            if usage_metadata is not None:
+                snap = ModelUsageSnapshot(
+                    input_tokens=getattr(usage_metadata, "prompt_token_count", 0) or 0,
+                    output_tokens=getattr(usage_metadata, "candidates_token_count", 0) or 0,
+                    cached_tokens=0,
+                    cost_usd=0.0,
+                )
+                yield UnifiedStreamEvent(type=StreamEventType.USAGE_FINAL, usage=snap)
+            self._chat_sessions.pop(f"_stream_{id(messages)}", None)
+            return
+
+        # No tools — preserve the legacy simulated word-chunking stream so the
+        # UI still sees progressive output for plain replies.
         response = await self.generate(messages, system_instruction, **kwargs)
 
         words = response.content.split()
@@ -382,6 +443,49 @@ class GeminiProvider(ModelProvider):
                 cached_tokens=response.usage.cached_tokens,
                 cost_usd=response.usage.cost_estimate,
             ),
+        )
+
+    # ------------------------------------------------------------------
+    # Tool-loop adapters
+    # ------------------------------------------------------------------
+
+    def format_assistant_tool_use_message(
+        self,
+        pending_tool_calls: List[Any],  # List[Tuple[str, str, Dict[str, Any]]]
+        text_so_far: str = "",
+        reasoning_content: Optional[str] = None,
+    ) -> ModelMessage:
+        """Gemini chat history is owned by the SDK's chat object, so we cache
+        the pending calls in metadata and the agent loop never re-sends this
+        message — the chat's curated_history already has the function_call
+        record from the previous send_message round."""
+        return ModelMessage(
+            role="assistant",
+            content=text_so_far,
+            metadata={
+                "_gemini_pending_tool_calls": list(pending_tool_calls),
+                "_gemini_history_owned_by_sdk": True,
+            },
+        )
+
+    def format_tool_result_message(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        payload: Any,
+    ) -> ModelMessage:
+        """Encode a Gemini function_response that the agent loop will hand back
+        to ``chat.send_message`` as a Part. Keeps the payload JSON-serializable."""
+        return ModelMessage(
+            role="user",
+            content="",
+            metadata={
+                "_gemini_function_response": {
+                    "name": tool_name,
+                    "response": _stringify_for_model(payload),
+                    "tool_call_id": tool_call_id,
+                }
+            },
         )
     
     async def validate_config(self) -> bool:

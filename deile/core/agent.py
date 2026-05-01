@@ -48,6 +48,30 @@ def _record_model_used(session: Any, provider: Any) -> None:
     )
 
 
+def _render_to_text(renderable: Any) -> str:
+    """Render a Rich renderable (Table, Panel, etc.) to a plain-text string.
+
+    Used to bridge slash-command results into the streaming pipeline, which
+    expects ``TEXT_DELTA.text`` to be a ``str``. Rendering uses a fixed-width
+    capture console so the output is reproducible regardless of the user's
+    terminal size at the time of capture; the live console will re-flow it
+    on print where possible.
+    """
+    try:
+        from io import StringIO
+        from rich.console import Console as _Console
+
+        buf = StringIO()
+        _Console(file=buf, width=120, force_terminal=False, no_color=True).print(
+            renderable
+        )
+        return buf.getvalue()
+    except Exception:
+        # Last-resort fallback — never break the turn just because a slash
+        # command returned an exotic object.
+        return str(renderable)
+
+
 _PLAIN_CONSOLE: Any = None
 
 
@@ -449,6 +473,399 @@ class DeileAgent:
                 error=e,
                 execution_time=time.time() - start_time
             )
+
+    async def process_input_stream(
+        self,
+        user_input: str,
+        session_id: str = "default",
+        **kwargs,
+    ) -> AsyncIterator["UnifiedStreamEvent"]:
+        """Stream the same turn that ``process_input`` would produce — but as
+        ``UnifiedStreamEvent`` objects so the UI can render text deltas and
+        tool calls as they happen.
+
+        Slash commands, autonomous processing, workflow paths and budget /
+        configuration errors are surfaced as a single TEXT_DELTA + USAGE_FINAL
+        (or a single ERROR) — they don't stream natively. The chat-with-tools
+        path is the one that exhibits real progressive disclosure: the
+        ``ToolLoopExecutor`` forwards every text/tool event and emits
+        TOOL_RESULT after each tool invocation.
+        """
+        from deile.core.models.stream_events import (
+            ModelUsageSnapshot,
+            StreamEventType,
+            UnifiedStreamEvent,
+        )
+
+        start_time = time.time()
+        self._status = AgentStatus.PROCESSING
+        self._request_count += 1
+
+        try:
+            session = self._get_or_create_session(session_id, **kwargs)
+            session.update_activity()
+            session.add_to_history("user", user_input)
+
+            # Slash commands — non-streaming, emit aggregated text once.
+            if user_input.strip().startswith('/'):
+                response = await self._process_slash_command(
+                    user_input.strip(), session, start_time
+                )
+                if response.content:
+                    # Slash commands may return Rich renderables (Table,
+                    # Panel, etc. — e.g. /model list returns a Table) as
+                    # content. The streaming pipeline expects text=str, so
+                    # we render non-string Rich objects into a plain-text
+                    # string here. Without this, downstream string ops
+                    # (Markdown(text), text concat in the renderer)
+                    # AttributeError on '.translate' / TypeError on '+='.
+                    payload = response.content
+                    if not isinstance(payload, str):
+                        payload = _render_to_text(payload)
+                    yield UnifiedStreamEvent(
+                        type=StreamEventType.TEXT_DELTA, text=payload
+                    )
+                yield UnifiedStreamEvent(
+                    type=StreamEventType.USAGE_FINAL, usage=ModelUsageSnapshot()
+                )
+                self._status = AgentStatus.IDLE
+                return
+
+            # Autonomous path — non-streaming.
+            autonomous_result = await self.process_autonomous_request(user_input, session)
+            if autonomous_result:
+                session.add_to_history(
+                    "assistant",
+                    autonomous_result,
+                    {
+                        "autonomous": True,
+                        "execution_time": time.time() - start_time,
+                    },
+                )
+                yield UnifiedStreamEvent(
+                    type=StreamEventType.TEXT_DELTA, text=autonomous_result
+                )
+                yield UnifiedStreamEvent(
+                    type=StreamEventType.USAGE_FINAL, usage=ModelUsageSnapshot()
+                )
+                self._status = AgentStatus.IDLE
+                return
+
+            yield UnifiedStreamEvent(type=StreamEventType.STAGE, stage="Parsing input")
+            parse_result = await self._parse_input(user_input, session)
+
+            yield UnifiedStreamEvent(type=StreamEventType.STAGE, stage="Running proactive tools")
+            proactive_results = await self._execute_proactive_tools(user_input, session)
+
+            yield UnifiedStreamEvent(type=StreamEventType.STAGE, stage="Checking workflow")
+            workflow_needed = await self._should_create_workflow(user_input, parse_result)
+
+            if workflow_needed and self.workflow_executor:
+                response_content, tool_results = await self._process_with_workflow(
+                    user_input, parse_result, session
+                )
+                if response_content:
+                    yield UnifiedStreamEvent(
+                        type=StreamEventType.TEXT_DELTA, text=response_content
+                    )
+                yield UnifiedStreamEvent(
+                    type=StreamEventType.USAGE_FINAL, usage=ModelUsageSnapshot()
+                )
+                # Persist
+                _hist_meta = {
+                    "tool_results": len(tool_results),
+                    "parse_status": parse_result.status.value if parse_result else None,
+                    "workflow": True,
+                }
+                session.add_to_history("assistant", response_content, _hist_meta)
+                self._status = AgentStatus.IDLE
+                return
+
+            # Main path: stream chat-with-tools via ToolLoopExecutor.
+            text_parts: List[str] = []
+            collected_tool_results: List[ToolResult] = []
+
+            async for event in self._stream_chat_with_tools(
+                user_input, parse_result, session
+            ):
+                yield event
+                if event.type is StreamEventType.TEXT_DELTA and event.text:
+                    text_parts.append(event.text)
+                elif event.type is StreamEventType.USAGE_FINAL and event.reasoning_content:
+                    # Non-tool final turn: capture reasoning_content so it is included
+                    # in history metadata and echoed back on the next turn.
+                    session.context_data["_last_reasoning_content"] = event.reasoning_content
+                elif event.type is StreamEventType.TOOL_RESULT:
+                    # Preserve original ToolResult.metadata that the executor copied into
+                    # event.tool_metadata. Critical for the validation gate, which inspects
+                    # post_write_validation_required / post_write_validation_command set by
+                    # write_file. Stream-only fields (function_name/tool_call_id/iteration)
+                    # are merged on top so they always win over any legacy collisions.
+                    _meta: Dict[str, Any] = dict(event.tool_metadata or {})
+                    _meta["function_name"] = event.tool_name
+                    _meta["tool_call_id"] = event.tool_call_id
+                    _meta["iteration"] = event.iteration
+                    tr = ToolResult(
+                        status=ToolStatus.SUCCESS
+                        if event.tool_status == "success"
+                        else ToolStatus.ERROR,
+                        message=event.tool_result_summary or "",
+                        data=event.tool_result_data,
+                        metadata=_meta,
+                    )
+                    collected_tool_results.append(tr)
+
+            content = "".join(text_parts)
+
+            # Validation gate — runs once at end. Pass only `collected_tool_results`
+            # (the iterative tool-loop output) to match the non-streaming path at
+            # process_input(): proactive_results must NOT influence the gate's
+            # "validated" detection, otherwise a proactive bash_execute could
+            # falsely satisfy the post-write-validation requirement of an
+            # unrelated write_file the model issued during the streamed turn.
+            gated_content, gated_tool_results = await self._apply_validation_gate(
+                user_input=user_input,
+                parse_result=parse_result,
+                session=session,
+                content=content,
+                tool_results=collected_tool_results,
+            )
+            if gated_content != content:
+                # _apply_validation_gate returns the retry's standalone reply
+                # (see agent.py: `return new_content, …`), not `content + addendum`.
+                # Emit it verbatim as a marked TEXT_DELTA so the UI panel renders
+                # it in the validation_gate frame.
+                yield UnifiedStreamEvent(
+                    type=StreamEventType.TEXT_DELTA,
+                    text=gated_content,
+                    source="validation_gate",
+                )
+
+            # Match non-streaming history_meta semantics: `tool_results` reports the
+            # FULL turn count (proactive + iterative + gate retry), and
+            # `proactive_results` is the per-bucket subcount.
+            _history_meta: Dict[str, Any] = {
+                "tool_results": len(proactive_results) + len(gated_tool_results),
+                "proactive_results": len(proactive_results),
+                "parse_status": parse_result.status.value if parse_result else None,
+                "function_calling_enabled": True,
+                "streaming": True,
+            }
+            _pending_rc = session.context_data.pop("_last_reasoning_content", None)
+            if _pending_rc:
+                _history_meta["reasoning_content"] = _pending_rc
+            session.add_to_history("assistant", gated_content, _history_meta)
+            self._status = AgentStatus.IDLE
+            return
+
+        except Exception as exc:
+            self._status = AgentStatus.ERROR
+            self.logger.error(
+                f"Streaming turn failed: {exc}", exc_info=True
+            )
+            # Surface BudgetExceeded / FORCED_MODEL with structured metadata
+            # the UI can use to render Rich panels.
+            err_meta: Dict[str, Any] = {"error_type": type(exc).__name__}
+            if isinstance(exc, _BudgetExceeded):
+                err_meta["budget_exceeded"] = True
+                err_meta["provider_id"] = getattr(exc, "provider_id", None)
+                err_meta["limit_type"] = getattr(exc, "limit_type", None)
+            if isinstance(exc, ModelError) and getattr(exc, "error_code", "") == "FORCED_MODEL_NOT_REGISTERED":
+                err_meta["forced_model_not_registered"] = True
+                err_meta["error_code"] = "FORCED_MODEL_NOT_REGISTERED"
+            err_meta["message"] = str(exc)
+            yield UnifiedStreamEvent(
+                type=StreamEventType.ERROR,
+                error_envelope=err_meta,
+            )
+            return
+
+    async def _stream_chat_with_tools(
+        self,
+        user_input: str,
+        parse_result: Optional[ParseResult],
+        session: AgentSession,
+    ) -> AsyncIterator["UnifiedStreamEvent"]:
+        """Stream the chat-with-tools loop for a single provider.
+
+        Reuses ``_process_iterative_function_calling``'s setup (tier classify,
+        provider selection, budget guard, message conversion) but routes the
+        tool-loop through ``ToolLoopExecutor`` instead of the provider's own
+        ``chat_with_tools`` (which is non-streaming).
+
+        Cascade across providers is intentionally NOT applied on the streaming
+        path: a stream interrupted mid-render can't be cleanly re-issued
+        against a different provider without confusing UX. If the streaming
+        provider fails, the ERROR event is forwarded; the consumer can
+        re-issue the turn.
+        """
+        from deile.core.models.base import ModelMessage as _MM
+        from deile.core.models.stream_events import (
+            StreamEventType,
+            UnifiedStreamEvent,
+        )
+        from deile.core.tool_loop_executor import ToolLoopExecutor
+        from deile.events.event_bus import Event, EventPriority, EventType
+
+        self._status = AgentStatus.GENERATING_RESPONSE
+
+        yield UnifiedStreamEvent(type=StreamEventType.STAGE, stage="Building context")
+        context = await self.context_manager.build_context(
+            user_input=user_input,
+            parse_result=parse_result,
+            tool_results=[],
+            session=session,
+        )
+
+        # Tier classification (best-effort)
+        yield UnifiedStreamEvent(type=StreamEventType.STAGE, stage="Analyzing intent")
+        model_tier: Optional[Any] = None
+        try:
+            from deile.core.intent_tier_mapper import classify_tier
+            intent_result = await self.intent_analyzer.analyze(
+                user_input=user_input,
+                parse_result=parse_result,
+                session_context={},
+            )
+            model_tier = classify_tier(intent_result)
+            session.context_data["_current_tier"] = model_tier.value
+        except Exception:
+            model_tier = None
+
+        # Provider selection — honors forced/default/router.
+        yield UnifiedStreamEvent(type=StreamEventType.STAGE, stage="Selecting provider")
+        forced = session.context_data.get("forced_model")
+        config_default: Optional[str] = None
+        if not forced:
+            try:
+                from deile.config.manager import get_config_manager
+                config_default = get_config_manager().get_config().default_model or None
+            except Exception:
+                pass
+
+        model_provider = None
+        _active_forced = forced or config_default
+        if _active_forced and isinstance(_active_forced, str) and ":" in _active_forced:
+            _fp_id, _fm_id = _active_forced.split(":", 1)
+            for p in self.model_router.providers.values():
+                if (
+                    getattr(p, "provider_id", None) == _fp_id
+                    and getattr(p, "model_name", None) == _fm_id
+                ):
+                    model_provider = p
+                    break
+            if model_provider is None and forced:
+                available = sorted({
+                    getattr(p, "model_name", "?") for p in self.model_router.providers.values()
+                    if getattr(p, "provider_id", None) == _fp_id
+                })
+                raise ModelError(
+                    f"Forced model '{forced}' is not registered. "
+                    f"Available {_fp_id} models: {available or '(none)'}. "
+                    f"Use /model use auto to clear the override.",
+                    error_code="FORCED_MODEL_NOT_REGISTERED",
+                )
+        if model_provider is None:
+            model_provider = await self.model_router.select_provider(
+                context=context, session=session, tier=model_tier,
+            )
+
+        # Budget guard
+        try:
+            from deile.storage.usage_repository import (
+                get_usage_repository, BudgetGuard, BudgetExceeded,
+            )
+            _guard: Any = getattr(self, "_budget_guard_singleton", None)
+            if _guard is None:
+                _yaml = Path(__file__).resolve().parents[1] / "config" / "model_providers.yaml"
+                try:
+                    self._budget_guard_singleton = BudgetGuard.from_yaml(
+                        _yaml, get_usage_repository()
+                    )
+                    _guard = self._budget_guard_singleton
+                except Exception:
+                    self._budget_guard_singleton = False
+            if _guard:
+                _guard.check_all(
+                    session_id=session.session_id,
+                    provider_id=model_provider.provider_id,
+                )
+        except BudgetExceeded:
+            raise
+
+        _record_model_used(session, model_provider)
+
+        # Build messages from context + register tools
+        system_instruction = None
+        raw_messages: List[Any] = []
+        if isinstance(context, dict):
+            system_instruction = context.get("system_instruction")
+            raw_messages = context.get("messages", [])
+
+        messages_for_provider: List[_MM] = []
+        for m in raw_messages:
+            if isinstance(m, _MM):
+                messages_for_provider.append(m)
+            elif isinstance(m, dict):
+                role = str(m.get("role", "user"))
+                content_raw = m.get("content", "")
+                msg_metadata = m.get("metadata", {}) or {}
+                messages_for_provider.append(
+                    _MM(role=role, content=content_raw, metadata=msg_metadata)  # type: ignore[arg-type]
+                )
+        if not messages_for_provider:
+            messages_for_provider = [_MM(role="user", content=user_input)]
+
+        tools = [
+            t.schema for t in self.tool_registry.list_enabled()
+            if getattr(t, "schema", None) is not None
+        ]
+
+        # EventBus publisher — best-effort, non-blocking.
+        async def _publish_tool_event(kind: str, name: str, **kw: Any) -> None:
+            try:
+                from deile.events.event_bus import get_event_bus  # type: ignore
+                bus = get_event_bus()
+                kind_to_event = {
+                    "invoked": EventType.TOOL_INVOKED,
+                    "completed": EventType.TOOL_COMPLETED,
+                    "failed": EventType.TOOL_FAILED,
+                }
+                evt_type = kind_to_event.get(kind)
+                if evt_type is None:
+                    return
+                event = Event(
+                    event_type=evt_type,
+                    source=f"agent:{model_provider.provider_id}",
+                    data={"tool_name": name, **kw},
+                    priority=EventPriority.LOW,
+                )
+                asyncio.create_task(bus.publish(event))
+            except Exception:
+                pass
+
+        executor = ToolLoopExecutor(
+            tool_registry=self.tool_registry,
+            event_publisher=_publish_tool_event,
+        )
+        _provider_label = (
+            getattr(model_provider, "model_name", None)
+            or getattr(model_provider, "provider_id", None)
+            or "model"
+        )
+        yield UnifiedStreamEvent(
+            type=StreamEventType.STAGE,
+            stage=f"Connecting to {_provider_label}",
+        )
+        async for event in executor.run(
+            provider=model_provider,
+            messages=messages_for_provider,
+            tools=tools,
+            system_instruction=system_instruction,
+            working_directory=str(session.working_directory),
+            session_data=session.context_data,
+        ):
+            yield event
 
     async def process_stream(
         self,

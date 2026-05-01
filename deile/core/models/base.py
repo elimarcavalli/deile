@@ -203,17 +203,26 @@ class ModelProvider(ABC):
         self,
         messages: List[ModelMessage],
         system_instruction: Optional[str] = None,
+        tools: Optional[List[Any]] = None,
         **kwargs,
     ) -> AsyncIterator["UnifiedStreamEvent"]:
         """Stream response as UnifiedStreamEvent objects.
 
+        Args:
+            messages: conversation history.
+            system_instruction: optional system prompt.
+            tools: optional list of ``ToolSchema``. When provided, the provider
+                must enable function-calling for this stream and emit
+                ``TOOL_USE_START`` / ``TOOL_USE_END`` events for any tool the
+                model decides to call. The provider does NOT execute the tool —
+                the agent's ``ToolLoopExecutor`` orchestrates that.
+            **kwargs: extra provider-specific knobs.
+
         Yields:
             UnifiedStreamEvent: typed events (TEXT_DELTA, TOOL_USE_*, USAGE_FINAL, ERROR)
-
-        Legacy providers that yield raw strings should be updated to emit
-        TEXT_DELTA events; until then the router wraps them.
         """
-        # Default: wrap generate() into a single TEXT_DELTA + USAGE_FINAL
+        # Default: wrap generate() into a single TEXT_DELTA + USAGE_FINAL.
+        # Subclasses that support streaming/tools override this method.
         from deile.core.models.stream_events import (
             StreamEventType,
             UnifiedStreamEvent,
@@ -229,6 +238,58 @@ class ModelProvider(ABC):
                 cached_tokens=response.usage.cached_tokens,
                 cost_usd=response.usage.cost_estimate,
             ),
+        )
+
+    # ------------------------------------------------------------------
+    # Tool-loop adapters — providers that support function-calling override.
+    # ------------------------------------------------------------------
+
+    def format_assistant_tool_use_message(
+        self,
+        pending_tool_calls: List[Tuple[str, str, Dict[str, Any]]],
+        text_so_far: str = "",
+        reasoning_content: Optional[str] = None,
+    ) -> "ModelMessage":
+        """Encode an assistant turn that contains pending tool_use blocks.
+
+        Args:
+            pending_tool_calls: list of ``(tool_call_id, tool_name, arguments)``
+                tuples produced by the current streaming round.
+            text_so_far: any free-text content the assistant emitted alongside
+                the tool calls (some providers require it to round-trip).
+
+        Returns:
+            ``ModelMessage`` ready to be appended to the conversation history
+            and sent back to the same provider in the next streaming round.
+
+        Default implementation raises ``NotImplementedError``; providers that
+        wire ``tools=`` into ``generate_stream`` MUST override.
+        """
+        raise NotImplementedError(
+            f"{self.provider_id} does not implement format_assistant_tool_use_message; "
+            "tool-loop streaming is not supported for this provider."
+        )
+
+    def format_tool_result_message(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        payload: Any,
+    ) -> "ModelMessage":
+        """Encode a tool-execution result back into a provider-native message.
+
+        Each provider's chat protocol expects tool results in a slightly
+        different shape (Anthropic: ``tool_result`` content blocks, OpenAI:
+        ``role=tool`` messages, Gemini: ``function_response`` parts). This
+        adapter centralizes that quirk so the agent's ``ToolLoopExecutor``
+        can stay provider-agnostic.
+
+        Default implementation raises ``NotImplementedError``; providers that
+        wire ``tools=`` into ``generate_stream`` MUST override.
+        """
+        raise NotImplementedError(
+            f"{self.provider_id} does not implement format_tool_result_message; "
+            "tool-loop streaming is not supported for this provider."
         )
 
     async def validate_config(self) -> bool:

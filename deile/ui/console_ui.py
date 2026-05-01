@@ -25,23 +25,48 @@ class ConsoleUIManager(UIManager):
 
     def __init__(self, theme: UITheme = UITheme.DEFAULT, config_manager=None):
         super().__init__(theme)
-        # Console com configuração robusta para Windows
         import sys
-        import io
-        
-        # Força codificação UTF-8 para stdout se possível
+
+        # Force UTF-8 stdout encoding when possible (helps emoji/box chars on Windows).
         if hasattr(sys.stdout, 'reconfigure'):
             try:
                 sys.stdout.reconfigure(encoding='utf-8')
-            except:
+            except Exception:
                 pass
-                
-        self.console = Console(
-            force_terminal=True,
-            legacy_windows=True,
-            _environ={"TERM": "ansi"},
-            file=sys.stdout
+
+        # Detect a true legacy Windows console (cmd.exe / older conhost without
+        # ANSI support). On modern Windows (Windows Terminal, VSCode, ConEmu)
+        # ANSICON / WT_SESSION / TERM are populated, so Rich's auto-detection
+        # works correctly. Forcing ``legacy_windows=True`` globally — as the
+        # previous implementation did — disabled Live refresh + Markdown
+        # rendering on every platform (notably macOS/Linux), breaking the
+        # streaming UI's Markdown output entirely. We now only opt into legacy
+        # behavior when the OS is Windows AND no modern-terminal hint is
+        # present.
+        import os as _os
+        _force_legacy_windows = (
+            _os.name == 'nt'
+            and not _os.environ.get('WT_SESSION')
+            and not _os.environ.get('ANSICON')
+            and not _os.environ.get('ConEmuPID')
+            and (_os.environ.get('TERM') in (None, '', 'cygwin'))
         )
+
+        if _force_legacy_windows:
+            self.console = Console(
+                force_terminal=True,
+                legacy_windows=True,
+                _environ={"TERM": "ansi"},
+                file=sys.stdout,
+            )
+        else:
+            # Let Rich auto-detect color depth, ANSI support, and width.
+            # ``force_terminal=True`` keeps colors when stdout is wrapped
+            # (e.g. captured by tests) but does not disable ANSI sequences.
+            self.console = Console(
+                force_terminal=True,
+                file=sys.stdout,
+            )
         self.session: Optional[PromptSession] = None
         self.is_initialized = False
         self.config_manager = config_manager
@@ -134,8 +159,31 @@ class ConsoleUIManager(UIManager):
                 except Exception:
                     return 80
 
+            # User-input visual contract: ALWAYS render the input area with
+            # black background + white text so the user's own message is
+            # unambiguously distinguishable from agent output, regardless of
+            # the terminal's color scheme.
+            from prompt_toolkit.styles import Style as PTStyle
+            _USER_INPUT_STYLE = 'bg:#000000 #ffffff'
+            user_style = PTStyle.from_dict({
+                '': _USER_INPUT_STYLE,             # default buffer text
+                'prompt': _USER_INPUT_STYLE,
+                'separator': _USER_INPUT_STYLE,
+            })
+
+            # The visual divider that separates turns is intentionally NOT
+            # part of the prompt's message — it would re-render on every
+            # SIGWINCH (terminal resize), and prompt_toolkit's height
+            # accounting can underestimate how many lines to clear when the
+            # column count changes, leaving stale dividers stacked in
+            # scrollback. Instead we print the divider once via
+            # ``console.rule()`` immediately before invoking the prompt
+            # (see ``get_user_input``); the static rule lives in scrollback
+            # and is never redrawn, so resize is harmless.
             def _prompt_message():
-                return FormattedText([('', '─' * _get_cols() + '\n'), ('', '> ')])
+                return FormattedText([
+                    ('class:prompt', '> '),
+                ])
 
             self.session = PromptSession(
                 message=_prompt_message,
@@ -143,6 +191,7 @@ class ConsoleUIManager(UIManager):
                 complete_while_typing=True,
                 color_depth=ColorDepth.DEPTH_1_BIT,
                 key_bindings=kb,
+                style=user_style,
             )
 
             # Inject ESC hint directly below the input area.
@@ -289,6 +338,9 @@ class ConsoleUIManager(UIManager):
                 clean_prompt = "\n" + clean_prompt
             return input(clean_prompt)
 
+        # Static turn separator — rendered once into scrollback per turn so
+        # terminal resize cannot duplicate it (see _prompt_message comment).
+        self.console.rule(style="dim")
         try:
             return self.session.prompt()
         except Exception:
@@ -351,6 +403,28 @@ class ConsoleUIManager(UIManager):
     def show_loading(self, message: str) -> Status:
         """Mostra uma animação de 'carregando' de forma segura."""
         return self.console.status(f"[bold cyan]{message}[/]", spinner="line")
+
+    async def display_streaming_turn(self, event_stream) -> "RenderResult":  # type: ignore[name-defined]
+        """Render a streaming agent turn progressively to the console.
+
+        Consumes a ``UnifiedStreamEvent`` async iterator and lets the
+        ``StreamingRenderer`` paint text deltas + tool blocks as they arrive.
+        Returns the captured ``RenderResult`` so callers can inspect the final
+        text and tool counts.
+
+        ``legacy_windows`` is read from ``self.console`` — Rich auto-detects
+        true legacy Windows consoles (cmd.exe / older conhost without ANSI),
+        and on macOS/Linux/modern Windows terminals it stays ``False`` so the
+        ``Live``-based Markdown rendering path is used.
+        """
+        from .streaming_renderer import StreamingRenderer
+        renderer = StreamingRenderer(
+            console=self.console,
+            legacy_windows=bool(getattr(self.console, "legacy_windows", False)),
+            markdown=True,
+            refresh_per_second=12.0,
+        )
+        return await renderer.render(event_stream)
 
     def display_success(self, message: str) -> None:
         """Exibe uma mensagem de sucesso formatada."""

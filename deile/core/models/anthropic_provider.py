@@ -143,12 +143,22 @@ class AnthropicProvider(ModelProvider):
     def _to_anthropic_messages(
         messages: List[ModelMessage],
     ) -> List[Dict[str, Any]]:
-        """Convert ModelMessage list → Anthropic messages array (no system)."""
+        """Convert ModelMessage list → Anthropic messages array (no system).
+
+        When a message carries ``metadata['_anthropic_content_blocks']``, those
+        structured blocks (e.g. ``tool_use`` / ``tool_result``) are sent
+        verbatim instead of the plain text — required by Anthropic's tool-use
+        protocol so the next turn round-trips correctly.
+        """
         result = []
         for m in messages:
             if m.role == "system":
                 continue
-            result.append({"role": m.role, "content": m.content})
+            blocks = m.metadata.get("_anthropic_content_blocks") if m.metadata else None
+            if blocks:
+                result.append({"role": m.role, "content": blocks})
+            else:
+                result.append({"role": m.role, "content": m.content})
         return result
 
     @staticmethod
@@ -214,7 +224,6 @@ class AnthropicProvider(ModelProvider):
         system_instruction: Optional[str] = None,
         **kwargs: Any,
     ) -> Tuple[str, List[Any], ModelUsage]:
-        from deile.tools.base import ToolContext, ToolStatus
 
         start = time.time()
         system = self._extract_system(messages, system_instruction)
@@ -330,6 +339,7 @@ class AnthropicProvider(ModelProvider):
         self,
         messages: List[ModelMessage],
         system_instruction: Optional[str] = None,
+        tools: Optional[List[Any]] = None,
         **kwargs: Any,
     ) -> AsyncIterator[UnifiedStreamEvent]:
         system = self._extract_system(messages, system_instruction)
@@ -344,18 +354,70 @@ class AnthropicProvider(ModelProvider):
             create_kwargs["system"] = [
                 {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
             ]
+        if tools:
+            create_kwargs["tools"] = [t.to_anthropic_tool() for t in tools]
+
+        # Per-tool-use accumulator: index → (id, name, json_args_text)
+        pending_tool_uses: Dict[int, Dict[str, Any]] = {}
 
         try:
             async with self._client.messages.stream(**create_kwargs) as stream:
                 async for event in stream:
-                    if event.type == "content_block_delta":
+                    etype = getattr(event, "type", None)
+
+                    if etype == "content_block_start":
+                        block = getattr(event, "content_block", None)
+                        if block is not None and getattr(block, "type", None) == "tool_use":
+                            idx = getattr(event, "index", 0)
+                            pending_tool_uses[idx] = {
+                                "id": getattr(block, "id", ""),
+                                "name": getattr(block, "name", ""),
+                                "args_text": "",
+                            }
+
+                    elif etype == "content_block_delta":
                         delta = getattr(event, "delta", None)
-                        if delta and getattr(delta, "type", None) == "text_delta":
+                        if delta is None:
+                            continue
+                        dtype = getattr(delta, "type", None)
+                        if dtype == "text_delta":
                             yield UnifiedStreamEvent(
                                 type=StreamEventType.TEXT_DELTA,
                                 text=delta.text,
                             )
-                    elif event.type == "message_stop":
+                        elif dtype == "input_json_delta":
+                            idx = getattr(event, "index", 0)
+                            partial = getattr(delta, "partial_json", "") or ""
+                            entry = pending_tool_uses.get(idx)
+                            if entry is not None:
+                                entry["args_text"] += partial
+
+                    elif etype == "content_block_stop":
+                        idx = getattr(event, "index", 0)
+                        entry = pending_tool_uses.pop(idx, None)
+                        if entry is not None:
+                            try:
+                                parsed_args = (
+                                    json.loads(entry["args_text"]) if entry["args_text"] else {}
+                                )
+                            except json.JSONDecodeError:
+                                parsed_args = {"_raw": entry["args_text"]}
+                            # Emit START then END back-to-back: both arrive in the same
+                            # Rich Live render tick so the block always shows args from
+                            # the moment it appears (no "● write_file() running…" state).
+                            yield UnifiedStreamEvent(
+                                type=StreamEventType.TOOL_USE_START,
+                                tool_call_id=entry["id"],
+                                tool_name=entry["name"],
+                            )
+                            yield UnifiedStreamEvent(
+                                type=StreamEventType.TOOL_USE_END,
+                                tool_call_id=entry["id"],
+                                tool_name=entry["name"],
+                                arguments=parsed_args,
+                            )
+
+                    elif etype == "message_stop":
                         final = await stream.get_final_message()
                         usage = final.usage
                         cached = (
@@ -378,6 +440,64 @@ class AnthropicProvider(ModelProvider):
         except anthropic.APIError as exc:
             envelope = _make_envelope(exc, self.provider_id, self.model_name)
             yield UnifiedStreamEvent(type=StreamEventType.ERROR, error_envelope=envelope)
+
+    # ------------------------------------------------------------------
+    # Tool-loop adapters
+    # ------------------------------------------------------------------
+
+    def format_assistant_tool_use_message(
+        self,
+        pending_tool_calls: List[Tuple[str, str, Dict[str, Any]]],
+        text_so_far: str = "",
+        reasoning_content: Optional[str] = None,
+    ) -> ModelMessage:
+        """Anthropic requires the assistant turn to carry the tool_use blocks
+        verbatim before the matching tool_result blocks arrive in the next user
+        turn. We round-trip them as JSON-serializable dicts in metadata so the
+        message-conversion layer can rehydrate the structure."""
+        content_blocks: List[Dict[str, Any]] = []
+        if text_so_far:
+            content_blocks.append({"type": "text", "text": text_so_far})
+        for tc_id, tc_name, tc_args in pending_tool_calls:
+            content_blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": tc_id,
+                    "name": tc_name,
+                    "input": tc_args,
+                }
+            )
+        return ModelMessage(
+            role="assistant",
+            content=text_so_far,
+            metadata={"_anthropic_content_blocks": content_blocks},
+        )
+
+    def format_tool_result_message(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        payload: Any,
+    ) -> ModelMessage:
+        """Anthropic encodes tool results as a user-turn tool_result block."""
+        if not isinstance(payload, str):
+            try:
+                payload_text = json.dumps(payload, default=str)
+            except (TypeError, ValueError):
+                payload_text = str(payload)
+        else:
+            payload_text = payload
+
+        block = {
+            "type": "tool_result",
+            "tool_use_id": tool_call_id,
+            "content": [{"type": "text", "text": payload_text}],
+        }
+        return ModelMessage(
+            role="user",
+            content=payload_text,
+            metadata={"_anthropic_content_blocks": [block]},
+        )
 
     # ------------------------------------------------------------------
     # Internal tool execution
