@@ -30,7 +30,7 @@ from deile.core.models.tier import ModelTier
 
 logger = logging.getLogger(__name__)
 
-_MAX_TOOL_ITERATIONS = 10
+_MAX_TOOL_ITERATIONS = 25
 _DEFAULT_MAX_TOKENS = 8192
 
 
@@ -142,9 +142,34 @@ class OpenAIProvider(ModelProvider):
         if system_instruction:
             result.append({"role": "system", "content": system_instruction})
         for m in messages:
-            msg_dict: Dict[str, Any] = {"role": m.role, "content": m.content}
+            # Tool-result envelope produced by format_tool_result_message:
+            # OpenAI's chat protocol uses role="tool" with a tool_call_id field.
+            if m.metadata and m.metadata.get("_openai_tool_result"):
+                tr_meta = m.metadata["_openai_tool_result"]
+                result.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tr_meta["tool_call_id"],
+                        "content": tr_meta["content"],
+                    }
+                )
+                continue
+            # Assistant turn that carried tool_calls (round-trip on next request)
+            if m.metadata and m.metadata.get("_openai_tool_calls"):
+                tc_blocks = m.metadata["_openai_tool_calls"]
+                msg_dict: Dict[str, Any] = {
+                    "role": "assistant",
+                    "content": m.content or None,
+                    "tool_calls": tc_blocks,
+                }
+                rc = m.metadata.get("reasoning_content")
+                if rc:
+                    msg_dict["reasoning_content"] = rc
+                result.append(msg_dict)
+                continue
+            msg_dict = {"role": m.role, "content": m.content}
             # Restore reasoning_content for providers that require it (e.g. DeepSeek)
-            rc = m.metadata.get("reasoning_content")
+            rc = m.metadata.get("reasoning_content") if m.metadata else None
             if rc and m.role == "assistant":
                 msg_dict["reasoning_content"] = rc
             result.append(msg_dict)
@@ -322,54 +347,180 @@ class OpenAIProvider(ModelProvider):
         self,
         messages: List[ModelMessage],
         system_instruction: Optional[str] = None,
+        tools: Optional[List[Any]] = None,
         **kwargs: Any,
     ) -> AsyncIterator[UnifiedStreamEvent]:
         oai_msgs = self._to_openai_messages(messages, system_instruction)
 
+        create_kwargs: Dict[str, Any] = {
+            "model": self.model_name,
+            "messages": oai_msgs,
+            "max_completion_tokens": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            create_kwargs["tools"] = [t.to_openai_function() for t in tools]
+            create_kwargs["tool_choice"] = "auto"
+
+        # tool_calls deltas come fragmented; index → accumulator
+        pending_tool_calls: Dict[int, Dict[str, Any]] = {}
+        final_usage: Optional[Any] = None
+        final_cached: int = 0
+        # DeepSeek reasoning models stream thinking tokens in delta.reasoning_content.
+        # We accumulate the full reasoning text so it can be echoed verbatim in the
+        # next API call — omitting it causes a 400 "reasoning_content must be passed back".
+        accumulated_reasoning: str = ""
+
         try:
-            async with self._client.chat.completions.stream(
-                model=self.model_name,
-                messages=oai_msgs,
-                max_completion_tokens=kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
-            ) as stream:
-                async for event in stream:
-                    if event.type == "content.delta":
+            stream_iter = await self._client.chat.completions.create(**create_kwargs)
+            async for chunk in stream_iter:
+                if getattr(chunk, "usage", None):
+                    final_usage = chunk.usage
+                    final_cached = self._extract_cached_tokens(chunk)
+
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                delta = getattr(choice, "delta", None)
+                finish_reason = getattr(choice, "finish_reason", None)
+
+                if delta is not None:
+                    if getattr(delta, "content", None):
                         yield UnifiedStreamEvent(
                             type=StreamEventType.TEXT_DELTA,
-                            text=event.content,
+                            text=delta.content,
                         )
-                    elif event.type == "chunk":
-                        # Low-level chunk: try to extract content delta
-                        try:
-                            delta = event.chunk.choices[0].delta
-                            if delta.content:
-                                yield UnifiedStreamEvent(
-                                    type=StreamEventType.TEXT_DELTA,
-                                    text=delta.content,
-                                )
-                        except (AttributeError, IndexError):
-                            pass
 
-                completion = await stream.get_final_completion()
-                usage = completion.usage
-                if usage:
-                    cached = self._extract_cached_tokens(completion)
-                    snap = ModelUsageSnapshot(
-                        input_tokens=usage.prompt_tokens,
-                        output_tokens=usage.completion_tokens,
-                        cached_tokens=cached,
-                        cost_usd=self.estimate_cost(
-                            ModelUsage(
-                                prompt_tokens=usage.prompt_tokens,
-                                completion_tokens=usage.completion_tokens,
-                                cached_tokens=cached,
+                    rc_delta = getattr(delta, "reasoning_content", None)
+                    if rc_delta:
+                        accumulated_reasoning += rc_delta
+
+                    tcs = getattr(delta, "tool_calls", None) or []
+                    for tc in tcs:
+                        idx = getattr(tc, "index", 0)
+                        entry = pending_tool_calls.setdefault(
+                            idx, {"id": "", "name": "", "args_text": ""}
+                        )
+                        if getattr(tc, "id", None):
+                            entry["id"] = tc.id
+                        fn = getattr(tc, "function", None)
+                        if fn is not None:
+                            if getattr(fn, "name", None):
+                                entry["name"] = fn.name
+                            if getattr(fn, "arguments", None):
+                                entry["args_text"] += fn.arguments
+
+                if finish_reason == "tool_calls":
+                    # Emit START then END back-to-back so both events land in the same
+                    # Rich Live render tick (12 Hz). The UI only sees the END state
+                    # (full args visible), never "● write_file() running…" with no args.
+                    rc = accumulated_reasoning or None
+                    for idx, entry in pending_tool_calls.items():
+                        try:
+                            parsed_args = (
+                                json.loads(entry["args_text"]) if entry["args_text"] else {}
                             )
-                        ),
-                    )
-                    yield UnifiedStreamEvent(type=StreamEventType.USAGE_FINAL, usage=snap)
+                        except json.JSONDecodeError:
+                            parsed_args = {"_raw": entry["args_text"]}
+                        yield UnifiedStreamEvent(
+                            type=StreamEventType.TOOL_USE_START,
+                            tool_call_id=entry["id"],
+                            tool_name=entry["name"],
+                        )
+                        yield UnifiedStreamEvent(
+                            type=StreamEventType.TOOL_USE_END,
+                            tool_call_id=entry["id"],
+                            tool_name=entry["name"],
+                            arguments=parsed_args,
+                            reasoning_content=rc,
+                        )
+                    pending_tool_calls.clear()
+                    accumulated_reasoning = ""
+
+            if final_usage is not None:
+                snap = ModelUsageSnapshot(
+                    input_tokens=final_usage.prompt_tokens,
+                    output_tokens=final_usage.completion_tokens,
+                    cached_tokens=final_cached,
+                    cost_usd=self.estimate_cost(
+                        ModelUsage(
+                            prompt_tokens=final_usage.prompt_tokens,
+                            completion_tokens=final_usage.completion_tokens,
+                            cached_tokens=final_cached,
+                        )
+                    ),
+                )
+                yield UnifiedStreamEvent(
+                    type=StreamEventType.USAGE_FINAL,
+                    usage=snap,
+                    reasoning_content=accumulated_reasoning or None,
+                )
         except openai.APIError as exc:
             envelope = _make_envelope(exc, self.provider_id, self.model_name)
             yield UnifiedStreamEvent(type=StreamEventType.ERROR, error_envelope=envelope)
+
+    # ------------------------------------------------------------------
+    # Tool-loop adapters
+    # ------------------------------------------------------------------
+
+    def format_assistant_tool_use_message(
+        self,
+        pending_tool_calls: List[Tuple[str, str, Dict[str, Any]]],
+        text_so_far: str = "",
+        reasoning_content: Optional[str] = None,
+    ) -> ModelMessage:
+        """Encode the assistant turn that carries tool_calls. The OpenAI-compatible
+        protocol expects a ``role=assistant`` message with a ``tool_calls`` array.
+
+        ``reasoning_content`` must be included verbatim for providers that use
+        reasoning/thinking mode (e.g. DeepSeek-R1); omitting it causes a 400 error
+        on the next API call.
+        """
+        tc_blocks = [
+            {
+                "id": tc_id,
+                "type": "function",
+                "function": {
+                    "name": tc_name,
+                    "arguments": json.dumps(tc_args, default=str),
+                },
+            }
+            for tc_id, tc_name, tc_args in pending_tool_calls
+        ]
+        metadata: Dict[str, Any] = {"_openai_tool_calls": tc_blocks}
+        if reasoning_content:
+            metadata["reasoning_content"] = reasoning_content
+        return ModelMessage(
+            role="assistant",
+            content=text_so_far,
+            metadata=metadata,
+        )
+
+    def format_tool_result_message(
+        self,
+        tool_call_id: str,
+        tool_name: str,
+        payload: Any,
+    ) -> ModelMessage:
+        """OpenAI-compatible: tool results are role=tool messages keyed by tool_call_id."""
+        if not isinstance(payload, str):
+            try:
+                payload_text = json.dumps(payload, default=str)
+            except (TypeError, ValueError):
+                payload_text = str(payload)
+        else:
+            payload_text = payload
+        return ModelMessage(
+            role="tool",
+            content=payload_text,
+            metadata={
+                "_openai_tool_result": {
+                    "tool_call_id": tool_call_id,
+                    "content": payload_text,
+                }
+            },
+        )
 
     # ------------------------------------------------------------------
     # Helpers

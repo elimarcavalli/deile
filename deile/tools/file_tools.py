@@ -1169,7 +1169,14 @@ class ListFilesTool(SyncTool):
                 # Se é um diretório, carrega padrões do .gitignore
                 gitignore_patterns = self._load_gitignore_patterns(working_dir)
                 
-                if recursive:
+                # ``recursive`` and ``pattern`` come from the LLM as either
+                # native bool/str or stringified ("True"/"False"). Coerce both
+                # so the rglob/glob branch is reachable.
+                recursive_flag = recursive
+                if isinstance(recursive_flag, str):
+                    recursive_flag = recursive_flag.strip().lower() in {"true", "1", "yes"}
+
+                if recursive_flag:
                     if pattern:
                         entries = full_path.rglob(pattern)
                     else:
@@ -1179,8 +1186,8 @@ class ListFilesTool(SyncTool):
                         entries = full_path.glob(pattern)
                     else:
                         entries = full_path.iterdir()
-                
-                for entry in full_path.iterdir():
+
+                for entry in entries:
                     # Pula arquivos ocultos se não solicitado
                     if not show_hidden and entry.name.startswith('.'):
                         continue

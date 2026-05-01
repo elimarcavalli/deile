@@ -69,6 +69,10 @@ class Settings:
     request_timeout: int = 120
     enable_caching: bool = True
     cache_ttl: int = 3600  # 1 hora
+
+    # Streaming UI
+    streaming_enabled: bool = True
+    show_tool_details: bool = False  # When True, show full tool payload after the turn
     
     # Configurações de segurança
     enable_file_safety_checks: bool = True

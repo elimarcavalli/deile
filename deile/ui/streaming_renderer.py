@@ -1,0 +1,711 @@
+"""Progressive transcript renderer for the agent's streaming turns.
+
+Consumes ``UnifiedStreamEvent`` objects and renders them to a ``rich.Console``
+as they arrive — text deltas accumulate inline, tool calls show up as
+status-tagged blocks that flip from "running" → "✓/✗" once the
+``TOOL_RESULT`` event lands.
+
+Architecture (Markdown-aware streaming):
+
+1. **Accumulator pattern** — every ``TEXT_DELTA`` is appended to a per-source
+   ``_TextBlock``. The renderer never tries to parse the *current* delta in
+   isolation; it always re-renders the *accumulated* text. This is what
+   ``rich.markdown.Markdown`` requires — it consumes a complete (possibly
+   transitional) Markdown document, not a token stream. Partial fences
+   (``"```py\n..."`` without a closing ``"```"``) and split inline runs
+   (``"**tex"`` → ``"to**"``) become well-formed Markdown the moment the
+   closing token arrives, and the next ``Live.update`` redraws the diff.
+2. **Live region with virtual-DOM diffing** — ``rich.live.Live`` uses ANSI
+   cursor-positioning to repaint only the changed lines, avoiding the
+   "wall of repeated text" effect of naively printing each frame.
+3. **Throttled refresh** — ``refresh_per_second`` (default 12 Hz) decouples
+   network speed from terminal redraw speed. The network coroutine pushes
+   into the block list as fast as it likes; ``Live`` flushes at the chosen
+   frame rate.
+4. **Legacy fallback** — for terminals where ``Live`` is unsafe (true
+   legacy Windows conhost without ANSI), we accumulate the same way and
+   flush rendered Markdown in batches, throttled by the same parameter.
+   Markdown is still produced; only the in-place refresh is sacrificed.
+
+Decoupled from ``ConsoleUIManager`` so it can be tested with a captured
+console (``Console(file=StringIO())``) without spinning up a terminal.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Dict, List, Optional
+
+from rich.console import Console
+from rich.live import Live
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.text import Text
+
+from deile.core.models.stream_events import (
+    StreamEventType,
+    UnifiedStreamEvent,
+)
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _ToolBlock:
+    tool_call_id: str
+    tool_name: str
+    args: Optional[Dict[str, Any]] = None
+    status: str = "running"  # running | success | error
+    summary: Optional[str] = None
+    iteration: Optional[int] = None
+
+
+@dataclass
+class _TextBlock:
+    text: str = ""
+    source: Optional[str] = None  # e.g. "validation_gate"
+
+
+@dataclass
+class _StageBlock:
+    """Transient progress indicator shown at the tail of the block list.
+
+    A StageBlock is always the LAST block — it's appended (or its label is
+    updated in place) when a STAGE event arrives, and removed the moment a
+    real content event (TEXT_DELTA / TOOL_USE_END / TOOL_RESULT / USAGE_FINAL
+    / ERROR) lands. This way the user always sees what the agent is doing
+    during otherwise silent gaps (next-iteration round-trip, tool execution,
+    pre-stream pipeline) without polluting the final transcript.
+    """
+
+    text: str = ""
+
+
+@dataclass
+class RenderResult:
+    """Aggregated transcript captured by the renderer.
+
+    Useful for tests and for callers that want the same text the user saw
+    without re-parsing the events.
+    """
+
+    full_text: str = ""
+    tool_invocations: int = 0
+    tool_failures: int = 0
+    error_message: Optional[str] = None
+
+
+class StreamingRenderer:
+    """Render an event stream progressively to a Rich Console.
+
+    Args:
+        console: target console; pass ``Console(file=StringIO())`` to capture
+            output for tests.
+        legacy_windows: when ``True``, fall back to append-only rendering
+            (no in-place ``Live`` refresh) — useful on terminals that
+            mishandle ANSI cursor moves.
+        markdown: render assistant text as Markdown when ``True``; emit plain
+            text otherwise. Defaults to ``True``.
+        refresh_per_second: ``rich.live.Live`` refresh rate.
+    """
+
+    def __init__(
+        self,
+        console: Console,
+        legacy_windows: bool = False,
+        markdown: bool = True,
+        refresh_per_second: float = 12.0,
+    ) -> None:
+        self._console = console
+        # Treat the console as legacy ONLY if Rich itself reports it as legacy
+        # (true cmd.exe-without-ANSI scenarios) or the caller explicitly opts
+        # in. Previously this also fired when ``legacy_windows`` was True for
+        # any reason — including ConsoleUIManager's blanket Windows-fallback
+        # configuration — which silently disabled Markdown rendering on
+        # macOS/Linux/modern Windows. The caller now decides explicitly.
+        self._legacy = bool(legacy_windows) or bool(getattr(console, "legacy_windows", False))
+        self._markdown = markdown
+        # Clamp to a sane range. 12 Hz is the sweet spot reported by Rich's
+        # docs for streaming — high enough to feel real-time, low enough not
+        # to saturate stdout on a slow terminal.
+        self._refresh_hz = max(1.0, float(refresh_per_second))
+        # Pre-compute the minimum interval between flushes for the legacy
+        # path (no Live → we throttle manually).
+        self._legacy_flush_interval = 1.0 / self._refresh_hz
+
+    async def render(self, event_stream: AsyncIterator[UnifiedStreamEvent]) -> RenderResult:
+        """Drive the stream to completion and return a summary."""
+        result = RenderResult()
+        blocks: List[Any] = []
+
+        if self._legacy:
+            await self._render_legacy(event_stream, blocks, result)
+        else:
+            await self._render_live(event_stream, blocks, result)
+
+        result.full_text = "".join(
+            b.text for b in blocks if isinstance(b, _TextBlock)
+        )
+        result.tool_invocations = sum(1 for b in blocks if isinstance(b, _ToolBlock))
+        result.tool_failures = sum(
+            1 for b in blocks if isinstance(b, _ToolBlock) and b.status == "error"
+        )
+        return result
+
+    # ------------------------------------------------------------------
+    # Live (in-place refresh) — default path
+    # ------------------------------------------------------------------
+
+    # Edge-event types that force an immediate refresh: any structural
+    # change (tool block appears, status flips, error, end-of-turn) MUST
+    # be visible to the user the instant it happens, regardless of the
+    # rate-limit window. Mid-stream TEXT_DELTAs are batched at refresh_hz.
+    _EDGE_EVENT_TYPES = frozenset({
+        StreamEventType.TOOL_USE_START,
+        StreamEventType.TOOL_USE_END,
+        StreamEventType.TOOL_RESULT,
+        StreamEventType.USAGE_FINAL,
+        StreamEventType.ERROR,
+    })
+
+    async def _render_live(
+        self,
+        event_stream: AsyncIterator[UnifiedStreamEvent],
+        blocks: List[Any],
+        result: RenderResult,
+    ) -> None:
+        # Per-block Live, scrollback for completed blocks. Rationale:
+        #   * A single Live region growing across the entire stream becomes
+        #     taller than the terminal. Rich's cursor-positioning logic
+        #     assumes the rendered region fits, so when content overflows
+        #     the user sees text "jump" — earlier blocks appearing AFTER
+        #     later ones because the Live redraw scrolls unpredictably.
+        #   * Solution: only the ACTIVE block (the one currently being
+        #     written to) lives in the Live region. As soon as a block
+        #     becomes "done" (a newer block has been started after it AND
+        #     it isn't a still-running tool), it is committed to the
+        #     terminal scrollback via ``console.print``. Rich Live cleanly
+        #     prints above its own region, so the user sees blocks flow
+        #     downward in the exact order events arrived.
+        #   * Live stays small (~1 block) → cursor positioning is always
+        #     correct → no jump-to-top glitches.
+        #   * ``auto_refresh=False`` + manual ``live.refresh()`` per event
+        #     gives deterministic, race-free painting. We refresh on EVERY
+        #     event so the user sees text/tool blocks appear the instant
+        #     the provider yields them — no rate-limit-induced staleness.
+        self._console.print("\n[bold #4285F4]Deile >[/]")
+
+        usage_footer: Optional[str] = None
+        # blocks[0..committed_count-1] are already in scrollback; Live only
+        # renders blocks[committed_count:] (typically just the last block).
+        committed_count = 0
+
+        # Thinking indicator: a small animated spinner shown in the Live
+        # region while we wait for the FIRST event. The provider's
+        # time-to-first-token (plus any pre-stream agent work — proactive
+        # tools, parsing, workflow checks) can take several seconds, and
+        # without feedback the user thinks the agent is hung. The spinner
+        # is cancelled on the first event, so it never overlaps real
+        # content.
+        _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        # Animation tick — runs for the entire turn. As long as the tail
+        # of ``blocks`` is a _StageBlock (i.e., we're in a "silent wait"),
+        # we refresh the Live region so the spinner frame visibly rotates.
+        # When real content arrives, the _StageBlock is popped by
+        # ``_apply_event`` and this loop refreshes nothing extra.
+        turn_done = [False]
+        spinner_frame_idx = [0]
+
+        async def _thinking_spinner(live_obj: Live) -> None:
+            try:
+                while not turn_done[0]:
+                    if blocks and isinstance(blocks[-1], _StageBlock):
+                        spinner_frame_idx[0] = (spinner_frame_idx[0] + 1) % len(_SPINNER_FRAMES)
+                        live_obj.update(self._compose(
+                            blocks[committed_count:],
+                            spinner_frame=_SPINNER_FRAMES[spinner_frame_idx[0]],
+                        ))
+                        live_obj.refresh()
+                    await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                return
+
+        # Seed: open the turn with a generic stage so the spinner appears
+        # immediately, before the agent has a chance to emit its first STAGE.
+        blocks.append(_StageBlock(text="aguardando resposta"))
+
+        with Live(
+            self._compose(blocks),
+            console=self._console,
+            refresh_per_second=self._refresh_hz,
+            transient=False,
+            auto_refresh=False,
+        ) as live:
+            spinner_task = asyncio.create_task(_thinking_spinner(live))
+            try:
+                async for event in event_stream:
+                    self._apply_event(event, blocks, result)
+                    if event.type is StreamEventType.USAGE_FINAL and event.usage:
+                        u = event.usage
+                        usage_footer = (
+                            f"\n[dim]:hourglass: {u.input_tokens} in / "
+                            f"{u.output_tokens} out"
+                            + (f" • ${u.cost_usd:.4f}" if u.cost_usd else "")
+                            + "[/dim]"
+                        )
+
+                    # Determine the first "active" block (the one currently
+                    # being modified). Everything before it can be committed.
+                    active_idx = self._first_active_block_idx(blocks, committed_count)
+                    if active_idx > committed_count:
+                        # First, shrink the Live region so the to-be-committed
+                        # blocks aren't rendered both in Live AND in scrollback
+                        # for a single frame.
+                        live.update(self._compose(blocks[active_idx:]))
+                        live.refresh()
+                        # Now flush the completed blocks to scrollback.
+                        # Each committed block is followed by a blank line so
+                        # tool blocks and text blocks never appear glued
+                        # together (matches the spacer rule in _compose).
+                        for i in range(committed_count, active_idx):
+                            renderable = self._render_single_block(blocks[i])
+                            if renderable is not None:
+                                self._console.print(renderable)
+                                self._console.print()
+                        committed_count = active_idx
+
+                    # Refresh on every event. With auto_refresh=False this is
+                    # the ONLY way pixels reach the terminal — and there's no
+                    # background thread to race against, so unconditional
+                    # refresh is safe and gives the most responsive feel.
+                    live.update(self._compose(blocks[committed_count:]))
+                    live.refresh()
+                # Final flush — guarantees the last delta is on screen
+                # before we exit the Live region.
+                live.refresh()
+            except KeyboardInterrupt:
+                live.update(self._compose(blocks[committed_count:], footer="[yellow]\n(interrupted)[/yellow]"))
+                live.refresh()
+                raise
+            finally:
+                # Mark the turn done first so the animation loop exits
+                # cleanly on its next tick; then cancel as a safety net.
+                turn_done[0] = True
+                if not spinner_task.done():
+                    spinner_task.cancel()
+                    try:
+                        await spinner_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                # If a stage was still pending at shutdown, drop it so it
+                # doesn't leak into scrollback.
+                while blocks and isinstance(blocks[-1], _StageBlock):
+                    blocks.pop()
+
+        if usage_footer:
+            self._console.print(usage_footer)
+
+    def _first_active_block_idx(self, blocks: List[Any], committed_count: int) -> int:
+        """Index of the first block that is still being modified.
+
+        A block is *active* if events can still mutate it:
+          * a ``_ToolBlock`` whose status is still ``running`` is awaiting
+            ``TOOL_RESULT`` and may change;
+          * the LAST block in the list is, by definition, the one we are
+            currently appending to (text deltas, tool result summary, etc.).
+
+        Blocks strictly before the active one are stable and safe to commit
+        to scrollback.
+        """
+        if not blocks:
+            return committed_count
+        for i in range(committed_count, len(blocks) - 1):
+            block = blocks[i]
+            if isinstance(block, _ToolBlock) and block.status == "running":
+                return i
+            # _StageBlock is always transient — if one ends up not at the
+            # tail (shouldn't normally happen), still treat it as active so
+            # we never commit it to scrollback.
+            if isinstance(block, _StageBlock):
+                return i
+        return len(blocks) - 1
+
+    def _render_single_block(self, block: Any) -> Optional[Any]:
+        """Render a single block as a Rich renderable for static print."""
+        # Stage blocks are never committed to scrollback.
+        if isinstance(block, _StageBlock):
+            return None
+        if isinstance(block, _TextBlock):
+            if not block.text:
+                return None
+            if block.source == "validation_gate":
+                return Panel(
+                    Text(block.text, style="yellow"),
+                    title="[yellow]validation gate[/yellow]",
+                    border_style="yellow",
+                )
+            if block.source == "error":
+                return Text.from_markup(block.text)
+            if self._markdown:
+                try:
+                    return Markdown(block.text)
+                except Exception:
+                    return Text(block.text)
+            return Text(block.text)
+        if isinstance(block, _ToolBlock):
+            return self._tool_renderable(block)
+        return None
+
+    # ------------------------------------------------------------------
+    # Legacy (append-only, no in-place refresh) — still Markdown-aware
+    # ------------------------------------------------------------------
+    #
+    # When ``Live`` is unsafe (true legacy Windows conhost without ANSI), we
+    # cannot do diff-based redraws. But we MUST still render Markdown — the
+    # previous implementation printed raw deltas, which surfaced the source
+    # bug the user reported (raw ``**bold**`` and ``# headings`` in the
+    # terminal). Strategy here:
+    #
+    #   * accumulate text into ``_TextBlock``s exactly like the live path;
+    #   * tool start/result events print immediately (single-line, low cost);
+    #   * on a USAGE_FINAL / ERROR / end-of-stream boundary, flush the
+    #     accumulated text as a single ``Markdown`` render — this is the
+    #     same "re-render the full accumulated buffer" approach Rich uses
+    #     internally and it correctly handles partial Markdown that was
+    #     completed mid-stream;
+    #   * between boundaries we ALSO flush opportunistically when the
+    #     accumulator grows past a soft threshold AND enough time has passed
+    #     since the last flush (throttled at ``refresh_per_second``), so the
+    #     user sees progressive output rather than one big wall at the end.
+    #
+    # The result is: Markdown is honored even on the legacy path; the only
+    # capability we lose vs. the Live path is in-place diffing of text
+    # blocks (the legacy path appends each batch).
+
+    _LEGACY_FLUSH_CHAR_THRESHOLD = 80
+
+    async def _render_legacy(
+        self,
+        event_stream: AsyncIterator[UnifiedStreamEvent],
+        blocks: List[Any],
+        result: RenderResult,
+    ) -> None:
+        self._console.print("\nDeile >")
+        last_flush = time.monotonic()
+        chars_since_flush = 0
+        rendered_text_len_per_block: Dict[int, int] = {}
+
+        async for event in event_stream:
+            # STAGE events: the legacy path can't repaint a spinner in place,
+            # so we print each stage as its own dim line. The user still gets
+            # a step-by-step trail of what the agent is doing pre-stream.
+            if event.type is StreamEventType.STAGE:
+                if event.stage:
+                    self._console.print(f"[dim]⠋ {event.stage}…[/dim]")
+                continue
+
+            self._apply_event(event, blocks, result)
+
+            if event.type is StreamEventType.TEXT_DELTA and event.text:
+                chars_since_flush += len(event.text)
+                now = time.monotonic()
+                if (
+                    chars_since_flush >= self._LEGACY_FLUSH_CHAR_THRESHOLD
+                    and (now - last_flush) >= self._legacy_flush_interval
+                ):
+                    self._legacy_flush_text(blocks, rendered_text_len_per_block)
+                    last_flush = now
+                    chars_since_flush = 0
+
+            elif event.type is StreamEventType.TOOL_USE_END:
+                # Flush any pending text before the tool block prints.
+                self._legacy_flush_text(blocks, rendered_text_len_per_block, final=True)
+                args_preview = self._render_args_inline(event.arguments)
+                self._console.print(
+                    f"\n[yellow]●[/yellow] {event.tool_name}({args_preview}) [dim]running…[/dim]"
+                )
+                last_flush = time.monotonic()
+                chars_since_flush = 0
+
+            elif event.type is StreamEventType.TOOL_RESULT:
+                icon = "[green]✓[/green]" if event.tool_status == "success" else "[red]✗[/red]"
+                summary = self._safe_markup(event.tool_result_summary or "")
+                self._console.print(
+                    f"  {icon} {event.tool_name}: [dim]{summary}[/dim]"
+                )
+
+            elif event.type is StreamEventType.USAGE_FINAL and event.usage:
+                # Final flush of any unrendered tail text BEFORE the usage line.
+                self._legacy_flush_text(blocks, rendered_text_len_per_block, final=True)
+                u = event.usage
+                self._console.print(
+                    f"\n[dim]:hourglass: {u.input_tokens} in / {u.output_tokens} out"
+                    + (f" • ${u.cost_usd:.4f}" if u.cost_usd else "")
+                    + "[/dim]"
+                )
+
+            elif event.type is StreamEventType.ERROR:
+                self._legacy_flush_text(blocks, rendered_text_len_per_block, final=True)
+
+        # Stream ended — flush any remaining text.
+        self._legacy_flush_text(blocks, rendered_text_len_per_block, final=True)
+
+    def _legacy_flush_text(
+        self,
+        blocks: List[Any],
+        rendered_lengths: Dict[int, int],
+        *,
+        final: bool = False,
+    ) -> None:
+        """Render the *new* portion of every ``_TextBlock`` accumulated.
+
+        We track per-block "already-rendered length" so we don't re-print the
+        same prefix on every flush. We pass the *new* slice to ``Markdown``
+        when it is reasonably self-contained; on a non-final flush we hold
+        back unfinished trailing fences/asterisks to avoid corrupting them.
+        On the final flush we render whatever is left, even if transitional.
+        """
+        for idx, block in enumerate(blocks):
+            if not isinstance(block, _TextBlock):
+                continue
+            already = rendered_lengths.get(idx, 0)
+            new_text = block.text[already:]
+            if not new_text:
+                continue
+
+            if not final:
+                # Hold back an obviously-unclosed trailing token so partial
+                # markup doesn't print ugly. Only matters between flushes;
+                # the final flush always renders everything.
+                safe_until = self._safe_markdown_cutoff(new_text)
+                if safe_until == 0:
+                    continue
+                new_text = new_text[:safe_until]
+
+            renderable = self._render_text_block(block, new_text)
+            if renderable is not None:
+                self._console.print(renderable)
+            rendered_lengths[idx] = already + len(new_text)
+
+    @staticmethod
+    def _safe_markdown_cutoff(text: str) -> int:
+        """Return the longest prefix of ``text`` ending at a safe boundary.
+
+        Used by the legacy progressive flush so we don't print half of a
+        ``**bold**`` run or half of an open code fence between flushes. The
+        Live path doesn't need this because ``Markdown`` re-parses the full
+        accumulated buffer every frame.
+        """
+        # If we're inside an open fenced code block (odd count of triple
+        # backticks), wait for the close.
+        if text.count("```") % 2 == 1:
+            return 0
+        # If the trailing tail looks like an unclosed inline run, trim back
+        # to the last newline (sentence boundary is safer than mid-run).
+        tail = text.rstrip()
+        for token in ("**", "__", "`", "[", "*", "_"):
+            # Odd count of token + tail ends inside it → cut at last newline.
+            if text.count(token) % 2 == 1 and tail.endswith(token[0]):
+                last_nl = text.rfind("\n")
+                return max(last_nl + 1, 0)
+        return len(text)
+
+    def _render_text_block(self, block: "_TextBlock", text: str):
+        """Build the Rich renderable for a chunk of text from ``block``."""
+        if not text:
+            return None
+        if block.source == "validation_gate":
+            return Panel(
+                Text(text, style="yellow"),
+                title="[yellow]validation gate[/yellow]",
+                border_style="yellow",
+            )
+        if block.source == "error":
+            return Text.from_markup(text)
+        if self._markdown:
+            try:
+                return Markdown(text)
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.debug("Markdown render failed, falling back to text: %s", exc)
+                return Text(text)
+        return Text(text)
+
+    # ------------------------------------------------------------------
+    # Event → block-list mutation
+    # ------------------------------------------------------------------
+
+    def _apply_event(
+        self,
+        event: UnifiedStreamEvent,
+        blocks: List[Any],
+        result: RenderResult,
+    ) -> None:
+        # STAGE events update the trailing transient progress indicator.
+        # They never produce permanent content — if a _StageBlock is already
+        # at the tail, mutate its label in place; otherwise append one.
+        if event.type is StreamEventType.STAGE:
+            label = event.stage or ""
+            if blocks and isinstance(blocks[-1], _StageBlock):
+                blocks[-1].text = label
+            else:
+                blocks.append(_StageBlock(text=label))
+            return
+
+        # Any non-STAGE event means real content is arriving — drop the
+        # transient stage indicator before processing so the new content
+        # takes its place.
+        while blocks and isinstance(blocks[-1], _StageBlock):
+            blocks.pop()
+
+        if event.type is StreamEventType.TEXT_DELTA:
+            if not event.text:
+                return
+            # If the most recent block is text and same source, append; else open new.
+            if blocks and isinstance(blocks[-1], _TextBlock) and blocks[-1].source == event.source:
+                blocks[-1].text += event.text
+            else:
+                blocks.append(_TextBlock(text=event.text, source=event.source))
+        elif event.type is StreamEventType.TOOL_USE_START:
+            blocks.append(
+                _ToolBlock(
+                    tool_call_id=event.tool_call_id or "",
+                    tool_name=event.tool_name or "<tool>",
+                    iteration=event.iteration,
+                )
+            )
+        elif event.type is StreamEventType.TOOL_USE_END:
+            block = self._find_tool_block(blocks, event.tool_call_id)
+            if block is not None:
+                block.args = event.arguments
+            else:
+                # Provider emitted END without START — synthesize a block.
+                blocks.append(
+                    _ToolBlock(
+                        tool_call_id=event.tool_call_id or "",
+                        tool_name=event.tool_name or "<tool>",
+                        args=event.arguments,
+                        iteration=event.iteration,
+                    )
+                )
+        elif event.type is StreamEventType.TOOL_RESULT:
+            block = self._find_tool_block(blocks, event.tool_call_id)
+            if block is not None:
+                block.status = event.tool_status or "success"
+                block.summary = event.tool_result_summary
+            else:
+                blocks.append(
+                    _ToolBlock(
+                        tool_call_id=event.tool_call_id or "",
+                        tool_name=event.tool_name or "<tool>",
+                        status=event.tool_status or "success",
+                        summary=event.tool_result_summary,
+                        iteration=event.iteration,
+                    )
+                )
+        elif event.type is StreamEventType.ERROR:
+            result.error_message = self._error_message(event.error_envelope)
+            display_msg = result.error_message
+            if isinstance(event.error_envelope, dict) and event.error_envelope.get("budget_exceeded"):
+                display_msg += "\nUse /model budget to view limits, or wait for the next window."
+            blocks.append(_TextBlock(text=f"[red]✗[/red] {display_msg}", source="error"))
+
+    @staticmethod
+    def _find_tool_block(blocks: List[Any], tool_call_id: Optional[str]) -> Optional[_ToolBlock]:
+        if not tool_call_id:
+            return None
+        for b in reversed(blocks):
+            if isinstance(b, _ToolBlock) and b.tool_call_id == tool_call_id:
+                return b
+        return None
+
+    # ------------------------------------------------------------------
+    # Compose — turn block list into a Rich renderable for Live
+    # ------------------------------------------------------------------
+
+    def _compose(
+        self,
+        blocks: List[Any],
+        footer: Optional[str] = None,
+        spinner_frame: str = "⠋",
+    ):
+        # Visual separation rule: every rendered item gets a blank line
+        # before it (except the first), so tool blocks, text blocks, and
+        # the usage footer are never "glued together" on the screen.
+        from rich.console import Group
+        rendered: List[Any] = []
+
+        def _push(item: Any) -> None:
+            if rendered:
+                rendered.append(Text(""))
+            rendered.append(item)
+
+        for b in blocks:
+            if isinstance(b, _TextBlock):
+                if not b.text:
+                    continue
+                if b.source == "validation_gate":
+                    _push(Panel(
+                        Text(b.text, style="yellow"),
+                        title="[yellow]validation gate[/yellow]",
+                        border_style="yellow",
+                    ))
+                elif b.source == "error":
+                    _push(Text.from_markup(b.text))
+                elif self._markdown:
+                    try:
+                        _push(Markdown(b.text))
+                    except Exception:
+                        _push(Text(b.text))
+                else:
+                    _push(Text(b.text))
+            elif isinstance(b, _StageBlock):
+                label = b.text or "processando"
+                _push(Text.from_markup(f"[dim]{spinner_frame} {label}…[/dim]"))
+            elif isinstance(b, _ToolBlock):
+                _push(self._tool_renderable(b))
+        if footer:
+            _push(Text.from_markup(footer))
+        return Group(*rendered) if rendered else Text("")
+
+    def _tool_renderable(self, block: _ToolBlock):
+        args_inline = self._render_args_inline(block.args)
+        if block.status == "running":
+            head = f"[yellow]●[/yellow] [bold]{block.tool_name}[/bold]({args_inline}) [dim]running…[/dim]"
+        elif block.status == "success":
+            head = f"[green]✓[/green] [bold]{block.tool_name}[/bold]({args_inline})"
+        else:
+            head = f"[red]✗[/red] [bold]{block.tool_name}[/bold]({args_inline})"
+        if block.summary:
+            return Text.from_markup(f"{head}\n  [dim]{self._safe_markup(block.summary)}[/dim]")
+        return Text.from_markup(head)
+
+    @staticmethod
+    def _render_args_inline(args: Optional[Dict[str, Any]]) -> str:
+        if not args:
+            return ""
+        parts = []
+        for k, v in list(args.items())[:3]:
+            sv = str(v)
+            if len(sv) > 40:
+                sv = sv[:37] + "…"
+            parts.append(f"{k}={sv!r}")
+        if len(args) > 3:
+            parts.append("…")
+        return ", ".join(parts)
+
+    @staticmethod
+    def _safe_markup(text: str) -> str:
+        # Defang accidental markup brackets so dim-rendered tool summaries
+        # never inject color codes from tool data.
+        return text.replace("[", "\\[")
+
+    @staticmethod
+    def _error_message(envelope: Any) -> str:
+        if envelope is None:
+            return "stream error"
+        if isinstance(envelope, dict):
+            return str(envelope.get("message") or envelope.get("error_type") or envelope)
+        return str(getattr(envelope, "message", envelope))
