@@ -1,9 +1,10 @@
+import argparse
 import asyncio
 import logging
 import os
 import sys
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 # Adiciona o diretório do projeto ao Python path
 project_root = Path(__file__).parent
@@ -221,19 +222,96 @@ class DeileAgentCLI:
         
         return sorted(project_files)[:500] # Limita a 500 arquivos
 
-def main():
-    ##
-    # os.system('cls' if os.name == 'nt' else 'clear')
-    logging.disable()
-    ##
-    """Ponto de entrada principal da aplicação CLI."""
-    cli = DeileAgentCLI()
-    if len(sys.argv) > 1:
-        # Modo de comando único (não implementado para esta fase)
-        print("Execução de comando único será implementada em versões futuras.")
+async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
+    """Run a single non-interactive turn. Prints response.content to stdout.
+
+    Returns process exit code: 0 on success, 1 on any failure path. All diagnostic
+    text is written to stderr so stdout stays clean for piping.
+    """
+    settings = get_settings()
+    config_manager = ConfigManager()
+    config_manager.load_config()
+
+    model_router = get_model_router()
+    if _use_legacy_gemini_only():
+        registered = _bootstrap_legacy_gemini(model_router)
     else:
-        # Modo interativo padrão
+        registered = bootstrap_providers(router=model_router)
+    if not registered:
+        print(
+            "ERROR: no provider configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, "
+            "DEEPSEEK_API_KEY, or GOOGLE_API_KEY.",
+            file=sys.stderr,
+        )
+        return 1
+
+    agent = DeileAgent(
+        model_router=model_router,
+        tool_registry=get_tool_registry(),
+        parser_registry=get_parser_registry(),
+        config_manager=config_manager,
+    )
+    await agent.initialize()
+
+    session = agent.create_session(
+        session_id="oneshot_cli_session",
+        working_directory=settings.working_directory,
+    )
+    if forced_model:
+        session.context_data["forced_model"] = forced_model
+
+    try:
+        response = await agent.process_input(
+            user_input=message,
+            session_id=session.session_id,
+        )
+    except Exception as exc:
+        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+    print(response.content)
+
+    status = response.status.value if hasattr(response.status, "value") else str(response.status)
+    return 0 if status != "error" else 1
+
+
+def main():
+    """Ponto de entrada principal da aplicação CLI."""
+    logging.disable()
+
+    if len(sys.argv) <= 1:
+        cli = DeileAgentCLI()
         asyncio.run(cli.run_interactive())
+        return
+
+    parser = argparse.ArgumentParser(
+        prog="deile",
+        description="DEILE — Run interactively (no args) or send a single message and exit.",
+    )
+    parser.add_argument(
+        "--model",
+        dest="model",
+        metavar="PROVIDER:MODEL_ID",
+        help="Force a specific model (e.g. deepseek:deepseek-v4-flash). "
+             "If omitted, uses default_model from api_config.yaml.",
+    )
+    parser.add_argument(
+        "message",
+        nargs=argparse.REMAINDER,
+        help="Message to send to the agent. Quote it if it contains shell metacharacters.",
+    )
+    args = parser.parse_args()
+
+    msg = " ".join(args.message).strip()
+    if not msg and not sys.stdin.isatty():
+        msg = sys.stdin.read().strip()
+
+    if not msg:
+        parser.error("no message provided (pass as positional args or via stdin)")
+
+    exit_code = asyncio.run(_run_oneshot(msg, forced_model=args.model))
+    sys.exit(exit_code)
+
 
 if __name__ == "__main__":
     main()
