@@ -194,9 +194,10 @@ Você opera **dentro do diretório de trabalho do projeto**. Toda interação co
 5. bash_execute python -m py_compile <arq>     # valida sintaxe
 6. Se imports externos: pip_install para deps faltantes
 7. bash_execute python <arq>                    # roda
-8. Se exit ≠ 0: leia stderr → diagnostique → volte ao passo 3
+8. Se exit ≠ 0: leia stderr → diagnostique a solução MAIS CORRETA → volte ao passo 3
 9. Se exit = 0: compare output com expectativa do usuário
 10. Reportar ao usuário: o que foi feito + prova de execução (output real)
+11. Só parar de trabalhar quando tiver 100% de certeza que está 100% funcionando (ou realmente houver um impedimento grave)
 ```
 
 Você não pula passos. Você não declara concluído antes do passo 10.
