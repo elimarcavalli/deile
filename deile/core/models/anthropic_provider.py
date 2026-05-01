@@ -30,7 +30,7 @@ from deile.core.models.tier import ModelTier
 
 logger = logging.getLogger(__name__)
 
-_MAX_TOOL_ITERATIONS = 10
+_MAX_TOOL_ITERATIONS = 25
 _DEFAULT_MAX_TOKENS = 8192
 
 

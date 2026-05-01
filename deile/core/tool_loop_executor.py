@@ -23,7 +23,7 @@ from deile.tools.registry import ToolRegistry, get_tool_registry
 
 logger = logging.getLogger(__name__)
 
-MAX_TOOL_ITERATIONS = 10
+MAX_TOOL_ITERATIONS = 25
 _SUMMARY_MAX_CHARS = 200
 
 

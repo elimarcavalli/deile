@@ -545,7 +545,7 @@ class GeminiProvider(ModelProvider):
     # Limite de iterações do loop de function calling manual.
     # Why: cap defensivo contra loops infinitos quando o modelo encadeia chamadas
     # sem convergir para uma resposta final.
-    MAX_TOOL_ITERATIONS = 10
+    MAX_TOOL_ITERATIONS = 25
 
     async def create_chat_session(self, session_id: str, system_instruction: Optional[str] = None) -> Any:
         """Cria ou retorna chat session existente para session_id.
