@@ -1,9 +1,11 @@
 """Ferramentas para manipulação de arquivos"""
 
-from typing import List
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 import logging
 import fnmatch
+import re
 
 from .base import SyncTool, ToolContext, ToolResult, ToolStatus
 from ..core.exceptions import ValidationError
@@ -12,96 +14,226 @@ from ..core.exceptions import ValidationError
 logger = logging.getLogger(__name__)
 
 
+# Extension → cheap, side-effect-free validator the LLM should run after a write.
+_POST_WRITE_VALIDATORS: Dict[str, Dict[str, str]] = {
+    ".py":  {"kind": "python_syntax",  "template": "python -m py_compile {path}"},
+    ".sh":  {"kind": "bash_syntax",    "template": "bash -n {path}"},
+    ".json": {"kind": "json_parse",    "template": 'python -c "import json; json.load(open({path!r}))"'},
+    ".yaml": {"kind": "yaml_parse",    "template": 'python -c "import yaml; yaml.safe_load(open({path!r}))"'},
+    ".yml":  {"kind": "yaml_parse",    "template": 'python -c "import yaml; yaml.safe_load(open({path!r}))"'},
+    ".js":  {"kind": "node_syntax",    "template": "node --check {path}"},
+    ".mjs": {"kind": "node_syntax",    "template": "node --check {path}"},
+    ".ts":  {"kind": "typescript_check", "template": "npx --yes tsc --noEmit {path}"},
+    ".tsx": {"kind": "typescript_check", "template": "npx --yes tsc --noEmit --jsx react {path}"},
+}
+
+
+def _post_write_validation_hint(file_path: str) -> Optional[Dict[str, str]]:
+    """Return a validation hint for files whose extension is executable / parseable.
+
+    Returns None for extensions we don't have a cheap validator for (text,
+    markdown, etc.) — the persona's DoD still applies for those, but there
+    is no specific shell command to suggest.
+    """
+    suffix = Path(file_path).suffix.lower()
+    spec = _POST_WRITE_VALIDATORS.get(suffix)
+    if spec is None:
+        return None
+    return {"kind": spec["kind"], "command": spec["template"].format(path=file_path)}
+
+
 class LocalFileAccessViolation(ValidationError):
     """Exceção para violações de acesso a arquivos locais"""
     pass
 
 
-def _validate_path_within_working_directory(file_path: str, working_directory: str) -> str:
-    """Valida se o caminho do arquivo está dentro do working_directory de forma robusta.
-    
-    Args:
-        file_path: Caminho do arquivo a ser validado
-        working_directory: Diretório de trabalho base
-        
-    Returns:
-        str: Caminho absoluto validado
-        
-    Raises:
-        LocalFileAccessViolation: Se o caminho é inválido ou inseguro
+@dataclass(frozen=True)
+class ResolvedPath:
+    """Output of :func:`_resolve_project_path`.
+
+    Attributes
+    ----------
+    absolute:
+        Final resolved absolute path string. Always inside the working
+        directory.
+    relative_to_cwd:
+        Path relative to the working directory (POSIX-style separators), used
+        for human-facing display and tool result messages.
+    input:
+        The exact string the caller passed in, preserved for diagnostic
+        messages.
+    note:
+        ``None`` when the input was already a clean project-relative path.
+        A human-readable string describing the normalization when one
+        happened (e.g. ``"leading '/' stripped — interpreted as project-relative"``).
+        The note flows into ``write_file``'s ``message`` so the LLM sees
+        exactly what the system did with its input and can correct course
+        on the next turn instead of misremembering where the file landed.
+    """
+
+    absolute: str
+    relative_to_cwd: str
+    input: str
+    note: Optional[str]
+
+
+# Patterns we reject outright, even after normalization.
+# `<>|*?` are shell metachars that don't belong in well-formed paths.
+# Null byte is a classic path-injection vector in C-extension callers.
+_DANGEROUS_PATH_CHARS = re.compile(r"[\x00<>|*?]")
+
+# Windows drive prefix: ``C:\foo``, ``D:/bar``, ``c:\\baz``, etc.
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]+")
+
+
+def _resolve_absolute_or_strip(
+    candidate: str, work_dir: Path, raw: str
+) -> Tuple[str, Optional[Path], Optional[str]]:
+    """Handle a path that starts with '/'. Returns ``(candidate, target, note)``:
+
+    - If the path resolves inside ``work_dir``, keep it as-is — ``target`` is
+      the resolved Path, no note.
+    - Otherwise the leading '/' is stripped and the caller will resolve the
+      remainder against ``work_dir`` — ``target`` is None, note describes
+      the normalization.
     """
     try:
-        # ROBUSTEZ: Normaliza working_directory
-        work_dir = Path(working_directory).resolve()
-        file_path_obj = Path(file_path)
-        
-        # DEBUG: Log para troubleshooting
-        logger.debug(f"Validating path - file_path: {file_path}, working_directory: {working_directory}")
-        logger.debug(f"Resolved work_dir: {work_dir}")
-        
-        # FLEXIBILIDADE: Múltiplas estratégias de resolução
-        target_paths_to_try = []
-        
-        # Estratégia 1: Path como fornecido
-        if file_path_obj.is_absolute():
-            target_paths_to_try.append(file_path_obj.resolve())
-        else:
-            target_paths_to_try.append((work_dir / file_path).resolve())
-        
-        # Estratégia 2: Se path original falhar, tenta só o nome do arquivo
-        if file_path_obj.is_absolute() or '/' in file_path or '\\' in file_path:
-            filename_only = file_path_obj.name
-            target_paths_to_try.append((work_dir / filename_only).resolve())
-        
-        # Estratégia 3: Se path contém diretórios, tenta relativo ao work_dir
-        if file_path != "." and not file_path_obj.is_absolute():
-            try:
-                alt_path = work_dir / file_path_obj
-                if alt_path != target_paths_to_try[0]:  # Evita duplicatas
-                    target_paths_to_try.append(alt_path.resolve())
-            except:
-                pass
-        
-        # Tenta cada estratégia
-        for target_path in target_paths_to_try:
-            try:
-                # Verifica se está dentro do working directory
-                relative_path = target_path.relative_to(work_dir)
-                logger.debug(f"Path validation successful: {target_path} -> {relative_path}")
-                
-                # Validações de segurança básicas (só para paths obviamente perigosos)
-                path_str = str(relative_path)
-                if '..' in path_str and ('..' in file_path or '../' in file_path):
-                    logger.warning(f"Path traversal detected in: {file_path}")
-                    continue  # Tenta próxima estratégia
-                
-                # Caracteres perigosos (apenas os mais críticos)
-                critical_chars = ['<', '>', '|', '*', '?']
-                if any(char in file_path for char in critical_chars):
-                    logger.warning(f"Dangerous characters in path: {file_path}")
-                    continue  # Tenta próxima estratégia
-                
-                return str(target_path)
-                
-            except ValueError as e:
-                logger.debug(f"Path outside working directory: {target_path} not in {work_dir}")
-                continue  # Tenta próxima estratégia
-            except Exception as e:
-                logger.debug(f"Path validation error: {e}")
-                continue  # Tenta próxima estratégia
-        
-        # Se todas as estratégias falharam
+        as_is = Path(candidate).resolve()
+    except (OSError, RuntimeError):
+        as_is = None
+    if as_is is not None:
+        try:
+            as_is.relative_to(work_dir)
+            return candidate, as_is, None
+        except ValueError:
+            pass
+    stripped = candidate.lstrip("/")
+    if not stripped:
         raise LocalFileAccessViolation(
-            f"Could not resolve secure path for '{file_path}' within working directory '{working_directory}'"
+            f"path is just slashes: {raw!r} — refuse to write to the project "
+            "root as a file"
         )
-        
-    except LocalFileAccessViolation:
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error in path validation: {e}")
+    return stripped, None, (
+        "leading '/' stripped — interpreted as project-relative, "
+        "NOT as a system-absolute path. The file lives INSIDE the "
+        "project working directory."
+    )
+
+
+def _resolve_project_path(file_path: str, working_directory: str) -> ResolvedPath:
+    """Resolve an LLM-supplied path to an absolute path inside ``working_directory``.
+
+    Normalizes the patterns LLMs mangle: ``@`` prefix, backslashes, Windows
+    drives, ``~``/``~/`` (NOT expanded to ``$HOME`` — treated as project-
+    relative), and leading ``/`` (treated as project-relative typo unless
+    the absolute path is already inside CWD). ``..`` is allowed when it
+    resolves inside CWD; rejected when it escapes.
+    """
+    if file_path is None:
+        raise LocalFileAccessViolation("path is None")
+
+    raw = file_path
+    if not isinstance(raw, str):
         raise LocalFileAccessViolation(
-            f"Path validation failed for '{file_path}': {str(e)}"
+            f"path must be str, got {type(raw).__name__}"
         )
+
+    stripped = raw.strip()
+    if not stripped:
+        raise LocalFileAccessViolation("path is empty")
+
+    if _DANGEROUS_PATH_CHARS.search(stripped):
+        raise LocalFileAccessViolation(
+            f"path contains forbidden characters (null byte or shell "
+            f"metacharacters <>|*?): {raw!r}"
+        )
+
+    notes: List[str] = []
+    candidate = stripped
+
+    # 2. @-prefix
+    if candidate.startswith("@"):
+        candidate = candidate[1:]
+        notes.append("'@' prefix stripped")
+
+    # 3. Backslash → forward slash
+    if "\\" in candidate:
+        candidate = candidate.replace("\\", "/")
+        notes.append("backslashes converted to forward slashes")
+
+    # 4. Windows drive prefix
+    if _WINDOWS_DRIVE_RE.match(candidate):
+        candidate = _WINDOWS_DRIVE_RE.sub("", candidate)
+        notes.append("Windows drive prefix stripped — path is project-relative")
+
+    # 5. Home shorthand
+    if candidate.startswith("~/") or candidate == "~":
+        candidate = candidate[2:] if candidate.startswith("~/") else ""
+        notes.append(
+            "leading '~' stripped — '~' is NOT expanded to system $HOME; "
+            "path is project-relative"
+        )
+        if not candidate:
+            candidate = "."
+
+    # 6. Leading slash. Three cases handled by _resolve_absolute_or_strip:
+    # (a) absolute and already inside CWD → pass through; (b) absolute and
+    # outside → strip the slash and treat as project-relative typo; (c)
+    # unresolvable → strip and let containment check catch escapes.
+    work_dir = Path(working_directory).resolve()
+    target: Optional[Path] = None
+    if candidate.startswith("/"):
+        candidate, target, slash_note = _resolve_absolute_or_strip(candidate, work_dir, raw)
+        if slash_note:
+            notes.append(slash_note)
+
+    if not candidate:
+        candidate = "."
+
+    if target is None:
+        try:
+            target = (work_dir / candidate).resolve()
+        except (OSError, RuntimeError) as exc:
+            raise LocalFileAccessViolation(
+                f"could not resolve {raw!r} against {work_dir}: {exc}"
+            ) from exc
+
+    # Final containment check. Path.is_relative_to was added in 3.9; we
+    # support older runtimes via try/relative_to.
+    try:
+        target.relative_to(work_dir)
+    except ValueError:
+        raise LocalFileAccessViolation(
+            f"path {raw!r} resolves to {target}, which is OUTSIDE the project "
+            f"working directory {work_dir}. Use a project-relative path "
+            f"(e.g. drop any leading '..' that escapes the project root)."
+        )
+
+    # POSIX-style relative for display (works across platforms in messages)
+    rel = target.relative_to(work_dir).as_posix() or "."
+    note = "; ".join(notes) if notes else None
+
+    if note is not None:
+        logger.debug(
+            "path normalized: input=%r resolved=%s note=%s", raw, target, note
+        )
+
+    return ResolvedPath(
+        absolute=str(target),
+        relative_to_cwd=rel,
+        input=raw,
+        note=note,
+    )
+
+
+def _validate_path_within_working_directory(file_path: str, working_directory: str) -> str:
+    """Backward-compatible wrapper returning only the absolute path.
+
+    Existing callers that only need the path string can keep using this. New
+    code should call :func:`_resolve_project_path` directly to get access to
+    the normalization ``note`` and surface it to the LLM.
+    """
+    return _resolve_project_path(file_path, working_directory).absolute
 
 
 class ReadFileTool(SyncTool):
@@ -458,26 +590,36 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
             )
         
         try:
-            # Valida segurança do caminho
-            validated_path = _validate_path_within_working_directory(
-                file_path, context.working_directory
-            )
-            full_path = Path(validated_path)
-            
+            # Resolve and validate the path. The path resolver normalizes
+            # leading '/', '@', '~', backslashes, Windows drives, etc.
+            resolved = _resolve_project_path(file_path, context.working_directory)
+            full_path = Path(resolved.absolute)
+
             # Verifica se arquivo existe
             if not full_path.exists():
+                hint = (
+                    f" (input was {resolved.input!r} → {resolved.note})"
+                    if resolved.note
+                    else ""
+                )
                 return ToolResult(
                     status=ToolStatus.ERROR,
-                    message=f"File not found: {file_path}",
-                    error=FileNotFoundError(f"File '{file_path}' not found")
+                    message=(
+                        f"File not found: {resolved.relative_to_cwd}"
+                        f"{hint}. Use list_files to inspect the project tree before "
+                        f"assuming a path."
+                    ),
+                    error=FileNotFoundError(
+                        f"File '{resolved.relative_to_cwd}' not found"
+                    ),
                 )
-            
+
             # Verifica se é um arquivo
             if not full_path.is_file():
                 return ToolResult(
                     status=ToolStatus.ERROR,
-                    message=f"Path is not a file: {file_path}",
-                    error=ValueError(f"'{file_path}' is not a file")
+                    message=f"Path is not a file: {resolved.relative_to_cwd}",
+                    error=ValueError(f"'{resolved.relative_to_cwd}' is not a file"),
                 )
 
             # Verifica configurações de segurança (se habilitadas)
@@ -492,34 +634,51 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
                         message=f"File type not allowed: {file_extension}. Allowed types: {settings.allowed_file_extensions}",
                         error=PermissionError(f"File extension '{file_extension}' not in allowed list")
                     )
-            
+
             # Lê conteúdo do arquivo com sistema universal
             content = self._read_file_universal(full_path)
-            
+
             # Prepara display rico
             lines = content.splitlines()
             line_count = len(lines)
-            
+
             # Cria preview do arquivo (primeiras 10 linhas)
             preview_lines = []
             for i, line in enumerate(lines[:10]):
                 line_num = str(i + 1).zfill(3)
                 preview_lines.append(f"        {line_num}        {line}")
-            
-            rich_display = f"● read_file({file_path})\n  ⎿ Read {line_count} lines\n" + "\n".join(preview_lines)
+
+            rich_display = (
+                f"● read_file({resolved.relative_to_cwd})\n"
+                f"  ⎿ Read {line_count} lines\n" + "\n".join(preview_lines)
+            )
             if line_count > 10:
                 rich_display += "\n        ..."
-            
+
+            message_parts = [
+                f"Read {len(content)} characters ({line_count} lines) from:",
+                f"  file_path: {resolved.absolute}",
+                f"  project_relative: {resolved.relative_to_cwd}",
+            ]
+            if resolved.note:
+                message_parts.append(
+                    f"  ⚠️  PATH_NORMALIZED: {resolved.note}"
+                )
+
             return ToolResult(
                 status=ToolStatus.SUCCESS,
                 data=content,
-                message=f"Successfully read {len(content)} characters from {file_path}",
+                message="\n".join(message_parts),
                 metadata={
-                    "file_path": str(full_path),
+                    "function_name": "read_file",
+                    "file_path": resolved.absolute,
+                    "project_relative_path": resolved.relative_to_cwd,
+                    "input_path": resolved.input,
+                    "path_normalization_note": resolved.note,
                     "file_size": len(content),
                     "encoding": "utf-8",
-                    "rich_display": rich_display
-                }
+                    "rich_display": rich_display,
+                },
             )
             
         except LocalFileAccessViolation as e:
@@ -654,21 +813,27 @@ class WriteFileTool(SyncTool):
             )
         
         try:
-            # Valida segurança do caminho
-            validated_path = _validate_path_within_working_directory(
-                file_path, context.working_directory
-            )
-            full_path = Path(validated_path)
-            
+            # Resolve and validate the path. The resolver normalizes common
+            # LLM-confusion patterns (leading '/', '@', '~', backslashes,
+            # Windows drives) and returns a structured result we surface to
+            # the caller so the model can never alucinar where the file went.
+            resolved = _resolve_project_path(file_path, context.working_directory)
+            full_path = Path(resolved.absolute)
+
             # Verifica se arquivo já existe
             existed_before = full_path.exists()
             if existed_before and not overwrite:
                 return ToolResult(
                     status=ToolStatus.ERROR,
-                    message=f"File already exists: {file_path}. Use overwrite=True to replace.",
-                    error=FileExistsError(f"File '{file_path}' already exists")
+                    message=(
+                        f"File already exists: {resolved.relative_to_cwd}. "
+                        f"Use overwrite=True to replace."
+                    ),
+                    error=FileExistsError(
+                        f"File '{resolved.relative_to_cwd}' already exists"
+                    ),
                 )
-            
+
             # Cria diretório pai se necessário
             full_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -678,37 +843,74 @@ class WriteFileTool(SyncTool):
             # de qualquer falha no caminho, o arquivo original (se existia)
             # permanece íntegro.
             self._atomic_write_text(full_path, content)
-            
+
             # Prepara display rico
             lines = content.splitlines()
             line_count = len(lines)
-            
+
             # Preview do arquivo criado (primeiras 10 linhas)
             preview_lines = []
             for i, line in enumerate(lines[:10]):
                 line_num = str(i + 1)
                 preview_lines.append(f"        {line_num}     {line}")
-            
-            status_color = "green" if not existed_before else "yellow" 
+
+            status_color = "green" if not existed_before else "yellow"
             action = "Created" if not existed_before else "Updated"
-            rich_display = f"● write_file({file_path})\n  ⎿ {action} [{status_color}]{file_path}[/{status_color}] with {line_count} lines\n" + "\n".join(preview_lines)
-            
+            rich_display = (
+                f"● write_file({resolved.relative_to_cwd})\n"
+                f"  ⎿ {action} [{status_color}]{resolved.relative_to_cwd}[/{status_color}] "
+                f"with {line_count} lines\n" + "\n".join(preview_lines)
+            )
             if line_count > 10:
                 rich_display += "\n        ..."
-            
+
+            message_parts = [
+                f"Wrote {len(content)} characters ({line_count} lines) to:",
+                f"  file_path: {resolved.absolute}",
+                f"  project_relative: {resolved.relative_to_cwd}",
+                f"  input_given: {resolved.input}",
+            ]
+            if resolved.note:
+                message_parts.append(
+                    f"  ⚠️  PATH_NORMALIZED: {resolved.note} "
+                    f"The file is at the resolved_path above — use THAT path "
+                    f"in subsequent tool calls (read_file, bash_execute, …), "
+                    f"NOT the input you originally sent."
+                )
+
+            metadata: Dict[str, Any] = {
+                "function_name": "write_file",
+                "file_path": resolved.absolute,
+                "project_relative_path": resolved.relative_to_cwd,
+                "input_path": resolved.input,
+                "path_normalization_note": resolved.note,
+                "content_length": len(content),
+                "overwrite": overwrite,
+                "encoding": "utf-8",
+                "rich_display": rich_display,
+            }
+
+            validation_hint = _post_write_validation_hint(resolved.relative_to_cwd)
+            if validation_hint is not None:
+                metadata["post_write_validation_required"] = True
+                metadata["post_write_validation_command"] = validation_hint["command"]
+                metadata["post_write_validation_kind"] = validation_hint["kind"]
+                message_parts.append(
+                    f"\n⚠️  POST_WRITE_VALIDATION_REQUIRED: per the Definition of Done, "
+                    f"your next action MUST validate this file. Suggested command:\n"
+                    f"    {validation_hint['command']}\n"
+                    f"Do NOT declare the task complete until validation succeeds "
+                    f"(exit 0) or you have explicitly diagnosed and reported a "
+                    f"failure to the user."
+                )
+
             return ToolResult(
                 status=ToolStatus.SUCCESS,
-                data=str(full_path),
-                message=f"Successfully wrote {len(content)} characters to {file_path}",
-                metadata={
-                    "file_path": str(full_path),
-                    "content_length": len(content),
-                    "overwrite": overwrite,
-                    "encoding": "utf-8",
-                    "rich_display": rich_display
-                }
+                data=resolved.absolute,
+                message="\n".join(message_parts),
+                metadata=metadata,
             )
-            
+
         except LocalFileAccessViolation as e:
             return ToolResult(
                 status=ToolStatus.ERROR,
