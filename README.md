@@ -2,9 +2,9 @@
 
 
 
-Versão
-Python
-Licença
+![Version](https://img.shields.io/badge/version-5.1.0-blue.svg?style=for-the-badge)
+![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg?style=for-the-badge)
+![License](https://img.shields.io/badge/license-MIT-green.svg?style=for-the-badge)
 
 **Agente de IA autônomo, multi-provedor, executado via CLI, voltado ao desenvolvimento de software.**
 
@@ -627,6 +627,36 @@ Contribuições são bem-vindas — desde correção de typos até novas ferrame
 
 
 > 💬 PRs grandes ou que mexam em arquitetura de núcleo: abra primeiro uma **issue de discussão** descrevendo a proposta, para alinhar antes do código.
+
+---
+
+## 🪞 Auto-análise — DEILE analisando o próprio DEILE
+
+Um dos diferenciais do projeto é que o próprio agente pode ser usado como ferramenta de **revisão arquitetural** e **caça a bugs** sobre o próprio código. Como o DEILE roda dentro do diretório de trabalho atual, basta executá-lo na raiz do repositório.
+
+### Modo interativo (mais flexível)
+
+| Passo | Comando |
+|---|---|
+| Subir o agente na raiz do projeto | `./deile.sh` |
+| Pedir uma análise | Dentro do prompt, peça em linguagem natural — por exemplo: *"analise o pacote `deile/core/` e me liste 5 melhorias arquiteturais essenciais com base nas melhores práticas"* |
+
+### Modo one-shot via scripts dedicados
+
+Dois scripts pré-formatados disparam o DEILE em modo one-shot com prompts focados e gravam o relatório em disco. Pré-requisito: ter rodado `./deile.sh` ao menos uma vez (para criar `.venv` e `.env`).
+
+| Script | O que faz | Saída gerada |
+|---|---|---|
+| `./self-improve.sh` | Análise arquitetural crítica do pacote `deile/` com priorização P0/P1/P2 e quick wins | `docs/self-improve/<timestamp>-self-improvement.md` |
+| `./self-fix.sh` | Caça a bugs, awaitables não awaited, exceções silenciadas, race conditions, validações ausentes, com classificação de severidade | `docs/self-fix/<timestamp>-self-fix.md` |
+
+Ambos os scripts:
+
+- 🔒 Instruem o agente a **não modificar código fonte** — apenas ler arquivos e gravar o relatório.
+- 🏷️ Carimbam o relatório com data, branch e commit hash automaticamente.
+- 🧠 Usam o `default_model` configurado em `deile/config/model_providers.yaml` (cobertura via cascata do tier).
+
+> ⚠️ A qualidade da análise depende do modelo escolhido e da chave de API disponível. Análises arquiteturais profundas se beneficiam de um modelo tier 1; caça a bugs simples roda bem em tier 3. Ajuste a tier ou força um modelo via `/model use <provider:model_id>` se necessário antes de rodar o script.
 
 ---
 
