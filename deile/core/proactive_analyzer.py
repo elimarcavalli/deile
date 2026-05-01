@@ -80,10 +80,17 @@ class ProactiveAnalyzer:
             r"(?:contents?\s+of|inside)\s+(?:the\s+)?([^\s]+)",
             r"(?:look\s+at|view)\s+(?:the\s+)?([^\s]+)",
 
-            # Natural language patterns (high confidence)
-            r"(?:read|show|open)\s+(?:the\s+)?(readme|config|license|changelog|main|setup|requirements)",
-            r"(?:what'?s\s+in\s+the\s+)?(readme|config|license|changelog|main|setup|requirements)",
-            r"(?:leia|examine)\s+o\s+(readme|config|license|changelog|main|setup|requirements)",
+            # Natural language patterns (high confidence). The verb prefix is
+            # mandatory — without it, every mention of "main", "config", etc.
+            # in casual conversation ("o que seria um bloco main?") would
+            # be misclassified as a file-read request.
+            r"(?:read|show|open)\s+(?:the\s+)?(readme|config|license|changelog|main|setup|requirements)\b",
+            r"(?:what'?s\s+in\s+the\s+)(readme|config|license|changelog|main|setup|requirements)\b",
+            r"(?:leia|examine)\s+o\s+(readme|config|license|changelog|main|setup|requirements)\b",
+            # Known filename + explicit extension. The extension is what
+            # distinguishes "README.md" / "main.py" / "config.yaml" from
+            # the bare word "main" in casual chat.
+            r"\b(readme|config|license|changelog|main|setup|requirements)\.(?:md|txt|yaml|yml|json|toml|cfg|ini|py|sh|rst|html|css|xml|csv)\b",
 
             # Multiple file patterns
             r"(?:compare|compare|confronte)\s+(?:os\s+)?(?:arquivos|files)\s+([^\s]+)\s+(?:e|and)\s+([^\s]+)",
