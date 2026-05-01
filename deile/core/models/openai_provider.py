@@ -403,10 +403,27 @@ class OpenAIProvider(ModelProvider):
             result = await tool.execute(ctx)
         except Exception as exc:
             payload = {"error": str(exc), "status": "error"}
-            return ToolResult(status=ToolStatus.ERROR, message=str(exc), error=exc), payload
+            err = ToolResult(status=ToolStatus.ERROR, message=str(exc), error=exc)
+            err.metadata.setdefault("function_name", name)
+            return err, payload
 
+        # Stamp tool name on metadata (Gemini's path does the same).
+        if result.metadata is None:
+            result.metadata = {}
+        result.metadata.setdefault("function_name", name)
+
+        # Payload carries data (e.g. read_file body) AND message (e.g.
+        # write_file's POST_WRITE_VALIDATION_REQUIRED hint).
         if result.is_success:
-            payload = {"status": "success", "result": str(result.data) if result.data is not None else ""}
+            payload = {
+                "status": "success",
+                "result": str(result.data) if result.data is not None else "",
+                "message": result.message or "",
+            }
         else:
-            payload = {"status": "error", "error": result.message or f"{name} failed"}
+            payload = {
+                "status": "error",
+                "error": result.message or f"{name} failed",
+                "result": str(result.data) if result.data is not None else "",
+            }
         return result, payload
