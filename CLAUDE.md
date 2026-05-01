@@ -52,6 +52,24 @@ Entry point: `python3 deile.py` (CLI shell in `DeileAgentCLI`; all logic lives i
 - **Personas are MD-driven** — instructions live in `deile/personas/instructions/*.md`; edit those to change behavior, no code change needed.
 - **`.gitignore` has `*claude*`** — `CLAUDE.md` and `claude_dev/` are explicitly negated (`!CLAUDE.md`, `!claude_dev/`). Don't remove those negations.
 
+## Running DEILE for empirical testing
+
+You are authorized to invoke `python3 deile.py` (or call the agent programmatically) to test behavior changes — persona rules, gates, tooling — against the real LLM. The user has approved modest token spend for this. Two distinct conventions for **where files go**, do not conflate:
+
+| Folder | Owner | Purpose |
+|---|---|---|
+| `test-your-might/<nickname>/` | **DEILE writes here** | Sandbox for artifacts DEILE creates *during interactive intelligence-tests* the user runs against him (e.g. the calc-package test, the fib.py test). When the user prompts DEILE to "create a program in tmp/X/...", instruct DEILE to scope under `test-your-might/<nickname>/` so the project root stays clean. |
+| `deile/tests/might/<nickname>/` | **You write here** | YOUR test scripts that make real LLM API requests (like `test_rule8.py`). Live alongside `deile/tests/` but isolated under `might/` because they cost real tokens and aren't part of the standard `pytest` suite. |
+| `deile/tests/` (rest) | **You write here** | Regular pytest tests — no API calls, no token spend. |
+
+Constraints when running:
+
+- **Keep the budget proportional to the question** — a smoke test is 1–4 messages, not a 20-message marathon. The user covered ~38 requests ≈ $0.13; aim well below that per ad-hoc test.
+- **Same DEILE process across multi-turn probes** so conversation history persists (e.g. probing S4 "summarize what you just said" requires history continuity).
+- **To bootstrap programmatically**, mirror what `deile.py` (the CLI) does — `ConfigManager().load_config()` + `bootstrap_providers(router=get_model_router())`. Calling `bootstrap_providers()` alone registers 0 providers because the router is the singleton DeileAgent reads from.
+- **Capture output, strip ANSI, report verbatim** what DEILE actually said + which tools it actually called. Don't paraphrase — that's exactly the kind of fabrication rule 8 was added to prevent.
+- **If DEILE asks for an interactive confirmation you cannot answer**, kill the process and surface that as a finding rather than guessing.
+
 ## SQL / database operations
 
 All SQL scripts are the human operator's responsibility to run. If a DB error appears during a task, **stop and tell the operator which script to execute** — do not attempt to run migrations or schema changes yourself.
