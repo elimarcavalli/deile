@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from deile_bot.foundation.event_bus import BotEventBus, BotEventType
 

@@ -9,7 +9,6 @@ from deile_bot._testing import (
     FakeProviderAdapter,
     make_channel,
     make_envelope,
-    make_user,
 )
 from deile_bot.foundation.audit import BotAuditLogger
 from deile_bot.foundation.capabilities import CapabilityCatalog

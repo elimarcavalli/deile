@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any
-from dataclasses import replace
 
 import discord
 from discord import app_commands

@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import List, NamedTuple, Optional, Protocol
 
 from deile_bot.foundation.conversation_store import StoredMessage
-from deile_bot.foundation.envelope import ChannelScope, MessageEnvelope
+from deile_bot.foundation.envelope import MessageEnvelope
 from deile_bot.foundation.settings import FoundationSettings
 
 

@@ -10,6 +10,9 @@ from typing import List
 
 from pydantic import Field, SecretStr
 
+from deile_bot.foundation.capabilities import ProviderCapabilities
+from deile_bot.foundation.envelope import AttachmentKind
+
 try:
     from pydantic_settings import BaseSettings, SettingsConfigDict
 except ImportError:  # pragma: no cover
@@ -44,10 +47,6 @@ class DiscordBotSettings(BaseSettings):
 
 
 # Capability matrix (00-PLAN.md §4 of discord plan)
-from deile_bot.foundation.capabilities import ProviderCapabilities
-from deile_bot.foundation.envelope import AttachmentKind
-
-
 DISCORD_CAPABILITIES = ProviderCapabilities(
     can_edit_message=True,
     can_react=True,

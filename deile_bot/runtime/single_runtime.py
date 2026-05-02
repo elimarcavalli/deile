@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
 
 from deile_bot.foundation.envelope import MessageEnvelope
 from deile_bot.foundation.logging import get_logger

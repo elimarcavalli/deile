@@ -6,7 +6,7 @@ import re
 from abc import ABC, abstractmethod
 from typing import List
 
-from deile.common.markup_ast import MarkupAST, MarkupSpan, SpanKind
+from deile.common.markup_ast import MarkupAST, SpanKind
 
 
 class OutputFormatter(ABC):
@@ -31,7 +31,6 @@ def _codeblock_aware_split(text: str, max_chars: int) -> List[str]:
     """Never break inside a ```...``` codeblock; prefer linebreaks."""
     chunks: List[str] = []
     cursor = 0
-    in_codeblock = False
     code_fence_re = re.compile(r"```")
     while cursor < len(text):
         end = min(cursor + max_chars, len(text))

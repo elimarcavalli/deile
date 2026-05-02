@@ -8,7 +8,6 @@ import pytest
 
 from deile_bot.foundation.agent_bridge import (
     AgentInvocation,
-    AgentResponse,
     InProcessAgentBridge,
     _sanitize_extra_prompt,
     build_agent_bridge,
@@ -131,11 +130,7 @@ class TestInProcess:
             return agent
 
         bridge = InProcessAgentBridge(provider)
-        inv = AgentInvocation(
-            bot_user_id="U", persona="d", forced_model=None,
-            inbound_text="x", timeout_seconds=1,
-        )
-        # Manipulate timeout via direct attr — we simulate timeout = 0
+        # asyncio.wait_for(timeout=0) immediately raises
         inv2 = AgentInvocation(
             bot_user_id="U", persona="d", forced_model=None,
             inbound_text="x", timeout_seconds=0,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from deile.common.markup_ast import MarkupAST, MarkupSpan, SpanKind
 from deile_bot.providers.discord.formatter import DiscordOutputFormatter

@@ -12,7 +12,6 @@ from deile_bot.foundation.conversation_store import ConversationStore
 from deile_bot.foundation.envelope import (
     Attachment,
     AttachmentKind,
-    Channel,
     ChannelScope,
 )
 from deile_bot.foundation.exceptions import ConversationStoreError

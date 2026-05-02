@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
 
 from deile_bot.foundation.capabilities import ProviderCapabilities
 from deile_bot.foundation.envelope import AttachmentKind

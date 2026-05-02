@@ -6,7 +6,7 @@ import pytest
 from pydantic import SecretStr
 
 from deile.common.markup_ast import MarkupAST, MarkupSpan, SpanKind
-from deile_bot.foundation.envelope import ChannelScope, ConversationWindow, OutboundEnvelope, OutboundIntent, TemplateMessage
+from deile_bot.foundation.envelope import ChannelScope, ConversationWindow
 from deile_bot.foundation.exceptions import CapabilityNotSupported, ProviderError
 from deile_bot.providers.whatsapp.adapter import WhatsAppAdapter
 from deile_bot.providers.whatsapp.formatter import WhatsAppFormatter

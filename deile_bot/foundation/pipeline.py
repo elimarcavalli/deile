@@ -8,15 +8,12 @@ Egress: render markup -> split -> send -> persist -> audit; on failure -> DLQ.
 
 from __future__ import annotations
 
-import asyncio
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, Optional
+from typing import Dict, Optional
 
 from tenacity import (
     AsyncRetrying,
-    RetryError,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
@@ -36,7 +33,6 @@ from deile_bot.foundation.envelope import Channel, MessageEnvelope
 from deile_bot.foundation.event_bus import BotEventBus, BotEventType
 from deile_bot.foundation.exceptions import (
     AgentInvocationError,
-    PermissionDenied,
     ProviderError,
     RateLimited,
 )
