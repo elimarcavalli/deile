@@ -140,7 +140,13 @@ async def _run_provider(provider: str, guild_ids: Optional[List[int]] = None) ->
         metrics=metrics, egress=egress, agent_meta=meta,
     )
     adapter = DiscordAdapter(discord_settings)
-    runtime = SingleProviderRuntime(adapter, ingress)
+    runtime = SingleProviderRuntime(
+        adapter,
+        ingress,
+        capability_catalog=catalog,
+        agent_meta=meta,
+        formatters=formatters,
+    )
     try:
         await runtime.start()
     except KeyboardInterrupt:

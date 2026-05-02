@@ -10,10 +10,24 @@ from deile_bot.foundation.pipeline import IngressPipeline
 
 
 class SingleProviderRuntime:
-    def __init__(self, adapter, pipeline: IngressPipeline):
+    def __init__(
+        self,
+        adapter,
+        pipeline: IngressPipeline,
+        *,
+        capability_catalog=None,
+        agent_meta=None,
+        formatters=None,
+    ):
         self.adapter = adapter
         self.pipeline = pipeline
+        self.capability_catalog = capability_catalog or pipeline.capability_catalog
+        self.agent_meta = agent_meta or pipeline.agent_meta
+        self.formatters = formatters or {}
         self._logger = get_logger("runtime.single")
+        # Cogs reach back via adapter.runtime
+        if hasattr(adapter, "runtime"):
+            adapter.runtime = self
 
     async def start(self) -> None:
         async def on_inbound(env: MessageEnvelope, src) -> None:

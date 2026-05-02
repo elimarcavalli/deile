@@ -24,6 +24,8 @@ class DiscordAdapter(ProviderAdapter):
         self,
         settings: DiscordBotSettings,
         on_inbound: Optional[InboundCallback] = None,
+        *,
+        runtime: Optional[Any] = None,
     ):
         self.settings = settings
         self.on_inbound = on_inbound
@@ -31,6 +33,7 @@ class DiscordAdapter(ProviderAdapter):
         self._client: Any = None
         self._self_user_id: str = settings.self_user_id or ""
         self._logger = get_logger("discord.adapter")
+        self.runtime: Optional[Any] = runtime
 
     @property
     def self_user_id(self) -> str:
@@ -71,10 +74,22 @@ class DiscordAdapter(ProviderAdapter):
                 from deile_bot.providers.discord.cogs.help_cog import HelpCog
                 from deile_bot.providers.discord.cogs.ping_cog import PingCog
 
-                if "HelpCog" not in [c.__class__.__name__ for c in client.cogs.values()]:
+                cog_names = [c.__class__.__name__ for c in client.cogs.values()]
+                if "HelpCog" not in cog_names:
                     await client.add_cog(HelpCog(client))
-                if "PingCog" not in [c.__class__.__name__ for c in client.cogs.values()]:
+                if "PingCog" not in cog_names:
                     await client.add_cog(PingCog(client))
+                if self.runtime is not None:
+                    from deile_bot.providers.discord.cogs.agent_cog import AgentCog
+                    from deile_bot.providers.discord.cogs.capabilities_cog import CapabilitiesCog
+                    from deile_bot.providers.discord.cogs.reaction_cog import ReactionCog
+
+                    if "AgentCog" not in cog_names:
+                        await client.add_cog(AgentCog(client, self.runtime, self))
+                    if "CapabilitiesCog" not in cog_names:
+                        await client.add_cog(CapabilitiesCog(client, self.runtime, self))
+                    if "ReactionCog" not in cog_names:
+                        await client.add_cog(ReactionCog(client, self.runtime, self))
                 if self.settings.slash_sync_guild_ids:
                     for gid in self.settings.slash_sync_guild_ids:
                         await client.tree.sync(guild=discord.Object(id=gid))
