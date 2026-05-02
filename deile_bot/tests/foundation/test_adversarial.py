@@ -25,21 +25,18 @@ from deile_bot.foundation.conversation_store import ConversationStore
 from deile_bot.foundation.dlq import DeadLetterQueue
 from deile_bot.foundation.envelope import ChannelScope
 from deile_bot.foundation.event_bus import BotEventBus
-from deile_bot.foundation.exceptions import (AgentInvocationError,
-                                             ProviderError, RateLimited)
+from deile_bot.foundation.exceptions import AgentInvocationError, ProviderError
 from deile_bot.foundation.identity import IdentityResolver
 from deile_bot.foundation.intent import HeuristicIntentClassifier
 from deile_bot.foundation.metrics import MetricsCollector
 from deile_bot.foundation.output_formatter import PlainTextFormatter
-from deile_bot.foundation.permissions import (Action, PermissionGate,
-                                              PermissionDecision)
+from deile_bot.foundation.permissions import Action, PermissionGate
 from deile_bot.foundation.persona_selector import PersonaSelector
 from deile_bot.foundation.pipeline import EgressPipeline, IngressPipeline
 from deile_bot.foundation.rate_limit import RateLimiter
 from deile_bot.foundation.settings import (BotSettings, FoundationSettings,
                                            PermissionsSettings, PersonaRule,
                                            PersonaSettings)
-
 
 # ──────────────────────── helpers ────────────────────────
 
@@ -319,7 +316,7 @@ class TestDiscordADV:
     async def test_advd1_renamed_user_cannot_admin(self, store):
         """Same as ADV-3 but framed for Discord ownership."""
         identity = IdentityResolver(store)
-        bob = await identity.resolve("discord", "222", display_name="bob")
+        await identity.resolve("discord", "222", display_name="bob")
         alice = await identity.resolve("discord", "111", display_name="elimar.ciss")
         settings = BotSettings(
             permissions=PermissionsSettings(owners=[alice.bot_user_id]),
@@ -489,7 +486,8 @@ class TestDiscordADV:
 
     def test_advd14_split_codeblock_aware(self):
         """Discord OutputFormatter.split must not break ``` fences."""
-        from deile_bot.providers.discord.formatter import DiscordOutputFormatter
+        from deile_bot.providers.discord.formatter import \
+            DiscordOutputFormatter
 
         fmt = DiscordOutputFormatter()
         big = "intro\n```python\n" + ("print('x')\n" * 400) + "```\nend"
@@ -556,8 +554,7 @@ class TestDeileHooksADV:
     async def test_adv6_extra_prompt_does_not_leak_between_calls(self, tmp_path):
         """extra_system_prompt set on one call must not bleed to next call."""
         from deile.core.agent import DeileAgent
-        from deile.core.bot_hooks import (get_bot_context,
-                                          sanitize_extra_system_prompt)
+        from deile.core.bot_hooks import sanitize_extra_system_prompt
 
         agent = DeileAgent()
         sess = await agent.get_or_create_session("s_adv6", working_directory=str(tmp_path))
