@@ -52,15 +52,19 @@ class IdentityResolver:
             )
             await self._store.upsert_user(user)
             return user
-        user = BotUser(
+        candidate = BotUser(
             bot_user_id=_generate_ulid(),
             provider=provider,
             provider_user_id=provider_user_id,
             display_name=display_name or "unknown",
             is_bot=is_bot,
         )
-        await self._store.upsert_user(user)
-        return user
+        await self._store.upsert_user(candidate)
+        # Re-read: under concurrent races for the same provider_user_id, our
+        # candidate's INSERT may have been a no-op (ON CONFLICT keeps existing
+        # bot_user_id). Always read back the canonical row.
+        canonical = await self._store.get_user_by_provider_id(provider, provider_user_id)
+        return canonical or candidate
 
     async def by_bot_user_id(self, bot_user_id: str) -> Optional[BotUser]:
         # Linear search via display_name fallback; OK for occasional admin lookups.
