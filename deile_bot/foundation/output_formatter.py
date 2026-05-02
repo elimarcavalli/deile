@@ -27,34 +27,78 @@ class OutputFormatter(ABC):
         return _codeblock_aware_split(text, self.max_message_chars)
 
 
+_FENCE_LANG_RE = re.compile(r"```(\w*)")
+_FENCE_RE = re.compile(r"```")
+
+
 def _codeblock_aware_split(text: str, max_chars: int) -> List[str]:
-    """Never break inside a ```...``` codeblock; prefer linebreaks."""
+    """Split into <= max_chars chunks; ensure every chunk has balanced ``` fences.
+
+    Strategy:
+    1. If the chunk would split inside an unclosed fence and the fence's
+       closing ``` is reachable within `max_chars * 2`, extend the chunk to
+       absorb the whole fence (preserves byte-for-byte concatenation).
+    2. Otherwise, close the fence with `\\n``` and reopen the next chunk with
+       `````<lang>\\n`. Joined output then differs from input by the inserted
+       fence markers, but every chunk renders correctly (ADV-D14, decision D10).
+    """
+    if not text:
+        return []
+    if len(text) <= max_chars:
+        return [text]
     chunks: List[str] = []
     cursor = 0
-    code_fence_re = re.compile(r"```")
+    pending_lang = ""
     while cursor < len(text):
-        end = min(cursor + max_chars, len(text))
-        if end == len(text):
-            chunks.append(text[cursor:end])
-            break
-        # walk forward and find safe split point
-        head = text[cursor:end]
-        # detect if head opens an unclosed fence — extend until close OR fall back
-        opens = len(code_fence_re.findall(head))
-        if opens % 2 == 1:
-            # find next ``` after end
-            next_close = text.find("```", end)
-            if next_close != -1 and (next_close + 3 - cursor) <= max_chars * 2:
-                end = next_close + 3
-            # else: leave as-is (better to chunk than to balloon)
-        # try to break at last newline within head
-        cut_at = end
-        snippet = text[cursor:end]
-        last_newline = snippet.rfind("\n")
-        if last_newline > max_chars // 2:
-            cut_at = cursor + last_newline + 1
-        chunks.append(text[cursor:cut_at])
-        cursor = cut_at
+        prefix = f"```{pending_lang}\n" if pending_lang else ""
+        # reserve room for prefix; closing fence is added only when needed
+        reserve = len(prefix)
+        budget = max(1, max_chars - reserve)
+        remaining = len(text) - cursor
+        end_offset = min(budget, remaining)
+        snippet = text[cursor:cursor + end_offset]
+        is_last = (cursor + end_offset) >= len(text)
+        # Try to align on newline in back half
+        if not is_last:
+            last_nl = snippet.rfind("\n")
+            if last_nl > end_offset // 2:
+                end_offset = last_nl + 1
+                snippet = text[cursor:cursor + end_offset]
+                is_last = (cursor + end_offset) >= len(text)
+        # Count net fence parity in this snippet (flipping pending_lang state)
+        matches = _FENCE_LANG_RE.findall(snippet)
+        starts_inside = bool(pending_lang)
+        ends_inside = starts_inside if len(matches) % 2 == 0 else not starts_inside
+        if ends_inside and not is_last:
+            # 1) Try to extend to swallow the closing ``` if within 2x budget
+            extended_close = text.find("```", cursor + end_offset)
+            extended_end = extended_close + 3 if extended_close != -1 else -1
+            if (
+                extended_end != -1
+                and (extended_end - cursor) <= max_chars * 2
+            ):
+                # absorb the rest of the fence
+                end_offset = extended_end - cursor
+                snippet = text[cursor:cursor + end_offset]
+                # re-evaluate is_last
+                is_last = (cursor + end_offset) >= len(text)
+                # parity now should be balanced; just append
+                chunk = prefix + snippet
+                pending_lang = ""
+            else:
+                # 2) Close + reopen
+                last_lang = matches[-1] if matches else pending_lang
+                chunk = prefix + snippet + "\n```"
+                pending_lang = last_lang
+        elif ends_inside and is_last:
+            # final chunk left open — close it
+            chunk = prefix + snippet + "\n```"
+            pending_lang = ""
+        else:
+            chunk = prefix + snippet
+            pending_lang = ""
+        chunks.append(chunk)
+        cursor += end_offset
     return chunks
 
 
