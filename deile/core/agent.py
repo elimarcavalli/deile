@@ -370,10 +370,24 @@ class DeileAgent:
         self._request_count += 1
         
         try:
+            # Bot-hooks: extract optional kwargs added in plano DEILE fase 2.
+            # These are stashed in session.context_data so context_manager and
+            # tool dispatch can read them later in the turn.
+            extra_system_prompt = kwargs.pop("extra_system_prompt", None)
+            bot_context = kwargs.pop("bot_context", None)
+
             # Obtém ou cria sessão
             session = self._get_or_create_session(session_id, **kwargs)
             session.update_activity()
-            
+
+            if extra_system_prompt is not None:
+                from deile.core.bot_hooks import sanitize_extra_system_prompt
+                session.context_data["extra_system_prompt"] = (
+                    sanitize_extra_system_prompt(str(extra_system_prompt))
+                )
+            if bot_context is not None:
+                session.context_data["bot_context"] = dict(bot_context)
+
             # Adiciona entrada ao histórico
             session.add_to_history("user", user_input)
             
@@ -1234,13 +1248,16 @@ class DeileAgent:
         
         for tool_name in parse_result.tool_requests:
             try:
-                # Cria contexto para a tool
+                # Cria contexto para a tool. Bot mode propaga bot_context para
+                # ctx.extra (D4 plano DEILE) — tools que precisam leem dali.
+                _bot_ctx = session.context_data.get("bot_context") or {}
                 context = ToolContext(
                     user_input=session.conversation_history[-1]["content"] if session.conversation_history else "",
                     parsed_args=parse_result.commands[0].arguments if parse_result.commands else {},
                     session_data=session.context_data,
                     working_directory=str(session.working_directory),
-                    file_list=parse_result.file_references
+                    file_list=parse_result.file_references,
+                    extra={"bot_context": dict(_bot_ctx)} if _bot_ctx else {},
                 )
                 
                 # Executa a tool
