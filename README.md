@@ -1,14 +1,14 @@
 # 🤖 DEILE — Development Environment Intelligence & Learning Engine
 
+<p align="center">
+  <img src="docs/img/banner.png" alt="DEILE" width="480">
+</p>
 
-
-Versão
-Python
-Licença
+![Version](https://img.shields.io/badge/version-5.1.0-blue.svg?style=for-the-badge)
+![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg?style=for-the-badge)
+![License](https://img.shields.io/badge/license-MIT-green.svg?style=for-the-badge)
 
 **Agente de IA autônomo, multi-provedor, executado via CLI, voltado ao desenvolvimento de software.**
-
-
 
 ---
 
