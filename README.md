@@ -62,12 +62,12 @@ Pré-requisito: **Python 3.9+** e ao menos uma chave de API entre Anthropic, Ope
 
 ### 2️⃣ Início rápido (recomendado)
 
-O script `deile.sh` cuida de tudo automaticamente: detecta/instala Python (Homebrew, apt, dnf, pacman ou apk), cria o `.venv` se ainda não existir, sempre ativa o venv, pergunta as chaves de API com input oculto e gera o `.env` na primeira execução, instala as dependências e inicia o agente. Idempotente — nas próximas execuções, só ativa o venv e sobe o DEILE.
+O próprio `deile.py` cuida de tudo na primeira execução: cria o `.venv` se ainda não existir, pergunta as chaves de API com input oculto e gera o `.env`, instala as dependências e sobe o agente. Nas próximas execuções, ele detecta o `.venv` e vai direto para o startup do DEILE.
 
 
-| Passo                 | Comando      |
-| --------------------- | ------------ |
-| Executar o instalador | `./deile.sh` |
+| Passo                 | Comando            |
+| --------------------- | ------------------ |
+| Executar o DEILE      | `python3 deile.py` |
 
 
 ### 3️⃣ Início manual (passo a passo)
@@ -588,7 +588,7 @@ Contribuições são bem-vindas — desde correção de typos até novas ferrame
 | 4️⃣ Adicionar o upstream               | `git remote add upstream https://github.com/elimarcavalli/deile.git`                                     |
 | 5️⃣ Sincronizar com o upstream         | `git fetch upstream && git checkout main && git merge upstream/main`                                     |
 | 6️⃣ Criar um branch para a sua mudança | `git checkout -b feature/nome-feature`                                                                   |
-| 7️⃣ Configurar o ambiente              | `./deile.sh` (cuida de venv, deps e .env)                                                                |
+| 7️⃣ Configurar o ambiente              | `python3 deile.py` (cuida de venv, deps e .env na primeira execução)                                     |
 | 8️⃣ Implementar e testar               | Rodar `pytest` e `ruff check deile/` antes de commitar                                                   |
 | 9️⃣ Commitar (Conventional Commits)    | `git commit -m "feat(tools): ..."`                                                                       |
 | 🔟 Enviar para o seu fork              | `git push origin feat/minha-mudanca`                                                                     |

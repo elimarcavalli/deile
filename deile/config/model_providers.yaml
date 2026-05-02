@@ -177,7 +177,7 @@ circuit_breaker:
 
 budget:
   enabled: true
-  per_session_usd: 5.00
+  per_session_usd: 10.00
   per_provider_daily_usd:
     anthropic: 50.00
     openai: 50.00
