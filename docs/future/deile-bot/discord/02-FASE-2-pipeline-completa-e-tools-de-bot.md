@@ -127,21 +127,26 @@ async def _run_discord():
 
 ### 2.4. Tools de bot
 
-`deile_bot/foundation/tools/` — tools registráveis no `tool_registry` do DEILE quando o bridge é in-process:
+> `BotTool` base e tools transversais já estão **declarados como foundation** (ver `deile-bot/foundation/00-PLAN.md` §6 e `00-MASTER-EXECUTION-PLAN.md` §2.2). Esta fase **implementa** as transversais e **adiciona** as Discord-specific.
 
 ```
+# Foundation (entregue por esta fase como parte da foundation tools)
 deile_bot/foundation/tools/
 ├── __init__.py
 ├── base.py                      # BotTool base que recebe ctx.extra["bot_context"]
-├── send_dm.py
-├── get_user_profile.py
-├── react_to_message.py
-├── pin_message.py
-├── start_thread.py
-└── mention_role.py
+├── send_dm.py                   # transversal — todos providers com can_send_dm=True
+├── get_user_profile.py          # transversal — providers com can_fetch_user_profile=True
+└── react_to_message.py          # transversal — providers com can_react=True
+
+# Provider-specific (Discord)
+deile_bot/providers/discord/tools/
+├── __init__.py
+├── pin_message.py               # Discord-only
+├── start_thread.py              # Discord-only
+└── mention_role.py              # Discord-only
 ```
 
-**`BotTool` base**:
+**`BotTool` base** (em `deile_bot/foundation/tools/base.py`):
 
 ```python
 class BotTool(Tool):

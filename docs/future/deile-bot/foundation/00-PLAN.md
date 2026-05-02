@@ -52,12 +52,14 @@ Decisões de implementação detalhadas vivem nas fases. Decisões cross-cutting
 
 ## 4. Modelo de domínio (resumo de tipos públicos)
 
+> Glossário canônico vive em [`docs/future/00-MASTER-EXECUTION-PLAN.md`](../../00-MASTER-EXECUTION-PLAN.md) §2. O resumo abaixo é não-normativo — em conflito, o master vence.
+
 ```python
 # deile_bot/foundation/envelope.py
 
 @dataclass(frozen=True)
 class BotUser:
-    bot_user_id: str                  # interno, estável
+    bot_user_id: str                  # interno, estável (ULID)
     provider: str                     # 'discord' | 'telegram' | ...
     provider_user_id: str             # ID nativo no provider
     display_name: str                 # informativo, NUNCA usado para autorizar
@@ -69,12 +71,13 @@ class Channel:
     provider_channel_id: str
     name: Optional[str]
     scope: ChannelScope               # DM | GROUP | THREAD | BROADCAST
+    parent_channel_id: Optional[str] = None  # populado para THREAD
 
 @dataclass(frozen=True)
 class Attachment:
-    kind: AttachmentKind              # IMAGE | VIDEO | AUDIO | FILE | STICKER
-    url: Optional[str]                # se hospedado pelo provider
-    bytes_inline: Optional[bytes]     # se vem inline
+    kind: AttachmentKind              # IMAGE | VIDEO | AUDIO | FILE | STICKER | OTHER
+    url: Optional[str]
+    bytes_inline: Optional[bytes]
     mime: Optional[str]
     filename: Optional[str]
     size_bytes: Optional[int]
@@ -83,23 +86,110 @@ class Attachment:
 class ReplyContext:
     replied_message_id: str
     replied_author: BotUser
-    replied_excerpt: str              # texto curto para contexto
+    replied_excerpt: str
 
 @dataclass(frozen=True)
-class MessageEnvelope:
-    message_id: str                   # ID estável do provider
+class MessageEnvelope:                # INBOUND
+    message_id: str
     channel: Channel
     author: BotUser
-    sent_at: datetime                 # UTC
+    sent_at: datetime                 # UTC-aware
     text: str
-    markup: Optional[MarkupAST]       # se o provider já parseou
+    markup: Optional[MarkupAST]
     attachments: tuple[Attachment, ...]
     reply: Optional[ReplyContext]
     mentions: tuple[BotUser, ...]
-    raw: Mapping[str, Any]            # payload original do provider, leitura-only
+    raw: Mapping[str, Any]
+
+# ─── Outbound (introduzido aqui desde a fase 1) ─────────────────────
+
+class OutboundIntent(str, Enum):
+    FREE_TEXT = "free_text"
+    TEMPLATE = "template"
+
+@dataclass(frozen=True)
+class TemplateMessage:
+    name: str
+    language: str
+    body_params: tuple[str, ...] = ()
+    header_params: tuple[str, ...] = ()
+    button_params: tuple[Mapping[str, Any], ...] = ()
+
+@dataclass(frozen=True)
+class ConversationWindow:
+    last_inbound_at: Optional[datetime]
+    window_hours: int                 # 24 (WhatsApp), 7*24 (Meta com human_agent)
+    @property
+    def is_open(self) -> bool: ...
+
+@dataclass(frozen=True)
+class OutboundEnvelope:
+    intent: OutboundIntent
+    text: Optional[str] = None
+    template: Optional[TemplateMessage] = None
+    interactive: Optional["InteractiveControls"] = None
+    attachments: tuple[Attachment, ...] = ()
+    reply_to: Optional[str] = None
 ```
 
-`MarkupAST` é `list[MarkupSpan]`, com `MarkupSpan = (kind, text)` onde `kind ∈ {plain, bold, italic, strike, code_inline, code_block, quote, link(url), heading(level), bullet, numbered}`.
+```python
+# deile_bot/foundation/interactive.py
+
+class InteractiveControls(ABC):
+    """Marcador para botões/listas/quick replies. Renderizado por adapter."""
+
+@dataclass(frozen=True)
+class InteractiveButton:
+    label: str
+    callback_data: Optional[str] = None
+    url: Optional[str] = None
+
+@dataclass(frozen=True)
+class InteractiveButtonRow(InteractiveControls):
+    buttons: tuple[InteractiveButton, ...]      # max 3 por row na maioria dos providers
+
+@dataclass(frozen=True)
+class InteractiveListSection:
+    title: str
+    items: tuple[InteractiveButton, ...]
+
+@dataclass(frozen=True)
+class InteractiveList(InteractiveControls):
+    button_label: str
+    sections: tuple[InteractiveListSection, ...]
+
+@dataclass(frozen=True)
+class QuickReply:
+    label: str
+    payload: str
+
+@dataclass(frozen=True)
+class QuickReplies(InteractiveControls):
+    options: tuple[QuickReply, ...]              # max 13 (Messenger), 11 (Telegram one-time)
+```
+
+```python
+# deile/common/markup_ast.py  (DEILE core; foundation importa)
+
+class SpanKind(str, Enum):
+    PLAIN = "plain"; BOLD = "bold"; ITALIC = "italic"; STRIKE = "strike"
+    CODE_INLINE = "code_inline"; CODE_BLOCK = "code_block"
+    QUOTE = "quote"; LINK = "link"
+    HEADING = "heading"; BULLET = "bullet"; NUMBERED = "numbered"
+    LINE_BREAK = "linebreak"
+
+@dataclass(frozen=True, slots=True)
+class MarkupSpan:
+    kind: SpanKind
+    text: str
+    meta: Mapping[str, Any] = MappingProxyType({})
+
+class MarkupAST(tuple[MarkupSpan, ...]):
+    @classmethod
+    def from_plain(cls, text: str) -> "MarkupAST": ...
+```
+
+> **Decisão final** (em conflito com primeira versão): `MarkupAST` mora em `deile/common/markup_ast.py`. Foundation importa via `from deile.common.markup_ast import MarkupAST, MarkupSpan, SpanKind`. Plano DEILE Fase 3 cria o módulo; foundation Fase 1 declara-o como dependência.
 
 ## 5. Pilha de serviços (visão única)
 
@@ -141,21 +231,28 @@ class MessageEnvelope:
 
 **Dentro do escopo da foundation:**
 
-- DTOs (`MessageEnvelope`, `BotUser`, `Channel`, `Attachment`, `ReplyContext`, `MarkupAST`, `MarkupSpan`).
+- DTOs **inbound**: `MessageEnvelope`, `BotUser`, `Channel`, `Attachment`, `ReplyContext`, `ChannelScope`, `AttachmentKind`.
+- DTOs **outbound**: `OutboundEnvelope`, `OutboundIntent`, `TemplateMessage`, `ConversationWindow`.
+- DTOs **interactive**: `InteractiveControls` (ABC), `InteractiveButton`, `InteractiveButtonRow`, `InteractiveList`, `InteractiveListSection`, `QuickReply`, `QuickReplies`.
 - `ProviderAdapter` ABC + `ProviderCapabilities` dataclass.
+- `BotTool` (base) em `deile_bot/foundation/tools/base.py`. Tools transversais (`send_dm`, `get_user_profile`, `react_to_message`, `send_template_message`) em `deile_bot/foundation/tools/*.py`.
 - `IngressPipeline` e `EgressPipeline` orquestrando os serviços.
-- Serviços: `IdentityResolver`, `PermissionGate`, `RateLimiter`, `ConversationStore`, `IntentClassifier`, `AgentBridge` (in-process + oneshot), `CapabilityCatalog`, `PersonaSelector`, `OutputFormatter` (ABC), `AuditLogger` wrap, `DeadLetterQueue`, `EventBus` wrap, `MetricsCollector`.
+- Serviços: `IdentityResolver`, `PermissionGate`, `RateLimiter`, `ConversationStore`, `IntentClassifier`, `AgentBridge` (in-process + oneshot), `CapabilityCatalog`, `PersonaSelector`, `OutputFormatter` (ABC), `BotAuditLogger` wrap, `DeadLetterQueue`, `BotEventBus` wrap, `MetricsCollector`.
+- `AgentMetaProvider` (ABC) em `deile_bot/foundation/agent_meta.py` + `DeileAgentMetaProvider` concreta.
+- `WebhookRouter` ABC em `deile_bot/runtime/webhook_router.py` (fase 3 da foundation; concreto FastAPI em `webhook_server.py` quando o primeiro adapter HTTP-only entrar — Telegram fase 2 ou WhatsApp fase 1).
 - Settings (`BotSettings`) singleton via `get_bot_settings()`.
-- Schema SQLite com migrations versionadas.
+- Schema SQLite (`data/deile_bot.sqlite`) com migrations versionadas.
+- Logging estruturado JSON (`deile_bot/foundation/logging.py`).
 - Exceptions tipadas.
-- Testes unit cobrindo cada serviço com fakes.
+- Testes unit cobrindo cada serviço com fakes; bateria E2E com `FakeProviderAdapter`.
 
-**Fora do escopo (nas pastas de provider):**
+**Fora do escopo (nas pastas de provider/runtime):**
 
-- Adapters concretos (`discord/`, `telegram/`, `whatsapp/`, `meta/`).
-- Cogs/handlers específicos.
-- Webhook server FastAPI (vai em `deile_bot/runtime/webhook_server.py` na fase do primeiro provider que precisar dele — WhatsApp).
-- CLI `deile-bot run --provider X` (vai em `deile_bot/cli.py` no plano do Discord).
+- Adapters concretos (`providers/discord/`, `providers/telegram/`, `providers/whatsapp/`, `providers/meta/`).
+- Cogs/handlers específicos por provider.
+- `WebhookServer` concreto FastAPI em `deile_bot/runtime/webhook_server.py` (introduzido no primeiro provider que precisa).
+- `Scheduler` concreto em `deile_bot/runtime/scheduler.py` (introduzido no plano Discord fase 4).
+- CLI `python3 -m deile_bot.cli run --provider X` em `deile_bot/cli.py` (introduzida no plano Discord fase 1, evoluída ao longo das fases).
 
 ## 7. Dependências externas e do projeto
 

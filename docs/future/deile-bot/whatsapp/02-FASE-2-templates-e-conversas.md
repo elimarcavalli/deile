@@ -1,48 +1,38 @@
-# Fase 2 — Templates aprovados + ConversationWindow + Interactive Messages
+# Fase 2 — Templates aprovados + janela de 24h + Interactive Messages
+
+> **Importante:** os DTOs `ConversationWindow`, `OutboundEnvelope`, `OutboundIntent`, `TemplateMessage`, `InteractiveControls`/`InteractiveList`/`InteractiveButtonRow`/`QuickReplies` já moram na foundation desde a fase 1 (ver `00-MASTER-EXECUTION-PLAN.md` §2.1 e `deile-bot/foundation/01-FASE-1-...`). Esta fase **consome** e adiciona suporte específico WhatsApp.
 
 ## Entregáveis
 
-### 2.1. `ConversationWindow` na foundation
-
-Extensão da foundation:
+### 2.1. `ConversationStore.get_window` (extensão na foundation se ainda não existe)
 
 ```python
-@dataclass(frozen=True)
-class ConversationWindow:
-    last_inbound_at: Optional[datetime]
-    window_hours: int                     # 24 para WhatsApp
-    @property
-    def is_open(self) -> bool: ...
-
 class ConversationStore:
-    async def get_window(self, provider: str, user: BotUser, window_hours: int) -> ConversationWindow: ...
+    async def get_window(self, provider: str, user: BotUser, window_hours: int) -> ConversationWindow:
+        last = await self._fetch_last_inbound_at(provider, user)
+        return ConversationWindow(last_inbound_at=last, window_hours=window_hours)
 ```
 
-### 2.2. `OutboundIntent`
+Se a foundation fase 2 já entregou `_fetch_last_inbound_at` ou similar, reuso. Se não, **adicionar agora à foundation** (PR pequeno separado, lifeline).
+
+### 2.2. `EgressPipeline` consciente da janela
+
+Para providers com `capabilities.has_conversation_window=True`, antes de `adapter.send_message`:
 
 ```python
-class OutboundIntent(str, Enum):
-    FREE_TEXT = "free_text"
-    TEMPLATE = "template"
-
-@dataclass(frozen=True)
-class TemplateMessage:
-    name: str
-    language: str
-    body_params: list[str] = []
-    header_params: list[str] = []
-    button_params: list[dict] = []
-
-@dataclass(frozen=True)
-class OutboundEnvelope:
-    intent: OutboundIntent
-    text: Optional[str] = None
-    template: Optional[TemplateMessage] = None
-    interactive: Optional[InteractiveControls] = None
-    attachments: tuple[Attachment, ...] = ()
+window = await store.get_window("whatsapp", user, window_hours=24)
+if window.is_open:
+    intent = OutboundIntent.FREE_TEXT
+    out = OutboundEnvelope(intent=intent, text=rendered_text, ...)
+else:
+    template = templates.get(settings.re_engagement_template)  # opt
+    if template is None:
+        await dlq.enqueue(...); audit.log(OUTBOUND_FAILED, reason="window_closed_no_template"); return
+    out = OutboundEnvelope(intent=OutboundIntent.TEMPLATE, template=template.with_params(...))
+await adapter.send_outbound(channel, out)
 ```
 
-`EgressPipeline` ganha consciência: para WhatsApp, antes de send_message, consulta `get_window(...)`. Se aberto → FREE_TEXT. Se fechado → TEMPLATE (com fallback configurado, senão raise + DLQ).
+> **Nota:** `adapter.send_message(channel, text, ...)` continua existindo como conveniência sobre `send_outbound(channel, OutboundEnvelope(intent=FREE_TEXT, text=text, ...))`. Adapters dever implementar `send_outbound` quando `has_conversation_window=True` ou quando suportam `interactive`/`template`.
 
 ### 2.3. Catálogo de templates
 

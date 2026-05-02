@@ -14,44 +14,94 @@
 
 ## Arquitetura-alvo do pacote `deile_bot/`
 
+> Glossário canônico de tipos e paths em [`../00-MASTER-EXECUTION-PLAN.md`](../00-MASTER-EXECUTION-PLAN.md) §2. O esqueleto abaixo é não-normativo.
+
 ```
 deile_bot/
 ├── foundation/                  ← provider-agnóstico (PLANEJADO)
-│   ├── envelope.py              MessageEnvelope, Attachment, ReplyContext (DTOs)
+│   ├── envelope.py              DTOs inbound + outbound + ConversationWindow
+│   ├── interactive.py           InteractiveControls/Button/Row/List/Section/QuickReply(ies)
 │   ├── identity.py              IdentityResolver: provider_user_id → BotUser
-│   ├── permissions.py           PermissionGate (allowlist por user.id)
+│   ├── permissions.py           PermissionGate (allowlist por bot_user_id)
 │   ├── rate_limit.py            TokenBucket + Semaphore por provider
 │   ├── conversation_store.py    Histórico em SQLite (substitui memory.json atual)
 │   ├── agent_bridge.py          Bridge para deile.core.agent.DeileAgent
-│   ├── capabilities.py          CapabilityCatalog para auto-introspecção
+│   ├── agent_meta.py            AgentMetaProvider ABC + DeileAgentMetaProvider
+│   ├── capabilities.py          ProviderCapabilities + CapabilityCatalog
 │   ├── persona_selector.py      Mapeia (provider, scope, user) → persona DEILE
-│   ├── audit.py                 Wrapper sobre deile.security.audit_logger
-│   ├── intent.py                Should-respond classifier
-│   ├── markup_ast.py            AST de marcação rica (B/I/code/quote/link/list)
-│   ├── output_formatter.py      Renderer ABC; subclasses por provider
+│   ├── audit.py                 BotAuditLogger (wrapper sobre deile.security.audit_logger)
+│   ├── intent.py                IntentClassifier (4 implementações)
+│   ├── output_formatter.py      Renderer ABC; subclasses em providers/<x>/formatter.py
+│   ├── pipeline.py              IngressPipeline + EgressPipeline
 │   ├── settings.py              BotSettings (singleton via get_bot_settings)
-│   ├── event_bus.py             Wrap de deile.events.event_bus
-│   ├── dlq.py                   Dead-letter queue para envios falhados
-│   ├── metrics.py               Contadores e histogramas
-│   └── exceptions.py
+│   ├── event_bus.py             BotEventBus (wrap de deile.events.event_bus)
+│   ├── dlq.py                   DeadLetterQueue (SQLite)
+│   ├── metrics.py               MetricsCollector
+│   ├── logging.py               JSON-structured logging
+│   ├── exceptions.py            BotFoundationError + subclasses tipadas
+│   ├── _testing.py              FakeProviderAdapter, FakeAgentMetaProvider, factories
+│   └── tools/
+│       ├── base.py              BotTool base (extrai adapter de ctx.extra)
+│       ├── send_dm.py           transversal
+│       ├── get_user_profile.py  transversal
+│       ├── react_to_message.py  transversal
+│       └── send_template_message.py  transversal (WhatsApp/Meta)
 ├── providers/                   ← provider-específico
-│   ├── base.py                  ProviderAdapter (ABC) + ProviderCapabilities
+│   ├── base.py                  ProviderAdapter ABC
 │   ├── discord/
+│   │   ├── adapter.py
+│   │   ├── normalizer.py
+│   │   ├── formatter.py
+│   │   ├── settings.py
+│   │   ├── intents.py
+│   │   ├── cogs/
+│   │   └── tools/               pin_message, start_thread, mention_role
 │   ├── telegram/
+│   │   ├── adapter.py
+│   │   ├── normalizer.py
+│   │   ├── formatter.py
+│   │   ├── settings.py
+│   │   └── handlers.py
 │   ├── whatsapp/
+│   │   ├── adapter.py
+│   │   ├── normalizer.py
+│   │   ├── formatter.py
+│   │   ├── settings.py
+│   │   ├── api_client.py
+│   │   ├── webhook_routes.py
+│   │   └── media.py
 │   └── meta/
+│       ├── _common/
+│       │   ├── webhook_router.py
+│       │   ├── api_client.py
+│       │   ├── auth.py
+│       │   └── settings.py
 │       ├── messenger/
 │       └── instagram/
 ├── runtime/
 │   ├── multi_runtime.py         Roda N adapters em paralelo
 │   ├── single_runtime.py        Roda 1 adapter
-│   └── webhook_server.py        FastAPI server compartilhado (WA/Meta)
+│   ├── webhook_server.py        FastAPI server compartilhado (WA/Meta/Telegram opt)
+│   ├── webhook_router.py        Dispatcher comum
+│   └── scheduler.py             Cron jobs YAML-driven
 ├── tests/
-│   ├── unit/
+│   ├── foundation/
+│   ├── providers/
+│   │   ├── discord/
+│   │   ├── telegram/
+│   │   ├── whatsapp/
+│   │   └── meta/
 │   ├── integration/
 │   └── e2e/
-└── cli.py                       deile-bot run --provider discord [--provider telegram]
+│       ├── (foundation E2E com FakeProviderAdapter)
+│       ├── discord/             E2E live
+│       ├── telegram/
+│       ├── whatsapp/
+│       └── meta/
+└── cli.py                       python3 -m deile_bot.cli run --provider X
 ```
+
+`deile/common/markup_ast.py` é entregue pelo plano DEILE (não vive em `deile_bot/`).
 
 ## Capability matrix (por que a foundation pode existir)
 

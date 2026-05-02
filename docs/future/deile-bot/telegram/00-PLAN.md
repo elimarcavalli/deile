@@ -47,12 +47,31 @@ Out: Telegram Premium features (reactions custom, etc.), Telegram Stars (pagamen
 
 ## 5. Riscos
 
-| Risco | Mitigação |
-|---|---|
-| MarkdownV2 escaping inconsistente | Testes golden de formatter; whitelist de caracteres; fallback para HTML mode |
-| Polling vs webhook em produção (escala) | Documentar trade-off; webhook recomendado para >100 chats |
-| Rate limit Telegram (30 msg/s global, 1 msg/s por chat) | RateLimiter da foundation já cobre; ajustar limites |
-| Topics em supergroups exigem feature flag no chat | Detecção e degradar para resposta no chat principal |
+| Risco | Prob | Impacto | Mitigação |
+|---|---|---|---|
+| MarkdownV2 escaping inconsistente (caracteres `_*[]()~\`>#+-=\|{}.!`) | alta | médio | Testes golden de formatter; helper `escape_markdown_v2`; fallback automático para HTML mode em mensagens com >5% chars escapáveis |
+| Polling vs webhook em produção (escala) | média | médio | Documentar trade-off; webhook recomendado para >100 chats simultâneos; runtime suporta os dois |
+| Rate limit Telegram (30 msg/s global, 1 msg/s por chat) | média | médio | `RateLimiter` da foundation já cobre; configurar por settings |
+| Topics em supergroups exigem feature flag no chat | baixa | baixo | Detecção via `chat.is_forum`; degradar para resposta no chat principal se feature off |
+| `Application.run_polling` bloqueante atrapalha multi-runtime | média | alto | Usar `Application.start()` + `updater.start_polling()` (não bloqueante); compatível com asyncio loop compartilhado |
+| Reactions API recente (Bot API 7.0+) — clientes antigos não veem | baixa | baixo | `set_reaction` falha gracefully em servidores legacy; capability-flagged |
+| `set_my_commands` por escopo conflita com outros bots | baixa | baixo | Escopo `BotCommandScopeAllPrivateChats` ou `BotCommandScopeChat(chat_id)` — nunca `Default` |
+| Webhook precisa de HTTPS válido + porta 80/88/443/8443 | média | médio | Documentar; ngrok em dev, Cloud Run/Fly em prod |
+| Conversation ID instável (Telegram não tem PSID estável como Messenger) | baixa | médio | Foundation usa `(provider, chat_id, user_id)` — conversação por usuário em chat |
+
+## 6. Capability matrix (referência cruzada)
+
+A matriz canônica vive em `docs/future/deile-bot/README.md`. Resumo Telegram:
+
+- Edit message: ✅ (mas rate-limited mais agressivo que Discord — debounce 1500ms)
+- React: ✅ (Bot API 7+)
+- Polls: ✅ (`send_poll`, com `is_anonymous`)
+- Threads: parcial (topics em supergroups)
+- DM: ✅ (chat privado é o default)
+- Inline keyboards: ✅ (renderer no plano fase 2)
+- Slash commands: ✅ (BotCommands sincronizados)
+- Voice: ✅ (`send_voice` para `Attachment.kind=AUDIO`)
+- Polling vs Webhook: os dois
 
 ## 6. Mapa de fases
 

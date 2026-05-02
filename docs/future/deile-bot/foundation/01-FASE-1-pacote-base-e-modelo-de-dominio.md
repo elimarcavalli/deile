@@ -17,10 +17,11 @@ deile_bot/
 ├── __init__.py                      # __version__ = "0.1.0"
 ├── foundation/
 │   ├── __init__.py
-│   ├── envelope.py
-│   ├── markup_ast.py
+│   ├── envelope.py                  # MessageEnvelope, BotUser, Channel, Attachment, ReplyContext,
+│   │                                # OutboundEnvelope, OutboundIntent, TemplateMessage, ConversationWindow
+│   ├── interactive.py               # InteractiveControls (ABC) + InteractiveButton/Row/List/Section/QuickReply/QuickReplies
 │   ├── capabilities.py              # ProviderCapabilities (ainda não o catalog)
-│   ├── settings.py
+│   ├── settings.py                  # BotSettings, FoundationSettings, ProviderRegistrySettings
 │   ├── exceptions.py
 │   └── _testing.py                  # fakes para outros pacotes consumirem em testes
 ├── providers/
@@ -30,38 +31,69 @@ deile_bot/
     ├── __init__.py
     └── foundation/
         ├── __init__.py
-        ├── test_envelope.py
-        ├── test_markup_ast.py
+        ├── test_envelope.py         # inbound + outbound + window
+        ├── test_interactive.py
         ├── test_settings.py
         ├── test_exceptions.py
         └── test_provider_adapter_abc.py
 ```
 
-### 1.2. `foundation/envelope.py` — DTOs imutáveis
+> **Nota sobre `MarkupAST`**: o tipo canônico vive em `deile/common/markup_ast.py` (criado pela fase 3 do plano DEILE). A foundation **importa** dali. Como a fase 3 do DEILE pode ainda não estar mergeada quando esta fase começar, a fase 1 da foundation pode criar `deile/common/markup_ast.py` como skeleton mínimo (apenas DTOs); a fase 3 do DEILE então adiciona o `MarkdownToASTParser` e o pipeline streaming. Decisão única, sem duplicação.
 
-Classes (ver §4 do `00-PLAN.md` para a lista canônica de campos):
+### 1.2. `foundation/envelope.py` — DTOs imutáveis (inbound + outbound + janela)
 
+Classes (lista canônica de campos no `00-PLAN.md` §4):
+
+**Inbound:**
 - `enum ChannelScope`: `DM`, `GROUP`, `THREAD`, `BROADCAST`.
 - `enum AttachmentKind`: `IMAGE`, `VIDEO`, `AUDIO`, `FILE`, `STICKER`, `OTHER`.
 - `@dataclass(frozen=True, slots=True) BotUser`.
-- `@dataclass(frozen=True, slots=True) Channel`.
+- `@dataclass(frozen=True, slots=True) Channel` (com `parent_channel_id` opcional para THREAD).
 - `@dataclass(frozen=True, slots=True) Attachment`.
 - `@dataclass(frozen=True, slots=True) ReplyContext`.
 - `@dataclass(frozen=True, slots=True) MessageEnvelope`.
+
+**Outbound:**
+- `enum OutboundIntent`: `FREE_TEXT`, `TEMPLATE`.
+- `@dataclass(frozen=True, slots=True) TemplateMessage`.
+- `@dataclass(frozen=True, slots=True) ConversationWindow` com property `is_open`.
+- `@dataclass(frozen=True, slots=True) OutboundEnvelope`.
 
 Regras:
 
 - Todos `frozen=True` para impedir mutação acidental entre tasks.
 - `slots=True` para footprint baixo.
-- `raw: Mapping[str, Any]` em `MessageEnvelope` é o payload original do provider, somente-leitura — útil para debug e para tools que precisem de campos raros.
-- Métodos auxiliares somente: `MessageEnvelope.has_attachments`, `MessageEnvelope.is_dm`, `MessageEnvelope.mentions_self(self_user_id)`, `Attachment.is_inline`. Nenhum método com I/O.
-- Validação em `__post_init__`: `message_id` não vazio, `sent_at.tzinfo is not None` (sempre UTC-aware), `provider` em set conhecido (mas extensível via settings).
+- `raw: Mapping[str, Any]` em `MessageEnvelope` é o payload original do provider, somente-leitura — útil para debug e para tools que precisem de campos raros. Tipo concreto: `MappingProxyType` ou `frozendict`.
+- Métodos auxiliares (sem I/O): `MessageEnvelope.has_attachments`, `MessageEnvelope.is_dm`, `MessageEnvelope.mentions_self(self_user_id)`, `MessageEnvelope.has_force_respond` (lê `raw.get("force_respond")` — contrato oficial documentado em `00-MASTER-EXECUTION-PLAN.md` §2.7), `Attachment.is_inline`, `OutboundEnvelope.requires_template_window` (`intent == TEMPLATE`).
+- Validação em `__post_init__`: `message_id` não vazio, `sent_at.tzinfo is not None` (sempre UTC-aware), `provider` em set extensível.
+- `OutboundEnvelope.__post_init__`: se `intent == FREE_TEXT`, `text` é obrigatório; se `intent == TEMPLATE`, `template` é obrigatório.
 
-### 1.3. `foundation/markup_ast.py` — Representação intermediária de texto formatado
+### 1.2.b. `foundation/interactive.py` — Controles interativos
+
+- `class InteractiveControls(ABC)`: marcador.
+- `@dataclass(frozen=True, slots=True) InteractiveButton` (label + `callback_data` ou `url`).
+- `@dataclass(frozen=True, slots=True) InteractiveButtonRow(InteractiveControls)`.
+- `@dataclass(frozen=True, slots=True) InteractiveListSection`.
+- `@dataclass(frozen=True, slots=True) InteractiveList(InteractiveControls)`.
+- `@dataclass(frozen=True, slots=True) QuickReply`.
+- `@dataclass(frozen=True, slots=True) QuickReplies(InteractiveControls)`.
+
+Validações:
+- `InteractiveButtonRow.buttons`: max 5 (Discord components), reduzido por adapter conforme provider.
+- `QuickReplies.options`: max 13.
+- `InteractiveListSection.items`: max 10 por seção (limite WhatsApp).
+- Renderização concreta vive em `OutputFormatter` de cada provider — foundation nunca renderiza.
+
+### 1.3. `deile/common/markup_ast.py` — Representação intermediária de texto formatado
+
+> **Reside em `deile/common/`, não em `deile_bot/foundation/`.** Decisão final do `00-MASTER-EXECUTION-PLAN.md` §2.1: tipo único compartilhado por DEILE (CLI/streaming) e foundation (renderização por provider). Esta fase **cria** o módulo com DTOs mínimos; parsers e `MarkdownToASTParser` são entregues pela fase 3 do plano DEILE.
 
 ```python
+# deile/common/markup_ast.py
 from enum import Enum
 from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any, Mapping
 
 class SpanKind(str, Enum):
     PLAIN = "plain"
@@ -69,10 +101,10 @@ class SpanKind(str, Enum):
     ITALIC = "italic"
     STRIKE = "strike"
     CODE_INLINE = "code_inline"
-    CODE_BLOCK = "code_block"        # com language opcional
+    CODE_BLOCK = "code_block"        # meta: {"language": "py"}
     QUOTE = "quote"
-    LINK = "link"
-    HEADING = "heading"              # com level 1-3
+    LINK = "link"                     # meta: {"url": "..."}
+    HEADING = "heading"               # meta: {"level": 1..3}
     BULLET = "bullet"
     NUMBERED = "numbered"
     LINE_BREAK = "linebreak"
@@ -81,7 +113,7 @@ class SpanKind(str, Enum):
 class MarkupSpan:
     kind: SpanKind
     text: str
-    meta: Mapping[str, Any] = MappingProxyType({})  # ex.: {"url": "..."} | {"language": "py"} | {"level": 2}
+    meta: Mapping[str, Any] = MappingProxyType({})
 
 class MarkupAST(tuple[MarkupSpan, ...]):
     """Lista plana de spans. Ordem importa. Sem aninhamento."""
@@ -89,14 +121,15 @@ class MarkupAST(tuple[MarkupSpan, ...]):
     def from_plain(cls, text: str) -> "MarkupAST": ...
 ```
 
-Funções utilitárias:
+Imports do lado da foundation:
 
-- `parse_discord_markdown(text: str) -> MarkupAST` (mover do conhecimento embutido no `bot.py` atual).
-- `parse_telegram_markdown_v2(text: str) -> MarkupAST` (stub na fase 1, implementar quando o adapter Telegram for planejado).
-- `parse_whatsapp_text(text: str) -> MarkupAST` (idem).
-- `parse_plain(text: str) -> MarkupAST` (sempre disponível).
+```python
+from deile.common.markup_ast import MarkupAST, MarkupSpan, SpanKind
+```
 
-A renderização (`MarkupAST -> str de provider`) **não vive aqui** — vive em `OutputFormatter` na fase 3. `markup_ast.py` é só estrutura + parsers de **entrada**.
+Parsers de entrada (`parse_discord_markdown`, `parse_telegram_markdown_v2`, `parse_whatsapp_text`, `parse_plain`) entram no plano DEILE Fase 3 ou no respectivo plano de provider — **não** nesta fase da foundation.
+
+A renderização (`MarkupAST → str do provider`) vive em `OutputFormatter` (foundation fase 3, ABC) e nas subclasses `providers/<x>/formatter.py`.
 
 ### 1.4. `foundation/settings.py` — `BotSettings` singleton
 
@@ -248,11 +281,12 @@ class ProviderAdapter(ABC):
 
 | Arquivo | Cobertura |
 |---|---|
-| `test_envelope.py` | Imutabilidade, validações `__post_init__`, métodos `is_dm`/`mentions_self`/`has_attachments`. |
-| `test_markup_ast.py` | `parse_plain`, `parse_discord_markdown` round-trip de bold/italic/code/quote/codeblock; spans em ordem; preservação de meta. |
+| `test_envelope.py` | Imutabilidade, validações `__post_init__` (inbound + outbound), métodos `is_dm`/`mentions_self`/`has_attachments`/`has_force_respond`/`requires_template_window`; `OutboundEnvelope(intent=FREE_TEXT, text=None)` levanta. |
+| `test_interactive.py` | Limites de tamanho (`InteractiveButtonRow` >5 levanta; `InteractiveListSection.items` >10 levanta; `QuickReplies.options` >13 levanta). |
 | `test_settings.py` | Override por env var (`DEILE_BOT_INTENT_CLASSIFIER=llm` deve refletir); singleton `get_bot_settings()` retorna mesma instância. |
 | `test_exceptions.py` | Hierarquia, atributo `context`. |
 | `test_provider_adapter_abc.py` | `FakeProviderAdapter().send_message(...)` aparece em `inbox`; chamar `edit_message` em adapter sem `can_edit_message` levanta `CapabilityNotSupported`. |
+| `test_markup_ast_skeleton.py` | DTOs criados em `deile/common/markup_ast.py` instanciam corretamente (mesmo sem parsers); `MarkupAST.from_plain` produz único span `PLAIN`. |
 
 ### 1.10. Configuração e CI
 

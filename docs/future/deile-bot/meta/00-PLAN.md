@@ -94,7 +94,40 @@ Total: ~9 dias.
 ## 8. Pré-requisitos operacionais (humanos)
 
 - App Meta criado com produtos `Messenger` e `Instagram Graph API`.
-- Page do Facebook (para Messenger) com Page Access Token.
+- Page do Facebook (para Messenger) com Page Access Token de longa duração.
 - Conta Instagram Business vinculada à Page.
 - Webhook subscriptions: `messages`, `messaging_postbacks`, `messaging_optins`, `message_reactions`, `instagram` (para IG).
-- Aprovação App Review do Meta para `pages_messaging`, `instagram_manage_messages`.
+- Aprovação App Review do Meta para `pages_messaging`, `instagram_manage_messages` (pode levar 1-3 semanas).
+- HTTPS público e webhook URL com `verify_token` configurado.
+
+## 9. Riscos consolidados
+
+| Risco | Prob | Impacto | Mitigação |
+|---|---|---|---|
+| Page Access Token expirar (60 dias) | alta | alto | Token de longa duração + rotação automática 7 dias antes; tarefa cron na fase 2 |
+| App Review rejeitado | média | crítico | Implementar features mínimas funcionais antes de submeter; documentação detalhada de cada permissão pedida |
+| Webhook URL muda em deploy → re-verificação Meta | média | médio | Domínio fixo (custom domain Cloud Run / Fly); reverificação como passo de deploy |
+| Janela 24h fechada sem human_agent tag → erro | alta | médio | `EgressPipeline` consciente; opt para human_agent tag se aplicável |
+| Story replies vêm com `referral.story_id` mas story já expirou | média | baixo | `replied_excerpt` com fallback "story expirada" |
+| Rate limit Graph API (varia por uso) | média | médio | RateLimiter + backoff + DLQ |
+| Mídia upload precisa de URL pública prévia | alta | baixo | `media.py` faz upload para storage interno + URL temporária |
+| Quick replies postback chega como inbound de payload sintético | sempre | baixo | Normalizer trata; envelope tem `force_respond=True` |
+
+## 10. Capability matrix (resumo)
+
+| Capacidade | Messenger | Instagram |
+|---|---|---|
+| Edit message | ❌ | ❌ |
+| React | ✅ (limitado) | parcial (apenas heart) |
+| DM | ✅ | ✅ |
+| Threads | ❌ | ❌ |
+| Polls | ❌ | ❌ |
+| Quick replies | ✅ (até 13) | parcial |
+| Inline buttons | ✅ (Generic Template) | ❌ |
+| Carousel | ✅ | ❌ |
+| Stories reply (entrega como mensagem) | n/a | ✅ |
+| Janela 24h | ✅ (com tags) | ✅ (com human_agent) |
+| Mídia | ✅ (image/audio/video/file) | ✅ (image/video) |
+| Voice messages | ✅ | ❌ |
+| Typing indicator | ✅ | ✅ |
+| Markup nativo | ❌ (texto puro) | ❌ (texto puro) |

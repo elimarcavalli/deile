@@ -52,17 +52,29 @@ WHATSAPP_CAPABILITIES = ProviderCapabilities(
 )
 ```
 
-## 5. Mudanças requeridas na foundation
+## 5. O que já está pronto na foundation (zero mudanças necessárias)
 
-| Mudança | Onde | Por quê |
+A revisão de integridade (commit 2 dos planos) **antecipou** as extensões que originalmente nasceriam aqui — agora vivem na foundation desde a fase 1:
+
+| Item | Onde já vive | Status |
 |---|---|---|
-| `ConversationWindow` em `MessageEnvelope` ou `BotUser` | foundation | Para egress saber se janela está aberta |
-| `TemplateMessage` DTO + `OutboundIntent` (FREE_TEXT \| TEMPLATE) | foundation | Egress decide qual usar |
-| `ProviderCapabilities.has_conversation_window` (já planejado) | foundation | Capability flag |
-| `OutputFormatter.render` com fallback "no markdown" para WhatsApp | foundation/provider | WhatsApp aceita formatação simples (`*bold*`, `_italic_`, `~strike~`, ` ```mono``` `) — formatter próprio |
-| `RateLimiter.acquire_outbound` com peso por tier | foundation | Limits diferentes |
+| `ConversationWindow` DTO + property `is_open` | `deile_bot/foundation/envelope.py` | ✅ na foundation |
+| `OutboundIntent` enum (FREE_TEXT, TEMPLATE) | `deile_bot/foundation/envelope.py` | ✅ |
+| `TemplateMessage` DTO | `deile_bot/foundation/envelope.py` | ✅ |
+| `OutboundEnvelope` DTO | `deile_bot/foundation/envelope.py` | ✅ |
+| `InteractiveControls`/`InteractiveList`/`InteractiveButtonRow`/`QuickReplies` | `deile_bot/foundation/interactive.py` | ✅ |
+| `ProviderCapabilities.has_conversation_window` flag | `deile_bot/foundation/capabilities.py` | ✅ |
+| `WebhookServer` | `deile_bot/runtime/webhook_server.py` | introduzido no plano Telegram fase 2 |
 
-Estas mudanças **não invalidam** o trabalho da foundation — são extensões previstas pelos princípios DI4 e F4. Documentar em `DECISOES.md` se chegarmos a este plano.
+Pequenas adições ainda exigidas por este plano:
+
+| Item | Onde | Quem entrega |
+|---|---|---|
+| `ConversationStore.get_window(provider, user, window_hours)` | `deile_bot/foundation/conversation_store.py` | esta fase, PR pequeno na foundation |
+| `EgressPipeline` consciente de janela e template fallback | `deile_bot/foundation/pipeline.py` | esta fase, PR pequeno na foundation |
+| `RateLimiter.acquire_outbound` com peso por tier | `deile_bot/foundation/rate_limit.py` | esta fase, PR pequeno na foundation |
+
+Esses PRs pequenos na foundation são incrementais, retro-compatíveis e ganham testes próprios na fase E2E desta área.
 
 ## 6. Mapa de fases
 
@@ -85,7 +97,23 @@ Total: ~10 dias.
 
 ## 8. Dependências
 
-- `httpx`
-- Foundation com `ConversationWindow`/`TemplateMessage`/`OutboundIntent`
+- `httpx>=0.25`
+- Foundation completa (ConversationWindow/TemplateMessage/OutboundIntent já presentes desde fase 1)
 - Meta Business verificado (operacional, fora de código)
 - Domínio com HTTPS público para webhook
+- App Meta com produto WhatsApp ativado, Phone Number ID, WABA ID, System User token
+
+## 9. Riscos consolidados
+
+| Risco | Prob | Impacto | Mitigação |
+|---|---|---|---|
+| Templates demoram dias para Meta aprovar | sempre | alto | Estoque de templates "operacionais" prontos antes do go-live; processo documentado |
+| Janela 24h fechada + sem template → mensagem perdida | alta | alto | Fallback automático para `re_engagement_template` configurável; sem template → DLQ + alerta |
+| Tier 1 (1k conv/dia) limita rapidamente | média | médio | Métricas projetam consumo; alertas a 70%/85%/95%; processo de upgrade tier documentado |
+| Cobrança por conversa (não mensagem) — billing surpresa | média | alto | Métrica `bot_whatsapp_conversations_total{type}` + dashboard custo; budget por dia |
+| Token System User expira/é revogado | baixa | crítico | Monitor 401; alerta operacional; rotação preventiva trimestral |
+| WhatsApp não suporta editar mensagem → streaming inviável | sempre | baixo | Estratégia: enviar resposta completa só no `done` do stream |
+| Mídia precisa upload prévio → latência | sempre | baixo | Cache de `media_id` por hash do conteúdo; reuse |
+| Compliance (opt-in obrigatório, política privacidade) | alta | crítico | Fluxo de opt-in registrado em `bot_user.opted_in_at`; auditoria |
+| Rate limit nativo varia por tier e qualidade rating | média | médio | `RateLimiter.acquire_outbound` com peso configurável |
+| Reactions (bot react) não disponível ainda | sempre | baixo | `can_react=False`; degradar gracefully quando agente pedir |

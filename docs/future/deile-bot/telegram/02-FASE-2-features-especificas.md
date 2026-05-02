@@ -16,19 +16,32 @@ class WebhookServer:
 
 `TelegramAdapter.start_webhook(public_url)` registra `/telegram/<secret>` e chama `bot.set_webhook`.
 
-### 2.2. Inline keyboards
+### 2.2. Inline keyboards (renderer Telegram para `InteractiveControls` da foundation)
 
-`InlineKeyboardBuilder` na foundation (já que outros providers também têm conceitos similares — Telegram, WhatsApp interactive, Messenger quick_replies):
+> Os tipos `InteractiveControls`, `InteractiveButton`, `InteractiveButtonRow`, `InteractiveList`, `QuickReplies` já vivem na foundation desde a fase 1 (ver `00-MASTER-EXECUTION-PLAN.md` §2.1). Telegram só fornece o **renderer**.
+
+`providers/telegram/formatter.py`:
 
 ```python
-class InteractiveControl: ...   # ABC
-class InlineButton(InteractiveControl): label, callback_data, url=None
-class QuickReply(InteractiveControl): label, payload
+def render_interactive(controls: InteractiveControls) -> InlineKeyboardMarkup | ReplyKeyboardMarkup | None:
+    if isinstance(controls, InteractiveButtonRow):
+        return InlineKeyboardMarkup([[
+            InlineKeyboardButton(b.label, callback_data=b.callback_data, url=b.url)
+            for b in controls.buttons
+        ]])
+    if isinstance(controls, InteractiveList):
+        # Telegram não tem List nativa equivalente — degradar para múltiplos rows
+        rows = [[InlineKeyboardButton(it.label, callback_data=it.callback_data) for it in sec.items] for sec in controls.sections]
+        return InlineKeyboardMarkup(rows)
+    if isinstance(controls, QuickReplies):
+        # Telegram quick reply = ReplyKeyboardMarkup com one_time_keyboard
+        return ReplyKeyboardMarkup([[KeyboardButton(o.label) for o in controls.options]], one_time_keyboard=True)
+    return None
 ```
 
-`adapter.send_message(..., interactive=InlineKeyboard(rows=[[btn1, btn2], ...]))`.
+`adapter.send_message(channel, OutboundEnvelope(intent=FREE_TEXT, text=..., interactive=InteractiveButtonRow(buttons=(...))))`. Outros providers ignoram se `can_inline_keyboards=False`.
 
-Telegram render: `InlineKeyboardMarkup`. Outros providers ignoram se `can_inline_keyboards=False`.
+Callbacks: handler dedicado para `Update.callback_query`; callback_data normalizado em envelope sintético com `force_respond=True` no `raw`.
 
 ### 2.3. Polls
 

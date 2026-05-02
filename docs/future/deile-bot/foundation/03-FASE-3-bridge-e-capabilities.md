@@ -6,6 +6,7 @@
 
 - Fase 1 e 2 mergeadas e verdes.
 - Compreensão das mudanças no DEILE descritas em [`../../deile/00-PLAN.md`](../../deile/00-PLAN.md). Algumas dependências do bridge dependem de hooks no `DeileAgent` — esta fase pode usar adaptadores temporários até o plano DEILE entregar.
+- `deile_bot/runtime/` criado nesta fase com `webhook_router.py` (ABC + dispatcher), `single_runtime.py` (loop adapter único). `webhook_server.py` (FastAPI concreto) é introduzido pelo primeiro adapter HTTP-only — Telegram fase 2 ou WhatsApp fase 1.
 
 ## Entregáveis
 
@@ -85,7 +86,30 @@ class CapabilityCatalog:
         """MarkupAST → string para ser enviada via /capabilities."""
 ```
 
-`AgentMetaProvider` é uma abstração fina sobre o que o DEILE expõe: `await agent_meta.list_tools()`, `await agent_meta.list_models()`, `await agent_meta.list_personas()`. Implementação concreta (`DeileAgentMetaProvider`) vive nesta fase, encostando no `agent.tool_registry`, `model_router`, `persona_manager`.
+`AgentMetaProvider` é uma ABC em `deile_bot/foundation/agent_meta.py` com:
+
+```python
+class AgentMetaProvider(ABC):
+    @abstractmethod
+    async def list_tools(self) -> list[ToolMeta]: ...
+    @abstractmethod
+    async def list_models(self) -> list[str]: ...        # ['anthropic:claude-...', 'deepseek:deepseek-chat', ...]
+    @abstractmethod
+    async def list_personas(self) -> list[str]: ...
+```
+
+Implementação concreta `DeileAgentMetaProvider` vive em `deile_bot/foundation/agent_meta.py` também, encostando em `agent.tool_registry`, `model_router`, `persona_manager`. Implementação fake `FakeAgentMetaProvider` em `_testing.py` para uso nos testes E2E da fase 4.
+
+`ToolMeta` (DTO):
+
+```python
+@dataclass(frozen=True, slots=True)
+class ToolMeta:
+    name: str
+    description: str
+    risk_level: Literal["safe", "low", "medium", "high"] = "safe"
+    requires_bot_context: bool = False           # True para BotTool
+```
 
 ### 3.4. `foundation/agent_bridge.py` — Bridge para o DEILE
 
