@@ -226,7 +226,6 @@ class DiscordAdapter(ProviderAdapter):
             ch = self._client.get_channel(int(channel.provider_channel_id))
             if ch is None:
                 ch = await self._client.fetch_channel(int(channel.provider_channel_id))
-            async with ch.typing():
-                pass
+            await ch.trigger_typing()
         except Exception:
             self._logger.warning("send_typing failed", exc_info=True)

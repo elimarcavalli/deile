@@ -63,3 +63,10 @@ class AgentCog(commands.Cog):
         await ctx.defer(ephemeral=False)
         env = self._make_envelope(ctx, prompt)
         await self.runtime.pipeline.handle(env, self.adapter)
+        # For slash command interactions: the pipeline sent the response via ch.send().
+        # Delete the deferred "thinking…" message so it doesn't linger / time-out.
+        if ctx.interaction is not None:
+            try:
+                await ctx.interaction.delete_original_response()
+            except Exception:
+                pass

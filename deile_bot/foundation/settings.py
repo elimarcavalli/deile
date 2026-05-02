@@ -116,9 +116,37 @@ def _load_yaml() -> Dict[str, Any]:
         return {}
 
 
+def _env_prefix(cls) -> str:
+    """Return the env_prefix for a BaseSettings subclass."""
+    cfg = getattr(cls, "model_config", None)
+    if cfg and isinstance(cfg, dict):
+        return cfg.get("env_prefix", "")
+    inner = getattr(cls, "Config", None)
+    return getattr(inner, "env_prefix", "") if inner else ""
+
+
+def _drop_env_overridden(data: Dict[str, Any], cls) -> Dict[str, Any]:
+    """Remove keys that are already provided by environment variables.
+
+    pydantic-settings v2 gives priority to init kwargs OVER env vars, which
+    means passing YAML values as explicit kwargs would shadow any env var
+    overrides (e.g. DEILE_BOT_INTENT_CLASSIFIER=always_respond would lose
+    to the YAML value).  Dropping keys that have a matching env var restores
+    the expected env > YAML precedence.
+    """
+    import os
+
+    prefix = _env_prefix(cls).upper()
+    return {
+        k: v
+        for k, v in data.items()
+        if not os.environ.get(f"{prefix}{k.upper()}")
+    }
+
+
 def _build_settings() -> BotSettings:
     yaml_data = _load_yaml()
-    foundation_data = yaml_data.get("foundation", {})
+    foundation_data = _drop_env_overridden(yaml_data.get("foundation", {}), FoundationSettings)
     providers_data = yaml_data.get("providers", {})
     permissions_data = yaml_data.get("permissions", {})
     personas_data = yaml_data.get("personas", {})

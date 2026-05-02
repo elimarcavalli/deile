@@ -347,6 +347,11 @@ class IngressPipeline:
             message_id=env.message_id,
             payload={"persona": persona, "extra_chars": len(extra)},
         )
+        # Show typing indicator while the agent processes (best-effort, never raises).
+        try:
+            await adapter.send_typing(env.channel)
+        except Exception:
+            self._logger.debug("send_typing ignored", exc_info=True)
         try:
             with timer(self.metrics, "bot_agent_invocation_seconds", {"provider": provider}):
                 response = await self.bridge.invoke(inv)

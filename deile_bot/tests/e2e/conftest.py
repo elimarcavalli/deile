@@ -127,7 +127,8 @@ async def real_agent():
     try:
         from deile.config.manager import ConfigManager
         from deile.core.agent import DeileAgent
-        from deile.core.models import bootstrap_providers, get_model_router
+        from deile.core.models.bootstrap import bootstrap_providers
+        from deile.core.models.router import get_model_router
     except Exception:  # pragma: no cover
         return None
     try:

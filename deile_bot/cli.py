@@ -97,14 +97,24 @@ async def _run_provider(provider: str, guild_ids: Optional[List[int]] = None) ->
         nonlocal _agent_inst
         if _agent_inst is None:
             try:
+                try:
+                    from dotenv import load_dotenv as _load_dotenv
+                    _load_dotenv()
+                except ImportError:
+                    pass
                 from deile.config.manager import ConfigManager
-                from deile.core.models import (bootstrap_providers,
-                                               get_model_router)
+                from deile.core.models.bootstrap import bootstrap_providers
+                from deile.core.models.router import get_model_router
 
                 ConfigManager().load_config()
-                bootstrap_providers(router=get_model_router())
-            except Exception:
-                pass
+                registered = bootstrap_providers(router=get_model_router())
+                if not registered:
+                    raise RuntimeError("bootstrap_providers returned 0 providers — check API keys in .env")
+            except Exception as _boot_err:
+                import logging as _logging
+                _logging.getLogger("deile_bot.cli").error(
+                    "agent bootstrap failed: %s", _boot_err, exc_info=True
+                )
             _agent_inst = DeileAgent()
             await _agent_inst.initialize()
         return _agent_inst
