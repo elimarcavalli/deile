@@ -8,7 +8,8 @@ from pydantic import SecretStr
 from deile_bot.foundation.envelope import AttachmentKind
 from deile_bot.foundation.exceptions import ProviderError
 from deile_bot.providers.discord.adapter import DiscordAdapter
-from deile_bot.providers.discord.settings import DISCORD_CAPABILITIES, DiscordBotSettings
+from deile_bot.providers.discord.settings import (DISCORD_CAPABILITIES,
+                                                  DiscordBotSettings)
 
 
 class TestAdapter:

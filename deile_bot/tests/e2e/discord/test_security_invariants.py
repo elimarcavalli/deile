@@ -6,7 +6,6 @@ import os
 
 import pytest
 
-
 pytestmark = [
     pytest.mark.e2e_discord_live,
     pytest.mark.skipif(

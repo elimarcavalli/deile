@@ -13,15 +13,9 @@ from typing import Any, List, Mapping, Optional, Sequence
 
 import aiosqlite
 
-from deile_bot.foundation.envelope import (
-    Attachment,
-    BotUser,
-    Channel,
-    ChannelScope,
-    MessageEnvelope,
-)
+from deile_bot.foundation.envelope import (Attachment, BotUser, Channel,
+                                           ChannelScope, MessageEnvelope)
 from deile_bot.foundation.exceptions import ConversationStoreError
-
 
 _SQL_DIR = Path(__file__).parent / "sql"
 

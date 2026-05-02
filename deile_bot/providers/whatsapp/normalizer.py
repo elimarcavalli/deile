@@ -7,14 +7,9 @@ from types import MappingProxyType
 from typing import Any, Mapping, Optional
 
 from deile.common.markup_ast import MarkupAST
-from deile_bot.foundation.envelope import (
-    Attachment,
-    AttachmentKind,
-    BotUser,
-    Channel,
-    ChannelScope,
-    MessageEnvelope,
-)
+from deile_bot.foundation.envelope import (Attachment, AttachmentKind, BotUser,
+                                           Channel, ChannelScope,
+                                           MessageEnvelope)
 
 
 class WhatsAppNormalizer:

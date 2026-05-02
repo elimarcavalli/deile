@@ -9,7 +9,6 @@ from deile_bot.foundation.agent_meta import ToolMeta
 from deile_bot.foundation.capabilities import CapabilityCatalog
 from deile_bot.foundation.output_formatter import PlainTextFormatter
 
-
 pytestmark = pytest.mark.e2e
 
 

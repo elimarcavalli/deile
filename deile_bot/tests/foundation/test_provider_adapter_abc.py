@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from deile_bot._testing import (
-    FakeProviderAdapter,
-    make_channel,
-    make_envelope,
-    make_user,
-)
+from deile_bot._testing import (FakeProviderAdapter, make_channel,
+                                make_envelope, make_user)
 from deile_bot.foundation.capabilities import ProviderCapabilities
 from deile_bot.foundation.envelope import AttachmentKind
-from deile_bot.foundation.exceptions import CapabilityNotSupported, ProviderError
+from deile_bot.foundation.exceptions import (CapabilityNotSupported,
+                                             ProviderError)
 
 
 def _no_edit_caps() -> ProviderCapabilities:

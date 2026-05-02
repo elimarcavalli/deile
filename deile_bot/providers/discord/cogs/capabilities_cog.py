@@ -21,7 +21,8 @@ class CapabilitiesCog(commands.Cog):
         )
         formatter = self.runtime.formatters.get("discord")
         if formatter is None:
-            from deile_bot.providers.discord.formatter import DiscordOutputFormatter
+            from deile_bot.providers.discord.formatter import \
+                DiscordOutputFormatter
 
             formatter = DiscordOutputFormatter()
         text = self.runtime.capability_catalog.render_for_user(snap, formatter)

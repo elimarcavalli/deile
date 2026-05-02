@@ -5,16 +5,13 @@ from __future__ import annotations
 import pytest
 from pydantic import SecretStr
 
-from deile_bot.foundation.exceptions import CapabilityNotSupported, ProviderError
+from deile_bot.foundation.exceptions import (CapabilityNotSupported,
+                                             ProviderError)
 from deile_bot.providers.meta._common.settings import MetaCommonSettings
-from deile_bot.providers.meta.instagram.adapter import (
-    INSTAGRAM_CAPABILITIES,
-    InstagramAdapter,
-)
-from deile_bot.providers.meta.messenger.adapter import (
-    MESSENGER_CAPABILITIES,
-    MessengerAdapter,
-)
+from deile_bot.providers.meta.instagram.adapter import (INSTAGRAM_CAPABILITIES,
+                                                        InstagramAdapter)
+from deile_bot.providers.meta.messenger.adapter import (MESSENGER_CAPABILITIES,
+                                                        MessengerAdapter)
 
 
 class TestMessenger:

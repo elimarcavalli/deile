@@ -98,7 +98,8 @@ async def _run_provider(provider: str, guild_ids: Optional[List[int]] = None) ->
         if _agent_inst is None:
             try:
                 from deile.config.manager import ConfigManager
-                from deile.core.models import bootstrap_providers, get_model_router
+                from deile.core.models import (bootstrap_providers,
+                                               get_model_router)
 
                 ConfigManager().load_config()
                 bootstrap_providers(router=get_model_router())

@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-
 import pytest
 
-from deile_bot.foundation.settings import (
-    FoundationSettings,
-    get_bot_settings,
-    reset_bot_settings_cache,
-)
+from deile_bot.foundation.settings import (FoundationSettings,
+                                           get_bot_settings,
+                                           reset_bot_settings_cache)
 
 
 @pytest.fixture(autouse=True)

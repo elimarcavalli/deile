@@ -8,13 +8,8 @@ from types import MappingProxyType
 from typing import Any, List
 
 from deile.common.markup_ast import MarkupAST
-from deile_bot.foundation.envelope import (
-    BotUser,
-    Channel,
-    ChannelScope,
-    MessageEnvelope,
-)
-
+from deile_bot.foundation.envelope import (BotUser, Channel, ChannelScope,
+                                           MessageEnvelope)
 
 logger = logging.getLogger(__name__)
 

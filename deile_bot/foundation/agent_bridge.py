@@ -24,13 +24,10 @@ from deile.common.markup_ast import MarkupAST
 from deile_bot.foundation.capabilities import CapabilitySnapshot
 from deile_bot.foundation.conversation_store import StoredMessage
 from deile_bot.foundation.envelope import Attachment
-from deile_bot.foundation.exceptions import (
-    AgentInvocationError,
-    AgentInvocationTimeout,
-)
+from deile_bot.foundation.exceptions import (AgentInvocationError,
+                                             AgentInvocationTimeout)
 from deile_bot.foundation.logging import get_logger
 from deile_bot.foundation.settings import FoundationSettings
-
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 

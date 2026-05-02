@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 from pydantic import SecretStr
 
 try:
@@ -15,7 +14,6 @@ except ImportError:  # pragma: no cover
 
 from deile_bot.foundation.capabilities import ProviderCapabilities
 from deile_bot.foundation.envelope import AttachmentKind
-
 
 TELEGRAM_CAPABILITIES = ProviderCapabilities(
     can_edit_message=True,

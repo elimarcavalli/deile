@@ -9,11 +9,8 @@ from deile_bot.foundation.conversation_store import ConversationStore
 from deile_bot.foundation.envelope import ChannelScope
 from deile_bot.foundation.identity import IdentityResolver
 from deile_bot.foundation.permissions import Action, PermissionGate
-from deile_bot.foundation.settings import (
-    BotSettings,
-    PermissionRule,
-    PermissionsSettings,
-)
+from deile_bot.foundation.settings import (BotSettings, PermissionRule,
+                                           PermissionsSettings)
 
 
 @pytest.fixture

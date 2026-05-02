@@ -7,16 +7,9 @@ from types import MappingProxyType
 from typing import Any, Tuple
 
 from deile.common.markup_ast import MarkupAST
-from deile_bot.foundation.envelope import (
-    Attachment,
-    AttachmentKind,
-    BotUser,
-    Channel,
-    ChannelScope,
-    MessageEnvelope,
-    ReplyContext,
-)
-
+from deile_bot.foundation.envelope import (Attachment, AttachmentKind, BotUser,
+                                           Channel, ChannelScope,
+                                           MessageEnvelope, ReplyContext)
 
 _CHAT_TYPE_TO_SCOPE = {
     "private": ChannelScope.DM,

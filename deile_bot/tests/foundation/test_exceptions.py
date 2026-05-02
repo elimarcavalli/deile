@@ -4,19 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from deile_bot.foundation.exceptions import (
-    AgentInvocationError,
-    AgentInvocationTimeout,
-    BotFoundationError,
-    CapabilityNotSupported,
-    ConversationStoreError,
-    DLQError,
-    FormatterError,
-    IdentityError,
-    PermissionDenied,
-    ProviderError,
-    RateLimited,
-)
+from deile_bot.foundation.exceptions import (AgentInvocationError,
+                                             AgentInvocationTimeout,
+                                             BotFoundationError,
+                                             CapabilityNotSupported,
+                                             ConversationStoreError, DLQError,
+                                             FormatterError, IdentityError,
+                                             PermissionDenied, ProviderError,
+                                             RateLimited)
 
 
 def test_all_subclass_base():

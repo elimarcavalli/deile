@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-
 from deile_bot.foundation.capabilities import ProviderCapabilities
 from deile_bot.foundation.envelope import AttachmentKind
 from deile_bot.providers.meta.messenger.adapter import MessengerAdapter
-
 
 INSTAGRAM_CAPABILITIES = ProviderCapabilities(
     can_edit_message=False,

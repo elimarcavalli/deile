@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 
-
 from deile_bot.foundation.metrics import MetricsCollector, timer
 
 

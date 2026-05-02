@@ -5,7 +5,6 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 
-
 class _FakeChannel:
     """Plain class — survives isinstance(_, discord.DMChannel) returning False."""
 

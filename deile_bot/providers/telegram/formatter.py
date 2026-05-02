@@ -8,7 +8,6 @@ from typing import List
 from deile.common.markup_ast import MarkupAST, MarkupSpan, SpanKind
 from deile_bot.foundation.output_formatter import OutputFormatter
 
-
 _MDV2_ESCAPE = re.compile(r"([_*\[\]()~`>#+\-=|{}.!])")
 
 

@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from deile_bot.foundation.exceptions import (
-    CapabilityNotSupported,
-    PermissionDenied,
-)
+from deile_bot.foundation.exceptions import (CapabilityNotSupported,
+                                             PermissionDenied)
 from deile_bot.foundation.tools.base import BotTool, get_bot_context
 
 

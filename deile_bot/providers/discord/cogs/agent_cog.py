@@ -11,12 +11,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from deile.common.markup_ast import MarkupAST
-from deile_bot.foundation.envelope import (
-    BotUser,
-    Channel,
-    ChannelScope,
-    MessageEnvelope,
-)
+from deile_bot.foundation.envelope import (BotUser, Channel, ChannelScope,
+                                           MessageEnvelope)
 
 
 class AgentCog(commands.Cog):

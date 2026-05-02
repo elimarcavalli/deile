@@ -6,7 +6,6 @@ from typing import Any, Awaitable, Callable, Dict, Mapping
 
 from deile_bot.foundation.logging import get_logger
 
-
 WebhookHandler = Callable[[Mapping[str, Any]], Awaitable[Mapping[str, Any]]]
 
 

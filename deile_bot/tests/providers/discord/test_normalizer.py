@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-
 from deile_bot.foundation.envelope import AttachmentKind, ChannelScope
 from deile_bot.providers.discord.normalizer import DiscordNormalizer
 

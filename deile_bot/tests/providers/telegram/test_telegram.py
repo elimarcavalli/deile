@@ -12,15 +12,11 @@ from deile.common.markup_ast import MarkupAST, MarkupSpan, SpanKind
 from deile_bot.foundation.envelope import ChannelScope
 from deile_bot.foundation.exceptions import ProviderError
 from deile_bot.providers.telegram.adapter import TelegramAdapter
-from deile_bot.providers.telegram.formatter import (
-    TelegramOutputFormatter,
-    escape_markdown_v2,
-)
+from deile_bot.providers.telegram.formatter import (TelegramOutputFormatter,
+                                                    escape_markdown_v2)
 from deile_bot.providers.telegram.normalizer import TelegramNormalizer
-from deile_bot.providers.telegram.settings import (
-    TELEGRAM_CAPABILITIES,
-    TelegramBotSettings,
-)
+from deile_bot.providers.telegram.settings import (TELEGRAM_CAPABILITIES,
+                                                   TelegramBotSettings)
 
 
 class TestCapabilities:

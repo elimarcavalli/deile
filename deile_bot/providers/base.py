@@ -6,9 +6,9 @@ from abc import ABC, abstractmethod
 from typing import Any, Awaitable, Callable, Mapping, Optional, Sequence
 
 from deile_bot.foundation.capabilities import ProviderCapabilities
-from deile_bot.foundation.envelope import Attachment, BotUser, Channel, MessageEnvelope
+from deile_bot.foundation.envelope import (Attachment, BotUser, Channel,
+                                           MessageEnvelope)
 from deile_bot.foundation.exceptions import CapabilityNotSupported
-
 
 InboundCallback = Callable[[MessageEnvelope, "ProviderAdapter"], Awaitable[None]]
 

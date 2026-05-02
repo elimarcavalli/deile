@@ -5,15 +5,14 @@ from __future__ import annotations
 from typing import Any, Mapping, Optional, Sequence
 
 from deile_bot.foundation.envelope import Attachment, BotUser, Channel
-from deile_bot.foundation.exceptions import CapabilityNotSupported, ProviderError
+from deile_bot.foundation.exceptions import (CapabilityNotSupported,
+                                             ProviderError)
 from deile_bot.foundation.logging import get_logger
 from deile_bot.providers.base import InboundCallback, ProviderAdapter
 from deile_bot.providers.whatsapp.api_client import WhatsAppApiClient
 from deile_bot.providers.whatsapp.normalizer import WhatsAppNormalizer
-from deile_bot.providers.whatsapp.settings import (
-    WHATSAPP_CAPABILITIES,
-    WhatsAppSettings,
-)
+from deile_bot.providers.whatsapp.settings import (WHATSAPP_CAPABILITIES,
+                                                   WhatsAppSettings)
 
 
 class WhatsAppAdapter(ProviderAdapter):

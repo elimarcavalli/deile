@@ -5,14 +5,13 @@ from __future__ import annotations
 from typing import Any, Mapping, Optional, Sequence
 
 from deile_bot.foundation.envelope import Attachment, BotUser, Channel
-from deile_bot.foundation.exceptions import CapabilityNotSupported, ProviderError
+from deile_bot.foundation.exceptions import (CapabilityNotSupported,
+                                             ProviderError)
 from deile_bot.foundation.logging import get_logger
 from deile_bot.providers.base import InboundCallback, ProviderAdapter
 from deile_bot.providers.telegram.normalizer import TelegramNormalizer
-from deile_bot.providers.telegram.settings import (
-    TELEGRAM_CAPABILITIES,
-    TelegramBotSettings,
-)
+from deile_bot.providers.telegram.settings import (TELEGRAM_CAPABILITIES,
+                                                   TelegramBotSettings)
 
 
 class TelegramAdapter(ProviderAdapter):

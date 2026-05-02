@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 from deile_bot.foundation.envelope import MessageEnvelope
 from deile_bot.foundation.logging import get_logger
 from deile_bot.foundation.pipeline import IngressPipeline

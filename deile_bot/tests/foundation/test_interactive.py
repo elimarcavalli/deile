@@ -4,14 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from deile_bot.foundation.interactive import (
-    InteractiveButton,
-    InteractiveButtonRow,
-    InteractiveList,
-    InteractiveListSection,
-    QuickReplies,
-    QuickReply,
-)
+from deile_bot.foundation.interactive import (InteractiveButton,
+                                              InteractiveButtonRow,
+                                              InteractiveList,
+                                              InteractiveListSection,
+                                              QuickReplies, QuickReply)
 
 
 class TestInteractiveButton:

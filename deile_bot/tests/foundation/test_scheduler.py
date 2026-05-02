@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 from deile_bot.runtime.scheduler import CronJob, Scheduler
 
 

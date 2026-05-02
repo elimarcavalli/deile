@@ -12,18 +12,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
-from tenacity import (
-    AsyncRetrying,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
+from tenacity import (AsyncRetrying, retry_if_exception_type,
+                      stop_after_attempt, wait_exponential)
 
-from deile_bot.foundation.agent_bridge import (
-    AgentBridge,
-    AgentInvocation,
-    AgentResponse,
-)
+from deile_bot.foundation.agent_bridge import (AgentBridge, AgentInvocation,
+                                               AgentResponse)
 from deile_bot.foundation.agent_meta import AgentMetaProvider
 from deile_bot.foundation.audit import AuditEventType, BotAuditLogger
 from deile_bot.foundation.capabilities import CapabilityCatalog
@@ -31,11 +24,8 @@ from deile_bot.foundation.conversation_store import ConversationStore
 from deile_bot.foundation.dlq import DeadLetterQueue
 from deile_bot.foundation.envelope import Channel, MessageEnvelope
 from deile_bot.foundation.event_bus import BotEventBus, BotEventType
-from deile_bot.foundation.exceptions import (
-    AgentInvocationError,
-    ProviderError,
-    RateLimited,
-)
+from deile_bot.foundation.exceptions import (AgentInvocationError,
+                                             ProviderError, RateLimited)
 from deile_bot.foundation.identity import IdentityResolver
 from deile_bot.foundation.intent import IntentClassifier
 from deile_bot.foundation.logging import get_logger

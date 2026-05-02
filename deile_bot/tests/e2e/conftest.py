@@ -12,11 +12,8 @@ import os
 import pytest
 
 from deile_bot._testing import FakeAgentMetaProvider, FakeProviderAdapter
-from deile_bot.foundation.agent_bridge import (
-    AgentBridge,
-    AgentInvocation,
-    AgentResponse,
-)
+from deile_bot.foundation.agent_bridge import (AgentBridge, AgentInvocation,
+                                               AgentResponse)
 from deile_bot.foundation.audit import BotAuditLogger
 from deile_bot.foundation.capabilities import CapabilityCatalog
 from deile_bot.foundation.conversation_store import ConversationStore

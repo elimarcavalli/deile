@@ -6,7 +6,6 @@ import os
 
 import pytest
 
-
 pytestmark = [
     pytest.mark.e2e_meta_live,
     pytest.mark.skipif(

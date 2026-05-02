@@ -8,19 +8,14 @@ from typing import Any, Mapping, Optional, Sequence
 
 from deile.common.markup_ast import MarkupAST
 from deile_bot.foundation.capabilities import ProviderCapabilities
-from deile_bot.foundation.envelope import (
-    Attachment,
-    AttachmentKind,
-    BotUser,
-    Channel,
-    ChannelScope,
-    MessageEnvelope,
-)
-from deile_bot.foundation.exceptions import CapabilityNotSupported, ProviderError
+from deile_bot.foundation.envelope import (Attachment, AttachmentKind, BotUser,
+                                           Channel, ChannelScope,
+                                           MessageEnvelope)
+from deile_bot.foundation.exceptions import (CapabilityNotSupported,
+                                             ProviderError)
 from deile_bot.providers.base import InboundCallback, ProviderAdapter
 from deile_bot.providers.meta._common.api_client import MetaApiClient
 from deile_bot.providers.meta._common.settings import MetaCommonSettings
-
 
 MESSENGER_CAPABILITIES = ProviderCapabilities(
     can_edit_message=False,

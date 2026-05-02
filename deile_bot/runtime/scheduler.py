@@ -12,7 +12,6 @@ from typing import Any, Callable, Dict, List
 
 from pydantic import BaseModel, Field
 
-
 logger = logging.getLogger(__name__)
 
 

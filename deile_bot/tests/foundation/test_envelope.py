@@ -7,19 +7,11 @@ from types import MappingProxyType
 
 import pytest
 
-from deile_bot.foundation.envelope import (
-    Attachment,
-    AttachmentKind,
-    BotUser,
-    Channel,
-    ChannelScope,
-    ConversationWindow,
-    MessageEnvelope,
-    OutboundEnvelope,
-    OutboundIntent,
-    ReplyContext,
-    TemplateMessage,
-)
+from deile_bot.foundation.envelope import (Attachment, AttachmentKind, BotUser,
+                                           Channel, ChannelScope,
+                                           ConversationWindow, MessageEnvelope,
+                                           OutboundEnvelope, OutboundIntent,
+                                           ReplyContext, TemplateMessage)
 
 
 def _user(**kw):

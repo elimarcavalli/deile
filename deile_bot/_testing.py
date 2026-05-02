@@ -9,18 +9,12 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from deile.common.markup_ast import MarkupAST
 from deile_bot.foundation.capabilities import ProviderCapabilities
-from deile_bot.foundation.envelope import (
-    Attachment,
-    AttachmentKind,
-    BotUser,
-    Channel,
-    ChannelScope,
-    MessageEnvelope,
-    ReplyContext,
-)
-from deile_bot.foundation.exceptions import CapabilityNotSupported, ProviderError
+from deile_bot.foundation.envelope import (Attachment, AttachmentKind, BotUser,
+                                           Channel, ChannelScope,
+                                           MessageEnvelope, ReplyContext)
+from deile_bot.foundation.exceptions import (CapabilityNotSupported,
+                                             ProviderError)
 from deile_bot.providers.base import InboundCallback, ProviderAdapter
-
 
 _FAKE_CAPABILITIES = ProviderCapabilities(
     can_edit_message=True,

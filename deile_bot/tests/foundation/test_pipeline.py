@@ -2,21 +2,12 @@
 
 from __future__ import annotations
 
-
 import pytest
 
-from deile_bot._testing import (
-    FakeAgentMetaProvider,
-    FakeProviderAdapter,
-    make_channel,
-    make_envelope,
-    make_user,
-)
-from deile_bot.foundation.agent_bridge import (
-    AgentBridge,
-    AgentInvocation,
-    AgentResponse,
-)
+from deile_bot._testing import (FakeAgentMetaProvider, FakeProviderAdapter,
+                                make_channel, make_envelope, make_user)
+from deile_bot.foundation.agent_bridge import (AgentBridge, AgentInvocation,
+                                               AgentResponse)
 from deile_bot.foundation.audit import BotAuditLogger
 from deile_bot.foundation.capabilities import CapabilityCatalog
 from deile_bot.foundation.conversation_store import ConversationStore
@@ -31,10 +22,7 @@ from deile_bot.foundation.permissions import PermissionGate
 from deile_bot.foundation.persona_selector import PersonaSelector
 from deile_bot.foundation.pipeline import EgressPipeline, IngressPipeline
 from deile_bot.foundation.rate_limit import RateLimiter
-from deile_bot.foundation.settings import (
-    BotSettings,
-    PermissionsSettings,
-)
+from deile_bot.foundation.settings import BotSettings, PermissionsSettings
 
 
 class FakeBridge(AgentBridge):

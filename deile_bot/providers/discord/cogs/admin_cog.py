@@ -9,7 +9,6 @@ from discord import app_commands
 from discord.ext import commands
 
 
-
 def _is_owner_check(adapter):
     """Build a check that consults PermissionGate.is_owner via runtime."""
 

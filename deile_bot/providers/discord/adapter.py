@@ -5,15 +5,14 @@ from __future__ import annotations
 from typing import Any, Mapping, Optional, Sequence
 
 from deile_bot.foundation.envelope import Attachment, BotUser, Channel
-from deile_bot.foundation.exceptions import CapabilityNotSupported, ProviderError
+from deile_bot.foundation.exceptions import (CapabilityNotSupported,
+                                             ProviderError)
 from deile_bot.foundation.logging import get_logger
 from deile_bot.providers.base import InboundCallback, ProviderAdapter
 from deile_bot.providers.discord.intents import build_intents
 from deile_bot.providers.discord.normalizer import DiscordNormalizer
-from deile_bot.providers.discord.settings import (
-    DISCORD_CAPABILITIES,
-    DiscordBotSettings,
-)
+from deile_bot.providers.discord.settings import (DISCORD_CAPABILITIES,
+                                                  DiscordBotSettings)
 
 
 class DiscordAdapter(ProviderAdapter):
@@ -80,9 +79,12 @@ class DiscordAdapter(ProviderAdapter):
                 if "PingCog" not in cog_names:
                     await client.add_cog(PingCog(client))
                 if self.runtime is not None:
-                    from deile_bot.providers.discord.cogs.agent_cog import AgentCog
-                    from deile_bot.providers.discord.cogs.capabilities_cog import CapabilitiesCog
-                    from deile_bot.providers.discord.cogs.reaction_cog import ReactionCog
+                    from deile_bot.providers.discord.cogs.agent_cog import \
+                        AgentCog
+                    from deile_bot.providers.discord.cogs.capabilities_cog import \
+                        CapabilitiesCog
+                    from deile_bot.providers.discord.cogs.reaction_cog import \
+                        ReactionCog
 
                     if "AgentCog" not in cog_names:
                         await client.add_cog(AgentCog(client, self.runtime, self))

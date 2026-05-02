@@ -9,11 +9,8 @@ import pytest
 
 from deile_bot._testing import make_channel, make_envelope, make_user
 from deile_bot.foundation.conversation_store import ConversationStore
-from deile_bot.foundation.envelope import (
-    Attachment,
-    AttachmentKind,
-    ChannelScope,
-)
+from deile_bot.foundation.envelope import (Attachment, AttachmentKind,
+                                           ChannelScope)
 from deile_bot.foundation.exceptions import ConversationStoreError
 
 

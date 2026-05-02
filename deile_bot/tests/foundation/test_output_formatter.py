@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-
 from deile.common.markup_ast import MarkupAST, MarkupSpan, SpanKind
-from deile_bot.foundation.output_formatter import (
-    PlainTextFormatter,
-    _codeblock_aware_split,
-)
+from deile_bot.foundation.output_formatter import (PlainTextFormatter,
+                                                   _codeblock_aware_split)
 
 
 class TestPlainText:

@@ -4,18 +4,14 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
-
 from deile_bot._testing import make_channel, make_envelope, make_user
 from deile_bot.foundation.envelope import ChannelScope, ReplyContext
-from deile_bot.foundation.intent import (
-    AlwaysRespond,
-    AlwaysRespondToAddressed,
-    HeuristicIntentClassifier,
-    LLMIntentClassifier,
-    build_intent_classifier,
-)
+from deile_bot.foundation.intent import (AlwaysRespond,
+                                         AlwaysRespondToAddressed,
+                                         HeuristicIntentClassifier,
+                                         LLMIntentClassifier,
+                                         build_intent_classifier)
 from deile_bot.foundation.settings import FoundationSettings
-
 
 SELF_ID = "bot-self"
 

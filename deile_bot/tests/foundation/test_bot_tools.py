@@ -6,23 +6,18 @@ import pytest
 
 from deile_bot._testing import FakeProviderAdapter, make_user
 from deile_bot.foundation.capabilities import ProviderCapabilities
+from deile_bot.foundation.conversation_store import ConversationStore
 from deile_bot.foundation.envelope import AttachmentKind
-from deile_bot.foundation.exceptions import (
-    CapabilityNotSupported,
-    PermissionDenied,
-)
+from deile_bot.foundation.exceptions import (CapabilityNotSupported,
+                                             PermissionDenied)
 from deile_bot.foundation.identity import IdentityResolver
 from deile_bot.foundation.permissions import PermissionGate
-from deile_bot.foundation.conversation_store import ConversationStore
-from deile_bot.foundation.settings import (
-    BotSettings,
-    PermissionRule,
-    PermissionsSettings,
-)
+from deile_bot.foundation.settings import (BotSettings, PermissionRule,
+                                           PermissionsSettings)
 from deile_bot.foundation.tools.base import get_bot_context
-from deile_bot.foundation.tools.send_dm import SendDMTool
 from deile_bot.foundation.tools.get_user_profile import GetUserProfileTool
 from deile_bot.foundation.tools.react_to_message import ReactToMessageTool
+from deile_bot.foundation.tools.send_dm import SendDMTool
 
 
 class _Ctx:

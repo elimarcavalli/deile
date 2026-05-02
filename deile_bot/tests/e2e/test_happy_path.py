@@ -7,7 +7,6 @@ import pytest
 from deile_bot._testing import make_channel, make_envelope, make_user
 from deile_bot.foundation.envelope import ChannelScope
 
-
 pytestmark = pytest.mark.e2e
 
 

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 
-
-
 class TestAdminCogShape:
     def test_admin_cog_attaches_subcommands(self):
         """Verify AdminCog has the expected hybrid commands declared."""

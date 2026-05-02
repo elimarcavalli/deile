@@ -15,7 +15,6 @@ except ImportError:  # pragma: no cover
 from deile_bot.foundation.capabilities import ProviderCapabilities
 from deile_bot.foundation.envelope import AttachmentKind
 
-
 WHATSAPP_CAPABILITIES = ProviderCapabilities(
     can_edit_message=False,
     can_react=True,

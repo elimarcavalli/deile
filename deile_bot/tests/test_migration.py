@@ -7,12 +7,8 @@ import json
 import pytest
 
 from deile_bot.foundation.conversation_store import ConversationStore
-from deile_bot.foundation.envelope import (
-    Channel,
-    ChannelScope,
-)
+from deile_bot.foundation.envelope import Channel, ChannelScope
 from scripts.migrate_memory_json_to_sqlite import migrate
-
 
 SAMPLE = {
     "channels": {

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 from deile_bot._testing import FakeAgentMetaProvider, FakeProviderAdapter
 from deile_bot.foundation.agent_meta import ToolMeta
 from deile_bot.foundation.capabilities import CapabilityCatalog
