@@ -160,10 +160,35 @@ class AgentSession:
     conversation_history: List[Dict[str, Any]] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
-    
+    persisted: bool = False
+
     def update_activity(self) -> None:
         """Atualiza timestamp da última atividade"""
         self.last_activity = time.time()
+
+    def snapshot(self) -> Dict[str, Any]:
+        """Serialize session to a JSON-friendly dict (context_data + metadata)."""
+        return {
+            "session_id": self.session_id,
+            "user_id": self.user_id,
+            "working_directory": str(self.working_directory),
+            "context_data": dict(self.context_data),
+            "created_at": self.created_at,
+            "last_activity": self.last_activity,
+        }
+
+    @classmethod
+    def from_snapshot(cls, snap: Dict[str, Any]) -> "AgentSession":
+        """Rebuild session from a snapshot dict."""
+        return cls(
+            session_id=snap["session_id"],
+            user_id=snap.get("user_id"),
+            working_directory=Path(snap.get("working_directory") or Path.cwd()),
+            context_data=dict(snap.get("context_data") or {}),
+            created_at=float(snap.get("created_at") or time.time()),
+            last_activity=float(snap.get("last_activity") or time.time()),
+            persisted=True,
+        )
     
     def get_context_value(self, key: str, default: Any = None) -> Any:
         """Obtém valor do contexto da sessão"""
@@ -1012,8 +1037,113 @@ class DeileAgent:
             if hasattr(session, 'clear_history'):
                 session.clear_history()
     
+    async def get_or_create_session(
+        self,
+        session_id: str,
+        working_directory: Optional[str] = None,
+        *,
+        persisted: bool = False,
+    ) -> AgentSession:
+        """Async helper that resurrects from SessionStore if `persisted=True`.
+
+        Default `persisted=False` keeps CLI behavior identical (in-memory only).
+        Bot adapters call with `persisted=True` so a session survives restart.
+        """
+        if session_id in self._sessions:
+            return self._sessions[session_id]
+        if persisted:
+            try:
+                store = await self._get_session_store()
+                row = await store.get(session_id)
+                if row is not None:
+                    snap = {
+                        "session_id": session_id,
+                        "user_id": None,
+                        "working_directory": row.working_directory,
+                        "context_data": row.context_data,
+                        "created_at": time.time(),
+                        "last_activity": time.time(),
+                    }
+                    session = AgentSession.from_snapshot(snap)
+                    self._sessions[session_id] = session
+                    await store.touch(session_id)
+                    return session
+            except Exception:
+                logger.warning(
+                    "SessionStore lookup failed; creating in-memory session",
+                    exc_info=True,
+                )
+        kwargs: Dict[str, Any] = {}
+        if working_directory:
+            kwargs["working_directory"] = working_directory
+        session = self.create_session(session_id, **kwargs)
+        session.persisted = persisted
+        if persisted:
+            try:
+                store = await self._get_session_store()
+                await store.upsert(
+                    session_id,
+                    str(session.working_directory),
+                    dict(session.context_data),
+                )
+            except Exception:
+                logger.warning("SessionStore upsert failed", exc_info=True)
+        return session
+
+    async def _get_session_store(self):
+        """Lazy SessionStore singleton."""
+        if not hasattr(self, "_session_store") or self._session_store is None:
+            try:
+                from deile.core.session_store import SessionStore
+                from deile_bot.foundation.settings import get_bot_settings
+
+                bot_settings = get_bot_settings()
+                path = bot_settings.foundation.sessions_sqlite_path
+            except Exception:
+                from deile.core.session_store import SessionStore
+                from pathlib import Path as _P
+
+                path = _P("./data/deile_sessions.sqlite")
+            store = SessionStore(path)
+            await store.init()
+            self._session_store = store
+        return self._session_store
+
+    async def flush_persisted_sessions(self) -> int:
+        """Persist all sessions marked `persisted=True`. Returns count flushed."""
+        if not hasattr(self, "_session_store") or self._session_store is None:
+            return 0
+        flushed = 0
+        for sid, session in self._sessions.items():
+            if not getattr(session, "persisted", False):
+                continue
+            try:
+                await self._session_store.upsert(
+                    sid,
+                    str(session.working_directory),
+                    dict(session.context_data),
+                )
+                flushed += 1
+            except Exception:
+                logger.warning(f"flush failed for session {sid}", exc_info=True)
+        return flushed
+
+    async def shutdown(self) -> None:
+        """Graceful shutdown — flush sessions, close store."""
+        try:
+            await self.flush_persisted_sessions()
+        except Exception:
+            pass
+        store = getattr(self, "_session_store", None)
+        if store is not None:
+            try:
+                await store.close()
+            except Exception:
+                pass
+            self._session_store = None
+
     # Métodos privados
-    
+
     def _get_or_create_session(self, session_id: str, **kwargs) -> AgentSession:
         """Obtém sessão existente ou cria nova"""
         if session_id not in self._sessions:
