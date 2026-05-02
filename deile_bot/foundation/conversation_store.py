@@ -160,7 +160,12 @@ class ConversationStore:
             )
             await db.commit()
 
-    async def record_inbound(self, env: MessageEnvelope) -> int:
+    async def record_inbound(
+        self,
+        env: MessageEnvelope,
+        *,
+        bot_user_id_override: Optional[str] = None,
+    ) -> int:
         async with self._lock:
             db = self._require_db()
             cursor = await db.execute(
@@ -175,7 +180,7 @@ class ConversationStore:
                     env.channel.provider_channel_id,
                     env.message_id,
                     "inbound",
-                    env.author.bot_user_id,
+                    bot_user_id_override or env.author.bot_user_id,
                     env.text,
                     env.reply.replied_message_id if env.reply else None,
                     env.sent_at.astimezone(timezone.utc).isoformat(),
