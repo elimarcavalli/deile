@@ -2,28 +2,49 @@
 
 ## Knowledge base — START HERE
 
-The authoritative project knowledge lives in `claude_dev/`. Three files are auto-loaded into your context via the `@`-imports below:
+The authoritative project knowledge lives in `docs/system_design/`. The single index/table-of-contents is `docs/system_design/00-VISAO-GERAL.md` — open it first to navigate. The three documents auto-loaded into your context via the `@`-imports below are the minimum set you should always have on hand:
 
-- `claude_dev/0_deile-agent.md` — decision tree mapping each situation to one of the eight docs.
-- `claude_dev/1_agent_persona.md` — your role.
-- `claude_dev/8_system_specific_guidelines.md` — async, registry, Gemini, memory specifics.
+- `docs/system_design/00-VISAO-GERAL.md` — pillars index, single source of truth for counts, decisions table.
+- `docs/system_design/03-PRINCIPIOS-ARQUITETURAIS.md` — non-negotiable rules with a fast trigger index.
+- `docs/system_design/12-PADROES-CODIGO.md` — concrete templates for tools, commands, parsers, memory, security, tests.
 
-@claude_dev/0_deile-agent.md
-@claude_dev/1_agent_persona.md
-@claude_dev/8_system_specific_guidelines.md
+@docs/system_design/00-VISAO-GERAL.md
+@docs/system_design/03-PRINCIPIOS-ARQUITETURAIS.md
+@docs/system_design/12-PADROES-CODIGO.md
 
-Docs 2–7 are **read-on-demand**. Open them with the `Read` tool only when a trigger in `0_deile-agent.md` fires; do not preemptively read them.
+The remaining pillar docs are **read-on-demand**. Open them with the `Read` tool only when the situation demands; never preemptively.
 
 ## Mandatory protocol (run before every non-trivial turn)
 
-`claude_dev/0_deile-agent.md` defines a **three-table decision protocol** (Action × Path × Keyword). Before the first `Write`, `Edit`, or mutating `Bash` of each turn:
+Before the first `Write`, `Edit`, or mutating `Bash` of each turn:
 
-1. Classify the action, the target file paths, and the user's keywords against the three tables in doc 0.
-2. Take the **union** of docs the tables point to.
-3. `Read` every unread doc in that union — **before** the first mutation, never after.
-4. If scope grows mid-task, **stop and re-run the protocol** with the expanded scope.
+1. Classify the **action** you are about to perform → consult the trigger index in `03-PRINCIPIOS-ARQUITETURAIS.md`.
+2. Classify the **target file path(s)** → match against the subpackage map in `02-ARQUITETURA.md`.
+3. Match the **user's keywords** → architecture / scope / capability terms point you to the relevant pillar (see `00-VISAO-GERAL.md`).
+4. **Take the union** of pillars implied by the three checks above. `Read` every unread document in that union **before** the first mutation.
+5. If the scope grows mid-task, **stop and re-run the protocol** with the expanded scope.
 
-Exemptions are listed in doc 0 (typos, whitespace, read-only operations, lockfiles). When uncertain, the action is **not** exempt — run the protocol.
+Exemptions: typos, whitespace, single-line cosmetic edits, renaming a strictly-local variable, non-architectural read-only questions, running tests/lint/formatters, editing `.env` or lockfiles, editing `CLAUDE.md` or files under `docs/system_design/`. When uncertain, the action is **not** exempt — run the protocol.
+
+## Pillar map
+
+| # | Pillar | Document |
+|---|---|---|
+| 0 | Index / counts / decisions table | `docs/system_design/00-VISAO-GERAL.md` |
+| 1 | Capabilities | `docs/system_design/01-CAPACIDADES.md` |
+| 2 | Architecture | `docs/system_design/02-ARQUITETURA.md` |
+| 3 | Architectural principles | `docs/system_design/03-PRINCIPIOS-ARQUITETURAIS.md` |
+| 4 | Component model (registries) | `docs/system_design/04-MODELO-COMPONENTES.md` |
+| 5 | Execution flow | `docs/system_design/05-FLUXO-EXECUCAO.md` |
+| 6 | Memory (4 layers) | `docs/system_design/06-MEMORIA.md` |
+| 7 | LLM integrations | `docs/system_design/07-INTEGRACOES-LLM.md` |
+| 8 | Security | `docs/system_design/08-SEGURANCA.md` |
+| 9 | Configuration | `docs/system_design/09-CONFIGURACAO.md` |
+| 10 | Diagrams | `docs/system_design/10-DIAGRAMAS.md` |
+| 11 | Development workflow | `docs/system_design/11-WORKFLOW-DESENVOLVIMENTO.md` |
+| 12 | Code patterns | `docs/system_design/12-PADROES-CODIGO.md` |
+| 13 | Documentation template | `docs/system_design/13-PADRAO-DOCUMENTACAO.md` |
+| — | Decision records | `docs/system_design/DECISOES.md` |
 
 ## Operational quick reference
 
@@ -39,7 +60,7 @@ Entry point: `python3 deile.py` (CLI shell in `DeileAgentCLI`; all logic lives i
 | Imports | `isort --check-only deile/` |
 | Complexity | `radon cc deile/ -a` |
 
-## Gotchas (not in claude_dev)
+## Gotchas (not in the system design)
 
 - **At least one provider API key is required at startup** — the agent exits if none are set. Configure any of: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, or `GOOGLE_API_KEY` in `.env` (loaded via `python-dotenv`). The `bootstrap_providers()` function in `deile/core/models/bootstrap.py` handles conditional registration.
 - **Two `config/` directories**: `./config/` (runtime YAML/JSON) vs `./deile/config/` (package code + `settings.py` + YAML configs like `intent_patterns.yaml`). Don't conflate.
@@ -50,7 +71,7 @@ Entry point: `python3 deile.py` (CLI shell in `DeileAgentCLI`; all logic lives i
 - **`asyncio_mode = auto`** — async tests don't need `@pytest.mark.asyncio`.
 - **Settings is a singleton** — use `from deile.config.settings import get_settings`, never instantiate `Settings()` directly.
 - **Personas are MD-driven** — instructions live in `deile/personas/instructions/*.md`; edit those to change behavior, no code change needed.
-- **`.gitignore` has `*claude*`** — `CLAUDE.md` and `claude_dev/` are explicitly negated (`!CLAUDE.md`, `!claude_dev/`). Don't remove those negations.
+- **`.gitignore` has `*claude*`** — `CLAUDE.md` is explicitly negated (`!CLAUDE.md`). Don't remove that negation.
 
 ## Running DEILE for empirical testing
 
