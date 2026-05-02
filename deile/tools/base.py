@@ -200,6 +200,7 @@ class ToolContext:
     working_directory: str = "."
     file_list: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    extra: Dict[str, Any] = field(default_factory=dict)
     
     def get(self, key: str, default: Any = None) -> Any:
         """Get value from session_data with default"""
