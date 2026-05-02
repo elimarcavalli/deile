@@ -1051,6 +1051,140 @@ class DeileAgent:
             if hasattr(session, 'clear_history'):
                 session.clear_history()
     
+    async def process_input_structured(
+        self,
+        user_input: str,
+        session_id: str = "default",
+        *,
+        extra_system_prompt: Any = None,
+        bot_context: Any = None,
+        **kwargs,
+    ):
+        """Bot-friendly variant: run process_input, parse output to MarkupAST."""
+        from deile.core.bot_streaming import StructuredResponse, ToolCallRecord
+        from deile.ui.markup import MarkdownToASTParser
+
+        response = await self.process_input(
+            user_input,
+            session_id=session_id,
+            extra_system_prompt=extra_system_prompt,
+            bot_context=bot_context,
+            **kwargs,
+        )
+        text = response.content or ""
+        ast = MarkdownToASTParser().parse(text)
+        tool_calls = []
+        for tr in getattr(response, "tool_results", []) or []:
+            tool_calls.append(
+                ToolCallRecord(
+                    name=getattr(tr, "tool_name", "") or "unknown",
+                    ok=getattr(tr, "is_success", True),
+                    elapsed_ms=int(getattr(tr, "execution_time", 0.0) * 1000),
+                )
+            )
+        elapsed_ms = int(getattr(response, "execution_time", 0.0) * 1000)
+        model_used = ""
+        try:
+            model_used = (response.metadata or {}).get("model_used", "") or ""
+        except Exception:
+            pass
+        return StructuredResponse(
+            text=text,
+            markup=ast,
+            tool_calls=tool_calls,
+            elapsed_ms=elapsed_ms,
+            model_used=model_used,
+            status=getattr(response.status, "value", "idle"),
+        )
+
+    async def process_input_stream_chunks(
+        self,
+        user_input: str,
+        session_id: str = "default",
+        *,
+        extra_system_prompt: Any = None,
+        bot_context: Any = None,
+        **kwargs,
+    ):
+        """Adapt UnifiedStreamEvent -> StreamChunk for bot consumers.
+
+        Always emits `done` as the last chunk; on fatal error, emits `error` then `done`.
+        """
+        from deile.core.bot_streaming import StreamChunk
+        from deile.ui.markup import MarkdownToASTParser
+
+        # Stash bot params on session before streaming consumer reads them.
+        session_kwargs = dict(kwargs)
+        if extra_system_prompt is not None or bot_context is not None:
+            session = self._get_or_create_session(session_id, **session_kwargs)
+            if extra_system_prompt is not None:
+                from deile.core.bot_hooks import sanitize_extra_system_prompt
+                session.context_data["extra_system_prompt"] = sanitize_extra_system_prompt(
+                    str(extra_system_prompt)
+                )
+            if bot_context is not None:
+                session.context_data["bot_context"] = dict(bot_context)
+            session_kwargs.pop("working_directory", None)
+
+        accumulated_text = ""
+        last_model = ""
+        last_error: Any = None
+        try:
+            async for evt in self.process_input_stream(
+                user_input, session_id=session_id, **session_kwargs
+            ):
+                etype = getattr(evt, "type", None)
+                if etype is None:
+                    continue
+                name = getattr(etype, "name", None) or getattr(etype, "value", str(etype))
+                if name in ("TEXT_DELTA", "text_delta"):
+                    text = getattr(evt, "text", "") or ""
+                    if text:
+                        accumulated_text += text
+                        yield StreamChunk(
+                            "text", {"text": text, "incremental": True}
+                        )
+                elif name in ("TOOL_INVOKED", "tool_invoked"):
+                    yield StreamChunk(
+                        "tool_call_started",
+                        {
+                            "tool_name": getattr(evt, "tool_name", "") or "",
+                            "args_preview": str(getattr(evt, "tool_args", ""))[:120],
+                        },
+                    )
+                elif name in ("TOOL_RESULT", "tool_result"):
+                    yield StreamChunk(
+                        "tool_call_finished",
+                        {
+                            "tool_name": getattr(evt, "tool_name", "") or "",
+                            "ok": getattr(evt, "ok", True),
+                            "elapsed_ms": int(getattr(evt, "elapsed_ms", 0) or 0),
+                        },
+                    )
+                elif name in ("USAGE_FINAL", "usage_final"):
+                    usage = getattr(evt, "usage", None)
+                    last_model = getattr(usage, "model", "") if usage else ""
+                elif name in ("ERROR", "error"):
+                    last_error = {
+                        "type": getattr(evt, "error_type", "") or "Error",
+                        "message": getattr(evt, "error_message", "") or "",
+                    }
+        except Exception as e:  # noqa: BLE001
+            last_error = {"type": type(e).__name__, "message": str(e)}
+
+        if last_error is not None:
+            yield StreamChunk("error", last_error)
+        ast = MarkdownToASTParser().parse(accumulated_text)
+        yield StreamChunk(
+            "done",
+            {
+                "text": accumulated_text,
+                "markup": ast,
+                "elapsed_ms": 0,
+                "model_used": last_model,
+            },
+        )
+
     async def get_or_create_session(
         self,
         session_id: str,
