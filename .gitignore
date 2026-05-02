@@ -39,3 +39,4 @@ old/
 .*-profile.json
 devscan/*
 discord_bot/*
+data/
