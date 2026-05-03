@@ -101,15 +101,36 @@ Pronto — o prompt interativo abre e você já pode conversar. Use `/help` para
 
 ### 🌍 Instalar globalmente (versão local)
 
-Para rodar o comando `deile` em qualquer diretório:
+Para rodar o comando `deile` em qualquer diretório a partir do **clone local** do repositório:
+
+**Forma recomendada (one-shot):** a partir da raiz do projeto:
 
 ```sh
-pip install -e .          # Instalar como pacote editável/global
-deile                     # Iniciar o DEILE (de qualquer pasta)
-deile "resuma a arquitetura do repositório"   # Enviar mensagem direta
+python3 deile.py --install
 ```
 
-> Recomenda-se sempre um ambiente virtual dedicado (venv/conda) para evitar conflitos de dependências com outros programas.
+O instalador roda `pip install --user -e .` no Python que você invocou. Em Python gerenciado pelo sistema (ex.: Homebrew no macOS, PEP 668), ele tenta de novo com `--break-system-packages` quando necessário. O executável costuma ficar em `~/.local/bin/deile` — confira se esse diretório está no seu `PATH`.
+
+Rodar de novo **atualiza** a instalação editável para apontar ao diretório atual do repositório.
+
+**Equivalente manual** (se preferir digitar o pip você mesmo):
+
+```sh
+python3 -m pip install --user -e .
+# Em ambiente PEP 668, se o comando acima falhar:
+python3 -m pip install --user --break-system-packages -e .
+```
+
+Depois:
+
+```sh
+deile                     # modo interativo
+deile "resuma a arquitetura do repositório"   # one-shot
+```
+
+Para isolar o app sem mexer no Python do sistema, use [pipx](https://pipx.pypa.io/): `brew install pipx` e depois `pipx install -e .` na raiz do repo.
+
+> Para desenvolvimento no dia a dia, um venv dedicado (`.venv`, conda) continua sendo a opção mais limpa para dependências; `--install` é o atalho para ter o comando `deile` globalmente no usuário.
 
 ---
 

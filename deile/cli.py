@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -320,6 +321,81 @@ async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
     return 0 if status != "error" else 1
 
 
+def _run_self_install() -> int:
+    """Install DEILE globally for the current user via pip editable mode."""
+    python_exe = sys.executable
+    project_root = _PROJECT_ROOT
+
+    base_install_cmd = [
+        python_exe,
+        "-m",
+        "pip",
+        "install",
+        "--user",
+        "-e",
+        str(project_root),
+    ]
+
+    print(f"Installing DEILE from: {project_root}")
+    print(f"Running: {' '.join(base_install_cmd)}")
+
+    try:
+        result = subprocess.run(
+            base_install_cmd,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except Exception as exc:
+        print(f"ERROR: failed to run pip: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+    stderr = result.stderr.strip() or "(no stderr)"
+    is_pep668 = "externally-managed-environment" in stderr or "PEP 668" in stderr
+    if result.returncode != 0 and is_pep668:
+        fallback_cmd = [
+            python_exe,
+            "-m",
+            "pip",
+            "install",
+            "--user",
+            "--break-system-packages",
+            "-e",
+            str(project_root),
+        ]
+        print(
+            "Detected externally-managed Python. Retrying with --break-system-packages..."
+        )
+        print(f"Running: {' '.join(fallback_cmd)}")
+        result = subprocess.run(
+            fallback_cmd,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        stderr = result.stderr.strip() or "(no stderr)"
+
+    if result.returncode != 0:
+        print("ERROR: installation failed.", file=sys.stderr)
+        print(stderr, file=sys.stderr)
+        if "externally-managed-environment" in stderr or "PEP 668" in stderr:
+            print(
+                "Tip: this Python is externally managed. "
+                "Use pipx (`brew install pipx && pipx install -e .`) if needed.",
+                file=sys.stderr,
+            )
+        return result.returncode or 1
+
+    which_cmd = ["/usr/bin/env", "which", "deile"]
+    which_result = subprocess.run(which_cmd, text=True, capture_output=True, check=False)
+    deile_path = which_result.stdout.strip() if which_result.returncode == 0 else "not found in PATH"
+
+    print("DEILE installed successfully.")
+    print(f"deile path: {deile_path}")
+    print("Try: deile --help")
+    return 0
+
+
 # ── main entry point ────────────────────────────────────────────────────────
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -354,11 +430,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Force a specific model (e.g. deepseek:deepseek-v4-flash).",
     )
     parser.add_argument(
+        "--install",
+        action="store_true",
+        help="Install DEILE globally for the current user (`pip install --user -e <repo>`).",
+    )
+    parser.add_argument(
         "message",
         nargs=argparse.REMAINDER,
         help="Message to send to the agent (quote if it contains shell metacharacters).",
     )
     args = parser.parse_args(argv)
+
+    if args.install:
+        return _run_self_install()
 
     msg = " ".join(args.message).strip()
     if not msg and not sys.stdin.isatty():

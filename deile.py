@@ -13,6 +13,7 @@ Uso:
     python3 deile.py                         # modo interativo
     python3 deile.py "sua mensagem"          # modo one-shot
     python3 deile.py --model PROVIDER:ID "msg"
+    python3 deile.py --install               # auto-instala globalmente (user)
 """
 
 from __future__ import annotations
@@ -257,6 +258,12 @@ def _start_deile() -> None:
 # -----------------------------------------------------------------------------
 
 def main() -> None:
+    # --install must run in the current interpreter (no venv redirect),
+    # so the installation target matches what the user invoked.
+    if "--install" in sys.argv[1:]:
+        _start_deile()
+        return
+
     if _running_in_project_venv():
         _start_deile()
         return
