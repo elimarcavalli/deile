@@ -7,16 +7,23 @@ assignees: ''
 ---
 
 ## Feature Summary
-Brief description of the requested feature.
+<!-- A clear and concise description of the requested feature. -->
 
-## Problem it Solves
-Explain what problem this feature would solve.
+## Problem or Motivation
+<!-- What problem does this solve? Who benefits from it? -->
 
-## Proposed Solution
-Detailed description of the desired implementation.
+## Desired Behavior
+<!-- Describe the user-visible behavior or workflow you would like to see. -->
 
-## Alternatives Considered
-Other approaches that were considered.
+## Acceptance Criteria
+<!-- Keep this short. List only the must-have outcomes. -->
+- [ ] 
+
+## Out of Scope
+<!-- Optional: list anything this request should not include. -->
+
+## Known Impact
+<!-- Optional: mention only known impact on existing behavior, commands, config, or docs. -->
 
 ## Additional Context
-Screenshots, mockups, or extra information.
+<!-- Screenshots, mockups, links, examples, or extra information if exists. -->

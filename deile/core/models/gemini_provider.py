@@ -5,6 +5,7 @@ from typing import List, Optional, AsyncIterator, Dict, Any, Tuple
 import os
 import asyncio
 import time
+import uuid
 from google import genai
 from google.genai.types import (
     GenerateContentConfig,
@@ -378,8 +379,9 @@ class GeminiProvider(ModelProvider):
             sys_instr = self._extract_system(messages, system_instruction)
             user_msg = self._messages_to_gemini_user_input(messages)
 
+            _session_key = f"_stream_{uuid.uuid4().hex}"
             chat = await self.create_chat_session(
-                session_id=f"_stream_{id(messages)}",
+                session_id=_session_key,
                 system_instruction=sys_instr,
             )
             try:
@@ -389,7 +391,7 @@ class GeminiProvider(ModelProvider):
                     type=StreamEventType.ERROR,
                     error_envelope={"provider_id": self.provider_id, "message": str(exc)},
                 )
-                self._chat_sessions.pop(f"_stream_{id(messages)}", None)
+                self._chat_sessions.pop(_session_key, None)
                 return
 
             text = self._extract_response_text(response)
@@ -420,7 +422,7 @@ class GeminiProvider(ModelProvider):
                     cost_usd=0.0,
                 )
                 yield UnifiedStreamEvent(type=StreamEventType.USAGE_FINAL, usage=snap)
-            self._chat_sessions.pop(f"_stream_{id(messages)}", None)
+            self._chat_sessions.pop(_session_key, None)
             return
 
         # No tools — preserve the legacy simulated word-chunking stream so the
@@ -576,7 +578,7 @@ class GeminiProvider(ModelProvider):
                 automatic_function_calling=afc_config,
                 system_instruction=system_instruction,
                 temperature=self.generation_config.get('temperature', 0.1),
-                max_output_tokens=self.generation_config.get('max_output_tokens', 8192)
+                max_output_tokens=self.generation_config.get('max_output_tokens', 16384)
             )
 
             chat = self.client.chats.create(
@@ -731,6 +733,7 @@ class GeminiProvider(ModelProvider):
             else "EXECUTION_ERROR",
         }
 
+    # TODO(streaming-cleanup): once all callers migrate to ToolLoopExecutor + generate_stream(tools=...), this method can be removed. Currently still used by deile/core/agent.py:_process_iterative_function_calling.
     async def chat_with_tools(
         self,
         messages: List[ModelMessage],
@@ -749,8 +752,9 @@ class GeminiProvider(ModelProvider):
         sys_instr = self._extract_system(messages, system_instruction)
         user_msg = self._messages_to_gemini_user_input(messages)
 
+        _session_key = f"_unified_{uuid.uuid4().hex}"
         chat = await self.create_chat_session(
-            session_id=f"_unified_{id(messages)}",
+            session_id=_session_key,
             system_instruction=sys_instr,
         )
         text, tool_results = await self._gemini_chat_with_tools(
@@ -760,7 +764,7 @@ class GeminiProvider(ModelProvider):
             session_data=kwargs.get("session_data"),
         )
         # Clean up the ephemeral session entry
-        self._chat_sessions.pop(f"_unified_{id(messages)}", None)
+        self._chat_sessions.pop(_session_key, None)
 
         usage = ModelUsage(
             prompt_tokens=0,

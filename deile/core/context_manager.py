@@ -22,6 +22,23 @@ from ..memory.memory_manager import MemoryManager
 logger = logging.getLogger(__name__)
 
 
+def _merge_bot_extra(base: str, session: Any) -> str:
+    """Append session.context_data['extra_system_prompt'] (bot mode) to base."""
+    if session is None:
+        return base
+    ctx = getattr(session, "context_data", {})
+    if not isinstance(ctx, dict):
+        return base
+    extra = ctx.get("extra_system_prompt")
+    if not extra:
+        return base
+    try:
+        from deile.core.bot_hooks import merge_extra_system_prompt
+        return merge_extra_system_prompt(base, str(extra))
+    except Exception:
+        return base
+
+
 @dataclass
 class ContextChunk:
     """Chunk de contexto com metadata"""
@@ -210,7 +227,11 @@ class ContextManager:
         session: Optional[Any],
         **kwargs
     ) -> str:
-        """Constrói instrução do sistema usando PersonaManager ou fallback hardcoded"""
+        """Constrói instrução do sistema usando PersonaManager ou fallback hardcoded.
+
+        Se a sessão tem `context_data["extra_system_prompt"]`, é apendado ao
+        final da instrução base como bloco `<bot_capabilities>`.
+        """
 
         # CORREÇÃO CRÍTICA: Usa PersonaManager se disponível
         if self.persona_manager:
@@ -231,7 +252,7 @@ class ContextManager:
                     if file_context:
                         base_instruction += f"\n\n📁 [ARQUIVOS DISPONÍVEIS NO PROJETO]\n{file_context}"
 
-                    return base_instruction
+                    return _merge_bot_extra(base_instruction, session)
 
             except Exception as e:
                 logger.error(f"Error using PersonaManager: {e}, falling back to hardcoded")
@@ -257,7 +278,7 @@ class ContextManager:
         if file_context:
             base_instruction += f"\n\n📁 [ARQUIVOS DISPONÍVEIS NO PROJETO]\n{file_context}"
 
-        return base_instruction
+        return _merge_bot_extra(base_instruction, session)
     
     async def _build_file_context(self, session: Optional[Any], **kwargs) -> str:
         """Constrói contexto de arquivos disponíveis no projeto"""

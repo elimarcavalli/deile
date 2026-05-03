@@ -1,6 +1,6 @@
 """Agent Orchestrator principal do DEILE"""
 
-from typing import Dict, List, Optional, Any, AsyncIterator
+from typing import Dict, List, Optional, Any, AsyncIterator, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 import asyncio
@@ -46,30 +46,6 @@ def _record_model_used(session: Any, provider: Any) -> None:
     session.context_data["_last_model_used"] = (
         f"{provider.provider_id}:{provider.model_name}"
     )
-
-
-def _render_to_text(renderable: Any) -> str:
-    """Render a Rich renderable (Table, Panel, etc.) to a plain-text string.
-
-    Used to bridge slash-command results into the streaming pipeline, which
-    expects ``TEXT_DELTA.text`` to be a ``str``. Rendering uses a fixed-width
-    capture console so the output is reproducible regardless of the user's
-    terminal size at the time of capture; the live console will re-flow it
-    on print where possible.
-    """
-    try:
-        from io import StringIO
-        from rich.console import Console as _Console
-
-        buf = StringIO()
-        _Console(file=buf, width=120, force_terminal=False, no_color=True).print(
-            renderable
-        )
-        return buf.getvalue()
-    except Exception:
-        # Last-resort fallback — never break the turn just because a slash
-        # command returned an exotic object.
-        return str(renderable)
 
 
 _PLAIN_CONSOLE: Any = None
@@ -119,6 +95,105 @@ def _is_permanent_provider_error(exc: Exception) -> bool:
     return exc.envelope.error_type in ("auth", "invalid_request")
 
 
+def _coerce_model_handle(value: Any) -> Optional[str]:
+    """Return a normalized provider:model_id handle, or None if malformed."""
+    if not isinstance(value, str):
+        return None
+    handle = value.strip()
+    if ":" not in handle:
+        return None
+    provider_id, model_id = handle.split(":", 1)
+    provider_id = provider_id.strip()
+    model_id = model_id.strip()
+    if not provider_id or not model_id:
+        return None
+    return f"{provider_id}:{model_id}"
+
+
+def _provider_for_handle(model_router: ModelRouter, handle: str) -> Optional[Any]:
+    provider_id, model_id = handle.split(":", 1)
+    for provider in model_router.providers.values():
+        if (
+            getattr(provider, "provider_id", None) == provider_id
+            and getattr(provider, "model_name", None) == model_id
+        ):
+            return provider
+    return None
+
+
+def _available_models_for_provider(model_router: ModelRouter, provider_id: str) -> List[str]:
+    return sorted({
+        getattr(provider, "model_name", "?")
+        for provider in model_router.providers.values()
+        if getattr(provider, "provider_id", None) == provider_id
+    })
+
+
+def _get_config_default_model() -> Optional[str]:
+    try:
+        from deile.config.manager import get_config_manager
+
+        return _coerce_model_handle(get_config_manager().get_config().default_model)
+    except Exception:
+        return None
+
+
+def _select_configured_model_provider(
+    model_router: ModelRouter,
+    session: Any,
+) -> Tuple[Optional[Any], Optional[str], Optional[str], Optional[str]]:
+    """Resolve hard and soft model preferences.
+
+    Precedence:
+    1. session.context_data["forced_model"] — hard /model override. Missing
+       registration is a user-visible error.
+    2. session.context_data["preferred_model"] — soft integration preference.
+    3. legacy session.context_data["_bot_forced_model"] — soft compatibility key.
+    4. api_config.yaml default_model — existing core soft preference.
+
+    Soft preferences are best-effort. If a handle is malformed or not registered,
+    the caller falls through to the normal router instead of failing the turn.
+    """
+    context_data = getattr(session, "context_data", {}) or {}
+    forced_raw = context_data.get("forced_model")
+    forced = _coerce_model_handle(forced_raw)
+    if forced_raw and forced is None:
+        raise ModelError(
+            f"Forced model '{forced_raw}' is invalid. Use provider:model_id.",
+            error_code="FORCED_MODEL_NOT_REGISTERED",
+        )
+    if forced:
+        provider = _provider_for_handle(model_router, forced)
+        if provider is not None:
+            return provider, forced, None, None
+        provider_id = forced.split(":", 1)[0]
+        available = _available_models_for_provider(model_router, provider_id)
+        raise ModelError(
+            f"Forced model '{forced}' is not registered. "
+            f"Available {provider_id} models: {available or '(none)'}. "
+            f"Use /model use auto to clear the override.",
+            error_code="FORCED_MODEL_NOT_REGISTERED",
+        )
+
+    soft_candidates = [
+        ("preferred_model", context_data.get("preferred_model")),
+        ("_bot_forced_model", context_data.get("_bot_forced_model")),
+        ("default_model", _get_config_default_model()),
+    ]
+    for source, raw_handle in soft_candidates:
+        handle = _coerce_model_handle(raw_handle)
+        if raw_handle and handle is None:
+            logger.warning("Ignoring malformed %s value: %r", source, raw_handle)
+            continue
+        if not handle:
+            continue
+        provider = _provider_for_handle(model_router, handle)
+        if provider is not None:
+            return provider, None, handle, source
+        logger.debug("%s '%s' not registered, falling back", source, handle)
+    return None, None, None, None
+
+
 def _self_record_circuit(provider_id: str, *, success: bool) -> None:
     """Notify TierRouter's CircuitBreaker of a provider call outcome."""
     try:
@@ -160,10 +235,35 @@ class AgentSession:
     conversation_history: List[Dict[str, Any]] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
-    
+    persisted: bool = False
+
     def update_activity(self) -> None:
         """Atualiza timestamp da última atividade"""
         self.last_activity = time.time()
+
+    def snapshot(self) -> Dict[str, Any]:
+        """Serialize session to a JSON-friendly dict (context_data + metadata)."""
+        return {
+            "session_id": self.session_id,
+            "user_id": self.user_id,
+            "working_directory": str(self.working_directory),
+            "context_data": dict(self.context_data),
+            "created_at": self.created_at,
+            "last_activity": self.last_activity,
+        }
+
+    @classmethod
+    def from_snapshot(cls, snap: Dict[str, Any]) -> "AgentSession":
+        """Rebuild session from a snapshot dict."""
+        return cls(
+            session_id=snap["session_id"],
+            user_id=snap.get("user_id"),
+            working_directory=Path(snap.get("working_directory") or Path.cwd()),
+            context_data=dict(snap.get("context_data") or {}),
+            created_at=float(snap.get("created_at") or time.time()),
+            last_activity=float(snap.get("last_activity") or time.time()),
+            persisted=True,
+        )
     
     def get_context_value(self, key: str, default: Any = None) -> Any:
         """Obtém valor do contexto da sessão"""
@@ -345,10 +445,24 @@ class DeileAgent:
         self._request_count += 1
         
         try:
+            # Bot-hooks: extract optional kwargs added in plano DEILE fase 2.
+            # These are stashed in session.context_data so context_manager and
+            # tool dispatch can read them later in the turn.
+            extra_system_prompt = kwargs.pop("extra_system_prompt", None)
+            bot_context = kwargs.pop("bot_context", None)
+
             # Obtém ou cria sessão
             session = self._get_or_create_session(session_id, **kwargs)
             session.update_activity()
-            
+
+            if extra_system_prompt is not None:
+                from deile.core.bot_hooks import sanitize_extra_system_prompt
+                session.context_data["extra_system_prompt"] = (
+                    sanitize_extra_system_prompt(str(extra_system_prompt))
+                )
+            if bot_context is not None:
+                session.context_data["bot_context"] = dict(bot_context)
+
             # Adiciona entrada ao histórico
             session.add_to_history("user", user_input)
             
@@ -513,18 +627,25 @@ class DeileAgent:
                 )
                 if response.content:
                     # Slash commands may return Rich renderables (Table,
-                    # Panel, etc. — e.g. /model list returns a Table) as
-                    # content. The streaming pipeline expects text=str, so
-                    # we render non-string Rich objects into a plain-text
-                    # string here. Without this, downstream string ops
-                    # (Markdown(text), text concat in the renderer)
-                    # AttributeError on '.translate' / TypeError on '+='.
+                    # Panel, etc. — e.g. /model list returns a Table) OR
+                    # plain text. We forward each kind through its own
+                    # event type so the renderer can let Rich's
+                    # width-aware layout run at the ACTUAL terminal width.
+                    # Previously we flattened renderables to a fixed-width
+                    # text snapshot and yielded TEXT_DELTA, which the
+                    # renderer then passed through Markdown() — Markdown
+                    # read the box-drawing chars as paragraphs and
+                    # word-wrapped them, shattering the table layout.
                     payload = response.content
-                    if not isinstance(payload, str):
-                        payload = _render_to_text(payload)
-                    yield UnifiedStreamEvent(
-                        type=StreamEventType.TEXT_DELTA, text=payload
-                    )
+                    if isinstance(payload, str):
+                        yield UnifiedStreamEvent(
+                            type=StreamEventType.TEXT_DELTA, text=payload
+                        )
+                    else:
+                        yield UnifiedStreamEvent(
+                            type=StreamEventType.RICH_RENDERABLE,
+                            renderable=payload,
+                        )
                 yield UnifiedStreamEvent(
                     type=StreamEventType.USAGE_FINAL, usage=ModelUsageSnapshot()
                 )
@@ -633,11 +754,16 @@ class DeileAgent:
             if gated_content != content:
                 # _apply_validation_gate returns the retry's standalone reply
                 # (see agent.py: `return new_content, …`), not `content + addendum`.
-                # Emit it verbatim as a marked TEXT_DELTA so the UI panel renders
-                # it in the validation_gate frame.
+                # `content` was already streamed to the user as TEXT_DELTA events,
+                # so emitting `gated_content` alone would leave two answers on
+                # screen (the original now-invalidated reply plus the retry).
+                # Prepend a one-line marker — rendered inside the yellow panel
+                # by the streaming renderer — telling the user this corrected
+                # reply REPLACES the prior streamed response.
+                marker = "(corrected reply — replaces the response above)\n\n"
                 yield UnifiedStreamEvent(
                     type=StreamEventType.TEXT_DELTA,
-                    text=gated_content,
+                    text=marker + gated_content,
                     source="validation_gate",
                 )
 
@@ -732,39 +858,11 @@ class DeileAgent:
         except Exception:
             model_tier = None
 
-        # Provider selection — honors forced/default/router.
+        # Provider selection — honors forced/preferred/default/router.
         yield UnifiedStreamEvent(type=StreamEventType.STAGE, stage="Selecting provider")
-        forced = session.context_data.get("forced_model")
-        config_default: Optional[str] = None
-        if not forced:
-            try:
-                from deile.config.manager import get_config_manager
-                config_default = get_config_manager().get_config().default_model or None
-            except Exception:
-                pass
-
-        model_provider = None
-        _active_forced = forced or config_default
-        if _active_forced and isinstance(_active_forced, str) and ":" in _active_forced:
-            _fp_id, _fm_id = _active_forced.split(":", 1)
-            for p in self.model_router.providers.values():
-                if (
-                    getattr(p, "provider_id", None) == _fp_id
-                    and getattr(p, "model_name", None) == _fm_id
-                ):
-                    model_provider = p
-                    break
-            if model_provider is None and forced:
-                available = sorted({
-                    getattr(p, "model_name", "?") for p in self.model_router.providers.values()
-                    if getattr(p, "provider_id", None) == _fp_id
-                })
-                raise ModelError(
-                    f"Forced model '{forced}' is not registered. "
-                    f"Available {_fp_id} models: {available or '(none)'}. "
-                    f"Use /model use auto to clear the override.",
-                    error_code="FORCED_MODEL_NOT_REGISTERED",
-                )
+        model_provider, forced, _, _ = _select_configured_model_provider(
+            self.model_router, session
+        )
         if model_provider is None:
             model_provider = await self.model_router.select_provider(
                 context=context, session=session, tier=model_tier,
@@ -1012,8 +1110,247 @@ class DeileAgent:
             if hasattr(session, 'clear_history'):
                 session.clear_history()
     
+    async def process_input_structured(
+        self,
+        user_input: str,
+        session_id: str = "default",
+        *,
+        extra_system_prompt: Any = None,
+        bot_context: Any = None,
+        **kwargs,
+    ):
+        """Bot-friendly variant: run process_input, parse output to MarkupAST."""
+        from deile.core.bot_streaming import StructuredResponse, ToolCallRecord
+        from deile.ui.markup import MarkdownToASTParser
+
+        response = await self.process_input(
+            user_input,
+            session_id=session_id,
+            extra_system_prompt=extra_system_prompt,
+            bot_context=bot_context,
+            **kwargs,
+        )
+        text = response.content or ""
+        ast = MarkdownToASTParser().parse(text)
+        tool_calls = []
+        for tr in getattr(response, "tool_results", []) or []:
+            tool_calls.append(
+                ToolCallRecord(
+                    name=getattr(tr, "tool_name", "") or "unknown",
+                    ok=getattr(tr, "is_success", True),
+                    elapsed_ms=int(getattr(tr, "execution_time", 0.0) * 1000),
+                )
+            )
+        elapsed_ms = int(getattr(response, "execution_time", 0.0) * 1000)
+        model_used = ""
+        try:
+            model_used = (response.metadata or {}).get("model_used", "") or ""
+        except Exception:
+            pass
+        return StructuredResponse(
+            text=text,
+            markup=ast,
+            tool_calls=tool_calls,
+            elapsed_ms=elapsed_ms,
+            model_used=model_used,
+            status=getattr(response.status, "value", "idle"),
+        )
+
+    async def process_input_stream_chunks(
+        self,
+        user_input: str,
+        session_id: str = "default",
+        *,
+        extra_system_prompt: Any = None,
+        bot_context: Any = None,
+        **kwargs,
+    ):
+        """Adapt UnifiedStreamEvent -> StreamChunk for bot consumers.
+
+        Always emits `done` as the last chunk; on fatal error, emits `error` then `done`.
+        """
+        from deile.core.bot_streaming import StreamChunk
+        from deile.ui.markup import MarkdownToASTParser
+
+        # Stash bot params on session before streaming consumer reads them.
+        session_kwargs = dict(kwargs)
+        if extra_system_prompt is not None or bot_context is not None:
+            session = self._get_or_create_session(session_id, **session_kwargs)
+            if extra_system_prompt is not None:
+                from deile.core.bot_hooks import sanitize_extra_system_prompt
+                session.context_data["extra_system_prompt"] = sanitize_extra_system_prompt(
+                    str(extra_system_prompt)
+                )
+            if bot_context is not None:
+                session.context_data["bot_context"] = dict(bot_context)
+            session_kwargs.pop("working_directory", None)
+
+        accumulated_text = ""
+        last_model = ""
+        last_error: Any = None
+        try:
+            async for evt in self.process_input_stream(
+                user_input, session_id=session_id, **session_kwargs
+            ):
+                etype = getattr(evt, "type", None)
+                if etype is None:
+                    continue
+                name = getattr(etype, "name", None) or getattr(etype, "value", str(etype))
+                if name in ("TEXT_DELTA", "text_delta"):
+                    text = getattr(evt, "text", "") or ""
+                    if text:
+                        accumulated_text += text
+                        yield StreamChunk(
+                            "text", {"text": text, "incremental": True}
+                        )
+                elif name in ("TOOL_INVOKED", "tool_invoked"):
+                    yield StreamChunk(
+                        "tool_call_started",
+                        {
+                            "tool_name": getattr(evt, "tool_name", "") or "",
+                            "args_preview": str(getattr(evt, "tool_args", ""))[:120],
+                        },
+                    )
+                elif name in ("TOOL_RESULT", "tool_result"):
+                    yield StreamChunk(
+                        "tool_call_finished",
+                        {
+                            "tool_name": getattr(evt, "tool_name", "") or "",
+                            "ok": getattr(evt, "ok", True),
+                            "elapsed_ms": int(getattr(evt, "elapsed_ms", 0) or 0),
+                        },
+                    )
+                elif name in ("USAGE_FINAL", "usage_final"):
+                    usage = getattr(evt, "usage", None)
+                    last_model = getattr(usage, "model", "") if usage else ""
+                elif name in ("ERROR", "error"):
+                    last_error = {
+                        "type": getattr(evt, "error_type", "") or "Error",
+                        "message": getattr(evt, "error_message", "") or "",
+                    }
+        except Exception as e:  # noqa: BLE001
+            last_error = {"type": type(e).__name__, "message": str(e)}
+
+        if last_error is not None:
+            yield StreamChunk("error", last_error)
+        ast = MarkdownToASTParser().parse(accumulated_text)
+        yield StreamChunk(
+            "done",
+            {
+                "text": accumulated_text,
+                "markup": ast,
+                "elapsed_ms": 0,
+                "model_used": last_model,
+            },
+        )
+
+    async def get_or_create_session(
+        self,
+        session_id: str,
+        working_directory: Optional[str] = None,
+        *,
+        persisted: bool = False,
+    ) -> AgentSession:
+        """Async helper that resurrects from SessionStore if `persisted=True`.
+
+        Default `persisted=False` keeps CLI behavior identical (in-memory only).
+        Bot adapters call with `persisted=True` so a session survives restart.
+        """
+        if session_id in self._sessions:
+            return self._sessions[session_id]
+        if persisted:
+            try:
+                store = await self._get_session_store()
+                row = await store.get(session_id)
+                if row is not None:
+                    snap = {
+                        "session_id": session_id,
+                        "user_id": None,
+                        "working_directory": row.working_directory,
+                        "context_data": row.context_data,
+                        "created_at": time.time(),
+                        "last_activity": time.time(),
+                    }
+                    session = AgentSession.from_snapshot(snap)
+                    self._sessions[session_id] = session
+                    await store.touch(session_id)
+                    return session
+            except Exception:
+                logger.warning(
+                    "SessionStore lookup failed; creating in-memory session",
+                    exc_info=True,
+                )
+        kwargs: Dict[str, Any] = {}
+        if working_directory:
+            kwargs["working_directory"] = working_directory
+        session = self.create_session(session_id, **kwargs)
+        session.persisted = persisted
+        if persisted:
+            try:
+                store = await self._get_session_store()
+                await store.upsert(
+                    session_id,
+                    str(session.working_directory),
+                    dict(session.context_data),
+                )
+            except Exception:
+                logger.warning("SessionStore upsert failed", exc_info=True)
+        return session
+
+    async def _get_session_store(self):
+        """Lazy SessionStore singleton."""
+        if not hasattr(self, "_session_store") or self._session_store is None:
+            try:
+                from deile.core.session_store import SessionStore
+                from deile_bot.foundation.settings import get_bot_settings
+
+                bot_settings = get_bot_settings()
+                path = bot_settings.foundation.sessions_sqlite_path
+            except Exception:
+                from deile.core.session_store import SessionStore
+                from pathlib import Path as _P
+
+                path = _P("./data/deile_sessions.sqlite")
+            store = SessionStore(path)
+            await store.init()
+            self._session_store = store
+        return self._session_store
+
+    async def flush_persisted_sessions(self) -> int:
+        """Persist all sessions marked `persisted=True`. Returns count flushed."""
+        if not hasattr(self, "_session_store") or self._session_store is None:
+            return 0
+        flushed = 0
+        for sid, session in self._sessions.items():
+            if not getattr(session, "persisted", False):
+                continue
+            try:
+                await self._session_store.upsert(
+                    sid,
+                    str(session.working_directory),
+                    dict(session.context_data),
+                )
+                flushed += 1
+            except Exception:
+                logger.warning(f"flush failed for session {sid}", exc_info=True)
+        return flushed
+
+    async def shutdown(self) -> None:
+        """Graceful shutdown — flush sessions, close store."""
+        try:
+            await self.flush_persisted_sessions()
+        except Exception:
+            pass
+        store = getattr(self, "_session_store", None)
+        if store is not None:
+            try:
+                await store.close()
+            except Exception:
+                pass
+            self._session_store = None
+
     # Métodos privados
-    
+
     def _get_or_create_session(self, session_id: str, **kwargs) -> AgentSession:
         """Obtém sessão existente ou cria nova"""
         if session_id not in self._sessions:
@@ -1104,13 +1441,16 @@ class DeileAgent:
         
         for tool_name in parse_result.tool_requests:
             try:
-                # Cria contexto para a tool
+                # Cria contexto para a tool. Bot mode propaga bot_context para
+                # ctx.extra (D4 plano DEILE) — tools que precisam leem dali.
+                _bot_ctx = session.context_data.get("bot_context") or {}
                 context = ToolContext(
                     user_input=session.conversation_history[-1]["content"] if session.conversation_history else "",
                     parsed_args=parse_result.commands[0].arguments if parse_result.commands else {},
                     session_data=session.context_data,
                     working_directory=str(session.working_directory),
-                    file_list=parse_result.file_references
+                    file_list=parse_result.file_references,
+                    extra={"bot_context": dict(_bot_ctx)} if _bot_ctx else {},
                 )
                 
                 # Executa a tool
@@ -1133,6 +1473,7 @@ class DeileAgent:
         
         return tool_results
     
+    # TODO(streaming-cleanup): legacy non-streaming tool-loop. Once the streaming path proves stable in production (Settings.streaming_enabled is True by default), migrate remaining callers and delete this method along with provider.chat_with_tools.
     async def _process_iterative_function_calling(
         self,
         user_input: str,
@@ -1165,52 +1506,14 @@ class DeileAgent:
             except Exception:
                 model_tier = None
 
-            # Honor /model use <provider:model_id> override stored on the session
-            forced = None  # session-level override (hard error if not registered)
-            try:
-                forced = session.context_data.get("forced_model")
-            except AttributeError:
-                forced = None
-
-            # Persistent default_model from api_config.yaml (soft preference — falls
-            # back to router if the provider is not registered, e.g. missing API key).
-            config_default: Optional[str] = None
-            if not forced:
-                try:
-                    from deile.config.manager import get_config_manager
-                    config_default = get_config_manager().get_config().default_model or None
-                except Exception:
-                    pass
-
-            # Seleciona modelo apropriado (tier-aware quando classificado)
-            model_provider = None
-            _active_forced = forced or config_default
-            if _active_forced and isinstance(_active_forced, str) and ":" in _active_forced:
-                _fp_id, _fm_id = _active_forced.split(":", 1)
-                for p in self.model_router.providers.values():
-                    if (
-                        getattr(p, "provider_id", None) == _fp_id
-                        and getattr(p, "model_name", None) == _fm_id
-                    ):
-                        model_provider = p
-                        break
-                if model_provider is None:
-                    if forced:
-                        # Session-level /model use — hard error, user chose this explicitly
-                        available = sorted({
-                            getattr(p, "model_name", "?") for p in self.model_router.providers.values()
-                            if getattr(p, "provider_id", None) == _fp_id
-                        })
-                        raise ModelError(
-                            f"Forced model '{forced}' is not registered. "
-                            f"Available {_fp_id} models: {available or '(none)'}. "
-                            f"Use /model use auto to clear the override.",
-                            error_code="FORCED_MODEL_NOT_REGISTERED",
-                        )
-                    # config default not registered — fall through to router silently
-                    logger.debug(
-                        "default_model '%s' not registered, falling back to router", config_default
-                    )
+            # Resolve provider preference. /model use is hard; bot/default model
+            # settings are soft and fall through to the router when unavailable.
+            (
+                model_provider,
+                forced,
+                selected_preference_handle,
+                selected_preference_source,
+            ) = _select_configured_model_provider(self.model_router, session)
             if model_provider is None:
                 model_provider = await self.model_router.select_provider(
                     context=context,
@@ -1424,7 +1727,10 @@ class DeileAgent:
                         # Permanent errors (auth / model-not-found) for a user-configured
                         # default_model must bubble up: cascading to another provider masks
                         # a misconfiguration the user needs to fix.
-                        if config_default and _is_permanent_provider_error(_chat_err):
+                        if (
+                            selected_preference_source == "default_model"
+                            and _is_permanent_provider_error(_chat_err)
+                        ):
                             raise
                         try:
                             from deile.core.models.tier_router import get_tier_router as _gtr
@@ -1436,8 +1742,9 @@ class DeileAgent:
 
                         model_provider = next_provider
                         logger.warning(
-                            "config_default '%s' failed (%s) — cascading to %s (attempt=%d)",
-                            config_default,
+                            "%s '%s' failed (%s) — cascading to %s (attempt=%d)",
+                            selected_preference_source or "router",
+                            selected_preference_handle or "auto",
                             str(_chat_err)[:120],
                             model_provider.provider_id,
                             attempt,

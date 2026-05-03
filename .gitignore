@@ -39,3 +39,7 @@ old/
 .*-profile.json
 devscan/*
 discord_bot/*
+data/
+deile_bot.yaml
+.openclaude/*
+.opendeile/*

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deile"
+version = "5.1.0"
+description = "DEILE — autonomous CLI AI agent + bot foundation"
+authors = [{ name = "elimarcavalli" }]
+readme = "README.md"
+requires-python = ">=3.9"
+
+[project.optional-dependencies]
+discord = ["discord.py>=2.3,<3.0"]
+telegram = ["python-telegram-bot>=20"]
+whatsapp = ["httpx>=0.25"]
+meta = ["httpx>=0.25"]
+all-bots = [
+    "discord.py>=2.3,<3.0",
+    "python-telegram-bot>=20",
+    "httpx>=0.25",
+]
+scheduler = ["apscheduler>=3.10"]
+webhook = ["fastapi>=0.100", "uvicorn>=0.23"]
+
+[project.scripts]
+deile-bot = "deile_bot.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["deile*", "deile_bot*"]

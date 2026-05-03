@@ -41,7 +41,6 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 from rich.console import Console
 from rich.live import Live
-from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 
@@ -49,8 +48,12 @@ from deile.core.models.stream_events import (
     StreamEventType,
     UnifiedStreamEvent,
 )
+from deile.ui.markdown_table import DeileMarkdown as Markdown
+from deile.ui.markdown_table import safe_streaming_split
 
 logger = logging.getLogger(__name__)
+
+_VALIDATION_GATE_TITLE = "[yellow]validation gate — corrected reply[/yellow]"
 
 
 @dataclass
@@ -67,6 +70,19 @@ class _ToolBlock:
 class _TextBlock:
     text: str = ""
     source: Optional[str] = None  # e.g. "validation_gate"
+
+
+@dataclass
+class _RenderableBlock:
+    """A pre-built Rich renderable carried verbatim through the stream.
+
+    Slash commands like ``/model list`` return ``rich.table.Table`` objects
+    that must be printed by Rich itself so its width-aware column-layout
+    algorithm runs at the actual terminal width. Flattening them to text
+    and re-rendering as Markdown shatters the layout.
+    """
+
+    renderable: Any = None
 
 
 @dataclass
@@ -283,8 +299,11 @@ class StreamingRenderer:
                     # refresh is safe and gives the most responsive feel.
                     live.update(self._compose(blocks[committed_count:]))
                     live.refresh()
-                # Final flush — guarantees the last delta is on screen
-                # before we exit the Live region.
+                # Final flush — pass force_complete=True so any trailing
+                # in-progress table (no closing blank line) commits as a
+                # real Markdown table in the scrollback, instead of the
+                # dim raw-pipes placeholder used during streaming.
+                live.update(self._compose(blocks[committed_count:], force_complete=True))
                 live.refresh()
             except KeyboardInterrupt:
                 live.update(self._compose(blocks[committed_count:], footer="[yellow]\n(interrupted)[/yellow]"))
@@ -338,13 +357,15 @@ class StreamingRenderer:
         # Stage blocks are never committed to scrollback.
         if isinstance(block, _StageBlock):
             return None
+        if isinstance(block, _RenderableBlock):
+            return block.renderable
         if isinstance(block, _TextBlock):
             if not block.text:
                 return None
             if block.source == "validation_gate":
                 return Panel(
                     Text(block.text, style="yellow"),
-                    title="[yellow]validation gate[/yellow]",
+                    title=_VALIDATION_GATE_TITLE,
                     border_style="yellow",
                 )
             if block.source == "error":
@@ -430,6 +451,13 @@ class StreamingRenderer:
                 last_flush = time.monotonic()
                 chars_since_flush = 0
 
+            elif event.type is StreamEventType.RICH_RENDERABLE:
+                # Flush any pending text before the renderable prints so
+                # the visual order matches the event order.
+                self._legacy_flush_text(blocks, rendered_text_len_per_block, final=True)
+                if event.renderable is not None:
+                    self._console.print(event.renderable)
+
             elif event.type is StreamEventType.TOOL_RESULT:
                 icon = "[green]✓[/green]" if event.tool_status == "success" else "[red]✗[/red]"
                 summary = self._safe_markup(event.tool_result_summary or "")
@@ -495,9 +523,11 @@ class StreamingRenderer:
         """Return the longest prefix of ``text`` ending at a safe boundary.
 
         Used by the legacy progressive flush so we don't print half of a
-        ``**bold**`` run or half of an open code fence between flushes. The
-        Live path doesn't need this because ``Markdown`` re-parses the full
-        accumulated buffer every frame.
+        ``**bold**`` run, half of an open code fence, or a half-built GFM
+        table between flushes. The Live path doesn't need the inline-markup
+        guards because ``Markdown`` re-parses the full accumulated buffer
+        every frame, but it DOES use ``safe_streaming_split`` for tables
+        for the same jitter-suppression reason.
         """
         # If we're inside an open fenced code block (odd count of triple
         # backticks), wait for the close.
@@ -511,6 +541,12 @@ class StreamingRenderer:
             if text.count(token) % 2 == 1 and tail.endswith(token[0]):
                 last_nl = text.rfind("\n")
                 return max(last_nl + 1, 0)
+        # Open-table guard: if the trailing block is an unfinished GFM
+        # table (no closing blank line yet), stop at its start so we don't
+        # print rows that will reflow once the table closes.
+        stable_prefix, transient_tail = safe_streaming_split(text)
+        if transient_tail:
+            return len(stable_prefix)
         return len(text)
 
     def _render_text_block(self, block: "_TextBlock", text: str):
@@ -520,7 +556,7 @@ class StreamingRenderer:
         if block.source == "validation_gate":
             return Panel(
                 Text(text, style="yellow"),
-                title="[yellow]validation gate[/yellow]",
+                title="[yellow]validation gate — corrected reply[/yellow]",
                 border_style="yellow",
             )
         if block.source == "error":
@@ -568,6 +604,9 @@ class StreamingRenderer:
                 blocks[-1].text += event.text
             else:
                 blocks.append(_TextBlock(text=event.text, source=event.source))
+        elif event.type is StreamEventType.RICH_RENDERABLE:
+            if event.renderable is not None:
+                blocks.append(_RenderableBlock(renderable=event.renderable))
         elif event.type is StreamEventType.TOOL_USE_START:
             blocks.append(
                 _ToolBlock(
@@ -630,10 +669,16 @@ class StreamingRenderer:
         blocks: List[Any],
         footer: Optional[str] = None,
         spinner_frame: str = "⠋",
+        force_complete: bool = False,
     ):
         # Visual separation rule: every rendered item gets a blank line
         # before it (except the first), so tool blocks, text blocks, and
         # the usage footer are never "glued together" on the screen.
+        #
+        # ``force_complete`` is set on the FINAL frame of the stream so any
+        # trailing in-progress GFM table (no closing blank line received)
+        # is rendered as a real Markdown table in the committed scrollback
+        # instead of the dim raw-pipes placeholder we use during streaming.
         from rich.console import Group
         rendered: List[Any] = []
 
@@ -649,18 +694,33 @@ class StreamingRenderer:
                 if b.source == "validation_gate":
                     _push(Panel(
                         Text(b.text, style="yellow"),
-                        title="[yellow]validation gate[/yellow]",
+                        title=_VALIDATION_GATE_TITLE,
                         border_style="yellow",
                     ))
                 elif b.source == "error":
                     _push(Text.from_markup(b.text))
                 elif self._markdown:
-                    try:
-                        _push(Markdown(b.text))
-                    except Exception:
-                        _push(Text(b.text))
+                    if force_complete:
+                        prefix, tail = b.text, ""
+                    else:
+                        prefix, tail = safe_streaming_split(b.text)
+                    if prefix:
+                        try:
+                            _push(Markdown(prefix))
+                        except Exception:
+                            _push(Text(prefix))
+                    if tail:
+                        # Show the in-progress table as raw dim pipes so
+                        # the user sees the agent typing rows; we avoid
+                        # re-parsing-as-table on every delta which causes
+                        # the Live region to jump (header → 0-row table
+                        # → 1-row table → …) as the parse outcome flips.
+                        _push(Text(tail, style="dim"))
                 else:
                     _push(Text(b.text))
+            elif isinstance(b, _RenderableBlock):
+                if b.renderable is not None:
+                    _push(b.renderable)
             elif isinstance(b, _StageBlock):
                 label = b.text or "processando"
                 _push(Text.from_markup(f"[dim]{spinner_frame} {label}…[/dim]"))

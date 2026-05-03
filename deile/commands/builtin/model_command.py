@@ -166,9 +166,29 @@ EXAMPLES:
                 ),
             )
 
+        try:
+            ctx_data = getattr(context.session, "context_data", {}) or {}
+        except AttributeError:
+            ctx_data = {}
+        if ctx_data.get("model_override_locked"):
+            locked_model = ctx_data.get("forced_model") or "(unknown)"
+            return CommandResult(
+                success=False,
+                content=Panel(
+                    Text(
+                        "Model selection is locked by bot configuration.\n"
+                        f"Forced model: {locked_model}\n"
+                        "Changing it with /model use is not allowed in this session.",
+                        style="yellow",
+                    ),
+                    title="[bold red]Model Override Locked[/bold red]",
+                    border_style="red",
+                ),
+                metadata={"model_override_locked": True, "forced_model": locked_model},
+            )
+
         if target.lower() == "auto":
             if hasattr(context, "session") and context.session is not None:
-                ctx_data = getattr(context.session, "context_data", {})
                 ctx_data.pop("forced_model", None)
             return CommandResult(
                 success=True,

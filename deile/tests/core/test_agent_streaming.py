@@ -208,12 +208,13 @@ async def test_slash_command_yields_single_text(configured_agent, tmp_path: Path
 
 @pytest.mark.asyncio
 async def test_slash_command_with_rich_renderable_content(configured_agent, tmp_path: Path):
-    """Regression: when a slash command returns a Rich renderable (e.g.
-    ``/model list`` returns a ``Table``) as ``response.content``, the
-    streaming pipeline must serialize it to a string before emitting the
-    TEXT_DELTA event. Otherwise downstream string ops in the renderer
-    (Markdown(text), text concat) blow up with
-    ``'Table' object has no attribute 'translate'``.
+    """When a slash command returns a Rich renderable (e.g. ``/model list``
+    returns a ``Table``), the streaming pipeline must forward the
+    renderable verbatim through a RICH_RENDERABLE event so the renderer
+    can let Rich's own width-aware layout run at the actual terminal
+    width. Flattening to text and yielding TEXT_DELTA is what made the
+    table re-render through ``Markdown()`` and shatter into scattered
+    pipes at the terminal width.
     """
     from deile.core.agent import AgentResponse, AgentStatus
     from rich.table import Table
@@ -236,14 +237,11 @@ async def test_slash_command_with_rich_renderable_content(configured_agent, tmp_
     ):
         events.append(evt)
     types = [e.type for e in events]
-    assert types == [StreamEventType.TEXT_DELTA, StreamEventType.USAGE_FINAL]
-    # Payload must be a string, not the original Table object.
-    assert isinstance(events[0].text, str)
-    # The rendered text must include the table content (column headers/rows
-    # at minimum) so the user sees a useful representation.
-    assert "Provider" in events[0].text
-    assert "openai" in events[0].text
-    assert "claude-opus-4-7" in events[0].text
+    assert types == [StreamEventType.RICH_RENDERABLE, StreamEventType.USAGE_FINAL]
+    # The original Table must arrive verbatim — same identity, no text
+    # round-trip — so Rich can re-flow columns at the actual terminal width.
+    assert events[0].renderable is table
+    assert events[0].text is None
 
 
 @pytest.mark.asyncio
@@ -453,7 +451,13 @@ async def test_streaming_gate_fires_on_unvalidated_write(
     assert len(gate_deltas) == 1, (
         f"expected exactly one validation_gate TEXT_DELTA, got {len(gate_deltas)}"
     )
-    assert gate_deltas[0].text == "validation gate retry reply"
+    # The delta carries a one-line marker (rendered inside the yellow panel)
+    # making it explicit that the corrected reply REPLACES the prior streamed
+    # response, followed by the gate's standalone retry reply.
+    assert gate_deltas[0].text == (
+        "(corrected reply — replaces the response above)\n\n"
+        "validation gate retry reply"
+    )
 
 
 @pytest.mark.asyncio

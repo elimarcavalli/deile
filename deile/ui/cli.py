@@ -4,12 +4,12 @@ from typing import Optional, Dict, Any
 import os
 import sys
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.prompt import Prompt
 from rich.table import Table
 
 from ..core.agent import DeileAgent
 from ..storage.logs import get_logger
+from .markdown_table import DeileMarkdown as Markdown
 
 
 class CLI:

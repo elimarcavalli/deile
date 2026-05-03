@@ -7,26 +7,28 @@ assignees: ''
 ---
 
 ## Bug Description
-A clear and concise description of the bug.
+<!-- A clear and concise description of the bug. -->
 
 ## Steps to Reproduce
-1. Go to '...'
-2. Run '...'
-3. See error
+<!-- Keep this short. Include the smallest steps that trigger the bug. -->
+1. 
+2. 
+3. 
 
 ## Expected Behavior
-A clear description of what should happen.
+<!-- What should happen instead? -->
 
 ## Actual Behavior
-A description of what is happening.
+<!-- What actually happens? -->
 
-## Screenshots
-If applicable, add screenshots.
+## Error Output
+<!-- Optional: paste the relevant error, traceback, or command output. -->
 
 ## Environment
-- OS: [e.g. Windows 11, Ubuntu 22.04]
-- Python: [e.g. 3.11.5]
-- DEILE Version: [e.g. 2.0.1]
+<!-- Optional if not relevant or unknown. -->
+- OS:
+- Python:
+- DEILE Version:
 
 ## Additional Context
-Any other information about the problem.
+<!-- Optional: screenshots, links, examples, or extra information if exists. -->
