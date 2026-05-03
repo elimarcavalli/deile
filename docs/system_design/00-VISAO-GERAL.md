@@ -85,6 +85,7 @@
 | 14 | Persistência (memória episódica/semântica/uso) em SQLite | V1 | Memória (06), Integrações (07) |
 | 15 | Streaming-first: `process_input_stream` é o caminho default da CLI | V1 | Fluxo (05) |
 | 16 | Two-flag flag de fallback `use_legacy_gemini_only` em `model_providers.yaml` | V1 | Integrações LLM (07) |
+| 17 | Separação `deile`/`deile-bot` + protocolo HTTP local (Bearer, 127.0.0.1) para a flecha reversa `agente → bot` | V1 | Arquitetura (02), Componentes (04), Segurança (08) |
 
 ## Estado dos pilares
 

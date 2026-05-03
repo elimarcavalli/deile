@@ -25,12 +25,13 @@ class ToolStatus(Enum):
 class ToolCategory(Enum):
     """Categorias de tools do sistema"""
     FILE = "file"
-    EXECUTION = "execution" 
+    EXECUTION = "execution"
     SEARCH = "search"
     SYSTEM = "system"
     ANALYSIS = "analysis"
     NETWORK = "network"
     DATABASE = "database"
+    MESSAGING = "messaging"
     OTHER = "other"
 
 

@@ -204,6 +204,21 @@
 
 ---
 
+## Decisão #17 — Separação `deile` / `deile-bot` e protocolo HTTP local para a flecha reversa
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 |
+| Pilar dono | 02-Arquitetura, 04-Componentes, 08-Segurança |
+| Decisão | A árvore `deile_bot/` foi extraída para um repositório separado (`elimarcavalli/deile-bot`) com `pyproject.toml` próprio. A comunicação `deile → deile-bot` (a flecha reversa) usa **HTTP local** (aiohttp.web em `127.0.0.1`, Bearer token), não importação in-process nem outbox SQLite. O cliente publicável `deile-bot-client` (httpx + pydantic) é a única superfície que a CLI da DEILE consome via extra opcional `bot` |
+| Evidência | `deile_bot/runtime/control_plane/`, `deile_bot/deile_bot_client/`, `deile/integrations/bot/`, `deile/tools/messaging/`, `pyproject.toml` (extra `bot = ["deile-bot-client>=0.1"]`), `deile_bot/pyproject.toml` |
+| Motivação | (1) Daemons de chat têm ciclo de vida independente da CLI; in-process forçaria subir o bot toda vez que a CLI abrisse e dificultaria deploy. (2) Outbox SQLite introduziria latência e perderia feedback síncrono (msg_id, falhas Discord). (3) HTTP em loopback dá ack imediato, isola repos, permite versionar contrato via tag, e reaproveita um cliente publicável sem expor a stack do bot. (4) Bearer auth + bind 127.0.0.1 fechá fecha a porta para qualquer processo fora da máquina |
+| Alternativas consideradas | (a) **In-process**: reprovado — junta ciclos de vida e complica testes. (b) **Outbox SQLite**: reprovado — sem feedback síncrono, latência de polling. (c) **gRPC**: reprovado — overhead de proto + nada que justifique a complexidade para 9 endpoints |
+| Trade-offs | Operação local fica dependente de o daemon estar de pé. Mitigado: tools só registram quando o daemon foi configurado; offline → `ToolResult.error_result(code="BOT_UNREACHABLE")` tipado, não stack trace |
+| Impacto breaking | Os extras `discord/telegram/whatsapp/meta/all-bots` e o console-script `deile-bot` **saíram** do `pyproject.toml` da DEILE. Quem instalava `pip install deile[discord]` agora deve usar `pip install deile-bot[discord]` |
+
+---
+
 ## Como adicionar uma nova decisão
 
 | # | Passo |
