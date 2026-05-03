@@ -24,6 +24,7 @@ class TestStreamEventType:
             "USAGE_FINAL",
             "ERROR",
             "STAGE",
+            "PROGRESS",
             "RICH_RENDERABLE",
         }
 

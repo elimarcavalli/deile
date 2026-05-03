@@ -202,8 +202,8 @@ async def test_slash_command_yields_single_text(configured_agent, tmp_path: Path
     ):
         events.append(evt)
     types = [e.type for e in events]
-    assert types == [StreamEventType.TEXT_DELTA, StreamEventType.USAGE_FINAL]
-    assert events[0].text == "help text"
+    assert types == [StreamEventType.STAGE, StreamEventType.TEXT_DELTA, StreamEventType.USAGE_FINAL]
+    assert events[1].text == "help text"
 
 
 @pytest.mark.asyncio
@@ -237,11 +237,11 @@ async def test_slash_command_with_rich_renderable_content(configured_agent, tmp_
     ):
         events.append(evt)
     types = [e.type for e in events]
-    assert types == [StreamEventType.RICH_RENDERABLE, StreamEventType.USAGE_FINAL]
+    assert types == [StreamEventType.STAGE, StreamEventType.RICH_RENDERABLE, StreamEventType.USAGE_FINAL]
     # The original Table must arrive verbatim — same identity, no text
     # round-trip — so Rich can re-flow columns at the actual terminal width.
-    assert events[0].renderable is table
-    assert events[0].text is None
+    assert events[1].renderable is table
+    assert events[1].text is None
 
 
 @pytest.mark.asyncio
@@ -256,8 +256,8 @@ async def test_autonomous_path_yields_single_text(configured_agent, tmp_path: Pa
         )
     ]
     types = [e.type for e in events]
-    assert types == [StreamEventType.TEXT_DELTA, StreamEventType.USAGE_FINAL]
-    assert events[0].text == "autonomous reply"
+    assert types == [StreamEventType.STAGE, StreamEventType.TEXT_DELTA, StreamEventType.USAGE_FINAL]
+    assert events[1].text == "autonomous reply"
 
 
 @pytest.mark.asyncio

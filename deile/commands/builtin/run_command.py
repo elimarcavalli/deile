@@ -226,7 +226,7 @@ class RunCommand(DirectCommand):
         
         # Create progress display
         progress = Progress(
-            TextColumn("[bold blue]Executing Plan:", justify="right"),
+            TextColumn("[bold blue]Executando plano:", justify="right"),
             BarColumn(bar_width=None),
             "[progress.percentage]{task.percentage:>3.1f}%",
             "•",
@@ -234,11 +234,11 @@ class RunCommand(DirectCommand):
             "•",
             TimeElapsedColumn(),
         )
-        
+
         # Start execution with live progress
         try:
             with Live(progress, refresh_per_second=2) as live:
-                task = progress.add_task(f"[cyan]Starting {plan.title}...", total=plan.total_steps)
+                task = progress.add_task(f"[cyan]Iniciando {plan.title}...", total=plan.total_steps)
                 
                 # Execute plan asynchronously and update progress
                 execution_result = await self._execute_with_progress(
@@ -292,11 +292,11 @@ class RunCommand(DirectCommand):
                         desc += "..."
                     
                     if current_steps[0]['status'] == 'requires_approval':
-                        desc = f"⚠️ {desc} (needs approval)"
-                    
+                        desc = f"⚠️ {desc} (precisa aprovação)"
+
                     progress.update(task, description=f"[cyan]{desc}")
                 else:
-                    progress.update(task, description="[cyan]Processing...")
+                    progress.update(task, description="[cyan]Processando...")
             
             await asyncio.sleep(0.5)
         
