@@ -41,6 +41,7 @@
 | Auto-discovery de tools | `ToolRegistry.auto_discover()` para conjunto-padrão; demais via `register_tool()` |
 | Categorias declaradas | `ToolCategory` em `deile/tools/base.py` (file, execution, search, system, analysis, network, database, other) |
 | Slash commands | Processados por `deile/parsers/command_parser.py`, despachados pelo `CommandRegistry`; conjunto exato em `deile/commands/builtin/*.py` |
+| Skills definidas pelo usuário | Arquivos `.md` em `~/.deile/skills/` (usuário) e `.deile/skills/` (projeto) são carregados na inicialização como slash commands; project skills têm prioridade sobre user skills em conflito de nomes. Implementado em `deile/commands/skill_loader.py`. Formato: frontmatter YAML opcional (`name`, `description`) + corpo em Markdown que será enviado ao LLM como prompt ao invocar o comando. O diretório `~/.deile/skills/` é criado automaticamente se ausente. |
 | Pipeline de parsing | Em ordem de prioridade: comandos slash, referências a arquivos, diffs (`deile/parsers/`) |
 | Personas | Markdown + YAML; hot-reload das instruções via `PersonaManager` quando habilitado |
 
