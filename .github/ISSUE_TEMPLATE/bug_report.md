@@ -1,34 +1,47 @@
 ---
-name: Bug Report
-about: Create a bug report to help improve DEILE
+name: Relatório de Bug
+about: Reporte um comportamento incorreto, inesperado ou quebrado no DEILE
 title: '[BUG] '
 labels: 'bug'
 assignees: ''
 ---
 
-## Bug Description
-<!-- A clear and concise description of the bug. -->
+## Descrição do Bug
+<!-- Descrição clara e objetiva do que está quebrado. -->
 
-## Steps to Reproduce
-<!-- Keep this short. Include the smallest steps that trigger the bug. -->
+## Severidade
+
+<!-- Marque exatamente uma opção. -->
+
+- [ ] **Crítica** — perda de dados, problema de segurança ou incapacidade total de executar o DEILE
+- [ ] **Maior** — uma funcionalidade central está quebrada ou produz resultado errado; sem contorno
+- [ ] **Menor** — comportamento degradado ou falha em caso de borda; existe contorno
+- [ ] **Cosmética** — problema de exibição, formatação ou texto sem impacto funcional
+
+## Passos para Reproduzir
+<!-- Menor sequência de passos que reproduz o bug de forma confiável. -->
+
 1. 
 2. 
 3. 
 
-## Expected Behavior
-<!-- What should happen instead? -->
+## Comportamento Esperado
+<!-- O que deveria acontecer? -->
 
-## Actual Behavior
-<!-- What actually happens? -->
+## Comportamento Atual
+<!-- O que acontece de fato? Inclua mensagens de erro, saída incorreta ou estado inesperado. -->
 
-## Error Output
-<!-- Optional: paste the relevant error, traceback, or command output. -->
+## Saída de Erro
+```
+<!-- Cole aqui o traceback completo, mensagem de erro ou linhas de log relevantes. -->
+```
 
-## Environment
-<!-- Optional if not relevant or unknown. -->
-- OS:
+## Ambiente
+
+- SO:
 - Python:
-- DEILE Version:
+- Versão / commit do DEILE:
+- Provider + modelo em uso:
 
-## Additional Context
-<!-- Optional: screenshots, links, examples, or extra information if exists. -->
+## Contexto Adicional
+<!-- Capturas de tela, issues relacionadas, links para documentos de pilar ou informações extras. -->
