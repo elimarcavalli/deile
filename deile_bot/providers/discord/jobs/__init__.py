@@ -1,1 +1,0 @@
-"""Discord scheduled jobs."""

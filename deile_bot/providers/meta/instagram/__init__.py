@@ -1,1 +1,0 @@
-"""Instagram Direct adapter."""
