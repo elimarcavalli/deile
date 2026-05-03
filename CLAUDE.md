@@ -53,8 +53,8 @@ Entry point: `python3 deile.py` (CLI shell in `DeileAgentCLI`; all logic lives i
 | Task | Command |
 |---|---|
 | Run agent | `python3 deile.py` |
-| Run tests | `pytest` (config in `pytest.ini`, testpaths = `deile/tests/`) |
-| Single test | `pytest deile/tests/path/to/test_x.py -v` |
+| Run tests | `python3 -m pytest deile/tests/ -q 2>&1 \| tail -5` — shows only the final summary line; add `-v` only when debugging a specific failure |
+| Single test | `python3 -m pytest deile/tests/path/to/test_x.py -v` |
 | Coverage | auto-runs with `pytest`; fails under 80% (`--cov-fail-under=80`) |
 | Lint | `ruff check deile/` |
 | Imports | `isort --check-only deile/` |
