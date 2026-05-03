@@ -504,9 +504,7 @@ class TestIntegrationPerformance:
         base_context = {"test": "data"}
 
         # This should work without async since no persona manager
-        result = asyncio.get_event_loop().run_until_complete(
-            layer.enhance_context_building(base_context)
-        )
+        result = asyncio.run(layer.enhance_context_building(base_context))
 
         assert result == base_context
 
