@@ -6,7 +6,6 @@ from typing import List, Optional, Dict, Any
 import yaml
 
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 from rich.status import Status
@@ -18,6 +17,7 @@ from prompt_toolkit import PromptSession
 
 from .base import UIManager, UITheme, UIMessage, MessageType, UIStatus
 from .completers import HybridCompleter
+from .markdown_table import DeileMarkdown as Markdown
 
 
 class ConsoleUIManager(UIManager):

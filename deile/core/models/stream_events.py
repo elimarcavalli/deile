@@ -15,14 +15,8 @@ class StreamEventType(Enum):
     TOOL_RESULT = "tool_result"
     USAGE_FINAL = "usage_final"
     ERROR = "error"
-    # Pre-stream stage indicator. The agent emits these before the first
-    # provider chunk so the UI can replace its opaque "aguardando…" spinner
-    # with a live description of what's actually running (parse, proactive
-    # tools, intent analysis, provider selection, etc.). STAGE events do NOT
-    # cancel the spinner — only a real content event (TEXT_DELTA, TOOL_USE_*,
-    # USAGE_FINAL, ERROR) does. They're advisory and may be dropped by
-    # consumers that don't care about progress.
     STAGE = "stage"
+    RICH_RENDERABLE = "rich_renderable"
 
 
 @dataclass
@@ -80,3 +74,8 @@ class UnifiedStreamEvent:
     # before the LLM starts streaming (e.g. "Analyzing intent",
     # "Connecting to deepseek-v4-pro", "Awaiting first token").
     stage: Optional[str] = None
+
+    # RICH_RENDERABLE — the Rich object (Table, Panel, Group, …) to print
+    # as-is. The renderer must call ``console.print(renderable)`` so
+    # Rich's width-aware layout runs at the actual terminal width.
+    renderable: Optional[Any] = None

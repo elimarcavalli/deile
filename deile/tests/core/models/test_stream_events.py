@@ -23,6 +23,8 @@ class TestStreamEventType:
             "TOOL_RESULT",
             "USAGE_FINAL",
             "ERROR",
+            "STAGE",
+            "RICH_RENDERABLE",
         }
 
 
