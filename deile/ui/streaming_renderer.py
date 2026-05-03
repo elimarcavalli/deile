@@ -98,6 +98,9 @@ class _StageBlock:
     """
 
     text: str = ""
+    progress_current: Optional[int] = None
+    progress_total: Optional[int] = None
+    progress_label: Optional[str] = None
 
 
 @dataclass
@@ -151,11 +154,19 @@ class StreamingRenderer:
         # Pre-compute the minimum interval between flushes for the legacy
         # path (no Live → we throttle manually).
         self._legacy_flush_interval = 1.0 / self._refresh_hz
+        # Anti-flicker: skip STAGE label changes within 3 seconds to prevent
+        # the spinner text from blurring. Exception: real phase change.
+        self._last_stage_update: float = 0.0
+        self._last_stage_label: Optional[str] = None
+        self._min_stage_interval: float = 3.0
 
     async def render(self, event_stream: AsyncIterator[UnifiedStreamEvent]) -> RenderResult:
         """Drive the stream to completion and return a summary."""
         result = RenderResult()
         blocks: List[Any] = []
+        # Reset anti-flicker state for fresh turn.
+        self._last_stage_update = 0.0
+        self._last_stage_label = None
 
         if self._legacy:
             await self._render_legacy(event_stream, blocks, result)
@@ -251,7 +262,7 @@ class StreamingRenderer:
 
         # Seed: open the turn with a generic stage so the spinner appears
         # immediately, before the agent has a chance to emit its first STAGE.
-        blocks.append(_StageBlock(text="aguardando resposta"))
+        blocks.append(_StageBlock(text="Pensando..."))
 
         with Live(
             self._compose(blocks),
@@ -582,16 +593,51 @@ class StreamingRenderer:
         # STAGE events update the trailing transient progress indicator.
         # They never produce permanent content — if a _StageBlock is already
         # at the tail, mutate its label in place; otherwise append one.
+        # Anti-flicker: skip label changes within MIN_STAGE_INTERVAL unless
+        # the label itself is identical (idempotent update).
         if event.type is StreamEventType.STAGE:
             label = event.stage or ""
+            now = time.monotonic()
+            if label != self._last_stage_label:
+                if now - self._last_stage_update < self._min_stage_interval:
+                    return
+                self._last_stage_label = label
+                self._last_stage_update = now
             if blocks and isinstance(blocks[-1], _StageBlock):
                 blocks[-1].text = label
+                blocks[-1].progress_current = None
+                blocks[-1].progress_total = None
             else:
                 blocks.append(_StageBlock(text=label))
             return
 
-        # Any non-STAGE event means real content is arriving — drop the
-        # transient stage indicator before processing so the new content
+        # PROGRESS events carry structured counters for long-running operations.
+        # They update the trailing _StageBlock (creating one if needed) and
+        # render the counter inline: "⠋ label (current/total)…"
+        if event.type is StreamEventType.PROGRESS:
+            label = event.progress_label or event.stage or "Processando"
+            now = time.monotonic()
+            if label != self._last_stage_label:
+                if now - self._last_stage_update < self._min_stage_interval:
+                    return
+                self._last_stage_label = label
+                self._last_stage_update = now
+            if blocks and isinstance(blocks[-1], _StageBlock):
+                blocks[-1].text = label
+                blocks[-1].progress_current = event.progress_current
+                blocks[-1].progress_total = event.progress_total
+                blocks[-1].progress_label = event.progress_label
+            else:
+                blocks.append(_StageBlock(
+                    text=label,
+                    progress_current=event.progress_current,
+                    progress_total=event.progress_total,
+                    progress_label=event.progress_label,
+                ))
+            return
+
+        # Any non-STAGE/PROGRESS event means real content is arriving — drop
+        # the transient stage indicator before processing so the new content
         # takes its place.
         while blocks and isinstance(blocks[-1], _StageBlock):
             blocks.pop()
@@ -722,8 +768,16 @@ class StreamingRenderer:
                 if b.renderable is not None:
                     _push(b.renderable)
             elif isinstance(b, _StageBlock):
-                label = b.text or "processando"
-                _push(Text.from_markup(f"[dim]{spinner_frame} {label}…[/dim]"))
+                label = b.text or "Processando"
+                if b.progress_total is not None and b.progress_total > 0:
+                    current = b.progress_current if b.progress_current is not None else 0
+                    if b.progress_label:
+                        label = f"{b.progress_label} ({current}/{b.progress_total})"
+                    else:
+                        label = f"{label} ({current}/{b.progress_total})"
+                    _push(Text.from_markup(f"[dim]{spinner_frame} {label}…[/dim]"))
+                else:
+                    _push(Text.from_markup(f"[dim]{spinner_frame} {label}…[/dim]"))
             elif isinstance(b, _ToolBlock):
                 _push(self._tool_renderable(b))
         if footer:

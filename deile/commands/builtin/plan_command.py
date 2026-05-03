@@ -95,7 +95,7 @@ class PlanCommand(DirectCommand):
             TextColumn("[progress.description]{task.description}"),
             transient=True,
         ) as progress:
-            progress.add_task(description="Creating execution plan...", total=None)
+            progress.add_task(description="Montando seu plano...", total=None)
             
             # Create plan
             plan = await self.plan_manager.create_plan(

@@ -16,6 +16,7 @@ class StreamEventType(Enum):
     USAGE_FINAL = "usage_final"
     ERROR = "error"
     STAGE = "stage"
+    PROGRESS = "progress"
     RICH_RENDERABLE = "rich_renderable"
 
 
@@ -74,6 +75,11 @@ class UnifiedStreamEvent:
     # before the LLM starts streaming (e.g. "Analyzing intent",
     # "Connecting to deepseek-v4-pro", "Awaiting first token").
     stage: Optional[str] = None
+
+    # PROGRESS — incremental counter for long-running operations
+    progress_current: Optional[int] = None
+    progress_total: Optional[int] = None
+    progress_label: Optional[str] = None
 
     # RICH_RENDERABLE — the Rich object (Table, Panel, Group, …) to print
     # as-is. The renderer must call ``console.print(renderable)`` so

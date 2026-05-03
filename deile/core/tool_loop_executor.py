@@ -20,6 +20,21 @@ from deile.core.models.base import ModelMessage, ModelProvider
 from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
 from deile.tools.base import ToolContext, ToolResult, ToolStatus
 from deile.tools.registry import ToolRegistry, get_tool_registry
+from deile.ui.stage_cascade import cascade_stream, cascade_until
+from deile.ui.stage_messages import get_stage_message, has_stage_messages  # noqa: F401
+
+# Map tool names (as emitted by the model) to message-library scenario keys.
+# When a tool is registered, use its specific scenario for richer feedback.
+_TOOL_SCENARIO_MAP: Dict[str, str] = {
+    "pip_install": "tool_pip_install",
+    "run_tests": "tool_run_tests",
+    "test_runner": "tool_run_tests",
+    "find_in_files": "tool_find_files",
+    "search_tool": "tool_find_files",
+    "bash_execute": "tool_bash",
+    "write_file": "tool_write_file",
+    "file_write": "tool_write_file",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -115,27 +130,23 @@ class ToolLoopExecutor:
             last_reasoning_content: Optional[str] = None
 
             # Round-trip latency before the model starts streaming the next
-            # iteration is otherwise silent — surface it as a STAGE so the UI
-            # can keep the user informed instead of going blank.
-            if iteration == 0:
-                yield UnifiedStreamEvent(
-                    type=StreamEventType.STAGE,
-                    stage=f"Awaiting first token from {provider_label}",
-                    iteration=iteration,
-                )
-            else:
-                yield UnifiedStreamEvent(
-                    type=StreamEventType.STAGE,
-                    stage=f"Awaiting next response from {provider_label}",
-                    iteration=iteration,
-                )
-
+            # iteration is otherwise silent — surface it as a STAGE cascade
+            # so the UI keeps evolving (3s → 10s → 30s) until the first event.
             stream_iter = provider.generate_stream(
                 history,
                 system_instruction=system_instruction,
                 tools=tools,
             )
-            async for event in stream_iter:
+            cascade_key = "await_first_token" if iteration == 0 else "await_next_response"
+            cascade_ctx: Dict[str, Any] = (
+                {} if iteration == 0 else {"iteration": str(iteration + 1)}
+            )
+            async for event in cascade_stream(
+                stream_iter,
+                message_key=cascade_key,
+                event_iteration=iteration,
+                **cascade_ctx,
+            ):
                 event.iteration = iteration
                 yield event
 
@@ -176,11 +187,44 @@ class ToolLoopExecutor:
 
             # Execute each tool sequentially, emitting TOOL_RESULT events.
             for tc_id, tc_name, tc_args in pending_tool_calls:
-                yield UnifiedStreamEvent(
-                    type=StreamEventType.STAGE,
-                    stage=f"Executing {tc_name}",
-                    iteration=iteration,
-                )
+                # Use a specific scenario key when available for richer feedback.
+                tool_key = _TOOL_SCENARIO_MAP.get(tc_name, "tool_executing")
+                tool_kwargs: Dict[str, Any] = {"tool": tc_name}
+                if tool_key == "tool_pip_install":
+                    tool_kwargs["package"] = (
+                        str(list(tc_args.values())[0]) if tc_args else tc_name
+                    )
+                elif tool_key == "tool_bash":
+                    raw_cmd = ""
+                    if tc_args:
+                        raw_cmd = str(
+                            tc_args.get("command")
+                            or tc_args.get("cmd")
+                            or tc_args.get("script")
+                            or list(tc_args.values())[0]
+                        )
+                    tool_kwargs["cmd"] = raw_cmd[:60] or tc_name
+                elif tool_key == "tool_write_file":
+                    tool_kwargs["file"] = str(
+                        tc_args.get("path") or tc_args.get("file_path") or tc_name
+                    ) if tc_args else tc_name
+                elif tool_key == "tool_find_files":
+                    tool_kwargs.setdefault(
+                        "path",
+                        str(tc_args.get("path") or tc_args.get("directory") or "workspace")
+                        if tc_args
+                        else "workspace",
+                    )
+                    tool_kwargs.setdefault("matches", 0)
+                    tool_kwargs.setdefault("scanned", 0)
+                elif tool_key == "tool_run_tests":
+                    tool_kwargs["target"] = (
+                        str(tc_args.get("target") or tc_args.get("path") or tc_name)
+                        if tc_args
+                        else tc_name
+                    )
+                    tool_kwargs.setdefault("count", 0)
+
                 await self._publish("invoked", tc_name, tc_id=tc_id, args=tc_args)
 
                 ctx = ToolContext(
@@ -196,8 +240,31 @@ class ToolLoopExecutor:
                     },
                 )
 
+                # Run the tool under a temporal cascade so the user sees the
+                # spinner text evolve when the tool takes >3s, >10s, >30s.
+                # cascade_until yields STAGE events while the awaitable runs
+                # and a final ("result", value) tuple when it completes; it
+                # re-raises the underlying exception if the tool fails.
+                tool_result_value: Any = None
+                tool_exc: Optional[BaseException] = None
                 try:
-                    result = await self._tool_registry.execute_tool(tc_name, ctx)
+                    async for item in cascade_until(
+                        self._tool_registry.execute_tool(tc_name, ctx),
+                        message_key=tool_key,
+                        event_iteration=iteration,
+                        **tool_kwargs,
+                    ):
+                        if isinstance(item, tuple) and item and item[0] == "result":
+                            tool_result_value = item[1]
+                        elif isinstance(item, UnifiedStreamEvent):
+                            yield item
+                except Exception as _exc:  # pylint: disable=broad-except
+                    tool_exc = _exc
+
+                try:
+                    if tool_exc is not None:
+                        raise tool_exc
+                    result = tool_result_value
                 except Exception as exc:  # pylint: disable=broad-except
                     logger.error(
                         "Tool '%s' raised in ToolLoopExecutor: %s", tc_name, exc, exc_info=True
@@ -255,6 +322,10 @@ class ToolLoopExecutor:
                     success=result.is_success,
                 )
 
+        yield UnifiedStreamEvent(
+            type=StreamEventType.STAGE,
+            stage=get_stage_message("max_iterations", "initial", max=self._max_iterations),
+        )
         logger.warning(
             "ToolLoopExecutor: hit max_iterations=%d for provider=%s",
             self._max_iterations,

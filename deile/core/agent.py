@@ -36,6 +36,8 @@ from ..storage.logs import get_logger
 from ..config.settings import get_settings
 from ..personas.manager import PersonaManager
 from ..orchestration.workflow_executor import get_workflow_executor
+from ..ui.stage_cascade import cascade_until
+from ..ui.stage_messages import get_stage_message, has_stage_messages
 
 
 logger = logging.getLogger(__name__)
@@ -622,9 +624,57 @@ class DeileAgent:
 
             # Slash commands — non-streaming, emit aggregated text once.
             if user_input.strip().startswith('/'):
-                response = await self._process_slash_command(
-                    user_input.strip(), session, start_time
+                cmd_name = user_input.strip()[1:].split()[0]
+                # Map command name to a specific scenario key when one exists.
+                # Strip command suffixes like "/patch-apply" → "patch_apply".
+                _normalized = cmd_name.replace("-", "_").lower()
+                _slash_key_map = {
+                    "plan": "slash_plan",
+                    "p": "slash_plan",
+                    "run": "slash_run",
+                    "sandbox": "slash_sandbox",
+                    "memory": "slash_memory",
+                    "compact": "slash_compact",
+                    "patch_apply": "slash_patch_apply",
+                    "patch_generate": "slash_patch_generate",
+                    "apply": "slash_patch_apply",
+                    "help": "slash_help",
+                    "model": "slash_model_list",
+                    "tools": "slash_tools",
+                    "logs": "slash_logs",
+                    "diff": "slash_diff",
+                    "permissions": "slash_permissions",
+                    "config": "slash_config",
+                    "status": "slash_status",
+                    "clear": "slash_clear",
+                    "cls": "slash_clear",
+                    "cost": "slash_cost",
+                    "context": "slash_context",
+                }
+                _slash_key = _slash_key_map.get(_normalized, "slash_generic")
+                _slash_ctx: Dict[str, Any] = (
+                    {} if _slash_key != "slash_generic" else {"cmd": cmd_name}
                 )
+                # Cascade so the user sees label evolution if the slash work
+                # blocks for >3s/10s/30s (e.g. /plan create on a heavy ticket,
+                # /sandbox docker setup, /memory compact, etc.).
+                _slash_response_holder: List[Any] = [None]
+
+                async def _run_slash() -> Any:
+                    return await self._process_slash_command(
+                        user_input.strip(), session, start_time
+                    )
+
+                async for _item in cascade_until(
+                    _run_slash(),
+                    message_key=_slash_key,
+                    **_slash_ctx,
+                ):
+                    if isinstance(_item, tuple) and _item and _item[0] == "result":
+                        _slash_response_holder[0] = _item[1]
+                    elif isinstance(_item, UnifiedStreamEvent):
+                        yield _item
+                response = _slash_response_holder[0]
                 if response.content:
                     # Slash commands may return Rich renderables (Table,
                     # Panel, etc. — e.g. /model list returns a Table) OR
@@ -653,6 +703,10 @@ class DeileAgent:
                 return
 
             # Autonomous path — non-streaming.
+            yield UnifiedStreamEvent(
+                type=StreamEventType.STAGE,
+                stage=get_stage_message("autonomous_process", "initial"),
+            )
             autonomous_result = await self.process_autonomous_request(user_input, session)
             if autonomous_result:
                 session.add_to_history(
@@ -672,16 +726,29 @@ class DeileAgent:
                 self._status = AgentStatus.IDLE
                 return
 
-            yield UnifiedStreamEvent(type=StreamEventType.STAGE, stage="Parsing input")
+            yield UnifiedStreamEvent(
+                type=StreamEventType.STAGE,
+                stage=get_stage_message("parse_input", "initial"),
+            )
             parse_result = await self._parse_input(user_input, session)
 
-            yield UnifiedStreamEvent(type=StreamEventType.STAGE, stage="Running proactive tools")
+            yield UnifiedStreamEvent(
+                type=StreamEventType.STAGE,
+                stage=get_stage_message("proactive_tools", "initial"),
+            )
             proactive_results = await self._execute_proactive_tools(user_input, session)
 
-            yield UnifiedStreamEvent(type=StreamEventType.STAGE, stage="Checking workflow")
+            yield UnifiedStreamEvent(
+                type=StreamEventType.STAGE,
+                stage=get_stage_message("check_workflow", "initial"),
+            )
             workflow_needed = await self._should_create_workflow(user_input, parse_result)
 
             if workflow_needed and self.workflow_executor:
+                yield UnifiedStreamEvent(
+                    type=StreamEventType.STAGE,
+                    stage=get_stage_message("workflow_execute", "initial", steps="?"),
+                )
                 response_content, tool_results = await self._process_with_workflow(
                     user_input, parse_result, session
                 )
@@ -744,13 +811,36 @@ class DeileAgent:
             # "validated" detection, otherwise a proactive bash_execute could
             # falsely satisfy the post-write-validation requirement of an
             # unrelated write_file the model issued during the streamed turn.
-            gated_content, gated_tool_results = await self._apply_validation_gate(
-                user_input=user_input,
-                parse_result=parse_result,
-                session=session,
-                content=content,
-                tool_results=collected_tool_results,
+            # Emit STAGE so the user sees feedback during the potentially slow retry.
+            # validation_check covers the cheap detection path (synchronous regex
+            # + metadata inspection). When the gate triggers a retry, switch to
+            # the validation_retry cascade so the user sees label evolution
+            # during the LLM round-trip — issue #39 P0.
+            yield UnifiedStreamEvent(
+                type=StreamEventType.STAGE,
+                stage=get_stage_message("validation_check", "initial"),
             )
+
+            _gate_holder: List[Any] = [None]
+
+            async def _run_gate() -> tuple:
+                return await self._apply_validation_gate(
+                    user_input=user_input,
+                    parse_result=parse_result,
+                    session=session,
+                    content=content,
+                    tool_results=collected_tool_results,
+                )
+
+            async for _item in cascade_until(
+                _run_gate(),
+                message_key="validation_retry",
+            ):
+                if isinstance(_item, tuple) and _item and _item[0] == "result":
+                    _gate_holder[0] = _item[1]
+                elif isinstance(_item, UnifiedStreamEvent):
+                    yield _item
+            gated_content, gated_tool_results = _gate_holder[0]
             if gated_content != content:
                 # _apply_validation_gate returns the retry's standalone reply
                 # (see agent.py: `return new_content, …`), not `content + addendum`.
@@ -835,7 +925,10 @@ class DeileAgent:
 
         self._status = AgentStatus.GENERATING_RESPONSE
 
-        yield UnifiedStreamEvent(type=StreamEventType.STAGE, stage="Building context")
+        yield UnifiedStreamEvent(
+            type=StreamEventType.STAGE,
+            stage=get_stage_message("build_context", "initial"),
+        )
         context = await self.context_manager.build_context(
             user_input=user_input,
             parse_result=parse_result,
@@ -844,7 +937,10 @@ class DeileAgent:
         )
 
         # Tier classification (best-effort)
-        yield UnifiedStreamEvent(type=StreamEventType.STAGE, stage="Analyzing intent")
+        yield UnifiedStreamEvent(
+            type=StreamEventType.STAGE,
+            stage=get_stage_message("analyze_intent", "initial"),
+        )
         model_tier: Optional[Any] = None
         try:
             from deile.core.intent_tier_mapper import classify_tier
@@ -859,7 +955,10 @@ class DeileAgent:
             model_tier = None
 
         # Provider selection — honors forced/preferred/default/router.
-        yield UnifiedStreamEvent(type=StreamEventType.STAGE, stage="Selecting provider")
+        yield UnifiedStreamEvent(
+            type=StreamEventType.STAGE,
+            stage=get_stage_message("select_provider", "initial"),
+        )
         model_provider, forced, _, _ = _select_configured_model_provider(
             self.model_router, session
         )
@@ -869,6 +968,10 @@ class DeileAgent:
             )
 
         # Budget guard
+        yield UnifiedStreamEvent(
+            type=StreamEventType.STAGE,
+            stage=get_stage_message("budget_guard", "initial"),
+        )
         try:
             from deile.storage.usage_repository import (
                 get_usage_repository, BudgetGuard, BudgetExceeded,
@@ -953,7 +1056,7 @@ class DeileAgent:
         )
         yield UnifiedStreamEvent(
             type=StreamEventType.STAGE,
-            stage=f"Connecting to {_provider_label}",
+            stage=get_stage_message("connect_model", "initial", model=_provider_label),
         )
         async for event in executor.run(
             provider=model_provider,
