@@ -485,6 +485,10 @@ def _start_deile() -> None:
         )
         if forced_model:
             session.context_data["forced_model"] = forced_model
+        else:
+            preferred_model = os.environ.get("DEILE_PREFERRED_MODEL")
+            if preferred_model:
+                session.context_data["preferred_model"] = preferred_model
 
         try:
             response = await agent.process_input(

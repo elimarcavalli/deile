@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -120,6 +120,37 @@ class TestModelUse:
         assert "forced_model" not in ctx.session.context_data
 
     @pytest.mark.asyncio
+    async def test_use_denies_changes_when_model_override_locked(self):
+        cmd = ModelCommand()
+        ctx = _make_context("use anthropic:claude-opus-4-7")
+        ctx.session.context_data = {
+            "forced_model": "deepseek:deepseek-v4-pro",
+            "model_override_locked": True,
+            "model_override_lock_source": "deile_bot",
+        }
+
+        result = await cmd.execute(ctx)
+
+        assert result.success is False
+        assert result.metadata.get("model_override_locked") is True
+        assert ctx.session.context_data["forced_model"] == "deepseek:deepseek-v4-pro"
+
+    @pytest.mark.asyncio
+    async def test_use_auto_denied_when_model_override_locked(self):
+        cmd = ModelCommand()
+        ctx = _make_context("use auto")
+        ctx.session.context_data = {
+            "forced_model": "deepseek:deepseek-v4-pro",
+            "model_override_locked": True,
+            "model_override_lock_source": "deile_bot",
+        }
+
+        result = await cmd.execute(ctx)
+
+        assert result.success is False
+        assert ctx.session.context_data["forced_model"] == "deepseek:deepseek-v4-pro"
+
+    @pytest.mark.asyncio
     async def test_use_without_args_fails(self):
         cmd = ModelCommand()
         result = await cmd.execute(_make_context("use"))
@@ -185,7 +216,7 @@ class TestModelStrategy:
     @pytest.mark.asyncio
     async def test_strategy_task_optimized(self):
         cmd = ModelCommand()
-        with patch("deile.commands.builtin.model_command.get_tier_router") as mock_get, \
+        with patch("deile.commands.builtin.model_command.get_tier_router"), \
              patch("deile.commands.builtin.model_command.reset_tier_router"):
             result = await cmd.execute(_make_context("strategy task_optimized"))
         assert result.success

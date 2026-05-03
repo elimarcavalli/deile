@@ -1,4 +1,4 @@
-"""DiscordAdapter — discord.Client wrapped as a foundation ProviderAdapter."""
+"""DiscordAdapter â€” discord.Client wrapped as a foundation ProviderAdapter."""
 
 from __future__ import annotations
 
@@ -226,6 +226,11 @@ class DiscordAdapter(ProviderAdapter):
             ch = self._client.get_channel(int(channel.provider_channel_id))
             if ch is None:
                 ch = await self._client.fetch_channel(int(channel.provider_channel_id))
-            await ch.trigger_typing()
+            # discord.py 2.x: trigger_typing() was removed; ch.typing() is an
+            # async context manager that fires the typing indicator. Entering
+            # and exiting immediately fires it once (valid for ~10s server-side).
+            # Works for TextChannel, DMChannel, Thread, GroupChannel.
+            async with ch.typing():
+                pass
         except Exception:
             self._logger.warning("send_typing failed", exc_info=True)

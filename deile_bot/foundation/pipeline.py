@@ -34,6 +34,7 @@ from deile_bot.foundation.output_formatter import OutputFormatter
 from deile_bot.foundation.permissions import Action, PermissionGate
 from deile_bot.foundation.persona_selector import PersonaSelector
 from deile_bot.foundation.rate_limit import RateLimiter
+from deile_bot.foundation.settings import get_bot_settings
 
 
 @dataclass
@@ -316,12 +317,14 @@ class IngressPipeline:
         # 9. capability snapshot + extra prompt
         snap = await self.capability_catalog.snapshot(adapter, self.agent_meta)
         extra = self.capability_catalog.render_for_system_prompt(snap)
+        bot_settings = get_bot_settings().foundation
         # 10. agent invoke
         inv = AgentInvocation(
             bot_user_id=user.bot_user_id,
             persona=persona,
-            forced_model=None,
+            forced_model=bot_settings.forced_model,
             inbound_text=env.text,
+            default_model=bot_settings.default_model,
             inbound_attachments=env.attachments,
             history=history,
             capabilities=snap,
@@ -334,7 +337,7 @@ class IngressPipeline:
                 "is_owner": is_owner,
                 "persona": persona,
             },
-            timeout_seconds=120,
+            timeout_seconds=bot_settings.agent_invocation_timeout_seconds,
         )
         self.metrics.inc(
             "bot_agent_invocations_total",
@@ -379,7 +382,7 @@ class IngressPipeline:
             payload={
                 "elapsed_ms": response.elapsed_ms,
                 "model": response.model_used,
-                "chars": len(response.text),
+                "chars": len(str(response.text)),
             },
         )
         self.metrics.inc(

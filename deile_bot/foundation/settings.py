@@ -34,6 +34,7 @@ class FoundationSettings(BaseSettings):
     agent_bridge_mode: Literal["in_process", "oneshot_subprocess"] = "in_process"
     agent_invocation_timeout_seconds: int = 120
     forced_model: Optional[str] = None
+    default_model: Optional[str] = None
     audit_log_to_file: bool = True
     metrics_enabled: bool = True
     log_dir: Path = Path("./data/logs")

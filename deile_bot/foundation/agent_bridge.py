@@ -36,6 +36,29 @@ def _strip_ansi(s: str) -> str:
     return _ANSI_RE.sub("", s)
 
 
+def _content_to_text(content: Any) -> str:
+    """Render agent content to text, including Rich renderables."""
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ""
+    try:
+        from io import StringIO
+        from rich.console import Console
+
+        buffer = StringIO()
+        Console(
+            file=buffer,
+            force_terminal=False,
+            no_color=True,
+            width=120,
+            highlight=False,
+        ).print(content)
+        return buffer.getvalue().strip()
+    except Exception:
+        return str(content)
+
+
 @dataclass(frozen=True)
 class ToolCallRecord:
     name: str
@@ -50,6 +73,7 @@ class AgentInvocation:
     persona: str
     forced_model: Optional[str]
     inbound_text: str
+    default_model: Optional[str] = None
     inbound_attachments: Tuple[Attachment, ...] = ()
     history: List[StoredMessage] = field(default_factory=list)
     capabilities: Optional[CapabilitySnapshot] = None
@@ -125,6 +149,29 @@ class InProcessAgentBridge(AgentBridge):
         if inv.bot_context:
             kwargs["bot_context"] = dict(inv.bot_context)
 
+        # Bot settings support both a security lock and a soft default:
+        # - forced_model: admin lock; /model use must not override it.
+        # - default_model: preference only when the user has not chosen a model.
+        try:
+            session = agent.get_session(session_id)
+            if session is not None:
+                if inv.forced_model:
+                    session.context_data["forced_model"] = inv.forced_model
+                    session.context_data["model_override_locked"] = True
+                    session.context_data["model_override_lock_source"] = "deile_bot"
+                else:
+                    if session.context_data.get("model_override_lock_source") == "deile_bot":
+                        session.context_data.pop("forced_model", None)
+                        session.context_data.pop("model_override_locked", None)
+                        session.context_data.pop("model_override_lock_source", None)
+                    if inv.default_model:
+                        session.context_data["preferred_model"] = inv.default_model
+                    else:
+                        session.context_data.pop("preferred_model", None)
+                    session.context_data.pop("_bot_forced_model", None)
+        except Exception:
+            pass
+
         start = time.monotonic()
         try:
             response = await asyncio.wait_for(
@@ -142,13 +189,14 @@ class InProcessAgentBridge(AgentBridge):
                 context={"bot_user_id": inv.bot_user_id},
             ) from e
         elapsed_ms = int((time.monotonic() - start) * 1000)
-        text = getattr(response, "content", "") or ""
+        text = _content_to_text(getattr(response, "content", ""))
+        metadata = getattr(response, "metadata", {}) or {}
         return AgentResponse(
             text=text,
             markup=MarkupAST.from_plain(text),
             tool_calls=(),
             elapsed_ms=elapsed_ms,
-            model_used=getattr(response, "metadata", {}).get("model", "") if hasattr(response, "metadata") else "",
+            model_used=metadata.get("model_used") or metadata.get("model") or "",
         )
 
 
@@ -165,6 +213,8 @@ class OneshotSubprocessAgentBridge(AgentBridge):
             cmd += ["--model", inv.forced_model]
         cmd += ["--", inv.inbound_text]
         env = os.environ.copy()
+        if inv.default_model:
+            env["DEILE_PREFERRED_MODEL"] = inv.default_model
         if inv.extra_system_prompt:
             env["DEILE_EXTRA_SYSTEM_PROMPT"] = _sanitize_extra_prompt(inv.extra_system_prompt)
         start = time.monotonic()
@@ -205,7 +255,7 @@ class OneshotSubprocessAgentBridge(AgentBridge):
             text=text,
             markup=MarkupAST.from_plain(text),
             elapsed_ms=elapsed_ms,
-            model_used=inv.forced_model or "",
+            model_used="",
         )
 
 

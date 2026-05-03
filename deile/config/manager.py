@@ -46,7 +46,7 @@ class GeminiConfig:
         "temperature": 0.1,
         "top_k": 32,
         "top_p": 0.9,
-        "max_output_tokens": 8192,
+        "max_output_tokens": 16384,
         "candidate_count": 1,
         "stop_sequences": []
     })

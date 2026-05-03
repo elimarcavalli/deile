@@ -133,8 +133,9 @@ async def real_agent():
         return None
     try:
         ConfigManager().load_config()
-        bootstrap_providers(router=get_model_router())
-        agent = DeileAgent()
+        model_router = get_model_router()
+        bootstrap_providers(router=model_router)
+        agent = DeileAgent(model_router=model_router)
         await agent.initialize()
         return agent
     except Exception:  # pragma: no cover
