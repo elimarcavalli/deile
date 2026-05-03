@@ -245,9 +245,9 @@ def _slash_envelope(text: str, user_id: str = "test-user-001") -> "MessageEnvelo
     )
 
 
-# ─── tests ──────────────────────────────────────────────────────────────────
+# ─── runners (not test_* — standalone runner called from _run_all, not pytest) ─
 
-async def test_01_dm_basic_response(pipeline, adapter):
+async def run_01_dm_basic_response(pipeline, adapter):
     """DM → agent must reply with non-empty text."""
     env = _dm_envelope("olá! diga uma frase curta de apresentação")
     await pipeline.handle(env, adapter)
@@ -258,7 +258,7 @@ async def test_01_dm_basic_response(pipeline, adapter):
     return ok
 
 
-async def test_02_group_no_mention_ignored(pipeline, adapter):
+async def run_02_group_no_mention_ignored(pipeline, adapter):
     """Group message without mention → bot must NOT respond."""
     adapter.inbox.clear()
     env = _group_envelope("que horas são agora?", user_id="user-002")
@@ -269,7 +269,7 @@ async def test_02_group_no_mention_ignored(pipeline, adapter):
     return ok
 
 
-async def test_03_group_with_mention_responds(pipeline, adapter):
+async def run_03_group_with_mention_responds(pipeline, adapter):
     """Group message with bot mention → agent responds."""
     adapter.inbox.clear()
     # FakeProviderAdapter.self_user_id == "fake-bot-self"
@@ -283,7 +283,7 @@ async def test_03_group_with_mention_responds(pipeline, adapter):
     return ok
 
 
-async def test_04_slash_force_respond(pipeline, adapter):
+async def run_04_slash_force_respond(pipeline, adapter):
     """force_respond=True (slash /deile) → always responds."""
     adapter.inbox.clear()
     env = _slash_envelope("quanto é 2 + 2?", user_id="user-004")
@@ -295,7 +295,7 @@ async def test_04_slash_force_respond(pipeline, adapter):
     return ok
 
 
-async def test_05_dm_session_continuity(pipeline, adapter, bridge):
+async def run_05_dm_session_continuity(pipeline, adapter, bridge):
     """Two DM messages from same user share session → context carries over."""
     adapter.inbox.clear()
     uid = "user-session-005"
@@ -313,7 +313,7 @@ async def test_05_dm_session_continuity(pipeline, adapter, bridge):
     return ok
 
 
-async def test_06_persona_dm_is_discord_developer(pipeline, adapter, bridge):
+async def run_06_persona_dm_is_discord_developer(pipeline, adapter, bridge):
     """DM scope with provider=discord → persona selector must pick discord_developer.
 
     The persona rule is `when: { provider: discord, scope: DM }`.
@@ -359,7 +359,7 @@ async def test_06_persona_dm_is_discord_developer(pipeline, adapter, bridge):
     return False
 
 
-async def test_07_rate_limit_burst(pipeline, adapter):
+async def run_07_rate_limit_burst(pipeline, adapter):
     """Concurrent burst from same user → rate limit triggers within burst quota.
 
     Uses concurrent tasks so the LLM processing time cannot refill the bucket
@@ -379,7 +379,7 @@ async def test_07_rate_limit_burst(pipeline, adapter):
     return ok
 
 
-async def test_08_empty_message_ignored(pipeline, adapter):
+async def run_08_empty_message_ignored(pipeline, adapter):
     """Empty/whitespace DM → pipeline skips (too_short heuristic)."""
     adapter.inbox.clear()
     env = _dm_envelope("hi", user_id="user-short-008")  # < 4 chars → too_short in GROUP, but DM returns True always
@@ -392,7 +392,7 @@ async def test_08_empty_message_ignored(pipeline, adapter):
     return ok
 
 
-async def test_09_permission_blocklist(pipeline, adapter):
+async def run_09_permission_blocklist(pipeline, adapter):
     """Blocklisted user → pipeline denies without invoking agent."""
     from deile_bot.foundation.settings import BotSettings, PermissionsSettings
     # We'll use a temporary pipeline with a blocklist
@@ -411,7 +411,7 @@ async def test_09_permission_blocklist(pipeline, adapter):
     return True
 
 
-async def test_10_multi_user_no_leak(pipeline, adapter, bridge):
+async def run_10_multi_user_no_leak(pipeline, adapter, bridge):
     """Two different users, DMs interleaved → sessions don't bleed."""
     adapter.inbox.clear()
     bridge.invocations.clear()
@@ -462,16 +462,16 @@ async def _run_all():
         pipeline, adapter, bridge = await _make_pipeline(store, agent)
 
         tests = [
-            (test_01_dm_basic_response,          [pipeline, adapter]),
-            (test_02_group_no_mention_ignored,   [pipeline, adapter]),
-            (test_03_group_with_mention_responds,[pipeline, adapter]),
-            (test_04_slash_force_respond,        [pipeline, adapter]),
-            (test_05_dm_session_continuity,      [pipeline, adapter, bridge]),
-            (test_06_persona_dm_is_discord_developer, [pipeline, adapter, bridge]),
-            (test_07_rate_limit_burst,           [pipeline, adapter]),
-            (test_08_empty_message_ignored,      [pipeline, adapter]),
-            (test_09_permission_blocklist,       [pipeline, adapter]),
-            (test_10_multi_user_no_leak,         [pipeline, adapter, bridge]),
+            (run_01_dm_basic_response,          [pipeline, adapter]),
+            (run_02_group_no_mention_ignored,   [pipeline, adapter]),
+            (run_03_group_with_mention_responds,[pipeline, adapter]),
+            (run_04_slash_force_respond,        [pipeline, adapter]),
+            (run_05_dm_session_continuity,      [pipeline, adapter, bridge]),
+            (run_06_persona_dm_is_discord_developer, [pipeline, adapter, bridge]),
+            (run_07_rate_limit_burst,           [pipeline, adapter]),
+            (run_08_empty_message_ignored,      [pipeline, adapter]),
+            (run_09_permission_blocklist,       [pipeline, adapter]),
+            (run_10_multi_user_no_leak,         [pipeline, adapter, bridge]),
         ]
 
         for fn, args in tests:
