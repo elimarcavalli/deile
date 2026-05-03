@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import List, Optional
 
 # --- path setup ---
-ROOT = Path(__file__).parents[4]
+ROOT = Path(__file__).parents[3]
 sys.path.insert(0, str(ROOT))
 
 
