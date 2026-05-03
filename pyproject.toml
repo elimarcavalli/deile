@@ -9,6 +9,63 @@ description = "DEILE — autonomous CLI AI agent + bot foundation"
 authors = [{ name = "elimarcavalli" }]
 readme = "README.md"
 requires-python = ">=3.9"
+dependencies = [
+    "aiofiles>=24",
+    "anthropic>=0.40.0",
+    "openai>=1.50.0",
+    "aiosqlite>=0.19",
+    "tenacity>=8.0.0",
+    "python-dotenv>=1.1",
+    "PyYAML>=6.0",
+    "rich>=14.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "prompt-toolkit>=3.0",
+    "tqdm>=4.0",
+    "requests>=2.0",
+    "urllib3>=2.0",
+    "certifi>=2024",
+    "charset-normalizer>=3.0",
+    "idna>=3.0",
+    "uritemplate>=4.0",
+    "typing-extensions>=4.0",
+    "numpy>=2.0",
+    "psutil>=6.0",
+    "packaging>=24",
+    "google-genai>=1.0",
+    "google-api-core>=2.0",
+    "google-api-python-client>=2.0",
+    "google-auth>=2.0",
+    "google-auth-httplib2>=0.2",
+    "googleapis-common-protos>=1.0",
+    "grpcio>=1.76",
+    "grpcio-status>=1.76",
+    "proto-plus>=1.0",
+    "protobuf>=6.0",
+    "httplib2>=0.31",
+    "pyasn1>=0.6",
+    "pyasn1_modules>=0.4",
+    "rsa>=4.0",
+    "cachetools>=5.0",
+    "pyparsing>=3.0",
+    "markdown-it-py>=3.0",
+    "mdurl>=0.1",
+    "Pygments>=2.0",
+    "iniconfig>=2.0",
+    "pluggy>=1.0",
+    "pathspec>=0.12",
+    "colorama>=0.4",
+    "pydantic-core>=2.0",
+    "annotated-types>=0.7",
+    "typing-inspection>=0.4",
+    "wcwidth>=0.2",
+    "docker>=7.0",
+    "chardet>=5.0",
+    "GitPython>=3.1",
+    "py7zr>=1.1",
+    "watchdog>=6.0",
+    "google-ai-generativelanguage>=0.7",
+]
 
 [project.optional-dependencies]
 discord = ["discord.py>=2.3,<3.0"]
@@ -24,6 +81,7 @@ scheduler = ["apscheduler>=3.10"]
 webhook = ["fastapi>=0.100", "uvicorn>=0.23"]
 
 [project.scripts]
+deile = "deile.cli:main"
 deile-bot = "deile_bot.cli:main"
 
 [tool.setuptools.packages.find]
