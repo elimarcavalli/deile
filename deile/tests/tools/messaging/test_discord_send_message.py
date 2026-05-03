@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
-from deile.security.audit_logger import AuditEventType, SeverityLevel
+from deile.security.audit_logger import AuditEventType
 from deile.tools.messaging import DiscordSendMessageTool
 
 from .conftest import make_context
@@ -88,8 +86,18 @@ async def test_emits_audit_event_on_permission_denied(
     )
 
 
-async def test_disabled_facade_returns_typed_error(fake_audit):
-    """No facade in session AND no real client configured → integration disabled."""
+async def test_disabled_facade_returns_typed_error(monkeypatch, fake_audit):
+    """No facade in session AND integration disabled → BOT_INTEGRATION_DISABLED.
+
+    The test forces the facade off explicitly. Using just the global
+    facade isn't enough because the surrounding shell env or `.env`
+    may have it configured.
+    """
+    from deile.integrations.bot import BotClientFacade, BotIntegrationSettings
+    from deile.tools.messaging import _base as base_mod
+    forced_facade = BotClientFacade(BotIntegrationSettings(endpoint="", auth_token=""))
+    monkeypatch.setattr(base_mod, "_resolve_facade", lambda _ctx: forced_facade)
+
     tool = DiscordSendMessageTool()
     ctx = make_context(args={"channel_id": "1", "text": "x"}, audit=fake_audit)
     result = await tool.execute(ctx)

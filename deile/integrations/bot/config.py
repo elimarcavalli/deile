@@ -66,5 +66,11 @@ def get_bot_settings() -> BotIntegrationSettings:
 
 
 def reset_bot_settings_cache() -> None:
-    """Clear the cache — used by tests that monkey-patch env vars."""
-    get_bot_settings.cache_clear()
+    """Clear the cache — used by tests that monkey-patch env vars.
+
+    Defensive against tests that monkeypatch `get_bot_settings` with a
+    plain function (no cache_clear): we just no-op in that case.
+    """
+    clear = getattr(get_bot_settings, "cache_clear", None)
+    if callable(clear):
+        clear()

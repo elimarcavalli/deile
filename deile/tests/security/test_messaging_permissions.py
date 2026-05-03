@@ -14,13 +14,15 @@ configured in YAML and is not part of this PR's tests.
 
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path as _P
+
 import pytest
 
 from deile.tools.messaging import DiscordSendDMTool, DiscordSendMessageTool
 
-import importlib.util
-from pathlib import Path as _P
-
+# Reuse the messaging conftest's fakes without inheriting its autouse
+# fixtures (cross-package test imports aren't supported by pytest).
 _conftest_path = _P(__file__).resolve().parent.parent / "tools" / "messaging" / "conftest.py"
 _spec = importlib.util.spec_from_file_location("_msg_conftest", str(_conftest_path))
 _module = importlib.util.module_from_spec(_spec)
@@ -30,6 +32,20 @@ FakeBotClient = _module.FakeBotClient
 FakePermissionManager = _module.FakePermissionManager
 FakeApprovalSystem = _module.FakeApprovalSystem
 make_context = _module.make_context
+
+
+@pytest.fixture(autouse=True)
+def _scrub_bot_env(monkeypatch):
+    """Defensive: scrub bot-related env so trusted-operator mode and other
+    integration toggles never leak into these tests."""
+    for key in (
+        "DEILE_BOT_ENDPOINT",
+        "DEILE_BOT_AUTH_TOKEN",
+        "DEILE_BOT_APPROVAL_AUTO",
+        "DEILE_BOT_DISABLED",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    yield
 
 
 async def test_dm_default_blocked_without_approval():

@@ -73,6 +73,19 @@ def _resolve_audit_logger(context: ToolContext):
     return get_audit_logger()
 
 
+def _trusted_operator_mode() -> bool:
+    """Opt-in: the human operator running this CLI session waives the
+    interactive approval prompt for messaging tools. The decision is
+    still audited (severity WARNING + event APPROVAL_GRANTED) so the
+    waiver appears in the audit trail.
+
+    Set `DEILE_BOT_APPROVAL_AUTO=1` (any truthy value) to enable.
+    Off by default; tests never see this turned on."""
+    import os
+
+    return os.environ.get("DEILE_BOT_APPROVAL_AUTO", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class MessagingTool(Tool, abc.ABC):
     """Base for Discord/messaging tools that go through the deile-bot daemon."""
 
@@ -172,9 +185,21 @@ class MessagingTool(Tool, abc.ABC):
 
         # 2. approval gate (HIGH-risk only) -----------------------------------
         if self.require_approval:
-            approval_outcome = await self._maybe_request_approval(context, args, audit, audit_payload)
-            if approval_outcome is not None:
-                return approval_outcome
+            if not _trusted_operator_mode():
+                approval_outcome = await self._maybe_request_approval(context, args, audit, audit_payload)
+                if approval_outcome is not None:
+                    return approval_outcome
+            else:
+                # Trusted-operator opt-in (env DEILE_BOT_APPROVAL_AUTO=1):
+                # the human running the CLI explicitly waived the approval
+                # prompt for this session. Audit it so the decision is traceable.
+                self._emit_audit(
+                    audit,
+                    "approved",
+                    {**audit_payload, "approval": "auto:trusted_operator"},
+                    severity=SeverityLevel.WARNING,
+                    event_type=AuditEventType.APPROVAL_GRANTED,
+                )
 
         # 3. perform ----------------------------------------------------------
         try:

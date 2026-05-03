@@ -9,7 +9,6 @@ Three scenarios:
 from __future__ import annotations
 
 import importlib
-import sys
 
 import pytest
 
@@ -40,12 +39,26 @@ def test_missing_client_registers_zero(monkeypatch):
 
 
 def test_unconfigured_registers_zero(monkeypatch):
+    """The integration is not configured → 0 tools register.
+
+    This test patches BOT_CLIENT_AVAILABLE=True and forces an
+    unconfigured BotIntegrationSettings instance, regardless of what
+    the surrounding shell env or `.env` says. We can't rely on
+    `monkeypatch.delenv` alone because pydantic-settings also reads
+    `.env` from the project root.
+    """
     monkeypatch.setattr(
         "deile.integrations.bot.BOT_CLIENT_AVAILABLE", True, raising=True
     )
-    monkeypatch.delenv("DEILE_BOT_ENDPOINT", raising=False)
-    monkeypatch.delenv("DEILE_BOT_AUTH_TOKEN", raising=False)
-    reset_bot_settings_cache()
+    import deile.integrations.bot.config as cfg
+    from deile.integrations.bot import BotIntegrationSettings
+    forced = BotIntegrationSettings(endpoint="", auth_token="", disabled=True)
+    monkeypatch.setattr(cfg, "get_bot_settings", lambda: forced, raising=True)
+    # The auto_discover module re-imports get_bot_settings; patching the
+    # source module is enough because it does `from .config import` lazily.
+    monkeypatch.setattr(
+        "deile.integrations.bot.get_bot_settings", lambda: forced, raising=True
+    )
     registry = ToolRegistry()
     n = register_messaging_tools(registry)
     assert n == 0

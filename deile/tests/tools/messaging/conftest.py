@@ -12,16 +12,14 @@ did the tool wait for approval?) instead of bytes-on-the-wire.
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import pytest
 
-from deile.integrations.bot import BotIntegrationSettings, get_bot_client, reset_bot_client
+from deile.integrations.bot import reset_bot_client
 from deile.integrations.bot.config import reset_bot_settings_cache
 from deile.tools.base import ToolContext
-
 
 # ---- canned response builders -----------------------------------------------
 
@@ -148,8 +146,23 @@ class FakeApprovalSystem:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_singletons():
-    """Reset cached singletons so monkeypatched env vars apply per test."""
+def _isolate_singletons(monkeypatch):
+    """Reset cached singletons + scrub bot-related env vars so the test
+    starts from a clean state regardless of the surrounding shell.
+
+    Pytest tests of this module don't ever want to inherit a real env
+    config (it would mask whatever the test is actually probing). Tests
+    that *want* env vars set them explicitly via `monkeypatch.setenv`.
+    """
+    for key in (
+        "DEILE_BOT_ENDPOINT",
+        "DEILE_BOT_AUTH_TOKEN",
+        "DEILE_BOT_TIMEOUT_S",
+        "DEILE_BOT_DEFAULT_GUILD_ID",
+        "DEILE_BOT_DISABLED",
+        "DEILE_BOT_APPROVAL_AUTO",
+    ):
+        monkeypatch.delenv(key, raising=False)
     reset_bot_settings_cache()
     reset_bot_client()
     yield

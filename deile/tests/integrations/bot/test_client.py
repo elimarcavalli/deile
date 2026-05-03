@@ -9,24 +9,14 @@ prod, and it catches contract drift between client and server.
 from __future__ import annotations
 
 import asyncio
-import json
-from typing import Any, AsyncIterator, Tuple
+from typing import AsyncIterator, Tuple
 
 import pytest
 from aiohttp import web
-
-import httpx
-
-from deile_bot_client import (
-    BotClientAuthError,
-    BotClientNotReady,
-    BotClientRateLimited,
-    BotClientTimeoutError,
-    BotClientUpstreamError,
-    BotControlClient,
-    BotControlSettings,
-)
-
+from deile_bot_client import (BotClientAuthError, BotClientNotReady,
+                              BotClientRateLimited, BotClientTimeoutError,
+                              BotClientUpstreamError, BotControlClient,
+                              BotControlSettings)
 
 # --- helpers -----------------------------------------------------------------
 

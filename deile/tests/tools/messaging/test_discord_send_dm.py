@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
-from deile.security.audit_logger import AuditEventType, SeverityLevel
+from deile.security.audit_logger import AuditEventType
 from deile.tools.base import SecurityLevel
 from deile.tools.messaging import DiscordSendDMTool
 

@@ -11,25 +11,18 @@ end-to-end.
 
 from __future__ import annotations
 
-import os
-from datetime import datetime, timezone
 from typing import AsyncIterator
 
 import pytest
 
-from deile.integrations.bot import (
-    BotIntegrationSettings,
-    get_bot_client,
-    reset_bot_client,
-)
+from deile.integrations.bot import get_bot_client, reset_bot_client
 from deile.integrations.bot.config import reset_bot_settings_cache
 from deile.tools.base import ToolContext
 from deile.tools.messaging import DiscordSendMessageTool
-
-from deile_bot.runtime.control_plane import ControlPlaneServer, ControlPlaneSettings
-from deile_bot.foundation.envelope import AttachmentKind
 from deile_bot.foundation.capabilities import ProviderCapabilities
-
+from deile_bot.foundation.envelope import AttachmentKind
+from deile_bot.runtime.control_plane import (ControlPlaneServer,
+                                             ControlPlaneSettings)
 
 pytestmark = pytest.mark.integration
 
