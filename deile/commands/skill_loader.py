@@ -1,11 +1,13 @@
 """Skill loader — discovers .md skill files and registers them as slash commands.
 
-Scans two directories in order (user skills first, project skills second):
+Scans directories in order (user first, project second):
   • ~/.deile/skills/   — per-user skills (created automatically if absent)
+  • ~/.claude/commands/ — per-user Claude command skills (optional)
   • <cwd>/.deile/skills/ — per-project skills (optional, not auto-created)
+  • <cwd>/.claude/commands/ — per-project Claude command skills (optional)
 
-Project skills take priority: if a user skill and a project skill share the
-same name the project skill wins and the user skill is silently dropped.
+Later directories take priority: if two skills share the same name, the last
+one scanned wins.
 
 Skill file format (YAML front-matter + Markdown body):
   ---
@@ -15,7 +17,8 @@ Skill file format (YAML front-matter + Markdown body):
   Prompt body sent to the LLM when the skill is invoked.
 
 The ``name`` field is optional; when absent the stem of the file name is used
-(spaces/underscores replaced with hyphens, lowercased).
+(spaces/underscores replaced with hyphens). Command files from ``commands``
+directories are registered with UPPERCASE names.
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 _FRONTMATTER_RE = re.compile(r"^---[ \t]*\n(.*?)\n---[ \t]*\n", re.DOTALL)
-_VALID_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9\-]{0,63}$")
+_VALID_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\-]{0,63}$")
 
 
 @dataclass
@@ -40,6 +43,7 @@ class SkillDefinition:
     description: str
     body: str
     source: str  # "user" | "project"
+    kind: str = "skill"  # "skill" | "command"
     file_path: Path = field(default_factory=Path)
 
 
@@ -56,7 +60,12 @@ def _name_from_stem(stem: str) -> str:
     return _normalize_name(stem)
 
 
-def _parse_skill_file(path: Path, source: str) -> Optional[SkillDefinition]:
+def _parse_skill_file(
+    path: Path,
+    source: str,
+    force_uppercase_name: bool = False,
+    kind: str = "skill",
+) -> Optional[SkillDefinition]:
     """Return a SkillDefinition from *path*, or None on unrecoverable error."""
     try:
         text = path.read_text(encoding="utf-8")
@@ -114,6 +123,8 @@ def _parse_skill_file(path: Path, source: str) -> Optional[SkillDefinition]:
 
     raw_name = frontmatter_data.get("name", "") or _name_from_stem(path.stem)
     name = _normalize_name(raw_name)
+    if force_uppercase_name:
+        name = name.upper()
 
     if not _VALID_NAME_RE.match(name):
         logger.warning(
@@ -133,6 +144,7 @@ def _parse_skill_file(path: Path, source: str) -> Optional[SkillDefinition]:
         description=description,
         body=body,
         source=source,
+        kind=kind,
         file_path=path,
     )
 
@@ -161,6 +173,14 @@ class SkillLoader:
     def project_skills_dir(self) -> Path:
         return self._project_dir / ".deile" / "skills"
 
+    @property
+    def user_claude_commands_dir(self) -> Path:
+        return self._user_home / ".claude" / "commands"
+
+    @property
+    def project_claude_commands_dir(self) -> Path:
+        return self._project_dir / ".claude" / "commands"
+
     def _ensure_user_dir(self) -> None:
         """Create ~/.deile/skills/ if it doesn't exist."""
         try:
@@ -169,26 +189,34 @@ class SkillLoader:
             logger.warning("Cannot create user skills dir %s: %s", self.user_skills_dir, exc)
 
     def load_skills(self) -> List[SkillDefinition]:
-        """Scan both skill directories and return merged skill list.
+        """Scan supported skill directories and return merged skill list.
 
-        Project skills override user skills when names collide.
+        Later directories override earlier ones when names collide.
         """
         self._ensure_user_dir()
 
-        # Gather user skills first (lower priority)
         merged: Dict[str, SkillDefinition] = {}
-        for skill in self._scan_directory(self.user_skills_dir, source="user"):
-            merged[skill.name] = skill
-
-        # Project skills override user skills
-        for skill in self._scan_directory(self.project_skills_dir, source="project"):
-            if skill.name in merged:
-                logger.debug(
-                    "Project skill %r overrides user skill from %s",
-                    skill.name,
-                    merged[skill.name].file_path,
-                )
-            merged[skill.name] = skill
+        scan_order = [
+            (self.user_skills_dir, "user", False, "skill"),
+            (self.user_claude_commands_dir, "user", True, "command"),
+            (self.project_skills_dir, "project", False, "skill"),
+            (self.project_claude_commands_dir, "project", True, "command"),
+        ]
+        for directory, source, force_uppercase_name, kind in scan_order:
+            for skill in self._scan_directory(
+                directory,
+                source=source,
+                force_uppercase_name=force_uppercase_name,
+                kind=kind,
+            ):
+                if skill.name in merged:
+                    logger.debug(
+                        "Skill %r from %s overrides previous definition from %s",
+                        skill.name,
+                        skill.file_path,
+                        merged[skill.name].file_path,
+                    )
+                merged[skill.name] = skill
 
         skills = list(merged.values())
         if skills:
@@ -199,13 +227,24 @@ class SkillLoader:
             )
         return skills
 
-    def _scan_directory(self, directory: Path, source: str) -> List[SkillDefinition]:
+    def _scan_directory(
+        self,
+        directory: Path,
+        source: str,
+        force_uppercase_name: bool = False,
+        kind: str = "skill",
+    ) -> List[SkillDefinition]:
         if not directory.is_dir():
             return []
 
         skills: List[SkillDefinition] = []
         for md_file in sorted(directory.glob("*.md")):
-            skill = _parse_skill_file(md_file, source)
+            skill = _parse_skill_file(
+                md_file,
+                source,
+                force_uppercase_name=force_uppercase_name,
+                kind=kind,
+            )
             if skill is not None:
                 skills.append(skill)
 
@@ -214,7 +253,7 @@ class SkillLoader:
     def load_into_registry(self, registry) -> int:
         """Load skills and register them in *registry*.
 
-        Refuses to register a skill whose name (or any alias) collides with
+        Refuses to register a skill whose name collides with
         a command already in the registry — the built-in ``/help``,
         ``/model``, ``/cost`` etc. must NOT be hijack-able by a dropped
         ``.md`` file (see PR #51 review F1: a malicious project-level
@@ -233,7 +272,7 @@ class SkillLoader:
         skipped_collisions: List[str] = []
         for skill in skills:
             # F1 guard: refuse to override a built-in (or any) existing
-            # command. ``get_command`` resolves both names and aliases.
+            # command.
             existing = registry.get_command(skill.name)
             if existing is not None:
                 logger.warning(
@@ -257,7 +296,7 @@ class SkillLoader:
                             description=sk.description,
                         )
                         super().__init__(cfg)
-                        self.category = "skills"
+                        self.category = "commands" if sk.kind == "command" else "skills"
                         self._skill_body = sk.body
 
                     async def execute(self, ctx: CommandContext) -> CommandResult:
