@@ -14,7 +14,8 @@ class CommandParser(RegexParser):
     def __init__(self, config_manager=None):
         # Padrões para comandos slash
         command_patterns = [
-            r'/(\w+)(?:\s+(.+))?',  # /comando ou /comando argumentos
+            # Nomes podem incluir hífen (ex.: /DOC-HYGIENE, /BEGIN-GIT)
+            r'/([A-Za-z0-9_-]+)(?:\s+(.+))?',  # /comando ou /comando argumentos
         ]
         
         super().__init__([re.compile(pattern, re.IGNORECASE) for pattern in command_patterns])
@@ -31,7 +32,7 @@ class CommandParser(RegexParser):
     
     @property
     def patterns(self) -> List[str]:
-        return [r'/(\w+)(?:\s+(.+))?']
+        return [r'/([A-Za-z0-9_-]+)(?:\s+(.+))?']
     
     @property
     def priority(self) -> int:
@@ -136,13 +137,13 @@ class CommandParser(RegexParser):
                 # Obter comandos do registry
                 for command in self._command_registry.get_enabled_commands():
                     cmd_name = f"/{command.name}"
-                    if cmd_name.startswith(partial_input.lower()):
+                    if cmd_name.lower().startswith(partial_input.lower()):
                         suggestions.append(cmd_name)
                     
                     # Adiciona aliases
                     for alias in getattr(command, 'aliases', []):
                         alias_cmd = f"/{alias}"
-                        if alias_cmd.startswith(partial_input.lower()):
+                        if alias_cmd.lower().startswith(partial_input.lower()):
                             suggestions.append(alias_cmd)
             else:
                 # Fallback para comandos básicos

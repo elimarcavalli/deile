@@ -67,17 +67,31 @@ class CommandRegistry:
         logger.debug(f"Registered action: {name}")
     
     def get_command(self, command_name: str) -> Optional[SlashCommand]:
-        """Obtém comando pelo nome ou alias"""
-        # Tenta nome direto
+
+        """Obtém comando pelo nome ou alias (case-insensitive)."""
+        # Nome exato
         if command_name in self._commands:
             return self._commands[command_name]
-        
-        # Tenta alias
+
+        # Alias exato
         if command_name in self._aliases:
             real_name = self._aliases[command_name]
             return self._commands.get(real_name)
-        
+
+        # Case-insensitive: nome canônico ou alias
+        key = command_name.lower()
+        for name, cmd in self._commands.items():
+            if name.lower() == key:
+                return cmd
+        for alias, real_name in self._aliases.items():
+            if alias.lower() == key:
+                return self._commands.get(real_name)
+
         return None
+
+    def has_command(self, command_name: str) -> bool:
+        """True se *command_name* resolve para um comando (nome ou alias, qualquer casing)."""
+        return self.get_command(command_name) is not None
     
     def get_enabled_commands(self) -> List[SlashCommand]:
         """Retorna apenas comandos habilitados"""
@@ -98,7 +112,7 @@ class CommandRegistry:
         
         # Busca em nomes de comando
         for cmd in self.get_enabled_commands():
-            if cmd.name.startswith(partial_lower):
+            if cmd.name.lower().startswith(partial_lower):
                 suggestions.append({
                     "name": cmd.name,
                     "display": f"/{cmd.name}",
@@ -108,7 +122,7 @@ class CommandRegistry:
         
         # Busca em aliases
         for alias, real_name in self._aliases.items():
-            if alias.startswith(partial_lower):
+            if alias.lower().startswith(partial_lower):
                 cmd = self._commands[real_name]
                 if cmd.enabled:
                     suggestions.append({
@@ -356,7 +370,7 @@ class CommandRegistry:
         return len(self._commands)
     
     def __contains__(self, command_name: str) -> bool:
-        return command_name in self._commands or command_name in self._aliases
+        return self.has_command(command_name)
     
     def __iter__(self):
         return iter(self._commands.values())

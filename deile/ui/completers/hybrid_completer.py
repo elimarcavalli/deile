@@ -2,6 +2,7 @@
 
 import os
 import logging
+import re
 from pathlib import Path
 from typing import List, Optional, Tuple, Iterable
 from prompt_toolkit.completion import Completer, Completion
@@ -10,6 +11,20 @@ from prompt_toolkit.document import Document
 from ...commands.registry import get_command_registry
 
 logger = logging.getLogger(__name__)
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _preview_first_words(text: str, word_limit: int = 20) -> str:
+    """Return a concise preview with the first *word_limit* words."""
+    normalized = _WHITESPACE_RE.sub(" ", (text or "").strip())
+    if not normalized:
+        return "Sem descricao..."
+
+    words = normalized.split(" ")
+    if len(words) <= word_limit:
+        return f"{normalized.rstrip('.')}..."
+    return f"{' '.join(words[:word_limit])}..."
 
 
 class HybridCompleter(Completer):
@@ -76,16 +91,25 @@ class HybridCompleter(Completer):
                 else:
                     return
             
-            # Busca comandos que fazem match
+            fragment_lower = command_fragment.lower()
+            # Busca comandos que fazem match (case-insensitive)
             for command in self._command_registry.get_enabled_commands():
-                if command.name.startswith(command_fragment):
+                if command.name.lower().startswith(fragment_lower):
                     # Cria completion com informações extras
                     display_text = f"/{command.name}"
                     description = command.description
                     
                     # Adiciona indicador de tipo
-                    cmd_type = "🤖 LLM" if command.has_prompt_template else "⚡ Direct"
-                    display_meta = f"{cmd_type} - {description}"
+                    category = getattr(command, "category", "")
+                    if category == "skills":
+                        preview = _preview_first_words(getattr(command, "_skill_body", ""))
+                        display_meta = f"✨ SKILL: {preview}"
+                    elif category == "commands":
+                        preview = _preview_first_words(getattr(command, "_skill_body", ""))
+                        display_meta = f"🛠️ COMMAND: {preview}"
+                    else:
+                        cmd_type = "🤖 LLM" if command.has_prompt_template else "⚡ Direct"
+                        display_meta = f"{cmd_type} - {description}"
                     
                     yield Completion(
                         text=command.name,
@@ -94,21 +118,6 @@ class HybridCompleter(Completer):
                         display_meta=display_meta
                     )
                 
-                # Também verifica aliases
-                for alias in getattr(command, 'aliases', []):
-                    if alias.startswith(command_fragment):
-                        display_text = f"/{alias}"
-                        description = f"Alias para /{command.name} - {command.description}"
-                        cmd_type = "🤖 LLM" if command.has_prompt_template else "⚡ Direct"
-                        display_meta = f"{cmd_type} - {description}"
-                        
-                        yield Completion(
-                            text=alias,
-                            start_position=start_position,
-                            display=display_text,
-                            display_meta=display_meta
-                        )
-                        
         except Exception as e:
             logger.error(f"Error in command completions: {e}")
     
