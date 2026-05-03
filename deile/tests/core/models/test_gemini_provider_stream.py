@@ -7,7 +7,6 @@ single TEXT_DELTA + TOOL_USE_START/END pair per round-trip.
 
 from __future__ import annotations
 
-import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,7 +14,7 @@ import pytest
 
 
 @pytest.fixture
-def gemini_provider():
+def gemini_provider(monkeypatch):
     """Construct a GeminiProvider without hitting the network."""
     from deile.core.models.gemini_provider import GeminiProvider
     from deile.core.models.catalog import ModelHandle, ModelPricing
@@ -35,7 +34,7 @@ def gemini_provider():
     cfg = ProviderConfig(
         provider_id="gemini", api_key_env="GOOGLE_API_KEY", base_url=None
     )
-    os.environ.setdefault("GOOGLE_API_KEY", "fake")
+    monkeypatch.setenv("GOOGLE_API_KEY", "fake")
     with patch("deile.core.models.gemini_provider.genai"):
         provider = GeminiProvider(handle, cfg)
     return provider
