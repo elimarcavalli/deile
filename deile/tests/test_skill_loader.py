@@ -281,3 +281,157 @@ class TestSkillCommandExecute:
         suggestions = registry.get_command_suggestions("rev")
         names = [s["name"] for s in suggestions]
         assert "revisar" in names
+
+
+# ---------------------------------------------------------------------------
+# F1 — Refuse to override built-in / existing commands (PR #51 review)
+# ---------------------------------------------------------------------------
+
+
+class TestNoOverrideExistingCommand:
+    """Skills must NOT silently hijack existing slash commands."""
+
+    def _registry_with_existing_command(self, name: str = "help"):
+        from deile.commands.base import (
+            CommandContext,
+            CommandResult,
+            CommandStatus,
+            SlashCommand,
+        )
+        from deile.commands.registry import CommandRegistry
+        from deile.config.manager import CommandConfig
+
+        registry = CommandRegistry()
+
+        class _Builtin(SlashCommand):
+            def __init__(self) -> None:
+                cfg = CommandConfig(name=name, description="REAL builtin")
+                super().__init__(cfg)
+                self.category = "system"
+
+            async def execute(self, ctx: CommandContext) -> CommandResult:
+                return CommandResult(
+                    success=True,
+                    content="from builtin",
+                    status=CommandStatus.SUCCESS,
+                )
+
+        registry.register_command(_Builtin())
+        return registry
+
+    def test_skill_does_not_override_existing_builtin(self, tmp_path, monkeypatch):
+        registry = self._registry_with_existing_command("help")
+
+        loader = SkillLoader(
+            project_dir=tmp_path / "project",
+            user_home=tmp_path / "home",
+        )
+        loader.user_skills_dir.mkdir(parents=True, exist_ok=True)
+        (loader.user_skills_dir / "help.md").write_text(
+            "---\nname: help\ndescription: HIJACKED\n---\nHijack body.",
+            encoding="utf-8",
+        )
+
+        # Patch the logger directly. caplog can be defeated by other tests in
+        # the suite that mutate the global logging config (propagate=False, etc).
+        from deile.commands import skill_loader as sl_mod
+
+        warn_calls: list[str] = []
+
+        def _capture(msg, *args, **kwargs):
+            warn_calls.append(msg % args if args else msg)
+
+        monkeypatch.setattr(sl_mod.logger, "warning", _capture)
+
+        registered = loader.load_into_registry(registry)
+
+        assert registered == 0
+        assert registry.get_command("help").description == "REAL builtin"
+        assert any("collides with existing command" in m for m in warn_calls), warn_calls
+        assert any("Skipped 1 skill(s) due to name collision" in m for m in warn_calls), warn_calls
+
+    def test_two_distinct_skills_register_when_no_collision(self, tmp_path):
+        from deile.commands.registry import CommandRegistry
+
+        registry = CommandRegistry()
+        loader = SkillLoader(
+            project_dir=tmp_path / "project",
+            user_home=tmp_path / "home",
+        )
+        loader.user_skills_dir.mkdir(parents=True, exist_ok=True)
+        (loader.user_skills_dir / "alpha.md").write_text("---\nname: alpha\n---\nA.", encoding="utf-8")
+        (loader.user_skills_dir / "beta.md").write_text("---\nname: beta\n---\nB.", encoding="utf-8")
+
+        registered = loader.load_into_registry(registry)
+
+        assert registered == 2
+        assert registry.get_command("alpha") is not None
+        assert registry.get_command("beta") is not None
+
+
+# ---------------------------------------------------------------------------
+# F3 — Strict frontmatter validation (PR #51 review)
+# ---------------------------------------------------------------------------
+
+
+class TestFrontmatterValidation:
+    def test_null_name_falls_back_to_stem(self, tmp_path):
+        f = tmp_path / "my_skill.md"
+        f.write_text("---\nname: null\n---\nBody here.", encoding="utf-8")
+        skill = _parse_skill_file(f, source="user")
+        assert skill is not None
+        # null -> ignored -> falls back to stem (normalized)
+        assert skill.name == "my-skill"
+
+    def test_list_description_is_rejected_and_default_used(self, tmp_path):
+        f = tmp_path / "x.md"
+        f.write_text(
+            "---\nname: x\ndescription:\n  - a\n  - b\n---\nBody.",
+            encoding="utf-8",
+        )
+        skill = _parse_skill_file(f, source="user")
+        assert skill is not None
+        # description rejected -> default ("Skill: x") used, NOT "['a', 'b']"
+        assert skill.description == "Skill: x"
+        assert "[" not in skill.description
+
+    def test_int_name_is_rejected_falls_back_to_stem(self, tmp_path):
+        f = tmp_path / "numeric.md"
+        f.write_text("---\nname: 42\n---\nBody.", encoding="utf-8")
+        skill = _parse_skill_file(f, source="user")
+        assert skill is not None
+        assert skill.name == "numeric"
+
+    def test_malformed_yaml_rejects_file_loudly(self, tmp_path, monkeypatch):
+        f = tmp_path / "broken.md"
+        # Unclosed quote -> YAML parse error
+        f.write_text(
+            "---\nname: 'unclosed\ndescription: real\n---\nBody.",
+            encoding="utf-8",
+        )
+
+        # Patch the logger directly (caplog vs suite-wide logging config).
+        from deile.commands import skill_loader as sl_mod
+
+        warn_calls: list[str] = []
+
+        def _capture(msg, *args, **kwargs):
+            warn_calls.append(msg % args if args else msg)
+
+        monkeypatch.setattr(sl_mod.logger, "warning", _capture)
+
+        skill = _parse_skill_file(f, source="user")
+
+        assert skill is None
+        assert any("invalid YAML front-matter" in m for m in warn_calls), warn_calls
+
+    def test_valid_frontmatter_still_works(self, tmp_path):
+        f = tmp_path / "ok.md"
+        f.write_text(
+            "---\nname: ok\ndescription: Works fine\n---\nBody.",
+            encoding="utf-8",
+        )
+        skill = _parse_skill_file(f, source="user")
+        assert skill is not None
+        assert skill.name == "ok"
+        assert skill.description == "Works fine"

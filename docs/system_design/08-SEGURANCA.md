@@ -75,6 +75,33 @@
 
 > A descrição funcional consolidada está em [`04-MODELO-COMPONENTES.md`](04-MODELO-COMPONENTES.md).
 
+## Skills como fronteira de confiança (em `deile/commands/skill_loader.py`)
+
+O sistema de skills (issue #41) descobre arquivos `.md` em duas pastas e expõe cada um como um comando `/<nome>` cujo corpo do arquivo vira **prompt enviado ao LLM**. Isso é um vetor de extensão por arquivo — qualquer pessoa que dropar um `.md` em uma das pastas registra um comando no agente. Tratar como superfície de confiança:
+
+| Pasta | Origem | Confiança | Como mitigar |
+|---|---|---|---|
+| `~/.deile/skills/` | Per-usuário | Igual ao `$HOME` do usuário. Quem escreve em `$HOME` já tem todos os privilégios do usuário. | Nada extra: o atacante já venceu se chegou aqui. |
+| `<projeto>/.deile/skills/` | Per-projeto, **commitada no repo** | Igual ao código do projeto. `git clone <repo-não-confiável> && python deile.py` carrega skills do autor do repo. | **Trate o conteúdo de `.deile/skills/*.md` como código auditável.** Faça code review desses arquivos como faria com Python. |
+
+### Guard-rails implementados
+
+- **Sem override de built-ins**: `SkillLoader.load_into_registry` consulta `registry.get_command(name)` antes de registrar e PULA qualquer skill cujo nome (ou alias) já esteja ocupado por um comando existente. Skills NÃO podem hijack `/help`, `/model`, `/cost`, `/permissions`, `/sandbox`, `/approve`, etc.
+- **Validação estrita de frontmatter**: `name` e `description` no YAML devem ser strings; valores nulos/listas/dicts são rejeitados (cai no stem do arquivo / descrição padrão), e YAML malformado faz a skill ser pulada com warning loud.
+- **Regex restritiva no nome**: `^[a-z0-9][a-z0-9\-]{0,63}$` — sem `..`, sem `/`, sem null bytes (impede skill name como vetor de path traversal).
+- **Project sobrescreve user**: se uma mesma skill existe em ambas as pastas, a versão do projeto vence (intencional — projetos definem suas próprias workflows).
+
+### O que o sistema NÃO faz (consciente)
+
+- Skills **não passam por `PermissionManager`** antes de executar. O prompt vai direto para o LLM, e qualquer tool-use que o LLM proponha em resposta passa pelas verificações normais de permissão. Mas o prompt em si é executado sem `check_permission`. Isso é consistente com como built-in slash commands funcionam.
+- Skills **não geram entrada de `AuditLogger`** específica. As tool calls que elas dispararem geram, mas a invocação `/skill-name` em si não é logada como evento auditável tipado. Se você precisar disso, é um TODO.
+- Não há **sandbox** para o conteúdo do prompt. Um skill pode injetar instruções que tentem coagir o LLM a ignorar regras (prompt injection clássico). Confie no `.deile/skills/` apenas tanto quanto confia no código que executaria o LLM.
+
+### Recomendações operacionais
+
+- Em CI / projeto compartilhado: **trate `.deile/skills/` como diretório protegido** (CODEOWNERS, branch protection). Trate adições/mudanças com o mesmo rigor de PRs de código.
+- Antes de rodar `python deile.py` em um repo clonado, faça `ls .deile/skills/ 2>/dev/null` para saber o que vai ser carregado.
+
 ## Regras inegociáveis
 
 | Regra | Detalhe |

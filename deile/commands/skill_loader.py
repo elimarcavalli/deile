@@ -73,10 +73,43 @@ def _parse_skill_file(path: Path, source: str) -> Optional[SkillDefinition]:
 
         try:
             parsed = yaml.safe_load(match.group(1)) or {}
-            if isinstance(parsed, dict):
-                frontmatter_data = {str(k): str(v) for k, v in parsed.items()}
         except Exception as exc:
-            logger.warning("Invalid YAML front-matter in %s: %s", path, exc)
+            # Loud warning + skip — silently treating malformed YAML as
+            # "no frontmatter" (the previous behaviour) hid typos and made
+            # debugging painful (see PR #51 review F3).
+            logger.warning(
+                "Skill file %s has invalid YAML front-matter and will be skipped: %s",
+                path,
+                exc,
+            )
+            return None
+        else:
+            if isinstance(parsed, dict):
+                # Per-key strict validation. Previously every value was
+                # blanket-coerced via str(), which produced absurd commands
+                # (e.g. ``name: null`` -> ``/none``; ``description: [a, b]``
+                # -> ``"['a', 'b']"``). Now we accept only string scalars
+                # for the keys we care about.
+                raw_name = parsed.get("name")
+                if raw_name is not None:
+                    if not isinstance(raw_name, str):
+                        logger.warning(
+                            "Skill file %s: front-matter ``name`` must be a string, got %s — using filename stem",
+                            path,
+                            type(raw_name).__name__,
+                        )
+                    else:
+                        frontmatter_data["name"] = raw_name
+                raw_desc = parsed.get("description")
+                if raw_desc is not None:
+                    if not isinstance(raw_desc, str):
+                        logger.warning(
+                            "Skill file %s: front-matter ``description`` must be a string, got %s — using default",
+                            path,
+                            type(raw_desc).__name__,
+                        )
+                    else:
+                        frontmatter_data["description"] = raw_desc
         body = text[match.end():]
 
     raw_name = frontmatter_data.get("name", "") or _name_from_stem(path.stem)
@@ -181,8 +214,15 @@ class SkillLoader:
     def load_into_registry(self, registry) -> int:
         """Load skills and register them in *registry*.
 
+        Refuses to register a skill whose name (or any alias) collides with
+        a command already in the registry — the built-in ``/help``,
+        ``/model``, ``/cost`` etc. must NOT be hijack-able by a dropped
+        ``.md`` file (see PR #51 review F1: a malicious project-level
+        ``.deile/skills/help.md`` would otherwise silently take over
+        ``/help`` for anyone who clones the repo).
+
         Returns:
-            Number of skills registered.
+            Number of skills registered (skipped collisions are NOT counted).
         """
         from .base import CommandContext, CommandResult, CommandStatus, SlashCommand
         from ..config.manager import CommandConfig
@@ -190,7 +230,24 @@ class SkillLoader:
         skills = self.load_skills()
 
         registered = 0
+        skipped_collisions: List[str] = []
         for skill in skills:
+            # F1 guard: refuse to override a built-in (or any) existing
+            # command. ``get_command`` resolves both names and aliases.
+            existing = registry.get_command(skill.name)
+            if existing is not None:
+                logger.warning(
+                    "Skill %r (from %s) collides with existing command /%s "
+                    "(category=%s) — skipping. Built-in commands cannot be "
+                    "overridden by a skill file.",
+                    skill.name,
+                    skill.file_path,
+                    existing.name,
+                    getattr(existing, "category", "general"),
+                )
+                skipped_collisions.append(skill.name)
+                continue
+
             # Capture skill in closure
             def _make_command(sk: SkillDefinition) -> SlashCommand:
                 class _SkillCommand(SlashCommand):
@@ -222,5 +279,12 @@ class SkillLoader:
                 registered += 1
             except Exception as exc:
                 logger.warning("Failed to register skill %r: %s", skill.name, exc)
+
+        if skipped_collisions:
+            logger.warning(
+                "Skipped %d skill(s) due to name collision with existing commands: %s",
+                len(skipped_collisions),
+                ", ".join(sorted(skipped_collisions)),
+            )
 
         return registered
