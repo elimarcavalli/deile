@@ -102,7 +102,7 @@ EXAMPLES:
         table.add_column("Out $/1M", justify="right")
         table.add_column("Context", justify="right")
         table.add_column("Capabilities")
-        table.add_column("Active", justify="center")
+        table.add_column("Active", justify="center") # TODO:(interactive-ui): Criar forma de selecionar modelo com setas cima/baixo + enter
 
         for h in sorted(handles, key=lambda x: (x.tier.value, x.provider_id)):
             key = f"{h.provider_id}:{h.model_id}"
