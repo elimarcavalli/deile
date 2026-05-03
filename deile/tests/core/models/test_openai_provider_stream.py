@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from types import SimpleNamespace
 from typing import List
 from unittest.mock import patch
@@ -14,7 +13,7 @@ from deile.core.models.base import ModelMessage
 from deile.core.models.stream_events import StreamEventType
 
 
-def _make_provider(provider_cls_name: str = "OpenAIProvider"):
+def _make_provider(monkeypatch, provider_cls_name: str = "OpenAIProvider"):
     from deile.core.models.openai_provider import OpenAIProvider
     from deile.core.models.deepseek_provider import DeepSeekProvider
     from deile.core.models.catalog import ModelHandle, ModelPricing
@@ -34,7 +33,7 @@ def _make_provider(provider_cls_name: str = "OpenAIProvider"):
     cfg = ProviderConfig(
         provider_id="openai", api_key_env="OPENAI_API_KEY", base_url=None
     )
-    os.environ.setdefault("OPENAI_API_KEY", "sk-test-fake")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
     cls = OpenAIProvider if provider_cls_name == "OpenAIProvider" else DeepSeekProvider
     if cls is DeepSeekProvider:
         cfg = ProviderConfig(
@@ -42,8 +41,13 @@ def _make_provider(provider_cls_name: str = "OpenAIProvider"):
             api_key_env="DEEPSEEK_API_KEY",
             base_url="https://api.deepseek.com/v1",
         )
-        os.environ.setdefault("DEEPSEEK_API_KEY", "sk-test-fake")
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-fake")
     return cls(model_handle=handle, provider_config=cfg)
+
+
+@pytest.fixture
+def provider(monkeypatch):
+    return _make_provider(monkeypatch)
 
 
 async def _replay(chunks: List):
@@ -77,8 +81,7 @@ def _chunk_finish_with_usage(prompt_tokens=10, completion_tokens=2):
 
 
 @pytest.mark.asyncio
-async def test_text_stream_emits_text_and_usage():
-    provider = _make_provider()
+async def test_text_stream_emits_text_and_usage(provider):
     chunks = [
         _chunk_text("hello "),
         _chunk_text("world"),
@@ -103,9 +106,7 @@ async def test_text_stream_emits_text_and_usage():
 
 
 @pytest.mark.asyncio
-async def test_tool_call_stream_emits_lifecycle():
-    provider = _make_provider()
-
+async def test_tool_call_stream_emits_lifecycle(provider):
     def _delta_tool_call(index, id_=None, name=None, arguments=None):
         return SimpleNamespace(
             choices=[
@@ -164,8 +165,7 @@ async def test_tool_call_stream_emits_lifecycle():
     assert end_idx == start_idx + 1, "TOOL_USE_END must immediately follow TOOL_USE_START"
 
 
-def test_format_assistant_tool_use_message_structure():
-    provider = _make_provider()
+def test_format_assistant_tool_use_message_structure(provider):
     msg = provider.format_assistant_tool_use_message(
         [("c1", "echo", {"x": 1})], text_so_far=""
     )
@@ -175,8 +175,7 @@ def test_format_assistant_tool_use_message_structure():
     assert json.loads(tcs[0]["function"]["arguments"]) == {"x": 1}
 
 
-def test_format_tool_result_message_round_trip():
-    provider = _make_provider()
+def test_format_tool_result_message_round_trip(provider):
     msg = provider.format_tool_result_message("c1", "echo", {"ok": True})
     tr = msg.metadata["_openai_tool_result"]
     assert tr["tool_call_id"] == "c1"
@@ -218,11 +217,10 @@ def _chunk_with_reasoning(reasoning: str, content: str = ""):
 
 
 @pytest.mark.asyncio
-async def test_reasoning_content_emitted_in_usage_final_for_stop_path():
+async def test_reasoning_content_emitted_in_usage_final_for_stop_path(provider):
     """When a provider streams delta.reasoning_content and finishes with 'stop',
     the accumulated text must appear in the USAGE_FINAL event's reasoning_content
     field so agent.py can store it for the next turn."""
-    provider = _make_provider()
     chunks = [
         _chunk_with_reasoning("<think>step1</think>"),
         _chunk_with_reasoning("<think>step2</think>", content="Hi"),
@@ -244,12 +242,10 @@ async def test_reasoning_content_emitted_in_usage_final_for_stop_path():
 
 
 @pytest.mark.asyncio
-async def test_reasoning_content_emitted_in_tool_use_end():
+async def test_reasoning_content_emitted_in_tool_use_end(provider):
     """When finish_reason=='tool_calls', reasoning_content must be attached to
     every TOOL_USE_END event so ToolLoopExecutor can pass it to
     format_assistant_tool_use_message for the next iteration."""
-    provider = _make_provider()
-
     def _tc_delta(index, id_=None, name=None, arguments=None, reasoning=None):
         return SimpleNamespace(
             choices=[
@@ -298,10 +294,9 @@ async def test_reasoning_content_emitted_in_tool_use_end():
     assert end_evt.reasoning_content == "<think>I need a tool</think>"
 
 
-def test_format_assistant_tool_use_message_preserves_reasoning_content():
+def test_format_assistant_tool_use_message_preserves_reasoning_content(provider):
     """reasoning_content kwarg must be stored in metadata so _to_openai_messages
     can echo it back to the API on the next round-trip."""
-    provider = _make_provider()
     msg = provider.format_assistant_tool_use_message(
         [("c1", "echo", {"x": 1})],
         text_so_far="",
