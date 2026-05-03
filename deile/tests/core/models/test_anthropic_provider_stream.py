@@ -6,7 +6,6 @@ mapping, not network behaviour.
 
 from __future__ import annotations
 
-import os
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import List
@@ -18,7 +17,7 @@ from deile.core.models.base import ModelMessage
 from deile.core.models.stream_events import StreamEventType
 
 
-def _make_provider():
+def _make_provider(monkeypatch):
     from deile.core.models.anthropic_provider import AnthropicProvider
     from deile.core.models.catalog import ModelHandle, ModelPricing
     from deile.core.models.tier import ModelTier
@@ -37,8 +36,13 @@ def _make_provider():
     cfg = ProviderConfig(
         provider_id="anthropic", api_key_env="ANTHROPIC_API_KEY", base_url=None
     )
-    os.environ.setdefault("ANTHROPIC_API_KEY", "sk-test-fake")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-fake")
     return AnthropicProvider(model_handle=handle, provider_config=cfg)
+
+
+@pytest.fixture
+def provider(monkeypatch):
+    return _make_provider(monkeypatch)
 
 
 def _e(etype, **kw):
@@ -66,8 +70,7 @@ async def _fake_stream(events: List, final_message):
 
 
 @pytest.mark.asyncio
-async def test_text_stream_only():
-    provider = _make_provider()
+async def test_text_stream_only(provider):
     final = SimpleNamespace(
         usage=SimpleNamespace(
             input_tokens=10,
@@ -103,8 +106,7 @@ async def test_text_stream_only():
 
 
 @pytest.mark.asyncio
-async def test_tool_use_stream_emits_lifecycle():
-    provider = _make_provider()
+async def test_tool_use_stream_emits_lifecycle(provider):
     final = SimpleNamespace(
         usage=SimpleNamespace(
             input_tokens=12,
@@ -152,8 +154,7 @@ async def test_tool_use_stream_emits_lifecycle():
     assert end_evt.arguments == {"command": "ls"}
 
 
-def test_format_assistant_tool_use_message_structure():
-    provider = _make_provider()
+def test_format_assistant_tool_use_message_structure(provider):
     msg = provider.format_assistant_tool_use_message(
         [("t1", "list_files", {"path": "."})], text_so_far="ok"
     )
@@ -165,8 +166,7 @@ def test_format_assistant_tool_use_message_structure():
     assert blocks[1]["input"] == {"path": "."}
 
 
-def test_format_tool_result_message_round_trip():
-    provider = _make_provider()
+def test_format_tool_result_message_round_trip(provider):
     msg = provider.format_tool_result_message("t1", "list_files", {"items": ["a.py"]})
     block = msg.metadata["_anthropic_content_blocks"][0]
     assert block["type"] == "tool_result"
