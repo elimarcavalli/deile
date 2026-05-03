@@ -1483,7 +1483,38 @@ class DeileAgent:
             
             # Executa comando
             command_result = await self.command_registry.execute_command(command_name, context)
-            
+
+            # Skills (and future LLM commands) return content_type="llm_prompt".
+            # Route the prompt through the LLM pipeline instead of returning it raw.
+            if command_result.content_type == "llm_prompt" and command_result.content:
+                prompt = str(command_result.content)
+                # Replace the slash-command user turn in history with the real prompt
+                # so the LLM sees the skill body, not the raw "/skill-name args".
+                for entry in reversed(session.conversation_history):
+                    if entry["role"] == "user":
+                        entry["content"] = prompt
+                        break
+                response_content, tool_results = await self._process_iterative_function_calling(
+                    prompt, None, session
+                )
+                response = AgentResponse(
+                    content=response_content,
+                    status=AgentStatus.IDLE,
+                    tool_results=tool_results,
+                    parse_result=None,
+                    execution_time=time.time() - start_time,
+                    metadata={
+                        "command_executed": command_name,
+                        "command_status": command_result.status.value,
+                        "is_slash_command": True,
+                    },
+                )
+                session.add_to_history("assistant", response_content, {
+                    "command": command_name,
+                    "command_status": command_result.status.value,
+                })
+                return response
+
             # Converte resultado do comando para AgentResponse
             response = AgentResponse(
                 content=command_result.content or f"Command /{command_name} executed",
@@ -1497,13 +1528,13 @@ class DeileAgent:
                     "is_slash_command": True
                 }
             )
-            
+
             # Adiciona resposta ao histórico
             session.add_to_history("assistant", response.content, {
                 "command": command_name,
                 "command_status": command_result.status.value
             })
-            
+
             return response
             
         except Exception as e:
@@ -2487,7 +2518,16 @@ class DeileAgent:
             builtin_commands = self.command_registry.auto_discover_builtin_commands()
             config_commands = self.command_registry.load_commands_from_config()
             self._register_command_actions()
-            
+
+            # Load user/project skills as slash commands
+            try:
+                from ..commands.skill_loader import SkillLoader
+                project_dir = getattr(self.settings, "working_directory", None)
+                skill_loader = SkillLoader(project_dir=project_dir)
+                skill_loader.load_into_registry(self.command_registry)
+            except Exception as _skill_exc:
+                self.logger.warning("Skill loading failed: %s", _skill_exc)
+
             # self.logger.info(
             #     f"Auto-discovery completed: {tools_discovered} tools, "
             #     f"{parsers_discovered} parsers, {builtin_commands + config_commands} commands"
