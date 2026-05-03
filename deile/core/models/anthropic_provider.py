@@ -217,6 +217,7 @@ class AnthropicProvider(ModelProvider):
     # chat_with_tools()
     # ------------------------------------------------------------------
 
+    # TODO(streaming-cleanup): once all callers migrate to ToolLoopExecutor + generate_stream(tools=...), this method can be removed. Currently still used by deile/core/agent.py:_process_iterative_function_calling.
     async def chat_with_tools(
         self,
         messages: List[ModelMessage],
