@@ -80,13 +80,17 @@ class VisionDescribeImageTool(Tool):
                             "type": "string",
                             "description": "HTTPS URL to fetch the image from (e.g. Discord CDN URL).",
                         },
+                        "image_path": {
+                            "type": "string",
+                            "description": "Local filesystem path to an image (e.g. 'docs/img/banner.png'). The tool reads the bytes itself; never use bash for this.",
+                        },
                         "image_base64": {
                             "type": "string",
                             "description": "Base64-encoded image bytes (RFC 4648). Use with mime_type.",
                         },
                         "mime_type": {
                             "type": "string",
-                            "description": "Image MIME type (image/jpeg, image/png, image/webp, image/gif). Required with image_base64.",
+                            "description": "Image MIME type (image/jpeg, image/png, image/webp, image/gif). Required with image_base64; auto-detected from extension when using image_path.",
                         },
                         "prompt": {
                             "type": "string",
@@ -119,14 +123,15 @@ class VisionDescribeImageTool(Tool):
     async def execute(self, context: ToolContext) -> ToolResult:
         args = dict(context.parsed_args or {})
         url = (args.get("image_url") or "").strip() or None
+        path = (args.get("image_path") or "").strip() or None
         b64 = (args.get("image_base64") or "").strip() or None
         mime = (args.get("mime_type") or "").strip() or None
         prompt = (args.get("prompt") or _DEFAULT_PROMPT).strip()
         model = (args.get("model") or _resolve_vision_model()).strip()
 
-        if not url and not b64:
+        if not url and not b64 and not path:
             return ToolResult.error_result(
-                "must provide either image_url or image_base64",
+                "must provide image_url, image_path, or image_base64",
                 error_code="VISION_BAD_INPUT",
             )
         if b64 and not mime:
@@ -148,6 +153,8 @@ class VisionDescribeImageTool(Tool):
                         f"mime_type must start with image/, got {mime!r}",
                         error_code="VISION_BAD_INPUT",
                     )
+            elif path:
+                image_bytes, mime = _read_image_from_path(path, mime)
             else:
                 image_bytes, mime = await _download_image(url)
         except VisionToolError as e:
@@ -197,6 +204,43 @@ class VisionToolError(Exception):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
+
+
+_EXT_TO_MIME = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".bmp": "image/bmp",
+}
+
+
+def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes, str]:
+    """Read image bytes from a local path. mime is auto-detected from
+    extension when not provided. Subject to the same 10 MiB cap.
+    Strips leading 'file://' if present."""
+    if path.startswith("file://"):
+        path = path[len("file://"):]
+    p = os.path.abspath(path)
+    if not os.path.isfile(p):
+        raise VisionToolError("VISION_BAD_INPUT", f"image_path not found: {path!r}")
+    size = os.path.getsize(p)
+    if size > _MAX_IMAGE_BYTES:
+        raise VisionToolError(
+            "VISION_IMAGE_TOO_LARGE",
+            f"image_path exceeds {_MAX_IMAGE_BYTES} bytes ({size} bytes)",
+        )
+    if not mime_hint:
+        ext = os.path.splitext(p)[1].lower()
+        mime_hint = _EXT_TO_MIME.get(ext)
+    if not mime_hint or not mime_hint.startswith(_ALLOWED_MIME_PREFIXES):
+        raise VisionToolError(
+            "VISION_BAD_INPUT",
+            f"could not infer image MIME for {path!r}; pass mime_type explicitly",
+        )
+    with open(p, "rb") as fh:
+        return fh.read(), mime_hint
 
 
 async def _download_image(url: str) -> tuple[bytes, str]:

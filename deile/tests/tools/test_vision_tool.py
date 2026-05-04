@@ -218,6 +218,51 @@ async def test_url_download_too_large(tool, ctx_factory, image_server):
     assert res.metadata["error_code"] == "VISION_IMAGE_TOO_LARGE"
 
 
+# ---- image_path -------------------------------------------------------------
+
+
+async def test_image_path_happy(tool, ctx_factory, monkeypatch, tmp_path):
+    captured = {}
+
+    async def fake(image_bytes, mime, prompt, model):
+        captured.update(bytes_len=len(image_bytes), mime=mime)
+        return "ok"
+
+    monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
+    p = tmp_path / "img.png"
+    p.write_bytes(PNG_1x1_BYTES)
+    res = await tool.execute(ctx_factory(image_path=str(p)))
+    assert res.is_success, res.message
+    assert captured["mime"] == "image/png"
+    assert captured["bytes_len"] == len(PNG_1x1_BYTES)
+
+
+async def test_image_path_with_file_scheme(tool, ctx_factory, monkeypatch, tmp_path):
+    async def fake(image_bytes, mime, prompt, model):
+        return "ok"
+
+    monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
+    p = tmp_path / "x.jpeg"
+    p.write_bytes(PNG_1x1_BYTES)
+    res = await tool.execute(ctx_factory(image_path=f"file://{p}"))
+    assert res.is_success
+    assert res.data["mime_type"] == "image/jpeg"
+
+
+async def test_image_path_missing(tool, ctx_factory):
+    res = await tool.execute(ctx_factory(image_path="/no/such/file.png"))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+
+
+async def test_image_path_unknown_extension_requires_mime(tool, ctx_factory, tmp_path):
+    p = tmp_path / "noext"
+    p.write_bytes(PNG_1x1_BYTES)
+    res = await tool.execute(ctx_factory(image_path=str(p)))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+
+
 # ---- llm error mapping ------------------------------------------------------
 
 
