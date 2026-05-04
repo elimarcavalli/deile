@@ -1,18 +1,17 @@
 """Logs Command - View security audit logs and system events"""
 
-from typing import Dict, Any, Optional, List
-from rich.panel import Panel
-from rich.text import Text
-from rich.table import Table
-from rich.tree import Tree
-from rich.console import Group
-from datetime import datetime, timedelta
+from datetime import datetime
+from typing import List
 
-from ..base import DirectCommand, CommandResult, CommandContext
+from rich.console import Group
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
 from ...core.exceptions import CommandError
-from ...security.audit_logger import (
-    get_audit_logger, AuditEventType, SeverityLevel
-)
+from ...security.audit_logger import (AuditEventType, SeverityLevel,
+                                      get_audit_logger)
+from ..base import CommandContext, CommandResult, DirectCommand
 
 
 class LogsCommand(DirectCommand):
@@ -149,8 +148,7 @@ class LogsCommand(DirectCommand):
                 "secret_redacted": "Data sanitized",
                 "tool_execution": "Tool run events",
                 "plan_execution": "Plan workflow events",
-                "approval_required": "Manual approval needed",
-                "sandbox_violation": "Security policy violation"
+                "approval_required": "Manual approval needed"
             }
             
             for event_type, count in sorted(type_counts.items(), key=lambda x: x[1], reverse=True):
@@ -181,7 +179,7 @@ class LogsCommand(DirectCommand):
                 "/logs summary           - Detailed statistics\n"
                 "/logs export <file>     - Export logs to file\n\n"
                 "📊 **Filters Available**\n"
-                "Type: permission, secret, tool, plan, approval, sandbox\n"
+                "Type: permission, secret, tool, plan, approval\n"
                 "Severity: debug, info, warning, error, critical\n"
                 "Actor: tool_name, user, system",
                 style="dim"
@@ -258,7 +256,6 @@ class LogsCommand(DirectCommand):
             AuditEventType.PERMISSION_DENIED,
             AuditEventType.SECRET_DETECTED,
             AuditEventType.SECRET_REDACTED,
-            AuditEventType.SANDBOX_VIOLATION,
             AuditEventType.SUSPICIOUS_ACTIVITY
         ]
         
@@ -357,7 +354,7 @@ class LogsCommand(DirectCommand):
         
         # Permission events table  
         perm_table = Table(
-            title=f"🔐 Permission Events (Last 30)",
+            title="🔐 Permission Events (Last 30)",
             show_header=True,
             header_style="bold blue"
         )
@@ -459,7 +456,6 @@ class LogsCommand(DirectCommand):
         
         # Tool execution stats
         successful_runs = len([e for e in tool_events if e.result == "success"])
-        failed_runs = len([e for e in tool_events if e.result == "failure"])
         success_rate = (successful_runs / len(tool_events) * 100) if tool_events else 0
         
         # Tools table
@@ -617,7 +613,6 @@ class LogsCommand(DirectCommand):
     async def _show_summary(self) -> CommandResult:
         """Show detailed audit log summary"""
         
-        summary = self.audit_logger.get_security_summary()
         recent_events = self.audit_logger.get_recent_events(1000)  # Larger sample
         
         # Detailed statistics
@@ -716,7 +711,6 @@ Event Types:
   • plan_execution        - Plan workflow events
   • approval_required     - Manual approval needed
   • approval_granted      - Manual approval given
-  • sandbox_violation     - Security policy violation
 
 Severity Levels:
   • debug       - Debug information

@@ -2,11 +2,11 @@
 
 import json
 import logging
+from dataclasses import asdict, dataclass
 from datetime import datetime
-from pathlib import Path
-from typing import Dict, Any, Optional, List, Union
-from dataclasses import dataclass, asdict
 from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 
 class AuditEventType(Enum):
@@ -15,7 +15,6 @@ class AuditEventType(Enum):
     PERMISSION_DENIED = "permission_denied"
     SECRET_DETECTED = "secret_detected"
     SECRET_REDACTED = "secret_redacted"
-    SANDBOX_VIOLATION = "sandbox_violation"
     TOOL_EXECUTION = "tool_execution"
     PLAN_EXECUTION = "plan_execution"
     APPROVAL_REQUIRED = "approval_required"
@@ -209,29 +208,6 @@ class AuditLogger:
             action="scan",
             result="redacted" if redacted else "detected",
             details=details
-        )
-    
-    def log_sandbox_violation(self,
-                            tool_name: str,
-                            violated_resource: str,
-                            violation_type: str,
-                            blocked: bool = True) -> None:
-        """Log sandbox policy violation"""
-        
-        details = {
-            "violation_type": violation_type,
-            "enforcement_action": "blocked" if blocked else "allowed_with_warning"
-        }
-        
-        self.log_event(
-            event_type=AuditEventType.SANDBOX_VIOLATION,
-            severity=SeverityLevel.WARNING if blocked else SeverityLevel.ERROR,
-            actor=tool_name,
-            resource=violated_resource,
-            action="access_attempt",
-            result="blocked" if blocked else "allowed",
-            details=details,
-            tool_name=tool_name
         )
     
     def log_tool_execution(self,
@@ -456,11 +432,6 @@ def log_secret_detection(file_path: str, secret_type: str, line_number: int, con
 def log_tool_execution(tool_name: str, resource: str, success: bool, **kwargs) -> None:
     """Convenience function for logging tool executions"""
     get_audit_logger().log_tool_execution(tool_name, resource, success, **kwargs)
-
-
-def log_sandbox_violation(tool_name: str, violated_resource: str, violation_type: str, blocked: bool = True) -> None:
-    """Convenience function for logging sandbox violations"""
-    get_audit_logger().log_sandbox_violation(tool_name, violated_resource, violation_type, blocked)
 
 
 def log_plan_execution(plan_id: str, action: str, result: str, step_count: int = 0, duration_ms: int = 0, **kwargs) -> None:
