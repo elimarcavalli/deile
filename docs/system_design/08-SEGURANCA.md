@@ -16,7 +16,7 @@
 
 | Símbolo | Papel |
 |---|---|
-| `AuditEventType` (enum) | Tipos: `SANDBOX_VIOLATION`, etc. |
+| `AuditEventType` (enum) | Tipos: `PERMISSION_DENIED`, `SECRET_DETECTED`, `TOOL_EXECUTION`, `PLAN_EXECUTION`, etc. |
 | `SeverityLevel` (enum) | Severidade |
 | `AuditEvent` (dataclass) | Evento tipado com `timestamp`, `event_type`, `severity`, `details`, etc. |
 | `AuditLogger` | Persiste e indexa eventos; singleton via `get_audit_logger()` |
@@ -28,7 +28,6 @@
 | `log_permission_check(tool_name, resource, action, allowed, **kwargs)` | Decisões de permissão |
 | `log_secret_detection(file_path, secret_type, line_number, confidence, redacted=True)` | Detecção de segredo |
 | `log_tool_execution(tool_name, resource, success, **kwargs)` | Execução de tool |
-| `log_sandbox_violation(tool_name, violated_resource, violation_type, blocked=True)` | Violação de sandbox |
 | `log_plan_execution(plan_id, action, result, step_count=0, duration_ms=0, **kwargs)` | Execução de plano |
 | `log_approval_event(plan_id, step_id, approval_action, tool_name, risk_level, **kwargs)` | Decisão de aprovação |
 

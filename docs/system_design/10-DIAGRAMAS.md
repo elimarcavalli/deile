@@ -294,7 +294,6 @@ EventBus.publish(Event)
    ├── budget_alert                — quando uso aproxima de threshold
    ├── permission_check            — log_permission_check
    ├── secret_detection            — log_secret_detection
-   ├── sandbox_violation           — log_sandbox_violation
    ├── plan_execution              — log_plan_execution
    └── approval_event              — log_approval_event
 
