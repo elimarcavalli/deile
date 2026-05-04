@@ -1,8 +1,8 @@
-# Messaging Tools — Mensageria Proativa via deile-bot Daemon
+# Messaging Tools — Mensageria Proativa via deilebot Daemon
 
 ## 1. Overview
 
-Adiciona à DEILE uma família de **tools de mensageria** (`messaging.discord_*`) que permite ao agente, durante uma sessão, enviar mensagens, DMs, reactions, threads e pins por meio de um daemon `deile-bot` rodando em paralelo (repo separado: `elimarcavalli/deile-bot`).
+Adiciona à DEILE uma família de **tools de mensageria** (`messaging.discord_*`) que permite ao agente, durante uma sessão, enviar mensagens, DMs, reactions, threads e pins por meio de um daemon `deilebot` rodando em paralelo (repo separado: `elimarcavalli/deilebot`).
 
 Hoje o fluxo é unidirecional (`bot → agent`: o usuário fala com o bot, o bot consulta a agente). Esta feature inverte a flecha (`agent → bot`): a agente decide proativamente falar em canais quando o usuário pede ("DEILE, avisa no #ops que o deploy terminou", "manda DM pro Tiago…").
 
@@ -15,7 +15,7 @@ Hoje o fluxo é unidirecional (`bot → agent`: o usuário fala com o bot, o bot
 | **HTTP control-plane** (não in-process, não outbox) | Daemons de chat têm ciclo de vida diferente da CLI; in-process forçaria subir o bot toda vez que a CLI abrir. SQLite outbox introduziria latência e perderia feedback síncrono (msg_id, falhas). HTTP em `127.0.0.1` é simples, isola repos, mantém ack imediato. |
 | **Bind em localhost + Bearer token** | Não expor ao mundo. Token gerado em setup, persistido em `.env` de ambos os lados. |
 | **Cliente fino separado das deps do daemon** | DEILE puxa só `httpx` + `pydantic` (já presentes). A pesada `discord.py` fica no daemon. Quem usa a CLI sem bot não paga o custo. |
-| **Auto-discovery condicional** das tools | Se `deile-bot-client` não está instalado **ou** `bot.endpoint` não está configurado, as tools simplesmente não registram. Princípio 10 (Extensibilidade). |
+| **Auto-discovery condicional** das tools | Se `deilebot` não está instalado **ou** `bot.endpoint` não está configurado, as tools simplesmente não registram. Princípio 10 (Extensibilidade). |
 | **Cada tool passa por `PermissionManager` + `AuditLogger`** | Princípios 5 e 11. DM e role-mention são `SecurityLevel.DANGEROUS` → exigem aprovação via `ApprovalSystem`. Channel-post e react são `MODERATE`. |
 | **Tools são assíncronas** (`Tool`, não `SyncTool`) | I/O de rede. Princípio 1. |
 | **Erros do daemon viram `ToolResult.error_result(code=...)` tipados** | Princípio 6. Sem `bare except`, sem deixar exceção escapar. |
@@ -28,9 +28,9 @@ Detalhe completo em [`DECISOES.md` #17](system_design/DECISOES.md).
 
 ```
 +---------------------------------+        +---------------------------------+
-|  deile (este repo)              |        |  deile-bot (repo separado)      |
+|  deile (este repo)              |        |  deilebot (repo separado)      |
 |                                 |        |                                 |
-|  deile/tools/messaging/         |        |  deile_bot/runtime/             |
+|  deile/tools/messaging/         |        |  deilebot/runtime/             |
 |    ├ _base.py (MessagingTool)   |        |    control_plane/               |
 |    ├ discord_send_message.py    |        |    ├ server.py (aiohttp.web)    |
 |    ├ discord_send_dm.py         |  HTTP  |    ├ routes.py                  |
@@ -38,14 +38,14 @@ Detalhe completo em [`DECISOES.md` #17](system_design/DECISOES.md).
 |    ├ discord_start_thread.py    | -----> |    ├ errors.py                  |
 |    ├ discord_pin_message.py     | Bearer |    └ settings.py                |
 |    ├ discord_mention_role.py    | token  |                                 |
-|    └ discord_get_user_profile.py|        |  deile_bot_client/              |
+|    └ discord_get_user_profile.py|        |  deilebot/              |
 |                                 |        |    ├ client.py (httpx, tenacity)|
 |  deile/integrations/bot/        |        |    ├ models.py (pydantic v2)    |
 |    ├ client.py (BotClientFacade)|        |    └ errors.py                  |
 |    ├ config.py (Settings)       |        |                                 |
 |    └ __init__.py                |        |  deps daemon: aiohttp, discord  |
 |                                 |        |  deps client: httpx, pydantic   |
-|  deps: deile-bot-client (extra) |        |                                 |
+|  deps: deilebot (extra) |        |                                 |
 +---------------------------------+        +---------------------------------+
 ```
 
@@ -74,7 +74,7 @@ deile/
         ├── discord_mention_role.py
         └── discord_get_user_profile.py
 
-deile_bot/                     # nested working tree, separate .git, separate repo
+deilebot/                     # nested working tree, separate .git, separate repo
 ├── pyproject.toml             # NEW — packageize the bot daemon + client
 ├── runtime/
 │   └── control_plane/         # NEW
@@ -84,7 +84,7 @@ deile_bot/                     # nested working tree, separate .git, separate re
 │       ├── auth.py            # Bearer middleware
 │       ├── errors.py          # canonical envelope
 │       └── settings.py        # ControlPlaneSettings
-├── deile_bot_client/          # NEW
+├── deilebot/          # NEW
 │   ├── __init__.py
 │   ├── client.py              # BotControlClient
 │   ├── models.py              # Pydantic v2 (shared with server)
@@ -95,7 +95,7 @@ deile_bot/                     # nested working tree, separate .git, separate re
 
 ## 5. API Specification
 
-### Control-plane HTTP (deile-bot side)
+### Control-plane HTTP (deilebot side)
 
 | Method | Path | Body model | Response model | Notes |
 |---|---|---|---|---|
@@ -160,9 +160,9 @@ Each tool inherits `MessagingTool` and exposes the standard `Tool` interface (`n
 | E2E real daemon | `deile/tests/tools/messaging/test_e2e_against_fake_daemon.py` | 1 (marker `integration`) | Boots `ControlPlaneServer` + uses real `BotControlClient` + real tool |
 | Permissions | `deile/tests/security/test_messaging_permissions.py` | 3 | Approval-required default, resource string shape, denylist |
 | Secrets scanner | `deile/tests/security/test_secrets_scanner_bot.py` | 4 | New token patterns |
-| Control-plane | `deile_bot/tests/control_plane/test_endpoints.py` | 4 | Health public, protected requires token, round-trip |
+| Control-plane | `deilebot/tests/control_plane/test_endpoints.py` | 4 | Health public, protected requires token, round-trip |
 
-Total: 85 new tests on the deile side + 4 on the deile-bot side. Coverage on new code: 90%.
+Total: 85 new tests on the deile side + 4 on the deilebot side. Coverage on new code: 90%.
 
 ## 9. Usage Examples
 
@@ -191,13 +191,13 @@ DEILE → tool messaging.discord_send_message(channel=releases, text="build 5.1.
         ✓ enviado (msg_id=...)
 ```
 
-### Daemon (deile-bot side)
+### Daemon (deilebot side)
 
 ```bash
 # .env on daemon side
 export DEILE_BOT_DISCORD_TOKEN="…"
 export DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN="$(openssl rand -hex 24)"
-deile-bot run --provider discord
+deilebot run --provider discord
 ```
 
 ## 10. Performance Characteristics
@@ -225,9 +225,9 @@ deile-bot run --provider discord
 
 | Aspect | Detail |
 |---|---|
-| Breaking change | `pyproject.toml` removed extras `discord/telegram/whatsapp/meta/all-bots` and the `deile-bot` console-script. Users running `pip install deile[discord]` need to migrate to `pip install deile-bot[discord]` |
-| Repo-split | `deile_bot/` left in this repo's working tree as a nested `.git` (untracked here, tracked in its own repo). Once both PRs merge, ops can either keep the nested layout or move it elsewhere |
-| Rollout | (1) Merge PR `elimarcavalli/deile-bot#1`. (2) Publish `deile-bot-client` to PyPI (or use path install during dev). (3) Merge this PR. (4) Operator sets env vars and restarts both processes |
+| Breaking change | `pyproject.toml` removed extras `discord/telegram/whatsapp/meta/all-bots` and the `deilebot` console-script. Users running `pip install deile[discord]` need to migrate to `pip install deilebot[discord]` |
+| Repo-split | `deilebot/` left in this repo's working tree as a nested `.git` (untracked here, tracked in its own repo). Once both PRs merge, ops can either keep the nested layout or move it elsewhere |
+| Rollout | (1) Merge PR `elimarcavalli/deilebot#1`. (2) Publish `deilebot` to PyPI (or use path install during dev). (3) Merge this PR. (4) Operator sets env vars and restarts both processes |
 | Rollback | Revert this PR — tools simply stop registering. Daemon side is unaffected |
 | Feature flag | Implicit: integration deactivates when env vars are absent. `BotIntegrationSettings.disabled=True` is an explicit kill switch |
 
@@ -235,7 +235,7 @@ deile-bot run --provider discord
 
 | Problem | Likely cause | Fix |
 |---|---|---|
-| Tool not appearing in `tool list` | Either `deile-bot-client` not installed or env vars unset | `pip install deile[bot]`; set `DEILE_BOT_ENDPOINT` and `DEILE_BOT_AUTH_TOKEN` |
+| Tool not appearing in `tool list` | Either `deilebot` not installed or env vars unset | `pip install deile[bot]`; set `DEILE_BOT_ENDPOINT` and `DEILE_BOT_AUTH_TOKEN` |
 | `BOT_AUTH_ERROR` (401) | Token mismatch between CLI and daemon | Same value in both `.env` files |
 | `BOT_NOT_READY` (503) | Daemon booted but Discord adapter not connected yet | Wait a few seconds, retry; check `GET /v1/health` |
 | `BOT_TIMEOUT` | Daemon hung or network blocked | Check daemon logs; increase `DEILE_BOT_TIMEOUT_S` |

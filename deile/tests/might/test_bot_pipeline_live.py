@@ -68,22 +68,22 @@ async def _bootstrap_agent():
 async def _make_pipeline(store, agent, *, settings=None):
     import tempfile
 
-    from deile_bot._testing import FakeAgentMetaProvider, FakeProviderAdapter
-    from deile_bot.foundation.agent_bridge import (AgentBridge, AgentInvocation,
+    from deilebot._testing import FakeAgentMetaProvider, FakeProviderAdapter
+    from deilebot.foundation.agent_bridge import (AgentBridge, AgentInvocation,
                                                     AgentResponse)
-    from deile_bot.foundation.audit import BotAuditLogger
-    from deile_bot.foundation.capabilities import CapabilityCatalog
-    from deile_bot.foundation.dlq import DeadLetterQueue
-    from deile_bot.foundation.event_bus import BotEventBus
-    from deile_bot.foundation.identity import IdentityResolver
-    from deile_bot.foundation.intent import HeuristicIntentClassifier
-    from deile_bot.foundation.metrics import MetricsCollector
-    from deile_bot.foundation.output_formatter import PlainTextFormatter
-    from deile_bot.foundation.permissions import PermissionGate
-    from deile_bot.foundation.persona_selector import PersonaSelector
-    from deile_bot.foundation.pipeline import EgressPipeline, IngressPipeline
-    from deile_bot.foundation.rate_limit import RateLimiter
-    from deile_bot.foundation.settings import BotSettings
+    from deilebot.foundation.audit import BotAuditLogger
+    from deilebot.foundation.capabilities import CapabilityCatalog
+    from deilebot.foundation.dlq import DeadLetterQueue
+    from deilebot.foundation.event_bus import BotEventBus
+    from deilebot.foundation.identity import IdentityResolver
+    from deilebot.foundation.intent import HeuristicIntentClassifier
+    from deilebot.foundation.metrics import MetricsCollector
+    from deilebot.foundation.output_formatter import PlainTextFormatter
+    from deilebot.foundation.permissions import PermissionGate
+    from deilebot.foundation.persona_selector import PersonaSelector
+    from deilebot.foundation.pipeline import EgressPipeline, IngressPipeline
+    from deilebot.foundation.rate_limit import RateLimiter
+    from deilebot.foundation.settings import BotSettings
 
     from deile.common.markup_ast import MarkupAST
 
@@ -116,7 +116,7 @@ async def _make_pipeline(store, agent, *, settings=None):
                     if hasattr(response, "metadata") else "",
             )
 
-    from deile_bot.foundation.settings import get_bot_settings
+    from deilebot.foundation.settings import get_bot_settings
     s = settings or get_bot_settings()
     identity = IdentityResolver(store)
     perms = PermissionGate(s, identity)
@@ -161,7 +161,7 @@ def _dm_envelope(text: str, user_id: str = "test-user-001") -> "MessageEnvelope"
     from datetime import datetime, timezone
     from types import MappingProxyType
     from deile.common.markup_ast import MarkupAST
-    from deile_bot.foundation.envelope import (BotUser, Channel, ChannelScope, MessageEnvelope)
+    from deilebot.foundation.envelope import (BotUser, Channel, ChannelScope, MessageEnvelope)
 
     return MessageEnvelope(
         message_id=f"msg-{int(time.time()*1000)}",
@@ -188,11 +188,11 @@ def _group_envelope(text: str, *, mention_bot_id: str = "", user_id: str = "test
     from datetime import datetime, timezone
     from types import MappingProxyType
     from deile.common.markup_ast import MarkupAST
-    from deile_bot.foundation.envelope import (BotUser, Channel, ChannelScope, MessageEnvelope)
+    from deilebot.foundation.envelope import (BotUser, Channel, ChannelScope, MessageEnvelope)
 
     mentions = ()
     if mention_bot_id:
-        from deile_bot.foundation.envelope import BotUser as _BU
+        from deilebot.foundation.envelope import BotUser as _BU
         mentions = (_BU(bot_user_id=mention_bot_id, provider="fake",
                         provider_user_id=mention_bot_id, display_name="DEILE"),)
 
@@ -222,7 +222,7 @@ def _slash_envelope(text: str, user_id: str = "test-user-001") -> "MessageEnvelo
     from datetime import datetime, timezone
     from types import MappingProxyType
     from deile.common.markup_ast import MarkupAST
-    from deile_bot.foundation.envelope import (BotUser, Channel, ChannelScope, MessageEnvelope)
+    from deilebot.foundation.envelope import (BotUser, Channel, ChannelScope, MessageEnvelope)
 
     return MessageEnvelope(
         message_id=f"slash-{int(time.time()*1000)}",
@@ -325,7 +325,7 @@ async def run_06_persona_dm_is_discord_developer(pipeline, adapter, bridge):
     from datetime import datetime, timezone
     from types import MappingProxyType
     from deile.common.markup_ast import MarkupAST
-    from deile_bot.foundation.envelope import BotUser, Channel, ChannelScope, MessageEnvelope
+    from deilebot.foundation.envelope import BotUser, Channel, ChannelScope, MessageEnvelope
 
     uid = "user-persona-006"
     env = MessageEnvelope(
@@ -371,7 +371,7 @@ async def run_07_rate_limit_burst(pipeline, adapter):
     envs = [_dm_envelope(f"burst {i}", user_id=uid) for i in range(20)]
     await asyncio.gather(*(pipeline.handle(e, adapter) for e in envs))
     responses = len(adapter.inbox)
-    burst = 5  # matches foundation.rate_limit_user_burst in config/deile_bot.yaml
+    burst = 5  # matches foundation.rate_limit_user_burst in config/deilebot.yaml
     # Allow slightly above burst (global semaphore, timing jitter) but not 20.
     ok = responses <= burst + 3
     _report("T07 rate limit burst (concurrent)", ok,
@@ -394,10 +394,10 @@ async def run_08_empty_message_ignored(pipeline, adapter):
 
 async def run_09_permission_blocklist(pipeline, adapter):
     """Blocklisted user → pipeline denies without invoking agent."""
-    from deile_bot.foundation.settings import BotSettings, PermissionsSettings
+    from deilebot.foundation.settings import BotSettings, PermissionsSettings
     # We'll use a temporary pipeline with a blocklist
     import tempfile
-    from deile_bot.foundation.conversation_store import ConversationStore
+    from deilebot.foundation.conversation_store import ConversationStore
 
     adapter.inbox.clear()
     blocked_uid = "blocked-user-999"
@@ -439,10 +439,10 @@ async def run_10_multi_user_no_leak(pipeline, adapter, bridge):
 
 async def _run_all():
     import tempfile
-    from deile_bot.foundation.conversation_store import ConversationStore
+    from deilebot.foundation.conversation_store import ConversationStore
 
     print("\n════════════════════════════════════════════")
-    print("  deile-bot LIVE pipeline tests")
+    print("  deilebot LIVE pipeline tests")
     print("════════════════════════════════════════════\n")
 
     print("▶ Bootstrapping agent...")
@@ -455,7 +455,7 @@ async def _run_all():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         store_path = Path(tmpdir) / "test.sqlite"
-        from deile_bot.foundation.conversation_store import ConversationStore
+        from deilebot.foundation.conversation_store import ConversationStore
         store = ConversationStore(store_path)
         await store.init()
 

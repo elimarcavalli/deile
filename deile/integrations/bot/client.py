@@ -1,7 +1,7 @@
-"""Lazy facade around `deile_bot_client.BotControlClient`.
+"""Lazy facade around `deilebot.BotControlClient`.
 
 Why a facade and not a direct import:
-- `deile-bot-client` is an *optional* dependency. If missing, importing
+- `deilebot` is an *optional* dependency. If missing, importing
   this module must NOT raise — it just reports BOT_CLIENT_AVAILABLE = False
   and the messaging tools auto-skip registration.
 - We want a single shared client across tools (connection pool reuse).
@@ -18,9 +18,9 @@ from .config import BotIntegrationSettings, get_bot_settings
 logger = logging.getLogger(__name__)
 
 try:  # pragma: no cover - import-time branch
-    from deile_bot_client import BotControlClient  # type: ignore
-    from deile_bot_client import BotControlSettings
-    from deile_bot_client.errors import (  # type: ignore  # noqa: F401
+    from deilebot import BotControlClient  # type: ignore
+    from deilebot import BotControlSettings
+    from deilebot.errors import (  # type: ignore  # noqa: F401
         BotClientAuthError, BotClientError, BotClientNotReady,
         BotClientRateLimited, BotClientTimeoutError, BotClientUpstreamError)
 
@@ -63,7 +63,7 @@ class BotClientFacade:
     def _ensure_client(self):
         if not BOT_CLIENT_AVAILABLE:
             raise RuntimeError(
-                "deile-bot-client is not installed; install with `pip install deile[bot]`"
+                "deilebot is not installed; install with `pip install deile[bot]`"
             )
         if not self._settings.is_configured:
             raise RuntimeError(

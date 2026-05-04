@@ -69,10 +69,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Outbound mensageria via deile-bot daemon (control-plane HTTP).
-# Adicione as deps adicionais do bot via pip install deile-bot[discord] no
-# repositório elimarcavalli/deile-bot — esta extra puxa só o cliente fino.
-bot = ["deile-bot-client>=0.1"]
+# Outbound mensageria via deilebot daemon (control-plane HTTP).
+# Adicione as deps adicionais do bot via pip install deilebot[discord] no
+# repositório elimarcavalli/deilebot — esta extra puxa só o cliente fino.
+bot = ["deilebot @ git+https://github.com/elimarcavalli/deilebot.git@main"]
 scheduler = ["apscheduler>=3.10"]
 webhook = ["fastapi>=0.100", "uvicorn>=0.23"]
 
@@ -81,4 +81,4 @@ deile = "deile.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["deile*"]
-exclude = ["deile_bot*", "deile_bot_client*", "tests*"]
+exclude = ["deilebot*", "tests*"]

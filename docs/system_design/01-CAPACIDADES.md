@@ -56,12 +56,12 @@
 
 ### Mensageria proativa (deile → bot)
 
-DEILE pode **falar ativamente** em canais de mensageria através do daemon `deile-bot` (repo separado: `elimarcavalli/deile-bot`). O fluxo é o inverso do tradicional `bot → agent`: aqui o agente decide enviar a mensagem, e o daemon executa contra o provedor (Discord, hoje).
+DEILE pode **falar ativamente** em canais de mensageria através do daemon `deilebot` (repo separado: `elimarcavalli/deilebot`). O fluxo é o inverso do tradicional `bot → agent`: aqui o agente decide enviar a mensagem, e o daemon executa contra o provedor (Discord, hoje).
 
 | Capacidade | Componente |
 |---|---|
 | Família de tools `messaging.discord_*` | `deile/tools/messaging/` — 7 operações (send_message, send_dm, react, start_thread, pin_message, mention_role, get_user_profile) |
-| Adapter HTTP para o daemon | `deile/integrations/bot/` — wrapper sobre o cliente publicável `deile-bot-client` |
+| Adapter HTTP para o daemon | `deile/integrations/bot/` — wrapper sobre o cliente publicável `deilebot` |
 | Configuração via env | `DEILE_BOT_ENDPOINT` e `DEILE_BOT_AUTH_TOKEN` (ver `.env.example`) |
 | Auto-discovery condicional | Tools só aparecem quando o cliente está instalado E o endpoint está configurado |
 | Aprovação para alto risco | `discord_send_dm` e `discord_mention_role` exigem `ApprovalSystem` antes de executar |

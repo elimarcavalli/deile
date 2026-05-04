@@ -15,7 +15,7 @@ from ._base import MessagingTool
 class DiscordSendDMTool(MessagingTool):
     tool_name = "discord_send_dm"
     description_text = (
-        "Send a Direct Message to a single Discord user via the deile-bot daemon. "
+        "Send a Direct Message to a single Discord user via the deilebot daemon. "
         "Provide either `user_id` (provider snowflake) or `bot_user_id` (DEILE-internal "
         "ULID). Requires explicit approval — a confirmation prompt is raised."
     )
@@ -26,7 +26,7 @@ class DiscordSendDMTool(MessagingTool):
         },
         "bot_user_id": {
             "type": "string",
-            "description": "Internal deile-bot user ULID. Provide this OR user_id, not both.",
+            "description": "Internal deilebot user ULID. Provide this OR user_id, not both.",
         },
         "text": {
             "type": "string",

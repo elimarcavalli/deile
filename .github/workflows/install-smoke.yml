@@ -1,0 +1,34 @@
+name: install-smoke
+on:
+  pull_request:
+    paths:
+      - pyproject.toml
+      - .github/workflows/install-smoke.yml
+  push:
+    branches: [main]
+
+jobs:
+  pip-install-extras:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        extra: ["", "bot"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: pip install in clean venv
+        run: |
+          python -m venv /tmp/v
+          /tmp/v/bin/pip install --upgrade pip
+          if [ "${{ matrix.extra }}" = "" ]; then
+            /tmp/v/bin/pip install -e .
+          else
+            /tmp/v/bin/pip install -e ".[${{ matrix.extra }}]"
+          fi
+          /tmp/v/bin/python -c "import deile; print(deile.__file__)"
+          if [ "${{ matrix.extra }}" = "bot" ]; then
+            /tmp/v/bin/python -c "import deilebot; print(deilebot.__file__)"
+          fi

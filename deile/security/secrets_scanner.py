@@ -106,7 +106,7 @@ class SecretsScanner:
             SecretType.GENERIC_SECRET: [
                 (re.compile(r'secret.*[:=]\s*["\']([^"\']{10,})["\']', re.IGNORECASE), 0.6),
                 (re.compile(r'["\'][A-Za-z0-9_\-]{32,}["\']'), 0.4),  # Generic long strings
-                # deile-bot control-plane Bearer token (env: DEILE_BOT_AUTH_TOKEN
+                # deilebot control-plane Bearer token (env: DEILE_BOT_AUTH_TOKEN
                 # or DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN). High-confidence on the
                 # env-var name; medium on a generic 16+ char value tied to the var.
                 (re.compile(r'DEILE_BOT(?:_CONTROL_PLANE)?_AUTH_TOKEN\s*[:=]\s*["\']?([A-Za-z0-9_\-]{16,})["\']?'), 0.95),

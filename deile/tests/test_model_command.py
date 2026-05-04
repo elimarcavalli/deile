@@ -128,7 +128,7 @@ class TestModelUse:
         ctx.session.context_data = {
             "forced_model": "deepseek:deepseek-v4-pro",
             "model_override_locked": True,
-            "model_override_lock_source": "deile_bot",
+            "model_override_lock_source": "deilebot",
         }
 
         result = await cmd.execute(ctx)
@@ -144,7 +144,7 @@ class TestModelUse:
         ctx.session.context_data = {
             "forced_model": "deepseek:deepseek-v4-pro",
             "model_override_locked": True,
-            "model_override_lock_source": "deile_bot",
+            "model_override_lock_source": "deilebot",
         }
 
         result = await cmd.execute(ctx)
@@ -425,7 +425,7 @@ class TestModelSelect:
         ctx.session.context_data = {
             "forced_model": "deepseek:deepseek-v4-pro",
             "model_override_locked": True,
-            "model_override_lock_source": "deile_bot",
+            "model_override_lock_source": "deilebot",
         }
         result = await cmd.execute(ctx)
         assert result.success is False

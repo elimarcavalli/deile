@@ -1,4 +1,4 @@
-"""Unit tests for `deile_bot_client.BotControlClient`.
+"""Unit tests for `deilebot.BotControlClient`.
 
 We hit a real-but-tiny aiohttp server (the actual control-plane wired
 to a fake adapter) for happy paths and use a stub aiohttp app for the
@@ -13,7 +13,7 @@ from typing import AsyncIterator, Tuple
 
 import pytest
 from aiohttp import web
-from deile_bot_client import (BotClientAuthError, BotClientNotReady,
+from deilebot import (BotClientAuthError, BotClientNotReady,
                               BotClientRateLimited, BotClientTimeoutError,
                               BotClientUpstreamError, BotControlClient,
                               BotControlSettings)

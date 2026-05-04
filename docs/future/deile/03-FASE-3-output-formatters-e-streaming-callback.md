@@ -17,7 +17,7 @@ class MarkdownToASTParser:
     def parse(self, text: str) -> MarkupAST: ...
 ```
 
-`MarkupAST` mora em **`deile/common/markup_ast.py`** (decisão final do `00-MASTER-EXECUTION-PLAN.md` §2.1). A foundation Fase 1 cria o skeleton (DTOs); esta fase 3 do plano DEILE adiciona o `MarkdownToASTParser` (parser de saída do agente) e os parsers de entrada por provider — `parse_discord_markdown`, `parse_telegram_markdown_v2`, `parse_whatsapp_text`. Sem duplicação. Sem `deile_bot/foundation/markup_ast.py`.
+`MarkupAST` mora em **`deile/common/markup_ast.py`** (decisão final do `00-MASTER-EXECUTION-PLAN.md` §2.1). A foundation Fase 1 cria o skeleton (DTOs); esta fase 3 do plano DEILE adiciona o `MarkdownToASTParser` (parser de saída do agente) e os parsers de entrada por provider — `parse_discord_markdown`, `parse_telegram_markdown_v2`, `parse_whatsapp_text`. Sem duplicação. Sem `deilebot/foundation/markup_ast.py`.
 
 Cobertura mínima: bold, italic, strike, code inline, code block (com language), quote, heading 1-3, link, bullet list, numbered list, plain.
 

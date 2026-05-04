@@ -17,8 +17,8 @@ from typing import Any, Mapping
 
 
 async def migrate(source: Path, target_db: Path, *, dry_run: bool = False) -> int:
-    from deile_bot.foundation.conversation_store import ConversationStore
-    from deile_bot.foundation.envelope import (
+    from deilebot.foundation.conversation_store import ConversationStore
+    from deilebot.foundation.envelope import (
         BotUser,
         Channel,
         ChannelScope,
@@ -105,7 +105,7 @@ async def migrate(source: Path, target_db: Path, *, dry_run: bool = False) -> in
 def main(argv: list = None) -> int:
     parser = argparse.ArgumentParser(description="Migrate memory.json to SQLite")
     parser.add_argument("--source", default="archive/discord_bot_legacy/memory.json")
-    parser.add_argument("--target-db", default="data/deile_bot.sqlite")
+    parser.add_argument("--target-db", default="data/deilebot.sqlite")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     return asyncio.run(migrate(Path(args.source), Path(args.target_db), dry_run=args.dry_run))

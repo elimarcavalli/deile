@@ -1,7 +1,7 @@
 """MarkupAST — provider-agnostic representation of formatted text.
 
 Lives in `deile.common` so that both DEILE core (CLI/streaming) and
-`deile_bot.foundation` (provider rendering) import the same types.
+`deilebot.foundation` (provider rendering) import the same types.
 """
 
 from __future__ import annotations

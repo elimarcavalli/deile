@@ -7,11 +7,11 @@
 | Pasta | Tema | Estado | Prioridade |
 |---|---|---|---|
 | [`deile/`](deile/) | Mudanças no agente DEILE para suportar bots como consumidores de primeira classe | planejamento | 🟡 segunda onda |
-| [`deile-bot/foundation/`](deile-bot/foundation/) | Camada provider-agnóstica do `deile_bot/` (memória, identidade, capacidades, bridge com o agente) | planejamento | 🔴 **PRIMEIRO** |
-| [`deile-bot/discord/`](deile-bot/discord/) | Provider adapter para Discord — primeiro bot real | planejamento | 🔴 **FOCO** |
-| [`deile-bot/telegram/`](deile-bot/telegram/) | Provider adapter para Telegram | esboço | 🟢 futuro |
-| [`deile-bot/whatsapp/`](deile-bot/whatsapp/) | Provider adapter para WhatsApp Cloud API (Meta) | esboço | 🟢 futuro |
-| [`deile-bot/meta/`](deile-bot/meta/) | Provider adapters para Messenger e Instagram Direct (Meta Platform) | esboço | 🟢 futuro |
+| [`deilebot/foundation/`](deilebot/foundation/) | Camada provider-agnóstica do `deilebot/` (memória, identidade, capacidades, bridge com o agente) | planejamento | 🔴 **PRIMEIRO** |
+| [`deilebot/discord/`](deilebot/discord/) | Provider adapter para Discord — primeiro bot real | planejamento | 🔴 **FOCO** |
+| [`deilebot/telegram/`](deilebot/telegram/) | Provider adapter para Telegram | esboço | 🟢 futuro |
+| [`deilebot/whatsapp/`](deilebot/whatsapp/) | Provider adapter para WhatsApp Cloud API (Meta) | esboço | 🟢 futuro |
+| [`deilebot/meta/`](deilebot/meta/) | Provider adapters para Messenger e Instagram Direct (Meta Platform) | esboço | 🟢 futuro |
 | [`multi_vibe.md`](multi_vibe.md) | Plano pré-existente — multi-vibe refactor | planejamento | n/a |
 
 ## Por que foundation primeiro
@@ -46,7 +46,7 @@ Regras:
 ## Ordem de execução recomendada
 
 ```
-deile-bot/foundation/  ──►  deile/  ──►  deile-bot/discord/  ──►  (telegram | whatsapp | meta)
+deilebot/foundation/  ──►  deile/  ──►  deilebot/discord/  ──►  (telegram | whatsapp | meta)
         ↑                     ↑                  ↑                            ↑
    bloqueia tudo       bloqueia bridge   primeiro adapter           paralelizáveis depois
 ```
