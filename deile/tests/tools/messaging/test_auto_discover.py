@@ -1,7 +1,7 @@
 """Auto-discovery rules for messaging tools.
 
 Three scenarios:
-  1. deile-bot-client missing       → 0 tools registered, no warning
+  1. deilebot missing       → 0 tools registered, no warning
   2. settings unconfigured          → 0 tools registered
   3. both available + configured    → 7 tools registered
 """
@@ -25,7 +25,7 @@ def _reset(monkeypatch):
 
 
 def test_missing_client_registers_zero(monkeypatch):
-    """Simulate `deile_bot_client` not being installed."""
+    """Simulate `deilebot` not being installed."""
     monkeypatch.setattr("deile.tools.messaging.auto_discover", importlib.import_module(
         "deile.tools.messaging.auto_discover"
     ))

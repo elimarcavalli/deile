@@ -87,7 +87,7 @@ def _trusted_operator_mode() -> bool:
 
 
 class MessagingTool(Tool, abc.ABC):
-    """Base for Discord/messaging tools that go through the deile-bot daemon."""
+    """Base for Discord/messaging tools that go through the deilebot daemon."""
 
     tool_name: str = "messaging.unknown"
     description_text: str = ""
@@ -167,7 +167,7 @@ class MessagingTool(Tool, abc.ABC):
         # 0. integration availability ----------------------------------------
         if not facade.is_available:
             reason = (
-                "deile-bot-client not installed"
+                "deilebot not installed"
                 if not BOT_CLIENT_AVAILABLE
                 else "DEILE_BOT_ENDPOINT/AUTH_TOKEN not configured"
             )
@@ -327,7 +327,7 @@ class MessagingTool(Tool, abc.ABC):
 
         if not BOT_CLIENT_AVAILABLE:
             return ToolResult.error_result(
-                f"deile-bot-client missing: {exc}",
+                f"deilebot missing: {exc}",
                 error=exc,
                 error_code="BOT_INTEGRATION_DISABLED",
             )
@@ -345,7 +345,7 @@ class MessagingTool(Tool, abc.ABC):
             )
         if isinstance(exc, BotClientNotReady):
             return ToolResult.error_result(
-                "deile-bot adapter not ready",
+                "deilebot adapter not ready",
                 error=exc,
                 error_code="BOT_NOT_READY",
             )

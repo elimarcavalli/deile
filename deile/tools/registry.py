@@ -304,7 +304,7 @@ class ToolRegistry:
 
         # Conditional registration of messaging tools (`messaging.discord_*`).
         # The dedicated module decides whether to register based on
-        # `deile-bot-client` availability AND env configuration.
+        # `deilebot` availability AND env configuration.
         try:
             from .messaging.auto_discover import register_messaging_tools
 

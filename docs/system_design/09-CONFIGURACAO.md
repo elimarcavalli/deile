@@ -82,7 +82,7 @@ Configura múltiplas seções tipadas:
 | `OPENAI_API_KEY` | Habilita provider OpenAI |
 | `DEEPSEEK_API_KEY` | Habilita provider DeepSeek |
 | `GOOGLE_API_KEY` | Habilita provider Gemini |
-| `DEILE_BOT_ENDPOINT` | URL do daemon `deile-bot` (control-plane HTTP). Sem isto, tools `messaging.discord_*` não registram |
+| `DEILE_BOT_ENDPOINT` | URL do daemon `deilebot` (control-plane HTTP). Sem isto, tools `messaging.discord_*` não registram |
 | `DEILE_BOT_AUTH_TOKEN` | Bearer token do control-plane do daemon. Mesmo valor configurado nos dois lados |
 | `DEILE_BOT_TIMEOUT_S` | Timeout (segundos) das chamadas do client. Default `10` |
 | `DEILE_BOT_DEFAULT_GUILD_ID` | Guild Discord default (informativo, opcional) |
@@ -96,10 +96,10 @@ Configura múltiplas seções tipadas:
 Para habilitar a mensageria proativa, instale o cliente:
 
 ```bash
-pip install deile[bot]              # instala deile-bot-client (apenas httpx + pydantic)
+pip install deile[bot]              # instala deilebot (apenas httpx + pydantic)
 ```
 
-O daemon em si vive em `elimarcavalli/deile-bot` e tem extras próprios (`discord`, `telegram`, etc.). Ver `deile_bot/pyproject.toml`.
+O daemon em si vive em `elimarcavalli/deilebot` e tem extras próprios (`discord`, `telegram`, etc.). Ver `deilebot/pyproject.toml`.
 
 ## Hot-reload
 

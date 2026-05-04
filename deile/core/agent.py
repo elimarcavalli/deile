@@ -1405,7 +1405,7 @@ class DeileAgent:
         if not hasattr(self, "_session_store") or self._session_store is None:
             try:
                 from deile.core.session_store import SessionStore
-                from deile_bot.foundation.settings import get_bot_settings
+                from deilebot.foundation.settings import get_bot_settings
 
                 bot_settings = get_bot_settings()
                 path = bot_settings.foundation.sessions_sqlite_path

@@ -135,3 +135,12 @@
 |---|---|
 | Instruções | `deile/personas/instructions/*.md` — editar Markdown para ajustar comportamento, não Python |
 | Capacidades e preferências | `deile/personas/library/*.yaml` e `deile/config/persona_config.yaml` |
+
+## 14. Dependências resolvíveis
+
+| Regra | Detalhe |
+|---|---|
+| Toda extra em `pyproject.toml` deve resolver em ambiente limpo | Sem nomes nominais que apontem para pacotes não publicados; usar git URL ou local path |
+| Sem PyPI privado | Não declarar deps que dependam de PyPI privado/credenciado |
+| CI smoke obrigatório | Toda PR que toca `pyproject.toml` ou `[project.optional-dependencies]` deve passar por job que faz `pip install -e ".[<extra>]"` em venv limpo |
+| Doc-instalação consistente | Todo `pip install <X>[Y]` em CLAUDE.md/README precisa corresponder a uma extra que resolve sem intervenção manual |

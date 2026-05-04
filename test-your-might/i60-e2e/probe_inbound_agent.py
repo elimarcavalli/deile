@@ -1,7 +1,7 @@
 """Mimic the daemon's in-process agent flow and ask it to send a DM.
 
 Failure-mode probe for the agent_failed timeout the user saw:
-this script bootstraps the agent the same way `deile_bot/cli.py`
+this script bootstraps the agent the same way `deilebot/cli.py`
 does, then calls `agent.process_input(...)` with the same
 bot_context/persona/extra_system_prompt the bot would inject.
 

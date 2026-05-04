@@ -2,7 +2,7 @@
 
 ## 1. Motivação
 
-`deile_bot/foundation/agent_bridge.py:InProcessAgentBridge` precisa que o `DeileAgent` aceite três coisas que hoje não são contratos públicos:
+`deilebot/foundation/agent_bridge.py:InProcessAgentBridge` precisa que o `DeileAgent` aceite três coisas que hoje não são contratos públicos:
 
 - Sessão com id arbitrário, persistente entre processos (para sobreviver a restart do bot sem perder contexto do usuário).
 - Bloco extra de system prompt por invocation (para injetar capacidades do bot dinamicamente).
@@ -47,7 +47,7 @@ Sem essas mudanças o bot funciona, mas **degradado**: cada turno do usuário é
 
 **Out:**
 
-- Tools novas para uso do bot (ex.: `send_dm`) — vivem em `deile_bot/foundation/tools/` ou no plano discord; não aqui.
+- Tools novas para uso do bot (ex.: `send_dm`) — vivem em `deilebot/foundation/tools/` ou no plano discord; não aqui.
 - UI da CLI mudando — esta entrega não muda nenhum byte da CLI default.
 
 ## 5. Riscos

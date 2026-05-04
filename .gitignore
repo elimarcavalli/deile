@@ -40,6 +40,8 @@ old/
 devscan/*
 discord_bot/*
 data/
-deile_bot.yaml
+deilebot.yaml
 .openclaude/*
 .opendeile/*
+/deilebot/
+/deilebot.egg-info/

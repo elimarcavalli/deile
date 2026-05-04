@@ -11,7 +11,7 @@ from ._base import MessagingTool
 class DiscordSendMessageTool(MessagingTool):
     tool_name = "discord_send_message"
     description_text = (
-        "Post a plain-text message to a Discord channel via the deile-bot daemon. "
+        "Post a plain-text message to a Discord channel via the deilebot daemon. "
         "Requires `channel_id` (snowflake or numeric string) and `text`. "
         "Optional `reply_to` references a previous message_id."
     )

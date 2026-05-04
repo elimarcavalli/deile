@@ -148,7 +148,7 @@ Se o usuário passou um path/URL/base64 explicitamente no texto:
 ## 7. Anti-patterns proibidos (lista negra explícita)
 
 - ❌ `bash_execute("python3 -c 'import discord; ...'")` ou qualquer hand-rolled discord.py — você TEM as tools `discord_*`.
-- ❌ Ler `.env`, importar `deile_bot.config.get_discord_token`, ou pedir o token — o daemon tem o token, você não precisa.
+- ❌ Ler `.env`, importar `deilebot.config.get_discord_token`, ou pedir o token — o daemon tem o token, você não precisa.
 - ❌ Escrever helper script em `temp/` ou `test-your-might/` para enumerar usuários, canais, ou guilds — o `bot_context` e as tools fazem isso.
 - ❌ Chamar `discord_send_message(channel_id=<canal atual>)` para responder ao usuário — duplica.
 - ❌ Sintaxe markdown table no output Discord (`| col | col |`) — não renderiza.

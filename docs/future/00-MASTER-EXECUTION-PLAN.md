@@ -50,21 +50,21 @@
 
 | Nome canônico | Onde vive | O que é |
 |---|---|---|
-| `BotUser` | `deile_bot/foundation/envelope.py` | Identidade de um humano ou bot externo (`bot_user_id` ULID estável) |
-| `Channel` | `deile_bot/foundation/envelope.py` | Canal/grupo/thread/DM normalizado |
-| `ChannelScope` | `deile_bot/foundation/envelope.py` | Enum: `DM`, `GROUP`, `THREAD`, `BROADCAST` |
-| `Attachment` | `deile_bot/foundation/envelope.py` | Anexo polimórfico |
-| `AttachmentKind` | `deile_bot/foundation/envelope.py` | Enum: `IMAGE`, `VIDEO`, `AUDIO`, `FILE`, `STICKER`, `OTHER` |
-| `ReplyContext` | `deile_bot/foundation/envelope.py` | Referência a mensagem respondida |
-| `MessageEnvelope` | `deile_bot/foundation/envelope.py` | DTO **inbound** normalizado |
-| `OutboundEnvelope` | `deile_bot/foundation/envelope.py` | DTO **outbound** com `intent`, `text`, `template`, `interactive`, `attachments`, `reply_to` |
-| `OutboundIntent` | `deile_bot/foundation/envelope.py` | Enum: `FREE_TEXT`, `TEMPLATE` |
-| `TemplateMessage` | `deile_bot/foundation/envelope.py` | DTO de mensagem-template (WhatsApp/Meta) |
-| `ConversationWindow` | `deile_bot/foundation/envelope.py` | DTO opcional: `last_inbound_at`, `window_hours`, `is_open` |
+| `BotUser` | `deilebot/foundation/envelope.py` | Identidade de um humano ou bot externo (`bot_user_id` ULID estável) |
+| `Channel` | `deilebot/foundation/envelope.py` | Canal/grupo/thread/DM normalizado |
+| `ChannelScope` | `deilebot/foundation/envelope.py` | Enum: `DM`, `GROUP`, `THREAD`, `BROADCAST` |
+| `Attachment` | `deilebot/foundation/envelope.py` | Anexo polimórfico |
+| `AttachmentKind` | `deilebot/foundation/envelope.py` | Enum: `IMAGE`, `VIDEO`, `AUDIO`, `FILE`, `STICKER`, `OTHER` |
+| `ReplyContext` | `deilebot/foundation/envelope.py` | Referência a mensagem respondida |
+| `MessageEnvelope` | `deilebot/foundation/envelope.py` | DTO **inbound** normalizado |
+| `OutboundEnvelope` | `deilebot/foundation/envelope.py` | DTO **outbound** com `intent`, `text`, `template`, `interactive`, `attachments`, `reply_to` |
+| `OutboundIntent` | `deilebot/foundation/envelope.py` | Enum: `FREE_TEXT`, `TEMPLATE` |
+| `TemplateMessage` | `deilebot/foundation/envelope.py` | DTO de mensagem-template (WhatsApp/Meta) |
+| `ConversationWindow` | `deilebot/foundation/envelope.py` | DTO opcional: `last_inbound_at`, `window_hours`, `is_open` |
 | `MarkupAST` | **`deile/common/markup_ast.py`** (singleton — DEILE e foundation importam dali) | Lista plana de spans |
 | `MarkupSpan` | mesmo arquivo | Span com `kind`, `text`, `meta` |
 | `SpanKind` | mesmo arquivo | Enum: `PLAIN`, `BOLD`, `ITALIC`, `STRIKE`, `CODE_INLINE`, `CODE_BLOCK`, `QUOTE`, `LINK`, `HEADING`, `BULLET`, `NUMBERED`, `LINE_BREAK` |
-| `InteractiveControls` (plural — abstract) | `deile_bot/foundation/interactive.py` | Marcador para botões/listas/quick replies |
+| `InteractiveControls` (plural — abstract) | `deilebot/foundation/interactive.py` | Marcador para botões/listas/quick replies |
 | `InteractiveButton` | mesmo | Botão (label, callback_data, opt url) |
 | `InteractiveButtonRow` | mesmo | Grupo de botões |
 | `InteractiveList` | mesmo | Lista com seções (WhatsApp/Telegram) |
@@ -75,43 +75,43 @@
 
 | Nome | Onde | Contrato |
 |---|---|---|
-| `ProviderAdapter` | `deile_bot/providers/base.py` | ABC do adapter |
-| `ProviderCapabilities` | `deile_bot/foundation/capabilities.py` | Dataclass com flags |
-| `OutputFormatter` | `deile_bot/foundation/output_formatter.py` | ABC; subclasses por provider em `providers/<x>/formatter.py` |
-| `WebhookRouter` | `deile_bot/runtime/webhook_router.py` | Roteador HTTP central; adapters montam handlers via `register_object_handler(name, fn)` |
-| `WebhookServer` | `deile_bot/runtime/webhook_server.py` | FastAPI server que hospeda o `WebhookRouter` |
-| `AgentMetaProvider` | `deile_bot/foundation/agent_meta.py` | Acesso introspectivo às tools/modelos/personas do DEILE |
-| `IntentClassifier` | `deile_bot/foundation/intent.py` | Protocol; 4 implementações (`heuristic`, `llm`, `always_respond_to_addressed`, `always_respond`) |
-| `BotTool` | `deile_bot/foundation/tools/base.py` | Tool base que extrai `adapter` de `ctx.extra["bot_context"]` |
+| `ProviderAdapter` | `deilebot/providers/base.py` | ABC do adapter |
+| `ProviderCapabilities` | `deilebot/foundation/capabilities.py` | Dataclass com flags |
+| `OutputFormatter` | `deilebot/foundation/output_formatter.py` | ABC; subclasses por provider em `providers/<x>/formatter.py` |
+| `WebhookRouter` | `deilebot/runtime/webhook_router.py` | Roteador HTTP central; adapters montam handlers via `register_object_handler(name, fn)` |
+| `WebhookServer` | `deilebot/runtime/webhook_server.py` | FastAPI server que hospeda o `WebhookRouter` |
+| `AgentMetaProvider` | `deilebot/foundation/agent_meta.py` | Acesso introspectivo às tools/modelos/personas do DEILE |
+| `IntentClassifier` | `deilebot/foundation/intent.py` | Protocol; 4 implementações (`heuristic`, `llm`, `always_respond_to_addressed`, `always_respond`) |
+| `BotTool` | `deilebot/foundation/tools/base.py` | Tool base que extrai `adapter` de `ctx.extra["bot_context"]` |
 
 ### 2.3. Serviços e pipelines
 
 | Nome | Onde | Função |
 |---|---|---|
-| `IdentityResolver` | `deile_bot/foundation/identity.py` | provider+id → `BotUser` |
-| `PermissionGate` | `deile_bot/foundation/permissions.py` | Allowlist/owner/blocklist |
-| `RateLimiter` | `deile_bot/foundation/rate_limit.py` | Token bucket + semáforo |
-| `ConversationStore` | `deile_bot/foundation/conversation_store.py` | SQLite persistência de mensagens |
-| `BotAuditLogger` | `deile_bot/foundation/audit.py` | Wrapper sobre `deile.security.audit_logger` |
-| `AgentBridge` | `deile_bot/foundation/agent_bridge.py` | ABC: `InProcessAgentBridge`, `OneshotSubprocessAgentBridge` |
-| `CapabilityCatalog` | `deile_bot/foundation/capabilities.py` | Snapshot de capacidades para system prompt e `/capabilities` |
-| `PersonaSelector` | `deile_bot/foundation/persona_selector.py` | `(env, user, is_owner) → persona_name` |
-| `BotEventBus` | `deile_bot/foundation/event_bus.py` | Wrap de `deile.events.event_bus` |
-| `MetricsCollector` | `deile_bot/foundation/metrics.py` | Counters/histograms/gauges em memória + emit no event_bus |
-| `DeadLetterQueue` | `deile_bot/foundation/dlq.py` | Fila SQLite de envios falhados |
-| `IngressPipeline` | `deile_bot/foundation/pipeline.py` | 16 passos: inbound → bridge |
-| `EgressPipeline` | `deile_bot/foundation/pipeline.py` | response → render → split → send |
-| `SingleProviderRuntime` | `deile_bot/runtime/single_runtime.py` | Roda 1 adapter |
-| `MultiProviderRuntime` | `deile_bot/runtime/multi_runtime.py` | Roda N adapters compartilhando foundation |
-| `Scheduler` | `deile_bot/runtime/scheduler.py` | Cron jobs YAML-driven |
+| `IdentityResolver` | `deilebot/foundation/identity.py` | provider+id → `BotUser` |
+| `PermissionGate` | `deilebot/foundation/permissions.py` | Allowlist/owner/blocklist |
+| `RateLimiter` | `deilebot/foundation/rate_limit.py` | Token bucket + semáforo |
+| `ConversationStore` | `deilebot/foundation/conversation_store.py` | SQLite persistência de mensagens |
+| `BotAuditLogger` | `deilebot/foundation/audit.py` | Wrapper sobre `deile.security.audit_logger` |
+| `AgentBridge` | `deilebot/foundation/agent_bridge.py` | ABC: `InProcessAgentBridge`, `OneshotSubprocessAgentBridge` |
+| `CapabilityCatalog` | `deilebot/foundation/capabilities.py` | Snapshot de capacidades para system prompt e `/capabilities` |
+| `PersonaSelector` | `deilebot/foundation/persona_selector.py` | `(env, user, is_owner) → persona_name` |
+| `BotEventBus` | `deilebot/foundation/event_bus.py` | Wrap de `deile.events.event_bus` |
+| `MetricsCollector` | `deilebot/foundation/metrics.py` | Counters/histograms/gauges em memória + emit no event_bus |
+| `DeadLetterQueue` | `deilebot/foundation/dlq.py` | Fila SQLite de envios falhados |
+| `IngressPipeline` | `deilebot/foundation/pipeline.py` | 16 passos: inbound → bridge |
+| `EgressPipeline` | `deilebot/foundation/pipeline.py` | response → render → split → send |
+| `SingleProviderRuntime` | `deilebot/runtime/single_runtime.py` | Roda 1 adapter |
+| `MultiProviderRuntime` | `deilebot/runtime/multi_runtime.py` | Roda N adapters compartilhando foundation |
+| `Scheduler` | `deilebot/runtime/scheduler.py` | Cron jobs YAML-driven |
 
 ### 2.4. Persistência — caminhos canônicos
 
 | Arquivo | Conteúdo | Owner |
 |---|---|---|
-| `data/deile_bot.sqlite` | `bot_user`, `channel`, `message`, `attachment`, `dlq`, `audit`, `schema_version` | `ConversationStore` (foundation) |
+| `data/deilebot.sqlite` | `bot_user`, `channel`, `message`, `attachment`, `dlq`, `audit`, `schema_version` | `ConversationStore` (foundation) |
 | `data/deile_sessions.sqlite` | `persisted_session` | `SessionStore` (DEILE) |
-| `data/logs/deile_bot.log` | logs JSON-structured rotativos | `setup_logging` |
+| `data/logs/deilebot.log` | logs JSON-structured rotativos | `setup_logging` |
 
 > Decisão: **dois arquivos SQLite separados** por simetria de ownership (foundation vs DEILE core). Conexões independentes via `aiosqlite`. WAL mode em ambos.
 
@@ -119,16 +119,16 @@
 
 ```bash
 # Forma canônica
-python3 -m deile_bot.cli run --provider discord
-python3 -m deile_bot.cli run --provider telegram --provider whatsapp   # multi
-python3 -m deile_bot.cli dlq list [--provider X]
-python3 -m deile_bot.cli sessions purge --older-than-days N
-python3 -m deile_bot.cli metrics
-python3 -m deile_bot.cli migrate-memory-json --source PATH
-python3 -m deile_bot.cli persona list
+python3 -m deilebot.cli run --provider discord
+python3 -m deilebot.cli run --provider telegram --provider whatsapp   # multi
+python3 -m deilebot.cli dlq list [--provider X]
+python3 -m deilebot.cli sessions purge --older-than-days N
+python3 -m deilebot.cli metrics
+python3 -m deilebot.cli migrate-memory-json --source PATH
+python3 -m deilebot.cli persona list
 ```
 
-`pip install -e .` adiciona console_script `deile-bot` que é alias.
+`pip install -e .` adiciona console_script `deilebot` que é alias.
 
 ### 2.6. session_strategy
 
@@ -170,14 +170,14 @@ Mensagens sintéticas geradas por slash commands ou reaction triggers carregam `
 - [ ] Tokens do `archive/discord_bot_legacy/` rotacionados no Developer Portal
 - [ ] `pytest.ini` registra markers: `e2e`, `e2e_discord_live`, `slow`, `manual`
 - [ ] `pip install -e .` funciona
-- [ ] Branch `deile-bot` ativa e atualizada com main
+- [ ] Branch `deilebot` ativa e atualizada com main
 
 ### M1 — Foundation pronto
 
-- [ ] `pytest deile_bot/tests/foundation/ -v` 100%
-- [ ] Coverage `deile_bot/foundation/` ≥ 88% (unit + e2e)
-- [ ] `pytest -m e2e deile_bot/tests/e2e/ -v` 100%
-- [ ] `grep -r "from deile_bot.providers" deile_bot/foundation/` vazio
+- [ ] `pytest deilebot/tests/foundation/ -v` 100%
+- [ ] Coverage `deilebot/foundation/` ≥ 88% (unit + e2e)
+- [ ] `pytest -m e2e deilebot/tests/e2e/ -v` 100%
+- [ ] `grep -r "from deilebot.providers" deilebot/foundation/` vazio
 - [ ] Revisão cética concluída sem 🔴
 
 ### M2 — DEILE hooks pronto
@@ -207,11 +207,11 @@ Critérios análogos por provider (ver respectivo `05-FASE-E2E.md`).
 
 ### 5.1. Logging estruturado
 
-`deile_bot/foundation/logging.py`:
+`deilebot/foundation/logging.py`:
 
 ```python
 def setup_logging(settings: BotSettings) -> None:
-    """JSON-friendly stdout (handler 0) + RotatingFileHandler em data/logs/deile_bot.log."""
+    """JSON-friendly stdout (handler 0) + RotatingFileHandler em data/logs/deilebot.log."""
 ```
 
 Format por entrada: `{"ts": "ISO8601Z", "level": "INFO", "logger": "...", "event": "outbound_sent", "...": "..."}`. Sem strings interpoladas — sempre `extra={...}` ou `LogRecord` adicional.
@@ -244,7 +244,7 @@ Exporter Prometheus opcional (futuro): `MetricsCollector.to_prometheus_text()`.
 
 ### 5.4. Hot-reload de YAMLs
 
-- `config/deile_bot.yaml`, `config/whatsapp_templates.yaml`, etc. carregados via `ConfigManager` com `watchdog` (já no projeto).
+- `config/deilebot.yaml`, `config/whatsapp_templates.yaml`, etc. carregados via `ConfigManager` com `watchdog` (já no projeto).
 - Mudanças disparam `BotEventBus.publish("bot.config.reloaded", {...})`. Serviços que dependem (PersonaSelector, IntentClassifier) re-bindam.
 
 ### 5.5. Tracing (opcional, futuro)
@@ -299,7 +299,7 @@ all-bots = ["discord.py>=2.3,<3.0", "python-telegram-bot>=20", "httpx>=0.25"]
 
 - [ ] `.env` com `ANTHROPIC_API_KEY` ou outro provider para o agente DEILE
 - [ ] `.env` com `DISCORD_TOKEN`
-- [ ] `config/deile_bot.yaml` preenchido (template em discord/00-PLAN.md §10)
+- [ ] `config/deilebot.yaml` preenchido (template em discord/00-PLAN.md §10)
 - [ ] `config/whatsapp_templates.yaml` (quando entrar M4b)
 
 ## 8. Convenções de commits e PRs
@@ -317,11 +317,11 @@ all-bots = ["discord.py>=2.3,<3.0", "python-telegram-bot>=20", "httpx>=0.25"]
                  ↓
         ┌────────▼────────┐
         │   PR final       │
-        │   "deile-bot v1" │
+        │   "deilebot v1" │
         └─────────────────┘
 ```
 
-Quando todos os marcos checados, abre-se um PR rotulando a release `deile-bot v1`. Esse PR é a gate final de revisão pelo operador humano.
+Quando todos os marcos checados, abre-se um PR rotulando a release `deilebot v1`. Esse PR é a gate final de revisão pelo operador humano.
 
 ## 10. Coverage matrix — decisões críticas vs cenário E2E
 
@@ -376,6 +376,6 @@ Esta versão integrou:
 - `session_strategy` configurável documentada.
 - `force_respond` virou contrato oficial.
 - Logging, métricas, secrets, hot-reload — princípios F9-F12.
-- Dois arquivos SQLite separados (`deile_bot.sqlite` e `deile_sessions.sqlite`) — decisão final.
-- CLI canônica `python3 -m deile_bot.cli`.
+- Dois arquivos SQLite separados (`deilebot.sqlite` e `deile_sessions.sqlite`) — decisão final.
+- CLI canônica `python3 -m deilebot.cli`.
 - pyproject extras para deps opcionais por provider.

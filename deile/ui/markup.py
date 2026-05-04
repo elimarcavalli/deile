@@ -1,7 +1,7 @@
 """Markdown → MarkupAST parser for DEILE-side rendering and bot output formatting.
 
 Lives in deile/ui/ but is consumed by both DEILE (CLI/streaming) and
-deile_bot.foundation (provider-agnostic rendering). See master plan §2.1:
+deilebot.foundation (provider-agnostic rendering). See master plan §2.1:
 shared types live in `deile.common.markup_ast`.
 
 This parser is intentionally minimal — it covers the spans we need for bot

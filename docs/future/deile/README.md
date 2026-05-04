@@ -1,6 +1,6 @@
 # `docs/future/deile/` — mudanças no agente DEILE para integração com bots
 
-> Tudo o que `deile_bot/` precisa que o `deile/` (agente) entregue como hook ou contrato. **Não** mudanças cosméticas; só hooks que destravam features do bot.
+> Tudo o que `deilebot/` precisa que o `deile/` (agente) entregue como hook ou contrato. **Não** mudanças cosméticas; só hooks que destravam features do bot.
 
 ## Documentos
 

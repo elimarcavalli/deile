@@ -1,0 +1,45 @@
+name: install-smoke
+on:
+  pull_request:
+    paths:
+      - pyproject.toml
+      - .github/workflows/install-smoke.yml
+  push:
+    branches: [main]
+
+jobs:
+  pip-install-extras:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        extra: ["", "bot"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: pip install in clean venv
+        env:
+          BOT_REPO_TOKEN: ${{ secrets.BOT_REPO_TOKEN }}
+        run: |
+          if [ "${{ matrix.extra }}" = "bot" ] && [ -z "$BOT_REPO_TOKEN" ]; then
+            echo "::error::BOT_REPO_TOKEN secret missing — required for cross-repo clone of private elimarcavalli/deilebot"
+            exit 1
+          fi
+          if [ -n "$BOT_REPO_TOKEN" ]; then
+            git config --global url."https://x-access-token:${BOT_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
+          python -m venv /tmp/v
+          /tmp/v/bin/pip install --upgrade pip
+          if [ "${{ matrix.extra }}" = "" ]; then
+            /tmp/v/bin/pip install -e .
+          else
+            /tmp/v/bin/pip install -e ".[${{ matrix.extra }}]"
+          fi
+          /tmp/v/bin/python -c "import deile; print(deile.__file__)"
+          if [ "${{ matrix.extra }}" = "bot" ]; then
+            /tmp/v/bin/python -c "import deilebot; print(deilebot.__file__)"
+            /tmp/v/bin/python -c "import deilebot_client; print(deilebot_client.__file__)"
+            /tmp/v/bin/python -c "from deile.integrations.bot.client import BOT_CLIENT_AVAILABLE; assert BOT_CLIENT_AVAILABLE, 'BOT_CLIENT_AVAILABLE must be True with both packages installed'"
+          fi

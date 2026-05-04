@@ -6,7 +6,7 @@
 |---|---|---|
 | P1 | Mudanças retro-compatíveis | 🟢 CLI default não mudou; smoke `python3 deile.py "olá"` funciona; AgentSession.persisted default False; process_input_structured/stream_chunks são métodos novos opt-in |
 | P2 | Hooks opt-in | 🟢 extra_system_prompt e bot_context são kwargs opcionais; ausência == comportamento default |
-| P3 | Persistência reusa storage existente | 🟢 SessionStore usa aiosqlite + WAL; mesmo padrão de `deile_bot/foundation/conversation_store.py` |
+| P3 | Persistência reusa storage existente | 🟢 SessionStore usa aiosqlite + WAL; mesmo padrão de `deilebot/foundation/conversation_store.py` |
 | P4 | Streaming usa feature/streaming-ui | 🟢 process_input_stream_chunks adapta UnifiedStreamEvent existente |
 | P5 | Tools recebem bot_context via ToolContext.extra | 🟢 ToolContext.extra adicionado; agent populador no _execute_tools_legacy |
 
@@ -31,7 +31,7 @@ total:                                        49 testes (todos verdes)
 
 | # | Critério | Status |
 |---|---|---|
-| 1 | CLI atual continua funcionando idêntica | 🟢 smoke ok; nenhum import obrigatório de deile_bot no caminho default |
+| 1 | CLI atual continua funcionando idêntica | 🟢 smoke ok; nenhum import obrigatório de deilebot no caminho default |
 | 2 | tests adicionados cobrem ≥85% das mudanças | 🟢 49 testes cobrem session_store, agent hooks, parser, structured, stream chunks |
 | 3 | Sessão persistente sobrevive entre processos | 🟢 test_bot_hooks_e2e.py::test_session_survives_close_and_reopen |
 | 4 | extra_system_prompt aparece no prompt | 🟢 test_extra_system_prompt.py + _merge_bot_extra em context_manager |

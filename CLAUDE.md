@@ -63,7 +63,19 @@ Entry point: `python3 deile.py` (CLI shell in `DeileAgentCLI`; all logic lives i
 ## Gotchas (not in the system design)
 
 - **At least one provider API key is required at startup** — the agent exits if none are set. Configure any of: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, or `GOOGLE_API_KEY` in `.env` (loaded via `python-dotenv`). The `bootstrap_providers()` function in `deile/core/models/bootstrap.py` handles conditional registration.
-- **`deile-bot` lives in a separate repo** (`elimarcavalli/deile-bot`). The `deile_bot/` directory you may see locally is that repo nested as a working tree (its own `.git`); this `deile` repo no longer ships the daemon. To enable the proactive messaging tools (`messaging.discord_*`), install the thin client extra: `pip install deile[bot]` and configure `DEILE_BOT_ENDPOINT` + `DEILE_BOT_AUTH_TOKEN` (see `.env.example`). Tools auto-register only when both the client is installed and both env vars are set.
+- **`deilebot` lives in a separate repo** (`elimarcavalli/deilebot`). DEILE consumes it via two modalities — pick the one that fits:
+
+  **Cloud / CI / fresh laptop (one-liner):** `pip install -e ".[bot]"` — the `bot` extra resolves `deilebot` directly from GitHub via git URL (no PyPI).
+
+  **Dev local (recommended for hacking on the bot itself):**
+  ```bash
+  git clone https://github.com/elimarcavalli/deilebot.git
+  pip install -e ./deilebot
+  pip install -e .
+  ```
+  Pip detects `deilebot` already installed and ignores the extra. The `deilebot/` folder is gitignored.
+
+  **Both cases:** configure `DEILE_BOT_ENDPOINT` + `DEILE_BOT_AUTH_TOKEN` (see `.env.example`). The `messaging.discord_*` tools auto-register only when `import deilebot` succeeds and both env vars are set.
 - **If you're touching messaging tools**, open [`08-SEGURANCA.md`](docs/system_design/08-SEGURANCA.md) **before** writing code — DM and role-mention tools are gated by `ApprovalSystem` by design and changes to that gate are non-trivial.
 - **Two `config/` directories**: `./config/` (runtime YAML/JSON) vs `./deile/config/` (package code + `settings.py` + YAML configs like `intent_patterns.yaml`). Don't conflate.
 - **`deile/tests/` mixes two kinds of tests**:

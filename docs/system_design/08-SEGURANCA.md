@@ -43,14 +43,14 @@
 
 ### Padrões cobertos
 
-Além das chaves de cloud/SCM tradicionais (AWS, GitHub, Slack, RSA…), o scanner detecta tokens da integração com o daemon `deile-bot`:
+Além das chaves de cloud/SCM tradicionais (AWS, GitHub, Slack, RSA…), o scanner detecta tokens da integração com o daemon `deilebot`:
 
 | Token | Pattern (resumo) |
 |---|---|
 | `DEILE_BOT_AUTH_TOKEN` / `DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN` | `DEILE_BOT(_CONTROL_PLANE)?_AUTH_TOKEN\s*=\s*[A-Za-z0-9_-]{16,}` |
 | Token de bot Discord | `(?:DISCORD\|DEILE_BOT_DISCORD)_TOKEN\s*=\s*xxx.yyy.zzz` (3 segmentos `.`-separados) |
 
-## Mensageria proativa (deile → deile-bot)
+## Mensageria proativa (deile → deilebot)
 
 | Aspecto | Detalhe |
 |---|---|

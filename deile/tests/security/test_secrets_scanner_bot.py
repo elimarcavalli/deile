@@ -5,7 +5,7 @@ from __future__ import annotations
 from deile.security.secrets_scanner import SecretsScanner, SecretType
 
 
-def test_detects_deile_bot_auth_token():
+def test_detects_deilebot_auth_token():
     scanner = SecretsScanner()
     sample = 'DEILE_BOT_AUTH_TOKEN=dgheQk3lJYkTzv-2_OcK9aB-ZxkkJpKLm12345'
     matches = scanner.scan_text(sample)
@@ -31,6 +31,6 @@ def test_ignores_unrelated_lines():
     sample = 'just_a_message=hello world'
     matches = scanner.scan_text(sample)
     # The generic credit-card / aws / etc. patterns should not fire on plain
-    # text like this. We only assert we don't flag a deile_bot auth token.
+    # text like this. We only assert we don't flag a deilebot auth token.
     relevant = [m for m in matches if "DEILE_BOT" in m.matched_text]
     assert relevant == []

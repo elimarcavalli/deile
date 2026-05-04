@@ -1,4 +1,4 @@
-"""Settings for the deile→deile-bot integration.
+"""Settings for the deile→deilebot integration.
 
 Loaded from env (DEILE_BOT_*) or .env. The token is treated as a secret
 — `__repr__` masks it.
@@ -19,7 +19,7 @@ except ImportError:  # pragma: no cover
 
 
 class BotIntegrationSettings(BaseSettings):
-    """Configuration for the deile→deile-bot daemon link.
+    """Configuration for the deile→deilebot daemon link.
 
     `endpoint` and `auth_token` are required for messaging tools to
     register. `default_guild_id` is informational (used as a hint by

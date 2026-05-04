@@ -4,7 +4,7 @@ The standard `ToolRegistry.auto_discover()` is a one-line call: it
 imports a module and grabs every concrete `Tool` subclass. That's wrong
 for messaging tools, because the tools should *only* register when:
 
-  1. `deile-bot-client` is installed, AND
+  1. `deilebot` is installed, AND
   2. `DEILE_BOT_ENDPOINT` and `DEILE_BOT_AUTH_TOKEN` are configured.
 
 Otherwise the LLM would see (and call) tools that immediately fail at
@@ -47,7 +47,7 @@ def register_messaging_tools(registry: "ToolRegistry") -> int:
     from ...integrations.bot import BOT_CLIENT_AVAILABLE, get_bot_settings
 
     if not BOT_CLIENT_AVAILABLE:
-        logger.debug("messaging tools skipped: deile-bot-client not installed")
+        logger.debug("messaging tools skipped: deilebot not installed")
         return 0
 
     settings = get_bot_settings()
@@ -56,7 +56,7 @@ def register_messaging_tools(registry: "ToolRegistry") -> int:
         return 0
 
     # Lazy imports — keep them inside the conditional so absence of
-    # deile_bot_client never breaks the deile import chain.
+    # deilebot never breaks the deile import chain.
     from . import (DiscordGetUserProfileTool, DiscordMentionRoleTool,
                    DiscordPinMessageTool, DiscordReactTool, DiscordSendDMTool,
                    DiscordSendMessageTool, DiscordStartThreadTool)
