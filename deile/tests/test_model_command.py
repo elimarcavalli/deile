@@ -347,10 +347,41 @@ class TestModelSelect:
         cmd = ModelCommand(selector=sel)
         result = await cmd.execute(_make_context("select"))
         assert result.success is True
-        # Falls back to the same content as /model list (a Rich Table).
+        # Falls back to the same content as /model list (a Rich Table) but
+        # tags the fallback so callers can distinguish the path and the user
+        # gets a caption explaining why interactive mode is unavailable.
         from rich.table import Table
         assert isinstance(result.content, Table)
+        assert result.content.caption is not None
+        assert "no TTY" in str(result.content.caption)
+        assert result.metadata.get("interactive_unavailable") is True
         assert sel.calls == []
+
+    @pytest.mark.asyncio
+    async def test_select_falls_back_when_adapter_raises_not_supported(self):
+        from deile.core.interfaces.selector import SelectorNotSupported
+
+        class _RaisingSelector(_StubSelector):
+            async def select(self, options, *, prompt="", default_index=0):
+                raise SelectorNotSupported("legacy console")
+
+        sel = _RaisingSelector(supported=True, choice=None)
+        cmd = ModelCommand(selector=sel)
+        result = await cmd.execute(_make_context("select"))
+        assert result.success is True
+        assert result.metadata.get("interactive_unavailable") is True
+
+    @pytest.mark.asyncio
+    async def test_select_warns_when_forced_model_not_in_catalog(self):
+        sel = _StubSelector(supported=True, choice=None)
+        cmd = ModelCommand(selector=sel)
+        ctx = _make_context("select")
+        ctx.session.context_data = {"forced_model": "ghost:nonexistent-model"}
+        await cmd.execute(ctx)
+        assert sel.calls[0]["default_index"] == 0
+        assert "no longer in the catalog" in sel.calls[0]["prompt"]
+        # No row carries the (current) marker because the forced model isn't there.
+        assert all("(current)" not in opt.label for opt in sel.calls[0]["options"])
 
     @pytest.mark.asyncio
     async def test_select_returns_cancelled_when_user_escapes(self):

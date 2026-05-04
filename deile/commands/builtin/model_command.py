@@ -159,8 +159,8 @@ EXAMPLES:
             )
 
         selector = self._resolve_selector()
-        if selector is None or not selector.is_supported():
-            return await self._list(context)
+        if not selector.is_supported():
+            return await self._list_with_fallback_hint(context)
 
         yaml_path = Path(__file__).parents[2] / "config" / "model_providers.yaml"
         catalog = ModelCatalog.from_yaml(yaml_path)
@@ -169,11 +169,13 @@ EXAMPLES:
 
         options: List[SelectorOption] = []
         default_index = 0
+        forced_found = False
         for idx, h in enumerate(handles):
             key = f"{h.provider_id}:{h.model_id}"
             label = f"{key}"
             if forced == key:
                 default_index = idx
+                forced_found = True
                 label = f"{key}  (current)"
             description = (
                 f"tier={h.tier.value}  in=${h.pricing.input_per_1m_usd:.2f}/1M  "
@@ -196,14 +198,22 @@ EXAMPLES:
                 ),
             )
 
+        if forced and not forced_found:
+            prompt = (
+                f"Select a model (previous '{forced}' is no longer in the catalog) "
+                "— ↑↓ navigate, Enter confirm, ESC cancel, type to filter"
+            )
+        else:
+            prompt = "Select a model (↑↓ navigate, Enter confirm, ESC cancel, type to filter)"
+
         try:
             choice = await selector.select(
                 options,
-                prompt="Select a model (↑↓ navigate, Enter confirm, ESC cancel, type to filter)",
+                prompt=prompt,
                 default_index=default_index,
             )
         except SelectorNotSupported:
-            return await self._list(context)
+            return await self._list_with_fallback_hint(context)
 
         if choice is None:
             return CommandResult(
@@ -218,15 +228,21 @@ EXAMPLES:
 
         return await self._use(str(choice.value), context)
 
-    def _resolve_selector(self) -> Optional[InteractiveSelector]:
+    def _resolve_selector(self) -> InteractiveSelector:
         if self._selector is not None:
             return self._selector
-        try:
-            from deile.infrastructure.selectors import get_default_selector
-        except ImportError as exc:
-            logger.debug("Default selector unavailable: %s", exc)
-            return None
+        from deile.infrastructure.selectors import get_default_selector
         return get_default_selector()
+
+    async def _list_with_fallback_hint(self, context: CommandContext) -> CommandResult:
+        result = await self._list(context)
+        result.metadata = {**(result.metadata or {}), "interactive_unavailable": True}
+        if isinstance(result.content, Table):
+            result.content.caption = (
+                "[dim yellow]Interactive picker unavailable (no TTY) — "
+                "use /model use <provider>:<model_id> to switch.[/dim yellow]"
+            )
+        return result
 
     # ------------------------------------------------------------------
     # /model current

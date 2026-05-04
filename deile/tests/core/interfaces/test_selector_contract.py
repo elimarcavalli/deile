@@ -8,7 +8,6 @@ import pytest
 
 from deile.core.exceptions import DEILEError
 from deile.core.interfaces.selector import (InteractiveSelector,
-                                            SelectorCancelled,
                                             SelectorNotSupported,
                                             SelectorOption)
 
@@ -33,9 +32,6 @@ class TestSelectorOption:
 
 
 class TestSelectorExceptions:
-    def test_cancelled_inherits_from_deile_error(self):
-        assert issubclass(SelectorCancelled, DEILEError)
-
     def test_not_supported_inherits_from_deile_error(self):
         assert issubclass(SelectorNotSupported, DEILEError)
 

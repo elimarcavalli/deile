@@ -35,15 +35,6 @@ class SelectorOption:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
-class SelectorCancelled(DEILEError):
-    """Raised by adapters that opt to signal cancellation as an exception.
-
-    Adapters MAY also return ``None`` from :meth:`InteractiveSelector.select`
-    to indicate cancellation; consumers should accept both. This exception is
-    intended for code paths that want a hard stop instead of a sentinel.
-    """
-
-
 class SelectorNotSupported(DEILEError):
     """Raised when the runtime environment cannot host an interactive selector.
 
@@ -95,8 +86,7 @@ class InteractiveSelector(ABC):
 
         Returns:
             The chosen :class:`SelectorOption`, or ``None`` if the user
-            cancelled (ESC). Implementations MAY raise :class:`SelectorCancelled`
-            instead of returning ``None`` if that suits their flow.
+            cancelled (ESC).
 
         Raises:
             ValueError: If ``options`` is empty.

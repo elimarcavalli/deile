@@ -7,7 +7,6 @@ Single-select only.
 
 from __future__ import annotations
 
-import logging
 import sys
 from typing import List, Optional, Sequence
 
@@ -21,9 +20,6 @@ from prompt_toolkit.styles import Style
 
 from ...core.interfaces.selector import (InteractiveSelector,
                                          SelectorNotSupported, SelectorOption)
-
-logger = logging.getLogger(__name__)
-
 
 _STYLE = Style.from_dict(
     {
@@ -91,7 +87,19 @@ class PromptToolkitSelector(InteractiveSelector):
         )
         state.app = app
 
-        result = await app.run_async()
+        try:
+            try:
+                result = await app.run_async()
+            except (OSError, RuntimeError) as exc:
+                # Legacy Windows console (cmd.exe without VT) and other
+                # non-interactive terminals raise here even after isatty()
+                # said yes. Map to the documented contract so consumers'
+                # SelectorNotSupported handler still fires.
+                raise SelectorNotSupported(
+                    f"prompt_toolkit could not initialise the picker: {exc}"
+                ) from exc
+        finally:
+            state.app = None
         return result if isinstance(result, SelectorOption) else None
 
     @staticmethod
@@ -138,6 +146,9 @@ class PromptToolkitSelector(InteractiveSelector):
         def _(event):
             event.app.exit(result=None)
 
+        # Ctrl+C cancels the picker (treated as ESC) instead of propagating
+        # KeyboardInterrupt to the parent CLI — the user almost always means
+        # "back out of this menu", not "kill the agent".
         @kb.add("c-c")
         def _(event):
             event.app.exit(result=None)
@@ -231,12 +242,6 @@ class _SelectorState:
         return None
 
 
-_default_selector: Optional[PromptToolkitSelector] = None
-
-
 def get_default_selector() -> PromptToolkitSelector:
-    """Return the process-wide default selector instance."""
-    global _default_selector
-    if _default_selector is None:
-        _default_selector = PromptToolkitSelector()
-    return _default_selector
+    """Return a fresh default selector. The adapter is stateless."""
+    return PromptToolkitSelector()

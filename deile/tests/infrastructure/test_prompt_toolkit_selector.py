@@ -8,7 +8,6 @@ narrow asserts on :meth:`PromptToolkitSelector.is_supported`. Driving a real
 
 from __future__ import annotations
 
-from typing import Optional, Sequence
 from unittest.mock import patch
 
 import pytest
@@ -168,32 +167,74 @@ class TestPromptToolkitSelectorSelect:
 
 
 class TestGetDefaultSelector:
-    def test_returns_singleton_instance(self):
-        a = get_default_selector()
-        b = get_default_selector()
-        assert a is b
-        assert isinstance(a, InteractiveSelector)
+    def test_returns_a_prompt_toolkit_selector(self):
+        sel = get_default_selector()
+        assert isinstance(sel, InteractiveSelector)
+        assert isinstance(sel, PromptToolkitSelector)
 
 
-class _RecordingSelector(InteractiveSelector):
-    """Selector that returns a preconfigured option without any I/O."""
+class TestRender:
+    def test_render_includes_prompt_and_rows(self):
+        opts = _make_options(3)
+        state = _SelectorState(options=opts, cursor=1)
+        rendered = PromptToolkitSelector._render("Pick one", state)
+        flat = "".join(text for _, text in rendered)
+        assert "Pick one" in flat
+        assert "item-0" in flat and "item-1" in flat and "item-2" in flat
+        # The cursor row carries the selection marker.
+        assert "▶ item-1" in flat
 
-    def __init__(self, supported: bool, choice: Optional[SelectorOption]):
-        self._supported = supported
-        self._choice = choice
-        self.calls: list[dict] = []
+    def test_render_empty_state_when_filter_matches_nothing(self):
+        state = _SelectorState(options=_make_options(3), cursor=0)
+        state.set_filter("zzz-no-match")
+        rendered = PromptToolkitSelector._render("Pick one", state)
+        flat = "".join(text for _, text in rendered)
+        assert "(no matches)" in flat
+        assert "filter: zzz-no-match" in flat
 
-    def is_supported(self) -> bool:
-        return self._supported
+    def test_render_includes_description_when_present(self):
+        opts = [SelectorOption(label="row", value=1, description="hello world")]
+        state = _SelectorState(options=opts, cursor=0)
+        rendered = PromptToolkitSelector._render("p", state)
+        flat = "".join(text for _, text in rendered)
+        assert "hello world" in flat
 
-    async def select(
-        self,
-        options: Sequence[SelectorOption],
-        *,
-        prompt: str = "Select an option",
-        default_index: int = 0,
-    ) -> Optional[SelectorOption]:
-        self.calls.append(
-            {"options": list(options), "prompt": prompt, "default_index": default_index}
-        )
-        return self._choice
+    def test_render_footer_shows_counts_and_hint(self):
+        state = _SelectorState(options=_make_options(5), cursor=0)
+        state.set_filter("item-1")  # filters down to 1
+        footer = PromptToolkitSelector._render_footer(state)
+        flat = "".join(text for _, text in footer)
+        assert "1/5" in flat
+        assert "ESC cancel" in flat
+
+
+class TestSelectMapsTerminalErrorToNotSupported:
+    @pytest.mark.asyncio
+    async def test_runtime_error_from_app_is_mapped(self):
+        sel = PromptToolkitSelector()
+
+        async def _boom(self, *args, **kwargs):
+            raise RuntimeError("no console screen buffer")
+
+        with patch.object(PromptToolkitSelector, "is_supported", return_value=True), \
+             patch(
+                 "deile.infrastructure.selectors.prompt_toolkit_selector.Application.run_async",
+                 _boom,
+             ):
+            with pytest.raises(SelectorNotSupported):
+                await sel.select([SelectorOption(label="x", value=1)])
+
+    @pytest.mark.asyncio
+    async def test_os_error_from_app_is_mapped(self):
+        sel = PromptToolkitSelector()
+
+        async def _boom(self, *args, **kwargs):
+            raise OSError("redirected stdin")
+
+        with patch.object(PromptToolkitSelector, "is_supported", return_value=True), \
+             patch(
+                 "deile.infrastructure.selectors.prompt_toolkit_selector.Application.run_async",
+                 _boom,
+             ):
+            with pytest.raises(SelectorNotSupported):
+                await sel.select([SelectorOption(label="x", value=1)])
