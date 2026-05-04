@@ -57,30 +57,59 @@ def test_plugin_sandbox_docstring_marks_skeleton():
 
 @pytest.mark.security
 def test_plugin_manager_does_not_invoke_plugin_sandbox():
-    """Issue #54: PluginManager source must not import or call PluginSandbox.
+    """Issue #54: PluginManager must not import or call PluginSandbox.
 
     The class exists as a skeleton; if a future change wires it into
-    PluginManager, this test should be updated alongside the doc that
-    promises isolation.
+    PluginManager, this test should be updated alongside the docs that
+    promise isolation. We parse the AST so an honest mention of
+    `PluginSandbox` in a docstring (e.g. "PluginSandbox does not isolate")
+    does not count as wiring.
     """
+    import ast
+
     plugin_manager_path = (
         Path(__file__).resolve().parents[2]
         / "plugins"
         / "plugin_manager.py"
     )
-    src = plugin_manager_path.read_text(encoding="utf-8")
+    tree = ast.parse(plugin_manager_path.read_text(encoding="utf-8"))
 
-    assert "PluginSandbox" not in src, (
-        "plugin_manager.py imports/uses PluginSandbox — but PluginSandbox is "
-        "documented as a non-isolating skeleton (issue #54). Either update the "
-        "skeleton docs or remove the wiring; do not silently reintroduce the "
-        "false-isolation drift."
-    )
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = [alias.name for alias in node.names]
+            module = getattr(node, "module", "") or ""
+            assert "PluginSandbox" not in names, (
+                "plugin_manager.py imports PluginSandbox — issue #54 forbids "
+                "wiring without first updating the docs that call it a skeleton."
+            )
+            assert "sandbox" not in module.split("."), (
+                "plugin_manager.py imports from .sandbox — issue #54."
+            )
+        if isinstance(node, ast.Name) and node.id == "PluginSandbox":
+            raise AssertionError(
+                "plugin_manager.py references the PluginSandbox name in code — "
+                "issue #54 forbids wiring without updating the skeleton docs."
+            )
+        if isinstance(node, ast.Attribute) and node.attr == "PluginSandbox":
+            raise AssertionError(
+                "plugin_manager.py references PluginSandbox via attribute access "
+                "— issue #54 forbids wiring without updating the skeleton docs."
+            )
 
 
 @pytest.mark.security
 def test_safety_sandbox_is_gone():
-    """Issue #56: SafetySandbox stub removed; module must not be importable."""
+    """Issue #56: SafetySandbox stub removed; module must not exist or import."""
+    safety_sandbox_path = (
+        Path(__file__).resolve().parents[2]
+        / "evolution"
+        / "safety_sandbox.py"
+    )
+    assert not safety_sandbox_path.exists(), (
+        "deile/evolution/safety_sandbox.py reappeared — issue #56 stub must "
+        "stay deleted."
+    )
+
     with pytest.raises(ImportError):
         import deile.evolution.safety_sandbox  # noqa: F401
 

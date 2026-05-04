@@ -3,7 +3,7 @@
 Sistema de auto-melhoria baseado nas práticas mais avançadas de 2025:
 - Self-analysis contínuo de performance
 - Autonomous code modification
-- Improvement loop com validação automática
+- Improvement loop com rollback pós-aplicação (sem validação em sandbox; ver issue #56)
 - Benchmarking e métricas de progresso
 - Rollback automático de melhorias falhadas
 
