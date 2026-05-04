@@ -15,7 +15,7 @@
 | `ToolContext` | dataclass | `user_input`, `parsed_args`, `session_data`, `working_directory`, `file_list`, `metadata` |
 | `ToolResult` | dataclass | `status`, `data`, `message`, `error`, `metadata`, `execution_time`, `display_policy`, `show_cli`, `artifact_path`, `display_data` |
 | `ToolStatus` | enum | `pending`, `running`, `success`, `error`, `cancelled` |
-| `ToolCategory` | enum | `file`, `execution`, `search`, `system`, `analysis`, `network`, `database`, `other` |
+| `ToolCategory` | enum | `file`, `execution`, `search`, `system`, `analysis`, `network`, `database`, `messaging`, `other` |
 | `SecurityLevel` | enum | `safe`, `moderate`, `dangerous` |
 | `DisplayPolicy` | enum | `system`, `agent`, `both`, `silent` |
 | `ShowCliPolicy` | enum | `always`, `parameter`, `never` |
@@ -32,8 +32,9 @@
 |---|---|---|
 | Registro explícito | `register(tool, aliases=None)` | Lança `ToolError` em duplicidade de nome |
 | Helper top-level | `register_tool(tool, aliases=None)` | Função módulo-level que delega ao singleton. **Não** é um decorator |
-| Auto-discovery | `auto_discover(package_names=None)` | Cobre por padrão: `file_tools`, `execution_tools`, `search_tool`, `bash_tool`, `slash_command_executor` |
+| Auto-discovery | `auto_discover(package_names=None)` | Cobre por padrão: `file_tools`, `execution_tools`, `search_tool`, `bash_tool`, `slash_command_executor`. Após o conjunto-padrão, chama `register_messaging_tools()` (registra 7 tools `messaging.discord_*` quando `deile-bot-client` está instalado **e** `DEILE_BOT_ENDPOINT`/`AUTH_TOKEN` configurados) |
 | Demais módulos | `git_tool`, `http_tool`, `lint_tool`, `archive_tool`, `process_tool`, `secrets_tool`, `tokenizer_tool` | Precisam de registro explícito ou descoberta passando o nome do módulo |
+| Tools de mensageria | `deile/tools/messaging/` | Categoria `MESSAGING`. Cada tool herda `MessagingTool` (`_base.py`), que centraliza permission/audit/approval e mapeia erros do `BotControlClient` para `ToolResult.error_result(error_code=...)` tipados |
 | Conversores para LLMs | `get_anthropic_tools(...)`, `get_openai_functions(...)`, `get_gemini_functions(...)` | Geram declarações nativas para function calling |
 
 ## Commands (Slash)

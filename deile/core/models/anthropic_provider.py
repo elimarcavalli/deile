@@ -10,6 +10,11 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import anthropic
 
+from deile.core.loop_guard import (
+    format_loop_break_message,
+    make_guard,
+    tool_result_made_progress,
+)
 from deile.core.models.base import (
     ModelMessage,
     ModelProvider,
@@ -234,6 +239,8 @@ class AnthropicProvider(ModelProvider):
         total_input = total_output = total_cached = 0
         tool_results: List[Any] = []
         final_text = ""
+        guard = make_guard(session_id=str(kwargs.get("session_id", "")) or None)
+        loop_aborted = False
 
         for iteration in range(_MAX_TOOL_ITERATIONS):
             create_kwargs: Dict[str, Any] = {
@@ -300,8 +307,44 @@ class AnthropicProvider(ModelProvider):
             # Execute each tool call and build tool_result turn
             tool_result_content = []
             for block in tool_use_blocks:
+                # Loop guard — see deile.core.loop_guard. We check BEFORE the
+                # tool runs; if the guard trips, replace the would-be tool
+                # invocation with a synthetic error result so the model can
+                # see we refused, append the abort text to final_text, and
+                # break out of the entire iteration loop.
+                abort = guard.check(block.name, dict(block.input or {}))
+                if abort is not None:
+                    abort_msg = abort.user_message()
+                    payload = {"status": "error", "error": abort_msg}
+                    from deile.tools.base import ToolResult as _TR
+                    from deile.tools.base import ToolStatus as _TS
+
+                    tr = _TR(
+                        status=_TS.ERROR,
+                        message=abort_msg,
+                        metadata={
+                            "loop_break": True,
+                            "loop_break_kind": abort.kind.value,
+                            "loop_break_args_hash": abort.args_hash,
+                        },
+                    )
+                    tool_results.append(tr)
+                    tool_result_content.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": [{"type": "text", "text": json.dumps(payload)}],
+                        }
+                    )
+                    final_text = (
+                        (final_text + "\n\n" if final_text else "")
+                        + format_loop_break_message(abort)
+                    )
+                    loop_aborted = True
+                    continue
                 tr, payload = await self._execute_tool(block.name, block.input)
                 tool_results.append(tr)
+                guard.record_result(made_progress=tool_result_made_progress(tr))
                 tool_result_content.append(
                     {
                         "type": "tool_result",
@@ -311,6 +354,8 @@ class AnthropicProvider(ModelProvider):
                 )
 
             anthropic_msgs.append({"role": "user", "content": tool_result_content})
+            if loop_aborted:
+                break
         else:
             logger.warning("AnthropicProvider: tool loop hit max_iterations=%d", _MAX_TOOL_ITERATIONS)
 

@@ -357,10 +357,15 @@ class TestChatWithToolsLoop:
         )
 
         # Always returns a function_call → would loop forever without a cap.
-        endless = lambda: _make_response(  # noqa: E731
-            _make_function_call_part("bash_execute", {"command": "x"})
-        )
-        chat = _FakeChat([endless() for _ in range(20)])
+        # Use a unique `command` per iteration so the per-turn ToolLoopGuard
+        # (which catches identical-call repetition by default) does NOT fire
+        # — that would mask the iteration-cap enforcement we want to test.
+        chat = _FakeChat([
+            _make_response(
+                _make_function_call_part("bash_execute", {"command": f"x{i}"})
+            )
+            for i in range(20)
+        ])
 
         text, results = await provider._gemini_chat_with_tools(
             chat, "loop please", max_iterations=3

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "deile"
 version = "5.1.0"
-description = "DEILE — autonomous CLI AI agent + bot foundation"
+description = "DEILE — autonomous CLI AI agent"
 authors = [{ name = "elimarcavalli" }]
 readme = "README.md"
 requires-python = ">=3.9"
@@ -65,24 +65,20 @@ dependencies = [
     "py7zr>=1.1",
     "watchdog>=6.0",
     "google-ai-generativelanguage>=0.7",
+    "httpx>=0.25",
 ]
 
 [project.optional-dependencies]
-discord = ["discord.py>=2.3,<3.0"]
-telegram = ["python-telegram-bot>=20"]
-whatsapp = ["httpx>=0.25"]
-meta = ["httpx>=0.25"]
-all-bots = [
-    "discord.py>=2.3,<3.0",
-    "python-telegram-bot>=20",
-    "httpx>=0.25",
-]
+# Outbound mensageria via deile-bot daemon (control-plane HTTP).
+# Adicione as deps adicionais do bot via pip install deile-bot[discord] no
+# repositório elimarcavalli/deile-bot — esta extra puxa só o cliente fino.
+bot = ["deile-bot-client>=0.1"]
 scheduler = ["apscheduler>=3.10"]
 webhook = ["fastapi>=0.100", "uvicorn>=0.23"]
 
 [project.scripts]
 deile = "deile.cli:main"
-deile-bot = "deile_bot.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["deile*", "deile_bot*"]
+include = ["deile*"]
+exclude = ["deile_bot*", "deile_bot_client*", "tests*"]

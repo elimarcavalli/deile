@@ -41,6 +41,26 @@
 | `SecretsScanner` | Varredura em strings/arquivos com padrões conhecidos |
 | Tool de uso visível pelo LLM | `deile/tools/secrets_tool.py` |
 
+### Padrões cobertos
+
+Além das chaves de cloud/SCM tradicionais (AWS, GitHub, Slack, RSA…), o scanner detecta tokens da integração com o daemon `deile-bot`:
+
+| Token | Pattern (resumo) |
+|---|---|
+| `DEILE_BOT_AUTH_TOKEN` / `DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN` | `DEILE_BOT(_CONTROL_PLANE)?_AUTH_TOKEN\s*=\s*[A-Za-z0-9_-]{16,}` |
+| Token de bot Discord | `(?:DISCORD\|DEILE_BOT_DISCORD)_TOKEN\s*=\s*xxx.yyy.zzz` (3 segmentos `.`-separados) |
+
+## Mensageria proativa (deile → deile-bot)
+
+| Aspecto | Detalhe |
+|---|---|
+| Categoria das tools | `ToolCategory.MESSAGING` (em `deile/tools/base.py`) |
+| Permission gate | `MessagingTool` (em `deile/tools/messaging/_base.py`) chama `PermissionManager.check_permission()` antes de qualquer operação. Resource string: `messaging:<tool_name>:<channel_id\|user_id\|role_id>` |
+| Approval gate | Tools com `require_approval=True` (`discord_send_dm`, `discord_mention_role`) passam por `ApprovalSystem.request_approval(...)` antes de executar; recusa → `ToolResult.error_result(code="APPROVAL_REQUIRED")` |
+| Audit obrigatório | Cada chamada emite `AuditEvent(TOOL_EXECUTION)` com `details={tool, channel_id?, user_id?, role_id?, message_id?, text_hash?}`. **Texto cru nunca é logado** — apenas SHA8 do conteúdo |
+| Auth do canal | Bearer token via `DEILE_BOT_AUTH_TOKEN`. Bind do daemon em `127.0.0.1` por padrão (controle do operador) |
+| Tokens auditados | `secrets_scanner` detecta `DEILE_BOT_AUTH_TOKEN`, `DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN`, `DEILE_BOT_DISCORD_TOKEN` |
+
 ## Sistema de aprovação (em `deile/orchestration/approval_system.py`)
 
 | Símbolo | Papel |

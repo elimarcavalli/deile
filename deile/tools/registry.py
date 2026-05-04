@@ -290,17 +290,28 @@ class ToolRegistry:
                 'deile.tools.execution_tools',
                 'deile.tools.search_tool',
                 'deile.tools.bash_tool',
-                'deile.tools.slash_command_executor'
+                'deile.tools.slash_command_executor',
+                'deile.tools.vision_tool',
             ]
-        
+
         discovered_count = 0
-        
+
         for package_name in package_names:
             try:
                 discovered_count += self._discover_in_package(package_name)
             except Exception as e:
                 logger.warning(f"Failed to discover tools in {package_name}: {e}")
-        
+
+        # Conditional registration of messaging tools (`messaging.discord_*`).
+        # The dedicated module decides whether to register based on
+        # `deile-bot-client` availability AND env configuration.
+        try:
+            from .messaging.auto_discover import register_messaging_tools
+
+            discovered_count += register_messaging_tools(self)
+        except Exception as e:  # pragma: no cover
+            logger.warning(f"messaging tool registration failed: {e}")
+
         return discovered_count
     
     def _discover_in_package(self, package_name: str) -> int:
