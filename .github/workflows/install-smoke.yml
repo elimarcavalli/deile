@@ -20,7 +20,16 @@ jobs:
         with:
           python-version: "3.11"
       - name: pip install in clean venv
+        env:
+          BOT_REPO_TOKEN: ${{ secrets.BOT_REPO_TOKEN }}
         run: |
+          if [ "${{ matrix.extra }}" = "bot" ] && [ -z "$BOT_REPO_TOKEN" ]; then
+            echo "::error::BOT_REPO_TOKEN secret missing — required for cross-repo clone of private elimarcavalli/deilebot"
+            exit 1
+          fi
+          if [ -n "$BOT_REPO_TOKEN" ]; then
+            git config --global url."https://x-access-token:${BOT_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
+          fi
           python -m venv /tmp/v
           /tmp/v/bin/pip install --upgrade pip
           if [ "${{ matrix.extra }}" = "" ]; then
