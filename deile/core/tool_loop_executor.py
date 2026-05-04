@@ -16,6 +16,12 @@ from __future__ import annotations
 import logging
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
+from deile.core.loop_guard import (
+    ToolLoopGuard,
+    format_loop_break_message,
+    make_guard,
+    tool_result_made_progress,
+)
 from deile.core.models.base import ModelMessage, ModelProvider
 from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
 from deile.tools.base import ToolContext, ToolResult, ToolStatus
@@ -94,10 +100,15 @@ class ToolLoopExecutor:
         tool_registry: Optional[ToolRegistry] = None,
         max_iterations: int = MAX_TOOL_ITERATIONS,
         event_publisher: Optional[Any] = None,
+        loop_guard: Optional[ToolLoopGuard] = None,
     ) -> None:
         self._tool_registry = tool_registry or get_tool_registry()
         self._max_iterations = max_iterations
         self._event_publisher = event_publisher  # callable: (kind, name, **kw) -> awaitable
+        # Each ``run()`` invocation builds its own guard (one per turn). The
+        # constructor accepts an explicit guard only so tests can inject a
+        # pre-configured detector — production callers leave it as ``None``.
+        self._loop_guard_override = loop_guard
 
     async def run(
         self,
@@ -118,6 +129,13 @@ class ToolLoopExecutor:
             getattr(provider, "model_name", None)
             or getattr(provider, "provider_id", None)
             or "model"
+        )
+        # Per-turn loop detector. Defensive against the model spinning on
+        # the same call when its previous tool returned an error or empty
+        # data — see deile.core.loop_guard for the detection rules.
+        guard = self._loop_guard_override or make_guard(
+            session_id=str((session_data or {}).get("session_id", ""))
+            or None,
         )
 
         for iteration in range(self._max_iterations):
@@ -225,6 +243,45 @@ class ToolLoopExecutor:
                     )
                     tool_kwargs.setdefault("count", 0)
 
+                # ── Loop guard: detect identical-call / windowed / no-progress
+                # spirals before we burn another round-trip. If the guard
+                # trips, emit a synthetic TOOL_RESULT (so the UI sees what
+                # happened) plus a TEXT_DELTA explaining the abort, then
+                # stop the entire run — the model has been demonstrably
+                # going in circles.
+                abort = guard.check(tc_name, tc_args)
+                if abort is not None:
+                    summary = format_loop_break_message(abort)
+                    yield UnifiedStreamEvent(
+                        type=StreamEventType.TOOL_RESULT,
+                        tool_call_id=tc_id,
+                        tool_name=tc_name,
+                        tool_status="error",
+                        tool_result_summary=summary[:200],
+                        tool_result_data=None,
+                        tool_metadata={
+                            "function_name": tc_name,
+                            "tool_call_id": tc_id,
+                            "loop_break": True,
+                            "loop_break_kind": abort.kind.value,
+                            "loop_break_args_hash": abort.args_hash,
+                        },
+                        iteration=iteration,
+                    )
+                    yield UnifiedStreamEvent(
+                        type=StreamEventType.TEXT_DELTA,
+                        text=abort.user_message(),
+                        source="loop_guard",
+                    )
+                    await self._publish(
+                        "failed",
+                        tc_name,
+                        tc_id=tc_id,
+                        error=summary,
+                        loop_break=True,
+                    )
+                    return
+
                 await self._publish("invoked", tc_name, tc_id=tc_id, args=tc_args)
 
                 ctx = ToolContext(
@@ -292,6 +349,10 @@ class ToolLoopExecutor:
                             _payload_for_model(err_result),
                         )
                     )
+                    # An exception escaping the registry is always "no progress"
+                    # — feed that into the guard so a string of failures
+                    # eventually trips the no-progress rule.
+                    guard.record_result(made_progress=False)
                     await self._publish("failed", tc_name, tc_id=tc_id, error=exc)
                     continue
 
@@ -314,6 +375,11 @@ class ToolLoopExecutor:
                     provider.format_tool_result_message(
                         tc_id, tc_name, _payload_for_model(result)
                     )
+                )
+                # Feed the result into the guard so the no-progress rule can
+                # observe consecutive empty/error returns.
+                guard.record_result(
+                    made_progress=tool_result_made_progress(result)
                 )
                 await self._publish(
                     "completed" if result.is_success else "failed",

@@ -10,6 +10,11 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import openai
 
+from deile.core.loop_guard import (
+    format_loop_break_message,
+    make_guard,
+    tool_result_made_progress,
+)
 from deile.core.models.base import (
     ModelMessage,
     ModelProvider,
@@ -239,6 +244,8 @@ class OpenAIProvider(ModelProvider):
         tool_results: List[Any] = []
         final_text = ""
         last_reasoning_content: Optional[str] = None
+        guard = make_guard(session_id=str(kwargs.get("session_id", "")) or None)
+        loop_aborted = False
 
         for _ in range(_MAX_TOOL_ITERATIONS):
             create_kwargs: Dict[str, Any] = {
@@ -308,8 +315,41 @@ class OpenAIProvider(ModelProvider):
             # Execute each tool call
             for tc in msg.tool_calls:
                 args = json.loads(tc.function.arguments or "{}")
+                # Loop guard — same defensive logic as Anthropic. See
+                # deile.core.loop_guard for the detection rules.
+                abort = guard.check(tc.function.name, args)
+                if abort is not None:
+                    abort_msg = abort.user_message()
+                    payload = {"status": "error", "error": abort_msg}
+                    from deile.tools.base import ToolResult as _TR
+                    from deile.tools.base import ToolStatus as _TS
+
+                    tr = _TR(
+                        status=_TS.ERROR,
+                        message=abort_msg,
+                        metadata={
+                            "loop_break": True,
+                            "loop_break_kind": abort.kind.value,
+                            "loop_break_args_hash": abort.args_hash,
+                        },
+                    )
+                    tool_results.append(tr)
+                    oai_msgs.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": json.dumps(payload),
+                        }
+                    )
+                    final_text = (
+                        (final_text + "\n\n" if final_text else "")
+                        + format_loop_break_message(abort)
+                    )
+                    loop_aborted = True
+                    continue
                 tr, payload = await self._execute_tool(tc.function.name, args)
                 tool_results.append(tr)
+                guard.record_result(made_progress=tool_result_made_progress(tr))
                 oai_msgs.append(
                     {
                         "role": "tool",
@@ -317,6 +357,8 @@ class OpenAIProvider(ModelProvider):
                         "content": json.dumps(payload),
                     }
                 )
+            if loop_aborted:
+                break
         else:
             logger.warning("OpenAIProvider: tool loop hit max_iterations=%d", _MAX_TOOL_ITERATIONS)
 

@@ -18,6 +18,11 @@ from google.genai import errors as genai_errors
 
 from .base import ModelProvider, ModelType, ModelSize, ModelMessage, ModelResponse, ModelUsage
 from ..exceptions import ModelError, ConfigurationError
+from ..loop_guard import (
+    format_loop_break_message,
+    make_guard,
+    tool_result_made_progress,
+)
 from ...storage.debug_logger import get_debug_logger, is_debug_enabled
 
 logger = logging.getLogger(__name__)
@@ -819,6 +824,10 @@ class GeminiProvider(ModelProvider):
         cap = max_iterations if max_iterations is not None else self.MAX_TOOL_ITERATIONS
         tool_results: list = []
         text_chunks: list[str] = []
+        guard = make_guard(
+            session_id=str((session_data or {}).get("session_id", "")) or None
+        )
+        loop_aborted = False
 
         # send_message é síncrono no SDK — usamos to_thread para não bloquear o loop.
         response = await asyncio.to_thread(chat.send_message, message)
@@ -837,6 +846,30 @@ class GeminiProvider(ModelProvider):
 
             function_response_parts = []
             for call in function_calls:
+                # Loop guard — same defensive logic as the other providers.
+                # See deile.core.loop_guard for the detection rules.
+                abort = guard.check(call["name"], dict(call.get("args") or {}))
+                if abort is not None:
+                    abort_msg = abort.user_message()
+                    payload = {"status": "error", "error": abort_msg}
+                    tr = ToolResult(
+                        status=ToolStatus.ERROR,
+                        message=abort_msg,
+                        metadata={
+                            "loop_break": True,
+                            "loop_break_kind": abort.kind.value,
+                            "loop_break_args_hash": abort.args_hash,
+                        },
+                    )
+                    tool_results.append(tr)
+                    function_response_parts.append(
+                        types.Part.from_function_response(
+                            name=call["name"], response=payload
+                        )
+                    )
+                    text_chunks.append(format_loop_break_message(abort))
+                    loop_aborted = True
+                    continue
                 tool_result, payload = await self.execute_function_call(
                     function_name=call["name"],
                     arguments=call["args"],
@@ -844,10 +877,19 @@ class GeminiProvider(ModelProvider):
                     session_data=session_data,
                 )
                 tool_results.append(tool_result)
+                guard.record_result(
+                    made_progress=tool_result_made_progress(tool_result)
+                )
                 function_response_parts.append(
                     types.Part.from_function_response(name=call["name"], response=payload)
                 )
 
+            if loop_aborted:
+                # We refused at least one call; do not invoke send_message
+                # again — that would let the model keep iterating against the
+                # same hash. The error result and break message we already
+                # appended will surface to the user.
+                break
             response = await asyncio.to_thread(chat.send_message, function_response_parts)
         else:
             # Loop esgotou o cap sem terminar — o modelo continua querendo chamar tools.
