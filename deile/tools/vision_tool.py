@@ -206,31 +206,37 @@ class VisionToolError(Exception):
         self.code = code
 
 
+# Gemini multimodal supports image/jpeg, image/png, image/webp, image/gif.
+# (BMP and other formats raise INVALID_ARGUMENT upstream — keep them out
+# of the auto-detection table so the user sees a clear error instead of
+# a confusing VISION_LLM_FAILED.)
 _EXT_TO_MIME = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
     ".gif": "image/gif",
-    ".bmp": "image/bmp",
 }
+_GEMINI_SUPPORTED_MIMES = frozenset(_EXT_TO_MIME.values())
 
 
 def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes, str]:
-    """Read image bytes from a local path. mime is auto-detected from
-    extension when not provided. Subject to the same 10 MiB cap.
-    Strips leading 'file://' if present."""
+    """Read image bytes from a local path in chunks (≤10 MiB cap).
+
+    Chunked read avoids a TOCTOU window between ``os.path.getsize`` and the
+    full ``read()`` — a file that just-fits the size check could be swapped
+    for a much larger one before the read completes. By streaming and
+    counting bytes as they come, the cap is enforced atomically.
+
+    MIME is auto-detected from extension when not provided; only formats
+    Gemini accepts are auto-recognized (jpeg/png/webp/gif). Strips leading
+    ``file://`` if present.
+    """
     if path.startswith("file://"):
         path = path[len("file://"):]
     p = os.path.abspath(path)
     if not os.path.isfile(p):
         raise VisionToolError("VISION_BAD_INPUT", f"image_path not found: {path!r}")
-    size = os.path.getsize(p)
-    if size > _MAX_IMAGE_BYTES:
-        raise VisionToolError(
-            "VISION_IMAGE_TOO_LARGE",
-            f"image_path exceeds {_MAX_IMAGE_BYTES} bytes ({size} bytes)",
-        )
     if not mime_hint:
         ext = os.path.splitext(p)[1].lower()
         mime_hint = _EXT_TO_MIME.get(ext)
@@ -239,8 +245,26 @@ def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes, str]
             "VISION_BAD_INPUT",
             f"could not infer image MIME for {path!r}; pass mime_type explicitly",
         )
+    if mime_hint not in _GEMINI_SUPPORTED_MIMES:
+        raise VisionToolError(
+            "VISION_BAD_INPUT",
+            f"mime_type {mime_hint!r} not supported by the vision model "
+            f"(supported: {sorted(_GEMINI_SUPPORTED_MIMES)})",
+        )
+    chunk = 64 * 1024
+    buf = bytearray()
     with open(p, "rb") as fh:
-        return fh.read(), mime_hint
+        while True:
+            blob = fh.read(chunk)
+            if not blob:
+                break
+            buf.extend(blob)
+            if len(buf) > _MAX_IMAGE_BYTES:
+                raise VisionToolError(
+                    "VISION_IMAGE_TOO_LARGE",
+                    f"image_path exceeds {_MAX_IMAGE_BYTES} bytes",
+                )
+    return bytes(buf), mime_hint
 
 
 async def _download_image(url: str) -> tuple[bytes, str]:

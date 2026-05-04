@@ -134,14 +134,26 @@ class MessagingTool(Tool, abc.ABC):
 
     def _build_audit_payload(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Subclasses override to add op-specific fields. Must NOT include
-        free-form text — only ids and hashes."""
-        text = args.get("text") if isinstance(args, dict) else None
+        free-form text — only ids and hashes.
+
+        IDs (channel_id, user_id, role_id, message_id) are platform-public
+        snowflakes and go in plaintext — they're how operators correlate
+        an audit row with the Discord side. Free-form payload (text,
+        emoji which can be ``<:secret:1234>`` for custom emojis) is
+        hashed via SHA8 to keep secrets out of the audit log while still
+        letting an operator confirm "the same bytes were sent twice".
+        """
         payload: Dict[str, Any] = {"tool": self.tool_name}
-        if text:
-            payload["text_hash"] = _sha8(text)
-        for key in ("channel_id", "user_id", "bot_user_id", "role_id", "message_id", "emoji"):
-            if isinstance(args, dict) and args.get(key) is not None:
-                payload[key] = args[key]
+        if isinstance(args, dict):
+            text = args.get("text")
+            if text:
+                payload["text_hash"] = _sha8(text)
+            emoji = args.get("emoji")
+            if emoji:
+                payload["emoji_hash"] = _sha8(str(emoji))
+            for key in ("channel_id", "user_id", "bot_user_id", "role_id", "message_id"):
+                if args.get(key) is not None:
+                    payload[key] = args[key]
         return payload
 
     # ---- execute() ---------------------------------------------------------

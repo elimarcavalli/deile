@@ -263,6 +263,37 @@ async def test_image_path_unknown_extension_requires_mime(tool, ctx_factory, tmp
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
 
+async def test_image_path_bmp_rejected_before_llm(tool, ctx_factory, tmp_path):
+    """Gemini doesn't support image/bmp. Reject before the LLM call so the
+    user sees a clear error instead of a confusing VISION_LLM_FAILED."""
+    p = tmp_path / "x.bmp"
+    p.write_bytes(PNG_1x1_BYTES)
+    res = await tool.execute(ctx_factory(image_path=str(p)))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+    # Even when MIME passed explicitly, BMP must be refused early.
+    res2 = await tool.execute(
+        ctx_factory(image_path=str(p), mime_type="image/bmp")
+    )
+    assert res2.is_error
+    assert res2.metadata["error_code"] == "VISION_BAD_INPUT"
+
+
+async def test_image_path_chunked_read_caps_oversize_atomic(
+    tool, ctx_factory, monkeypatch, tmp_path
+):
+    """Cap is enforced *during* the read, not against pre-measured size,
+    so a TOCTOU swap can't bypass it. Simulated by writing a file larger
+    than the cap and asserting the failure is VISION_IMAGE_TOO_LARGE."""
+    from deile.tools.vision_tool import _MAX_IMAGE_BYTES
+    p = tmp_path / "huge.png"
+    # 1 MiB beyond the cap
+    p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * (_MAX_IMAGE_BYTES + 1024))
+    res = await tool.execute(ctx_factory(image_path=str(p)))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_IMAGE_TOO_LARGE"
+
+
 # ---- llm error mapping ------------------------------------------------------
 
 
