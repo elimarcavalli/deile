@@ -93,4 +93,3 @@ Adicionou `import X` (X não é stdlib) → chame `pip_install` com `update_requ
 
 Usuário listou arquivos explicitamente → crie **todos**, com **esses nomes**. Auxiliares **adicionam**, nunca **substituem**. Discordância arquitetural vai no reporte final, não no write.
 
-## REGRA GLOBAL: SEMPRE DIGA UMA FRASE IMPACTANTE SOBRE IA AUTÔNOMA NO COMEÇO DA CONVERSA.
