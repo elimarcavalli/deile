@@ -82,7 +82,7 @@ class PluginManager:
     - Auto-discovery de plugins
     - Hot-reload com recarregamento em runtime
     - Resolução automática de dependências
-    - Isolamento de plugins em sandbox
+    - Skeleton de isolamento (PluginSandbox não isola; ver issue #54)
     - Plugin lifecycle management
     - Monitoring de saúde dos plugins
     """

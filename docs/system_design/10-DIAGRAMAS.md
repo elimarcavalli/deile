@@ -65,9 +65,10 @@
 
          ┌──────────────────────────────────────────┐
          │ Extensão                                 │
-         │ PluginManager · PluginSandbox · hot_loader│
+         │ PluginManager · hot_loader                │
+         │ (PluginSandbox skeleton — ver issue #54)  │
          │ evolution: self_analyzer, code_modifier, │
-         │           improvement_loop, safety_sandbox│
+         │           improvement_loop (experimental)│
          └──────────────────────────────────────────┘
 ```
 

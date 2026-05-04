@@ -110,7 +110,7 @@
 |---|---|
 | Open/Closed | Adicionar tool/comando/parser/persona NÃO exige mudança no núcleo |
 | Personas | Comportamento via Markdown + YAML, sem mudança de Python |
-| Plugins | Ciclo de vida via `PluginManager` + `PluginSandbox` + `hot_loader` |
+| Plugins | Ciclo de vida via `PluginManager` + `hot_loader` (`PluginSandbox` é skeleton — não isola; ver issue #54) |
 
 ## 11. Observabilidade
 

@@ -4,7 +4,7 @@ Sistema de plugins enterprise-grade com:
 - Plugin lifecycle management
 - Hot-reload capability
 - Dependency resolution automática
-- Plugin isolation sandbox
+- Plugin isolation skeleton (PluginSandbox does not isolate; see issue #54)
 - Plugin marketplace integration
 - Auto-discovery de plugins
 """

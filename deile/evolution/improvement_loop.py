@@ -11,7 +11,6 @@ import uuid
 from .self_analyzer import SelfAnalyzer, ImprovementOpportunity
 from .code_modifier import CodeModifier
 from .benchmarker import Benchmarker
-from .safety_sandbox import SafetySandbox
 from .rollback_manager import RollbackManager
 
 logger = logging.getLogger(__name__)
@@ -33,15 +32,19 @@ class ImprovementAttempt:
 
 
 class ImprovementLoop:
-    """Ciclo contínuo de auto-melhoria baseado nas práticas de 2025
+    """Ciclo experimental de auto-melhoria.
 
-    Implementa o ciclo completo:
+    Implementa o ciclo:
     1. Identifica oportunidades (via SelfAnalyzer)
     2. Planeja modificações (via CodeModifier)
-    3. Testa em sandbox (via SafetySandbox)
-    4. Valida melhorias (via Benchmarker)
-    5. Aplica ou reverte (via RollbackManager)
-    6. Monitora resultados e aprende
+    3. Valida melhorias (via Benchmarker)
+    4. Aplica ou reverte (via RollbackManager)
+    5. Monitora resultados e aprende
+
+    Não há sandbox de validação para a modificação proposta — o passo
+    foi removido junto com `SafetySandbox` (era um stub que sempre
+    retornava sucesso). Por isso `start()` exige `experimental=True`
+    explícito. Ver issue #56.
     """
 
     def __init__(
@@ -49,13 +52,11 @@ class ImprovementLoop:
         self_analyzer: SelfAnalyzer,
         code_modifier: Optional[CodeModifier] = None,
         benchmarker: Optional[Benchmarker] = None,
-        safety_sandbox: Optional[SafetySandbox] = None,
         rollback_manager: Optional[RollbackManager] = None
     ):
         self.self_analyzer = self_analyzer
         self.code_modifier = code_modifier or CodeModifier()
         self.benchmarker = benchmarker or Benchmarker()
-        self.safety_sandbox = safety_sandbox or SafetySandbox()
         self.rollback_manager = rollback_manager or RollbackManager()
 
         # Configuração do loop
@@ -82,18 +83,29 @@ class ImprovementLoop:
 
         logger.info("ImprovementLoop inicializado")
 
-    async def start(self) -> None:
-        """Inicia o ciclo de melhoria contínua"""
+    async def start(self, *, experimental: bool = False) -> None:
+        """Inicia o ciclo de melhoria contínua.
+
+        Exige `experimental=True` porque o pipeline aplica modificações
+        sem validação em sandbox — só rollback pós-fato. Ver issue #56.
+        """
+        if not experimental:
+            raise RuntimeError(
+                "ImprovementLoop.start() requires experimental=True. "
+                "Pipeline applies modifications without sandbox validation; "
+                "see issue #56."
+            )
         if self._is_running:
             return
 
-        logger.info("Iniciando ciclo de melhoria contínua...")
+        logger.warning(
+            "Iniciando ImprovementLoop em modo experimental — auto-modificação "
+            "sem sandbox de validação. Não use em produção."
+        )
 
-        # Inicializa componentes
         await self.self_analyzer.start()
         await self.code_modifier.initialize()
         await self.benchmarker.initialize()
-        await self.safety_sandbox.initialize()
         await self.rollback_manager.initialize()
 
         self._is_running = True
@@ -126,7 +138,6 @@ class ImprovementLoop:
         await self.self_analyzer.stop()
         await self.code_modifier.shutdown()
         await self.benchmarker.shutdown()
-        await self.safety_sandbox.shutdown()
         await self.rollback_manager.shutdown()
 
         logger.info("Ciclo de melhoria parado")
@@ -250,29 +261,23 @@ class ImprovementLoop:
             if not modification_plan.get("feasible", False):
                 raise Exception("Plano de modificação não é viável")
 
-            # 3. Executa modificação em sandbox
-            sandbox_result = await self.safety_sandbox.test_modification(modification_plan)
-
-            if not sandbox_result.get("success", False):
-                raise Exception(f"Teste em sandbox falhou: {sandbox_result.get('error')}")
-
-            # 4. Cria ponto de rollback
+            # 3. Cria ponto de rollback (não há sandbox de validação — ver issue #56)
             rollback_data = await self.rollback_manager.create_rollback_point(
                 f"improvement_{attempt_id}"
             )
             attempt.rollback_data = rollback_data
 
-            # 5. Aplica modificação no sistema real
+            # 4. Aplica modificação no sistema real
             application_result = await self.code_modifier.apply_modification(modification_plan)
 
             if not application_result.get("success", False):
                 raise Exception(f"Aplicação da modificação falhou: {application_result.get('error')}")
 
-            # 6. Aguarda estabilização e mede performance
+            # 5. Aguarda estabilização e mede performance
             await asyncio.sleep(30)  # Aguarda estabilização
             attempt.performance_after = await self.benchmarker.measure_current_performance()
 
-            # 7. Valida melhoria
+            # 6. Valida melhoria
             improvement_validated = await self._validate_improvement(attempt)
 
             if improvement_validated:
