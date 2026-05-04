@@ -59,8 +59,8 @@
 | `events/` | `EventBus`, `Event`, `EventType`, `EventPriority`; handlers de eventos |
 | `storage/` | `logs`, `debug_logger`, `embeddings`, `usage_repository` (com `BudgetGuard` e `BudgetExceeded`) |
 | `infrastructure/` | Adapters externos (ex.: `google_file_api`), monitoring |
-| `plugins/` | `plugin_manager`, `dependency_resolver`, `hot_loader` (via `watchdog`), `marketplace`, `sandbox` (`PluginSandbox`) |
-| `evolution/` | `self_analyzer`, `code_modifier`, `improvement_loop`, `benchmarker`, `safety_sandbox`, `rollback_manager` |
+| `plugins/` | `plugin_manager`, `dependency_resolver`, `hot_loader` (via `watchdog`), `marketplace`, `sandbox` (`PluginSandbox` — skeleton, não isola; ver issue #54) |
+| `evolution/` | `self_analyzer`, `code_modifier`, `improvement_loop` (gated atrás de `experimental=True`), `benchmarker`, `rollback_manager` |
 | `ui/` | `ConsoleUIManager`, `DisplayManager`, `streaming_renderer`, `emoji_support`, `themes/`, `components/`, `completers/` (`hybrid_completer`) |
 | `tests/` | Suíte pytest + scripts standalone (ver `CLAUDE.md` para convenção dual) |
 

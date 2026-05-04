@@ -790,36 +790,29 @@ class SandboxCommand(DirectCommand):
         status_table.add_column("Value", style=status_color, width=25)
         status_table.add_column("Description", style="dim", width=30)
         
-        status_table.add_row("Mode", f"{status_emoji} {status_text}", "Current sandbox state")
-        status_table.add_row("Isolation", "Process-level" if self.sandbox_enabled else "None", "Execution isolation")
-        status_table.add_row("File Access", "Restricted" if self.sandbox_enabled else "Unrestricted", "Filesystem permissions")
-        status_table.add_row("Network", "Controlled" if self.sandbox_enabled else "Open", "Network access policy")
-        status_table.add_row("System Calls", "Filtered" if self.sandbox_enabled else "Direct", "System interaction level")
-        
+        status_table.add_row("Mode", f"{status_emoji} {status_text}", "Toggle state (informational only)")
+        status_table.add_row("Isolation", "None", "No real isolation in either mode")
+        status_table.add_row("File Access", "Unrestricted", "Filesystem permissions (host-level)")
+        status_table.add_row("Network", "Open", "Network access (host-level)")
+        status_table.add_row("System Calls", "Direct", "System interaction (host-level)")
+
         # Features description
         if self.sandbox_enabled:
             features_text = (
-                "✅ **Active Protections**\n\n"
-                "🔒 **Process Isolation**: Commands run in isolated processes\n"
-                "📁 **File System**: Access restricted to workspace and temp directories\n"
-                "🌐 **Network Control**: Network access controlled by permission rules\n"
-                "⚙️ **System Calls**: Dangerous system calls are blocked or monitored\n"
-                "🕒 **Timeouts**: All operations have enforced time limits\n"
-                "📊 **Resource Limits**: CPU, memory, and disk usage are capped\n"
-                "🔍 **Monitoring**: All actions are logged for audit\n\n"
-                "💡 **Note**: Sandbox provides security but may limit some operations."
+                "ℹ️ **Sandbox Toggle ENABLED — Informational Only**\n\n"
+                "The '/sandbox on' toggle does NOT activate any real isolation today.\n"
+                "No `DockerSandboxManager` wiring exists for `bash_execute` or `python_execute`,\n"
+                "and `bash_execute(sandbox=True)` only disables PTY allocation.\n\n"
+                "🚨 **Do not rely on this state for security guarantees.**\n"
+                "See issue #57 (PTY-only behavior) and #55 (Docker wiring gap)."
             )
-            features_color = "green"
+            features_color = "yellow"
         else:
             features_text = (
-                "⚠️ **Sandbox Disabled**\n\n"
-                "❌ Tools run with full system access\n"
-                "❌ No process isolation or resource limits\n"
-                "❌ Direct file system and network access\n"
-                "❌ All system calls are permitted\n\n"
-                "🚨 **Security Risk**: Running without sandbox increases security exposure\n\n"
-                "💡 **Recommendation**: Enable sandbox for production use\n"
-                "🛡️ Use '/sandbox on' to enable protection"
+                "ℹ️ **Sandbox Toggle DISABLED**\n\n"
+                "Tools run on the host with the DEILE process's full privileges.\n"
+                "This is the same effective behavior as the 'enabled' state — the toggle\n"
+                "is currently informational only. See issues #54/#55/#57.\n"
             )
             features_color = "red"
         

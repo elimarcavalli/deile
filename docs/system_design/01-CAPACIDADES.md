@@ -82,7 +82,7 @@ DEILE pode **falar ativamente** em canais de mensageria através do daemon `deil
 | Restrição | Origem |
 |---|---|
 | Pelo menos uma chave de API de LLM é obrigatória no startup | `deile.py` (em `DeileAgentCLI.initialize` e `_run_oneshot`); ver [`09-CONFIGURACAO.md`](09-CONFIGURACAO.md) |
-| Sandbox de plugins isola apenas via dicionário (não containerização) | `deile/plugins/sandbox.py` (`PluginSandbox`) |
+| `PluginSandbox` é skeleton — não isola plugins, e `PluginManager` nem o invoca | `deile/plugins/sandbox.py` (`PluginSandbox`); ver issue #54 |
 | Auto-discovery de tools cobre um subconjunto fixo dos módulos | `auto_discover()` em `deile/tools/registry.py`; demais tools precisam de registro explícito |
 | Coverage mínimo do `pytest` | `--cov-fail-under=80` em `pytest.ini` |
 

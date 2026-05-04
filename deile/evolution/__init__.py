@@ -2,18 +2,20 @@
 
 Sistema de auto-melhoria baseado nas práticas mais avançadas de 2025:
 - Self-analysis contínuo de performance
-- Autonomous code modification em sandbox
+- Autonomous code modification
 - Improvement loop com validação automática
 - Benchmarking e métricas de progresso
-- Safety sandbox para modificações seguras
 - Rollback automático de melhorias falhadas
+
+> Não há sandbox de validação para modificações geradas. O fluxo só
+> deve ser ativado em ambientes experimentais (`ImprovementLoop.start(experimental=True)`).
+> Ver issue #56.
 """
 
 from .self_analyzer import SelfAnalyzer
 from .code_modifier import CodeModifier
 from .improvement_loop import ImprovementLoop
 from .benchmarker import Benchmarker
-from .safety_sandbox import SafetySandbox
 from .rollback_manager import RollbackManager
 
 __all__ = [
@@ -21,8 +23,7 @@ __all__ = [
     "CodeModifier",
     "ImprovementLoop",
     "Benchmarker",
-    "SafetySandbox",
-    "RollbackManager"
+    "RollbackManager",
 ]
 
 __version__ = "2.0.0"

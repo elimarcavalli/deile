@@ -50,7 +50,7 @@ As ferramentas disponíveis incluem `list_files`, `read_file`, `write_file`, `de
 | 📨 EVENTOS             | Event bus assíncrono para progresso, ferramentas, tarefas e sistema.     |
 | 💰 TELEMETRIA          | Mede tokens, latência e custo em USD com persistência SQLite.            |
 | 🔒 SEGURANÇA           | Permissões, aprovação por risco, auditoria e scanner de segredos.        |
-| 🔌 PLUGINS HOT RELOAD  | Extensões com ciclo de vida, sandbox e recarga dinâmica.                 |
+| 🔌 PLUGINS HOT RELOAD  | Extensões com ciclo de vida e recarga dinâmica (sem isolamento — ver §segurança). |
 | 🚀 MODOS CLI           | Modo interativo (REPL) e modo one-shot para automação.                   |
 
 
@@ -177,7 +177,7 @@ DEILE segue arquitetura por camadas, com registries para artefatos extensíveis 
 | 🎯 Orquestração        | `deile/orchestration/`             | Planos, workflows, tarefas, aprovações               |
 | 🖥️ UI                 | `deile/ui/`                        | Renderização, streaming, display                     |
 | 🧬 Evolução            | `deile/evolution/`                 | Auto-learning experimental                           |
-| 🔌 Plugins             | `deile/plugins/`                   | Plugin manager, sandbox, hot-reload                  |
+| 🔌 Plugins             | `deile/plugins/`                   | Plugin manager, hot-reload                           |
 | ⚙️ Infra               | `deile/infrastructure/`            | Adapters externos (SDKs, drivers)                    |
 | 🛠️ Configuração       | `deile/config/`                    | Settings singleton, YAML, profiles                   |
 
@@ -480,7 +480,7 @@ pytest --cov deile/ --cov-fail-under=80   # Roda com cobertura mínima exigida
 - 🖼️ Streaming Markdown incremental de altíssima UX no terminal
 - 🧠 Quatro memórias explícitas: separação clara de estados
 - 🎭 Personas MD-driven: editáveis sem mexer no core Python
-- 🔌 Plugins hot-reload e sandbox
+- 🔌 Plugins hot-reload (sem sandbox — só carregue plugins auditados)
 - 🔒 Auditoria + scan de segredos nativo
 
 ---

@@ -1,6 +1,6 @@
 # 08 — Segurança
 
-> Permissões, audit logging, scanner de segredos, sistema de aprovação. Implementação dispersa em `deile/security/`, `deile/orchestration/approval_system.py`, `deile/plugins/sandbox.py` e `deile/evolution/safety_sandbox.py`.
+> Permissões, audit logging, scanner de segredos, sistema de aprovação. Implementação dispersa em `deile/security/`, `deile/orchestration/approval_system.py` e `deile/plugins/sandbox.py` (skeleton — não isola).
 
 ## Permissões (em `deile/security/permissions.py`)
 
@@ -79,10 +79,9 @@ Além das chaves de cloud/SCM tradicionais (AWS, GitHub, Slack, RSA…), o scann
 
 | Sandbox | Local | Escopo |
 |---|---|---|
-| `PluginSandbox` | `deile/plugins/sandbox.py` | Isola plugins de terceiros — implementação atual mantém instâncias em dicionário e expõe `isolate_plugin`, `execute_in_sandbox` |
-| `safety_sandbox` (módulo) | `deile/evolution/safety_sandbox.py` | Ambiente seguro para o módulo de evolução (auto-modificação) testar mudanças em diretório temporário |
+| `PluginSandbox` | `deile/plugins/sandbox.py` | **Skeleton — não isola nada hoje.** Apenas guarda instâncias em um dicionário; `PluginManager` nem invoca esta classe. Plugins carregados rodam com privilégios totais do processo DEILE. Veja issue #54. |
 
-> Não existe classe global `SandboxExecutor`. Pedidos de sandbox em outros contextos devem usar uma das duas implementações acima ou criar um novo módulo dedicado — não inventar a partir de imports inexistentes.
+> Não existe classe global `SandboxExecutor` nem sandbox para o módulo de evolução. Pedidos de sandbox em outros contextos devem criar um módulo dedicado — não inventar a partir de imports inexistentes. Plugins de terceiros devem ser auditados como código.
 
 ## Comandos slash relacionados a segurança (em `deile/commands/builtin/`)
 
