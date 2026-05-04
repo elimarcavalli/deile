@@ -40,7 +40,7 @@ pyparsing==3.3.2
 python-dotenv==1.1.1
 PyYAML==6.0.3
 requests==2.32.5
-rich==14.1.0
+rich==15.0.0
 rsa==4.9.1
 tqdm==4.67.1
 typing-inspection==0.4.2
