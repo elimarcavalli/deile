@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Optional, Sequence
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from deile.commands.builtin.model_command import ModelCommand
+from deile.core.interfaces.selector import InteractiveSelector, SelectorOption
 
 _YAML_PATH = Path(__file__).parents[2] / "deile" / "config" / "model_providers.yaml"
 
@@ -245,7 +247,8 @@ class TestModelStrategy:
 class TestModelCost:
     @pytest.mark.asyncio
     async def test_cost_empty_session_returns_zero(self, tmp_path):
-        from deile.storage.usage_repository import UsageRepository, reset_usage_repository
+        from deile.storage.usage_repository import (UsageRepository,
+                                                    reset_usage_repository)
         reset_usage_repository()
 
         repo = UsageRepository(db_path=tmp_path / "test.db")
@@ -260,9 +263,9 @@ class TestModelCost:
 
     @pytest.mark.asyncio
     async def test_cost_aggregates_correctly(self, tmp_path):
-        from deile.storage.usage_repository import (
-            UsageRepository, UsageRecord, reset_usage_repository
-        )
+        from deile.storage.usage_repository import (UsageRecord,
+                                                    UsageRepository,
+                                                    reset_usage_repository)
         reset_usage_repository()
 
         repo = UsageRepository(db_path=tmp_path / "test.db")
@@ -294,7 +297,8 @@ class TestModelCost:
 class TestModelBudget:
     @pytest.mark.asyncio
     async def test_budget_loads_from_yaml(self, tmp_path):
-        from deile.storage.usage_repository import UsageRepository, reset_usage_repository
+        from deile.storage.usage_repository import (UsageRepository,
+                                                    reset_usage_repository)
         reset_usage_repository()
         repo = UsageRepository(db_path=tmp_path / "test.db")
 
@@ -305,6 +309,131 @@ class TestModelBudget:
             result = await cmd.execute(ctx)
 
         assert result.success
+
+
+# ---------------------------------------------------------------------------
+# /model select  (interactive picker)
+# ---------------------------------------------------------------------------
+
+
+class _StubSelector(InteractiveSelector):
+    """Test double — no terminal I/O, deterministic answer."""
+
+    def __init__(self, supported: bool, choice: Optional[SelectorOption]):
+        self._supported = supported
+        self._choice = choice
+        self.calls: list[dict] = []
+
+    def is_supported(self) -> bool:
+        return self._supported
+
+    async def select(
+        self,
+        options: Sequence[SelectorOption],
+        *,
+        prompt: str = "Select an option",
+        default_index: int = 0,
+    ) -> Optional[SelectorOption]:
+        self.calls.append(
+            {"options": list(options), "prompt": prompt, "default_index": default_index}
+        )
+        return self._choice
+
+
+class TestModelSelect:
+    @pytest.mark.asyncio
+    async def test_select_falls_back_to_list_when_unsupported(self):
+        sel = _StubSelector(supported=False, choice=None)
+        cmd = ModelCommand(selector=sel)
+        result = await cmd.execute(_make_context("select"))
+        assert result.success is True
+        # Falls back to the same content as /model list (a Rich Table).
+        from rich.table import Table
+        assert isinstance(result.content, Table)
+        assert sel.calls == []
+
+    @pytest.mark.asyncio
+    async def test_select_returns_cancelled_when_user_escapes(self):
+        sel = _StubSelector(supported=True, choice=None)
+        cmd = ModelCommand(selector=sel)
+        ctx = _make_context("select")
+        result = await cmd.execute(ctx)
+        assert result.success is True
+        assert result.metadata.get("cancelled") is True
+        assert "forced_model" not in ctx.session.context_data
+        assert len(sel.calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_select_applies_chosen_model(self):
+        chosen = SelectorOption(
+            label="anthropic:claude-haiku-4-5  (current)",
+            value="anthropic:claude-haiku-4-5",
+        )
+        sel = _StubSelector(supported=True, choice=chosen)
+        cmd = ModelCommand(selector=sel)
+        ctx = _make_context("select")
+        result = await cmd.execute(ctx)
+        assert result.success is True
+        assert ctx.session.context_data.get("forced_model") == "anthropic:claude-haiku-4-5"
+
+    @pytest.mark.asyncio
+    async def test_select_alias_pick(self):
+        chosen = SelectorOption(label="openai:gpt-4o", value="openai:gpt-4o")
+        sel = _StubSelector(supported=True, choice=chosen)
+        cmd = ModelCommand(selector=sel)
+        ctx = _make_context("pick")
+        result = await cmd.execute(ctx)
+        assert result.success is True
+        assert ctx.session.context_data.get("forced_model") == "openai:gpt-4o"
+
+    @pytest.mark.asyncio
+    async def test_select_denied_when_override_locked(self):
+        sel = _StubSelector(supported=True, choice=SelectorOption(label="x", value="x:y"))
+        cmd = ModelCommand(selector=sel)
+        ctx = _make_context("select")
+        ctx.session.context_data = {
+            "forced_model": "deepseek:deepseek-v4-pro",
+            "model_override_locked": True,
+            "model_override_lock_source": "deile_bot",
+        }
+        result = await cmd.execute(ctx)
+        assert result.success is False
+        assert sel.calls == []  # never reached the picker
+        assert ctx.session.context_data["forced_model"] == "deepseek:deepseek-v4-pro"
+
+    @pytest.mark.asyncio
+    async def test_select_default_index_points_to_forced_model(self):
+        """When a model is already forced, the picker should preselect that row."""
+        from deile.core.models.catalog import ModelCatalog
+
+        catalog = ModelCatalog.from_yaml(_YAML_PATH)
+        handles = sorted(
+            catalog.list_all(),
+            key=lambda h: (h.tier.value, h.provider_id, h.model_id),
+        )
+        # Pick a forced model that is guaranteed to be in the catalog and not first.
+        forced_idx = next(
+            (i for i, h in enumerate(handles) if i > 0),
+            None,
+        )
+        assert forced_idx is not None and forced_idx > 0
+        forced_key = f"{handles[forced_idx].provider_id}:{handles[forced_idx].model_id}"
+
+        sel = _StubSelector(supported=True, choice=None)
+        cmd = ModelCommand(selector=sel)
+        ctx = _make_context("select")
+        ctx.session.context_data = {"forced_model": forced_key}
+        await cmd.execute(ctx)
+        assert sel.calls[0]["default_index"] == forced_idx
+
+    @pytest.mark.asyncio
+    async def test_select_options_match_catalog_size(self):
+        from deile.core.models.catalog import ModelCatalog
+        catalog = ModelCatalog.from_yaml(_YAML_PATH)
+        sel = _StubSelector(supported=True, choice=None)
+        cmd = ModelCommand(selector=sel)
+        await cmd.execute(_make_context("select"))
+        assert len(sel.calls[0]["options"]) == len(catalog.list_all())
 
 
 # ---------------------------------------------------------------------------

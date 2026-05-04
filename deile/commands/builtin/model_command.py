@@ -5,14 +5,16 @@ from __future__ import annotations
 import logging
 from typing import Any, List, Optional
 
-from rich.table import Table
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
-from ..base import DirectCommand, CommandResult, CommandContext
 from ...config.manager import CommandConfig
+from ...core.interfaces.selector import (InteractiveSelector,
+                                         SelectorNotSupported, SelectorOption)
 from ...core.models.tier_router import get_tier_router, reset_tier_router
-from ...storage.usage_repository import get_usage_repository, BudgetGuard
+from ...storage.usage_repository import BudgetGuard, get_usage_repository
+from ..base import CommandContext, CommandResult, DirectCommand
 
 logger = logging.getLogger(__name__)
 
@@ -20,18 +22,20 @@ logger = logging.getLogger(__name__)
 class ModelCommand(DirectCommand):
     """Multi-provider model management command."""
 
-    def __init__(self) -> None:
+    def __init__(self, selector: Optional[InteractiveSelector] = None) -> None:
         config = CommandConfig(
             name="model",
             description="Manage AI models — list, switch, show cost/budget",
         )
         super().__init__(config)
         self.category = "ai"
+        self._selector = selector
         self.help_text = """
 Model Command — Multi-Provider Management
 
 USAGE:
     /model [list]                        List all models with pricing
+    /model select                        Pick a model interactively (↑↓ Enter, ESC, type to filter)
     /model current                       Show active model + tier + cascade
     /model use <provider>:<model_id>     Force a specific model for this session
     /model use auto                      Return to automatic tier routing
@@ -41,6 +45,7 @@ USAGE:
 
 EXAMPLES:
     /model list
+    /model select
     /model use anthropic:claude-opus-4-7
     /model strategy cost_optimized
     /model cost
@@ -53,6 +58,8 @@ EXAMPLES:
         try:
             if action in ("list", ""):
                 return await self._list(context)
+            if action in ("select", "pick"):
+                return await self._select(context)
             if action == "current":
                 return await self._current(context)
             if action == "use":
@@ -85,8 +92,9 @@ EXAMPLES:
     # ------------------------------------------------------------------
 
     async def _list(self, context: CommandContext) -> CommandResult:
-        from deile.core.models.catalog import ModelCatalog
         from pathlib import Path
+
+        from deile.core.models.catalog import ModelCatalog
 
         yaml_path = Path(__file__).parents[2] / "config" / "model_providers.yaml"
         catalog = ModelCatalog.from_yaml(yaml_path)
@@ -102,7 +110,7 @@ EXAMPLES:
         table.add_column("Out $/1M", justify="right")
         table.add_column("Context", justify="right")
         table.add_column("Capabilities")
-        table.add_column("Active", justify="center") # TODO:(interactive-ui): Criar forma de selecionar modelo com setas cima/baixo + enter
+        table.add_column("Active", justify="center")
 
         for h in sorted(handles, key=lambda x: (x.tier.value, x.provider_id)):
             key = f"{h.provider_id}:{h.model_id}"
@@ -120,6 +128,105 @@ EXAMPLES:
             )
 
         return CommandResult(success=True, content=table, metadata={"count": len(handles)})
+
+    # ------------------------------------------------------------------
+    # /model select
+    # ------------------------------------------------------------------
+
+    async def _select(self, context: CommandContext) -> CommandResult:
+        from pathlib import Path
+
+        from deile.core.models.catalog import ModelCatalog
+
+        try:
+            ctx_data = getattr(context.session, "context_data", {}) or {}
+        except AttributeError:
+            ctx_data = {}
+        if ctx_data.get("model_override_locked"):
+            locked_model = ctx_data.get("forced_model") or "(unknown)"
+            return CommandResult(
+                success=False,
+                content=Panel(
+                    Text(
+                        "Model selection is locked by bot configuration.\n"
+                        f"Forced model: {locked_model}",
+                        style="yellow",
+                    ),
+                    title="[bold red]Model Override Locked[/bold red]",
+                    border_style="red",
+                ),
+                metadata={"model_override_locked": True, "forced_model": locked_model},
+            )
+
+        selector = self._resolve_selector()
+        if selector is None or not selector.is_supported():
+            return await self._list(context)
+
+        yaml_path = Path(__file__).parents[2] / "config" / "model_providers.yaml"
+        catalog = ModelCatalog.from_yaml(yaml_path)
+        handles = sorted(catalog.list_all(), key=lambda h: (h.tier.value, h.provider_id, h.model_id))
+        forced = self._get_forced(context)
+
+        options: List[SelectorOption] = []
+        default_index = 0
+        for idx, h in enumerate(handles):
+            key = f"{h.provider_id}:{h.model_id}"
+            label = f"{key}"
+            if forced == key:
+                default_index = idx
+                label = f"{key}  (current)"
+            description = (
+                f"tier={h.tier.value}  in=${h.pricing.input_per_1m_usd:.2f}/1M  "
+                f"out=${h.pricing.output_per_1m_usd:.2f}/1M  ctx={h.context_window // 1000}K"
+            )
+            options.append(SelectorOption(
+                label=label,
+                value=key,
+                description=description,
+                metadata={"provider": h.provider_id, "tier": h.tier.value},
+            ))
+
+        if not options:
+            return CommandResult(
+                success=False,
+                content=Panel(
+                    Text("No models available in catalog.", style="yellow"),
+                    title="Model",
+                    border_style="yellow",
+                ),
+            )
+
+        try:
+            choice = await selector.select(
+                options,
+                prompt="Select a model (↑↓ navigate, Enter confirm, ESC cancel, type to filter)",
+                default_index=default_index,
+            )
+        except SelectorNotSupported:
+            return await self._list(context)
+
+        if choice is None:
+            return CommandResult(
+                success=True,
+                content=Panel(
+                    Text("Selection cancelled.", style="dim"),
+                    title="Model",
+                    border_style="yellow",
+                ),
+                metadata={"cancelled": True},
+            )
+
+        return await self._use(str(choice.value), context)
+
+    def _resolve_selector(self) -> Optional[InteractiveSelector]:
+        if self._selector is not None:
+            return self._selector
+        try:
+            from deile.infrastructure.selectors import get_default_selector
+        except ImportError as exc:
+            logger.debug("Default selector unavailable: %s", exc)
+            return None
+        return get_default_selector()
 
     # ------------------------------------------------------------------
     # /model current
