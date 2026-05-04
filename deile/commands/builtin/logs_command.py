@@ -179,7 +179,7 @@ class LogsCommand(DirectCommand):
                 "/logs summary           - Detailed statistics\n"
                 "/logs export <file>     - Export logs to file\n\n"
                 "📊 **Filters Available**\n"
-                "Type: permission, secret, tool, plan, approval, sandbox\n"
+                "Type: permission, secret, tool, plan, approval\n"
                 "Severity: debug, info, warning, error, critical\n"
                 "Actor: tool_name, user, system",
                 style="dim"
