@@ -275,7 +275,7 @@ Os comandos slash do DEILE (em `deile/commands/builtin/`):
 /approve          # Aprovar etapa pendente
 /patch-apply      # Aplicar patch gerado
 /patch-generate   # Gerar patch das mudanças
-/sandbox          # Operar sandbox Docker
+/sandbox          # Status do toggle de sandbox (informativo)
 /welcome          # Tela de boas-vindas
 ```
 
@@ -492,7 +492,7 @@ pytest --cov deile/ --cov-fail-under=80   # Roda com cobertura mínima exigida
 - Limite de iteração no tool-loop: MAX_TOOL_ITERATIONS = 25
 - Cobertura real não reportada no README (verificar local via pytest)
 - Módulo de evolução ainda experimental
-- Sandbox Docker exige Docker disponível — obrigatório para o comando `sandbox`
+- `/sandbox` é apenas um toggle informativo — não fornece isolamento real (ver issues #54/#55/#57)
 
 ---
 
