@@ -31,4 +31,6 @@ jobs:
           /tmp/v/bin/python -c "import deile; print(deile.__file__)"
           if [ "${{ matrix.extra }}" = "bot" ]; then
             /tmp/v/bin/python -c "import deilebot; print(deilebot.__file__)"
+            /tmp/v/bin/python -c "import deilebot_client; print(deilebot_client.__file__)"
+            /tmp/v/bin/python -c "from deile.integrations.bot.client import BOT_CLIENT_AVAILABLE; assert BOT_CLIENT_AVAILABLE, 'BOT_CLIENT_AVAILABLE must be True with both packages installed'"
           fi

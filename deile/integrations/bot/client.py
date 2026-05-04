@@ -1,9 +1,11 @@
-"""Lazy facade around `deilebot.BotControlClient`.
+"""Lazy facade around `deilebot_client.BotControlClient`.
 
 Why a facade and not a direct import:
-- `deilebot` is an *optional* dependency. If missing, importing
-  this module must NOT raise — it just reports BOT_CLIENT_AVAILABLE = False
-  and the messaging tools auto-skip registration.
+- `deilebot_client` is an *optional* dependency (lives alongside the
+  `deilebot` daemon in repo elimarcavalli/deilebot, exported as the
+  thin HTTP client package). If missing, importing this module must NOT
+  raise — it just reports BOT_CLIENT_AVAILABLE = False and the messaging
+  tools auto-skip registration.
 - We want a single shared client across tools (connection pool reuse).
 - We want tests to be able to inject a fake client.
 """
@@ -18,9 +20,9 @@ from .config import BotIntegrationSettings, get_bot_settings
 logger = logging.getLogger(__name__)
 
 try:  # pragma: no cover - import-time branch
-    from deilebot import BotControlClient  # type: ignore
-    from deilebot import BotControlSettings
-    from deilebot.errors import (  # type: ignore  # noqa: F401
+    from deilebot_client import BotControlClient  # type: ignore
+    from deilebot_client import BotControlSettings
+    from deilebot_client.errors import (  # type: ignore  # noqa: F401
         BotClientAuthError, BotClientError, BotClientNotReady,
         BotClientRateLimited, BotClientTimeoutError, BotClientUpstreamError)
 
@@ -63,7 +65,7 @@ class BotClientFacade:
     def _ensure_client(self):
         if not BOT_CLIENT_AVAILABLE:
             raise RuntimeError(
-                "deilebot is not installed; install with `pip install deile[bot]`"
+                "deilebot_client is not installed; install with `pip install deile[bot]`"
             )
         if not self._settings.is_configured:
             raise RuntimeError(
