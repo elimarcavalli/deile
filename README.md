@@ -412,7 +412,7 @@ Principais caminhos:
 - ⚡ Async I/O: aiofiles, aiosqlite
 - ✅ Validação/config: pydantic, PyYAML, python-dotenv
 - 🌐 Rede: requests, httplib2
-- 🔧 Sistema: psutil, docker, chardet, GitPython
+- 🔧 Sistema: psutil, chardet, GitPython
 - 📚 Outras: numpy, pathspec, watchdog, py7zr
 
 ### 🧪 Dependências de desenvolvimento (`dev-requirements.txt`)
