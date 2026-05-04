@@ -91,6 +91,12 @@ class Settings:
     # Configurações específicas do ambiente
     environment: str = "development"  # development, staging, production
     api_keys: Dict[str, str] = field(default_factory=dict)
+
+    # DEILE.md hierarchical loader (Issue #62 / Feature #64)
+    deile_md_enabled: bool = True
+    deile_md_user_path: Optional[Path] = None  # default: ~/.deile/DEILE.md
+    deile_md_cwd_filename: str = "DEILE.md"
+    deile_md_max_bytes: int = 64 * 1024  # cap per-layer to avoid bloat
     
     def __post_init__(self):
         """Inicialização pós-criação"""

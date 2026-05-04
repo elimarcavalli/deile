@@ -17,6 +17,7 @@ from ..storage.embeddings import EmbeddingStore
 from ..personas.manager import PersonaManager
 from ..personas.instruction_loader import InstructionLoader
 from ..memory.memory_manager import MemoryManager
+from .deile_md_loader import DEILEMDLoader  # Issue #62 — leitura hierárquica DEILE.md
 
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,28 @@ def _merge_bot_extra(base: str, session: Any) -> str:
         return merge_extra_system_prompt(base, str(extra))
     except Exception:
         return base
+
+
+async def _prepend_deile_md_layers(base_instruction: str, working_directory: Optional[str] = None) -> str:
+    """Issue #62: Prepend hierarchical DEILE.md layers (Core → User → CWD).
+
+    As camadas DEILE.md são injetadas ANTES da instrução da persona,
+    com demarcação clara de origem e prioridade. Core primeiro (não
+    negociável), depois Usuário, depois CWD.
+
+    Leitura de disco roda em thread auxiliar para honrar o princípio
+    async-first do projeto (cf. `03-PRINCIPIOS-ARQUITETURAIS.md` §1).
+    """
+    try:
+        wd = Path(working_directory) if working_directory else Path.cwd()
+        loader = DEILEMDLoader(working_directory=wd)
+        deile_md_block = await asyncio.to_thread(loader.build_merged_prompt)
+        if deile_md_block:
+            return deile_md_block + "\n\n" + base_instruction
+        return base_instruction
+    except Exception as exc:
+        logger.warning("Falha ao carregar camadas DEILE.md: %s — usando instrução base", exc)
+        return base_instruction
 
 
 @dataclass
@@ -75,7 +98,7 @@ class ContextWindow:
         """Remove o chunk mais antigo"""
         if self.chunks:
             removed = self.chunks.pop(0)
-            # Recalcula tokens (approximação)
+            # Recalcula tokens (aproximação)
             self.current_tokens = sum(len(c.content) // 4 for c in self.chunks)
             return removed
         return None
@@ -94,6 +117,7 @@ class ContextManager:
     - MemoryManager para contexto inteligente
     - Event-driven context building
     - Hot-reload de configurações
+    - DEILE.md hierarchical layers (Issue #62)
     """
 
     def __init__(
@@ -229,9 +253,15 @@ class ContextManager:
     ) -> str:
         """Constrói instrução do sistema usando PersonaManager ou fallback hardcoded.
 
+        Issue #62: As camadas hierárquicas DEILE.md (Core → Usuário → CWD) são
+        prefixadas à instrução da persona, com demarcação clara de origem e
+        prioridade. As regras do Core são absolutamente não-negociáveis.
+
         Se a sessão tem `context_data["extra_system_prompt"]`, é apendado ao
         final da instrução base como bloco `<bot_capabilities>`.
         """
+
+        working_directory = kwargs.get('working_directory', os.getcwd())
 
         # CORREÇÃO CRÍTICA: Usa PersonaManager se disponível
         if self.persona_manager:
@@ -243,9 +273,12 @@ class ContextManager:
                     # Constrói instrução usando o método da persona (que carrega do MD)
                     context = {
                         'session': session,
-                        'working_directory': kwargs.get('working_directory', os.getcwd())
+                        'working_directory': working_directory
                     }
                     base_instruction = await active_persona.build_system_instruction(context)
+
+                    # Issue #62: Prefixa camadas DEILE.md (Core → User → CWD)
+                    base_instruction = await _prepend_deile_md_layers(base_instruction, working_directory)
 
                     # Adiciona contexto de arquivos
                     file_context = await self._build_file_context(session, **kwargs)
@@ -266,12 +299,20 @@ class ContextManager:
         session: Optional[Any],
         **kwargs
     ) -> str:
-        """CORREÇÃO BG003: Carrega instrução de arquivo MD (não mais hardcoded!)"""
+        """CORREÇÃO BG003: Carrega instrução de arquivo MD (não mais hardcoded!)
+
+        Issue #62: Também prefixa as camadas DEILE.md no fallback.
+        """
 
         logger.debug("Loading system instruction from MD file (fallback)")
 
+        working_directory = kwargs.get('working_directory', os.getcwd())
+
         # Carrega instrução de arquivo MD
         base_instruction = self.instruction_loader.load_fallback_instruction()
+
+        # Issue #62: Prefixa camadas DEILE.md (Core → User → CWD)
+        base_instruction = await _prepend_deile_md_layers(base_instruction, working_directory)
 
         # Adiciona contexto de arquivos se disponível
         file_context = await self._build_file_context(session, **kwargs)

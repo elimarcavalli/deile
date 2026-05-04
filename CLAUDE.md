@@ -92,6 +92,7 @@ Constraints when running:
 - **To bootstrap programmatically**, mirror what `deile.py` (the CLI) does — `ConfigManager().load_config()` + `bootstrap_providers(router=get_model_router())`. Calling `bootstrap_providers()` alone registers 0 providers because the router is the singleton DeileAgent reads from.
 - **Capture output, strip ANSI, report verbatim** what DEILE actually said + which tools it actually called. Don't paraphrase — that's exactly the kind of fabrication rule 8 was added to prevent.
 - **If DEILE asks for an interactive confirmation you cannot answer**, kill the process and surface that as a finding rather than guessing.
+- **ALWAYS** when asked to open an issue, follow the relevant `.github/ISSUE_TEMPLATE/*.md` (read all the templates and decide which is most appropriate). If user asks without specific details, use the `intent` template.
 
 ## SQL / database operations
 
