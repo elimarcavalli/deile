@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import os
 import sys
 import time
 
@@ -91,6 +90,9 @@ async def main() -> int:
                 "mime": "image/png",
                 "filename": "test.png",
                 "size_bytes": len(PNG_BYTES),
+                # Mirror what the bot pipeline does: pre-fetch + base64 so
+                # the agent doesn't need to re-download.
+                "data_base64": base64.b64encode(PNG_BYTES).decode("ascii"),
             }
         ],
     }
@@ -120,10 +122,17 @@ async def main() -> int:
         "attachments:",
     ]
     for att in bot_context["attachments"]:
+        delivery = "base64_inline" if att.get("data_base64") else "url_only"
         ctx_lines.append(
             f"  - kind={att['kind']} mime={att['mime']} filename={att['filename']} "
-            f"url={att['url']} size_bytes={att['size_bytes']}"
+            f"size_bytes={att['size_bytes']} delivery={delivery}"
         )
+        if att.get("data_base64"):
+            ctx_lines.append(
+                f"    data_base64: <{len(att['data_base64'])} chars in bot_context.attachments[].data_base64>"
+            )
+        if att.get("url"):
+            ctx_lines.append(f"    url: {att['url']}")
     ctx_lines.append("</bot_context>")
     extra_prompt = "\n".join(ctx_lines)
 
