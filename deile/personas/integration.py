@@ -311,16 +311,10 @@ class PersonaEnhancedAgent:
         try:
             current_persona = self.integration_context.current_persona
 
-            # Update context manager with persona instructions
-            if hasattr(self.base_agent.context_manager, 'set_persona_instructions'):
-                system_instructions = await current_persona.build_system_instruction(
-                    self.integration_context
-                ) if current_persona else None
-
-                if system_instructions:
-                    await self.base_agent.context_manager.set_persona_instructions(
-                        system_instructions
-                    )
+            # Persona instructions are injected lazily by ContextManager
+            # at every turn (see _build_system_instruction + DEILE.md
+            # hierarchical layers). The previous `set_persona_instructions`
+            # callsite was a no-op (method never defined) — removed in #65.
 
             # Update intent analyzer with persona patterns
             if (hasattr(self.base_agent, 'intent_analyzer') and

@@ -7,12 +7,20 @@ derruba o turno.
 """
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from deile.core import context_manager as cm_module
+from deile.core import deile_md_loader as loader_module
 from deile.core.context_manager import ContextManager
+
+
+@pytest.fixture(autouse=True)
+def _isolate_loader_cache():
+    loader_module.clear_cache()
+    yield
+    loader_module.clear_cache()
 
 
 CORE_MARKER = "CORE_TEST_MARKER_alpha"
@@ -59,9 +67,10 @@ def deile_md_layout(tmp_path, monkeypatch):
 # ── _prepend_deile_md_layers ────────────────────────────────────────────────
 
 
-def test_prepend_layers_includes_all_three(deile_md_layout):
+@pytest.mark.asyncio
+async def test_prepend_layers_includes_all_three(deile_md_layout):
     base = "PERSONA_BASE_INSTRUCTION"
-    out = cm_module._prepend_deile_md_layers(base, str(deile_md_layout["cwd"]))
+    out = await cm_module._prepend_deile_md_layers(base, str(deile_md_layout["cwd"]))
 
     assert CORE_MARKER in out
     assert USER_MARKER in out
@@ -73,7 +82,8 @@ def test_prepend_layers_includes_all_three(deile_md_layout):
     assert out.index(CWD_MARKER) < out.index(base)
 
 
-def test_prepend_layers_preserves_base_when_no_deile_md(tmp_path, monkeypatch):
+@pytest.mark.asyncio
+async def test_prepend_layers_preserves_base_when_no_deile_md(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "h"))
     (tmp_path / "h").mkdir()
     monkeypatch.setattr(
@@ -83,11 +93,12 @@ def test_prepend_layers_preserves_base_when_no_deile_md(tmp_path, monkeypatch):
     base = "ONLY_PERSONA"
     empty_cwd = tmp_path / "empty"
     empty_cwd.mkdir()
-    out = cm_module._prepend_deile_md_layers(base, str(empty_cwd))
+    out = await cm_module._prepend_deile_md_layers(base, str(empty_cwd))
     assert out == base
 
 
-def test_prepend_layers_swallows_loader_failure_and_returns_base(monkeypatch):
+@pytest.mark.asyncio
+async def test_prepend_layers_swallows_loader_failure_and_returns_base(monkeypatch):
     base = "FALLBACK_BASE"
 
     class _BoomLoader:
@@ -95,7 +106,7 @@ def test_prepend_layers_swallows_loader_failure_and_returns_base(monkeypatch):
             raise RuntimeError("boom")
 
     monkeypatch.setattr(cm_module, "DEILEMDLoader", _BoomLoader)
-    out = cm_module._prepend_deile_md_layers(base, "/tmp/whatever")
+    out = await cm_module._prepend_deile_md_layers(base, "/tmp/whatever")
     assert out == base
 
 
@@ -178,3 +189,37 @@ async def test_fallback_system_instruction_when_no_layers_returns_only_base(
 
     assert "JUST_FALLBACK" in out
     assert "FIM DAS CAMADAS DEILE.md" not in out
+
+
+# ── End-to-end: build_context() public API ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_build_context_end_to_end_includes_deile_md_layers(deile_md_layout):
+    """Garante que o caminho público `build_context` ainda passa pelo
+    `_prepend_deile_md_layers`. Catches regression if someone moves the
+    injection point.
+    """
+    persona = MagicMock()
+    persona.name = "test_persona"
+    persona.build_system_instruction = AsyncMock(return_value="PERSONA_PROMPT_BODY")
+
+    persona_manager = MagicMock()
+    persona_manager.get_active_persona = MagicMock(return_value=persona)
+
+    ctx_manager = ContextManager(persona_manager=persona_manager)
+
+    ctx = await ctx_manager.build_context(
+        user_input="oi",
+        working_directory=str(deile_md_layout["cwd"]),
+    )
+
+    sys_instr = ctx["system_instruction"]
+    assert CORE_MARKER in sys_instr
+    assert USER_MARKER in sys_instr
+    assert CWD_MARKER in sys_instr
+    assert "PERSONA_PROMPT_BODY" in sys_instr
+    # A ordem fixa CORE → USER → CWD → persona é preservada
+    assert sys_instr.index(CORE_MARKER) < sys_instr.index(USER_MARKER)
+    assert sys_instr.index(USER_MARKER) < sys_instr.index(CWD_MARKER)
+    assert sys_instr.index(CWD_MARKER) < sys_instr.index("PERSONA_PROMPT_BODY")

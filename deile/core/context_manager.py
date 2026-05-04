@@ -40,26 +40,21 @@ def _merge_bot_extra(base: str, session: Any) -> str:
         return base
 
 
-def _prepend_deile_md_layers(base_instruction: str, working_directory: Optional[str] = None) -> str:
+async def _prepend_deile_md_layers(base_instruction: str, working_directory: Optional[str] = None) -> str:
     """Issue #62: Prepend hierarchical DEILE.md layers (Core → User → CWD).
 
     As camadas DEILE.md são injetadas ANTES da instrução da persona,
     com demarcação clara de origem e prioridade. Core primeiro (não
     negociável), depois Usuário, depois CWD.
 
-    Args:
-        base_instruction: Instrução base da persona (ou fallback).
-        working_directory: Diretório de trabalho para resolver ./DEILE.md.
-
-    Returns:
-        Instrução completa com camadas DEILE.md prefixadas.
+    Leitura de disco roda em thread auxiliar para honrar o princípio
+    async-first do projeto (cf. `03-PRINCIPIOS-ARQUITETURAIS.md` §1).
     """
     try:
         wd = Path(working_directory) if working_directory else Path.cwd()
         loader = DEILEMDLoader(working_directory=wd)
-        deile_md_block = loader.build_merged_prompt()
+        deile_md_block = await asyncio.to_thread(loader.build_merged_prompt)
         if deile_md_block:
-            # Camadas DEILE.md primeiro, depois a instrução da persona
             return deile_md_block + "\n\n" + base_instruction
         return base_instruction
     except Exception as exc:
@@ -283,7 +278,7 @@ class ContextManager:
                     base_instruction = await active_persona.build_system_instruction(context)
 
                     # Issue #62: Prefixa camadas DEILE.md (Core → User → CWD)
-                    base_instruction = _prepend_deile_md_layers(base_instruction, working_directory)
+                    base_instruction = await _prepend_deile_md_layers(base_instruction, working_directory)
 
                     # Adiciona contexto de arquivos
                     file_context = await self._build_file_context(session, **kwargs)
@@ -317,7 +312,7 @@ class ContextManager:
         base_instruction = self.instruction_loader.load_fallback_instruction()
 
         # Issue #62: Prefixa camadas DEILE.md (Core → User → CWD)
-        base_instruction = _prepend_deile_md_layers(base_instruction, working_directory)
+        base_instruction = await _prepend_deile_md_layers(base_instruction, working_directory)
 
         # Adiciona contexto de arquivos se disponível
         file_context = await self._build_file_context(session, **kwargs)

@@ -126,7 +126,7 @@ async def main():
     session_id = "deile-md-hierarchy-test"
     session = agent._get_or_create_session(session_id)
     # Força um modelo previsível e barato.
-    session.context_data["forced_model"] = "gemini:gemini-2.5-flash-lite"
+    session.context_data["forced_model"] = "deepseek:deepseek-v4-flash"
     print(f"Forced model: {session.context_data['forced_model']}")
 
     # ── Sonda única: greeting trigger ─────────────────────────────────────

@@ -17,7 +17,16 @@ from deile.core.deile_md_loader import (
     DEILEMDLoader,
     DEILEMDSource,
     _read_if_exists,
+    clear_cache,
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_loader_cache():
+    """Garante que cada teste comece com cache limpo."""
+    clear_cache()
+    yield
+    clear_cache()
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -245,6 +254,108 @@ def test_merged_prompt_marks_core_as_non_negotiable(tmp_layout):
     assert "NÃO NEGOCIÁVEIS" in out
     # As camadas opcionais devem trazer aviso de subordinação
     assert "não podem contradizer" in out.lower() or "nao podem contradizer" in out.lower()
+
+
+def test_merged_prompt_disabled_via_settings_returns_empty(tmp_layout, monkeypatch):
+    from deile.config import settings as settings_module
+
+    settings = settings_module.get_settings()
+    monkeypatch.setattr(settings, "deile_md_enabled", False)
+
+    loader = tmp_layout()
+    assert loader.build_merged_prompt() == ""
+
+
+def test_settings_override_user_path(tmp_path, monkeypatch):
+    from deile.config import settings as settings_module
+
+    custom_user_dir = tmp_path / "custom-user"
+    custom_user_dir.mkdir()
+    custom_user_md = custom_user_dir / "MY_DEILE.md"
+    custom_user_md.write_text("CUSTOM_USER_CONTENT", encoding="utf-8")
+
+    settings = settings_module.get_settings()
+    monkeypatch.setattr(settings, "deile_md_user_path", custom_user_md)
+
+    loader = DEILEMDLoader(working_directory=tmp_path)
+    user = loader.load_user()
+    assert user is not None
+    assert "CUSTOM_USER_CONTENT" in user.content
+
+
+def test_settings_override_cwd_filename(tmp_path, monkeypatch):
+    from deile.config import settings as settings_module
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    (tmp_path / "home").mkdir()
+
+    project = tmp_path / "p"
+    project.mkdir()
+    (project / "RULES.md").write_text("CUSTOM_CWD_CONTENT", encoding="utf-8")
+
+    settings = settings_module.get_settings()
+    monkeypatch.setattr(settings, "deile_md_cwd_filename", "RULES.md")
+
+    loader = DEILEMDLoader(working_directory=project)
+    cwd = loader.load_cwd()
+    assert cwd is not None
+    assert "CUSTOM_CWD_CONTENT" in cwd.content
+
+
+def test_large_file_is_truncated(tmp_path, monkeypatch):
+    from deile.config import settings as settings_module
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "h"))
+    (tmp_path / "h").mkdir()
+
+    settings = settings_module.get_settings()
+    monkeypatch.setattr(settings, "deile_md_max_bytes", 100)
+
+    huge = tmp_path / "huge.md"
+    huge.write_text("X" * 5000, encoding="utf-8")
+    content = _read_if_exists(huge)
+    assert content is not None
+    assert len(content) <= 100
+
+
+def test_cache_avoids_rereads_same_mtime(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "h"))
+    (tmp_path / "h").mkdir()
+
+    target = tmp_path / "x.md"
+    target.write_text("v1", encoding="utf-8")
+
+    from deile.core import deile_md_loader as mod
+
+    call_counter = {"n": 0}
+    real_read_if_exists = mod._read_if_exists
+
+    def counted(path):
+        if str(path) == str(target):
+            call_counter["n"] += 1
+        return real_read_if_exists(path)
+
+    monkeypatch.setattr(mod, "_read_if_exists", counted)
+
+    assert mod._read_cached(target) == "v1"
+    assert mod._read_cached(target) == "v1"
+    assert mod._read_cached(target) == "v1"
+    # Apenas uma leitura efetiva — as outras vieram do cache.
+    assert call_counter["n"] == 1
+
+
+def test_cache_invalidates_when_mtime_changes(tmp_path):
+    import os
+    target = tmp_path / "x.md"
+    target.write_text("v1", encoding="utf-8")
+
+    from deile.core import deile_md_loader as mod
+    assert mod._read_cached(target) == "v1"
+
+    target.write_text("v2", encoding="utf-8")
+    # Garante mtime distinto
+    os.utime(target, (target.stat().st_atime, target.stat().st_mtime + 1.0))
+    assert mod._read_cached(target) == "v2"
 
 
 # ── get_stats ───────────────────────────────────────────────────────────────
