@@ -75,6 +75,20 @@ async def test_url_must_be_http(tool, ctx_factory):
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
 
+async def test_ambiguous_input_rejected(tool, ctx_factory):
+    """Multiple input sources at once → VISION_BAD_INPUT (no silent pick)."""
+    res = await tool.execute(
+        ctx_factory(
+            image_base64=PNG_1x1_B64,
+            mime_type="image/png",
+            image_url="https://example.com/x.png",
+        )
+    )
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+    assert "exactly ONE" in res.message
+
+
 # ---- happy path with monkeypatched gemini -----------------------------------
 
 

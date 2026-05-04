@@ -129,9 +129,19 @@ class VisionDescribeImageTool(Tool):
         prompt = (args.get("prompt") or _DEFAULT_PROMPT).strip()
         model = (args.get("model") or _resolve_vision_model()).strip()
 
-        if not url and not b64 and not path:
+        sources = [s for s in (url, b64, path) if s]
+        if not sources:
             return ToolResult.error_result(
                 "must provide image_url, image_path, or image_base64",
+                error_code="VISION_BAD_INPUT",
+            )
+        if len(sources) > 1:
+            # Reject ambiguity instead of picking one silently — the agent
+            # should commit to a single source so we don't waste a vision
+            # call on an image the user didn't actually intend.
+            return ToolResult.error_result(
+                "provide exactly ONE of image_url, image_path, image_base64 "
+                "(got multiple)",
                 error_code="VISION_BAD_INPUT",
             )
         if b64 and not mime:
