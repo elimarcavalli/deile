@@ -1,13 +1,13 @@
 """Working Memory - Cache de curto prazo e contexto ativo"""
 
 import asyncio
+import hashlib
+import json
 import logging
 import time
-from typing import Dict, List, Optional, Any, Set
-from dataclasses import dataclass, field
 from collections import OrderedDict
-import json
-import hashlib
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ class WorkingMemory:
             str: ID da entrada criada
         """
         # Gera ID baseado no conteúdo e timestamp
-        content_hash = hashlib.md5(content.encode()).hexdigest()[:8]
+        content_hash = hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()[:8]
         entry_id = f"{entry_type}_{content_hash}_{int(time.time())}"
 
         # Cria entrada

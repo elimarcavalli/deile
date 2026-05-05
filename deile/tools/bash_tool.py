@@ -1,14 +1,14 @@
 """Enhanced Bash Tool - PTY support, tee, security and artifacts - SITUAÇÃO 4"""
 
+import logging
 import os
+import platform
+import re
+import subprocess
 import sys
 import time
-import subprocess
-import platform
-from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
-import logging
-import re
+from typing import Any, Dict, List, Optional, Tuple
 
 # PTY imports for Unix-like systems
 try:
@@ -20,11 +20,10 @@ except ImportError as e:
     logging.warning(f"PTY modules not available: {e}")
     PTY_AVAILABLE = False
 
-from .base import SyncTool, ToolContext, ToolResult, ToolStatus, DisplayPolicy
 from ..core.exceptions import ToolError
-from ..security.permissions import PermissionManager
 from ..orchestration.artifact_manager import ArtifactManager
-
+from ..security.permissions import PermissionManager
+from .base import DisplayPolicy, SyncTool, ToolContext, ToolResult, ToolStatus
 
 logger = logging.getLogger(__name__)
 
@@ -202,14 +201,14 @@ class BashExecuteTool(SyncTool):
         try:
             import pty
             import select
-            
+
             # Create master and slave PTY
             master_fd, slave_fd = pty.openpty()
             
             # Start process with PTY
             process = subprocess.Popen(
                 command,
-                shell=True,
+                shell=True,  # nosec B602 — intentional: BashExecuteTool is a shell-execution primitive; command passes security assessment before reaching here
                 cwd=working_dir,
                 env=env,
                 stdin=slave_fd,

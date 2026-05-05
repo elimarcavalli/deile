@@ -3,21 +3,23 @@
 import asyncio
 import logging
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
-from rich.text import Text
 from rich import box
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
-from .base import CommandResult, CommandContext
-from ..tools.execution_tools import EnhancedExecutionTool
-from ..tools.base import ToolContext
 from deile.config.settings import get_settings
+
+from ..tools.base import ToolContext
+from ..tools.execution_tools import EnhancedExecutionTool
+from .base import CommandContext, CommandResult
 
 logger = logging.getLogger(__name__)
 
@@ -240,7 +242,10 @@ class CommandActions:
                     if hasattr(self.ui_manager, 'show_welcome'):
                         self.ui_manager.show_welcome()
                 else:
-                    os.system('cls' if os.name == 'nt' else 'clear')
+                    if os.name == 'nt':
+                        subprocess.run(['cmd', '/c', 'cls'], check=False)
+                    else:
+                        subprocess.run(['clear'], check=False)
                 
                 # Mensagem de reset completo
                 reset_panel = Panel(
@@ -276,7 +281,10 @@ class CommandActions:
                         self.ui_manager.show_welcome()
                 else:
                     # Fallback: clear via console
-                    os.system('cls' if os.name == 'nt' else 'clear')
+                    if os.name == 'nt':
+                        subprocess.run(['cmd', '/c', 'cls'], check=False)
+                    else:
+                        subprocess.run(['clear'], check=False)
             
             # Mensagem de confirmação
             success_panel = Panel(

@@ -1,15 +1,14 @@
 """Artifact Management System for DEILE"""
 
-from pathlib import Path
-import json
-import time
-import hashlib
-import uuid
-from typing import Dict, Any, Optional, List
-from dataclasses import dataclass, asdict
-import logging
 import gzip
-
+import hashlib
+import json
+import logging
+import time
+import uuid
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +48,7 @@ class ArtifactManager:
     def _hash_input(self, input_data: Any) -> str:
         """Generate hash of input data"""
         input_str = json.dumps(input_data, sort_keys=True)
-        return hashlib.md5(input_str.encode()).hexdigest()
+        return hashlib.md5(input_str.encode(), usedforsecurity=False).hexdigest()
         
     def _should_compress(self, data_size: int) -> bool:
         """Determine if data should be compressed (>10KB)"""

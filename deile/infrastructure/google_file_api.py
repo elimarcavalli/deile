@@ -1,19 +1,18 @@
 """Google File API Integration - Enterprise Grade Implementation"""
 
 import asyncio
+import hashlib
 import logging
+import mimetypes
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Any, Optional, List
-import mimetypes
-import hashlib
+from typing import Any, Dict, List, Optional
 
 from google import genai
 from google.genai import errors as genai_errors
 
 from ..core.exceptions import DEILEError
-
 
 logger = logging.getLogger(__name__)
 
@@ -286,7 +285,7 @@ class GoogleFileUploader:
         """Calcula hash MD5 do arquivo para cache"""
         try:
             def _hash_file():
-                hash_md5 = hashlib.md5()
+                hash_md5 = hashlib.md5(usedforsecurity=False)
                 with open(file_path, "rb") as f:
                     for chunk in iter(lambda: f.read(4096), b""):
                         hash_md5.update(chunk)
