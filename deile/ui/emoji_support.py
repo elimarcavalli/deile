@@ -4,8 +4,9 @@ This module provides intelligent emoji rendering that falls back to text
 equivalents on systems that don't support Unicode emojis properly.
 """
 
-import sys
 import os
+import subprocess
+import sys
 from typing import Dict, Optional
 
 
@@ -36,7 +37,7 @@ class EmojiManager:
         if sys.platform == "win32":
             try:
                 # Try to set console to UTF-8
-                os.system('chcp 65001 >nul 2>&1')
+                subprocess.run(['cmd', '/c', 'chcp', '65001'], capture_output=True, check=False)
                 # Most modern Windows terminals support emojis now
                 return True
             except:
@@ -136,7 +137,7 @@ class EmojiManager:
         if sys.platform == "win32":
             try:
                 # Set console code page to UTF-8
-                os.system('chcp 65001 >nul 2>&1')
+                subprocess.run(['cmd', '/c', 'chcp', '65001'], capture_output=True, check=False)
                 
                 # Set environment variables for better Unicode support
                 os.environ['PYTHONIOENCODING'] = 'utf-8'

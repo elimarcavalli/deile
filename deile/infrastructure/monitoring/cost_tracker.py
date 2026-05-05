@@ -13,12 +13,12 @@ import logging
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
-from pathlib import Path
-from typing import Dict, Any, List, Optional, Union, Callable
 from enum import Enum
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from deile.core.context_manager import ContextManager
 
@@ -638,36 +638,35 @@ class CostTracker:
                 
                 where_sql = " AND ".join(where_clauses)
                 
-                # Total amount and entry count
+                # nosec B608 — where_sql is built from hardcoded clause strings only;
+                # all user-controlled values are bound via the `params` list (parameterised query).
                 cursor = conn.execute(f"""
                     SELECT COALESCE(SUM(amount), 0), COUNT(*)
                     FROM cost_entries
                     WHERE {where_sql}
-                """, params)
-                
+                """, params)  # nosec B608
+
                 total_amount, entry_count = cursor.fetchone()
-                
-                # Category breakdown
+
                 cursor = conn.execute(f"""
                     SELECT category, COALESCE(SUM(amount), 0)
                     FROM cost_entries
                     WHERE {where_sql}
                     GROUP BY category
                     ORDER BY SUM(amount) DESC
-                """, params)
-                
+                """, params)  # nosec B608
+
                 categories = {}
                 for row in cursor.fetchall():
                     categories[row[0]] = Decimal(str(row[1]))
-                
-                # Top expenses
+
                 cursor = conn.execute(f"""
                     SELECT category, subcategory, amount, description, timestamp
                     FROM cost_entries
                     WHERE {where_sql}
                     ORDER BY amount DESC
                     LIMIT 10
-                """, params)
+                """, params)  # nosec B608
                 
                 top_expenses = []
                 for row in cursor.fetchall():

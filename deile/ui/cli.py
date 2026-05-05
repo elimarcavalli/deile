@@ -1,8 +1,10 @@
 """Interface CLI principal"""
 
-from typing import Optional, Dict, Any
 import os
+import subprocess
 import sys
+from typing import Any, Dict, Optional
+
 from rich.console import Console
 from rich.prompt import Prompt
 from rich.table import Table
@@ -130,7 +132,10 @@ class CLI:
     
     def clear_screen(self) -> None:
         """Limpa a tela"""
-        os.system('cls' if os.name == 'nt' else 'clear')
+        if os.name == 'nt':
+            subprocess.run(['cmd', '/c', 'cls'], check=False)
+        else:
+            subprocess.run(['clear'], check=False)
     
     def print_goodbye(self) -> None:
         """Mensagem de despedida"""

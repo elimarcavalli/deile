@@ -11,21 +11,21 @@ otimizado para agentes autônomos, seguindo as melhores práticas:
 - Métricas e observabilidade
 """
 
-import re
-import time
 import hashlib
 import logging
-from typing import Dict, List, Optional, Tuple, Any, Set
+import re
+import time
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-import yaml
+from typing import Any, Dict, List, Optional, Set, Tuple
+
 import numpy as np
-from collections import defaultdict, deque
+import yaml
 
-from .exceptions import DEILEError
 from ..parsers.base import ParseResult
-
+from .exceptions import DEILEError
 
 logger = logging.getLogger(__name__)
 
@@ -666,7 +666,7 @@ class IntentAnalyzer:
             cache_data += f"|tools:{len(parse_result.tool_requests or [])}"
             cache_data += f"|files:{len(parse_result.file_references or [])}"
 
-        return hashlib.md5(cache_data.encode()).hexdigest()
+        return hashlib.md5(cache_data.encode(), usedforsecurity=False).hexdigest()
 
     def _get_from_cache(self, cache_key: str) -> Optional[IntentAnalysisResult]:
         """Recupera resultado do cache"""

@@ -12,12 +12,12 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import List, Optional, Dict, Any, Callable, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 if platform.system() == "Windows":
     WINDOWS_PTY_AVAILABLE = False
-    import msvcrt
     import ctypes
+    import msvcrt
     from ctypes import wintypes
 else:
     try:
@@ -27,8 +27,8 @@ else:
     except ImportError:
         UNIX_PTY_AVAILABLE = False
 
-from .base import SyncTool, AsyncTool, ToolContext, ToolResult, ToolStatus
 from ..core.exceptions import ToolError, ValidationError
+from .base import AsyncTool, SyncTool, ToolContext, ToolResult, ToolStatus
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ class PTYSession:
                     
             self.process = subprocess.Popen(
                 self.command,
-                shell=True,
+                shell=True,  # nosec B602 — intentional: EnhancedExecutionTool is a shell-execution primitive; caller validates command before dispatch
                 cwd=self.working_dir,
                 env=self.env,
                 stdin=subprocess.PIPE,
@@ -110,7 +110,7 @@ class PTYSession:
             
             self.process = subprocess.Popen(
                 self.command,
-                shell=True,
+                shell=True,  # nosec B602 — intentional: PTY mode; same security boundary as non-PTY path
                 cwd=self.working_dir,
                 env=self.env,
                 stdin=self.slave_fd,
@@ -503,7 +503,7 @@ class EnhancedExecutionTool(SyncTool):
             # Execute with timeout
             result = subprocess.run(
                 command,
-                shell=True,
+                shell=True,  # nosec B602 — intentional: execution tool; command validated upstream
                 cwd=context.working_directory,
                 env=full_env,
                 capture_output=True,

@@ -9,17 +9,18 @@ Version: 3.0.0 ULTRA
 License: MIT
 """
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any, Set, Tuple, Callable, Union
-from enum import Enum, auto
-from pydantic import BaseModel, Field, field_validator, model_validator
-import logging
-import time
 import hashlib
 import json
+import logging
+import time
+from abc import ABC, abstractmethod
 from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from enum import Enum, auto
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -508,7 +509,7 @@ class AgentContext:
 
     def cache_tool_result(self, tool_call: str, result: Any, ttl_seconds: int = 300):
         """Cache tool execution result"""
-        cache_key = hashlib.md5(tool_call.encode()).hexdigest()
+        cache_key = hashlib.md5(tool_call.encode(), usedforsecurity=False).hexdigest()
         self.tool_results_cache[cache_key] = {
             "result": result,
             "timestamp": time.time(),
@@ -517,7 +518,7 @@ class AgentContext:
 
     def get_cached_tool_result(self, tool_call: str) -> Optional[Any]:
         """Get cached tool result if still valid"""
-        cache_key = hashlib.md5(tool_call.encode()).hexdigest()
+        cache_key = hashlib.md5(tool_call.encode(), usedforsecurity=False).hexdigest()
         if cache_key in self.tool_results_cache:
             cached = self.tool_results_cache[cache_key]
             if time.time() - cached['timestamp'] < cached['ttl']:
@@ -754,7 +755,7 @@ After completing the task:
 
         # Create plan
         plan = ToolOrchestrationPlan(
-            task_id=hashlib.md5(task.encode()).hexdigest()[:8],
+            task_id=hashlib.md5(task.encode(), usedforsecurity=False).hexdigest()[:8],
             tools_required=required_tools,
             execution_strategy=strategy,
             dependencies=dependencies,
@@ -835,7 +836,7 @@ After completing the task:
 
     def _get_cache_key(self, task: str, context_hash: str) -> str:
         """Generate cache key for response"""
-        return hashlib.md5(f"{task}:{context_hash}".encode()).hexdigest()
+        return hashlib.md5(f"{task}:{context_hash}".encode(), usedforsecurity=False).hexdigest()
 
     def _should_use_cache(self, cache_key: str) -> bool:
         """Check if cached response should be used"""
