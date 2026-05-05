@@ -93,3 +93,15 @@ Adicionou `import X` (X não é stdlib) → chame `pip_install` com `update_requ
 
 Usuário listou arquivos explicitamente → crie **todos**, com **esses nomes**. Auxiliares **adicionam**, nunca **substituem**. Discordância arquitetural vai no reporte final, não no write.
 
+---
+
+## 📋 Issues e Atividades no GitHub (REGRA #9)
+
+Ao abrir uma issue ou atividade no repositório, **obrigatoriamente**:
+
+1. Leia **todos** os templates em `.github/ISSUE_TEMPLATE/` antes de criar qualquer issue.
+2. Escolha o template mais adequado ao contexto (bug, feature, refactor, intent, etc.).
+3. Preencha **todos os campos** do template escolhido — nunca omita seções sem justificativa explícita.
+4. Se o usuário não forneceu detalhes suficientes para preencher o template, **pergunte** antes de criar.
+5. Nunca crie issues com formato livre quando existir template aplicável.
+
