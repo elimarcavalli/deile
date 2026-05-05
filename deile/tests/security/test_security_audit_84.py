@@ -19,10 +19,7 @@ Four invariants pinned by this file:
 from __future__ import annotations
 
 import ast
-import io
 import re
-import sys
-import tokenize
 from pathlib import Path
 
 import pytest
@@ -100,6 +97,7 @@ def test_md5_has_usedforsecurity_false(rel_path: str) -> None:
 OS_SYSTEM_FREE_FILES = [
     "deile/commands/actions.py",
     "deile/ui/cli.py",
+    "deile/ui/emoji_support.py",
 ]
 
 

@@ -3,7 +3,6 @@
 import asyncio
 import logging
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -242,10 +241,7 @@ class CommandActions:
                     if hasattr(self.ui_manager, 'show_welcome'):
                         self.ui_manager.show_welcome()
                 else:
-                    if os.name == 'nt':
-                        subprocess.run(['cmd', '/c', 'cls'], check=False)
-                    else:
-                        subprocess.run(['clear'], check=False)
+                    print("\033c", end="", flush=True)
                 
                 # Mensagem de reset completo
                 reset_panel = Panel(
@@ -280,11 +276,7 @@ class CommandActions:
                     if hasattr(self.ui_manager, 'show_welcome'):
                         self.ui_manager.show_welcome()
                 else:
-                    # Fallback: clear via console
-                    if os.name == 'nt':
-                        subprocess.run(['cmd', '/c', 'cls'], check=False)
-                    else:
-                        subprocess.run(['clear'], check=False)
+                    print("\033c", end="", flush=True)
             
             # Mensagem de confirmação
             success_panel = Panel(
