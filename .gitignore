@@ -45,3 +45,4 @@ deilebot.yaml
 .opendeile/*
 /deilebot/
 /deilebot.egg-info/
+.worktrees/
