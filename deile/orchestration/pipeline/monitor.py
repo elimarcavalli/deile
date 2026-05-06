@@ -23,15 +23,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 from deile.orchestration.pipeline.claude_dispatcher import (
     ClaudeDispatcher, render_implement_prompt, render_review_prompt)
+from deile.orchestration.pipeline.constants import (PIPELINE_MSG_TRUNCATE_CHARS,
+                                                    PIPELINE_POLL_INTERVAL_SECONDS,
+                                                    PIPELINE_STOP_TIMEOUT_SECONDS)
 from deile.orchestration.pipeline.github_client import (GhCommandError,
                                                         GitHubClient,
-                                                        IssueRef, PrRef)
+                                                        IssueRef)
 from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
@@ -41,8 +44,7 @@ from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
                                                  WORKFLOW_REVIEWING)
 from deile.orchestration.pipeline.lockfile import LockHeldError, acquire as acquire_lock, release as release_lock
 from deile.orchestration.pipeline.notifier import DiscordNotifier
-from deile.orchestration.pipeline.scheduler import (PendingRun, Schedule,
-                                                    ScheduleStore)
+from deile.orchestration.pipeline.scheduler import (PendingRun, ScheduleStore)
 from deile.orchestration.pipeline.worktree_manager import WorktreeManager
 
 logger = logging.getLogger(__name__)
@@ -54,7 +56,7 @@ _PR_URL_RE = re.compile(r"https://github\.com/[^\s\"'<>]+/pull/\d+", re.IGNORECA
 class PipelineConfig:
     repo: str
     base_repo_path: Path
-    poll_interval_seconds: int = 60
+    poll_interval_seconds: int = PIPELINE_POLL_INTERVAL_SECONDS
     main_branch: str = "main"
     # ``branch_prefix`` is the *legacy* per-instance default. When an
     # ``identity`` is provided to :class:`PipelineMonitor`, the actual prefix
@@ -153,6 +155,10 @@ class PipelineMonitor:
     def stats(self) -> _Stats:
         return self._stats
 
+    @property
+    def is_running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
     # ------------------------------------------------------------------
     # lifecycle
     # ------------------------------------------------------------------
@@ -170,7 +176,7 @@ class PipelineMonitor:
         worktree sub-directory and schedule file. The lockfile is the last line
         of defence against operator error.
         """
-        if self._task is not None and not self._task.done():
+        if self.is_running:
             return
         should_lock = self.config.use_pid_lock or not self.identity.is_default
         if should_lock:
@@ -228,7 +234,7 @@ class PipelineMonitor:
         self._stop_event.set()
         if self._task is not None:
             try:
-                await asyncio.wait_for(self._task, timeout=5)
+                await asyncio.wait_for(self._task, timeout=PIPELINE_STOP_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
                 self._task.cancel()
                 try:
@@ -254,6 +260,12 @@ class PipelineMonitor:
             except asyncio.TimeoutError:
                 pass
 
+    def _this_monitor_owns(self, issue: IssueRef) -> bool:
+        """Return True if this monitor should process the given issue."""
+        if self.identity.is_default:
+            return self.identity.owns(issue.title)
+        return self.identity.ownership_label() in issue.labels
+
     # ------------------------------------------------------------------
     # one tick
     # ------------------------------------------------------------------
@@ -268,7 +280,8 @@ class PipelineMonitor:
         # back to legacy "every action every tick" behaviour.
         try:
             schedule = self.schedule_store.load()
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("schedule load failed on tick; falling back to legacy mode: %s", exc)
             schedule = None
         if schedule and (schedule.recurring or schedule.oneshot):
             pending = schedule.compute_pending()
@@ -339,20 +352,13 @@ class PipelineMonitor:
         except GhCommandError as exc:
             logger.warning("could not list reviewed issues: %s", exc)
             return
-        # Stage 2 only picks up issues this monitor claimed in stage 1
-        # (ownership label) OR — for backwards compat — issues with a batch
-        # lock when running with the default identity.
-        own = self.identity.ownership_label()
+        # Stage 2 only picks up issues this monitor claimed in stage 1.
         target = next(
             (
                 i for i in issues
                 if WORKFLOW_PR not in i.labels
                 and i.batch_id is not None
-                and (
-                    own in i.labels
-                    if not self.identity.is_default
-                    else self.identity.owns(i.title)
-                )
+                and self._this_monitor_owns(i)
             ),
             None,
         )
@@ -373,7 +379,7 @@ class PipelineMonitor:
         pr_url = _extract_pr_url(result.stdout)
         if not result.ok:
             await self.notifier.error(
-                f"implement #{target.number}", result.stderr.strip()[:1500] or "non-zero exit"
+                f"implement #{target.number}", result.stderr.strip()[:PIPELINE_MSG_TRUNCATE_CHARS] or "non-zero exit"
             )
             return
         try:

@@ -16,17 +16,15 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
+from deile.orchestration.pipeline.constants import PIPELINE_DEFAULT_REPO
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
 
 
-_DEFAULT_REPO = "elimarcavalli/deile"
-
-
 def _resolve_repo() -> str:
-    return os.environ.get("DEILE_PIPELINE_REPO", _DEFAULT_REPO)
+    return os.environ.get("DEILE_PIPELINE_REPO", PIPELINE_DEFAULT_REPO)
 
 
 def _resolve_base_path() -> Path:

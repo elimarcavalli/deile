@@ -14,6 +14,6 @@ The three LLM-callable tools (CronCreate / CronList / CronDelete) live
 under ``deile/tools/`` for registry auto-discovery.
 """
 
-from deile.cron.store import CronEntry, CronStore
+from deile.cron.store import CronEntry, CronStore, resolve_db_path
 
-__all__ = ["CronEntry", "CronStore"]
+__all__ = ["CronEntry", "CronStore", "resolve_db_path"]

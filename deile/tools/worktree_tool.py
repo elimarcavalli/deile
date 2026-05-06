@@ -32,7 +32,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from deile.orchestration.pipeline.worktree_manager import (WorktreeError,
                                                            WorktreeManager)
@@ -224,15 +224,16 @@ class WorktreeTool(Tool):
             )
 
         entries = []
-        for item in sorted(worktrees_dir.rglob("*")):
-            if item.is_dir() and (item / ".git").exists():
-                entries.append(
-                    {
-                        "path": str(item),
-                        "branch": item.name,
-                        "base_repo": str(base_path),
-                    }
-                )
+        for item in sorted(worktrees_dir.iterdir()):
+            if not item.is_dir():
+                continue
+            if (item / ".git").exists():
+                entries.append({"path": str(item), "branch": item.name, "base_repo": str(base_path)})
+            else:
+                # One level deeper for subdir-namespaced worktrees (e.g. .worktrees/<monitor>/<branch>)
+                for sub in sorted(item.iterdir()):
+                    if sub.is_dir() and (sub / ".git").exists():
+                        entries.append({"path": str(sub), "branch": sub.name, "base_repo": str(base_path)})
 
         return ToolResult.success_result(
             data={"worktrees": entries},

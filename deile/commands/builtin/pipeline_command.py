@@ -18,15 +18,13 @@ from typing import Optional
 
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
 from deile.config.manager import CommandConfig
+from deile.orchestration.pipeline.constants import PIPELINE_DEFAULT_REPO
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
 
 
-_DEFAULT_REPO = "elimarcavalli/deile"
-
-
 def _resolve_repo() -> str:
-    return os.environ.get("DEILE_PIPELINE_REPO", _DEFAULT_REPO)
+    return os.environ.get("DEILE_PIPELINE_REPO", PIPELINE_DEFAULT_REPO)
 
 
 def _resolve_base_path() -> Path:
@@ -55,7 +53,8 @@ class PipelineCommand(DirectCommand):
         self.category = "orchestration"
 
     async def execute(self, context: CommandContext) -> CommandResult:
-        sub = (context.args.strip().split(" ", 1) + [""])[0].lower() or "status"
+        parts = context.args.strip().split(None, 1)
+        sub = parts[0].lower() if parts else "status"
         agent = context.agent
         monitor: Optional[PipelineMonitor] = getattr(agent, "pipeline_monitor", None)
 
@@ -93,7 +92,7 @@ class PipelineCommand(DirectCommand):
             )
         # default: status
         s = monitor.stats
-        running = monitor._task is not None and not monitor._task.done()  # type: ignore[union-attr]
+        running = monitor.is_running
         return CommandResult(
             success=True,
             content=(

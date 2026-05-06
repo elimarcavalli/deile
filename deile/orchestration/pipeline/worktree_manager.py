@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -129,11 +128,13 @@ class WorktreeManager:
         # Create / switch to the feature branch.
         rc, _, err = await self._git_in_capture(target, "checkout", "-b", branch)
         if rc != 0:
-            # Branch may already exist locally; try a plain checkout.
+            # Branch may already exist; try plain checkout and surface both errors on failure.
+            logger.debug("checkout -b %s failed (%s); trying plain checkout", branch, err.strip()[:200])
             rc2, _, err2 = await self._git_in_capture(target, "checkout", branch)
             if rc2 != 0:
                 raise WorktreeError(
-                    f"could not create branch {branch!r} in {target}: {err or err2}"
+                    f"could not create or checkout branch {branch!r} in {target}: "
+                    f"create-err={err.strip()[:200]!r} checkout-err={err2.strip()[:200]!r}"
                 )
         return Worktree(path=target, branch=branch, base_repo=self.base_repo)
 
@@ -156,16 +157,10 @@ class WorktreeManager:
 
     @staticmethod
     async def _git_in(cwd: Path, *args: str) -> None:
-        proc = await asyncio.create_subprocess_exec(
-            "git", "-C", str(cwd), *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr_b = await proc.communicate()
-        if (proc.returncode or 0) != 0:
+        rc, _, err = await WorktreeManager._git_in_capture(cwd, *args)
+        if rc != 0:
             raise WorktreeError(
-                f"git -C {cwd} {' '.join(args)} failed: "
-                f"{stderr_b.decode('utf-8', 'replace').strip()[:300]}"
+                f"git -C {cwd} {' '.join(args)} failed: {err.strip()[:300]}"
             )
 
     @staticmethod

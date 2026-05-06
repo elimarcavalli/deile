@@ -40,10 +40,10 @@ case where every missed slot must run individually.
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import List, Optional
 
 import yaml
 

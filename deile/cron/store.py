@@ -14,6 +14,7 @@ entries. The ``next_fire_at`` column is denormalized so the runner can
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import threading
 import uuid
@@ -27,6 +28,17 @@ from deile.core.exceptions import DEILEError
 from deile.orchestration.pipeline.cron import CronExpressionError, next_after
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_db_path() -> Path:
+    """Return the CronStore DB path from env vars or a cwd-relative default."""
+    raw = os.environ.get("DEILE_CRON_DB_PATH")
+    if raw:
+        return Path(raw).resolve()
+    base = os.environ.get("DEILE_PIPELINE_BASE_PATH")
+    if base:
+        return Path(base).resolve() / "data" / "cron.db"
+    return Path.cwd() / "data" / "cron.db"
 
 
 class CronStoreError(DEILEError):
@@ -206,16 +218,19 @@ class CronStore:
 
     def mark_fired(self, entry_id: str, *, when: Optional[datetime] = None,
                    result: Optional[str] = None) -> None:
-        """Update ``last_fired_at`` + ``next_fire_at`` after firing."""
+        """Update ``last_fired_at`` + ``next_fire_at`` after firing (atomic)."""
         when = when or _now_utc()
-        entry = self.get(entry_id)
-        if entry is None:
-            return
-        entry.last_fired_at = when
-        if result is not None:
-            entry.last_result = result[:1000]
-        entry.advance(after=when)
         with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM cron_entries WHERE id = ?", (entry_id,)
+            ).fetchone()
+            if row is None:
+                return
+            entry = self._row_to_entry(row)
+            entry.last_fired_at = when
+            if result is not None:
+                entry.last_result = result[:1000]
+            entry.advance(after=when)
             conn.execute(
                 """UPDATE cron_entries
                    SET last_fired_at = ?, next_fire_at = ?, enabled = ?,
@@ -243,7 +258,7 @@ class CronStore:
     @staticmethod
     def _row_to_entry(row: sqlite3.Row) -> CronEntry:
         # Build via __new__ to bypass __post_init__'s next_fire_at recompute
-        # (we trust the persisted value).
+        # (we trust the persisted value for next_fire_at).
         e = CronEntry.__new__(CronEntry)
         e.id = row["id"]
         e.prompt = row["prompt"]
@@ -256,6 +271,11 @@ class CronStore:
         e.enabled = bool(row["enabled"])
         e.created_at = _from_iso(row["created_at"]) or _now_utc()
         e.last_result = row["last_result"]
+        # Guard: cron XOR run_at — catches DB corruption early.
+        assert bool(e.cron) != bool(e.run_at), (
+            f"DB row {e.id!r}: expected exactly one of cron/run_at, "
+            f"got cron={e.cron!r} run_at={e.run_at!r}"
+        )
         return e
 
 

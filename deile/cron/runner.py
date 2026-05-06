@@ -21,9 +21,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
+from deile.cron.constants import (CRON_DM_PROMPT_MAX_CHARS, CRON_DM_RESULT_MAX_CHARS,
+                                  CRON_POLL_INTERVAL_SECONDS, CRON_RESULT_MAX_CHARS,
+                                  CRON_STOP_TIMEOUT_SECONDS)
 from deile.cron.store import CronEntry, CronStore
 
 logger = logging.getLogger(__name__)
@@ -44,7 +46,7 @@ class CronRunner:
         store: CronStore,
         *,
         fire_callback: Optional[FireCallback] = None,
-        poll_interval_seconds: int = 30,
+        poll_interval_seconds: int = CRON_POLL_INTERVAL_SECONDS,
         notify_dm: Optional[Callable[[str, str], Awaitable[dict]]] = None,
     ) -> None:
         self.store = store
@@ -73,7 +75,7 @@ class CronRunner:
         self._stop_event.set()
         if self._task is not None:
             try:
-                await asyncio.wait_for(self._task, timeout=5)
+                await asyncio.wait_for(self._task, timeout=CRON_STOP_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
                 self._task.cancel()
                 try:
@@ -99,7 +101,7 @@ class CronRunner:
                 # Even on error, mark fired so we don't loop on a poison entry.
                 self.store.mark_fired(
                     entry.id, when=datetime.now(timezone.utc),
-                    result=f"error: {type(exc).__name__}: {exc}"[:500],
+                    result=f"error: {type(exc).__name__}: {exc}"[:CRON_RESULT_MAX_CHARS],
                 )
         return fired
 
@@ -110,13 +112,13 @@ class CronRunner:
             self.store.mark_fired(entry.id, result="skipped: no callback")
             return
         result_summary = await cb(entry)
-        self.store.mark_fired(entry.id, result=str(result_summary)[:500])
+        self.store.mark_fired(entry.id, result=str(result_summary)[:CRON_RESULT_MAX_CHARS])
         if self.notify_dm and entry.notify_user_id and result_summary:
             try:
                 msg = (
                     f"⏰ **Tarefa agendada executada** ({entry.id})\n"
-                    f"> {entry.prompt[:300]}\n\n"
-                    f"**Resultado:** {str(result_summary)[:1500]}"
+                    f"> {entry.prompt[:CRON_DM_PROMPT_MAX_CHARS]}\n\n"
+                    f"**Resultado:** {str(result_summary)[:CRON_DM_RESULT_MAX_CHARS]}"
                 )
                 await self.notify_dm(entry.notify_user_id, msg)
             except Exception as exc:  # noqa: BLE001
