@@ -250,8 +250,21 @@ class GitHubClient:
         if current.batch_id is not None:
             return None
         batch_id = compute_batch_id(title)
-        await self.add_labels(kind, number, [make_batch_label(batch_id)])
+        label = make_batch_label(batch_id)
+        await self._ensure_label(label, color="d73a4a", description="Pipeline batch lock")
+        await self.add_labels(kind, number, [label])
         return batch_id
+
+    async def _ensure_label(self, name: str, *, color: str, description: str) -> None:
+        """Create label if it doesn't exist; ignore "already exists" errors."""
+        rc, _, err = await self._run(
+            "label", "create", name,
+            "--repo", self.repo,
+            "--color", color,
+            "--description", description,
+        )
+        if rc != 0 and "already exists" not in err.lower():
+            logger.debug("ensure_label %s: rc=%d err=%s", name, rc, err.strip()[:200])
 
     async def ensure_pipeline_labels(self) -> None:
         """Create all pipeline-managed labels on the repo if they don't exist."""
