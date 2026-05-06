@@ -70,13 +70,13 @@ class TestCronCreate:
         r = await tool.execute(_ctx(prompt="x", cron="* * * * *",
                                     run_at="2030-01-01T00:00:00Z"))
         assert r.status == ToolStatus.ERROR
-        assert r.metadata["error_code"] == "INVALID_SCHEDULE"
+        assert r.metadata["error_code"] == "AMBIGUOUS_SCHEDULE"
 
     async def test_neither_cron_nor_run_at_rejected(self, cron_db):
         tool = CronCreateTool()
         r = await tool.execute(_ctx(prompt="x"))
         assert r.status == ToolStatus.ERROR
-        assert r.metadata["error_code"] == "INVALID_SCHEDULE"
+        assert r.metadata["error_code"] == "MISSING_SCHEDULE"
 
     async def test_invalid_run_at(self, cron_db):
         tool = CronCreateTool()

@@ -2,22 +2,9 @@
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
-from deile.cron.store import CronStore
+from deile.cron.store import CronStore, resolve_db_path
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
-
-
-def _resolve_db_path() -> Path:
-    raw = os.environ.get("DEILE_CRON_DB_PATH")
-    if raw:
-        return Path(raw).resolve()
-    base = os.environ.get("DEILE_PIPELINE_BASE_PATH")
-    if base:
-        return Path(base).resolve() / "data" / "cron.db"
-    return Path.cwd() / "data" / "cron.db"
 
 
 class CronListTool(Tool):
@@ -69,7 +56,7 @@ class CronListTool(Tool):
         only_enabled = bool(args.get("only_enabled", False))
         creator = args.get("created_by")
         try:
-            store = CronStore(_resolve_db_path())
+            store = CronStore(resolve_db_path())
             entries = store.list_all(only_enabled=only_enabled)
         except Exception as exc:  # noqa: BLE001
             return ToolResult.error_result(

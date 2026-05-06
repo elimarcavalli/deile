@@ -17,19 +17,18 @@ import json
 import logging
 import shutil
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple
 
+from deile.core.exceptions import DEILEError
 from deile.orchestration.pipeline.labels import (LABEL_COLORS,
                                                  LABEL_DESCRIPTIONS,
                                                  REVIEW_LABELS,
                                                  WORKFLOW_LABELS,
+                                                 batch_id_from_label,
                                                  is_batch_label,
                                                  make_batch_label)
 
 logger = logging.getLogger(__name__)
-
-
-from deile.core.exceptions import DEILEError
 
 
 class GhCommandError(DEILEError):
@@ -56,7 +55,7 @@ class IssueRef:
     def batch_id(self) -> Optional[str]:
         for label in self.labels:
             if is_batch_label(label):
-                return label[len("~batch:"):]
+                return batch_id_from_label(label)
         return None
 
 
@@ -75,7 +74,7 @@ class PrRef:
     def batch_id(self) -> Optional[str]:
         for label in self.labels:
             if is_batch_label(label):
-                return label[len("~batch:"):]
+                return batch_id_from_label(label)
         return None
 
 
@@ -155,6 +154,30 @@ class GitHubClient:
             state=item.get("state", "open"),
         )
 
+    async def get_pr(self, number: int) -> Optional[PrRef]:
+        """Fetch a single PR by number; returns None if not found / not open."""
+        try:
+            out = await self._run_checked(
+                "pr", "view", str(number),
+                "--repo", self.repo,
+                "--json", "number,title,url,labels,headRefName,baseRefName,state,isDraft",
+            )
+        except GhCommandError:
+            return None
+        item = json.loads(out)
+        if item.get("state", "open").lower() not in ("open",):
+            return None
+        return PrRef(
+            number=item["number"],
+            title=item["title"],
+            url=item["url"],
+            labels=tuple(lab["name"] for lab in item.get("labels", [])),
+            head_ref=item.get("headRefName", ""),
+            base_ref=item.get("baseRefName", "main"),
+            state=item.get("state", "open"),
+            is_draft=bool(item.get("isDraft", False)),
+        )
+
     # -- pull requests ------------------------------------------------
 
     async def list_open_prs(self, *, limit: int = 50) -> List[PrRef]:
@@ -202,28 +225,28 @@ class GitHubClient:
             "--remove-label", ",".join(labels_list),
         )
 
-    async def transition_issue(
+    async def transition(
         self,
+        kind: str,
         number: int,
         *,
         from_label: Optional[str],
         to_label: str,
     ) -> None:
-        """Atomically swap a workflow label on an issue."""
+        """Swap a workflow label on an issue or PR (kind='issue'|'pr')."""
         if from_label is not None:
-            await self.remove_labels("issue", number, [from_label])
-        await self.add_labels("issue", number, [to_label])
+            await self.remove_labels(kind, number, [from_label])
+        await self.add_labels(kind, number, [to_label])
+
+    async def transition_issue(
+        self, number: int, *, from_label: Optional[str], to_label: str,
+    ) -> None:
+        await self.transition("issue", number, from_label=from_label, to_label=to_label)
 
     async def transition_pr(
-        self,
-        number: int,
-        *,
-        from_label: Optional[str],
-        to_label: str,
+        self, number: int, *, from_label: Optional[str], to_label: str,
     ) -> None:
-        if from_label is not None:
-            await self.remove_labels("pr", number, [from_label])
-        await self.add_labels("pr", number, [to_label])
+        await self.transition("pr", number, from_label=from_label, to_label=to_label)
 
     async def claim_with_batch(
         self,
@@ -241,8 +264,7 @@ class GitHubClient:
         if kind == "issue":
             current = await self.get_issue(number)
         elif kind == "pr":
-            prs = await self.list_open_prs(limit=200)
-            current = next((p for p in prs if p.number == number), None)
+            current = await self.get_pr(number)
             if current is None:
                 return None
         else:
@@ -268,7 +290,7 @@ class GitHubClient:
 
     async def ensure_pipeline_labels(self) -> None:
         """Create all pipeline-managed labels on the repo if they don't exist."""
-        for label in (*WORKFLOW_LABELS, *REVIEW_LABELS):
+        async def _create_one(label: str) -> None:
             color = LABEL_COLORS.get(label, "ededed")
             description = LABEL_DESCRIPTIONS.get(label, "Pipeline-managed label")
             rc, _, _ = await self._run(
@@ -280,6 +302,8 @@ class GitHubClient:
             # rc != 0 typically means "already exists"; we ignore that case.
             if rc != 0:
                 logger.debug("label %s already exists or could not be created", label)
+
+        await asyncio.gather(*[_create_one(label) for label in (*WORKFLOW_LABELS, *REVIEW_LABELS)])
 
     async def comment_on_issue(self, number: int, text: str) -> None:
         await self._run_checked(

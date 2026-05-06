@@ -18,6 +18,8 @@ import logging
 import os
 from typing import Awaitable, Callable, Optional
 
+from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
+
 logger = logging.getLogger(__name__)
 
 _DM_FN: Optional[Callable[[str, str], Awaitable[dict]]] = None
@@ -115,4 +117,4 @@ class DiscordNotifier:
         await self._send(f"{emoji} **PR #{number} {verb}**: {title}\n🔗 {url}")
 
     async def error(self, where: str, detail: str) -> None:
-        await self._send(f"⚠️ **Pipeline error** em `{where}`:\n```\n{detail[:1500]}\n```")
+        await self._send(f"⚠️ **Pipeline error** em `{where}`:\n```\n{detail[:PIPELINE_MSG_TRUNCATE_CHARS]}\n```")

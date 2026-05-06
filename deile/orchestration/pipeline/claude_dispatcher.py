@@ -9,12 +9,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shlex
 import shutil
 import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Mapping, Optional, Sequence
+
+from deile.orchestration.pipeline.constants import (CLAUDE_TIMEOUT_SECONDS,
+                                                    ISSUE_BODY_MAX_CHARS)
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +49,7 @@ class ClaudeDispatcher:
         self,
         *,
         claude_path: Optional[str] = None,
-        timeout_seconds: int = 1800,
+        timeout_seconds: int = CLAUDE_TIMEOUT_SECONDS,
         prefer_subscription_auth: bool = True,
     ) -> None:
         self._claude = claude_path or shutil.which("claude") or "claude"
@@ -74,8 +78,7 @@ class ClaudeDispatcher:
             return dict(override)
         if not self.prefer_subscription_auth:
             return None
-        import os as _os
-        env = dict(_os.environ)
+        env = dict(os.environ)
         for k in self._STRIP_KEYS:
             env.pop(k, None)
         return env
@@ -178,7 +181,7 @@ def render_implement_prompt(repo: str, number: int, title: str, issue_body: str)
         repo=repo,
         number=number,
         title=title,
-        issue_body=issue_body.strip()[:6000],
+        issue_body=issue_body.strip()[:ISSUE_BODY_MAX_CHARS],
     )
 
 

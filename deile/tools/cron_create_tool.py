@@ -8,28 +8,16 @@ schedule fires.
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
-from deile.cron.store import CronEntry, CronStore, CronStoreError, make_id
+from deile.cron.store import CronEntry, CronStore, CronStoreError, make_id, resolve_db_path
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
 
 
-def _resolve_db_path() -> Path:
-    raw = os.environ.get("DEILE_CRON_DB_PATH")
-    if raw:
-        return Path(raw).resolve()
-    base = os.environ.get("DEILE_PIPELINE_BASE_PATH")
-    if base:
-        return Path(base).resolve() / "data" / "cron.db"
-    return Path.cwd() / "data" / "cron.db"
-
-
 def _get_store() -> CronStore:
-    return CronStore(_resolve_db_path())
+    return CronStore(resolve_db_path())
 
 
 class CronCreateTool(Tool):
@@ -124,10 +112,15 @@ class CronCreateTool(Tool):
                 message="prompt is required and must be non-empty",
                 error_code="MISSING_PROMPT",
             )
-        if bool(cron) == bool(run_at_str):
+        if not cron and not run_at_str:
             return ToolResult.error_result(
-                message="provide EITHER cron OR run_at, not both",
-                error_code="INVALID_SCHEDULE",
+                message="provide either cron (recurring) or run_at (one-shot)",
+                error_code="MISSING_SCHEDULE",
+            )
+        if cron and run_at_str:
+            return ToolResult.error_result(
+                message="cron and run_at are mutually exclusive; provide only one",
+                error_code="AMBIGUOUS_SCHEDULE",
             )
 
         run_at: Optional[datetime] = None

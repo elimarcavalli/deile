@@ -14,7 +14,6 @@ from __future__ import annotations
 import errno
 import logging
 import os
-import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional

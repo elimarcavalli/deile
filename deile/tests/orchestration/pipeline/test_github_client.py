@@ -141,10 +141,10 @@ class TestClaimWithBatch:
             bid = await client.claim_with_batch("issue", 5, "claim me")
         assert bid is None
 
-    async def test_claim_pr_uses_pr_list(self):
+    async def test_claim_pr_uses_pr_view(self):
         client = GitHubClient("owner/name")
         pr = PrRef(number=7, title="t", url="u", labels=(REVIEW_PENDING,))
-        with patch.object(client, "list_open_prs", new=AsyncMock(return_value=[pr])), \
+        with patch.object(client, "get_pr", new=AsyncMock(return_value=pr)), \
              patch.object(client, "_run_checked", new=AsyncMock(return_value="")):
             bid = await client.claim_with_batch("pr", 7, "t")
         assert bid is not None
@@ -221,7 +221,7 @@ class TestEnsureLabelOnClaim:
             calls.append(("_run_checked", *args))
             return ""
 
-        with patch.object(client, "list_open_prs", new=AsyncMock(return_value=[unclaimed_pr])), \
+        with patch.object(client, "get_pr", new=AsyncMock(return_value=unclaimed_pr)), \
              patch.object(client, "_run", side_effect=fake_run), \
              patch.object(client, "_run_checked", side_effect=fake_run_checked):
             bid = await client.claim_with_batch("pr", 11, "pr title")
