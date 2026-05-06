@@ -292,6 +292,12 @@ class ToolRegistry:
                 'deile.tools.bash_tool',
                 'deile.tools.slash_command_executor',
                 'deile.tools.vision_tool',
+                'deile.tools.pipeline_tool',
+                'deile.tools.pipeline_schedule_tool',
+                'deile.tools.cron_create_tool',
+                'deile.tools.cron_list_tool',
+                'deile.tools.cron_delete_tool',
+                'deile.tools.worktree_tool',
             ]
 
         discovered_count = 0

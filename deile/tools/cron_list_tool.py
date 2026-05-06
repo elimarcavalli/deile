@@ -1,0 +1,102 @@
+"""CronListTool — list scheduled prompts (intent #86)."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from deile.cron.store import CronStore
+from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
+                              ToolResult, ToolSchema)
+
+
+def _resolve_db_path() -> Path:
+    raw = os.environ.get("DEILE_CRON_DB_PATH")
+    if raw:
+        return Path(raw).resolve()
+    base = os.environ.get("DEILE_PIPELINE_BASE_PATH")
+    if base:
+        return Path(base).resolve() / "data" / "cron.db"
+    return Path.cwd() / "data" / "cron.db"
+
+
+class CronListTool(Tool):
+    """List scheduled prompts (recurring + one-shot)."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            schema=ToolSchema(
+                name="cron_list",
+                description=(
+                    "List all scheduled prompts (recurring crons + one-shots). "
+                    "Use this to answer 'what's scheduled?' / 'what tasks are "
+                    "pending?'. Set `only_enabled=true` to skip disabled "
+                    "entries. Set `created_by` to filter by who scheduled."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "only_enabled": {
+                            "type": "boolean",
+                            "description": "If true, omit disabled / completed entries.",
+                        },
+                        "created_by": {
+                            "type": "string",
+                            "description": "Filter by creator id (e.g. 'discord:1234').",
+                        },
+                    },
+                    "required": [],
+                },
+                security_level=SecurityLevel.SAFE,
+                category=ToolCategory.SYSTEM,
+            )
+        )
+
+    @property
+    def name(self) -> str:
+        return "cron_list"
+
+    @property
+    def description(self) -> str:
+        return self._schema.description if self._schema else ""
+
+    @property
+    def category(self) -> str:
+        return ToolCategory.SYSTEM.value
+
+    async def execute(self, context: ToolContext) -> ToolResult:
+        args = context.parsed_args or {}
+        only_enabled = bool(args.get("only_enabled", False))
+        creator = args.get("created_by")
+        try:
+            store = CronStore(_resolve_db_path())
+            entries = store.list_all(only_enabled=only_enabled)
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult.error_result(
+                message=f"could not list cron entries: {exc}",
+                error=exc, error_code="LIST_FAILED",
+            )
+
+        if creator:
+            entries = [e for e in entries if e.created_by == creator]
+
+        out = [
+            {
+                "id": e.id,
+                "prompt": e.prompt,
+                "cron": e.cron,
+                "run_at": e.run_at.isoformat() if e.run_at else None,
+                "next_fire_at": e.next_fire_at.isoformat() if e.next_fire_at else None,
+                "last_fired_at": e.last_fired_at.isoformat() if e.last_fired_at else None,
+                "enabled": e.enabled,
+                "is_oneshot": e.is_oneshot,
+                "created_by": e.created_by,
+                "notify_user_id": e.notify_user_id,
+                "last_result": e.last_result,
+            }
+            for e in entries
+        ]
+        return ToolResult.success_result(
+            data={"entries": out, "count": len(out)},
+            message=f"{len(out)} entries scheduled",
+        )

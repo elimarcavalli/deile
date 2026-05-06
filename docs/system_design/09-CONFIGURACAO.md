@@ -101,6 +101,24 @@ pip install deile[bot]              # instala deilebot (apenas httpx + pydantic)
 
 O daemon em si vive em `elimarcavalli/deilebot` e tem extras próprios (`discord`, `telegram`, etc.). Ver `deilebot/pyproject.toml`.
 
+### Pipeline + Cron — variáveis de ambiente
+
+> Todas opcionais. Ausentes, o pipeline e o cron simplesmente não iniciam automaticamente.
+
+| Variável | Uso | Default |
+|---|---|---|
+| `DEILE_PIPELINE_REPO` | Repositório GitHub alvo no formato `owner/repo` | `elimarcavalli/deile` |
+| `DEILE_PIPELINE_BASE_PATH` | Caminho absoluto da raiz do repositório onde `.worktrees/` será criado | Detectado automaticamente (busca ancestral com `.git` + `deile.py`) |
+| `DEILE_PIPELINE_NOTIFY_USER_ID` | Discord snowflake para DMs de notificação de transições de estado | nenhum |
+| `DEILE_PIPELINE_MONITOR_ID` | Identificador único deste monitor (1-32 chars `[a-zA-Z0-9_-]`); aparece em branch names, labels e worktree paths | `default` |
+| `DEILE_PIPELINE_SHARD_INDEX` | Índice do shard neste monitor (int, `[0, SHARD_COUNT)`) | `0` |
+| `DEILE_PIPELINE_SHARD_COUNT` | Total de shards no deploy (int `>= 1`); define quantas issues/PRs cada monitor atende por hash | `1` |
+| `DEILE_PIPELINE_AUTOSTART` | Se `1`, o daemon `deilebot` inicia o `PipelineMonitor` automaticamente no boot | não setado |
+| `DEILE_CRON_AUTOSTART` | Se `1`, o daemon `deilebot` inicia o `CronRunner` automaticamente no boot | não setado |
+| `DEILE_CRON_DB_PATH` | Caminho absoluto do SQLite do `CronStore` | `<DEILE_PIPELINE_BASE_PATH>/data/cron.db` ou `<cwd>/data/cron.db` |
+
+> O `pipeline_tool.py` e o `pipeline_command.py` leem essas variáveis diretamente via `os.environ` (pois são componentes de borda — não domínio); isso está alinhado com a regra "adapters podem ler env, core não pode".
+
 ## Hot-reload
 
 | Componente | Como funciona |

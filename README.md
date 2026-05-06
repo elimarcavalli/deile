@@ -12,6 +12,60 @@
 
 ---
 
+## 🤖 Pipeline autônomo
+
+O DEILE pode operar **autonomamente** sobre o repositório GitHub: quando uma issue recebe o label `~workflow:nova`, o pipeline a implementa e abre uma PR sem intervenção humana.
+
+### Fluxo completo
+
+```
+Discord: "/ideia implementar feature X"
+  → DEILE cria issue com ~workflow:nova
+  → PipelineMonitor tick
+    → Stage 1: DEILE revisa issue → ~workflow:revisada
+    → Stage 2: Claude Code implementa em worktree → PR aberta → ~workflow:em_pr
+    → Stage 3: Claude Code revisa PR → merge → ~review:concluida
+  → Discord: DM com URL da PR
+```
+
+### Quick start do pipeline
+
+Configure as variáveis de ambiente:
+
+```bash
+export DEILE_PIPELINE_REPO=owner/repo
+export DEILE_PIPELINE_BASE_PATH=/caminho/para/repo
+export DEILE_PIPELINE_NOTIFY_USER_ID=123456789012345678  # Discord snowflake (opcional)
+```
+
+Inicie de dentro do REPL:
+
+```
+> /pipeline start          # inicia o loop de polling (1 min)
+> /pipeline status         # mostra contadores
+> /pipeline stop           # para o loop
+```
+
+Ou configure `DEILE_PIPELINE_AUTOSTART=1` para iniciar automaticamente com o daemon.
+
+### Agendamento de tarefas
+
+```
+# Agendar revisão de issues a cada 10 minutos
+→ pipeline_schedule(action="add_recurring", trigger_action="review", cron="*/10 * * * *")
+
+# Agendar prompt natural toda segunda às 9h
+→ cron_create(prompt="Gere relatório de custos", cron="0 9 * * 1")
+
+# One-shot: implementar issue 99 amanhã às 18h
+→ pipeline_schedule(action="add_oneshot", trigger_action="implement",
+    run_at="2026-05-07T18:00:00Z", target_issue=99)
+```
+
+Documentação completa: [`docs/2026-05-06_PIPELINE-AUTONOMO.md`](docs/2026-05-06_PIPELINE-AUTONOMO.md)
+
+---
+
 ## 🚀 Visão geral
 
 DEILE é um **agente de IA autônomo para desenvolvimento de software**, executado diretamente no terminal. Você conversa com ele em linguagem natural — em português ou inglês — e ele lê, escreve e edita arquivos do seu projeto, roda comandos, instala pacotes, executa testes, busca trechos no repositório, planeja tarefas e acompanha custo de uso, tudo dentro do diretório de trabalho atual.

@@ -36,3 +36,54 @@ personas:
 
 providers:
   enabled_providers: ["discord"]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pipeline autônomo (intent #87) — todas as variáveis abaixo são opcionais.
+# Sem elas o pipeline não inicia e as tools pipeline/pipeline_schedule não
+# têm efeito ao ser invocadas.
+# Equivalentes env: DEILE_PIPELINE_* (ver docs/system_design/09-CONFIGURACAO.md)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# pipeline:
+#   # Repositório GitHub alvo no formato "owner/repo"
+#   # Env var: DEILE_PIPELINE_REPO
+#   repo: elimarcavalli/deile
+#
+#   # Caminho absoluto da raiz do repositório local (onde .worktrees/ será criado)
+#   # Env var: DEILE_PIPELINE_BASE_PATH
+#   # Detectado automaticamente se omitido (busca ancestral com .git + deile.py)
+#   base_path: /home/runner/deile
+#
+#   # Discord snowflake do usuário que receberá DMs de notificação a cada transição
+#   # Env var: DEILE_PIPELINE_NOTIFY_USER_ID
+#   notify_user_id: "123456789012345678"
+#
+#   # Identificador único desta instância do monitor (1-32 chars [a-zA-Z0-9_-])
+#   # Afeta branch names (auto/<monitor_id>/issue-N) e ownership labels (~by:<monitor_id>)
+#   # Env var: DEILE_PIPELINE_MONITOR_ID
+#   monitor_id: default
+#
+#   # Sharding horizontal: índice [0, shard_count) deste monitor
+#   # Env var: DEILE_PIPELINE_SHARD_INDEX
+#   shard_index: 0
+#
+#   # Sharding horizontal: total de monitores paralelos no deploy
+#   # Env var: DEILE_PIPELINE_SHARD_COUNT
+#   shard_count: 1
+#
+#   # Se true (ou DEILE_PIPELINE_AUTOSTART=1), o daemon sobe o PipelineMonitor no boot
+#   autostart: false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cron genérico (intent #86) — agendador de prompts naturais do usuário
+# Equivalentes env: DEILE_CRON_* (ver docs/system_design/09-CONFIGURACAO.md)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# cron:
+#   # Se true (ou DEILE_CRON_AUTOSTART=1), o daemon sobe o CronRunner no boot
+#   autostart: false
+#
+#   # Caminho absoluto do SQLite do CronStore (tabela cron_entries)
+#   # Env var: DEILE_CRON_DB_PATH
+#   # Default: <base_path>/data/cron.db  ou  <cwd>/data/cron.db
+#   db_path: /home/runner/deile/data/cron.db

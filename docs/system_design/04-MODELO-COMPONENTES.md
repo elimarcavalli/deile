@@ -35,7 +35,20 @@
 | Auto-discovery | `auto_discover(package_names=None)` | Cobre por padrão: `file_tools`, `execution_tools`, `search_tool`, `bash_tool`, `slash_command_executor`. Após o conjunto-padrão, chama `register_messaging_tools()` (registra 7 tools `messaging.discord_*` quando `deilebot` está instalado **e** `DEILE_BOT_ENDPOINT`/`AUTH_TOKEN` configurados) |
 | Demais módulos | `git_tool`, `http_tool`, `lint_tool`, `archive_tool`, `process_tool`, `secrets_tool`, `tokenizer_tool` | Precisam de registro explícito ou descoberta passando o nome do módulo |
 | Tools de mensageria | `deile/tools/messaging/` | Categoria `MESSAGING`. Cada tool herda `MessagingTool` (`_base.py`), que centraliza permission/audit/approval e mapeia erros do `BotControlClient` para `ToolResult.error_result(error_code=...)` tipados |
+| Tools de pipeline/cron | `deile/tools/pipeline_tool.py`, `pipeline_schedule_tool.py`, `cron_create_tool.py`, `cron_list_tool.py`, `cron_delete_tool.py` | Categoria `SYSTEM`. Descritas abaixo. Precisam de registro explícito |
 | Conversores para LLMs | `get_anthropic_tools(...)`, `get_openai_functions(...)`, `get_gemini_functions(...)` | Geram declarações nativas para function calling |
+
+#### Tools do pipeline autônomo (intent #87 e #86)
+
+As cinco tools abaixo expõem o pipeline e o agendador para o LLM, permitindo que o DEILE as invoque quando o usuário pede em linguagem natural (ex: via Discord).
+
+| Tool | Arquivo | Propósito |
+|---|---|---|
+| `pipeline` | `pipeline_tool.py` | Controla o `PipelineMonitor`: start/stop/status/tick. Serve intent "inicie / pare / verifique o pipeline" |
+| `pipeline_schedule` | `pipeline_schedule_tool.py` | CRUD de entradas no `ScheduleStore` (YAML por monitor): lista, add_recurring, add_oneshot, remove, enable, disable. Serve intent "agende revisão de issue a cada 5 minutos" |
+| `cron_create` | `cron_create_tool.py` | Agenda um prompt natural para execução futura no `CronStore` (SQLite). Serve intent "execute isso todo dia às 9h" ou "execute isso uma vez amanhã às 18h" |
+| `cron_list` | `cron_list_tool.py` | Lista entradas do `CronStore` com filtros. Serve intent "o que está agendado?" / "quais tarefas pendentes?" |
+| `cron_delete` | `cron_delete_tool.py` | Remove ou desabilita uma entrada do `CronStore` por id. Serve intent "cancele o cron X" |
 
 ## Commands (Slash)
 
@@ -58,6 +71,13 @@
 | Despacho | Para comandos parseados pelo `CommandParser` |
 | Variante adicional | `StaticCommandRegistry` (registro classe-a-classe) |
 | Configuração estendida | `deile/config/commands.yaml` |
+
+#### Comandos slash do pipeline (intent #87)
+
+| Comando | Arquivo | Propósito |
+|---|---|---|
+| `/pipeline` | `pipeline_command.py` | `start \| stop \| status \| tick` — controla o `PipelineMonitor` diretamente da CLI. Idempotente: `start` duas vezes é no-op. Guarda a instância em `agent.pipeline_monitor` |
+| `/pipeline-schedule` | (se existir `pipeline_schedule_command.py`) | Alias de linha de comando para as mesmas operações de `pipeline_schedule` tool; útil para operação manual no REPL sem passar pelo LLM |
 
 ## Parsers
 
