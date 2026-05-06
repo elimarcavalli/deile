@@ -219,6 +219,42 @@
 
 ---
 
+## Decisão #18 — Hash sharding para execução paralela de monitores
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 |
+| Pilar dono | 03-Princípios, 02-Arquitetura |
+| Decisão | Cada instância do `PipelineMonitor` tem uma identidade (`MonitorIdentity`) composta por `monitor_id`, `shard_index` e `shard_count`. O método `owns(key)` computa `SHA-256(key) % shard_count == shard_index` para decidir se aquela instância deve processar um dado issue/PR. Dois monitores com `shard_count=2` e `shard_index=0,1` dividem o trabalho de forma determinística e sem comunicação entre si. A identidade padrão (`monitor_id=default`, `shard_count=1`) mantém comportamento backwards-compatible de monitor único |
+| Evidência | `deile/orchestration/pipeline/identity.py:MonitorIdentity.owns`, `monitor.py:_review_one_new_issue` |
+| Motivação | Permitir escalar o pipeline horizontalmente (N máquinas ou N processos) sem um coordenador central, sem banco de dados compartilhado e sem mudança de protocolo com o GitHub. O `~batch:` label garante que dois monitors não processem a mesma issue simultaneamente |
+
+---
+
+## Decisão #19 — Cron genérico separado do scheduler do pipeline
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 |
+| Pilar dono | 04-Componentes |
+| Decisão | Existem dois mecanismos de agendamento com propósitos distintos: (a) `ScheduleStore` / `Schedule` / `RecurringEntry` / `OneshotEntry` em `orchestration/pipeline/scheduler.py` — YAML por monitor, controla *quando* cada estágio do pipeline dispara (review/implement/pr_review); (b) `CronStore` / `CronEntry` / `CronRunner` em `cron/` — SQLite global, agenda *prompts naturais* do usuário para execução futura em uma turn do agente. Os dois são independentes: o pipeline scheduler determina atividade do monitor; o cron runner dispara texto arbitrário que o usuário queira agendar |
+| Evidência | `deile/orchestration/pipeline/scheduler.py`, `deile/cron/store.py`, `deile/cron/runner.py` |
+| Motivação | Misturar os dois num único mecanismo forçaria o cron a conhecer semântica de pipeline (review/implement/pr_review) e impediria que o cron fosse usado para tarefas não relacionadas ao pipeline. A separação mantém responsabilidades únicas (SRP) |
+
+---
+
+## Decisão #20 — Strip de `ANTHROPIC_API_KEY` no subprocess do Claude Code
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 |
+| Pilar dono | 08-Segurança |
+| Decisão | `ClaudeDispatcher` tem flag `prefer_subscription_auth=True` (default). Quando ativa, o env passado ao subprocess `claude -p <prompt>` tem `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` e `ANTHROPIC_BEARER_TOKEN` removidos. O subprocess `claude` cai então para autenticação por assinatura Claude Pro/Max do operador |
+| Evidência | `deile/orchestration/pipeline/claude_dispatcher.py:ClaudeDispatcher._build_env`, atributo `_STRIP_KEYS` |
+| Motivação | O agente DEILE tipicamente roda com uma `ANTHROPIC_API_KEY` de API (paga por token). O Claude Code usado para implementação no pipeline deve faturar contra a assinatura do operador, não contra a mesma key do DEILE. Sem o strip, os subprocessos consumiriam tokens da key do DEILE, gerando custo inesperado e potencialmente excedendo o budget |
+
+---
+
 ## Como adicionar uma nova decisão
 
 | # | Passo |

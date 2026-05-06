@@ -52,6 +52,8 @@
 | `commands/` | Slash commands, `CommandRegistry`, builtins em `deile/commands/builtin/` |
 | `parsers/` | Pipeline de parsing: comando, arquivo, diff, parser inteligente; `ParserRegistry` |
 | `orchestration/` | `PlanManager`, `WorkflowExecutor`, `TaskManager`, `SQLiteTaskManager`, `ApprovalSystem`, `ArtifactManager`, `RunManager` |
+| `orchestration/pipeline/` | Pipeline autônomo de issues/PRs: `PipelineMonitor` (loop de polling, 3 estágios), `GitHubClient` (wrapper de `gh` CLI), `WorktreeManager`, `ClaudeDispatcher` (`claude -p` subprocess), `DiscordNotifier`, `MonitorIdentity` (sharding hash-based), `LockFile` (PID lock), `ScheduleStore`/`Schedule`/`RecurringEntry`/`OneshotEntry` (scheduler YAML por monitor), `cron.py` (parser de expressões 5-field) |
+| `cron/` | Agendador genérico de prompts: `CronStore` (SQLite, `data/cron.db`), `CronEntry` (recurring + one-shot), `CronRunner` (poll loop 30s, dispara `fire_callback`) |
 | `memory/` | `MemoryManager` + 4 camadas (`WorkingMemory`, `EpisodicMemory`, `SemanticMemory`, `ProceduralMemory`) + `MemoryConsolidator` |
 | `security/` | `PermissionManager`, `AuditLogger`, `SecretsScanner` |
 | `personas/` | `BasePersona`, `BaseAutonomousPersona`, `PersonaManager`, `PersonaLoader`, `instruction_loader`, `builder`, `context`, `library/` (YAMLs), `instructions/` (MDs), `memory/integration.py` |
