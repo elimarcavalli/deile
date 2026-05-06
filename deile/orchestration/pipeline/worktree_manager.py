@@ -52,15 +52,35 @@ class WorktreeManager:
         Name of the integration branch (default ``main``).
     """
 
-    def __init__(self, base_repo: Path, *, main_branch: str = "main") -> None:
+    def __init__(
+        self,
+        base_repo: Path,
+        *,
+        main_branch: str = "main",
+        subdir: Optional[str] = None,
+    ) -> None:
+        """Initialize worktree manager.
+
+        ``subdir`` namespaces all per-branch worktrees under
+        ``.worktrees/<subdir>/<branch>``. ``.worktrees/main`` (the
+        always-clean clone of main) is shared across subdirs to save disk
+        and keep ``ensure_main`` cheap. Pass ``subdir=monitor_id`` to keep
+        parallel monitors from colliding.
+        """
         self.base_repo = Path(base_repo).resolve()
         if not (self.base_repo / ".git").exists():
             raise WorktreeError(f"{self.base_repo} is not a git repository")
         self.main_branch = main_branch
+        self.subdir = subdir
         self.worktrees_dir = self.base_repo / ".worktrees"
+        if subdir is not None:
+            self.branches_dir = self.worktrees_dir / subdir
+        else:
+            self.branches_dir = self.worktrees_dir
 
     @property
     def main_worktree(self) -> Path:
+        # Shared across subdirs: same clean main clone.
         return self.worktrees_dir / "main"
 
     # ------------------------------------------------------------------
@@ -90,7 +110,7 @@ class WorktreeManager:
         if not branch or branch == self.main_branch:
             raise WorktreeError(f"branch must be a non-main branch name, got {branch!r}")
         await self.ensure_main()
-        target = self.worktrees_dir / branch
+        target = self.branches_dir / branch
         if (target / ".git").exists():
             logger.info("worktree %s already exists; reusing", target)
             return Worktree(path=target, branch=branch, base_repo=self.base_repo)

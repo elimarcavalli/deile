@@ -226,3 +226,60 @@ class TestLifecycle:
         await monitor.stop()
         assert monitor.stats.ticks >= 1
         monitor.github.ensure_pipeline_labels.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Multi-monitor identity-aware tests
+# ---------------------------------------------------------------------------
+
+from deile.orchestration.pipeline.identity import MonitorIdentity
+
+
+class TestIdentityAwareSelection:
+    async def test_default_identity_picks_any_issue(self, tmp_path):
+        new_issue = IssueRef(number=1, title="t", url="u", labels=(WORKFLOW_NEW,))
+        monitor, notifier = _make_monitor(issues_new=[new_issue])
+        # default identity (shard_count=1) → owns everything
+        await monitor.tick()
+        notifier.issue_picked_up.assert_called_once()
+
+    async def test_sharded_identity_skips_other_shard(self, tmp_path):
+        # Pick a title that hashes to shard 1 (we'll make monitor be shard 0).
+        # Iterate to find one.
+        from deile.orchestration.pipeline.identity import MonitorIdentity
+        a = MonitorIdentity(monitor_id="a", shard_index=0, shard_count=2)
+        # Find a title that shard 0 does NOT own.
+        title = None
+        for i in range(1, 100):
+            cand = f"some title {i}"
+            if not a.owns(cand):
+                title = cand
+                break
+        assert title is not None, "could not find unowned title"
+        new_issue = IssueRef(number=1, title=title, url="u", labels=(WORKFLOW_NEW,))
+        monitor, notifier = _make_monitor(issues_new=[new_issue])
+        monitor.identity = a
+        await monitor.tick()
+        notifier.issue_picked_up.assert_not_called()
+
+    async def test_branch_for_issue_uses_default_prefix(self):
+        monitor, _ = _make_monitor()
+        # default identity → legacy prefix
+        assert monitor.branch_for_issue(42) == "auto/issue-42"
+
+    async def test_branch_for_issue_uses_namespaced_prefix(self):
+        monitor, _ = _make_monitor()
+        monitor.identity = MonitorIdentity(monitor_id="m-alfa")
+        assert monitor.branch_for_issue(42) == "auto/m-alfa/issue-42"
+
+    async def test_pr_ownership_default_matches_legacy_prefix(self):
+        monitor, _ = _make_monitor()
+        assert monitor._owns_pr_branch("auto/issue-42")
+        assert not monitor._owns_pr_branch("feat/something-else")
+
+    async def test_pr_ownership_namespaced(self):
+        monitor, _ = _make_monitor()
+        monitor.identity = MonitorIdentity(monitor_id="m-alfa")
+        assert monitor._owns_pr_branch("auto/m-alfa/issue-1")
+        assert not monitor._owns_pr_branch("auto/m-beta/issue-1")
+        assert not monitor._owns_pr_branch("auto/issue-1")  # legacy prefix not ours

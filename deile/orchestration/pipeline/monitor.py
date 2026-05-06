@@ -32,13 +32,17 @@ from deile.orchestration.pipeline.claude_dispatcher import (
 from deile.orchestration.pipeline.github_client import (GhCommandError,
                                                         GitHubClient,
                                                         IssueRef, PrRef)
+from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
                                                  REVIEW_PENDING, WORKFLOW_NEW,
                                                  WORKFLOW_PR,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING)
+from deile.orchestration.pipeline.lockfile import LockHeldError, acquire as acquire_lock, release as release_lock
 from deile.orchestration.pipeline.notifier import DiscordNotifier
+from deile.orchestration.pipeline.scheduler import (PendingRun, Schedule,
+                                                    ScheduleStore)
 from deile.orchestration.pipeline.worktree_manager import WorktreeManager
 
 logger = logging.getLogger(__name__)
@@ -52,11 +56,21 @@ class PipelineConfig:
     base_repo_path: Path
     poll_interval_seconds: int = 60
     main_branch: str = "main"
+    # ``branch_prefix`` is the *legacy* per-instance default. When an
+    # ``identity`` is provided to :class:`PipelineMonitor`, the actual prefix
+    # is derived from ``identity.branch_prefix("auto") + "/issue-"`` so two
+    # monitors don't collide on branch names. ``branch_prefix`` here remains
+    # the fallback for single-monitor (default identity) deployments.
     branch_prefix: str = "auto/issue-"
     notify_user_id: Optional[str] = None
     enable_review: bool = True
     enable_implement: bool = True
     enable_pr_review: bool = True
+    # When True, the monitor acquires a PID lockfile under base_repo_path
+    # named after the identity. Two monitors with the same monitor_id on
+    # the same host will fail to start. Default off because most tests
+    # don't need it; production callers should set True.
+    use_pid_lock: bool = False
 
 
 @dataclass
@@ -66,6 +80,8 @@ class _Stats:
     issues_implemented: int = 0
     prs_reviewed: int = 0
     errors: int = 0
+    catchup_runs: int = 0
+    scheduled_runs: int = 0
 
 
 class PipelineMonitor:
@@ -80,21 +96,58 @@ class PipelineMonitor:
         claude: Optional[ClaudeDispatcher] = None,
         notifier: Optional[DiscordNotifier] = None,
         review_callback: Optional[Callable[[IssueRef], Awaitable[str]]] = None,
+        identity: Optional[MonitorIdentity] = None,
+        schedule_store: Optional[ScheduleStore] = None,
     ) -> None:
         self.config = config
+        self.identity = identity or MonitorIdentity.from_env()
         self.github = github or GitHubClient(config.repo)
         self.worktrees = worktrees or WorktreeManager(
-            config.base_repo_path, main_branch=config.main_branch
+            config.base_repo_path,
+            main_branch=config.main_branch,
+            subdir=self.identity.worktree_subdir(),
         )
         self.claude = claude or ClaudeDispatcher()
         self.notifier = notifier or DiscordNotifier(config.notify_user_id)
-        # `review_callback` lets a host inject DEILE's actual review function.
-        # When None, the monitor performs a no-op "mark as reviewed" pass — the
-        # body of the issue is left as-is (useful in tests / dry runs).
         self._review_cb = review_callback
         self._stats = _Stats()
         self._stop_event = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
+        self._held_lock: Optional[Path] = None
+        # Schedule store — when present, schedule entries drive when each
+        # action fires (instead of the fixed poll interval). On startup the
+        # monitor first drains any catch-up queue (entries whose run time
+        # has already passed), then enters the polling loop where every
+        # tick re-checks for due entries. If no schedule file exists, the
+        # monitor falls back to legacy "every action every poll" behaviour.
+        self.schedule_store = schedule_store or ScheduleStore(
+            config.base_repo_path, monitor_id=self.identity.monitor_id
+        )
+
+    # ------------------------------------------------------------------
+    # identity-aware naming helpers
+    # ------------------------------------------------------------------
+
+    def branch_for_issue(self, issue_number: int) -> str:
+        """Per-monitor branch name for stage 2 implementation."""
+        if self.identity.is_default:
+            return f"{self.config.branch_prefix}{issue_number}"
+        # Per-monitor prefix overrides the legacy config.branch_prefix.
+        return f"{self.identity.branch_prefix('auto')}/issue-{issue_number}"
+
+    def _owns_pr_branch(self, head_ref: str) -> bool:
+        """Return True if the PR's branch was opened by THIS monitor.
+
+        Used to scope stage 3 to PRs the local monitor implemented. Default
+        identity owns any branch starting with ``auto/issue-`` (legacy path).
+        """
+        if not head_ref:
+            return False
+        if self.identity.is_default:
+            # Legacy: claim PRs whose branch matches the legacy prefix and has
+            # no monitor segment.
+            return head_ref.startswith("auto/issue-")
+        return head_ref.startswith(f"{self.identity.branch_prefix('auto')}/")
 
     @property
     def stats(self) -> _Stats:
@@ -107,9 +160,56 @@ class PipelineMonitor:
     async def start(self) -> None:
         if self._task is not None and not self._task.done():
             return
+        if self.config.use_pid_lock:
+            lock_path = Path(self.config.base_repo_path) / self.identity.lockfile_name()
+            try:
+                self._held_lock = acquire_lock(lock_path)
+            except LockHeldError as exc:
+                logger.error(
+                    "another monitor with id=%s is already running (PID %d); refusing start",
+                    self.identity.monitor_id, exc.holder_pid,
+                )
+                raise
         await self.github.ensure_pipeline_labels()
+        await self._catch_up_pending()
         self._stop_event.clear()
-        self._task = asyncio.create_task(self._run_forever(), name="pipeline-monitor")
+        self._task = asyncio.create_task(
+            self._run_forever(), name=f"pipeline-monitor-{self.identity.monitor_id}"
+        )
+
+    async def _catch_up_pending(self) -> None:
+        """On startup, drain any schedule entries whose time already passed."""
+        try:
+            schedule = self.schedule_store.load()
+        except Exception as exc:  # noqa: BLE001 — schedule errors must not block boot
+            logger.warning("schedule load failed; skipping catch-up: %s", exc)
+            return
+        pending = schedule.compute_pending()
+        if not pending:
+            return
+        logger.info(
+            "monitor %s catching up on %d missed runs",
+            self.identity.monitor_id, len(pending),
+        )
+        for run in pending:
+            await self._run_scheduled(run)
+            schedule.mark_run(run)
+            self._stats.catchup_runs += 1
+        try:
+            self.schedule_store.save(schedule)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("could not persist schedule after catch-up: %s", exc)
+
+    async def _run_scheduled(self, run: PendingRun) -> None:
+        """Execute a single scheduled action by name."""
+        if run.action == "review" and self.config.enable_review:
+            await self._review_one_new_issue()
+        elif run.action == "implement" and self.config.enable_implement:
+            await self._implement_one_reviewed_issue()
+        elif run.action == "pr_review" and self.config.enable_pr_review:
+            await self._review_one_open_pr()
+        else:
+            logger.debug("scheduled action %s skipped (disabled or unknown)", run.action)
 
     async def stop(self) -> None:
         self._stop_event.set()
@@ -122,6 +222,9 @@ class PipelineMonitor:
                     await self._task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
+        if self._held_lock is not None:
+            release_lock(self._held_lock)
+            self._held_lock = None
 
     async def _run_forever(self) -> None:
         while not self._stop_event.is_set():
@@ -145,6 +248,28 @@ class PipelineMonitor:
     async def tick(self) -> None:
         self._stats.ticks += 1
         logger.debug("pipeline tick #%d", self._stats.ticks)
+
+        # When a schedule file exists with at least one entry, the schedule
+        # is authoritative: each tick runs only the actions whose cron
+        # window opened since the previous tick. Without a schedule, fall
+        # back to legacy "every action every tick" behaviour.
+        try:
+            schedule = self.schedule_store.load()
+        except Exception:  # noqa: BLE001
+            schedule = None
+        if schedule and (schedule.recurring or schedule.oneshot):
+            pending = schedule.compute_pending()
+            for run in pending:
+                await self._run_scheduled(run)
+                schedule.mark_run(run)
+                self._stats.scheduled_runs += 1
+            if pending:
+                try:
+                    self.schedule_store.save(schedule)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("could not persist schedule after tick: %s", exc)
+            return
+
         if self.config.enable_review:
             await self._review_one_new_issue()
         if self.config.enable_implement:
@@ -160,12 +285,18 @@ class PipelineMonitor:
         except GhCommandError as exc:
             logger.warning("could not list new issues: %s", exc)
             return
-        target = next((i for i in issues if i.batch_id is None), None)
+        # Shard filter: only consider issues whose hash falls in our shard.
+        target = next(
+            (i for i in issues if i.batch_id is None and self.identity.owns(i.title)),
+            None,
+        )
         if target is None:
             return
         batch = await self.github.claim_with_batch("issue", target.number, target.title)
         if batch is None:
             return
+        # Tag ownership so other monitors can identify who claimed this.
+        await self.github.add_labels("issue", target.number, [self.identity.ownership_label()])
         await self.notifier.issue_picked_up(target.number, target.title, target.url)
         try:
             await self.github.transition_issue(
@@ -195,13 +326,26 @@ class PipelineMonitor:
         except GhCommandError as exc:
             logger.warning("could not list reviewed issues: %s", exc)
             return
+        # Stage 2 only picks up issues this monitor claimed in stage 1
+        # (ownership label) OR — for backwards compat — issues with a batch
+        # lock when running with the default identity.
+        own = self.identity.ownership_label()
         target = next(
-            (i for i in issues if WORKFLOW_PR not in i.labels and i.batch_id is not None),
+            (
+                i for i in issues
+                if WORKFLOW_PR not in i.labels
+                and i.batch_id is not None
+                and (
+                    own in i.labels
+                    if not self.identity.is_default
+                    else self.identity.owns(i.title)
+                )
+            ),
             None,
         )
         if target is None:
             return
-        branch = f"{self.config.branch_prefix}{target.number}"
+        branch = self.branch_for_issue(target.number)
         await self.notifier.implementation_started(target.number, target.title, branch)
         try:
             worktree = await self.worktrees.create_branch_worktree(branch)
@@ -236,6 +380,9 @@ class PipelineMonitor:
         except GhCommandError as exc:
             logger.warning("could not list PRs: %s", exc)
             return
+        # Scope stage 3 to PRs whose head branch belongs to THIS monitor
+        # (so we never review a peer's PR). Default-identity monitors keep
+        # the legacy behaviour: any PR with a matching head_ref or none.
         target = next(
             (
                 pr
@@ -244,6 +391,7 @@ class PipelineMonitor:
                 and REVIEW_CONCLUDED not in pr.labels
                 and REVIEW_IN_PROGRESS not in pr.labels
                 and pr.batch_id is None
+                and self._owns_pr_branch(pr.head_ref)
             ),
             None,
         )
