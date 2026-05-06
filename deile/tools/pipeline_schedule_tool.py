@@ -55,50 +55,54 @@ class PipelineScheduleTool(Tool):
                     "action='enable'/'disable' to toggle a recurring entry."
                 ),
                 parameters={
-                    "action": {
-                        "type": "string",
-                        "enum": ["list", "add_recurring", "add_oneshot",
-                                 "remove", "enable", "disable"],
-                        "description": "Operation to perform.",
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["list", "add_recurring", "add_oneshot",
+                                     "remove", "enable", "disable"],
+                            "description": "Operation to perform.",
+                        },
+                        "id": {
+                            "type": "string",
+                            "description": (
+                                "Entry id (required for remove/enable/disable; "
+                                "auto-generated if omitted on add_*)."
+                            ),
+                        },
+                        "trigger_action": {
+                            "type": "string",
+                            "enum": ["review", "implement", "pr_review"],
+                            "description": "Pipeline action this entry fires.",
+                        },
+                        "cron": {
+                            "type": "string",
+                            "description": "5-field cron expression (e.g. '*/5 * * * *').",
+                        },
+                        "run_at": {
+                            "type": "string",
+                            "description": (
+                                "ISO-8601 UTC datetime for oneshot (e.g. "
+                                "'2026-05-06T18:00:00Z')."
+                            ),
+                        },
+                        "target_issue": {
+                            "type": "integer",
+                            "description": "Issue number for oneshot (optional context).",
+                        },
+                        "target_pr": {
+                            "type": "integer",
+                            "description": "PR number for oneshot (optional context).",
+                        },
+                        "monitor_id": {
+                            "type": "string",
+                            "description": (
+                                "Monitor whose schedule to edit (defaults to env "
+                                "DEILE_PIPELINE_MONITOR_ID or 'default')."
+                            ),
+                        },
                     },
-                    "id": {
-                        "type": "string",
-                        "description": (
-                            "Entry id (required for remove/enable/disable; "
-                            "auto-generated if omitted on add_*)."
-                        ),
-                    },
-                    "trigger_action": {
-                        "type": "string",
-                        "enum": ["review", "implement", "pr_review"],
-                        "description": "Pipeline action this entry fires.",
-                    },
-                    "cron": {
-                        "type": "string",
-                        "description": "5-field cron expression (e.g. '*/5 * * * *').",
-                    },
-                    "run_at": {
-                        "type": "string",
-                        "description": (
-                            "ISO-8601 UTC datetime for oneshot (e.g. "
-                            "'2026-05-06T18:00:00Z')."
-                        ),
-                    },
-                    "target_issue": {
-                        "type": "integer",
-                        "description": "Issue number for oneshot (optional context).",
-                    },
-                    "target_pr": {
-                        "type": "integer",
-                        "description": "PR number for oneshot (optional context).",
-                    },
-                    "monitor_id": {
-                        "type": "string",
-                        "description": (
-                            "Monitor whose schedule to edit (defaults to env "
-                            "DEILE_PIPELINE_MONITOR_ID or 'default')."
-                        ),
-                    },
+                    "required": ["action"],
                 },
                 required=["action"],
                 security_level=SecurityLevel.MODERATE,

@@ -37,11 +37,18 @@ class TestPipelineToolSchema:
         assert tool.category == "system"
         assert "start" in tool.description.lower()
         schema = tool._schema
-        assert "action" in schema.parameters
-        assert "start" in schema.parameters["action"]["enum"]
-        assert "stop" in schema.parameters["action"]["enum"]
-        assert "status" in schema.parameters["action"]["enum"]
-        assert "tick" in schema.parameters["action"]["enum"]
+        # JSON Schema: parameters MUST be a wrapped object schema for the
+        # OpenAI/Anthropic/Gemini function-calling APIs.
+        assert schema.parameters["type"] == "object"
+        properties = schema.parameters["properties"]
+        assert "action" in properties
+        assert "start" in properties["action"]["enum"]
+        assert "stop" in properties["action"]["enum"]
+        assert "status" in properties["action"]["enum"]
+        assert "tick" in properties["action"]["enum"]
+        # And the ToolSchema serializes correctly for OpenAI function calling.
+        fn = schema.to_openai_function()
+        assert fn["function"]["parameters"]["type"] == "object"
 
 
 class TestPipelineToolActions:

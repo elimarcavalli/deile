@@ -294,6 +294,9 @@ class ToolRegistry:
                 'deile.tools.vision_tool',
                 'deile.tools.pipeline_tool',
                 'deile.tools.pipeline_schedule_tool',
+                'deile.tools.cron_create_tool',
+                'deile.tools.cron_list_tool',
+                'deile.tools.cron_delete_tool',
             ]
 
         discovered_count = 0

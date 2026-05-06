@@ -56,11 +56,15 @@ class PipelineTool(Tool):
                     "synchronous tick (debug)."
                 ),
                 parameters={
-                    "action": {
-                        "type": "string",
-                        "enum": ["start", "stop", "status", "tick"],
-                        "description": "Pipeline operation to perform.",
-                    }
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["start", "stop", "status", "tick"],
+                            "description": "Pipeline operation to perform.",
+                        },
+                    },
+                    "required": ["action"],
                 },
                 required=["action"],
                 security_level=SecurityLevel.MODERATE,

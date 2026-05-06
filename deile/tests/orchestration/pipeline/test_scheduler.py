@@ -72,10 +72,15 @@ class TestComputePending:
 
     def test_recurring_not_due_yet(self):
         s = Schedule()
-        # cron fires every 5 min; last_run_at is 2 min ago → next is 3 min from now
+        # `0 0 1 1 *` = once a year on Jan 1 00:00. With last_run_at set to
+        # the most recent Jan 1, the next run is far in the future regardless
+        # of when this test runs.
+        now = datetime.now(timezone.utc)
+        last_jan_1 = datetime(now.year if now.month > 1 or now.day > 1 else now.year - 1,
+                              1, 1, 0, 0, tzinfo=timezone.utc)
         s.add_recurring(RecurringEntry(
-            id="r1", action="review", cron="*/5 * * * *",
-            last_run_at=datetime.now(timezone.utc) - timedelta(minutes=2),
+            id="r1", action="review", cron="0 0 1 1 *",
+            last_run_at=last_jan_1,
         ))
         assert s.compute_pending() == []
 
