@@ -46,9 +46,39 @@ class ClaudeDispatcher:
         *,
         claude_path: Optional[str] = None,
         timeout_seconds: int = 1800,
+        prefer_subscription_auth: bool = True,
     ) -> None:
         self._claude = claude_path or shutil.which("claude") or "claude"
         self.timeout_seconds = timeout_seconds
+        # When True, strip ANTHROPIC_API_KEY (and friends) from the subprocess
+        # env so `claude` falls back to the operator's Claude Pro/Max
+        # subscription. Most local-dev setups carry an API key in `.env` for
+        # the DEILE agent itself, but that key is often on a *different*
+        # billing account than the subscription paying for Claude Code.
+        self.prefer_subscription_auth = prefer_subscription_auth
+
+    _STRIP_KEYS = (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BEARER_TOKEN",
+    )
+
+    def _build_env(self, override: Optional[Mapping[str, str]]) -> Optional[dict]:
+        """Return the env dict to pass to ``claude``, or None to inherit.
+
+        If ``prefer_subscription_auth`` is True (default), copies the parent
+        env minus the keys that would force API-key auth. If False, behaves
+        like before: explicit ``override`` wins, otherwise inherits.
+        """
+        if override is not None:
+            return dict(override)
+        if not self.prefer_subscription_auth:
+            return None
+        import os as _os
+        env = dict(_os.environ)
+        for k in self._STRIP_KEYS:
+            env.pop(k, None)
+        return env
 
     async def run(
         self,
@@ -73,7 +103,7 @@ class ClaudeDispatcher:
             cwd=str(cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=dict(env) if env is not None else None,
+            env=self._build_env(env),
         )
         try:
             stdout_b, stderr_b = await asyncio.wait_for(

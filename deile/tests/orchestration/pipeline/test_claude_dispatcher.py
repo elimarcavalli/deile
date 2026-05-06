@@ -88,3 +88,53 @@ class TestPrompts:
         assert "foo/bar" in prompt
         assert "#17" in prompt
         assert "PR title" in prompt
+
+
+class TestSubscriptionAuthStripping:
+    """Verify ANTHROPIC_API_KEY is stripped from subprocess env by default."""
+
+    def test_build_env_strips_api_key_by_default(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+        monkeypatch.setenv("PATH", "/bin")
+        d = ClaudeDispatcher()
+        env = d._build_env(None)
+        assert env is not None
+        assert "ANTHROPIC_API_KEY" not in env
+        assert env.get("PATH") == "/bin"  # other vars preserved
+
+    def test_build_env_strips_all_anthropic_auth_vars(self, monkeypatch):
+        for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BEARER_TOKEN"):
+            monkeypatch.setenv(k, "secret")
+        d = ClaudeDispatcher()
+        env = d._build_env(None)
+        for k in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BEARER_TOKEN"):
+            assert k not in env
+
+    def test_build_env_inherits_when_subscription_disabled(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+        d = ClaudeDispatcher(prefer_subscription_auth=False)
+        env = d._build_env(None)
+        # None means "inherit parent env" — claude will see the API key.
+        assert env is None
+
+    def test_build_env_explicit_override_wins(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+        d = ClaudeDispatcher()  # subscription mode by default
+        # Caller passes an explicit env — we don't second-guess them.
+        env = d._build_env({"X": "1", "ANTHROPIC_API_KEY": "explicit-key"})
+        assert env == {"X": "1", "ANTHROPIC_API_KEY": "explicit-key"}
+
+    async def test_run_uses_stripped_env(self, monkeypatch, fake_claude, tmp_path):
+        # Echo the env back so we can assert what claude actually saw.
+        echoer = tmp_path / "echo-env"
+        echoer.write_text(
+            "#!/bin/sh\n"
+            "echo \"key=${ANTHROPIC_API_KEY:-UNSET}\"\n"
+            "exit 0\n"
+        )
+        echoer.chmod(0o755)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-leak")
+        d = ClaudeDispatcher(claude_path=str(echoer), timeout_seconds=10)
+        result = await d.run("anything", cwd=tmp_path)
+        assert "key=UNSET" in result.stdout, \
+            f"expected ANTHROPIC_API_KEY to be stripped; got: {result.stdout!r}"
