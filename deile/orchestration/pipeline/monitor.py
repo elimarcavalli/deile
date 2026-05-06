@@ -158,9 +158,22 @@ class PipelineMonitor:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
+        """Start the background polling loop.
+
+        PID locking is enabled when:
+        - ``config.use_pid_lock`` is explicitly set, **or**
+        - the identity is non-default (any named monitor, any sharded deployment).
+
+        The second condition is intentional: a non-default identity implies a
+        multi-monitor deployment where two instances with the same ``monitor_id``
+        on the same host are a guaranteed-bug — they would race on the same
+        worktree sub-directory and schedule file. The lockfile is the last line
+        of defence against operator error.
+        """
         if self._task is not None and not self._task.done():
             return
-        if self.config.use_pid_lock:
+        should_lock = self.config.use_pid_lock or not self.identity.is_default
+        if should_lock:
             lock_path = Path(self.config.base_repo_path) / self.identity.lockfile_name()
             try:
                 self._held_lock = acquire_lock(lock_path)
@@ -400,6 +413,9 @@ class PipelineMonitor:
         batch = await self.github.claim_with_batch("pr", target.number, target.title)
         if batch is None:
             return
+        # Tag ownership so other monitors can identify who claimed this PR —
+        # mirrors the identical pattern in stage 1 for issues.
+        await self.github.add_labels("pr", target.number, [self.identity.ownership_label()])
         await self.notifier.pr_picked_up(target.number, target.title, target.url)
         try:
             await self.github.transition_pr(

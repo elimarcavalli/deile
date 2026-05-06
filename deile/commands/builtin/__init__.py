@@ -27,6 +27,7 @@ from .logs_command import LogsCommand
 from .memory_command import MemoryCommand
 from .welcome_command import WelcomeCommand
 from .pipeline_command import PipelineCommand
+from .pipeline_schedule_command import PipelineScheduleCommand
 
 __all__ = [
     "HelpCommand",
@@ -52,4 +53,5 @@ __all__ = [
     "MemoryCommand",
     "WelcomeCommand",
     "PipelineCommand",
+    "PipelineScheduleCommand",
 ]
