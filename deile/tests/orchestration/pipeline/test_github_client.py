@@ -171,3 +171,33 @@ class TestGhCommandError:
         err = GhCommandError(("gh", "issue", "list"), 2, "out", "err msg")
         assert err.returncode == 2
         assert "err msg" in str(err)
+
+
+class TestEnsureLabelOnClaim:
+    """The batch lock label must be created on-demand by claim_with_batch."""
+
+    async def test_claim_creates_batch_label_before_adding(self):
+        from unittest.mock import AsyncMock, patch
+        client = GitHubClient("owner/name")
+        unclaimed = IssueRef(
+            number=42, title="brand new", url="x", labels=(WORKFLOW_NEW,),
+        )
+        calls = []
+
+        async def fake_run(*args):
+            calls.append(args)
+            return (0, "", "")
+
+        async def fake_run_checked(*args):
+            calls.append(args)
+            return ""
+
+        with patch.object(client, "get_issue", new=AsyncMock(return_value=unclaimed)), \
+             patch.object(client, "_run", side_effect=fake_run), \
+             patch.object(client, "_run_checked", side_effect=fake_run_checked):
+            bid = await client.claim_with_batch("issue", 42, "brand new")
+
+        assert bid is not None
+        # The first call must be `label create ~batch:<bid>` via _run
+        assert calls[0][0] == "label" and calls[0][1] == "create"
+        assert calls[0][2].startswith("~batch:")
