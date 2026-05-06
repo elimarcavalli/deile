@@ -297,6 +297,7 @@ class ToolRegistry:
                 'deile.tools.cron_create_tool',
                 'deile.tools.cron_list_tool',
                 'deile.tools.cron_delete_tool',
+                'deile.tools.worktree_tool',
             ]
 
         discovered_count = 0
