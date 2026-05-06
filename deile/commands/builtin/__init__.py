@@ -26,10 +26,11 @@ except ImportError:
 from .logs_command import LogsCommand
 from .memory_command import MemoryCommand
 from .welcome_command import WelcomeCommand
+from .pipeline_command import PipelineCommand
 
 __all__ = [
     "HelpCommand",
-    "DebugCommand", 
+    "DebugCommand",
     "ClearCommand",
     "StatusCommand",
     "ConfigCommand",
@@ -41,7 +42,7 @@ __all__ = [
     "PlanCommand",
     "RunCommand",
     "ApproveCommand",
-    "StopCommand", 
+    "StopCommand",
     "DiffCommand",
     "PatchCommand",
     "ApplyCommand",
@@ -49,5 +50,6 @@ __all__ = [
     "SandboxCommand",
     "LogsCommand",
     "MemoryCommand",
-    "WelcomeCommand"
+    "WelcomeCommand",
+    "PipelineCommand",
 ]
