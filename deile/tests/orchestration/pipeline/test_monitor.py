@@ -283,3 +283,110 @@ class TestIdentityAwareSelection:
         assert monitor._owns_pr_branch("auto/m-alfa/issue-1")
         assert not monitor._owns_pr_branch("auto/m-beta/issue-1")
         assert not monitor._owns_pr_branch("auto/issue-1")  # legacy prefix not ours
+
+
+# ---------------------------------------------------------------------------
+# PID lock auto-enable for non-default identity
+# ---------------------------------------------------------------------------
+
+def _make_minimal_monitor(
+    tmp_path,
+    *,
+    identity,
+    use_pid_lock: bool = False,
+):
+    """Build a PipelineMonitor with all I/O mocked, using ``tmp_path`` as repo."""
+    from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
+    from deile.orchestration.pipeline.worktree_manager import Worktree
+
+    cfg = PipelineConfig(
+        repo="owner/name",
+        base_repo_path=tmp_path,
+        use_pid_lock=use_pid_lock,
+        poll_interval_seconds=60,
+    )
+    github = MagicMock()
+    github.ensure_pipeline_labels = AsyncMock()
+    github.list_issues_with_label = AsyncMock(return_value=[])
+    github.list_open_prs = AsyncMock(return_value=[])
+
+    worktrees = MagicMock()
+    worktrees.create_branch_worktree = AsyncMock(
+        return_value=Worktree(path=tmp_path / ".wt", branch="x", base_repo=tmp_path)
+    )
+
+    notifier = MagicMock()
+    for attr in ("issue_picked_up", "issue_reviewed", "implementation_started",
+                 "implementation_finished", "pr_picked_up", "pr_reviewed", "error"):
+        setattr(notifier, attr, AsyncMock())
+
+    schedule_store = MagicMock()
+    schedule_store.load = MagicMock(return_value=MagicMock(
+        recurring=[], oneshot=[], compute_pending=MagicMock(return_value=[])
+    ))
+
+    return PipelineMonitor(
+        cfg,
+        github=github,
+        worktrees=worktrees,
+        notifier=notifier,
+        identity=identity,
+        schedule_store=schedule_store,
+    )
+
+
+class TestPidLockAutoEnable:
+    async def test_non_default_identity_creates_lockfile(self, tmp_path):
+        """A non-default identity must acquire a PID lock even when
+        config.use_pid_lock is False (multi-monitor guard)."""
+        from deile.orchestration.pipeline.identity import MonitorIdentity
+
+        identity = MonitorIdentity(monitor_id="gamma")
+        monitor = _make_minimal_monitor(tmp_path, identity=identity, use_pid_lock=False)
+        try:
+            await monitor.start()
+            # After start(), the lockfile must exist under base_repo_path.
+            lock_path = tmp_path / identity.lockfile_name()
+            assert lock_path.exists(), f"expected lockfile at {lock_path}"
+        finally:
+            await monitor.stop()
+
+    async def test_default_identity_no_pid_lock_flag_skips_lockfile(self, tmp_path):
+        """Default identity with use_pid_lock=False must NOT create a lockfile."""
+        from deile.orchestration.pipeline.identity import MonitorIdentity
+
+        identity = MonitorIdentity()  # default
+        monitor = _make_minimal_monitor(tmp_path, identity=identity, use_pid_lock=False)
+        try:
+            await monitor.start()
+            # No lockfile should be created for the default identity without flag.
+            lock_path = tmp_path / identity.lockfile_name()
+            assert not lock_path.exists(), f"unexpected lockfile at {lock_path}"
+        finally:
+            await monitor.stop()
+
+
+# ---------------------------------------------------------------------------
+# Ownership label stamped on claimed PRs
+# ---------------------------------------------------------------------------
+
+class TestPrOwnershipLabel:
+    async def test_claimed_pr_gets_ownership_label(self):
+        """After a PR is claimed in stage 3, the monitor's ownership label must
+        be stamped on the PR — mirroring stage 1 issue behaviour."""
+        pr = PrRef(
+            number=77, title="my pr", url="https://x/pull/77",
+            labels=(REVIEW_PENDING,), head_ref="auto/issue-5",
+        )
+        monitor, notifier = _make_monitor(prs=[pr])
+        monitor.config.enable_review = False
+        monitor.config.enable_implement = False
+        await monitor.tick()
+
+        # ownership label must have been added
+        ownership = monitor.identity.ownership_label()
+        add_labels_calls = monitor.github.add_labels.call_args_list
+        ownership_calls = [c for c in add_labels_calls if ownership in (c.args[2] if c.args else [])]
+        assert ownership_calls, (
+            f"expected add_labels call with {ownership!r}; calls were: {add_labels_calls}"
+        )

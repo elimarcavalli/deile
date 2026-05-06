@@ -201,3 +201,44 @@ class TestEnsureLabelOnClaim:
         # The first call must be `label create ~batch:<bid>` via _run
         assert calls[0][0] == "label" and calls[0][1] == "create"
         assert calls[0][2].startswith("~batch:")
+
+    async def test_claim_pr_creates_batch_label_before_adding(self):
+        """For PRs, _ensure_label must be called BEFORE add_labels — same
+        contract as for issues (tested above).  This test verifies call order
+        using a spy that records every invocation."""
+        client = GitHubClient("owner/name")
+        unclaimed_pr = PrRef(
+            number=11, title="pr title", url="u", labels=(REVIEW_PENDING,),
+            head_ref="auto/issue-11",
+        )
+        calls = []
+
+        async def fake_run(*args):
+            calls.append(("_run", *args))
+            return (0, "", "")
+
+        async def fake_run_checked(*args):
+            calls.append(("_run_checked", *args))
+            return ""
+
+        with patch.object(client, "list_open_prs", new=AsyncMock(return_value=[unclaimed_pr])), \
+             patch.object(client, "_run", side_effect=fake_run), \
+             patch.object(client, "_run_checked", side_effect=fake_run_checked):
+            bid = await client.claim_with_batch("pr", 11, "pr title")
+
+        assert bid is not None
+
+        # Locate the _ensure_label call (label create) and the add_labels call.
+        ensure_idx = next(
+            (i for i, c in enumerate(calls) if c[0] == "_run" and "label" in c and "create" in c),
+            None,
+        )
+        add_idx = next(
+            (i for i, c in enumerate(calls) if c[0] == "_run_checked" and "edit" in c),
+            None,
+        )
+        assert ensure_idx is not None, f"_ensure_label not called; calls={calls}"
+        assert add_idx is not None, f"add_labels not called; calls={calls}"
+        assert ensure_idx < add_idx, (
+            f"_ensure_label (idx={ensure_idx}) must precede add_labels (idx={add_idx})"
+        )
