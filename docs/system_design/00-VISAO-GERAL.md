@@ -86,6 +86,9 @@
 | 15 | Streaming-first: `process_input_stream` é o caminho default da CLI | V1 | Fluxo (05) |
 | 16 | Two-flag flag de fallback `use_legacy_gemini_only` em `model_providers.yaml` | V1 | Integrações LLM (07) |
 | 17 | Separação `deile`/`deilebot` + protocolo HTTP local (Bearer, 127.0.0.1) para a flecha reversa `agente → bot` | V1 | Arquitetura (02), Componentes (04), Segurança (08) |
+| 18 | Hash sharding para execução paralela de monitores (`MonitorIdentity` + `shard_index/shard_count`) | V1 | Princípios (03), Arquitetura (02) |
+| 19 | Cron genérico separado do scheduler do pipeline (`CronStore` SQLite + `CronRunner` vs `ScheduleStore` YAML) | V1 | Componentes (04) |
+| 20 | Strip de `ANTHROPIC_API_KEY` no subprocess do Claude Code (`ClaudeDispatcher.prefer_subscription_auth`) | V1 | Segurança (08) |
 
 ## Estado dos pilares
 
