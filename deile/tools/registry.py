@@ -292,6 +292,7 @@ class ToolRegistry:
                 'deile.tools.bash_tool',
                 'deile.tools.slash_command_executor',
                 'deile.tools.vision_tool',
+                'deile.tools.pipeline_tool',
             ]
 
         discovered_count = 0
