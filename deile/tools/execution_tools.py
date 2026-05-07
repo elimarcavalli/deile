@@ -617,7 +617,6 @@ class EnhancedExecutionTool(SyncTool):
             r'fdisk.*--delete',
         ]
         
-        import re
         command_lower = command.lower()
         
         for pattern in dangerous_patterns:
