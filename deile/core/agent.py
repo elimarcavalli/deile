@@ -2534,8 +2534,15 @@ class DeileAgent:
             # Load user/project skills as slash commands
             try:
                 from ..commands.skill_loader import SkillLoader
+                from ..commands.settings_manager import SettingsManager
                 project_dir = getattr(self.settings, "working_directory", None)
-                skill_loader = SkillLoader(project_dir=project_dir)
+                _settings_mgr = SettingsManager(
+                    project_dir=Path(project_dir) if project_dir else None
+                )
+                skill_loader = SkillLoader(
+                    project_dir=project_dir,
+                    settings_manager=_settings_mgr,
+                )
                 skill_loader.load_into_registry(self.command_registry)
             except Exception as _skill_exc:
                 self.logger.warning("Skill loading failed: %s", _skill_exc)

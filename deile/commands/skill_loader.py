@@ -27,7 +27,10 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from .settings_manager import SettingsManager
 
 logger = logging.getLogger(__name__)
 
@@ -161,9 +164,11 @@ class SkillLoader:
         self,
         project_dir: Optional[Path] = None,
         user_home: Optional[Path] = None,
+        settings_manager: "Optional[SettingsManager]" = None,
     ) -> None:
         self._project_dir = project_dir or Path.cwd()
         self._user_home = user_home or Path.home()
+        self._settings_manager = settings_manager
 
     @property
     def user_skills_dir(self) -> Path:
@@ -202,6 +207,12 @@ class SkillLoader:
             (self.project_skills_dir, "project", False, "skill"),
             (self.project_claude_commands_dir, "project", True, "command"),
         ]
+
+        # Extra paths registered via SettingsManager override the defaults on collision.
+        if self._settings_manager is not None:
+            for extra_path in self._settings_manager.get_all_skills_paths():
+                scan_order.append((extra_path, "extra", False, "skill"))
+
         for directory, source, force_uppercase_name, kind in scan_order:
             for skill in self._scan_directory(
                 directory,

@@ -164,6 +164,125 @@ class TestSkillLoaderLoadSkills:
 
 
 # ---------------------------------------------------------------------------
+# SkillLoader + SettingsManager extra paths
+# ---------------------------------------------------------------------------
+
+
+class TestSkillLoaderExtraPaths:
+    """SkillLoader reads extra directories from SettingsManager."""
+
+    def _write_skill(self, directory: Path, filename: str, name: str, body: str) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / filename).write_text(
+            f"---\nname: {name}\ndescription: {name} skill\n---\n{body}",
+            encoding="utf-8",
+        )
+
+    def test_extra_path_skills_loaded(self, tmp_path):
+        from deile.commands.settings_manager import SettingsManager
+
+        extra_dir = tmp_path / "extra_skills"
+        self._write_skill(extra_dir, "extra.md", "extra-skill", "Extra body.")
+
+        mgr = SettingsManager(
+            project_dir=tmp_path / "project",
+            user_home=tmp_path / "home",
+        )
+        mgr.add_skills_path(str(extra_dir), scope="global")
+
+        loader = SkillLoader(
+            project_dir=tmp_path / "project",
+            user_home=tmp_path / "home",
+            settings_manager=mgr,
+        )
+        skills = loader.load_skills()
+        names = {s.name for s in skills}
+        assert "extra-skill" in names
+
+    def test_extra_path_overrides_default_on_collision(self, tmp_path):
+        from deile.commands.settings_manager import SettingsManager
+
+        # Write same skill name in user_skills_dir and in extra dir
+        loader_base = SkillLoader(
+            project_dir=tmp_path / "project",
+            user_home=tmp_path / "home",
+        )
+        user_dir = loader_base.user_skills_dir
+        user_dir.mkdir(parents=True, exist_ok=True)
+        (user_dir / "clash.md").write_text(
+            "---\nname: clash\ndescription: user ver\n---\nUser body.", encoding="utf-8"
+        )
+
+        extra_dir = tmp_path / "extra_skills"
+        self._write_skill(extra_dir, "clash.md", "clash", "Extra body.")
+
+        mgr = SettingsManager(
+            project_dir=tmp_path / "project",
+            user_home=tmp_path / "home",
+        )
+        mgr.add_skills_path(str(extra_dir), scope="global")
+
+        loader = SkillLoader(
+            project_dir=tmp_path / "project",
+            user_home=tmp_path / "home",
+            settings_manager=mgr,
+        )
+        skills = loader.load_skills()
+        assert len(skills) == 1
+        assert skills[0].body == "Extra body."
+
+    def test_no_settings_manager_loads_defaults_only(self, tmp_path):
+        loader = SkillLoader(
+            project_dir=tmp_path / "project",
+            user_home=tmp_path / "home",
+        )
+        # No extra paths — should not crash and should return normal scan result
+        skills = loader.load_skills()
+        assert isinstance(skills, list)
+
+    def test_extra_nonexistent_dir_skipped_gracefully(self, tmp_path):
+        from deile.commands.settings_manager import SettingsManager
+
+        mgr = SettingsManager(
+            project_dir=tmp_path / "project",
+            user_home=tmp_path / "home",
+        )
+        mgr.add_skills_path("/nonexistent/path/does/not/exist", scope="global")
+
+        loader = SkillLoader(
+            project_dir=tmp_path / "project",
+            user_home=tmp_path / "home",
+            settings_manager=mgr,
+        )
+        skills = loader.load_skills()
+        assert isinstance(skills, list)
+
+    def test_multiple_extra_paths(self, tmp_path):
+        from deile.commands.settings_manager import SettingsManager
+
+        extra1 = tmp_path / "extra1"
+        extra2 = tmp_path / "extra2"
+        self._write_skill(extra1, "a.md", "skill-extra-a", "Body A.")
+        self._write_skill(extra2, "b.md", "skill-extra-b", "Body B.")
+
+        mgr = SettingsManager(
+            project_dir=tmp_path / "project",
+            user_home=tmp_path / "home",
+        )
+        mgr.add_skills_path(str(extra1), scope="global")
+        mgr.add_skills_path(str(extra2), scope="global")
+
+        loader = SkillLoader(
+            project_dir=tmp_path / "project",
+            user_home=tmp_path / "home",
+            settings_manager=mgr,
+        )
+        names = {s.name for s in loader.load_skills()}
+        assert "skill-extra-a" in names
+        assert "skill-extra-b" in names
+
+
+# ---------------------------------------------------------------------------
 # SkillLoader.load_into_registry
 # ---------------------------------------------------------------------------
 

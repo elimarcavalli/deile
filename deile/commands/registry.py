@@ -250,7 +250,8 @@ class CommandRegistry:
                 'deile.commands.builtin.memory_command',
                 'deile.commands.builtin.logs_command',
                 'deile.commands.builtin.permissions_command',
-                'deile.commands.builtin.sandbox_command'
+                'deile.commands.builtin.sandbox_command',
+                'deile.commands.builtin.skills_command',
             ]
             
             for module_name in builtin_modules:
