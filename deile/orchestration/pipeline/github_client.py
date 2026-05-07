@@ -318,3 +318,42 @@ class GitHubClient:
             "--repo", self.repo,
             "--body", text,
         )
+
+    async def list_unclassified_issues(self, *, limit: int = 50) -> List[IssueRef]:
+        """Return open issues that have no pipeline labels (no ``~workflow:*``, ``~batch:*``, ``~review:*``).
+
+        These are candidates for Stage 0 auto-classification.
+        """
+        out = await self._run_checked(
+            "issue", "list",
+            "--repo", self.repo,
+            "--state", "open",
+            "--limit", str(limit),
+            "--json", "number,title,url,labels,body,state",
+        )
+        data = json.loads(out or "[]")
+        result = []
+        for item in data:
+            try:
+                labels = tuple(
+                    lab["name"] for lab in item.get("labels", []) if isinstance(lab, dict)
+                )
+                if any(lb.startswith("~") for lb in labels):
+                    continue
+                result.append(IssueRef(
+                    number=int(item["number"]),
+                    title=str(item.get("title", "")),
+                    url=str(item.get("url", "")),
+                    labels=labels,
+                    body=str(item.get("body") or ""),
+                    state=str(item.get("state", "open")),
+                ))
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning("skipping malformed issue payload: %s", exc)
+                continue
+        if len(result) >= limit:
+            logger.warning(
+                "list_unclassified_issues truncated at limit=%d; some eligible issues may be missed",
+                limit,
+            )
+        return result

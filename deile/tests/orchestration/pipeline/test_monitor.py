@@ -64,10 +64,13 @@ def _make_monitor(
         cmd=("claude", "-p", "x"),
     ))
 
+    github.list_unclassified_issues = AsyncMock(return_value=[])
+
     notifier = MagicMock()
     for attr in (
         "issue_picked_up", "issue_reviewed", "implementation_started",
-        "implementation_finished", "pr_picked_up", "pr_reviewed", "error",
+        "implementation_finished", "pr_picked_up", "pr_reviewed",
+        "issue_auto_classified", "error",
     ):
         setattr(notifier, attr, AsyncMock())
 
@@ -309,6 +312,7 @@ def _make_minimal_monitor(
     github.ensure_pipeline_labels = AsyncMock()
     github.list_issues_with_label = AsyncMock(return_value=[])
     github.list_open_prs = AsyncMock(return_value=[])
+    github.list_unclassified_issues = AsyncMock(return_value=[])
 
     worktrees = MagicMock()
     worktrees.create_branch_worktree = AsyncMock(
@@ -317,7 +321,8 @@ def _make_minimal_monitor(
 
     notifier = MagicMock()
     for attr in ("issue_picked_up", "issue_reviewed", "implementation_started",
-                 "implementation_finished", "pr_picked_up", "pr_reviewed", "error"):
+                 "implementation_finished", "pr_picked_up", "pr_reviewed",
+                 "issue_auto_classified", "error"):
         setattr(notifier, attr, AsyncMock())
 
     schedule_store = MagicMock()

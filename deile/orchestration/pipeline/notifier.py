@@ -19,6 +19,7 @@ import os
 from typing import Awaitable, Callable, Optional
 
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
+from deile.orchestration.pipeline.labels import WORKFLOW_NEW
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,12 @@ class DiscordNotifier:
         verb = "mergeada" if merged else "revisada"
         emoji = "🟣" if merged else "✅"
         await self._send(f"{emoji} **PR #{number} {verb}**: {title}\n🔗 {url}")
+
+    async def issue_auto_classified(self, number: int, title: str, url: str) -> None:
+        await self._send(
+            f"📋 **Issue auto-classificada** #{number}: {title}\n"
+            f"Label `{WORKFLOW_NEW}` adicionado — na fila do pipeline.\n🔗 {url}"
+        )
 
     async def error(self, where: str, detail: str) -> None:
         await self._send(f"⚠️ **Pipeline error** em `{where}`:\n```\n{detail[:PIPELINE_MSG_TRUNCATE_CHARS]}\n```")

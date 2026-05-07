@@ -29,12 +29,11 @@ from typing import Awaitable, Callable, Optional
 
 from deile.orchestration.pipeline.claude_dispatcher import (
     ClaudeDispatcher, render_implement_prompt, render_review_prompt)
-from deile.orchestration.pipeline.constants import (PIPELINE_MSG_TRUNCATE_CHARS,
-                                                    PIPELINE_POLL_INTERVAL_SECONDS,
-                                                    PIPELINE_STOP_TIMEOUT_SECONDS)
+from deile.orchestration.pipeline.constants import (
+    PIPELINE_MSG_TRUNCATE_CHARS, PIPELINE_POLL_INTERVAL_SECONDS,
+    PIPELINE_STOP_TIMEOUT_SECONDS)
 from deile.orchestration.pipeline.github_client import (GhCommandError,
-                                                        GitHubClient,
-                                                        IssueRef)
+                                                        GitHubClient, IssueRef)
 from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
@@ -42,14 +41,22 @@ from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
                                                  WORKFLOW_PR,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING)
-from deile.orchestration.pipeline.lockfile import LockHeldError, acquire as acquire_lock, release as release_lock
+from deile.orchestration.pipeline.lockfile import LockHeldError
+from deile.orchestration.pipeline.lockfile import acquire as acquire_lock
+from deile.orchestration.pipeline.lockfile import release as release_lock
 from deile.orchestration.pipeline.notifier import DiscordNotifier
-from deile.orchestration.pipeline.scheduler import (PendingRun, ScheduleStore)
+from deile.orchestration.pipeline.scheduler import PendingRun, ScheduleStore
 from deile.orchestration.pipeline.worktree_manager import WorktreeManager
 
 logger = logging.getLogger(__name__)
 
 _PR_URL_RE = re.compile(r"https://github\.com/[^\s\"'<>]+/pull/\d+", re.IGNORECASE)
+
+_CLASSIFY_COMMENT = (
+    f"🤖 **DEILE auto-classificação** — esta issue foi adicionada à fila do pipeline "
+    f"autônomo (`{WORKFLOW_NEW}`).\n\n"
+    f"Para excluir da fila, remova o label `{WORKFLOW_NEW}`."
+)
 
 
 @dataclass
@@ -68,6 +75,9 @@ class PipelineConfig:
     enable_review: bool = True
     enable_implement: bool = True
     enable_pr_review: bool = True
+    enable_classify: bool = True
+    classifiable_labels: frozenset = frozenset({"intent", "bug", "refactor", "feature_request"})
+    classify_skip_labels: frozenset = frozenset({"infra"})
     # When True, the monitor acquires a PID lockfile under base_repo_path
     # named after the identity. Two monitors with the same monitor_id on
     # the same host will fail to start. Default off because most tests
@@ -81,6 +91,7 @@ class _Stats:
     issues_reviewed: int = 0
     issues_implemented: int = 0
     prs_reviewed: int = 0
+    issues_classified: int = 0
     errors: int = 0
     catchup_runs: int = 0
     scheduled_runs: int = 0
@@ -221,7 +232,9 @@ class PipelineMonitor:
 
     async def _run_scheduled(self, run: PendingRun) -> None:
         """Execute a single scheduled action by name."""
-        if run.action == "review" and self.config.enable_review:
+        if run.action == "classify" and self.config.enable_classify:
+            await self._classify_new_issues()
+        elif run.action == "review" and self.config.enable_review:
             await self._review_one_new_issue()
         elif run.action == "implement" and self.config.enable_implement:
             await self._implement_one_reviewed_issue()
@@ -296,12 +309,68 @@ class PipelineMonitor:
                     logger.warning("could not persist schedule after tick: %s", exc)
             return
 
+        if self.config.enable_classify:
+            await self._classify_new_issues()
         if self.config.enable_review:
             await self._review_one_new_issue()
         if self.config.enable_implement:
             await self._implement_one_reviewed_issue()
         if self.config.enable_pr_review:
             await self._review_one_open_pr()
+
+    # ----- stage 0: auto-classify new issues -----------------------
+
+    async def _classify_new_issues(self) -> None:
+        """Apply ``~workflow:nova`` to open issues that are eligible but unclassified.
+
+        An issue is eligible when:
+        - it has at least one label in ``config.classifiable_labels``
+        - it has no label in ``config.classify_skip_labels``
+        - it has no pipeline labels (nothing starting with ``~``)
+        - its body is non-empty (filled template)
+        - it falls in this monitor's shard
+
+        Known limitation: Stage 0 does not use ``claim_with_batch`` — there is a
+        narrow race window between ``list_unclassified_issues`` and ``add_labels``
+        where two monitor instances could classify the same issue simultaneously.
+        In practice DEILE runs as a single process, so this is acceptable; the
+        GitHub ``add_labels`` call is idempotent and the worst case is a duplicate
+        comment and notification.
+        """
+        try:
+            issues = await self.github.list_unclassified_issues()
+        except Exception as exc:  # noqa: BLE001 — gh error, JSON parse error, etc.
+            logger.warning("could not list unclassified issues: %s", exc)
+            return
+
+        for issue in issues:
+            # Defense-in-depth: never touch an issue that already has a pipeline label.
+            if any(lb.startswith("~") for lb in issue.labels):
+                continue
+            if not any(lb in self.config.classifiable_labels for lb in issue.labels):
+                continue
+            if any(lb in self.config.classify_skip_labels for lb in issue.labels):
+                continue
+            if not self.identity.owns(issue.title):
+                continue
+            if not issue.body.strip():
+                logger.debug("issue #%s has empty body; skipping auto-classification", issue.number)
+                continue
+            try:
+                await self.github.add_labels("issue", issue.number, [WORKFLOW_NEW])
+            except Exception as exc:  # noqa: BLE001 — best-effort, never abort loop
+                logger.warning("auto-classify label #%s failed: %s", issue.number, exc)
+                await self.notifier.error(
+                    f"auto-classify #{issue.number}", f"{type(exc).__name__}: {exc}"
+                )
+                continue
+            self._stats.issues_classified += 1
+            logger.info("auto-classified issue #%s as %s", issue.number, WORKFLOW_NEW)
+            await self.notifier.issue_auto_classified(issue.number, issue.title, issue.url)
+            try:
+                await self.github.comment_on_issue(issue.number, _CLASSIFY_COMMENT)
+            except Exception as exc:  # noqa: BLE001 — comment is best-effort; label already applied
+                logger.warning("auto-classify comment #%s failed (label applied): %s", issue.number, exc)
 
     # ----- stage 1: review ------------------------------------------
 

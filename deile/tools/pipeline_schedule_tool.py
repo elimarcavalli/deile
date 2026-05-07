@@ -17,7 +17,6 @@ from __future__ import annotations
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
 
 from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.scheduler import (OneshotEntry,
@@ -72,7 +71,7 @@ class PipelineScheduleTool(Tool):
                         },
                         "trigger_action": {
                             "type": "string",
-                            "enum": ["review", "implement", "pr_review"],
+                            "enum": ["review", "implement", "pr_review", "classify"],
                             "description": "Pipeline action this entry fires.",
                         },
                         "cron": {
