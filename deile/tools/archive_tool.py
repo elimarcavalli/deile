@@ -8,24 +8,22 @@ compressed archives with security controls and cross-format support.
 Author: DEILE
 """
 
-import json
 import logging
 import os
 import shutil
-import stat
 import tarfile
 import zipfile
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union, Tuple
+from typing import Any, Dict, List, Optional
 
 import py7zr
 
-from deile.core.models.base import SyncTool, ToolRegistry
 from deile.core.context_manager import ContextManager
 from deile.core.exceptions import ToolError
+from deile.core.models.base import SyncTool, ToolRegistry
 from deile.infrastructure.security.secrets_scanner import SecretsScanner
 
 logger = logging.getLogger(__name__)
@@ -912,7 +910,7 @@ class ArchiveTool(SyncTool):
     def _should_include(self, path: Path, include_patterns: List[str], exclude_patterns: List[str]) -> bool:
         """Check if file should be included based on patterns"""
         import fnmatch
-        
+
         # Check exclude patterns first
         for pattern in exclude_patterns:
             if fnmatch.fnmatch(path.name, pattern) or fnmatch.fnmatch(str(path), pattern):
@@ -955,8 +953,7 @@ class ArchiveTool(SyncTool):
     def _validate_path(self, path: str) -> bool:
         """Validate path for security"""
         try:
-            path_obj = Path(path).resolve()
-            # Add additional validation as needed
+            Path(path).resolve()
             return True
         except Exception:
             return False

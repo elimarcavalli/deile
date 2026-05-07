@@ -1,15 +1,14 @@
 """Ferramentas para manipulação de arquivos"""
 
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
-from pathlib import Path
-import logging
 import fnmatch
+import logging
 import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
-from .base import SyncTool, ToolContext, ToolResult, ToolStatus
 from ..core.exceptions import ValidationError
-
+from .base import SyncTool, ToolContext, ToolResult, ToolStatus
 
 logger = logging.getLogger(__name__)
 
@@ -245,8 +244,9 @@ class ReadFileTool(SyncTool):
     
     def _read_file_universal(self, file_path: Path) -> str:
         """Lê qualquer tipo de arquivo com detecção robusta de encoding e verificação de tamanho"""
-        from ..config.settings import get_settings
         import chardet
+
+        from ..config.settings import get_settings
 
         settings = get_settings()
 
@@ -319,7 +319,7 @@ class ReadFileTool(SyncTool):
             # Fallback final mais seguro
             try:
                 return file_path.read_text(encoding='utf-8', errors='replace')
-            except:
+            except OSError:
                 return f"[ERRO: Não foi possível ler o arquivo {file_path}: {str(e)}]"
 
     def _handle_binary_file(self, file_path: Path, raw_data: bytes) -> str:
@@ -475,6 +475,7 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
         # NOVO: Fallback para user_input se contém referência a arquivo
         if not file_path and context.user_input:
             import re
+
             # Filler tokens (articles, pronouns) that may appear between a verb
             # and the actual file reference, e.g. "read the readme",
             # "show me the README". Skipping them lets the capture group land
@@ -514,10 +515,10 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
         # NOVO: Smart File Resolution - último fallback antes do erro
         if not file_path and context.user_input:
             try:
-                from ..core.file_resolver import get_file_resolver
-
                 # Extrai termos que podem ser referências de arquivo do user_input
                 import re
+
+                from ..core.file_resolver import get_file_resolver
 
                 # Filler tokens to skip between verb and file reference
                 _Q_FILLERS = r'(?:(?:the|a|an|me|my|this|that|o|a|os|as|um|uma|este|esta|esse|essa)\s+)*'
@@ -1055,7 +1056,7 @@ class ListFilesTool(SyncTool):
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Executa listagem de arquivos"""
         import re
-        
+
         # Extração robusta dos argumentos com fallbacks múltiplos
         target_path = "."
         recursive = False
@@ -1215,7 +1216,7 @@ class ListFilesTool(SyncTool):
             # Prepara display rico com quebras de linha FORÇADAS
             rich_display_lines = [
                 f"● list_files({target_path})",
-                f"⎿ Estrutura do projeto:"
+                "⎿ Estrutura do projeto:"
             ]
             
             # Cria tree structure visual

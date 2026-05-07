@@ -1,14 +1,10 @@
 """Git Tool - Integração completa com Git através do GitPython"""
 
-import os
-import subprocess
-from pathlib import Path
-from typing import Dict, List, Optional, Any
-from datetime import datetime
+from typing import Any, Dict, Optional
 
 try:
     import git
-    from git import Repo, InvalidGitRepositoryError, NoSuchPathError
+    from git import InvalidGitRepositoryError, NoSuchPathError, Repo
     GIT_AVAILABLE = True
 except ImportError:
     GIT_AVAILABLE = False
@@ -17,8 +13,8 @@ except ImportError:
     InvalidGitRepositoryError = Exception
     NoSuchPathError = Exception
 
-from .base import SyncTool, ToolContext, ToolResult, ToolStatus, DisplayPolicy
 from ..security.secrets_scanner import SecretsScanner
+from .base import DisplayPolicy, SyncTool, ToolContext, ToolResult, ToolStatus
 
 
 class GitTool(SyncTool):
@@ -226,7 +222,7 @@ class GitTool(SyncTool):
             origin.fetch()
             status_data["remote_behind"] = len(list(repo.iter_commits(f'{repo.active_branch}..origin/{repo.active_branch}')))
             status_data["remote_ahead"] = len(list(repo.iter_commits(f'origin/{repo.active_branch}..{repo.active_branch}')))
-        except:
+        except Exception:
             pass
         
         # Format output
@@ -275,7 +271,7 @@ class GitTool(SyncTool):
                     diff = repo.git.diff("HEAD", file)
                     if diff:
                         diff_output += f"\n--- {file} ---\n{diff}\n"
-                except:
+                except Exception:
                     diff_output += f"\n--- {file} ---\nFile not found or no diff\n"
         else:
             # Get all diffs
@@ -442,9 +438,9 @@ class GitTool(SyncTool):
                         "data": {"remote": remote_name, "branch": branch},
                         "output": "Everything up-to-date"
                     }
-            except:
+            except Exception:
                 pass
-            
+
             # Perform push
             if force:
                 info = remote.push(branch, force=True)[0]
@@ -535,7 +531,7 @@ class GitTool(SyncTool):
         else:
             # Create new branch
             try:
-                new_branch = repo.create_head(branch_name)
+                repo.create_head(branch_name)
                 return {
                     "success": True,
                     "data": {"branch": branch_name},
@@ -592,7 +588,7 @@ class GitTool(SyncTool):
             return {
                 "success": True,
                 "data": {"stashes": stashes},
-                "output": f"Stash list:\n" + "\n".join(stashes) if stashes else "No stashes found"
+                "output": "Stash list:\n" + "\n".join(stashes) if stashes else "No stashes found"
             }
         except Exception as e:
             return {

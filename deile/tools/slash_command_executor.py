@@ -1,11 +1,11 @@
 """Tool para execução de comandos slash integrado ao sistema de parsers"""
 
 import logging
-from typing import Dict, Any, Optional, List
+from typing import List
 
-from .base import Tool, ToolContext, ToolResult, ToolCategory
-from ..commands.registry import get_command_registry
 from ..commands.base import CommandContext
+from ..commands.registry import get_command_registry
+from .base import Tool, ToolCategory, ToolContext, ToolResult
 
 logger = logging.getLogger(__name__)
 
