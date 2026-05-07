@@ -480,8 +480,8 @@ class EnhancedExecutionTool(SyncTool):
                 try:
                     self.active_sessions[session_id].terminate()
                     del self.active_sessions[session_id]
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Failed to terminate session %s during cleanup: %s", session_id, exc)
             
             return ToolResult(
                 status=ToolStatus.ERROR,
