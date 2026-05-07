@@ -56,7 +56,7 @@ class PTYSession:
             else:
                 return self._start_unix()
         except Exception as e:
-            logger.error(f"Failed to start PTY session: {e}")
+            logger.error("Failed to start PTY session: %s", e)
             return False
     
     def _start_windows(self) -> bool:
@@ -92,7 +92,7 @@ class PTYSession:
             return True
             
         except Exception as e:
-            logger.error(f"Failed to start Windows PTY session: {e}")
+            logger.error("Failed to start Windows PTY session: %s", e)
             return False
     
     def _start_unix(self) -> bool:
@@ -126,7 +126,7 @@ class PTYSession:
             return True
             
         except Exception as e:
-            logger.error(f"Failed to start Unix PTY session: {e}")
+            logger.error("Failed to start Unix PTY session: %s", e)
             return False
     
     def _read_output_windows(self):
@@ -143,7 +143,7 @@ class PTYSession:
                             logger.warning("Error reading PTY output: %s", exc)
                         break
         except Exception as e:
-            logger.error(f"PTY output thread error: {e}")
+            logger.error("PTY output thread error: %s", e)
         finally:
             self._cleanup_windows()
     
@@ -166,11 +166,11 @@ class PTYSession:
                             
                 except Exception as e:
                     if self.is_running:
-                        logger.error(f"Error reading subprocess output: {e}")
+                        logger.error("Error reading subprocess output: %s", e)
                     break
                     
         except Exception as e:
-            logger.error(f"Subprocess output thread error: {e}")
+            logger.error("Subprocess output thread error: %s", e)
         finally:
             if self.process:
                 self.exit_code = self.process.returncode
@@ -193,11 +193,11 @@ class PTYSession:
                             break
                 except Exception as e:
                     if self.is_running:
-                        logger.error(f"Error in select/read: {e}")
+                        logger.error("Error in select/read: %s", e)
                     break
                     
         except Exception as e:
-            logger.error(f"PTY output thread error: {e}")
+            logger.error("PTY output thread error: %s", e)
         finally:
             self._cleanup_unix()
     
@@ -218,7 +218,7 @@ class PTYSession:
                     return True
                     
         except Exception as e:
-            logger.error(f"Failed to write input to PTY: {e}")
+            logger.error("Failed to write input to PTY: %s", e)
         
         return False
     
@@ -258,7 +258,7 @@ class PTYSession:
                     return True
                     
         except Exception as e:
-            logger.error(f"Failed to send signal {sig}: {e}")
+            logger.error("Failed to send signal %s: %s", sig, e)
         
         return False
     
@@ -297,7 +297,7 @@ class PTYSession:
             return not self.is_alive()
             
         except Exception as e:
-            logger.error(f"Error terminating PTY session: {e}")
+            logger.error("Error terminating PTY session: %s", e)
             return False
         finally:
             self._cleanup()
@@ -309,7 +309,7 @@ class PTYSession:
                 self.pty_process.close()
                 self.pty_process = None
         except Exception as e:
-            logger.error(f"Error cleaning up Windows PTY: {e}")
+            logger.error("Error cleaning up Windows PTY: %s", e)
     
     def _cleanup_unix(self):
         """Cleanup Unix PTY resources"""
@@ -318,7 +318,7 @@ class PTYSession:
                 os.close(self.master_fd)
                 self.master_fd = None
         except Exception as e:
-            logger.error(f"Error cleaning up Unix PTY: {e}")
+            logger.error("Error cleaning up Unix PTY: %s", e)
     
     def _cleanup(self):
         """General cleanup"""
@@ -382,7 +382,7 @@ class EnhancedExecutionTool(SyncTool):
                 return self._execute_standard(command, context, timeout, env_vars)
                 
         except Exception as e:
-            logger.error(f"Enhanced execution error: {e}")
+            logger.error("Enhanced execution error: %s", e)
             return ToolResult(
                 status=ToolStatus.ERROR,
                 message=f"Execution failed: {str(e)}",
@@ -580,7 +580,7 @@ class EnhancedExecutionTool(SyncTool):
             return success
             
         except Exception as e:
-            logger.error(f"Error terminating session {session_id}: {e}")
+            logger.error("Error terminating session %s: %s", session_id, e)
             return False
     
     def list_active_sessions(self) -> Dict[str, Dict[str, Any]]:
