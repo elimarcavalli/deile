@@ -15,9 +15,6 @@ from typing import Any, Dict, Optional
 
 if platform.system() == "Windows":
     WINDOWS_PTY_AVAILABLE = False
-    import ctypes
-    import msvcrt
-    from ctypes import wintypes
 else:
     try:
         import pty
