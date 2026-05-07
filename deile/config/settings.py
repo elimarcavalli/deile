@@ -1,13 +1,20 @@
-"""Sistema de configurações do DEILE"""
+"""Sistema de configurações do DEILE.
 
-from typing import Dict, Any, Optional, List
-from dataclasses import dataclass, field
-from pathlib import Path
-import os
+Layered settings (issue #111):
+  Project ``.deile/settings.json`` > User ``~/.deile/settings.json`` > defaults.
+
+The legacy ``config/settings.json`` flow is still recognized as a one-shot
+fallback (with a deprecation log). New writes go to the user's
+``~/.deile/settings.json`` via :class:`SettingsManager`.
+"""
+
 import json
 import logging
+import os
+from dataclasses import dataclass, field
 from enum import Enum
-
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +26,70 @@ class LogLevel(Enum):
     WARNING = "WARNING"
     ERROR = "ERROR"
     CRITICAL = "CRITICAL"
+
+
+# ---------------------------------------------------------------------------
+# Override mapping (issue #111)
+# ---------------------------------------------------------------------------
+
+def _to_log_level(value: Any) -> LogLevel:
+    if isinstance(value, LogLevel):
+        return value
+    return LogLevel(str(value).upper())
+
+
+def _to_optional_path(value: Any) -> Optional[Path]:
+    if value in (None, ""):
+        return None
+    return Path(str(value)).expanduser()
+
+
+def _mb_to_bytes(value: Any) -> int:
+    return int(value) * 1024 * 1024
+
+
+# Map of nested JSON paths in ``.deile/settings.json`` to ``Settings`` flat
+# fields, with a converter for each. Anything not listed is ignored (with a
+# debug log) — that's how unknown-but-future keys stay forward-compatible.
+_OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
+    "logging.level": ("log_level", _to_log_level),
+    "logging.to_file": ("log_to_file", bool),
+    "logging.max_size_mb": ("log_file_max_size", _mb_to_bytes),
+    "logging.backup_count": ("log_file_backup_count", int),
+    "ui.streaming_enabled": ("streaming_enabled", bool),
+    "ui.show_tool_details": ("show_tool_details", bool),
+    "model.default_provider": ("default_model_provider", str),
+    "model.max_context_tokens": ("max_context_tokens", int),
+    "caching.enabled": ("enable_caching", bool),
+    "caching.ttl_seconds": ("cache_ttl", int),
+    "caching.parser_cache_enabled": ("parser_cache_enabled", bool),
+    "caching.parser_cache_ttl": ("parser_cache_ttl", int),
+    "concurrency.max_concurrent_requests": ("max_concurrent_requests", int),
+    "concurrency.request_timeout": ("request_timeout", int),
+    "concurrency.max_tool_execution_time": ("max_tool_execution_time", int),
+    "file_safety.enabled": ("enable_file_safety_checks", bool),
+    "file_safety.allowed_extensions": ("allowed_file_extensions", list),
+    "file_safety.blocked_directories": ("blocked_directories", list),
+    "file_safety.max_file_size_bytes": ("max_file_size_bytes", int),
+    "file_safety.allow_all_types": ("allow_all_file_types", bool),
+    "file_safety.encoding_detection": ("file_encoding_detection", bool),
+    "deile_md.enabled": ("deile_md_enabled", bool),
+    "deile_md.user_path": ("deile_md_user_path", _to_optional_path),
+    "deile_md.cwd_filename": ("deile_md_cwd_filename", str),
+    "deile_md.max_bytes": ("deile_md_max_bytes", int),
+    "environment": ("environment", str),
+    "debug": ("debug", bool),
+}
+
+
+def _resolve_dotted(data: dict, key_path: str) -> Tuple[bool, Any]:
+    """Walk *data* by dotted *key_path*. Returns (found, value)."""
+    node: Any = data
+    for part in key_path.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return False, None
+        node = node[part]
+    return True, node
 
 
 @dataclass
@@ -152,50 +223,61 @@ class Settings:
                 logger.warning(f"Could not create directory {directory}: {e}")
     
     def save_to_file(self, file_path: Optional[Path] = None) -> bool:
-        """Salva configurações em arquivo JSON"""
+        """DEPRECATED (issue #111): write to ``~/.deile/settings.json`` instead.
+
+        Kept for backward compat with callers that pass an explicit
+        *file_path*. When called without arguments, writes to the legacy
+        ``config/settings.json`` path with a deprecation log.
+        """
         if file_path is None:
             file_path = self.config_directory / "settings.json"
-        
+            logger.warning(
+                "Settings.save_to_file() with no path is deprecated; "
+                "writes to legacy %s. Migrate to ~/.deile/settings.json.",
+                file_path,
+            )
+
         try:
-            # Converte para dicionário serializável
             config_dict = self.to_dict()
-            
-            with open(file_path, 'w', encoding='utf-8') as f:
+
+            with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(config_dict, f, indent=2, default=str)
-            
-            logger.info(f"Settings saved to {file_path}")
+
+            logger.info("Settings saved to %s", file_path)
             return True
-            
-        except Exception as e:
-            logger.error(f"Failed to save settings to {file_path}: {e}")
+
+        except OSError as e:
+            logger.error("Failed to save settings to %s: %s", file_path, e)
             return False
-    
+
     @classmethod
     def load_from_file(cls, file_path: Path) -> 'Settings':
-        """Carrega configurações de arquivo JSON"""
+        """DEPRECATED (issue #111): read via SettingsManager + apply_overrides.
+
+        Kept so existing callers passing an explicit path don't break;
+        ``get_settings()`` no longer routes through this method.
+        """
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 config_dict = json.load(f)
 
-            if 'api_keys' in config_dict:
+            if "api_keys" in config_dict:
                 logger.warning("API keys found in config file. Ignoring them for security.")
-                del config_dict['api_keys']
+                del config_dict["api_keys"]
 
-            # Converte paths de volta para Path objects
-            for key in ['working_directory', 'config_directory', 'logs_directory', 'cache_directory']:
+            for key in ("working_directory", "config_directory", "logs_directory", "cache_directory"):
                 if key in config_dict:
                     config_dict[key] = Path(config_dict[key])
 
-            # Converte log_level de volta para enum
-            if 'log_level' in config_dict:
-                config_dict['log_level'] = LogLevel(config_dict['log_level'])
+            if "log_level" in config_dict:
+                config_dict["log_level"] = LogLevel(config_dict["log_level"])
 
             settings = cls(**config_dict)
-            logger.info(f"Settings loaded from {file_path}")
+            logger.info("Settings loaded from %s", file_path)
             return settings
-            
-        except Exception as e:
-            logger.warning(f"Failed to load settings from {file_path}: {e}")
+
+        except (OSError, ValueError, TypeError) as e:
+            logger.warning("Failed to load settings from %s: %s", file_path, e)
             logger.info("Using default settings")
             return cls()
     
@@ -227,7 +309,30 @@ class Settings:
             if hasattr(self, key):
                 setattr(self, key, value)
             else:
-                logger.warning(f"Unknown setting: {key}")
+                logger.warning("Unknown setting: %s", key)
+
+    def apply_overrides(self, data: dict) -> None:
+        """Apply nested ``.deile/settings.json`` overrides to flat fields.
+
+        Walks ``_OVERRIDE_HANDLERS`` and pulls each known key out of *data*.
+        Unknown keys are ignored (logged at debug). Convertion errors fall
+        back to leaving the existing default in place plus a warning log.
+        """
+        if not isinstance(data, dict) or not data:
+            return
+        for key_path, (field_name, converter) in _OVERRIDE_HANDLERS.items():
+            found, raw = _resolve_dotted(data, key_path)
+            if not found:
+                continue
+            try:
+                value = converter(raw)
+            except (ValueError, TypeError) as exc:
+                logger.warning(
+                    "settings: cannot apply %s=%r (%s); keeping default",
+                    key_path, raw, exc,
+                )
+                continue
+            setattr(self, field_name, value)
     
     def get_api_key(self, provider: str) -> Optional[str]:
         """Obtém API key para um provedor específico"""
@@ -322,20 +427,59 @@ class Settings:
 _settings: Optional[Settings] = None
 
 
+def _load_layered_settings() -> Settings:
+    """Build a fresh ``Settings`` from defaults + ``.deile/settings.json`` layers.
+
+    Order:
+      1. Defaults from the dataclass.
+      2. Apply ``~/.deile/settings.json`` (user) overrides.
+      3. Apply ``<cwd>/.deile/settings.json`` (project) overrides on top.
+
+    If neither layer exists but the legacy ``config/settings.json`` is
+    present, fall back to it once with a deprecation warning. This
+    preserves behavior for setups that haven't migrated yet.
+    """
+    settings = Settings()
+
+    try:
+        from ..commands.settings_manager import SettingsManager
+    except ImportError as exc:  # pragma: no cover — circular import guard
+        logger.warning("settings: SettingsManager unavailable (%s); using defaults", exc)
+        return settings
+
+    manager = SettingsManager()
+    user_layer = manager.get_layer(SettingsManager.GLOBAL)
+    project_layer = manager.get_layer(SettingsManager.PROJECT)
+
+    if not user_layer and not project_layer:
+        legacy_path = Path.cwd() / "config" / "settings.json"
+        if legacy_path.exists():
+            logger.warning(
+                "settings: loading legacy %s; migrate to ~/.deile/settings.json (issue #111)",
+                legacy_path,
+            )
+            return Settings.load_from_file(legacy_path)
+        return settings
+
+    if user_layer:
+        settings.apply_overrides(user_layer)
+    if project_layer:
+        settings.apply_overrides(project_layer)
+    return settings
+
+
 def get_settings() -> Settings:
-    """Retorna instância singleton das configurações"""
+    """Retorna instância singleton das configurações.
+
+    Reads ``.deile/settings.json`` (project > user > defaults). The legacy
+    ``config/settings.json`` is honored as a one-shot fallback when neither
+    new-layer file exists.
+    """
     global _settings
-    
+
     if _settings is None:
-        # Tenta carregar de arquivo
-        config_file = Path.cwd() / "config" / "settings.json"
-        if config_file.exists():
-            _settings = Settings.load_from_file(config_file)
-        else:
-            _settings = Settings()
-            # Salva configurações padrão
-            _settings.save_to_file()
-    
+        _settings = _load_layered_settings()
+
     return _settings
 
 
