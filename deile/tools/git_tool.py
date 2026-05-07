@@ -5,14 +5,20 @@ from typing import Any, Dict, Optional
 
 try:
     import git
-    from git import InvalidGitRepositoryError, NoSuchPathError, Repo
+    from git import (GitCommandError, InvalidGitRepositoryError,
+                     NoSuchPathError, Repo)
     GIT_AVAILABLE = True
 except ImportError:
     GIT_AVAILABLE = False
     git = None
     Repo = None
-    InvalidGitRepositoryError = Exception
-    NoSuchPathError = Exception
+
+    class _GitUnavailable(Exception):
+        """Sentinel: never raised; substitutes git exception types when GitPython is absent."""
+
+    InvalidGitRepositoryError = _GitUnavailable
+    NoSuchPathError = _GitUnavailable
+    GitCommandError = _GitUnavailable
 
 from ..security.secrets_scanner import SecretsScanner
 from .base import DisplayPolicy, SyncTool, ToolContext, ToolResult, ToolStatus
@@ -225,8 +231,8 @@ class GitTool(SyncTool):
             origin.fetch()
             status_data["remote_behind"] = len(list(repo.iter_commits(f'{repo.active_branch}..origin/{repo.active_branch}')))
             status_data["remote_ahead"] = len(list(repo.iter_commits(f'origin/{repo.active_branch}..{repo.active_branch}')))
-        except Exception as exc:
-            logger.warning("Could not fetch remote status: %s", exc)
+        except (GitCommandError, OSError) as exc:
+            logger.warning("Could not fetch remote status: %s", exc, exc_info=True)
         
         # Format output
         output_lines = [
@@ -274,8 +280,8 @@ class GitTool(SyncTool):
                     diff = repo.git.diff("HEAD", file)
                     if diff:
                         diff_output += f"\n--- {file} ---\n{diff}\n"
-                except Exception as exc:
-                    logger.warning("Could not diff %s: %s", file, exc)
+                except (GitCommandError, OSError) as exc:
+                    logger.warning("Could not diff %s: %s", file, exc, exc_info=True)
                     diff_output += f"\n--- {file} ---\nFile not found or no diff\n"
         else:
             # Get all diffs
@@ -442,8 +448,8 @@ class GitTool(SyncTool):
                         "data": {"remote": remote_name, "branch": branch},
                         "output": "Everything up-to-date"
                     }
-            except Exception as exc:
-                logger.warning("Could not check remote status before push: %s", exc)
+            except (GitCommandError, OSError) as exc:
+                logger.warning("Could not check remote status before push: %s", exc, exc_info=True)
 
             # Perform push
             if force:
