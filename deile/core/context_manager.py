@@ -321,47 +321,130 @@ class ContextManager:
 
         return _merge_bot_extra(base_instruction, session)
     
+    # Maximum characters for the file-context block injected into the system prompt.
+    # Each LLM token is roughly 4 chars; keeping this at 8 000 chars ≈ 2 000 tokens —
+    # enough to list a few hundred top-level paths without blowing the context window.
+    _FILE_CONTEXT_MAX_CHARS: int = 8_000
+
+    # Extensions that are never useful as references in a chat context.
+    _IGNORE_EXTENSIONS: frozenset = frozenset({
+        ".pyc", ".pyo", ".pyd",           # compiled Python
+        ".o", ".so", ".a", ".dylib",      # compiled C/C++
+        ".class", ".jar",                  # Java bytecode
+        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".svg", ".webp",
+        ".mp4", ".mp3", ".wav", ".avi",   # media
+        ".zip", ".tar", ".gz", ".bz2", ".xz", ".rar",  # archives
+        ".db", ".sqlite", ".sqlite3",     # databases
+        ".bin", ".exe", ".dll",           # binaries
+        ".lock",                          # lock files (large, unreadable)
+    })
+
     async def _build_file_context(self, session: Optional[Any], **kwargs) -> str:
-        """Constrói contexto de arquivos disponíveis no projeto"""
+        """Constrói lista compacta de arquivos do projeto para o system prompt.
+
+        Limitações aplicadas para evitar overflow de contexto:
+        - Apenas arquivos não-binários e não-compilados.
+        - Diretórios irrelevantes são ignorados (pruning real via dirs[:]).
+        - Saída truncada a ``_FILE_CONTEXT_MAX_CHARS`` caracteres com aviso de log.
+        """
         try:
-            from pathlib import Path
-            
             working_directory = None
-            if session and hasattr(session, 'working_directory'):
+            if session and hasattr(session, "working_directory"):
                 working_directory = session.working_directory
-            elif 'working_directory' in kwargs:
-                working_directory = kwargs['working_directory']
-            
+            elif "working_directory" in kwargs:
+                working_directory = kwargs["working_directory"]
+
             if not working_directory:
                 return ""
-            
+
             work_dir = Path(working_directory)
             if not work_dir.exists():
                 return ""
-            
-            # Lista arquivos principais do projeto
-            file_list = []
-            ignore_dirs = {'.git', '__pycache__', '.venv', 'venv', 'node_modules', 'logs', '.claude', 'cache'}
-            
+
+            # Directories that are fully pruned from the walk (no descent, no listing).
+            ignore_dirs = {
+                ".git", ".github", ".hg", ".svn",
+                "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+                ".venv", "venv", ".env", "env",
+                "node_modules",
+                "logs",
+                ".claude",
+                "cache", ".cache",
+                "deile_bot",           # separate repo, irrelevant to file nav
+                "work_items",          # large planning docs, not project code
+                "test-your-might",     # sandbox output dir
+                "dist", "build", "site-packages",
+                ".worktrees",
+            }
+
             import os
 
-            # Procura recursivamente todos os arquivos e diretórios
+            file_list: List[str] = []
+            root_str = str(work_dir)
+
+            # os.walk with dirs[:] pruning — never descends into ignored dirs.
             for root, dirs, files in os.walk(work_dir):
+                # Prune in-place so os.walk does NOT recurse into ignored dirs.
+                dirs[:] = [
+                    d for d in dirs
+                    if d not in ignore_dirs and not d.startswith(".")
+                ]
+
                 for file in files:
-                    if not file.startswith('.'):
-                        file_list.append(f"{root / file}")
-                for dir in dirs:
-                    if dir not in ignore_dirs:
-                        file_list.append(f"{root / dir}")
-            
-            # Adiciona informações úteis
-            if file_list:
-                file_list.append("💡 Você pode referenciar qualquer arquivo usando @nome_do_arquivo ou mencionar diretamente no texto.")
-                file_list.append("💡 Use a ferramenta 'read_file' para ler qualquer arquivo que considerar pertinente ou mencionado pelo usuário.")
-                return "\n".join(sorted(file_list))
-            
-            return ""
-            
-        except Exception as e:
-            logger.debug(f"Error building file context: {e}")
+                    # Skip hidden files and binary/compiled extensions.
+                    if file.startswith("."):
+                        continue
+                    ext = Path(file).suffix.lower()
+                    if ext in self._IGNORE_EXTENSIONS:
+                        continue
+
+                    rel_path = os.path.relpath(os.path.join(root, file), root_str)
+                    file_list.append(rel_path)
+
+            if not file_list:
+                return ""
+
+            file_list.sort()
+
+            # Build output and enforce hard character limit (sliding window: keep
+            # the first N entries that fit so the most top-level paths are preserved).
+            header = "Arquivos do projeto (use read_file para ler qualquer um):"
+            # Reserve room for the worst-case footer (e.g. 6-digit omission count).
+            _FOOTER_RESERVE = 80
+            lines: List[str] = [header]
+            char_budget = (
+                self._FILE_CONTEXT_MAX_CHARS
+                - len(header)
+                - 1              # header newline
+                - _FOOTER_RESERVE
+            )
+            truncated = False
+            included = 0
+            for entry in file_list:
+                line = f"  {entry}"
+                needed = len(line) + 1  # +1 for newline
+                if char_budget - needed < 0:
+                    truncated = True
+                    break
+                lines.append(line)
+                char_budget -= needed
+                included += 1
+
+            if truncated:
+                omitted = len(file_list) - included
+                lines.append(
+                    f"  ... ({omitted} arquivo(s) omitido(s) para respeitar limite de contexto)"
+                )
+                logger.warning(
+                    "_build_file_context: truncated file list at %d/%d entries "
+                    "to stay within %d chars. Add ignore patterns or reduce project size.",
+                    included,
+                    len(file_list),
+                    self._FILE_CONTEXT_MAX_CHARS,
+                )
+
+            return "\n".join(lines)
+
+        except Exception as exc:
+            logger.debug("Error building file context: %s", exc)
             return ""
