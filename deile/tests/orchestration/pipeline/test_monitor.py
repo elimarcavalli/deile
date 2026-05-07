@@ -65,12 +65,15 @@ def _make_monitor(
     ))
 
     github.list_unclassified_issues = AsyncMock(return_value=[])
+    github.get_pr_body = AsyncMock(return_value="")
+    github.list_pr_comments = AsyncMock(return_value=[])
+    github.create_issue = AsyncMock(return_value=0)
 
     notifier = MagicMock()
     for attr in (
         "issue_picked_up", "issue_reviewed", "implementation_started",
         "implementation_finished", "pr_picked_up", "pr_reviewed",
-        "issue_auto_classified", "error",
+        "issue_auto_classified", "follow_ups_processed", "error",
     ):
         setattr(notifier, attr, AsyncMock())
 
@@ -395,3 +398,140 @@ class TestPrOwnershipLabel:
         assert ownership_calls, (
             f"expected add_labels call with {ownership!r}; calls were: {add_labels_calls}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: follow-up issue creation
+# ---------------------------------------------------------------------------
+
+class TestStage4FollowUps:
+    def _merged_pr(self) -> PrRef:
+        return PrRef(
+            number=55, title="fix: parser", url="https://github.com/o/r/pull/55",
+            labels=(REVIEW_PENDING,), head_ref="auto/issue-10",
+        )
+
+    async def test_stage4_not_called_when_not_merged(self):
+        """If claude did not merge, stage 4 must not run."""
+        pr = self._merged_pr()
+        monitor, _ = _make_monitor(prs=[pr], claude_stdout="review done", claude_rc=0)
+        monitor.config.enable_review = False
+        monitor.config.enable_implement = False
+        await monitor.tick()
+        monitor.github.get_pr_body.assert_not_called()
+
+    async def test_stage4_not_called_when_disabled(self):
+        """enable_follow_ups=False must suppress stage 4 entirely."""
+        pr = self._merged_pr()
+        monitor, _ = _make_monitor(prs=[pr], claude_stdout="merged ok", claude_rc=0)
+        monitor.config.enable_review = False
+        monitor.config.enable_implement = False
+        monitor.config.enable_follow_ups = False
+        await monitor.tick()
+        monitor.github.get_pr_body.assert_not_called()
+
+    async def test_stage4_runs_after_merge(self):
+        """When claude stdout contains 'merged', stage 4 fetches PR body + comments."""
+        pr = self._merged_pr()
+        monitor, _ = _make_monitor(prs=[pr], claude_stdout="PR merged successfully", claude_rc=0)
+        monitor.config.enable_review = False
+        monitor.config.enable_implement = False
+        await monitor.tick()
+        monitor.github.get_pr_body.assert_called_once_with(55)
+        monitor.github.list_pr_comments.assert_called_once_with(55)
+
+    async def test_stage4_opens_issue_for_non_breaking_followup(self):
+        """Non-breaking follow-up items must be opened as issues."""
+        pr = self._merged_pr()
+        monitor, notifier = _make_monitor(prs=[pr], claude_stdout="merged", claude_rc=0)
+        monitor.config.enable_review = False
+        monitor.config.enable_implement = False
+        monitor.github.get_pr_body = AsyncMock(
+            return_value="## Follow-up\n- Write integration tests\n"
+        )
+        monitor.github.create_issue = AsyncMock(return_value=99)
+        await monitor.tick()
+        monitor.github.create_issue.assert_called_once()
+        call_kwargs = monitor.github.create_issue.call_args
+        assert "Write integration tests" in call_kwargs.args[0]
+        assert monitor._stats.follow_ups_opened == 1
+
+    async def test_stage4_skips_breaking_change(self):
+        """Breaking-change items must be skipped (not opened as issues)."""
+        pr = self._merged_pr()
+        monitor, _ = _make_monitor(prs=[pr], claude_stdout="merged", claude_rc=0)
+        monitor.config.enable_review = False
+        monitor.config.enable_implement = False
+        monitor.github.get_pr_body = AsyncMock(
+            return_value="## Follow-up\n- Breaking change: remove old API\n"
+        )
+        await monitor.tick()
+        monitor.github.create_issue.assert_not_called()
+        assert monitor._stats.follow_ups_skipped == 1
+
+    async def test_stage4_comments_on_pr(self):
+        """Stage 4 must post a follow-up report as a comment on the merged PR."""
+        pr = self._merged_pr()
+        monitor, _ = _make_monitor(prs=[pr], claude_stdout="merged", claude_rc=0)
+        monitor.config.enable_review = False
+        monitor.config.enable_implement = False
+        monitor.github.get_pr_body = AsyncMock(
+            return_value="## Follow-up\n- Add more tests\n"
+        )
+        monitor.github.create_issue = AsyncMock(return_value=42)
+        await monitor.tick()
+        monitor.github.comment_on_pr.assert_called()
+        comment_body = monitor.github.comment_on_pr.call_args.args[1]
+        assert "Stage 4" in comment_body
+
+    async def test_stage4_no_followups_no_comment(self):
+        """When no follow-ups are detected, no PR comment should be posted."""
+        pr = self._merged_pr()
+        monitor, _ = _make_monitor(prs=[pr], claude_stdout="merged", claude_rc=0)
+        monitor.config.enable_review = False
+        monitor.config.enable_implement = False
+        monitor.github.get_pr_body = AsyncMock(return_value="Just a summary.")
+        monitor.github.list_pr_comments = AsyncMock(return_value=[])
+        await monitor.tick()
+        monitor.github.comment_on_pr.assert_not_called()
+
+    async def test_stage4_notifies_discord(self):
+        """follow_ups_processed notification must fire after stage 4."""
+        pr = self._merged_pr()
+        monitor, notifier = _make_monitor(prs=[pr], claude_stdout="merged", claude_rc=0)
+        monitor.config.enable_review = False
+        monitor.config.enable_implement = False
+        monitor.github.get_pr_body = AsyncMock(
+            return_value="## Follow-up\n- Improve error messages\n"
+        )
+        monitor.github.create_issue = AsyncMock(return_value=77)
+        await monitor.tick()
+        notifier.follow_ups_processed.assert_called_once_with(55, 1, 0)
+
+    async def test_stage4_error_in_get_pr_body_does_not_propagate(self):
+        """Failure in get_pr_body must not abort the tick — stage 3 result stands."""
+        from deile.orchestration.pipeline.github_client import GhCommandError
+
+        pr = self._merged_pr()
+        monitor, _ = _make_monitor(prs=[pr], claude_stdout="merged", claude_rc=0)
+        monitor.config.enable_review = False
+        monitor.config.enable_implement = False
+        monitor.github.get_pr_body = AsyncMock(
+            side_effect=GhCommandError(["gh"], 1, "", "network error")
+        )
+        await monitor.tick()
+        assert monitor._stats.errors == 0
+
+    async def test_stage4_create_issue_failure_counted_as_skipped(self):
+        """If create_issue fails, the item is counted as skipped, not opened."""
+        pr = self._merged_pr()
+        monitor, _ = _make_monitor(prs=[pr], claude_stdout="merged", claude_rc=0)
+        monitor.config.enable_review = False
+        monitor.config.enable_implement = False
+        monitor.github.get_pr_body = AsyncMock(
+            return_value="## Follow-up\n- Refactor logger\n"
+        )
+        monitor.github.create_issue = AsyncMock(side_effect=Exception("gh error"))
+        await monitor.tick()
+        assert monitor._stats.follow_ups_opened == 0
+        assert monitor._stats.follow_ups_skipped == 1

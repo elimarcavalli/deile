@@ -123,5 +123,10 @@ class DiscordNotifier:
             f"Label `{WORKFLOW_NEW}` adicionado — na fila do pipeline.\n🔗 {url}"
         )
 
+    async def follow_ups_processed(self, pr_number: int, opened: int, skipped: int) -> None:
+        await self._send(
+            f"🔗 **Stage 4 — PR #{pr_number}**: {opened} issue(s) abertas, {skipped} puladas."
+        )
+
     async def error(self, where: str, detail: str) -> None:
         await self._send(f"⚠️ **Pipeline error** em `{where}`:\n```\n{detail[:PIPELINE_MSG_TRUNCATE_CHARS]}\n```")
