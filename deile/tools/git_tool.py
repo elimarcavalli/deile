@@ -5,16 +5,20 @@ from typing import Any, Dict, Optional
 
 try:
     import git
-    from git import InvalidGitRepositoryError, NoSuchPathError, Repo
-    from git.exc import GitCommandError
+    from git import (GitCommandError, InvalidGitRepositoryError,
+                     NoSuchPathError, Repo)
     GIT_AVAILABLE = True
 except ImportError:
     GIT_AVAILABLE = False
     git = None
     Repo = None
-    InvalidGitRepositoryError = Exception
-    NoSuchPathError = Exception
-    GitCommandError = Exception
+
+    class _GitUnavailable(Exception):
+        """Sentinel: never raised; substitutes git exception types when GitPython is absent."""
+
+    InvalidGitRepositoryError = _GitUnavailable
+    NoSuchPathError = _GitUnavailable
+    GitCommandError = _GitUnavailable
 
 from ..security.secrets_scanner import SecretsScanner
 from .base import DisplayPolicy, SyncTool, ToolContext, ToolResult, ToolStatus
