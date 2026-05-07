@@ -816,10 +816,22 @@ class DeileAgent:
             # + metadata inspection). When the gate triggers a retry, switch to
             # the validation_retry cascade so the user sees label evolution
             # during the LLM round-trip — issue #39 P0.
-            yield UnifiedStreamEvent(
-                type=StreamEventType.STAGE,
-                stage=get_stage_message("validation_check", "initial"),
+            #
+            # Only emit the STAGE spinner when the gate might actually fire:
+            # - tool calls present (potential unvalidated writes to check), OR
+            # - short response with a promise pattern (anti-hallucination check).
+            # For pure text responses (no tools, no promises) the gate exits in
+            # < 1 ms — emitting the spinner is noise and can interfere with the
+            # terminal's last text chunk rendering.
+            _gate_might_fire = bool(collected_tool_results) or (
+                len(content) <= 500
+                and self._contains_promise_pattern(content)
             )
+            if _gate_might_fire:
+                yield UnifiedStreamEvent(
+                    type=StreamEventType.STAGE,
+                    stage=get_stage_message("validation_check", "initial"),
+                )
 
             _gate_holder: List[Any] = [None]
 
