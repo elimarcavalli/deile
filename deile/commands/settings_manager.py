@@ -150,7 +150,11 @@ class SettingsManager:
         self._ensure_global_dir()
         settings_path = self._settings_path(scope)
         data = self._load(settings_path)
-        norm = str(path)
+        # Always resolve to absolute so the path works regardless of CWD at load time.
+        try:
+            norm = str(Path(str(path)).expanduser().resolve())
+        except Exception:
+            norm = str(path)
         if norm in data["skills_paths"]:
             return False
         data["skills_paths"].append(norm)

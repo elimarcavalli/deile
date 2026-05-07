@@ -211,6 +211,11 @@ class SkillLoader:
         # Extra paths registered via SettingsManager override the defaults on collision.
         if self._settings_manager is not None:
             for extra_path in self._settings_manager.get_all_skills_paths():
+                if not extra_path.is_dir():
+                    logger.warning(
+                        "Configured skill path does not exist or is not a directory: %s",
+                        extra_path,
+                    )
                 scan_order.append((extra_path, "extra", False, "skill"))
 
         for directory, source, force_uppercase_name, kind in scan_order:
@@ -261,6 +266,22 @@ class SkillLoader:
 
         return skills
 
+    def reload_into_registry(self, registry) -> int:
+        """Unregister all skill commands then load fresh ones from disk.
+
+        Skill commands are identified by the ``_is_skill_command`` marker placed
+        by ``load_into_registry``. Built-in commands are never touched.
+        """
+        skill_names = [
+            name
+            for name, cmd in list(registry._commands.items())
+            if getattr(cmd, "_is_skill_command", False)
+        ]
+        for name in skill_names:
+            registry.unregister_command(name)
+        logger.debug("Removed %d stale skill command(s) before reload", len(skill_names))
+        return self.load_into_registry(registry)
+
     def load_into_registry(self, registry) -> int:
         """Load skills and register them in *registry*.
 
@@ -301,6 +322,10 @@ class SkillLoader:
             # Capture skill in closure
             def _make_command(sk: SkillDefinition) -> SlashCommand:
                 class _SkillCommand(SlashCommand):
+                    # Marker used by reload_into_registry to identify and remove
+                    # skill commands without touching built-ins.
+                    _is_skill_command: bool = True
+
                     def __init__(self) -> None:
                         cfg = CommandConfig(
                             name=sk.name,

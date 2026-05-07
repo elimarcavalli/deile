@@ -45,9 +45,9 @@ class SkillsCommand(DirectCommand):
         if action == "list":
             return self._list_paths()
         elif action == "add":
-            return self._add_path(rest)
+            return self._add_path(rest, context)
         elif action == "remove":
-            return self._remove_path(rest)
+            return self._remove_path(rest, context)
         else:
             return CommandResult.error_result(
                 f"Unknown action '{action}'. Available: list, add <path> [--scope global|project], "
@@ -151,7 +151,19 @@ class SkillsCommand(DirectCommand):
 
         return CommandResult.success_result(table, "rich")
 
-    def _add_path(self, args: List[str]) -> CommandResult:
+    @staticmethod
+    def _hot_reload(context: "CommandContext") -> str:
+        """Trigger skills reload on the running agent. Returns a status suffix."""
+        agent = getattr(context, "agent", None)
+        if agent is None:
+            return ""
+        reload_fn = getattr(agent, "reload_skills", None)
+        if reload_fn is None:
+            return ""
+        count = reload_fn()
+        return f" {count} skill(s) now active."
+
+    def _add_path(self, args: List[str], context: "CommandContext") -> CommandResult:
         remaining, scope = self._parse_scope(args)
 
         if not remaining:
@@ -167,19 +179,29 @@ class SkillsCommand(DirectCommand):
         mgr = self._manager()
         added = mgr.add_skills_path(raw_path, scope=scope)
 
+        # SettingsManager resolves the path to absolute; show what was stored.
+        stored = mgr.list_skills_paths(scope)[-1] if added else raw_path
+
         if added:
-            msg = f"Added '{raw_path}' to {scope} skills paths."
+            suffix = self._hot_reload(context)
+            body = Text()
+            body.append(f"Added to {scope} skills paths.\n", style="bright_green")
+            body.append(stored, style="bright_blue")
+            if suffix:
+                body.append(f"\n{suffix}", style="dim")
             style = "green"
         else:
-            msg = f"'{raw_path}' is already in {scope} skills paths."
+            body = Text()
+            body.append("Already present — no change.\n", style="yellow")
+            body.append(stored, style="bright_blue")
             style = "yellow"
 
         return CommandResult.success_result(
-            Panel(Text(msg, style=style), title="Skills", border_style=style),
+            Panel(body, title="[bold cyan] Skills — add [/bold cyan]", border_style=style, padding=(1, 2)),
             "rich",
         )
 
-    def _remove_path(self, args: List[str]) -> CommandResult:
+    def _remove_path(self, args: List[str], context: "CommandContext") -> CommandResult:
         remaining, scope = self._parse_scope(args)
 
         if not remaining:
@@ -196,13 +218,20 @@ class SkillsCommand(DirectCommand):
         removed = mgr.remove_skills_path(raw_path, scope=scope)
 
         if removed:
-            msg = f"Removed '{raw_path}' from {scope} skills paths."
+            suffix = self._hot_reload(context)
+            body = Text()
+            body.append(f"Removed from {scope} skills paths.\n", style="bright_green")
+            body.append(raw_path, style="dim")
+            if suffix:
+                body.append(f"\n{suffix}", style="dim")
             style = "green"
         else:
-            msg = f"'{raw_path}' was not found in {scope} skills paths."
+            body = Text()
+            body.append("Not found — no change.\n", style="yellow")
+            body.append(raw_path, style="dim")
             style = "yellow"
 
         return CommandResult.success_result(
-            Panel(Text(msg, style=style), title="Skills", border_style=style),
+            Panel(body, title="[bold cyan] Skills — remove [/bold cyan]", border_style=style, padding=(1, 2)),
             "rich",
         )

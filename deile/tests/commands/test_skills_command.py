@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from rich.console import Console
 
@@ -281,3 +281,89 @@ class TestParseScope:
         remaining, scope = SkillsCommand._parse_scope(["--scope", "project", "/path"])
         assert "/path" in remaining
         assert scope == "project"
+
+
+# ---------------------------------------------------------------------------
+# Hot-reload (_hot_reload)
+# ---------------------------------------------------------------------------
+
+
+class TestHotReload:
+    async def test_reload_called_on_agent_after_add(self, tmp_path):
+        """reload_skills() must be called on context.agent after a successful add."""
+        cmd = _make_cmd()
+        mgr = _make_manager(tmp_path)
+        fake_agent = MagicMock()
+        fake_agent.reload_skills.return_value = 3
+        ctx = _ctx("add /new/skills")
+        ctx.agent = fake_agent
+        with patch.object(cmd, "_manager", return_value=mgr):
+            result = await cmd.execute(ctx)
+        assert result.success is True
+        fake_agent.reload_skills.assert_called_once()
+
+    async def test_reload_called_on_agent_after_remove(self, tmp_path):
+        cmd = _make_cmd()
+        mgr = _make_manager(tmp_path)
+        mgr.add_skills_path("/rem/skills")
+        fake_agent = MagicMock()
+        fake_agent.reload_skills.return_value = 0
+        ctx = _ctx("remove /rem/skills")
+        ctx.agent = fake_agent
+        with patch.object(cmd, "_manager", return_value=mgr):
+            result = await cmd.execute(ctx)
+        assert result.success is True
+        fake_agent.reload_skills.assert_called_once()
+
+    async def test_no_reload_when_agent_is_none(self, tmp_path):
+        """No error when context.agent is None (tests / non-agent invocations)."""
+        cmd = _make_cmd()
+        mgr = _make_manager(tmp_path)
+        ctx = _ctx("add /some/path")
+        assert ctx.agent is None
+        with patch.object(cmd, "_manager", return_value=mgr):
+            result = await cmd.execute(ctx)
+        assert result.success is True
+
+    async def test_no_reload_on_duplicate_add(self, tmp_path):
+        """reload_skills() must NOT be called when add is a no-op (duplicate)."""
+        cmd = _make_cmd()
+        mgr = _make_manager(tmp_path)
+        mgr.add_skills_path("/dup")
+        fake_agent = MagicMock()
+        ctx = _ctx("add /dup")
+        ctx.agent = fake_agent
+        with patch.object(cmd, "_manager", return_value=mgr):
+            await cmd.execute(ctx)
+        fake_agent.reload_skills.assert_not_called()
+
+    async def test_no_reload_on_remove_not_found(self, tmp_path):
+        """reload_skills() must NOT be called when remove target is not present."""
+        cmd = _make_cmd()
+        mgr = _make_manager(tmp_path)
+        fake_agent = MagicMock()
+        ctx = _ctx("remove /ghost")
+        ctx.agent = fake_agent
+        with patch.object(cmd, "_manager", return_value=mgr):
+            await cmd.execute(ctx)
+        fake_agent.reload_skills.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Path resolution
+# ---------------------------------------------------------------------------
+
+
+class TestPathResolution:
+    def test_add_stores_absolute_path(self, tmp_path):
+        """add_skills_path() must resolve relative paths to absolute."""
+        mgr = _make_manager(tmp_path)
+        mgr.add_skills_path("relative/dir")
+        paths = mgr.list_skills_paths("global")
+        assert len(paths) == 1
+        assert Path(paths[0]).is_absolute()
+
+    def test_add_absolute_path_unchanged(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        mgr.add_skills_path("/absolute/path")
+        assert "/absolute/path" in mgr.list_skills_paths("global")

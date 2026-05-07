@@ -358,6 +358,7 @@ class DeileAgent:
         self._status = AgentStatus.IDLE
         self._sessions: Dict[str, AgentSession] = {}
         self._request_count = 0
+        self._skill_loader = None  # set by _auto_discover_components; used by reload_skills()
 
         # Initialize PersonaManager - será inicializado via async initialize()
         self.persona_manager: Optional[PersonaManager] = None
@@ -468,9 +469,13 @@ class DeileAgent:
             # Adiciona entrada ao histórico
             session.add_to_history("user", user_input)
             
-            # Intercepta comandos slash ANTES de processar
-            if user_input.strip().startswith('/'):
-                return await self._process_slash_command(user_input.strip(), session, start_time)
+            # Intercepta comandos slash ANTES de processar — apenas se o comando existe.
+            # Comandos desconhecidos (ex: /ideias-projetos) caem no LLM como linguagem natural.
+            _stripped = user_input.strip()
+            if _stripped.startswith('/'):
+                _cmd = _stripped[1:].split()[0] if _stripped[1:] else ""
+                if _cmd and self.command_registry.has_command(_cmd):
+                    return await self._process_slash_command(_stripped, session, start_time)
             
             # AUTONOMY PHASE: Try autonomous processing first
             autonomous_result = await self.process_autonomous_request(user_input, session)
@@ -623,8 +628,11 @@ class DeileAgent:
             session.add_to_history("user", user_input)
 
             # Slash commands — non-streaming, emit aggregated text once.
-            if user_input.strip().startswith('/'):
-                cmd_name = user_input.strip()[1:].split()[0]
+            # Unknown /commands fall through to the LLM as natural language.
+            _stripped_input = user_input.strip()
+            _slash_cmd_name = _stripped_input[1:].split()[0] if _stripped_input.startswith('/') and _stripped_input[1:] else ""
+            if _slash_cmd_name and self.command_registry.has_command(_slash_cmd_name):
+                cmd_name = _slash_cmd_name
                 # Map command name to a specific scenario key when one exists.
                 # Strip command suffixes like "/patch-apply" → "patch_apply".
                 _normalized = cmd_name.replace("-", "_").lower()
@@ -2520,6 +2528,22 @@ class DeileAgent:
         except Exception as e:
             yield f"Error in streaming response: {str(e)}"
     
+    def reload_skills(self) -> int:
+        """Re-scan all skill directories and hot-reload the command registry.
+
+        Called by /skills add|remove so changes take effect in the running session
+        without restarting DEILE.  Returns the number of skills registered after reload.
+        """
+        if self._skill_loader is None:
+            return 0
+        try:
+            count = self._skill_loader.reload_into_registry(self.command_registry)
+            self.logger.info("Skills hot-reloaded: %d skill(s) active", count)
+            return count
+        except Exception as exc:
+            self.logger.warning("Skills hot-reload failed: %s", exc)
+            return 0
+
     def _auto_discover_components(self) -> None:
         """Descobre automaticamente tools, parsers e comandos"""
         try:
@@ -2544,6 +2568,8 @@ class DeileAgent:
                     settings_manager=_settings_mgr,
                 )
                 skill_loader.load_into_registry(self.command_registry)
+                # Store for hot-reload via /skills add|remove
+                self._skill_loader = skill_loader
             except Exception as _skill_exc:
                 self.logger.warning("Skill loading failed: %s", _skill_exc)
 

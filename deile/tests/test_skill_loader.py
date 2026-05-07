@@ -554,3 +554,107 @@ class TestFrontmatterValidation:
         assert skill is not None
         assert skill.name == "ok"
         assert skill.description == "Works fine"
+
+
+# ---------------------------------------------------------------------------
+# reload_into_registry (hot-reload — bug fix)
+# ---------------------------------------------------------------------------
+
+
+class TestReloadIntoRegistry:
+    def _make_loader(self, tmp_path: Path) -> SkillLoader:
+        return SkillLoader(
+            project_dir=tmp_path / "project",
+            user_home=tmp_path / "home",
+        )
+
+    def _write_skill(self, directory: Path, filename: str, name: str, body: str) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / filename).write_text(
+            f"---\nname: {name}\ndescription: A skill\n---\n{body}",
+            encoding="utf-8",
+        )
+
+    def test_reload_removes_stale_skill_and_adds_new_one(self, tmp_path):
+        """After reload the old skill is gone and the new one is registered."""
+        from deile.commands.registry import CommandRegistry
+
+        loader = self._make_loader(tmp_path)
+        skills_dir = loader.user_skills_dir
+
+        self._write_skill(skills_dir, "old.md", "old-skill", "Old body.")
+        registry = CommandRegistry()
+        loader.load_into_registry(registry)
+        assert registry.get_command("old-skill") is not None
+
+        # Remove old skill file, add a new one
+        (skills_dir / "old.md").unlink()
+        self._write_skill(skills_dir, "new.md", "new-skill", "New body.")
+
+        loader.reload_into_registry(registry)
+
+        assert registry.get_command("old-skill") is None, "stale skill must be removed"
+        assert registry.get_command("new-skill") is not None, "new skill must be present"
+
+    def test_reload_does_not_touch_builtin_commands(self, tmp_path):
+        """Built-in commands (no _is_skill_command marker) survive reload."""
+        from deile.commands.base import (
+            CommandContext,
+            CommandResult,
+            CommandStatus,
+            SlashCommand,
+        )
+        from deile.commands.registry import CommandRegistry
+        from deile.config.manager import CommandConfig
+
+        class _Builtin(SlashCommand):
+            def __init__(self):
+                super().__init__(CommandConfig(name="builtin", description="built-in"))
+
+            async def execute(self, ctx: CommandContext) -> CommandResult:
+                return CommandResult(success=True, content="", status=CommandStatus.SUCCESS)
+
+        registry = CommandRegistry()
+        registry.register_command(_Builtin())
+
+        loader = self._make_loader(tmp_path)
+        self._write_skill(loader.user_skills_dir, "s.md", "skill-x", "Body.")
+        loader.load_into_registry(registry)
+        loader.reload_into_registry(registry)
+
+        assert registry.get_command("builtin") is not None, "built-in must survive reload"
+
+    async def test_reload_registers_updated_skill_body(self, tmp_path):
+        """A skill whose file was modified gets the updated body after reload."""
+        from deile.commands.base import CommandContext
+        from deile.commands.registry import CommandRegistry
+
+        loader = self._make_loader(tmp_path)
+        skills_dir = loader.user_skills_dir
+        self._write_skill(skills_dir, "s.md", "my-skill", "Original body.")
+        registry = CommandRegistry()
+        loader.load_into_registry(registry)
+
+        # Overwrite with new body
+        (skills_dir / "s.md").write_text(
+            "---\nname: my-skill\ndescription: Updated\n---\nUpdated body.",
+            encoding="utf-8",
+        )
+        loader.reload_into_registry(registry)
+
+        cmd = registry.get_command("my-skill")
+        assert cmd is not None
+        ctx = CommandContext(user_input="/my-skill", args="")
+        result = await cmd.execute(ctx)
+        assert "Updated body." in result.content
+
+    def test_reload_marks_commands_with_is_skill_command(self, tmp_path):
+        """Skills registered via load_into_registry carry the _is_skill_command marker."""
+        from deile.commands.registry import CommandRegistry
+
+        loader = self._make_loader(tmp_path)
+        self._write_skill(loader.user_skills_dir, "x.md", "marked-skill", "Body.")
+        registry = CommandRegistry()
+        loader.load_into_registry(registry)
+        cmd = registry.get_command("marked-skill")
+        assert getattr(cmd, "_is_skill_command", False) is True
