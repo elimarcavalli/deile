@@ -460,10 +460,17 @@ class CommandActions:
             
             tables.append(commands_table)
             
+            from rich.console import Group
+
+            config_panel = Panel(
+                Group(*tables),
+                title="[bold cyan]DEILE Configuration[/bold cyan]",
+                border_style="cyan",
+            )
             return CommandResult.success_result(
-                tables, 
+                config_panel,
                 "rich",
-                config_sections=["system", "gemini", "commands"]
+                config_sections=["system", "gemini", "commands"],
             )
             
         except Exception as e:
