@@ -325,7 +325,7 @@ def _make_minimal_monitor(
     notifier = MagicMock()
     for attr in ("issue_picked_up", "issue_reviewed", "implementation_started",
                  "implementation_finished", "pr_picked_up", "pr_reviewed",
-                 "issue_auto_classified", "error"):
+                 "issue_auto_classified", "follow_ups_processed", "error"):
         setattr(notifier, attr, AsyncMock())
 
     schedule_store = MagicMock()
@@ -441,7 +441,7 @@ class TestStage4FollowUps:
         monitor.github.list_pr_comments.assert_called_once_with(55)
 
     async def test_stage4_opens_issue_for_non_breaking_followup(self):
-        """Non-breaking follow-up items must be opened as issues."""
+        """Non-breaking follow-up items must be opened as issues with label 'intent'."""
         pr = self._merged_pr()
         monitor, notifier = _make_monitor(prs=[pr], claude_stdout="merged", claude_rc=0)
         monitor.config.enable_review = False
@@ -452,8 +452,9 @@ class TestStage4FollowUps:
         monitor.github.create_issue = AsyncMock(return_value=99)
         await monitor.tick()
         monitor.github.create_issue.assert_called_once()
-        call_kwargs = monitor.github.create_issue.call_args
-        assert "Write integration tests" in call_kwargs.args[0]
+        call_args = monitor.github.create_issue.call_args
+        assert "Write integration tests" in call_args.args[0]
+        assert call_args.kwargs.get("labels") == ["intent"]
         assert monitor._stats.follow_ups_opened == 1
 
     async def test_stage4_skips_breaking_change(self):
@@ -535,3 +536,21 @@ class TestStage4FollowUps:
         await monitor.tick()
         assert monitor._stats.follow_ups_opened == 0
         assert monitor._stats.follow_ups_skipped == 1
+
+    async def test_stage4_all_breaking_no_issues_opened(self):
+        """When every detected item is a breaking change, no issues are opened."""
+        pr = self._merged_pr()
+        monitor, _ = _make_monitor(prs=[pr], claude_stdout="merged", claude_rc=0)
+        monitor.config.enable_review = False
+        monitor.config.enable_implement = False
+        monitor.github.get_pr_body = AsyncMock(
+            return_value=(
+                "## Follow-up\n"
+                "- Breaking change: drop Python 3.9 support\n"
+                "- Incompatible API refactor\n"
+            )
+        )
+        await monitor.tick()
+        monitor.github.create_issue.assert_not_called()
+        assert monitor._stats.follow_ups_opened == 0
+        assert monitor._stats.follow_ups_skipped == 2

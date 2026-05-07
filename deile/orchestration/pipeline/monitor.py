@@ -559,7 +559,7 @@ class PipelineMonitor:
                 self._stats.follow_ups_skipped += 1
                 continue
             issue_body = (
-                f"{fu.description}\n\n"
+                f"{fu.title}\n\n"
                 f"---\n\n"
                 f"Origem: PR #{pr_number} — [{pr_title}]({pr_url})"
             )

@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import shutil
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence, Tuple
@@ -354,7 +355,6 @@ class GitHubClient:
         labels: Optional[List[str]] = None,
     ) -> int:
         """Create a new issue and return its number (0 on failure)."""
-        import re as _re
         cmd = [
             "issue", "create",
             "--repo", self.repo,
@@ -368,7 +368,7 @@ class GitHubClient:
         except GhCommandError as exc:
             logger.warning("create_issue %r failed: %s", title[:60], exc)
             return 0
-        m = _re.search(r"/issues/(\d+)", out)
+        m = re.search(r"/issues/(\d+)", out)
         return int(m.group(1)) if m else 0
 
     async def list_unclassified_issues(self, *, limit: int = 50) -> List[IssueRef]:

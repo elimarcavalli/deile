@@ -50,7 +50,6 @@ _MAX_TITLE_CHARS = 120
 @dataclass(frozen=True)
 class FollowUp:
     title: str
-    description: str
     is_breaking: bool
 
 
@@ -133,4 +132,4 @@ def _add_item(text: str, results: List[FollowUp], seen: Set[str]) -> None:
         return
     seen.add(key)
     is_breaking = bool(_BREAKING_RE.search(title))
-    results.append(FollowUp(title=title, description=title, is_breaking=is_breaking))
+    results.append(FollowUp(title=title, is_breaking=is_breaking))

@@ -213,3 +213,13 @@ Not a bullet to open
         assert isinstance(result[0], FollowUp)
         with pytest.raises(Exception):
             result[0].title = "mutate"  # type: ignore[misc]
+
+    def test_all_breaking_returns_only_breaking_items(self):
+        body = (
+            "## Follow-up\n"
+            "- Breaking change: remove v1 API\n"
+            "- Incompatible interface change\n"
+        )
+        results = detect_follow_ups(body, [])
+        assert len(results) == 2
+        assert all(r.is_breaking for r in results)
