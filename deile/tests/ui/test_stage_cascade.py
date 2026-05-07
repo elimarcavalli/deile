@@ -10,7 +10,6 @@ import pytest
 from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
 from deile.ui.stage_cascade import cascade_stream, cascade_until
 
-
 pytestmark = pytest.mark.asyncio
 
 

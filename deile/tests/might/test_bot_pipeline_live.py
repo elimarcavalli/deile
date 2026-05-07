@@ -13,11 +13,13 @@ Requires at least one of: ANTHROPIC_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, G
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import TYPE_CHECKING, List
+
+if TYPE_CHECKING:
+    from deilebot.foundation.envelope import MessageEnvelope
 
 # --- path setup ---
 ROOT = Path(__file__).parents[3]
@@ -66,11 +68,10 @@ async def _bootstrap_agent():
 # ─── pipeline factory ───────────────────────────────────────────────────────
 
 async def _make_pipeline(store, agent, *, settings=None):
-    import tempfile
 
     from deilebot._testing import FakeAgentMetaProvider, FakeProviderAdapter
     from deilebot.foundation.agent_bridge import (AgentBridge, AgentInvocation,
-                                                    AgentResponse)
+                                                  AgentResponse)
     from deilebot.foundation.audit import BotAuditLogger
     from deilebot.foundation.capabilities import CapabilityCatalog
     from deilebot.foundation.dlq import DeadLetterQueue
@@ -83,7 +84,6 @@ async def _make_pipeline(store, agent, *, settings=None):
     from deilebot.foundation.persona_selector import PersonaSelector
     from deilebot.foundation.pipeline import EgressPipeline, IngressPipeline
     from deilebot.foundation.rate_limit import RateLimiter
-    from deilebot.foundation.settings import BotSettings
 
     from deile.common.markup_ast import MarkupAST
 
@@ -160,8 +160,11 @@ async def _make_pipeline(store, agent, *, settings=None):
 def _dm_envelope(text: str, user_id: str = "test-user-001") -> "MessageEnvelope":
     from datetime import datetime, timezone
     from types import MappingProxyType
+
+    from deilebot.foundation.envelope import (BotUser, Channel, ChannelScope,
+                                              MessageEnvelope)
+
     from deile.common.markup_ast import MarkupAST
-    from deilebot.foundation.envelope import (BotUser, Channel, ChannelScope, MessageEnvelope)
 
     return MessageEnvelope(
         message_id=f"msg-{int(time.time()*1000)}",
@@ -187,8 +190,11 @@ def _dm_envelope(text: str, user_id: str = "test-user-001") -> "MessageEnvelope"
 def _group_envelope(text: str, *, mention_bot_id: str = "", user_id: str = "test-user-001") -> "MessageEnvelope":
     from datetime import datetime, timezone
     from types import MappingProxyType
+
+    from deilebot.foundation.envelope import (BotUser, Channel, ChannelScope,
+                                              MessageEnvelope)
+
     from deile.common.markup_ast import MarkupAST
-    from deilebot.foundation.envelope import (BotUser, Channel, ChannelScope, MessageEnvelope)
 
     mentions = ()
     if mention_bot_id:
@@ -221,8 +227,11 @@ def _group_envelope(text: str, *, mention_bot_id: str = "", user_id: str = "test
 def _slash_envelope(text: str, user_id: str = "test-user-001") -> "MessageEnvelope":
     from datetime import datetime, timezone
     from types import MappingProxyType
+
+    from deilebot.foundation.envelope import (BotUser, Channel, ChannelScope,
+                                              MessageEnvelope)
+
     from deile.common.markup_ast import MarkupAST
-    from deilebot.foundation.envelope import (BotUser, Channel, ChannelScope, MessageEnvelope)
 
     return MessageEnvelope(
         message_id=f"slash-{int(time.time()*1000)}",
@@ -324,8 +333,11 @@ async def run_06_persona_dm_is_discord_developer(pipeline, adapter, bridge):
 
     from datetime import datetime, timezone
     from types import MappingProxyType
+
+    from deilebot.foundation.envelope import (BotUser, Channel, ChannelScope,
+                                              MessageEnvelope)
+
     from deile.common.markup_ast import MarkupAST
-    from deilebot.foundation.envelope import BotUser, Channel, ChannelScope, MessageEnvelope
 
     uid = "user-persona-006"
     env = MessageEnvelope(
@@ -382,7 +394,7 @@ async def run_07_rate_limit_burst(pipeline, adapter):
 async def run_08_empty_message_ignored(pipeline, adapter):
     """Empty/whitespace DM → pipeline skips (too_short heuristic)."""
     adapter.inbox.clear()
-    env = _dm_envelope("hi", user_id="user-short-008")  # < 4 chars → too_short in GROUP, but DM returns True always
+    _dm_envelope("hi", user_id="user-short-008")  # < 4 chars → too_short in GROUP, but DM returns True always
     # DMs always return True regardless of length — so this tests GROUP instead
     env_grp = _group_envelope("ok", user_id="user-short-008")
     await pipeline.handle(env_grp, adapter)
@@ -394,13 +406,10 @@ async def run_08_empty_message_ignored(pipeline, adapter):
 
 async def run_09_permission_blocklist(pipeline, adapter):
     """Blocklisted user → pipeline denies without invoking agent."""
-    from deilebot.foundation.settings import BotSettings, PermissionsSettings
     # We'll use a temporary pipeline with a blocklist
-    import tempfile
-    from deilebot.foundation.conversation_store import ConversationStore
 
     adapter.inbox.clear()
-    blocked_uid = "blocked-user-999"
+    _ = "blocked-user-999"
 
     # Inject via settings override: create settings with blocked user
     # (We can't easily override after identity resolution; test via known bot_user_id)
@@ -439,6 +448,7 @@ async def run_10_multi_user_no_leak(pipeline, adapter, bridge):
 
 async def _run_all():
     import tempfile
+
     from deilebot.foundation.conversation_store import ConversationStore
 
     print("\n════════════════════════════════════════════")

@@ -12,29 +12,17 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
 from deile.orchestration.pipeline.github_client import IssueRef, PrRef
-from deile.orchestration.pipeline.labels import (
-    WORKFLOW_NEW,
-    WORKFLOW_REVIEWED,
-    WORKFLOW_PR,
-    REVIEW_PENDING,
-    REVIEW_IN_PROGRESS,
-    REVIEW_CONCLUDED,
-)
-from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
-from deile.orchestration.pipeline.scheduler import (
-    OneshotEntry,
-    RecurringEntry,
-    Schedule,
-    ScheduleStore,
-)
+from deile.orchestration.pipeline.labels import WORKFLOW_NEW, WORKFLOW_REVIEWED
+from deile.orchestration.pipeline.monitor import (PipelineConfig,
+                                                  PipelineMonitor)
+from deile.orchestration.pipeline.scheduler import (OneshotEntry,
+                                                    RecurringEntry, Schedule,
+                                                    ScheduleStore)
 from deile.orchestration.pipeline.worktree_manager import Worktree
-
 
 # ---------------------------------------------------------------------------
 # helpers

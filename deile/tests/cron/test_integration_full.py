@@ -2,10 +2,10 @@
 import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
-import pytest
-from deile.cron.store import CronEntry, CronStore
-from deile.cron.runner import CronRunner
+
 from deile.cron.agent_bridge import make_fire_callback
+from deile.cron.runner import CronRunner
+from deile.cron.store import CronEntry, CronStore
 
 
 class TestCronEndToEnd:
@@ -50,7 +50,7 @@ class TestCronEndToEnd:
         agent = MagicMock()
         agent.process_input = AsyncMock(return_value=MagicMock(content="ok"))
 
-        runner = CronRunner(store, fire_callback=make_fire_callback(lambda: asyncio.coroutine(lambda: agent)()))
+        _runner = CronRunner(store, fire_callback=make_fire_callback(lambda: asyncio.coroutine(lambda: agent)()))
 
         # Use a direct callback to capture kwargs
         captured: dict = {}

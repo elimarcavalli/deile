@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
 from deile.core.agent import DeileAgent
-from deile.core.bot_streaming import StreamChunk
 
 
 class FakeStreamEvent:

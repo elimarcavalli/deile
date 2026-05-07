@@ -95,7 +95,8 @@ class _DeileCLI:
                 data = yaml.safe_load(f)
             if bool(data.get("feature_flags", {}).get("use_legacy_gemini_only", False)):
                 if os.getenv("GOOGLE_API_KEY"):
-                    from deile.core.models.gemini_provider import GeminiProvider
+                    from deile.core.models.gemini_provider import \
+                        GeminiProvider
                     model_router.register_provider(GeminiProvider(), priority=1)
                     return ["gemini"]
                 return []
@@ -175,7 +176,8 @@ class _DeileCLI:
     async def run_interactive(self) -> None:
         from rich.panel import Panel
         from rich.text import Text
-        from deile.ui import UIMessage, MessageType
+
+        from deile.ui import MessageType, UIMessage
 
         if not await self.initialize():
             return
@@ -286,8 +288,8 @@ async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
     from deile.config.manager import ConfigManager
     from deile.config.settings import get_settings
     from deile.core.agent import DeileAgent
-    from deile.core.models.router import get_model_router
     from deile.core.models.bootstrap import bootstrap_providers
+    from deile.core.models.router import get_model_router
     from deile.parsers.registry import get_parser_registry
     from deile.tools.registry import get_tool_registry
 
@@ -321,7 +323,7 @@ async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
     if forced_model:
         session.context_data["forced_model"] = forced_model
     else:
-        preferred = os.environ.get("DEILE_PREFERRED_MODEL")
+        preferred = settings.preferred_model
         if preferred:
             session.context_data["preferred_model"] = preferred
 

@@ -15,7 +15,6 @@ artifact for human evaluation in the parent conversation.
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 import time
 from pathlib import Path
@@ -26,13 +25,14 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # noqa: E402
+
 load_dotenv(PROJECT_ROOT / ".env")
 
-from deile.config.manager import ConfigManager
-from deile.core.agent import DeileAgent
-from deile.core.models.bootstrap import bootstrap_providers
-from deile.core.models.router import get_model_router
+from deile.config.manager import ConfigManager  # noqa: E402
+from deile.core.agent import DeileAgent  # noqa: E402
+from deile.core.models.bootstrap import bootstrap_providers  # noqa: E402
+from deile.core.models.router import get_model_router  # noqa: E402
 
 
 def _format_tool_calls(tool_results) -> str:
@@ -64,10 +64,10 @@ async def run_turn(agent: DeileAgent, session_id: str, label: str, user_input: s
     print(f"\n--- TOOL CALLS ({len(response.tool_results)}) ---")
     print(_format_tool_calls(response.tool_results))
 
-    print(f"\n--- RESPONSE TEXT ---")
+    print("\n--- RESPONSE TEXT ---")
     print(response.content)
 
-    print(f"\n--- METADATA ---")
+    print("\n--- METADATA ---")
     print(f"  duration: {dt:.2f}s")
     print(f"  model_used: {response.metadata.get('model_used', '?')}")
     print(f"  status: {response.status.value if hasattr(response.status, 'value') else response.status}")

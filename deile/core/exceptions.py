@@ -1,6 +1,6 @@
 """Exceções customizadas do DEILE"""
 
-from typing import Optional, Any, Dict
+from typing import Any, Dict, Optional
 
 
 class DEILEError(Exception):

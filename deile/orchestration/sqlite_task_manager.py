@@ -1,15 +1,15 @@
 """SQLite Task Manager - Sistema robusto de TODO lists com persistência SQLite"""
 
-import sqlite3
-import json
 import asyncio
-import uuid
+import json
 import logging
-from typing import Dict, List, Optional, Any, Union
-from dataclasses import dataclass, field, asdict
-from enum import Enum
+import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from enum import Enum
 from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import aiosqlite
 
 from ..core.exceptions import DEILEError
@@ -494,7 +494,7 @@ class SQLiteTaskManager:
         if not task_list:
             return None
 
-        tasks = await self._get_tasks_for_list(list_id)
+        _tasks = await self._get_tasks_for_list(list_id)
         next_tasks = await self.get_next_tasks(list_id)
 
         return {

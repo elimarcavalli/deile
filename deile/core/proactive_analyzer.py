@@ -4,16 +4,15 @@ Enhanced ProactiveAnalyzer com capacidades de resolução inteligente de arquivo
 e encadeamento de ações para autonomia completa no DEILE.
 """
 
-import re
 import logging
-from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+import re
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+from typing import Dict, List, Optional
 
 from ..tools.base import ToolContext
-from .file_resolver import get_file_resolver, FileMatch
-
+from .file_resolver import FileMatch, get_file_resolver
 
 logger = logging.getLogger(__name__)
 

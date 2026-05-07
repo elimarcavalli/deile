@@ -12,13 +12,12 @@ from __future__ import annotations
 from io import StringIO
 from unittest.mock import MagicMock
 
-import pytest
 from rich.console import Console
 
 from deile.commands.actions import CommandActions
 from deile.commands.base import CommandContext
-from deile.config.manager import CommandConfig, DeileConfig, GeminiConfig, SystemConfig
-
+from deile.config.manager import (CommandConfig, DeileConfig, GeminiConfig,
+                                  SystemConfig)
 
 # ---------------------------------------------------------------------------
 # Helpers

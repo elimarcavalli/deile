@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from deile.common.markup_ast import MarkupAST, SpanKind
 from deile.ui.markup import MarkdownToASTParser
 

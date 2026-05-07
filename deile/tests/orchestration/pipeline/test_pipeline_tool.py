@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
-from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
+from deile.orchestration.pipeline.monitor import (PipelineConfig,
+                                                  PipelineMonitor)
 from deile.tools.base import ToolContext, ToolStatus
 from deile.tools.pipeline_tool import PipelineTool
 
@@ -181,9 +180,10 @@ class TestPipelineToolFailureHandling:
 
 class TestAutoDiscover:
     def test_pipeline_tool_in_default_packages(self):
-        from deile.tools.registry import ToolRegistry
         # Construct a registry and inspect the default discovery list.
         # We don't actually import; just check the constant.
         import inspect
+
+        from deile.tools.registry import ToolRegistry
         src = inspect.getsource(ToolRegistry.auto_discover)
         assert "deile.tools.pipeline_tool" in src

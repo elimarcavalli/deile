@@ -1,13 +1,13 @@
 """Error recovery system for persona operations with automatic recovery strategies"""
 
-from typing import Dict, List, Callable, Any, Optional, Type
-from abc import ABC, abstractmethod
 import asyncio
 import logging
+from abc import ABC, abstractmethod
 from enum import Enum
+from typing import Any, Dict, List
 
+from ..core.exceptions import PersonaError
 from .error_context import ErrorContext, ErrorSeverity
-from ..core.exceptions import PersonaError, DEILEError
 
 logger = logging.getLogger(__name__)
 

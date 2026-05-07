@@ -1,16 +1,16 @@
 """Diff Command - Show differences and changes from plan execution"""
 
-from typing import Dict, Any, Optional, List
-import json
 from pathlib import Path
-from rich.panel import Panel
-from rich.text import Text
-from rich.table import Table
-from rich.syntax import Syntax
+from typing import Any, Dict, List
 
-from ..base import DirectCommand, CommandResult, CommandContext
+from rich.panel import Panel
+from rich.syntax import Syntax
+from rich.table import Table
+from rich.text import Text
+
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import get_plan_manager
+from ..base import CommandContext, CommandResult, DirectCommand
 
 
 class DiffCommand(DirectCommand):
@@ -279,7 +279,7 @@ class DiffCommand(DirectCommand):
             f"**Status:** {plan.status.value}",
             f"**Total Files:** {len(changes['file_changes'])}",
             "",
-            f"**Overall Changes:**",
+            "**Overall Changes:**",
             f"  • Files Modified: {summary['files_modified']} 📝",
             f"  • Files Created: {summary['files_created']} ✨",
             f"  • Files Deleted: {summary['files_deleted']} 🗑️",

@@ -11,13 +11,12 @@ provider-tool encodings, so the recursive flag must be coerced from str.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 
-from deile.tools.file_tools import ListFilesTool
 from deile.tools.base import ToolContext
+from deile.tools.file_tools import ListFilesTool
 
 
 def _make_ctx(working_dir: Path, **parsed_args) -> ToolContext:

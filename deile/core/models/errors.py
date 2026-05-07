@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+
 @dataclass
 class ProviderErrorEnvelope:
     """Structured representation of a provider API error."""

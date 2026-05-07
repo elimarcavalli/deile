@@ -10,15 +10,11 @@ Verifies that the file context injected into the system prompt:
 
 from __future__ import annotations
 
-import os
-import textwrap
 from pathlib import Path
-from typing import Generator
 
 import pytest
 
 from deile.core.context_manager import ContextManager
-
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 

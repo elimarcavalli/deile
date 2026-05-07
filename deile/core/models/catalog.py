@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, Optional
+from typing import Dict, FrozenSet, List, Optional
 
 import yaml
 

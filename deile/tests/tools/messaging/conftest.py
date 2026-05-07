@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
+from deile.config.settings import reset_settings
 from deile.integrations.bot import reset_bot_client
 from deile.integrations.bot.config import reset_bot_settings_cache
 from deile.tools.base import ToolContext
@@ -165,9 +166,11 @@ def _isolate_singletons(monkeypatch):
         monkeypatch.delenv(key, raising=False)
     reset_bot_settings_cache()
     reset_bot_client()
+    reset_settings()
     yield
     reset_bot_settings_cache()
     reset_bot_client()
+    reset_settings()
 
 
 @pytest.fixture

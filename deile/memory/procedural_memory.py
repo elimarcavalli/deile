@@ -1,11 +1,10 @@
 """Procedural Memory - Patterns aprendidos e habilidades adquiridas"""
 
-import asyncio
-import logging
 import json
-from typing import Dict, List, Optional, Any
-from pathlib import Path
+import logging
 from collections import defaultdict
+from pathlib import Path
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional, Tuple
 from enum import Enum
-import logging
-import time
+from typing import (TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional,
+                    Tuple)
 
 from deile.core.models.tier import ModelTier
 
@@ -223,11 +223,9 @@ class ModelProvider(ABC):
         """
         # Default: wrap generate() into a single TEXT_DELTA + USAGE_FINAL.
         # Subclasses that support streaming/tools override this method.
-        from deile.core.models.stream_events import (
-            StreamEventType,
-            UnifiedStreamEvent,
-            ModelUsageSnapshot,
-        )
+        from deile.core.models.stream_events import (ModelUsageSnapshot,
+                                                     StreamEventType,
+                                                     UnifiedStreamEvent)
         response = await self.generate(messages, system_instruction, **kwargs)
         yield UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text=response.content)
         yield UnifiedStreamEvent(
@@ -360,7 +358,8 @@ class ModelProvider(ABC):
         No-op until UsageRepository is available; safe to call from all providers.
         """
         try:
-            from deile.storage.usage_repository import get_usage_repository  # noqa: PLC0415
+            from deile.storage.usage_repository import \
+                get_usage_repository  # noqa: PLC0415
             repo = get_usage_repository()
             await repo.record_from_provider(
                 provider_id=self.provider_id,

@@ -1,21 +1,21 @@
 import random
-import time
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from .streaming_renderer import RenderResult
 
 import yaml
-
+from prompt_toolkit import PromptSession
+from rich import box
 from rich.console import Console
 from rich.panel import Panel
-from rich.text import Text
-from rich.status import Status
 from rich.prompt import Prompt as RichPrompt
+from rich.status import Status
 from rich.table import Table
-from rich import box
+from rich.text import Text
 
-from prompt_toolkit import PromptSession
-
-from .base import UIManager, UITheme, UIMessage, MessageType, UIStatus
+from .base import UIManager, UIMessage, UIStatus, UITheme
 from .completers import HybridCompleter
 from .markdown_table import DeileMarkdown as Markdown
 
@@ -101,14 +101,16 @@ class ConsoleUIManager(UIManager):
             
             # Tenta configuração mais compatível com Windows
             import asyncio
+
             from prompt_toolkit import PromptSession
-            from prompt_toolkit.output import ColorDepth
-            from prompt_toolkit.key_binding import KeyBindings
-            from prompt_toolkit.formatted_text import FormattedText
             from prompt_toolkit.application import get_app
-            from prompt_toolkit.layout.containers import Window, ConditionalContainer
-            from prompt_toolkit.layout.controls import FormattedTextControl
             from prompt_toolkit.filters import Condition
+            from prompt_toolkit.formatted_text import FormattedText
+            from prompt_toolkit.key_binding import KeyBindings
+            from prompt_toolkit.layout.containers import (ConditionalContainer,
+                                                          Window)
+            from prompt_toolkit.layout.controls import FormattedTextControl
+            from prompt_toolkit.output import ColorDepth
 
             kb = KeyBindings()
             _esc = {'active': False, 'task': None}
@@ -218,7 +220,7 @@ class ConsoleUIManager(UIManager):
             self.session.app.ttimeoutlen = 0
             self.session.app.timeoutlen = 0
             
-        except Exception as e:
+        except Exception:
             # Fallback completo - sem prompt_toolkit 
             self.session = None
 
@@ -296,7 +298,7 @@ class ConsoleUIManager(UIManager):
 
             prov_label = f"Provider  {provider_label}"
             model_label_line = f"Model     {model_label}"
-            status_plain = f"● DEILE   Pronto — digite /help para começar"
+            status_plain = "● DEILE   Pronto — digite /help para começar"
 
             inner_w = max(len(prov_label), len(model_label_line), len(status_plain)) + 2
 
@@ -381,7 +383,7 @@ class ConsoleUIManager(UIManager):
             if details:
                 panel.renderable = Text.from_markup(f":x: [bold red]ERRO:[/bold red] {error}\n\n[dim]{details}[/dim]")
             self.console.print(panel)
-        except (UnicodeEncodeError, Exception) as e:
+        except (UnicodeEncodeError, Exception):
             try:
                 # Fallback sem emoji
                 error_text = Text.from_markup(f"[!] [bold red]ERRO:[/bold red] {error}")
@@ -397,7 +399,7 @@ class ConsoleUIManager(UIManager):
                     if details:
                         print("Detalhes:", details)
                     print("=" * 50)
-                except:
+                except Exception:
                     print("ERRO ocorreu na exibição")
 
     def show_loading(self, message: str) -> Status:

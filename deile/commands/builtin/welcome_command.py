@@ -1,13 +1,12 @@
 """Welcome Command - Show welcome message and getting started guide"""
 
-from typing import Dict, Any, Optional
-from rich.panel import Panel
-from rich.text import Text
-from rich.table import Table
 from rich.columns import Columns
 from rich.console import Group
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
-from ..base import DirectCommand, CommandResult, CommandContext
+from ..base import CommandContext, CommandResult, DirectCommand
 
 
 class WelcomeCommand(DirectCommand):

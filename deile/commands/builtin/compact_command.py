@@ -15,14 +15,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from rich.console import Console
-from rich.table import Table
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
 from deile.commands.base import DirectCommand
 from deile.core.context_manager import ContextManager
-from deile.core.exceptions import CommandError
-from deile.ui.display_manager import DisplayManager
 
 logger = logging.getLogger(__name__)
 
@@ -737,5 +735,6 @@ EXAMPLES:
 
 
 # Register the command
-from deile.commands.registry import StaticCommandRegistry
+from deile.commands.registry import StaticCommandRegistry  # noqa: E402
+
 StaticCommandRegistry.register("compact", CompactCommand)

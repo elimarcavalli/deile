@@ -1,24 +1,25 @@
 """Gerenciador de personas com hot-reload e ciclo de vida completo - UNIFIED CONFIG"""
 
-import asyncio
 import logging
-from pathlib import Path
-from typing import Dict, List, Optional, Any, Set
 from datetime import datetime
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from .base import BasePersona, BaseAutonomousPersona, AgentCapability
+if TYPE_CHECKING:
+    from ..core.agent import DeileAgent
+
+from ..core.exceptions import (PersonaConfigError, PersonaError,
+                               PersonaExecutionError,
+                               PersonaInitializationError,
+                               PersonaIntegrationError, PersonaLoadError,
+                               PersonaSwitchError)
+from .audit_integration import get_persona_audit_logger
+from .base import AgentCapability, BaseAutonomousPersona, BasePersona
 from .config import PersonaConfig  # ← Use unified configuration
-from .loader import PersonaLoader
 from .context import PersonaContext
-from .memory.integration import PersonaMemoryLayer
 from .error_context import ErrorContext, ErrorSeverity
 from .error_recovery import ErrorRecoveryManager
-from .audit_integration import get_persona_audit_logger
-from ..core.exceptions import (
-    PersonaError, PersonaLoadError, PersonaSwitchError,
-    PersonaConfigError, PersonaExecutionError, PersonaInitializationError,
-    PersonaIntegrationError
-)
+from .loader import PersonaLoader
+from .memory.integration import PersonaMemoryLayer
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ class PersonaManager:
         self._memory_integrated = self.memory_manager is not None
 
         if self._memory_integrated:
-            logger.info(f"PersonaManager initialized with unified memory system integration")
+            logger.info("PersonaManager initialized with unified memory system integration")
 
         # Storage de personas ativas
         self._personas: Dict[str, BasePersona] = {}
@@ -75,7 +76,7 @@ class PersonaManager:
         self._total_switches = 0
         self._last_reload_time = 0.0
 
-        logger.info(f"PersonaManager initialized with unified configuration and error handling systems")
+        logger.info("PersonaManager initialized with unified configuration and error handling systems")
 
     async def initialize(self, enable_hot_reload: bool = True) -> None:
         """Initialize persona manager with unified configuration"""
@@ -173,7 +174,7 @@ class PersonaManager:
     ) -> BasePersona:
         """Create persona instance with unified configuration"""
         # Create memory layer for this persona
-        memory_layer = PersonaMemoryLayer(self.memory_manager, persona_id)
+        _memory_layer = PersonaMemoryLayer(self.memory_manager, persona_id)
 
         # Load persona instructions
         instructions = await self.loader.load_persona_instructions(persona_id)
@@ -419,9 +420,9 @@ class PersonaManager:
                         'timestamp': datetime.now().isoformat()
                     }
                 )
-                logger.debug(f"Stored persona switch event in unified memory")
+                logger.debug("Stored persona switch event in unified memory")
             else:
-                logger.warning(f"Memory integration not available for persona switch")
+                logger.warning("Memory integration not available for persona switch")
 
             # Activate new persona
             new_persona = self._personas[persona_id]

@@ -18,27 +18,15 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 
 import pytest
 
-from deile.core.loop_guard import (
-    AbortKind,
-    ToolLoopGuard,
-    args_hash_for,
-    format_loop_break_message,
-    make_guard,
-    tool_result_made_progress,
-)
+from deile.core.loop_guard import (AbortKind, ToolLoopGuard, args_hash_for,
+                                   format_loop_break_message, make_guard,
+                                   tool_result_made_progress)
 from deile.core.models.base import ModelMessage
-from deile.core.models.stream_events import (
-    StreamEventType,
-    UnifiedStreamEvent,
-)
+from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
 from deile.core.tool_loop_executor import ToolLoopExecutor
-from deile.security.audit_logger import (
-    AuditEventType,
-    SeverityLevel,
-    get_audit_logger,
-)
+from deile.security.audit_logger import (AuditEventType, SeverityLevel,
+                                         get_audit_logger)
 from deile.tools.base import ToolResult, ToolStatus
-
 
 # ---------------------------------------------------------------------------
 # Fakes (shared with the executor's own test file in shape, but kept local

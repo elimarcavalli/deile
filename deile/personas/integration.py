@@ -13,17 +13,14 @@ Version: 5.1.0 ULTRA
 """
 
 import logging
-import asyncio
-from typing import Dict, List, Optional, Any, TYPE_CHECKING
 from dataclasses import dataclass, field
-from datetime import datetime
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 # TYPE_CHECKING imports to avoid circular dependencies
 if TYPE_CHECKING:
-    from ..core.agent import DeileAgent, AgentSession
-    from .base import BasePersona, PersonaConfig
+    from ..core.agent import AgentResponse, DeileAgent
+    from .base import BasePersona
     from .manager import PersonaManager
-    from .memory.integration import PersonaMemoryLayer
 
 logger = logging.getLogger(__name__)
 

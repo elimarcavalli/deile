@@ -1,7 +1,7 @@
 """Comando debug builtin"""
 
-from ..base import DirectCommand, CommandResult, CommandContext
 from ..actions import CommandActions
+from ..base import CommandContext, CommandResult, DirectCommand
 
 
 class DebugCommand(DirectCommand):

@@ -17,7 +17,6 @@ from typing import Any, Dict, Optional
 
 import aiosqlite
 
-
 logger = logging.getLogger(__name__)
 
 

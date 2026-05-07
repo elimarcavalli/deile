@@ -8,16 +8,15 @@ and comprehensive logging for autonomous plan execution.
 Author: DEILE
 """
 
-import logging
-import json
-import uuid
-import time
 import asyncio
-from pathlib import Path
-from typing import List, Dict, Any, Optional, AsyncIterator, Union
-from dataclasses import dataclass, field, asdict
-from datetime import datetime
+import json
+import logging
+import time
+import uuid
+from dataclasses import asdict, dataclass, field
 from enum import Enum
+from pathlib import Path
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -292,8 +291,8 @@ class RunManager:
         
         step_id = step_data.get('id', 'unknown_step')
         tool_name = step_data.get('tool_name', 'unknown_tool')
-        params = step_data.get('parameters', {})
-        
+        _params = step_data.get('parameters', {})
+
         logger.info(f"Executing step {step_id}: {tool_name}")
         
         start_time = time.time()

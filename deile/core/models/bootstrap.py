@@ -9,7 +9,7 @@ from typing import Any, List, Optional
 
 import yaml
 
-from deile.core.models.catalog import ModelCatalog, ModelHandle
+from deile.core.models.catalog import ModelCatalog
 from deile.core.models.provider_config import ProviderConfig
 
 logger = logging.getLogger(__name__)

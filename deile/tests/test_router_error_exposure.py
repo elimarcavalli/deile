@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import json
 import time
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from deile.core.models.errors import ProviderErrorEnvelope, ProviderInvocationError
 from deile.core.exceptions import ModelError
-
+from deile.core.models.errors import (ProviderErrorEnvelope,
+                                      ProviderInvocationError)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -40,7 +39,7 @@ def _make_invocation_error(provider_id: str, http_status: int = 401) -> Provider
 
 class TestModelErrorContext:
     def test_model_error_carries_context(self):
-        envelope = _make_envelope("anthropic")
+        _envelope = _make_envelope("anthropic")
         errors = {"anthropic": {"error_type": "auth", "http_status": 401, "raw_json": {}}}
         err = ModelError(
             "ALL_TIER_PROVIDERS_FAILED",
@@ -141,8 +140,8 @@ class TestProviderErrorEnvelopeSerialisation:
 class TestLogRouterEvent:
     @pytest.mark.asyncio
     async def test_log_router_event_writes_jsonl(self, tmp_path):
-        from deile.storage.debug_logger import _DebugLogger, _EVENTS_LOG
         import deile.storage.debug_logger as _mod
+        from deile.storage.debug_logger import _DebugLogger
 
         logger = _DebugLogger()
         events_file = tmp_path / "router_events.jsonl"
@@ -167,8 +166,8 @@ class TestLogRouterEvent:
 
     @pytest.mark.asyncio
     async def test_log_multiple_events(self, tmp_path):
-        from deile.storage.debug_logger import _DebugLogger
         import deile.storage.debug_logger as _mod
+        from deile.storage.debug_logger import _DebugLogger
 
         logger = _DebugLogger()
         events_file = tmp_path / "router_events.jsonl"
@@ -182,13 +181,13 @@ class TestLogRouterEvent:
 
         lines = events_file.read_text().strip().splitlines()
         assert len(lines) == 2
-        events = [json.loads(l)["event"] for l in lines]
+        events = [json.loads(ln)["event"] for ln in lines]
         assert events == ["cascade_fallback", "circuit_breaker_opened"]
 
     @pytest.mark.asyncio
     async def test_log_router_event_all_valid_types(self, tmp_path):
-        from deile.storage.debug_logger import _DebugLogger
         import deile.storage.debug_logger as _mod
+        from deile.storage.debug_logger import _DebugLogger
 
         logger = _DebugLogger()
         events_file = tmp_path / "router_events.jsonl"

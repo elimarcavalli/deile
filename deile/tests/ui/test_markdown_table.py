@@ -193,11 +193,9 @@ async def test_streaming_renderer_prints_rich_renderable_verbatim():
 
     from rich.table import Table
 
-    from deile.core.models.stream_events import (
-        ModelUsageSnapshot,
-        StreamEventType,
-        UnifiedStreamEvent,
-    )
+    from deile.core.models.stream_events import (ModelUsageSnapshot,
+                                                 StreamEventType,
+                                                 UnifiedStreamEvent)
     from deile.ui.streaming_renderer import StreamingRenderer
 
     async def _replay(events: List[UnifiedStreamEvent]) -> AsyncIterator[UnifiedStreamEvent]:
@@ -242,11 +240,9 @@ async def test_streaming_renderer_prints_rich_renderable_verbatim_legacy():
 
     from rich.table import Table
 
-    from deile.core.models.stream_events import (
-        ModelUsageSnapshot,
-        StreamEventType,
-        UnifiedStreamEvent,
-    )
+    from deile.core.models.stream_events import (ModelUsageSnapshot,
+                                                 StreamEventType,
+                                                 UnifiedStreamEvent)
     from deile.ui.streaming_renderer import StreamingRenderer
 
     async def _replay(events: List[UnifiedStreamEvent]) -> AsyncIterator[UnifiedStreamEvent]:
@@ -284,10 +280,8 @@ async def test_streaming_renderer_defers_open_table_then_commits_on_final_flush(
     rendered table (not the dim raw pipes the user sees mid-stream)."""
     from typing import AsyncIterator, List
 
-    from deile.core.models.stream_events import (
-        StreamEventType,
-        UnifiedStreamEvent,
-    )
+    from deile.core.models.stream_events import (StreamEventType,
+                                                 UnifiedStreamEvent)
     from deile.ui.streaming_renderer import StreamingRenderer
 
     async def _replay(events: List[UnifiedStreamEvent]) -> AsyncIterator[UnifiedStreamEvent]:

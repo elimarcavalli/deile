@@ -11,19 +11,18 @@ para o sistema de detecção de intenção, seguindo melhores práticas para age
 - Auto-ajuste de parâmetros
 """
 
-import logging
-import time
 import json
-from typing import Dict, List, Optional, Any, Tuple
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, timedelta
-from pathlib import Path
-from collections import defaultdict, deque
-from enum import Enum
+import logging
 import statistics
+import time
+from collections import defaultdict, deque
+from dataclasses import asdict, dataclass, field
+from datetime import datetime
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from .intent_analyzer import IntentAnalysisResult, IntentType, IntentCategory
-
+from .intent_analyzer import IntentAnalysisResult, IntentType
 
 logger = logging.getLogger(__name__)
 

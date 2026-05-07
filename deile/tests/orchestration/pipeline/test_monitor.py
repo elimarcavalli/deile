@@ -4,16 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import List, Optional, Tuple
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
 from deile.orchestration.pipeline.github_client import IssueRef, PrRef
 from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
                                                  REVIEW_PENDING, WORKFLOW_NEW,
-                                                 WORKFLOW_PR,
                                                  WORKFLOW_REVIEWED)
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor,
@@ -238,7 +235,7 @@ class TestLifecycle:
 # Multi-monitor identity-aware tests
 # ---------------------------------------------------------------------------
 
-from deile.orchestration.pipeline.identity import MonitorIdentity
+from deile.orchestration.pipeline.identity import MonitorIdentity  # noqa: E402
 
 
 class TestIdentityAwareSelection:
@@ -302,7 +299,8 @@ def _make_minimal_monitor(
     use_pid_lock: bool = False,
 ):
     """Build a PipelineMonitor with all I/O mocked, using ``tmp_path`` as repo."""
-    from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
+    from deile.orchestration.pipeline.monitor import (PipelineConfig,
+                                                      PipelineMonitor)
     from deile.orchestration.pipeline.worktree_manager import Worktree
 
     cfg = PipelineConfig(

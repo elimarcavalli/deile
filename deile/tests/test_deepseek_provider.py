@@ -6,14 +6,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deile.core.models.deepseek_provider import DeepSeekProvider
 from deile.core.models.base import ModelMessage, ModelType
 from deile.core.models.catalog import ModelHandle, ModelPricing
+from deile.core.models.deepseek_provider import DeepSeekProvider
 from deile.core.models.errors import ProviderInvocationError
 from deile.core.models.provider_config import ProviderConfig
 from deile.core.models.stream_events import StreamEventType
 from deile.core.models.tier import ModelTier
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

@@ -2,14 +2,15 @@
 
 import asyncio
 import logging
-from typing import Dict, List, Optional, Any, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, List, Optional
 
-from .sqlite_task_manager import SQLiteTaskManager, Task, TaskList, TaskStatus, TaskPriority, get_sqlite_task_manager
-from ..tools.registry import get_tool_registry
-from ..tools.base import ToolResult, ToolStatus, ToolContext
 from ..core.exceptions import DEILEError
+from ..tools.base import ToolContext, ToolStatus
+from ..tools.registry import get_tool_registry
+from .sqlite_task_manager import (SQLiteTaskManager, Task, TaskList,
+                                  TaskPriority, get_sqlite_task_manager)
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +187,7 @@ class WorkflowExecutor:
             steps.append(WorkflowStep(
                 action='read_file',
                 params={'path': context.get('target_file', 'README.md')},
-                description=f"Read target file for analysis",
+                description="Read target file for analysis",
                 timeout=30
             ))
 
@@ -208,7 +209,7 @@ class WorkflowExecutor:
                     'path': context.get('search_path', '.'),
                     'max_results': 50
                 },
-                description=f"Search for pattern in files",
+                description="Search for pattern in files",
                 timeout=120
             ))
 

@@ -3,17 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
-import pytest
-
-from deile.commands.skill_loader import (
-    SkillDefinition,
-    SkillLoader,
-    _normalize_name,
-    _parse_skill_file,
-)
-
+from deile.commands.skill_loader import (SkillLoader, _normalize_name,
+                                         _parse_skill_file)
 
 # ---------------------------------------------------------------------------
 # _normalize_name
@@ -411,12 +403,8 @@ class TestNoOverrideExistingCommand:
     """Skills must NOT silently hijack existing slash commands."""
 
     def _registry_with_existing_command(self, name: str = "help"):
-        from deile.commands.base import (
-            CommandContext,
-            CommandResult,
-            CommandStatus,
-            SlashCommand,
-        )
+        from deile.commands.base import (CommandContext, CommandResult,
+                                         CommandStatus, SlashCommand)
         from deile.commands.registry import CommandRegistry
         from deile.config.manager import CommandConfig
 
@@ -598,12 +586,8 @@ class TestReloadIntoRegistry:
 
     def test_reload_does_not_touch_builtin_commands(self, tmp_path):
         """Built-in commands (no _is_skill_command marker) survive reload."""
-        from deile.commands.base import (
-            CommandContext,
-            CommandResult,
-            CommandStatus,
-            SlashCommand,
-        )
+        from deile.commands.base import (CommandContext, CommandResult,
+                                         CommandStatus, SlashCommand)
         from deile.commands.registry import CommandRegistry
         from deile.config.manager import CommandConfig
 

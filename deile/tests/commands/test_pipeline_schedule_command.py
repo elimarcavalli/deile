@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
+from deile.commands.base import CommandContext
 from deile.commands.builtin.pipeline_schedule_command import (
-    PipelineScheduleCommand,
-    _parse_kv,
-)
-from deile.commands.base import CommandContext, CommandResult
+    PipelineScheduleCommand, _parse_kv)
 from deile.tools.base import ToolContext, ToolResult
-
 
 # ---------------------------------------------------------------------------
 # helpers

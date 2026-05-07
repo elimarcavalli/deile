@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from deile.orchestration.pipeline.worktree_manager import (Worktree,
-                                                            WorktreeError,
-                                                            WorktreeManager)
+                                                           WorktreeError,
+                                                           WorktreeManager)
 
 
 def _git(cwd: Path, *args: str) -> None:

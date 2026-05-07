@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from deile.common.markup_ast import SpanKind
 from deile.core.agent import AgentResponse, AgentStatus, DeileAgent
 from deile.core.bot_streaming import StructuredResponse

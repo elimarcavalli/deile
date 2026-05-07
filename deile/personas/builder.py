@@ -1,11 +1,12 @@
 """Builder pattern para construção de personas personalizadas"""
 
 import logging
-from typing import Dict, List, Optional, Any
 from pathlib import Path
+from typing import List
+
 import yaml
 
-from .base import BasePersona, PersonaConfig, AgentCapability, CommunicationStyle
+from .base import AgentCapability, CommunicationStyle, PersonaConfig
 
 logger = logging.getLogger(__name__)
 

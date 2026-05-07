@@ -13,12 +13,8 @@ from unittest.mock import patch
 
 import pytest
 
-from deile.core.deile_md_loader import (
-    DEILEMDLoader,
-    DEILEMDSource,
-    _read_if_exists,
-    clear_cache,
-)
+from deile.core.deile_md_loader import (DEILEMDLoader, DEILEMDSource,
+                                        _read_if_exists, clear_cache)
 
 
 @pytest.fixture(autouse=True)

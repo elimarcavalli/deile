@@ -1,13 +1,12 @@
 """Stop Command - Stop running plan execution"""
 
-from typing import Dict, Any, Optional
 from rich.panel import Panel
-from rich.text import Text
 from rich.table import Table
+from rich.text import Text
 
-from ..base import DirectCommand, CommandResult, CommandContext
 from ...core.exceptions import CommandError
-from ...orchestration.plan_manager import get_plan_manager, PlanStatus
+from ...orchestration.plan_manager import PlanStatus, get_plan_manager
+from ..base import CommandContext, CommandResult, DirectCommand
 
 
 class StopCommand(DirectCommand):
@@ -154,7 +153,7 @@ class StopCommand(DirectCommand):
             f"**Plan:** {plan.title}",
             f"**Plan ID:** {plan_id}",
             f"**Previous Status:** {plan.status.value}",
-            f"**New Status:** cancelled"
+            "**New Status:** cancelled"
         ]
         
         # Add progress information if available
@@ -162,7 +161,7 @@ class StopCommand(DirectCommand):
             progress = status_before['progress']
             content_lines.extend([
                 "",
-                f"**Progress at Stop:**",
+                "**Progress at Stop:**",
                 f"  • Completed Steps: {progress['completed']}/{progress['total']} ({progress['percentage']:.1f}%)",
                 f"  • Failed Steps: {progress['failed']}",
                 f"  • Skipped Steps: {progress['skipped']}"
@@ -181,7 +180,7 @@ class StopCommand(DirectCommand):
             current_steps = status_before['current_steps']
             content_lines.extend([
                 "",
-                f"**Interrupted Steps:**"
+                "**Interrupted Steps:**"
             ])
             
             for step in current_steps:

@@ -10,20 +10,16 @@ Author: DEILE
 
 import logging
 from datetime import datetime, timedelta
-from decimal import Decimal
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List
 
-from rich.console import Console, Group
+from rich.console import Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
 from deile.commands.base import DirectCommand
 from deile.core.context_manager import ContextManager
-from deile.core.exceptions import CommandError
-from deile.infrastructure.monitoring.cost_tracker import (
-    get_cost_tracker, CostCategory, BudgetPeriod
-)
+from deile.infrastructure.monitoring.cost_tracker import get_cost_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -209,7 +205,7 @@ EXAMPLES:
             )
             
             if session_cost > 0:
-                session_info += f"\n\n📈 **Session is active with costs**"
+                session_info += "\n\n📈 **Session is active with costs**"
                 style = "green"
             else:
                 session_info += "\n\n🎉 **No costs yet in this session!**"
@@ -313,5 +309,6 @@ EXAMPLES:
 
 
 # Register the command
-from deile.commands.registry import StaticCommandRegistry
+from deile.commands.registry import StaticCommandRegistry  # noqa: E402
+
 StaticCommandRegistry.register("cost", CostCommand)

@@ -1,10 +1,10 @@
 """Semantic Memory - Conhecimento estruturado e embeddings"""
 
 import asyncio
-import logging
 import json
-from typing import Dict, List, Optional, Any
+import logging
 from pathlib import Path
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 

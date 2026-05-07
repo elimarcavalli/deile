@@ -44,10 +44,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
-from deile.core.models.stream_events import (
-    StreamEventType,
-    UnifiedStreamEvent,
-)
+from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
 from deile.ui.markdown_table import DeileMarkdown as Markdown
 from deile.ui.markdown_table import safe_streaming_split
 

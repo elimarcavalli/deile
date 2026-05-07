@@ -1,10 +1,9 @@
 """Handlers base e implementações específicas para eventos do sistema"""
 
-import asyncio
 import logging
-from abc import ABC, abstractmethod
-from typing import Dict, Any, Optional
 import time
+from abc import ABC, abstractmethod
+from typing import Any, Dict
 
 from .event_bus import Event, EventType
 

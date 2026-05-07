@@ -8,15 +8,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from deile.core.models.catalog import ModelCatalog
 from deile.core.models.tier import ModelTier
-from deile.core.models.tier_router import (
-    BreakerState,
-    CircuitBreaker,
-    NoProviderAvailable,
-    RoutingPolicy,
-    TierRouter,
-)
+from deile.core.models.tier_router import (BreakerState, CircuitBreaker,
+                                           NoProviderAvailable, RoutingPolicy,
+                                           TierRouter)
 
 # Path to the real YAML (used in integration-style tests)
 _YAML_PATH = Path(__file__).parents[2] / "deile" / "config" / "model_providers.yaml"
@@ -66,7 +61,7 @@ class TestRoutingPolicy:
             RoutingPolicy.from_yaml(_YAML_PATH, "nonexistent_policy")
 
     def test_cascade_for_unknown_tier_returns_empty(self):
-        policy = RoutingPolicy.from_yaml(_YAML_PATH, "task_optimized")
+        _policy = RoutingPolicy.from_yaml(_YAML_PATH, "task_optimized")
         # Build a custom policy with only tier_1 to test missing tier
         from deile.core.models.tier_router import RoutingPolicy as RP
         p = RP("test", {ModelTier.TIER_1: ["a:b"]})

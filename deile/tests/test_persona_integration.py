@@ -5,18 +5,20 @@ Comprehensive test suite for persona integration with DeileAgent
 Tests the deep integration between personas and DEILE's core systems.
 """
 
-import pytest
 import asyncio
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
-from pathlib import Path
 import tempfile
+from pathlib import Path
+from unittest.mock import AsyncMock, Mock, patch
+
+import pytest
 import yaml
 
+from deile.personas.base import AgentCapability, PersonaConfig
 # Import the components we're testing
-from deile.personas.integration import PersonaEnhancedAgent, PersonaIntegrationContext, PersonaIntegrationLayer
+from deile.personas.integration import (PersonaEnhancedAgent,
+                                        PersonaIntegrationContext,
+                                        PersonaIntegrationLayer)
 from deile.personas.manager import PersonaManager
-from deile.personas.base import PersonaConfig, AgentCapability, CommunicationStyle, ResponseMode
-from deile.core.agent import DeileAgent
 
 
 class MockMemoryManager:
@@ -197,7 +199,7 @@ class TestPersonaEnhancedAgent:
         # Mock the _has_active_persona method to return False
         enhanced_agent._has_active_persona = Mock(return_value=False)
 
-        response = await enhanced_agent.process_input_with_persona("test input")
+        _response = await enhanced_agent.process_input_with_persona("test input")
 
         # Should fallback to base agent
         mock_deile_agent.process_input.assert_called_once_with("test input", "default")
@@ -220,7 +222,7 @@ class TestPersonaEnhancedAgent:
         enhanced_agent._enhance_context_with_persona = AsyncMock(return_value={})
         enhanced_agent._post_process_with_persona = AsyncMock(side_effect=lambda x, *args: x)
 
-        response = await enhanced_agent.process_input_with_persona("test input")
+        _response = await enhanced_agent.process_input_with_persona("test input")
 
         # Should use enhanced processing
         mock_deile_agent.process_input.assert_called_once()
@@ -243,7 +245,7 @@ class TestPersonaEnhancedAgent:
 
         result = await enhanced_agent.switch_persona("new_persona", "test_session")
 
-        assert result == True
+        assert result
         mock_pm.switch_persona.assert_called_once_with("new_persona", "test_session")
 
     @pytest.mark.asyncio
@@ -460,7 +462,7 @@ class TestEndToEndIntegration:
             mock_persona = MockBasePersona()
             pm._personas["new_persona"] = mock_persona
 
-            result = await pm.switch_persona("new_persona", "test_session")
+            _result = await pm.switch_persona("new_persona", "test_session")
 
             # Verify memory operations
             mock_context.save_state.assert_called_once()
@@ -482,7 +484,7 @@ class TestIntegrationPerformance:
         enhanced_agent = PersonaEnhancedAgent(mock_deile_agent, faulty_pm)
 
         # Should fallback gracefully
-        response = await enhanced_agent.process_input_with_persona("test input")
+        _response = await enhanced_agent.process_input_with_persona("test input")
 
         # Should have fallen back to base agent
         mock_deile_agent.process_input.assert_called_once()

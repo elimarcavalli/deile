@@ -36,8 +36,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable
 
-from deile.cron.store import CronEntry
 from deile.cron.runner import FireCallback
+from deile.cron.store import CronEntry
 
 logger = logging.getLogger(__name__)
 

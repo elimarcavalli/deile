@@ -1,24 +1,21 @@
 """Context Manager para gerenciamento de contexto e RAG - DEILE 2.0 ULTRA"""
 
-from typing import Dict, List, Optional, Any, Set, Tuple
-from dataclasses import dataclass, field
-from pathlib import Path
 import asyncio
-import json
 import logging
 import os
 import time
-from collections import deque
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from .exceptions import DEILEError, ValidationError
-from ..parsers.base import ParseResult
-from ..tools.base import ToolResult
-from ..storage.embeddings import EmbeddingStore
-from ..personas.manager import PersonaManager
-from ..personas.instruction_loader import InstructionLoader
 from ..memory.memory_manager import MemoryManager
-from .deile_md_loader import DEILEMDLoader  # Issue #62 — leitura hierárquica DEILE.md
-
+from ..parsers.base import ParseResult
+from ..personas.instruction_loader import InstructionLoader
+from ..personas.manager import PersonaManager
+from ..storage.embeddings import EmbeddingStore
+from ..tools.base import ToolResult
+from .deile_md_loader import \
+    DEILEMDLoader  # Issue #62 — leitura hierárquica DEILE.md
 
 logger = logging.getLogger(__name__)
 

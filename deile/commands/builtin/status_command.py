@@ -1,18 +1,18 @@
 """Status Command - Complete system status and health information"""
 
-from typing import Dict, Any, Optional
 import platform
 import sys
 from datetime import datetime
-from rich.panel import Panel
-from rich.text import Text
-from rich.table import Table
-from rich.columns import Columns
-from rich.tree import Tree
-import psutil
+from typing import Any, Dict
 
-from ..base import DirectCommand, CommandResult, CommandContext
+import psutil
+from rich.columns import Columns
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
 from ...core.exceptions import CommandError
+from ..base import CommandContext, CommandResult, DirectCommand
 
 
 class StatusCommand(DirectCommand):
@@ -209,7 +209,7 @@ class StatusCommand(DirectCommand):
             hours, remainder = divmod(uptime.seconds, 3600)
             minutes, _ = divmod(remainder, 60)
             return f"{days}d {hours}h {minutes}m"
-        except:
+        except Exception:
             return "Unknown"
     
     def _create_system_panel(self, info: Dict[str, Any]) -> Panel:
@@ -315,7 +315,7 @@ class StatusCommand(DirectCommand):
 ⏱️  **Uptime**: {info.get('uptime', 'Unknown')}"""
         
         if info.get('warnings'):
-            content += f"\n\n⚠️ **Warnings**:\n"
+            content += "\n\n⚠️ **Warnings**:\n"
             for warning in info['warnings']:
                 content += f"  • {warning}\n"
         else:

@@ -14,11 +14,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from deile.core.models.base import ModelMessage
-from deile.core.models.stream_events import (
-    ModelUsageSnapshot,
-    StreamEventType,
-    UnifiedStreamEvent,
-)
+from deile.core.models.stream_events import (ModelUsageSnapshot,
+                                             StreamEventType,
+                                             UnifiedStreamEvent)
 
 
 @dataclass
@@ -216,8 +214,9 @@ async def test_slash_command_with_rich_renderable_content(configured_agent, tmp_
     table re-render through ``Markdown()`` and shatter into scattered
     pipes at the terminal width.
     """
-    from deile.core.agent import AgentResponse, AgentStatus
     from rich.table import Table
+
+    from deile.core.agent import AgentResponse, AgentStatus
 
     table = Table(title="Models")
     table.add_column("Provider")

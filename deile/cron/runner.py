@@ -23,8 +23,10 @@ import logging
 from datetime import datetime, timezone
 from typing import Awaitable, Callable, Optional
 
-from deile.cron.constants import (CRON_DM_PROMPT_MAX_CHARS, CRON_DM_RESULT_MAX_CHARS,
-                                  CRON_POLL_INTERVAL_SECONDS, CRON_RESULT_MAX_CHARS,
+from deile.cron.constants import (CRON_DM_PROMPT_MAX_CHARS,
+                                  CRON_DM_RESULT_MAX_CHARS,
+                                  CRON_POLL_INTERVAL_SECONDS,
+                                  CRON_RESULT_MAX_CHARS,
                                   CRON_STOP_TIMEOUT_SECONDS)
 from deile.cron.store import CronEntry, CronStore
 

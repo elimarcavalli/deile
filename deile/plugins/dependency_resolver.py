@@ -1,8 +1,8 @@
 """Dependency Resolver - Resolução automática de dependências entre plugins"""
 
 import logging
-from typing import Dict, List, Set, Optional
 from dataclasses import dataclass
+from typing import Dict, List, Set
 
 logger = logging.getLogger(__name__)
 

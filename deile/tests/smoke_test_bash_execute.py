@@ -113,7 +113,7 @@ async def main() -> int:
     finally:
         if created_ola and ola.exists():
             ola.unlink()
-            print(f"[cleanup] removed ola.py created by setup")
+            print("[cleanup] removed ola.py created by setup")
 
 
 if __name__ == "__main__":

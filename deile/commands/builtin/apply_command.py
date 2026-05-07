@@ -1,16 +1,16 @@
 """Apply Command - Apply patch files to current directory"""
 
-from typing import Dict, Any, Optional, List
 import re
 import shutil
 from pathlib import Path
-from rich.panel import Panel
-from rich.text import Text
-from rich.table import Table
-from rich.prompt import Confirm
+from typing import Any, Dict, List
 
-from ..base import DirectCommand, CommandResult, CommandContext
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
 from ...core.exceptions import CommandError
+from ..base import CommandContext, CommandResult, DirectCommand
 
 
 class ApplyCommand(DirectCommand):
@@ -306,7 +306,7 @@ class ApplyCommand(DirectCommand):
                     'path': file_path,
                     'action': action,
                     'new_content': '\n'.join(content_lines) if content_lines else '',
-                    'lines_added': len([l for l in lines[i:j] if l.startswith('+') and not l.startswith('+++')])
+                    'lines_added': len([ln for ln in lines[i:j] if ln.startswith('+') and not ln.startswith('+++')])
                 })
                 
                 i = j
@@ -435,7 +435,7 @@ class ApplyCommand(DirectCommand):
         """Format patch conflict information"""
         
         content_lines = [
-            f"⚠️ **Patch Conflicts Detected**",
+            "⚠️ **Patch Conflicts Detected**",
             "",
             f"**Patch File:** {patch_file}",
             f"**Files Affected:** {validation['files_affected']}",
@@ -483,7 +483,7 @@ class ApplyCommand(DirectCommand):
         metadata = patch_data.get('metadata', {})
         
         content_lines = [
-            f"🔍 **Dry Run Preview**",
+            "🔍 **Dry Run Preview**",
             "",
             f"**Patch:** {metadata.get('plan_id', 'Unknown')}",
             f"**Target:** {target_path}",
@@ -533,9 +533,9 @@ class ApplyCommand(DirectCommand):
         content_lines.extend([
             "",
             "**To Apply:**",
-            f"• Remove `--dry-run` flag to apply changes",
-            f"• Use `--force` to ignore conflicts",
-            f"• Use `--no-backup` to skip backup creation"
+            "• Remove `--dry-run` flag to apply changes",
+            "• Use `--force` to ignore conflicts",
+            "• Use `--no-backup` to skip backup creation"
         ])
         
         content = "\n".join(content_lines)
@@ -554,7 +554,7 @@ class ApplyCommand(DirectCommand):
         """Format apply confirmation preview"""
         
         content_lines = [
-            f"📋 **Ready to Apply Patch**",
+            "📋 **Ready to Apply Patch**",
             "",
             f"**Target Directory:** {target_path}",
             f"**Files to Change:** {len(patch_data['file_changes'])}",

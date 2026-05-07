@@ -170,7 +170,6 @@ class ArtifactManager:
             artifacts = []
             for artifact_file in run_dir.glob("*.json"):
                 if not artifact_file.stem.endswith("_metadata"):
-                    artifact_data = self.get_artifact(artifact_file)
                     metadata = self.get_artifact_metadata(artifact_file)
                     
                     artifacts.append({

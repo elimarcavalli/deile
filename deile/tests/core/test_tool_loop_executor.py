@@ -17,14 +17,11 @@ from typing import Any, AsyncIterator, Dict, List, Optional
 import pytest
 
 from deile.core.models.base import ModelMessage
-from deile.core.models.stream_events import (
-    ModelUsageSnapshot,
-    StreamEventType,
-    UnifiedStreamEvent,
-)
+from deile.core.models.stream_events import (ModelUsageSnapshot,
+                                             StreamEventType,
+                                             UnifiedStreamEvent)
 from deile.core.tool_loop_executor import ToolLoopExecutor
 from deile.tools.base import ToolResult, ToolStatus
-
 
 # ---------------------------------------------------------------------------
 # Fakes

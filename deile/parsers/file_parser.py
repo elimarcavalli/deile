@@ -1,14 +1,14 @@
 """Parser para referências de arquivos (@arquivo.txt) - Google File API Integration"""
 
-import re
-import asyncio
 import logging
-from typing import List, Optional
+import re
 from pathlib import Path
+from typing import List, Optional
 
-from .base import RegexParser, ParseResult, ParseStatus, ParsedCommand
 from ..core.exceptions import ParserError
-from ..infrastructure.google_file_api import GoogleFileUploader, get_file_uploader, UploadError
+from ..infrastructure.google_file_api import (GoogleFileUploader, UploadError,
+                                              get_file_uploader)
+from .base import ParsedCommand, ParseResult, ParseStatus, RegexParser
 
 
 class ApiFileNotFoundError(ParserError):
@@ -146,7 +146,7 @@ class FileParser(RegexParser):
                         # Continua processando outros arquivos em erros genéricos
                         continue
                     
-                except FileNotFoundError as e:
+                except FileNotFoundError:
                     self._upload_stats["failed_uploads"] += 1
                     logger.error(f"Local file not found: {file_path}")
                     raise ApiFileNotFoundError(f"Arquivo '{file_path}' não encontrado localmente para upload")

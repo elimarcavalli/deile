@@ -2,10 +2,9 @@
 
 Manages ~/.deile/settings.json (global) and <project>/.deile/settings.json (project).
 
-Schema: { "skills_paths": ["path1", "path2"] }
-
-The get_all_skills_paths() method returns the merged union of both layers
-(global first, then project), with duplicates removed.
+Full preference schema documented in docs/system_design/09-CONFIGURACAO.md.
+The get_all_skills_paths() helper and the add/remove skills API remain for
+backward compatibility with the /settings slash command.
 """
 
 from __future__ import annotations
@@ -78,6 +77,17 @@ class SettingsManager:
         if not isinstance(data.get("skills_paths"), list):
             data["skills_paths"] = []
         return data
+
+    def _load_raw(self, path: Path) -> dict:
+        """Load the raw JSON dict; empty dict if missing or invalid."""
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Cannot read settings file %s: %s", path, exc)
+            return {}
 
     def _save(self, path: Path, data: dict) -> bool:
         try:
@@ -178,4 +188,62 @@ class SettingsManager:
         if norm not in data["skills_paths"]:
             return False
         data["skills_paths"].remove(norm)
+        return self._save(settings_path, data)
+
+    def load_all_preferences(self, scope: str = GLOBAL) -> dict:
+        """Return the full preference dict for *scope* (raw JSON content).
+
+        Unlike ``list_skills_paths``, this returns the entire settings dict so
+        callers can read any preference field, not just skills.
+
+        Args:
+            scope: ``"global"`` or ``"project"``.
+
+        Returns:
+            Dict with all fields stored in the settings file for that scope.
+        """
+        if scope not in _VALID_SCOPES:
+            raise ValueError(f"Invalid scope {scope!r}. Use 'global' or 'project'.")
+        return self._load_raw(self._settings_path(scope))
+
+    def get_all_preferences(self) -> dict:
+        """Return merged preferences: global first, project overrides.
+
+        Project-scope keys win over global-scope keys at the top level and
+        within nested dicts (one-level deep merge).
+        """
+        merged: dict = {}
+        for scope in (GLOBAL, PROJECT):
+            for key, value in self.load_all_preferences(scope).items():
+                if (
+                    key in merged
+                    and isinstance(merged[key], dict)
+                    and isinstance(value, dict)
+                ):
+                    merged[key] = {**merged[key], **value}
+                else:
+                    merged[key] = value
+        return merged
+
+    def set_preference(self, key: str, value: object, scope: str = GLOBAL) -> bool:
+        """Write a single top-level preference key to *scope*.
+
+        Creates the settings file if absent.
+
+        Args:
+            key:   Top-level key in the JSON (e.g. ``"model"``).
+            value: JSON-serialisable value.
+            scope: ``"global"`` (default) or ``"project"``.
+
+        Returns:
+            ``True`` on success, ``False`` on write error.
+        """
+        if scope not in _VALID_SCOPES:
+            raise ValueError(f"Invalid scope {scope!r}. Use 'global' or 'project'.")
+        self._ensure_global_dir()
+        settings_path = self._settings_path(scope)
+        data = self._load_raw(settings_path)
+        data[key] = value
+        if not isinstance(data.get("skills_paths"), list):
+            data["skills_paths"] = []
         return self._save(settings_path, data)

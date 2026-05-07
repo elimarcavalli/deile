@@ -22,20 +22,14 @@ hallucinate where a file ended up.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import Mock
 
 import pytest
 
-from deile.tools.file_tools import (
-    LocalFileAccessViolation,
-    ReadFileTool,
-    ResolvedPath,
-    WriteFileTool,
-    _resolve_project_path,
-    _validate_path_within_working_directory,
-)
 from deile.tools.base import ToolContext
-
+from deile.tools.file_tools import (LocalFileAccessViolation, ReadFileTool,
+                                    ResolvedPath, WriteFileTool,
+                                    _resolve_project_path,
+                                    _validate_path_within_working_directory)
 
 # ---------------------------------------------------------------------------
 # 1. Pure-function tests for _resolve_project_path

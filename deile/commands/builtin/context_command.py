@@ -1,14 +1,14 @@
 """Context Command - Display LLM context information"""
 
-from typing import Dict, Any, Optional
 import json
-from rich.table import Table
-from rich.panel import Panel
+from typing import Any, Dict, Optional
+
 from rich.columns import Columns
+from rich.panel import Panel
 from rich.text import Text
 
-from ..base import DirectCommand, CommandResult
 from ...core.exceptions import CommandError
+from ..base import DirectCommand
 
 
 class ContextCommand(DirectCommand):
@@ -30,7 +30,7 @@ class ContextCommand(DirectCommand):
             # Parse arguments
             parts = args.strip().split() if args.strip() else []
             format_type = "summary"  # default
-            export = False
+            _ = False
             show_tokens = False
             
             i = 0
@@ -42,7 +42,7 @@ class ContextCommand(DirectCommand):
                     else:
                         raise CommandError("--format requires a value (summary, detailed, json)")
                 elif parts[i] in ["--export", "-e"]:
-                    export = True
+                    _export = True
                     i += 1
                 elif parts[i] in ["--show-tokens", "-t"]:
                     show_tokens = True
@@ -144,7 +144,7 @@ class ContextCommand(DirectCommand):
         
         # Create content
         content_lines = [
-            f"📊 **Context Overview**",
+            "📊 **Context Overview**",
             "",
             f"🤖 **Model**: {data.get('model', {}).get('name', 'Unknown')}",
             f"⏱️  **Session**: {data.get('session', {}).get('duration', 'Unknown')}",
@@ -186,7 +186,7 @@ class ContextCommand(DirectCommand):
             f"**Max Tokens**: {model_info.get('max_tokens', 0):,}",
             f"**Temperature**: {model_info.get('temperature', 0.7)}",
             "",
-            f"**System Instructions**:",
+            "**System Instructions**:",
             f"  Length: {system_info.get('length', 0)} chars",
             f"  Tokens: {system_info.get('tokens', 0):,}"
         ]
@@ -203,12 +203,12 @@ class ContextCommand(DirectCommand):
         long_term = memory.get("long_term", {})
         
         memory_content = [
-            f"**Short-term Memory**:",
+            "**Short-term Memory**:",
             f"  Entries: {short_term.get('entries', 0)}",
             f"  Tokens: {short_term.get('tokens', 0):,}",
             f"  Updated: {short_term.get('last_update', 'Never')[:16]}",
             "",
-            f"**Long-term Memory**:",
+            "**Long-term Memory**:",
             f"  Entries: {long_term.get('entries', 0)}",
             f"  Tokens: {long_term.get('tokens', 0):,}",
             f"  Indexed: {'Yes' if long_term.get('indexed') else 'No'}"

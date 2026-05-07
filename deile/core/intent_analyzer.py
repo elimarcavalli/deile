@@ -19,13 +19,11 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional
 
-import numpy as np
 import yaml
 
 from ..parsers.base import ParseResult
-from .exceptions import DEILEError
 
 logger = logging.getLogger(__name__)
 

@@ -1,18 +1,15 @@
 """Sistema de Registry para Tools do DEILE com Function Calling support"""
 
-from typing import Dict, List, Optional, Type, Set, Any
+import asyncio
+import importlib
+import inspect
+import logging
 from collections import defaultdict
 from pathlib import Path
-import asyncio
-import inspect
-import importlib
-import pkgutil
-import logging
-import json
+from typing import Any, Dict, List, Optional, Set
 
-from .base import Tool, ToolContext, ToolResult, ToolStatus, ToolSchema, SecurityLevel
 from ..core.exceptions import ToolError, ValidationError
-
+from .base import SecurityLevel, Tool, ToolContext, ToolResult, ToolSchema
 
 logger = logging.getLogger(__name__)
 

@@ -10,11 +10,12 @@ Version: 5.1.0 ULTRA
 """
 
 import asyncio
+import shutil
 import sys
 import tempfile
-import shutil
-import yaml
 from pathlib import Path
+
+import yaml
 
 # Add the deile package to sys.path (file lives at scripts/tests/, project root is two parents up)
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -237,7 +238,7 @@ class HotReloadTest:
             for observer in observers:
                 try:
                     observer('resilience_persona', {'test': 'data'}, 'updated')
-                except Exception as e:
+                except Exception:
                     # In real implementation, this would be logged but not stop other observers
                     continue
 

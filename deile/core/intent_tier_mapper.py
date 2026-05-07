@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from deile.core.intent_analyzer import IntentAnalysisResult, IntentCategory, IntentType
+from deile.core.intent_analyzer import (IntentAnalysisResult, IntentCategory,
+                                        IntentType)
 from deile.core.models.tier import ModelTier
 
 _TYPE_MAP: dict[IntentType, ModelTier] = {

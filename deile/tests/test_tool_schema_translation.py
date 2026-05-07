@@ -4,13 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from deile.tools.base import (
-    SecurityLevel,
-    ToolCategory,
-    ToolSchema,
-)
+from deile.tools.base import SecurityLevel, ToolCategory, ToolSchema
 from deile.tools.registry import ToolRegistry
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

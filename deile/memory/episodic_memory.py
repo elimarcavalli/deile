@@ -1,13 +1,12 @@
 """Episodic Memory - Histórico de sessões e conversas"""
 
-import asyncio
+import json
 import logging
 import time
-import json
-from typing import Dict, List, Optional, Any
-from pathlib import Path
 from dataclasses import dataclass, field
-import sqlite3
+from pathlib import Path
+from typing import Any, Dict, List
+
 import aiosqlite
 
 logger = logging.getLogger(__name__)

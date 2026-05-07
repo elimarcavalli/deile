@@ -79,11 +79,11 @@ def _trusted_operator_mode() -> bool:
     still audited (severity WARNING + event APPROVAL_GRANTED) so the
     waiver appears in the audit trail.
 
-    Set `DEILE_BOT_APPROVAL_AUTO=1` (any truthy value) to enable.
+    Set ``approval.auto: true`` in ``~/.deile/settings.json`` to enable.
     Off by default; tests never see this turned on."""
-    import os
+    from deile.config.settings import get_settings
 
-    return os.environ.get("DEILE_BOT_APPROVAL_AUTO", "").strip().lower() in {"1", "true", "yes", "on"}
+    return get_settings().bot_approval_auto
 
 
 class MessagingTool(Tool, abc.ABC):
