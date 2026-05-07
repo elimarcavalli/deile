@@ -235,6 +235,15 @@ class TestClassifyNewIssues:
         notifier.error.assert_called_once()
         notifier.issue_auto_classified.assert_called_once_with(21, issues[1].title, issues[1].url)
 
+    async def test_comment_failure_does_not_trigger_error_notification(self):
+        issue = _issue(22, ("intent",), body="body")
+        monitor, github, notifier = _make_monitor(unclassified=[issue])
+        github.comment_on_issue = AsyncMock(side_effect=RuntimeError("timeout"))
+        await monitor._classify_new_issues()
+        github.add_labels.assert_called_once()
+        notifier.issue_auto_classified.assert_called_once()
+        notifier.error.assert_not_called()
+
     async def test_disabled_classify_skips_stage0(self):
         issue = _issue(30, ("intent",), body="body")
         monitor, github, notifier = _make_monitor(unclassified=[issue])

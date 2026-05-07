@@ -341,19 +341,23 @@ class PipelineMonitor:
                 continue
             try:
                 await self.github.add_labels("issue", issue.number, [WORKFLOW_NEW])
+            except Exception as exc:  # noqa: BLE001 — best-effort, never abort loop
+                logger.warning("auto-classify label #%s failed: %s", issue.number, exc)
+                await self.notifier.error(
+                    f"auto-classify #{issue.number}", f"{type(exc).__name__}: {exc}"
+                )
+                continue
+            logger.info("auto-classified issue #%s as %s", issue.number, WORKFLOW_NEW)
+            await self.notifier.issue_auto_classified(issue.number, issue.title, issue.url)
+            try:
                 await self.github.comment_on_issue(
                     issue.number,
                     f"🤖 **DEILE auto-classificação** — esta issue foi adicionada à fila do pipeline "
                     f"autônomo (`{WORKFLOW_NEW}`).\n\n"
                     f"Para excluir da fila, remova o label `{WORKFLOW_NEW}`.",
                 )
-                await self.notifier.issue_auto_classified(issue.number, issue.title, issue.url)
-                logger.info("auto-classified issue #%s as %s", issue.number, WORKFLOW_NEW)
-            except Exception as exc:  # noqa: BLE001 — best-effort, never abort loop
-                logger.warning("auto-classification of #%s failed: %s", issue.number, exc)
-                await self.notifier.error(
-                    f"auto-classify #{issue.number}", f"{type(exc).__name__}: {exc}"
-                )
+            except Exception as exc:  # noqa: BLE001 — comment is best-effort; label already applied
+                logger.warning("auto-classify comment #%s failed (label applied): %s", issue.number, exc)
 
     # ----- stage 1: review ------------------------------------------
 
