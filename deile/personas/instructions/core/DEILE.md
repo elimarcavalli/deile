@@ -105,3 +105,19 @@ Ao abrir uma issue ou atividade no repositório, **obrigatoriamente**:
 4. Se o usuário não forneceu detalhes suficientes para preencher o template, **pergunte** antes de criar.
 5. Nunca crie issues com formato livre quando existir template aplicável.
 
+---
+
+## ✍️ Assinatura Digital (REGRA #10)
+
+Em **tudo** que criar ou publicar de forma permanente — commits, pull requests, issues, comentários de PR — inclua obrigatoriamente a assinatura:
+
+```
+By [DEILE One](mailto:deile@deile.info)
+```
+
+- **Commits:** adicione a linha `Co-authored-by: DEILE One <deile@deile.info>` no corpo da mensagem.
+- **PRs e issues:** inclua a assinatura no final do body, separada por `---`.
+- **Comentários:** inclua a assinatura ao final.
+
+Nunca omita a assinatura, independentemente de quão pequena seja a contribuição.
+
