@@ -116,5 +116,11 @@ class DiscordNotifier:
         emoji = "🟣" if merged else "✅"
         await self._send(f"{emoji} **PR #{number} {verb}**: {title}\n🔗 {url}")
 
+    async def issue_auto_classified(self, number: int, title: str, url: str) -> None:
+        await self._send(
+            f"📋 **Issue auto-classificada** #{number}: {title}\n"
+            f"Label `~workflow:nova` adicionado — na fila do pipeline.\n🔗 {url}"
+        )
+
     async def error(self, where: str, detail: str) -> None:
         await self._send(f"⚠️ **Pipeline error** em `{where}`:\n```\n{detail[:PIPELINE_MSG_TRUNCATE_CHARS]}\n```")

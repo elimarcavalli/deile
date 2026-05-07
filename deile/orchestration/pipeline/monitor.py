@@ -25,16 +25,15 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Optional, Tuple
 
 from deile.orchestration.pipeline.claude_dispatcher import (
     ClaudeDispatcher, render_implement_prompt, render_review_prompt)
-from deile.orchestration.pipeline.constants import (PIPELINE_MSG_TRUNCATE_CHARS,
-                                                    PIPELINE_POLL_INTERVAL_SECONDS,
-                                                    PIPELINE_STOP_TIMEOUT_SECONDS)
+from deile.orchestration.pipeline.constants import (
+    PIPELINE_MSG_TRUNCATE_CHARS, PIPELINE_POLL_INTERVAL_SECONDS,
+    PIPELINE_STOP_TIMEOUT_SECONDS)
 from deile.orchestration.pipeline.github_client import (GhCommandError,
-                                                        GitHubClient,
-                                                        IssueRef)
+                                                        GitHubClient, IssueRef)
 from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
@@ -42,9 +41,11 @@ from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
                                                  WORKFLOW_PR,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING)
-from deile.orchestration.pipeline.lockfile import LockHeldError, acquire as acquire_lock, release as release_lock
+from deile.orchestration.pipeline.lockfile import LockHeldError
+from deile.orchestration.pipeline.lockfile import acquire as acquire_lock
+from deile.orchestration.pipeline.lockfile import release as release_lock
 from deile.orchestration.pipeline.notifier import DiscordNotifier
-from deile.orchestration.pipeline.scheduler import (PendingRun, ScheduleStore)
+from deile.orchestration.pipeline.scheduler import PendingRun, ScheduleStore
 from deile.orchestration.pipeline.worktree_manager import WorktreeManager
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,9 @@ class PipelineConfig:
     enable_review: bool = True
     enable_implement: bool = True
     enable_pr_review: bool = True
+    enable_classify: bool = True
+    classifiable_labels: Tuple[str, ...] = ("intent", "bug", "refactor", "feature_request")
+    classify_skip_labels: Tuple[str, ...] = ("infra",)
     # When True, the monitor acquires a PID lockfile under base_repo_path
     # named after the identity. Two monitors with the same monitor_id on
     # the same host will fail to start. Default off because most tests
@@ -221,7 +225,9 @@ class PipelineMonitor:
 
     async def _run_scheduled(self, run: PendingRun) -> None:
         """Execute a single scheduled action by name."""
-        if run.action == "review" and self.config.enable_review:
+        if run.action == "classify" and self.config.enable_classify:
+            await self._classify_new_issues()
+        elif run.action == "review" and self.config.enable_review:
             await self._review_one_new_issue()
         elif run.action == "implement" and self.config.enable_implement:
             await self._implement_one_reviewed_issue()
@@ -296,12 +302,58 @@ class PipelineMonitor:
                     logger.warning("could not persist schedule after tick: %s", exc)
             return
 
+        if self.config.enable_classify:
+            await self._classify_new_issues()
         if self.config.enable_review:
             await self._review_one_new_issue()
         if self.config.enable_implement:
             await self._implement_one_reviewed_issue()
         if self.config.enable_pr_review:
             await self._review_one_open_pr()
+
+    # ----- stage 0: auto-classify new issues -----------------------
+
+    async def _classify_new_issues(self) -> None:
+        """Apply ``~workflow:nova`` to open issues that are eligible but unclassified.
+
+        An issue is eligible when:
+        - it has at least one label in ``config.classifiable_labels``
+        - it has no label in ``config.classify_skip_labels``
+        - it has no pipeline labels (nothing starting with ``~``)
+        - its body is non-empty (filled template)
+        - it falls in this monitor's shard
+        """
+        try:
+            issues = await self.github.list_unclassified_issues()
+        except GhCommandError as exc:
+            logger.warning("could not list unclassified issues: %s", exc)
+            return
+
+        for issue in issues:
+            if not any(lb in self.config.classifiable_labels for lb in issue.labels):
+                continue
+            if any(lb in self.config.classify_skip_labels for lb in issue.labels):
+                continue
+            if not self.identity.owns(issue.title):
+                continue
+            if not issue.body.strip():
+                logger.debug("issue #%s has empty body; skipping auto-classification", issue.number)
+                continue
+            try:
+                await self.github.add_labels("issue", issue.number, [WORKFLOW_NEW])
+                await self.github.comment_on_issue(
+                    issue.number,
+                    f"🤖 **DEILE auto-classificação** — esta issue foi adicionada à fila do pipeline "
+                    f"autônomo (`{WORKFLOW_NEW}`).\n\n"
+                    f"Para excluir da fila, remova o label `{WORKFLOW_NEW}`.",
+                )
+                await self.notifier.issue_auto_classified(issue.number, issue.title, issue.url)
+                logger.info("auto-classified issue #%s as %s", issue.number, WORKFLOW_NEW)
+            except Exception as exc:  # noqa: BLE001 — best-effort, never abort loop
+                logger.warning("auto-classification of #%s failed: %s", issue.number, exc)
+                await self.notifier.error(
+                    f"auto-classify #{issue.number}", f"{type(exc).__name__}: {exc}"
+                )
 
     # ----- stage 1: review ------------------------------------------
 

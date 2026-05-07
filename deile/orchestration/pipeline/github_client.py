@@ -318,3 +318,31 @@ class GitHubClient:
             "--repo", self.repo,
             "--body", text,
         )
+
+    async def list_unclassified_issues(self, *, limit: int = 100) -> List[IssueRef]:
+        """Return open issues that have no pipeline labels (no ``~workflow:*``, ``~batch:*``, ``~review:*``).
+
+        These are candidates for Stage 0 auto-classification.
+        """
+        out = await self._run_checked(
+            "issue", "list",
+            "--repo", self.repo,
+            "--state", "open",
+            "--limit", str(limit),
+            "--json", "number,title,url,labels,body,state",
+        )
+        data = json.loads(out or "[]")
+        result = []
+        for item in data:
+            labels = tuple(lab["name"] for lab in item.get("labels", []))
+            if any(lb.startswith("~") for lb in labels):
+                continue
+            result.append(IssueRef(
+                number=item["number"],
+                title=item["title"],
+                url=item["url"],
+                labels=labels,
+                body=item.get("body", "") or "",
+                state=item.get("state", "open"),
+            ))
+        return result

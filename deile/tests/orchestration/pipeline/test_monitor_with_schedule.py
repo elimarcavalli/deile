@@ -77,6 +77,7 @@ def _make_monitor_sched(
     github.add_labels = AsyncMock()
     github.comment_on_issue = AsyncMock()
     github.comment_on_pr = AsyncMock()
+    github.list_unclassified_issues = AsyncMock(return_value=[])
 
     worktrees = MagicMock()
     worktrees.create_branch_worktree = AsyncMock(
@@ -106,6 +107,7 @@ def _make_monitor_sched(
         "implementation_finished",
         "pr_picked_up",
         "pr_reviewed",
+        "issue_auto_classified",
         "error",
     ):
         setattr(notifier, attr, AsyncMock())
