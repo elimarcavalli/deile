@@ -53,7 +53,7 @@ from deile.orchestration.pipeline.cron import CronExpressionError, next_after
 logger = logging.getLogger(__name__)
 
 
-VALID_ACTIONS = {"review", "implement", "pr_review"}
+VALID_ACTIONS = {"review", "implement", "pr_review", "classify"}
 
 
 class ScheduleError(DEILEError):

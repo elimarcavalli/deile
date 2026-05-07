@@ -12,6 +12,9 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
 from deile.orchestration.pipeline.github_client import (GhCommandError,
                                                         GitHubClient, IssueRef)
 from deile.orchestration.pipeline.labels import WORKFLOW_NEW
@@ -61,7 +64,14 @@ def _make_monitor(*, unclassified: list | None = None) -> tuple[PipelineMonitor,
 
     worktrees = MagicMock()
 
-    monitor = PipelineMonitor(cfg, github=github, worktrees=worktrees, notifier=notifier)
+    claude = MagicMock()
+    claude.run = AsyncMock(
+        return_value=ClaudeRunResult(
+            returncode=0, stdout="", stderr="", duration_seconds=0.0, cmd=("claude", "-p", "x")
+        )
+    )
+
+    monitor = PipelineMonitor(cfg, github=github, worktrees=worktrees, claude=claude, notifier=notifier)
     return monitor, github, notifier
 
 
@@ -230,10 +240,16 @@ class TestClassifyNewIssues:
             _issue(21, ("intent",), body="body 2"),
         ]
         monitor, github, notifier = _make_monitor(unclassified=issues)
-        github.add_labels = AsyncMock(side_effect=[RuntimeError("network"), None])
+
+        async def _add_labels_by_issue(kind, num, labels):
+            if num == 20:
+                raise RuntimeError("network")
+
+        github.add_labels = AsyncMock(side_effect=_add_labels_by_issue)
         await monitor._classify_new_issues()
         notifier.error.assert_called_once()
         notifier.issue_auto_classified.assert_called_once_with(21, issues[1].title, issues[1].url)
+        github.comment_on_issue.assert_called_once()
 
     async def test_comment_failure_does_not_trigger_error_notification(self):
         issue = _issue(22, ("intent",), body="body")
@@ -303,3 +319,31 @@ class TestIssueAutoClassifiedNotification:
         n = DiscordNotifier(user_id="", dm_fn=fake_dm)
         await n.issue_auto_classified(1, "t", "u")
         assert sent == []
+
+
+# ---------------------------------------------------------------------------
+# Parametrized: all classifiable labels are handled
+# ---------------------------------------------------------------------------
+
+class TestClassifiableLabelCoverage:
+    @pytest.mark.parametrize("label", ["intent", "bug", "refactor", "feature_request"])
+    async def test_classifies_each_classifiable_label(self, label):
+        issue = _issue(99, (label,), body="some body")
+        monitor, github, _ = _make_monitor(unclassified=[issue])
+        await monitor._classify_new_issues()
+        github.add_labels.assert_called_once_with("issue", 99, [WORKFLOW_NEW])
+
+
+# ---------------------------------------------------------------------------
+# Scheduler integration: RecurringEntry with action="classify" is valid
+# ---------------------------------------------------------------------------
+
+class TestSchedulerClassifyAction:
+    def test_recurring_classify_entry_is_valid(self):
+        from deile.orchestration.pipeline.scheduler import (RecurringEntry,
+                                                            Schedule)
+
+        entry = RecurringEntry(id="cls-loop", action="classify", cron="*/5 * * * *")
+        s = Schedule()
+        s.add_recurring(entry)
+        assert any(e.action == "classify" for e in s.recurring)

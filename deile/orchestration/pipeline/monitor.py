@@ -25,7 +25,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable, Optional, Tuple
+from typing import Awaitable, Callable, Optional
 
 from deile.orchestration.pipeline.claude_dispatcher import (
     ClaudeDispatcher, render_implement_prompt, render_review_prompt)
@@ -52,6 +52,12 @@ logger = logging.getLogger(__name__)
 
 _PR_URL_RE = re.compile(r"https://github\.com/[^\s\"'<>]+/pull/\d+", re.IGNORECASE)
 
+_CLASSIFY_COMMENT = (
+    f"🤖 **DEILE auto-classificação** — esta issue foi adicionada à fila do pipeline "
+    f"autônomo (`{WORKFLOW_NEW}`).\n\n"
+    f"Para excluir da fila, remova o label `{WORKFLOW_NEW}`."
+)
+
 
 @dataclass
 class PipelineConfig:
@@ -70,8 +76,8 @@ class PipelineConfig:
     enable_implement: bool = True
     enable_pr_review: bool = True
     enable_classify: bool = True
-    classifiable_labels: Tuple[str, ...] = ("intent", "bug", "refactor", "feature_request")
-    classify_skip_labels: Tuple[str, ...] = ("infra",)
+    classifiable_labels: frozenset = frozenset({"intent", "bug", "refactor", "feature_request"})
+    classify_skip_labels: frozenset = frozenset({"infra"})
     # When True, the monitor acquires a PID lockfile under base_repo_path
     # named after the identity. Two monitors with the same monitor_id on
     # the same host will fail to start. Default off because most tests
@@ -322,6 +328,13 @@ class PipelineMonitor:
         - it has no pipeline labels (nothing starting with ``~``)
         - its body is non-empty (filled template)
         - it falls in this monitor's shard
+
+        Known limitation: Stage 0 does not use ``claim_with_batch`` — there is a
+        narrow race window between ``list_unclassified_issues`` and ``add_labels``
+        where two monitor instances could classify the same issue simultaneously.
+        In practice DEILE runs as a single process, so this is acceptable; the
+        GitHub ``add_labels`` call is idempotent and the worst case is a duplicate
+        comment and notification.
         """
         try:
             issues = await self.github.list_unclassified_issues()
@@ -350,12 +363,7 @@ class PipelineMonitor:
             logger.info("auto-classified issue #%s as %s", issue.number, WORKFLOW_NEW)
             await self.notifier.issue_auto_classified(issue.number, issue.title, issue.url)
             try:
-                await self.github.comment_on_issue(
-                    issue.number,
-                    f"🤖 **DEILE auto-classificação** — esta issue foi adicionada à fila do pipeline "
-                    f"autônomo (`{WORKFLOW_NEW}`).\n\n"
-                    f"Para excluir da fila, remova o label `{WORKFLOW_NEW}`.",
-                )
+                await self.github.comment_on_issue(issue.number, _CLASSIFY_COMMENT)
             except Exception as exc:  # noqa: BLE001 — comment is best-effort; label already applied
                 logger.warning("auto-classify comment #%s failed (label applied): %s", issue.number, exc)
 

@@ -319,7 +319,7 @@ class GitHubClient:
             "--body", text,
         )
 
-    async def list_unclassified_issues(self, *, limit: int = 100) -> List[IssueRef]:
+    async def list_unclassified_issues(self, *, limit: int = 50) -> List[IssueRef]:
         """Return open issues that have no pipeline labels (no ``~workflow:*``, ``~batch:*``, ``~review:*``).
 
         These are candidates for Stage 0 auto-classification.
@@ -345,4 +345,9 @@ class GitHubClient:
                 body=item.get("body", "") or "",
                 state=item.get("state", "open"),
             ))
+        if len(result) >= limit:
+            logger.warning(
+                "list_unclassified_issues truncated at limit=%d; some eligible issues may be missed",
+                limit,
+            )
         return result
