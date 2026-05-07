@@ -1,7 +1,8 @@
 """End-to-end smoke test for the bash_execute tool.
 
-Asks the agent to run the ``ola.py`` that already exists at the repo root and
-verifies the *actual* stdout from disk is what the agent surfaces back.
+Creates ``ola.py`` at the repo root if missing, asks the agent to execute it,
+and verifies the *actual* stdout from a real subprocess run is what the agent
+surfaces back. Cleans up the file if setup created it.
 
 Usage:
     python scripts/smoke_test_bash_execute.py
@@ -42,22 +43,21 @@ async def main() -> int:
         return 2
 
     ola = PROJECT_ROOT / "ola.py"
+    created_ola = False
     if not ola.exists():
-        print(f"FATAL: {ola} not found — create it first", file=sys.stderr)
-        return 2
+        ola.write_text('print("BASH_EXECUTE_PROOF_42")\n', encoding="utf-8")
+        created_ola = True
+        print(f"[setup] created ola.py at {ola}")
 
-    # Read the ground-truth stdout straight from disk. This is what we'll
-    # require the agent to repeat back — that's the only way to prove it
-    # actually executed instead of paraphrasing or hallucinating.
-    expected_stdout = ola.read_text(encoding="utf-8").strip()
-    # `print(...)` strips quotes, so derive expected output by literally
-    # running the script ourselves (subprocess, not the agent).
+    # Derive expected output by literally running the script ourselves
+    # (subprocess, not the agent) — that's the ground truth the agent
+    # must repeat back to prove it actually executed.
     import subprocess
     proof = subprocess.run(
         ["python3", str(ola)], capture_output=True, text=True, check=True
     )
     expected_stdout = proof.stdout.strip()
-    print(f"[setup] ola.py exists at {ola}")
+    print(f"[setup] ola.py at {ola}")
     print(f"[setup] expected stdout (from real subprocess): {expected_stdout!r}")
 
     settings = get_settings()
@@ -95,20 +95,25 @@ async def main() -> int:
         print(f"[tools] {tools}")
         return text
 
-    result_text = await turn(
-        "turn1",
-        "execute o arquivo ola.py com python3 e me traga exatamente o que ele imprimiu",
-    )
+    try:
+        result_text = await turn(
+            "turn1",
+            "execute o arquivo ola.py com python3 e me traga exatamente o que ele imprimiu",
+        )
 
-    print("\n" + "=" * 70)
-    if expected_stdout and expected_stdout in result_text:
-        print(f"PASS: agent surfaced the real stdout {expected_stdout!r}")
-        return 0
-    print(
-        f"FAIL: agent reply did not contain the real stdout {expected_stdout!r}",
-        file=sys.stderr,
-    )
-    return 1
+        print("\n" + "=" * 70)
+        if expected_stdout and expected_stdout in result_text:
+            print(f"PASS: agent surfaced the real stdout {expected_stdout!r}")
+            return 0
+        print(
+            f"FAIL: agent reply did not contain the real stdout {expected_stdout!r}",
+            file=sys.stderr,
+        )
+        return 1
+    finally:
+        if created_ola and ola.exists():
+            ola.unlink()
+            print(f"[cleanup] removed ola.py created by setup")
 
 
 if __name__ == "__main__":
