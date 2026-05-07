@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import shutil
 from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence, Tuple
@@ -318,6 +319,57 @@ class GitHubClient:
             "--repo", self.repo,
             "--body", text,
         )
+
+    async def get_pr_body(self, number: int) -> str:
+        """Fetch the body of any PR (open or merged) by number."""
+        try:
+            out = await self._run_checked(
+                "pr", "view", str(number),
+                "--repo", self.repo,
+                "--json", "body",
+            )
+            return json.loads(out).get("body", "") or ""
+        except GhCommandError as exc:
+            logger.warning("get_pr_body #%s failed: %s", number, exc)
+            return ""
+
+    async def list_pr_comments(self, number: int) -> List[str]:
+        """Return the body text of every general comment on a PR."""
+        try:
+            out = await self._run_checked(
+                "pr", "view", str(number),
+                "--repo", self.repo,
+                "--json", "comments",
+            )
+            data = json.loads(out)
+            return [c.get("body", "") for c in data.get("comments", []) if c.get("body")]
+        except GhCommandError as exc:
+            logger.warning("list_pr_comments #%s failed: %s", number, exc)
+            return []
+
+    async def create_issue(
+        self,
+        title: str,
+        body: str,
+        *,
+        labels: Optional[List[str]] = None,
+    ) -> int:
+        """Create a new issue and return its number (0 on failure)."""
+        cmd = [
+            "issue", "create",
+            "--repo", self.repo,
+            "--title", title,
+            "--body", body,
+        ]
+        if labels:
+            cmd.extend(["--label", ",".join(labels)])
+        try:
+            out = await self._run_checked(*cmd)
+        except GhCommandError as exc:
+            logger.warning("create_issue %r failed: %s", title[:60], exc)
+            return 0
+        m = re.search(r"/issues/(\d+)", out)
+        return int(m.group(1)) if m else 0
 
     async def list_unclassified_issues(self, *, limit: int = 50) -> List[IssueRef]:
         """Return open issues that have no pipeline labels (no ``~workflow:*``, ``~batch:*``, ``~review:*``).

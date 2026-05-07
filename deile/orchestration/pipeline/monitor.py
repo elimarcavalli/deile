@@ -32,6 +32,7 @@ from deile.orchestration.pipeline.claude_dispatcher import (
 from deile.orchestration.pipeline.constants import (
     PIPELINE_MSG_TRUNCATE_CHARS, PIPELINE_POLL_INTERVAL_SECONDS,
     PIPELINE_STOP_TIMEOUT_SECONDS)
+from deile.orchestration.pipeline.follow_up_detector import detect_follow_ups
 from deile.orchestration.pipeline.github_client import (GhCommandError,
                                                         GitHubClient, IssueRef)
 from deile.orchestration.pipeline.identity import MonitorIdentity
@@ -76,6 +77,7 @@ class PipelineConfig:
     enable_implement: bool = True
     enable_pr_review: bool = True
     enable_classify: bool = True
+    enable_follow_ups: bool = True
     classifiable_labels: frozenset = frozenset({"intent", "bug", "refactor", "feature_request"})
     classify_skip_labels: frozenset = frozenset({"infra"})
     # When True, the monitor acquires a PID lockfile under base_repo_path
@@ -95,6 +97,8 @@ class _Stats:
     errors: int = 0
     catchup_runs: int = 0
     scheduled_runs: int = 0
+    follow_ups_opened: int = 0
+    follow_ups_skipped: int = 0
 
 
 class PipelineMonitor:
@@ -522,6 +526,65 @@ class PipelineMonitor:
             logger.warning("could not transition PR #%s to concluida: %s", target.number, exc)
         self._stats.prs_reviewed += 1
         await self.notifier.pr_reviewed(target.number, target.title, target.url, merged=merged)
+        if merged and self.config.enable_follow_ups:
+            await self._stage4_follow_ups(target.number, target.title, target.url)
+
+
+    # ----- stage 4: follow-up issues from merged PR ----------------
+
+    async def _stage4_follow_ups(self, pr_number: int, pr_title: str, pr_url: str) -> None:
+        """Open GitHub issues for non-breaking follow-ups found in the merged PR.
+
+        This stage is best-effort: any exception is logged but never propagates
+        to the caller (stage 3 already finished successfully).
+        """
+        try:
+            pr_body = await self.github.get_pr_body(pr_number)
+            pr_comments = await self.github.list_pr_comments(pr_number)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("stage 4: could not fetch PR #%s content: %s", pr_number, exc)
+            return
+
+        follow_ups = detect_follow_ups(pr_body, pr_comments)
+        if not follow_ups:
+            logger.debug("stage 4: no follow-ups detected in PR #%s", pr_number)
+            return
+
+        opened: list[tuple[str, int]] = []
+        skipped: list[tuple[str, str]] = []
+
+        for fu in follow_ups:
+            if fu.is_breaking:
+                skipped.append((fu.title, "breaking change — requer revisão humana"))
+                self._stats.follow_ups_skipped += 1
+                continue
+            issue_body = (
+                f"{fu.title}\n\n"
+                f"---\n\n"
+                f"Origem: PR #{pr_number} — [{pr_title}]({pr_url})"
+            )
+            try:
+                number = await self.github.create_issue(
+                    fu.title, issue_body, labels=["intent"]
+                )
+                if number:
+                    opened.append((fu.title, number))
+                    self._stats.follow_ups_opened += 1
+                else:
+                    skipped.append((fu.title, "gh create_issue não retornou número"))
+                    self._stats.follow_ups_skipped += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("stage 4: create_issue %r failed: %s", fu.title[:60], exc)
+                skipped.append((fu.title, str(exc)[:120]))
+                self._stats.follow_ups_skipped += 1
+
+        report = _render_follow_up_report(pr_number, opened, skipped)
+        try:
+            await self.github.comment_on_pr(pr_number, report)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("stage 4: could not post follow-up report on PR #%s: %s", pr_number, exc)
+
+        await self.notifier.follow_ups_processed(pr_number, len(opened), len(skipped))
 
 
 # ---------------------------------------------------------------------------
@@ -533,3 +596,24 @@ def _extract_pr_url(text: str) -> Optional[str]:
         return None
     m = _PR_URL_RE.search(text)
     return m.group(0) if m else None
+
+
+def _render_follow_up_report(
+    pr_number: int,
+    opened: list[tuple[str, int]],
+    skipped: list[tuple[str, str]],
+) -> str:
+    lines = [f"## 🤖 Stage 4 — Follow-ups detectados na PR #{pr_number}\n"]
+    if opened:
+        lines.append("### ✅ Issues abertas")
+        for title, number in opened:
+            lines.append(f"- #{number} — {title}")
+        lines.append("")
+    if skipped:
+        lines.append("### ❌ Itens não abertos")
+        for title, reason in skipped:
+            lines.append(f"- **{title}** — {reason}")
+        lines.append("")
+    if not opened and not skipped:
+        lines.append("_Nenhum follow-up detectado._")
+    return "\n".join(lines)
