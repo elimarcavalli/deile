@@ -102,9 +102,12 @@ class StatusCommand(DirectCommand):
             border_style="dim"
         )
         
-        final_display = f"{left_column}\n\n{right_column}\n\n{usage_panel}"
-        
-        return CommandResult.success_result(final_display, "rich")
+        from rich.console import Group
+
+        return CommandResult.success_result(
+            Group(left_column, right_column, usage_panel),
+            "rich",
+        )
     
     def _get_system_info(self) -> Dict[str, Any]:
         """Get system information"""
