@@ -8,19 +8,16 @@ secret types, custom patterns, and safe handling of sensitive data.
 Author: DEILE
 """
 
+import fnmatch
 import logging
 import re
-import json
-import hashlib
-import base64
-from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple, Set, Pattern
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
-import fnmatch
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from .base import SyncTool, ToolContext, ToolResult, ToolStatus, DisplayPolicy
 from ..core.exceptions import ToolError
+from .base import DisplayPolicy, SyncTool, ToolContext, ToolResult, ToolStatus
 
 logger = logging.getLogger(__name__)
 
@@ -621,4 +618,5 @@ class SecretsTool(SyncTool):
 
 # Register the tool
 from deile.tools.registry import ToolRegistry
+
 ToolRegistry.register("secrets_scanner", SecretsTool)

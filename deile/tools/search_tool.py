@@ -9,20 +9,19 @@ Author: DEILE
 Features: Context-limited search, performance optimization, smart filtering
 """
 
-import logging
-import re
-import os
-from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple, Union
-from dataclasses import dataclass, asdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import mimetypes
 import fnmatch
-from datetime import datetime
+import logging
+import mimetypes
+import os
+import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
-from .base import SyncTool, ToolContext, ToolResult, ToolStatus, DisplayPolicy
 from ..core.exceptions import ToolError
+from .base import DisplayPolicy, SyncTool, ToolContext, ToolResult, ToolStatus
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +174,7 @@ class SearchTool(SyncTool):
             with open(file_path, 'rb') as f:
                 chunk = f.read(512)
                 return b'\0' in chunk
-        except:
+        except OSError:
             return True
     
     def _should_exclude_path(self, path: Path, exclude_patterns: List[str]) -> bool:

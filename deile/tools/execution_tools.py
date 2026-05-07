@@ -1,6 +1,5 @@
 """Enhanced Execution Tools for DEILE - Advanced PTY Support"""
 
-import asyncio
 import logging
 import os
 import platform
@@ -12,7 +11,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Dict, Optional
 
 if platform.system() == "Windows":
     WINDOWS_PTY_AVAILABLE = False
@@ -27,8 +26,8 @@ else:
     except ImportError:
         UNIX_PTY_AVAILABLE = False
 
-from ..core.exceptions import ToolError, ValidationError
-from .base import AsyncTool, SyncTool, ToolContext, ToolResult, ToolStatus
+from ..core.exceptions import ValidationError
+from .base import SyncTool, ToolContext, ToolResult, ToolStatus
 
 logger = logging.getLogger(__name__)
 
@@ -484,7 +483,7 @@ class EnhancedExecutionTool(SyncTool):
                 try:
                     self.active_sessions[session_id].terminate()
                     del self.active_sessions[session_id]
-                except:
+                except Exception:
                     pass
             
             return ToolResult(

@@ -1,14 +1,13 @@
 """Interface base para Tools do DEILE com Function Calling support"""
 
-from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
-from enum import Enum
-from pathlib import Path
 import asyncio
 import json
 import logging
-
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
