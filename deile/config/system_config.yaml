@@ -6,10 +6,10 @@ agent:
   rag_enabled: false
 system:
   auto_save_sessions: true
-  debug_mode: false
-  log_level: INFO
-  log_requests: false
-  log_responses: false
+  debug_mode: true
+  log_level: DEBUG
+  log_requests: true
+  log_responses: true
   session_timeout: 3600
 ui:
   auto_complete: true

@@ -59,7 +59,6 @@ assignees: ''
 <!-- Liste as issues de feature abertas a partir desta intenção. Agrupe sempre que possível. -->
 
 - [ ] `feature_request` #____ — 
-- [ ] `feature_request` #____ — 
 
 ## Regra de Fechamento
 <!-- GitHub não fecha esta issue automaticamente apenas porque outra issue a referenciou. -->
