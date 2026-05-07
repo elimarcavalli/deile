@@ -36,7 +36,7 @@ from deile.core.models.tier import ModelTier
 logger = logging.getLogger(__name__)
 
 _MAX_TOOL_ITERATIONS = 25
-_DEFAULT_MAX_TOKENS = 8192
+_DEFAULT_MAX_TOKENS = 16384
 
 
 def _classify_anthropic_error(exc: anthropic.APIError) -> str:
