@@ -263,6 +263,24 @@ class _DeileCLI:
 
 # ── one-shot mode ───────────────────────────────────────────────────────────
 
+
+def _print_oneshot_content(content) -> None:
+    """Print response content to stdout, rendering Rich renderables properly."""
+    if content is None:
+        return
+    if isinstance(content, str):
+        print(content)
+        return
+    # Rich renderable (Table, Panel, Text, Group, etc.) or list thereof.
+    from rich.console import Console
+    console = Console()
+    if isinstance(content, list):
+        for item in content:
+            console.print(item)
+    else:
+        console.print(content)
+
+
 async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
     """Single-turn non-interactive. stdout = response.content."""
     from deile.config.manager import ConfigManager
@@ -316,7 +334,7 @@ async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
         print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
-    print(response.content)
+    _print_oneshot_content(response.content)
     status = response.status.value if hasattr(response.status, "value") else str(response.status)
     return 0 if status != "error" else 1
 

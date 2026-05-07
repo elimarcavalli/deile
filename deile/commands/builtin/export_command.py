@@ -17,10 +17,11 @@ class ExportCommand(DirectCommand):
     """Export conversation history, artifacts, plans and session data in various formats"""
     
     def __init__(self):
-        super().__init__(
+        from ...config.manager import CommandConfig
+        super().__init__(CommandConfig(
             name="export",
             description="Export conversation history, artifacts, plans and session data in various formats.",
-        )
+        ))
     
     def execute(self, 
                args: str = "",

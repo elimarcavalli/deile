@@ -41,9 +41,7 @@ class CompactCommand(DirectCommand):
     
     def __init__(self):
         super().__init__()
-        self.name = "compact"
-        self.description = "Manage conversation history and memory optimization"
-        self.aliases = []
+        self.config.description = "Manage conversation history and memory optimization"
         self.help_text = """
 Compact command - Memory and History Management
 
@@ -68,8 +66,8 @@ EXAMPLES:
     /compact config auto-compress on    # Enable auto-compression
 """
         
-        # Configuration settings
-        self.config = {
+        # Configuration settings (use compact_config to avoid shadowing parent's CommandConfig)
+        self.compact_config = {
             'auto_compress': True,
             'compress_threshold_days': 7,
             'purge_threshold_days': 30,
@@ -78,9 +76,9 @@ EXAMPLES:
             'compression_ratio_target': 0.3,
             'max_memory_usage_mb': 100
         }
-        
+
         self.context_manager = ContextManager()
-        self.display_manager = DisplayManager()
+        self.display_manager = None
 
     def execute(self, args: List[str]) -> Dict[str, Any]:
         """Execute the compact command"""
@@ -93,10 +91,10 @@ EXAMPLES:
             if action == "summary":
                 return self._show_summary()
             elif action == "compress":
-                threshold = int(args[1]) if len(args) > 1 else self.config['compress_threshold_days']
+                threshold = int(args[1]) if len(args) > 1 else self.compact_config['compress_threshold_days']
                 return self._compress_conversations(threshold)
             elif action == "purge":
-                days = int(args[1]) if len(args) > 1 else self.config['purge_threshold_days']
+                days = int(args[1]) if len(args) > 1 else self.compact_config['purge_threshold_days']
                 return self._purge_conversations(days)
             elif action == "analyze":
                 return self._analyze_conversations()
@@ -139,7 +137,7 @@ EXAMPLES:
             table.add_row(
                 "Memory Usage",
                 f"{memory_usage['total_mb']:.1f} MB",
-                f"Limit: {self.config['max_memory_usage_mb']} MB"
+                f"Limit: {self.compact_config['max_memory_usage_mb']} MB"
             )
             table.add_row(
                 "Active Conversations",
@@ -182,7 +180,7 @@ EXAMPLES:
                 'memory_usage': memory_usage,
                 'conversation_stats': stats,
                 'recommendations': recommendations,
-                'auto_compress_enabled': self.config['auto_compress']
+                'auto_compress_enabled': self.compact_config['auto_compress']
             })
             
         except Exception as e:
@@ -482,7 +480,7 @@ EXAMPLES:
                 'max_memory_usage_mb': "Maximum memory usage limit in MB"
             }
             
-            for setting, value in self.config.items():
+            for setting, value in self.compact_config.items():
                 if setting in config_descriptions:
                     table.add_row(
                         setting,
@@ -495,7 +493,7 @@ EXAMPLES:
             console.print(table)
             
             return self._success({
-                'configuration': self.config,
+                'configuration': self.compact_config,
                 'timestamp': datetime.now().isoformat()
             })
             
@@ -511,11 +509,11 @@ EXAMPLES:
             setting = args[0]
             value = args[1]
             
-            if setting not in self.config:
+            if setting not in self.compact_config:
                 return self._error(f"Unknown setting: {setting}")
             
             # Convert value to appropriate type
-            original_value = self.config[setting]
+            original_value = self.compact_config[setting]
             
             if isinstance(original_value, bool):
                 new_value = value.lower() in ['true', 'on', 'yes', '1']
@@ -531,8 +529,8 @@ EXAMPLES:
                 return self._error(f"Invalid value for {setting}: {value}")
             
             # Update configuration
-            old_value = self.config[setting]
-            self.config[setting] = new_value
+            old_value = self.compact_config[setting]
+            self.compact_config[setting] = new_value
             
             # Save configuration
             self._save_config()
@@ -589,16 +587,16 @@ EXAMPLES:
         """Generate optimization recommendations"""
         recommendations = []
         
-        if memory['total_mb'] > self.config['max_memory_usage_mb'] * 0.8:
+        if memory['total_mb'] > self.compact_config['max_memory_usage_mb'] * 0.8:
             recommendations.append("Memory usage is high - consider compressing old conversations")
         
-        if stats['days_of_history'] > self.config['compress_threshold_days'] * 2:
+        if stats['days_of_history'] > self.compact_config['compress_threshold_days'] * 2:
             recommendations.append("Long conversation history detected - compression recommended")
         
         if stats['compressed_messages'] / stats['total_messages'] < 0.2:
             recommendations.append("Low compression ratio - enable auto-compression")
         
-        if not self.config['auto_compress']:
+        if not self.compact_config['auto_compress']:
             recommendations.append("Auto-compression is disabled - enable for automatic optimization")
         
         return recommendations
@@ -635,7 +633,7 @@ EXAMPLES:
 
     def _update_last_compress_time(self):
         """Update last compression timestamp"""
-        self.config['last_compress'] = datetime.now().isoformat()
+        self.compact_config['last_compress'] = datetime.now().isoformat()
 
     def _get_all_conversations(self) -> List[Dict[str, Any]]:
         """Get all conversations (mock implementation)"""

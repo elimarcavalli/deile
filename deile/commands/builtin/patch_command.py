@@ -19,8 +19,9 @@ class PatchCommand(DirectCommand):
     def __init__(self):
         from ...config.manager import CommandConfig
         config = CommandConfig(
-            name="patch-generate",
+            name="patch",
             description="Generate patch files from plan execution changes.",
+            aliases=["patch-generate"],
         )
         super().__init__(config)
         self.plan_manager = get_plan_manager()

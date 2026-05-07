@@ -43,9 +43,7 @@ class CostCommand(DirectCommand):
     
     def __init__(self):
         super().__init__()
-        self.name = "cost"
-        self.description = "Cost tracking, budgets, and financial analytics"
-        self.aliases = []
+        self.config.description = "Cost tracking, budgets, and financial analytics"
         self.help_text = """
 Cost Command - Financial Management and Analytics
 

@@ -19,8 +19,9 @@ class ApplyCommand(DirectCommand):
     def __init__(self):
         from ...config.manager import CommandConfig
         config = CommandConfig(
-            name="patch-apply",
+            name="apply",
             description="Apply patch files to current directory.",
+            aliases=["patch-apply"],
         )
         super().__init__(config)
         self.patches_dir = Path("./PATCHES")

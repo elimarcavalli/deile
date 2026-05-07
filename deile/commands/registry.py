@@ -61,6 +61,25 @@ class CommandRegistry:
         self._registration_count += 1
         logger.debug(f"Registered command: /{command_name}")
     
+    def unregister_command(self, name: str) -> bool:
+        """Remove a command and its aliases from the registry. Returns True if removed."""
+        if name not in self._commands:
+            return False
+        cmd = self._commands.pop(name)
+        # Remove from aliases
+        dead_aliases = [alias for alias, target in self._aliases.items() if target == name]
+        for alias in dead_aliases:
+            del self._aliases[alias]
+        # Remove from categories
+        category = getattr(cmd, "category", "general")
+        cat_list = self._categories.get(category, [])
+        try:
+            cat_list.remove(cmd)
+        except ValueError:
+            pass
+        logger.debug("Unregistered command: /%s", name)
+        return True
+
     def register_action(self, name: str, action: Callable) -> None:
         """Registra função de ação"""
         self._actions[name] = action
@@ -247,11 +266,18 @@ class CommandRegistry:
                 'deile.commands.builtin.diff_command',
                 'deile.commands.builtin.patch_command',
                 'deile.commands.builtin.apply_command',
+                'deile.commands.builtin.approve_command',
+                'deile.commands.builtin.compact_command',
                 'deile.commands.builtin.memory_command',
                 'deile.commands.builtin.logs_command',
                 'deile.commands.builtin.permissions_command',
+                'deile.commands.builtin.pipeline_command',
+                'deile.commands.builtin.pipeline_schedule_command',
+                'deile.commands.builtin.plan_command',
+                'deile.commands.builtin.run_command',
                 'deile.commands.builtin.sandbox_command',
                 'deile.commands.builtin.skills_command',
+                'deile.commands.builtin.welcome_command',
             ]
             
             for module_name in builtin_modules:

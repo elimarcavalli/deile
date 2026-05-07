@@ -19,8 +19,9 @@ class ClearCommand(DirectCommand):
     def __init__(self):
         from ...config.manager import CommandConfig
         config = CommandConfig(
-            name="cls",
-            description="Clear conversation history and screen. Use 'cls reset' for complete session reset.",
+            name="clear",
+            description="Clear conversation history and screen. Use 'clear reset' for complete session reset.",
+            aliases=["cls"],
         )
         super().__init__(config)
     

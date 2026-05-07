@@ -16,10 +16,11 @@ class ToolsCommand(DirectCommand):
     """Display available tools, their schemas and usage statistics"""
     
     def __init__(self):
-        super().__init__(
+        from ...config.manager import CommandConfig
+        super().__init__(CommandConfig(
             name="tools",
             description="Display available tools, their schemas and usage statistics.",
-        )
+        ))
     
     def execute(self, 
                args: str = "",
