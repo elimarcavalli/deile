@@ -138,11 +138,9 @@ class PTYSession:
                         output = self.pty_process.read(timeout=100)  # 100ms timeout
                         if output:
                             self.output_buffer.append(output)
-                    except Exception:
-                        break
-                    except Exception as e:
+                    except Exception as exc:
                         if self.is_running:
-                            logger.error(f"Error reading PTY output: {e}")
+                            logger.warning("Error reading PTY output: %s", exc)
                         break
         except Exception as e:
             logger.error(f"PTY output thread error: {e}")
@@ -480,8 +478,8 @@ class EnhancedExecutionTool(SyncTool):
                 try:
                     self.active_sessions[session_id].terminate()
                     del self.active_sessions[session_id]
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Failed to terminate session %s during cleanup: %s", session_id, exc)
             
             return ToolResult(
                 status=ToolStatus.ERROR,

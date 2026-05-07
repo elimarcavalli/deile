@@ -1,5 +1,6 @@
 """Git Tool - Integração completa com Git através do GitPython"""
 
+import logging
 from typing import Any, Dict, Optional
 
 try:
@@ -15,6 +16,8 @@ except ImportError:
 
 from ..security.secrets_scanner import SecretsScanner
 from .base import DisplayPolicy, SyncTool, ToolContext, ToolResult, ToolStatus
+
+logger = logging.getLogger(__name__)
 
 
 class GitTool(SyncTool):
@@ -222,8 +225,8 @@ class GitTool(SyncTool):
             origin.fetch()
             status_data["remote_behind"] = len(list(repo.iter_commits(f'{repo.active_branch}..origin/{repo.active_branch}')))
             status_data["remote_ahead"] = len(list(repo.iter_commits(f'origin/{repo.active_branch}..{repo.active_branch}')))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Could not fetch remote status: %s", exc)
         
         # Format output
         output_lines = [
@@ -271,7 +274,8 @@ class GitTool(SyncTool):
                     diff = repo.git.diff("HEAD", file)
                     if diff:
                         diff_output += f"\n--- {file} ---\n{diff}\n"
-                except Exception:
+                except Exception as exc:
+                    logger.warning("Could not diff %s: %s", file, exc)
                     diff_output += f"\n--- {file} ---\nFile not found or no diff\n"
         else:
             # Get all diffs
@@ -438,8 +442,8 @@ class GitTool(SyncTool):
                         "data": {"remote": remote_name, "branch": branch},
                         "output": "Everything up-to-date"
                     }
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Could not check remote status before push: %s", exc)
 
             # Perform push
             if force:
