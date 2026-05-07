@@ -93,48 +93,59 @@ class SkillsCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     def _show_menu(self) -> CommandResult:
+        body = Text()
+        body.append("  /skills list\n", style="bold bright_cyan")
+        body.append("      List all active skill paths (global + project)\n\n", style="white")
+        body.append("  /skills add ", style="bold bright_cyan")
+        body.append("<path>", style="bold yellow")
+        body.append(" [--scope global|project]\n", style="dim cyan")
+        body.append("      Add a skill directory to settings (default scope: global)\n\n", style="white")
+        body.append("  /skills remove ", style="bold bright_cyan")
+        body.append("<path>", style="bold yellow")
+        body.append(" [--scope global|project]\n", style="dim cyan")
+        body.append("      Remove a skill directory from settings\n\n", style="white")
+        body.append("  Global:  ", style="dim")
+        body.append("~/.deile/settings.json\n", style="bright_blue")
+        body.append("  Project: ", style="dim")
+        body.append(".deile/settings.json", style="bright_blue")
+        body.append("  (current directory)", style="dim")
+
         panel = Panel(
-            Text(
-                "/skills list\n"
-                "    List all active skill paths (global + project)\n\n"
-                "/skills add <path> [--scope global|project]\n"
-                "    Add a skill directory to settings (default scope: global)\n\n"
-                "/skills remove <path> [--scope global|project]\n"
-                "    Remove a skill directory from settings\n\n"
-                "Global settings: ~/.deile/settings.json\n"
-                "Project settings: .deile/settings.json (current directory)",
-                style="dim",
-            ),
-            title="Skills Manager — /skills",
+            body,
+            title="[bold cyan] Skills Manager [/bold cyan]",
             border_style="cyan",
+            padding=(1, 2),
         )
         return CommandResult.success_result(panel, "rich")
 
     def _list_paths(self) -> CommandResult:
         mgr = self._manager()
 
-        table = Table(title="Active Skill Paths", show_header=True, header_style="bold cyan")
-        table.add_column("Scope", style="bold", width=10)
-        table.add_column("Path", style="green")
+        table = Table(
+            title="[bold cyan]Active Skill Paths[/bold cyan]",
+            show_header=True,
+            header_style="bold bright_cyan",
+            border_style="cyan",
+            row_styles=["", "dim"],
+        )
+        table.add_column("Scope", style="bold magenta", width=10)
+        table.add_column("Path", style="bright_green")
         table.add_column("Exists?", width=8, justify="center")
 
         for scope in ("global", "project"):
             for raw in mgr.list_skills_paths(scope):
                 p = Path(raw).expanduser()
-                exists_str = "yes" if p.is_dir() else "no"
+                exists_str = "[green]yes[/green]" if p.is_dir() else "[red]no[/red]"
                 table.add_row(scope, raw, exists_str)
 
         if table.row_count == 0:
+            body = Text()
+            body.append("No skill paths configured.\n", style="yellow")
+            body.append("Use ", style="dim")
+            body.append("/skills add <path>", style="bold bright_cyan")
+            body.append(" to add a directory.", style="dim")
             return CommandResult.success_result(
-                Panel(
-                    Text(
-                        "No skill paths configured.\n"
-                        "Use '/skills add <path>' to add a directory.",
-                        style="dim",
-                    ),
-                    title="Skills",
-                    border_style="cyan",
-                ),
+                Panel(body, title="[bold cyan] Skills [/bold cyan]", border_style="cyan", padding=(1, 2)),
                 "rich",
             )
 
