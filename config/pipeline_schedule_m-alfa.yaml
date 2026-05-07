@@ -1,0 +1,8 @@
+recurring:
+- id: alfa-loop
+  action: review
+  cron: '*/5 * * * *'
+  enabled: true
+  last_run_at: null
+  replay_all: false
+oneshot: []
