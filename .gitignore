@@ -41,6 +41,17 @@ devscan/*
 discord_bot/*
 data/
 deilebot.yaml
+# Runtime config — operator-specific, never commit
+config/settings.json
+config/permissions.yaml
+config/persona_config.yaml
+config/deile_bot.yaml
+# Dead duplicates of deile/config/* — code never reads these
+config/api_config.yaml
+config/commands.yaml
+config/system_config.yaml
+config/display.yaml
+config/search.yaml
 .openclaude/*
 .opendeile/*
 /deilebot/
