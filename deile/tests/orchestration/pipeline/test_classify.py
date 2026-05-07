@@ -347,3 +347,101 @@ class TestSchedulerClassifyAction:
         s = Schedule()
         s.add_recurring(entry)
         assert any(e.action == "classify" for e in s.recurring)
+
+    async def test_schedule_roundtrip_triggers_classify(self, tmp_path):
+        from datetime import datetime, timedelta, timezone
+
+        from deile.orchestration.pipeline.scheduler import (RecurringEntry,
+                                                            Schedule,
+                                                            ScheduleStore)
+
+        store = ScheduleStore(tmp_path, monitor_id="default")
+        s = Schedule()
+        s.add_recurring(RecurringEntry(
+            id="cls-loop",
+            action="classify",
+            cron="*/5 * * * *",
+            last_run_at=datetime.now(timezone.utc) - timedelta(hours=2),
+        ))
+        store.save(s)
+
+        issue = _issue(70, ("intent",), body="body")
+        cfg = PipelineConfig(
+            repo="owner/name",
+            base_repo_path=tmp_path,
+            notify_user_id="42",
+        )
+        github = MagicMock()
+        github.ensure_pipeline_labels = AsyncMock()
+        github.list_unclassified_issues = AsyncMock(return_value=[issue])
+        github.list_issues_with_label = AsyncMock(return_value=[])
+        github.list_open_prs = AsyncMock(return_value=[])
+        github.add_labels = AsyncMock()
+        github.comment_on_issue = AsyncMock()
+        github.comment_on_pr = AsyncMock()
+        github.claim_with_batch = AsyncMock(return_value="abc")
+        github.transition_issue = AsyncMock()
+        github.transition_pr = AsyncMock()
+
+        notifier = MagicMock()
+        for attr in (
+            "issue_picked_up", "issue_reviewed", "implementation_started",
+            "implementation_finished", "pr_picked_up", "pr_reviewed",
+            "issue_auto_classified", "error",
+        ):
+            setattr(notifier, attr, AsyncMock())
+
+        monitor = PipelineMonitor(
+            cfg,
+            github=github,
+            worktrees=MagicMock(),
+            notifier=notifier,
+            schedule_store=store,
+        )
+        await monitor.tick()
+        github.list_unclassified_issues.assert_called_once()
+        github.add_labels.assert_called_once_with("issue", 70, [WORKFLOW_NEW])
+
+    async def test_run_scheduled_classify_disabled_noop(self):
+        from datetime import datetime, timezone
+
+        from deile.orchestration.pipeline.scheduler import PendingRun
+
+        issue = _issue(80, ("intent",), body="body")
+        monitor, github, _ = _make_monitor(unclassified=[issue])
+        monitor.config.enable_classify = False
+        run = PendingRun(
+            when=datetime.now(timezone.utc),
+            entry_id="x",
+            action="classify",
+            is_oneshot=False,
+        )
+        await monitor._run_scheduled(run)
+        github.list_unclassified_issues.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Shard filter in Stage 0
+# ---------------------------------------------------------------------------
+
+class TestClassifySharding:
+    async def test_skips_issue_outside_own_shard(self):
+        from deile.orchestration.pipeline.identity import MonitorIdentity
+
+        # "issue 60" hashes to shard 0 with shard_count=2.
+        # A monitor on shard_index=1 must NOT classify it.
+        issue = _issue(60, ("intent",), body="body")
+        monitor, github, _ = _make_monitor(unclassified=[issue])
+        monitor.identity = MonitorIdentity(monitor_id="m1", shard_index=1, shard_count=2)
+        await monitor._classify_new_issues()
+        github.add_labels.assert_not_called()
+
+    async def test_classifies_issue_inside_own_shard(self):
+        from deile.orchestration.pipeline.identity import MonitorIdentity
+
+        # "issue 61" hashes to shard 1 with shard_count=2.
+        issue = _issue(61, ("intent",), body="body")
+        monitor, github, _ = _make_monitor(unclassified=[issue])
+        monitor.identity = MonitorIdentity(monitor_id="m1", shard_index=1, shard_count=2)
+        await monitor._classify_new_issues()
+        github.add_labels.assert_called_once_with("issue", 61, [WORKFLOW_NEW])

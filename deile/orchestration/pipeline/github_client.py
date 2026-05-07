@@ -334,17 +334,23 @@ class GitHubClient:
         data = json.loads(out or "[]")
         result = []
         for item in data:
-            labels = tuple(lab["name"] for lab in item.get("labels", []))
-            if any(lb.startswith("~") for lb in labels):
+            try:
+                labels = tuple(
+                    lab["name"] for lab in item.get("labels", []) if isinstance(lab, dict)
+                )
+                if any(lb.startswith("~") for lb in labels):
+                    continue
+                result.append(IssueRef(
+                    number=int(item["number"]),
+                    title=str(item.get("title", "")),
+                    url=str(item.get("url", "")),
+                    labels=labels,
+                    body=str(item.get("body") or ""),
+                    state=str(item.get("state", "open")),
+                ))
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning("skipping malformed issue payload: %s", exc)
                 continue
-            result.append(IssueRef(
-                number=item["number"],
-                title=item["title"],
-                url=item["url"],
-                labels=labels,
-                body=item.get("body", "") or "",
-                state=item.get("state", "open"),
-            ))
         if len(result) >= limit:
             logger.warning(
                 "list_unclassified_issues truncated at limit=%d; some eligible issues may be missed",

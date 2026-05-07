@@ -91,6 +91,7 @@ class _Stats:
     issues_reviewed: int = 0
     issues_implemented: int = 0
     prs_reviewed: int = 0
+    issues_classified: int = 0
     errors: int = 0
     catchup_runs: int = 0
     scheduled_runs: int = 0
@@ -338,11 +339,14 @@ class PipelineMonitor:
         """
         try:
             issues = await self.github.list_unclassified_issues()
-        except GhCommandError as exc:
+        except Exception as exc:  # noqa: BLE001 — gh error, JSON parse error, etc.
             logger.warning("could not list unclassified issues: %s", exc)
             return
 
         for issue in issues:
+            # Defense-in-depth: never touch an issue that already has a pipeline label.
+            if any(lb.startswith("~") for lb in issue.labels):
+                continue
             if not any(lb in self.config.classifiable_labels for lb in issue.labels):
                 continue
             if any(lb in self.config.classify_skip_labels for lb in issue.labels):
@@ -360,6 +364,7 @@ class PipelineMonitor:
                     f"auto-classify #{issue.number}", f"{type(exc).__name__}: {exc}"
                 )
                 continue
+            self._stats.issues_classified += 1
             logger.info("auto-classified issue #%s as %s", issue.number, WORKFLOW_NEW)
             await self.notifier.issue_auto_classified(issue.number, issue.title, issue.url)
             try:
