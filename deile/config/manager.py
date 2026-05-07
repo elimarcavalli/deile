@@ -82,8 +82,8 @@ class GeminiConfig:
         
         # Valida max_output_tokens
         max_tokens = self.generation_config.get("max_output_tokens", 0)
-        if max_tokens > 8192 or max_tokens <= 0:
-            errors.append("max_output_tokens deve estar entre 1 e 8192")
+        if max_tokens > 65536 or max_tokens <= 0:
+            errors.append("max_output_tokens deve estar entre 1 e 65536")
         
         # Valida top_k
         top_k = self.generation_config.get("top_k", 1)
