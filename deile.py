@@ -28,6 +28,7 @@ ENV_FILE = PROJECT_ROOT / ".env"
 REQUIREMENTS = PROJECT_ROOT / "requirements.txt"
 DEPS_MARKER = VENV_DIR / ".deile-deps-installed"
 MIN_PYTHON = (3, 9)
+_API_KEY_NAMES = frozenset({"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY"})
 
 
 # -----------------------------------------------------------------------------
@@ -151,16 +152,35 @@ def _install_deps() -> None:
     _ok("Dependências instaladas")
 
 
+def _env_file_has_valid_key() -> bool:
+    """Return True if ENV_FILE exists and has at least one non-empty recognized API key."""
+    try:
+        text = ENV_FILE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        if k.strip() in _API_KEY_NAMES and v.strip():
+            return True
+    return False
+
+
 def _ensure_env_file() -> None:
     _step("Verificando .env")
-    if ENV_FILE.exists():
-        _ok(".env já existe")
+    if _env_file_has_valid_key():
+        _ok(".env existe com pelo menos uma chave configurada")
         return
 
     import getpass
     from datetime import datetime
 
-    _warn(".env não encontrado — vamos configurar agora.")
+    if ENV_FILE.exists():
+        _warn(".env existe mas nenhuma chave de API está preenchida — vamos configurar agora.")
+    else:
+        _warn(".env não encontrado — vamos configurar agora.")
     print()
     print(f"  {_BOLD}Chaves de API{_RESET}")
     print(f"  {_DIM}─────────────{_RESET}")

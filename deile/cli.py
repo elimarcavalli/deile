@@ -26,6 +26,12 @@ from typing import List, Optional
 # ── package root (where deile/ lives) ───────────────────────────────────────
 _PACKAGE_ROOT = Path(__file__).parent.resolve()
 _PROJECT_ROOT = _PACKAGE_ROOT.parent  # repo root when editable, same when installed
+_ENV_KEY_NAMES = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY")
+_TTY = sys.stdout.isatty()
+_RESET = "\033[0m" if _TTY else ""
+_BOLD = "\033[1m" if _TTY else ""
+_DIM = "\033[2m" if _TTY else ""
+_GREEN = "\033[0;32m" if _TTY else ""
 
 
 def _find_dotenv() -> Optional[Path]:
@@ -66,6 +72,72 @@ def _silence_genai_shutdown_noise() -> None:
             pass
 
     _gc.Client.__del__ = _safe_del
+
+
+def _run_env_recovery() -> bool:
+    """Interactive wizard: prompt for API keys, write .env, reload os.environ.
+
+    Only runs when stdin is a TTY. Merges with any existing .env so unrelated
+    variables (DEILE_* settings, etc.) are preserved. Returns True if at least
+    one key was saved.
+    """
+    if not sys.stdin.isatty():
+        return False
+
+    import getpass
+
+    env_path = _find_dotenv() or (_PROJECT_ROOT / ".env")
+
+    print()
+    print(f"  {_BOLD}Chaves de API{_RESET}")
+    print(f"  {_DIM}Pelo menos UMA é necessária para iniciar o DEILE.{_RESET}")
+    print(f"  {_DIM}Pressione ENTER para pular ou manter o valor atual.{_RESET}")
+    print()
+
+    new_keys: dict[str, str] = {}
+    for name in _ENV_KEY_NAMES:
+        current = os.getenv(name, "")
+        suffix = f" {_DIM}[já configurado]{_RESET}" if current else ""
+        try:
+            val = getpass.getpass(f"  {name}{suffix}: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return False
+        new_keys[name] = val or current
+
+    if not any(new_keys.values()):
+        return False
+
+    kept_lines: list[str] = []
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            stripped = raw.strip()
+            if "=" in stripped and not stripped.startswith("#"):
+                k = stripped.split("=", 1)[0].strip()
+                if k in _ENV_KEY_NAMES:
+                    continue
+            kept_lines.append(raw)
+    except FileNotFoundError:
+        pass
+
+    new_lines = kept_lines + [f"{k}={v}" for k, v in new_keys.items() if v]
+    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    try:
+        os.chmod(env_path, 0o600)
+    except OSError:
+        pass
+
+    try:
+        from dotenv import load_dotenv as _ld
+        _ld(env_path, override=True)
+    except ImportError:
+        for k, v in new_keys.items():
+            if v:
+                os.environ[k] = v
+
+    count = sum(1 for v in new_keys.values() if v)
+    print(f"\n  {_GREEN}✓{_RESET}  {count} chave(s) salva(s) em {env_path}\n")
+    return True
 
 
 # ── interactive mode ────────────────────────────────────────────────────────
@@ -125,18 +197,24 @@ class _DeileCLI:
             self.ui.initialize()
             self.config_manager.load_config()
 
+            model_router = get_model_router()
             with self.ui.show_loading("Acordando DEILE..."):
-                model_router = get_model_router()
                 # _bootstrap_providers is sync — call it directly, no asyncio.to_thread
                 registered = self._bootstrap_providers(model_router)
-                if not registered:
-                    self.ui.display_error(
-                        "Nenhum provider configurado.",
-                        "Defina ao menos uma variável de ambiente: "
-                        "ANTHROPIC_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, GOOGLE_API_KEY.",
-                    )
-                    return False
 
+            if not registered and _run_env_recovery():
+                with self.ui.show_loading("Acordando DEILE..."):
+                    registered = self._bootstrap_providers(model_router)
+
+            if not registered:
+                self.ui.display_error(
+                    "Nenhum provider configurado.",
+                    "Defina ao menos uma variável de ambiente: "
+                    "ANTHROPIC_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, GOOGLE_API_KEY.",
+                )
+                return False
+
+            with self.ui.show_loading("Finalizando inicialização..."):
                 self.agent = DeileAgent(
                     model_router=model_router,
                     tool_registry=get_tool_registry(),
@@ -342,6 +420,8 @@ async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
 
     model_router = get_model_router()
     registered = bootstrap_providers(router=model_router)
+    if not registered and _run_env_recovery():
+        registered = bootstrap_providers(router=model_router)
     if not registered:
         print(
             "ERROR: no provider configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, "
