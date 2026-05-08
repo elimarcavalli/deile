@@ -78,14 +78,13 @@ class PipelineConfig:
     enable_pr_review: bool = True
     enable_classify: bool = True
     enable_follow_ups: bool = True
-    # gap #4/#33: include "security" by default; read from YAML/settings at runtime
     classifiable_labels: frozenset = frozenset(
         {"intent", "bug", "refactor", "feature_request", "security"}
     )
     classify_skip_labels: frozenset = frozenset({"infra"})
-    # gap #27: default True so /pipeline start in production is single-instance
+    # Default True: two simultaneous /pipeline start on the same host fail fast.
     use_pid_lock: bool = True
-    # gap #8: when True, Stage 3 reviews any non-draft PR (not just pipeline-branch PRs)
+    # When True, Stage 3 reviews any non-draft PR regardless of head branch origin.
     enable_review_human_prs: bool = False
 
 
@@ -97,7 +96,7 @@ class _Stats:
     prs_reviewed: int = 0
     issues_classified: int = 0
     errors: int = 0
-    # gap #18: separate gh and claude error counters for better diagnostics
+    # Separate counters allow operators to distinguish gh CLI failures from Claude failures.
     gh_errors: int = 0
     claude_errors: int = 0
     catchup_runs: int = 0
@@ -163,13 +162,13 @@ class PipelineMonitor:
         Used to scope stage 3 to PRs the local monitor implemented. Default
         identity owns any branch starting with ``auto/issue-`` (legacy path).
 
-        When ``config.enable_review_human_prs`` is True (gap #8), this always
+        When ``config.enable_review_human_prs`` is True, this always
         returns True so stage 3 can review human-opened PRs too.
         """
         if self.config.enable_review_human_prs:
             return True
         if not head_ref:
-            # gap #22: cross-repo PRs or missing head_ref should be logged, not silently skipped
+            # Cross-repo PRs and GitHub API gaps arrive with empty head_ref.
             if pr_number:
                 logger.warning(
                     "PR #%d has empty head_ref; skipping (cross-repo PR or GitHub API gap). "
@@ -313,10 +312,10 @@ class PipelineMonitor:
         # window opened since the previous tick. Without a schedule, fall
         # back to legacy "every action every tick" behaviour.
         #
-        # gap #1: if a stage is enabled in config but has NO entry in the
-        # schedule, we still run it legacy-style so the operator doesn't need
-        # to guess why nothing is happening.  Schedule entries override; gaps
-        # in the schedule fall back to legacy.
+        # If a stage is enabled in config but missing from the schedule's recurring
+        # entries, we still run it legacy-style so an incomplete schedule doesn't
+        # silently drop stages. Schedule entries override; gaps fall back to legacy.
+        # Only-oneshot schedules are respected as-is (no recurring fallback).
         try:
             schedule = self.schedule_store.load()
         except Exception as exc:  # noqa: BLE001
@@ -335,11 +334,6 @@ class PipelineMonitor:
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("could not persist schedule after tick: %s", exc)
 
-            # gap #1: when there ARE recurring entries, run legacy fallback for any
-            # enabled stage that has NO recurring entry.  This prevents silent gaps
-            # where an operator forgets to add a stage to the schedule.
-            # If there are ONLY oneshots (no recurring), skip the fallback — this is
-            # a deliberately minimal schedule and we respect it.
             if schedule.recurring:
                 scheduled_actions = {e.action for e in schedule.recurring if e.enabled}
                 if self.config.enable_classify and "classify" not in scheduled_actions:
@@ -383,7 +377,6 @@ class PipelineMonitor:
         try:
             issues = await self.github.list_unclassified_issues()
         except GhCommandError as exc:
-            # gap #17/18: gh errors → ERROR level + stats.errors + stats.gh_errors
             self._stats.errors += 1
             self._stats.gh_errors += 1
             logger.error("could not list unclassified issues (gh error): %s", exc)
@@ -404,14 +397,13 @@ class PipelineMonitor:
                 continue
             if not self.identity.owns(issue.title):
                 continue
-            # gap #5: empty body is accepted; we add WORKFLOW_NEW plus a reminder comment
             empty_body = not issue.body.strip()
             if empty_body:
                 logger.info(
                     "issue #%s has empty body; auto-classifying and requesting template fill",
                     issue.number,
                 )
-            # gap #6: claim before labelling to reduce TOCTOU
+            # Claim before labelling to reduce the TOCTOU window with parallel monitors.
             try:
                 batch = await self.github.claim_with_batch("issue", issue.number, issue.title)
             except GhCommandError as exc:
@@ -461,7 +453,6 @@ class PipelineMonitor:
         try:
             issues = await self.github.list_issues_with_label(WORKFLOW_NEW, limit=50)
         except GhCommandError as exc:
-            # gap #17/18: gh errors → ERROR level + stats
             self._stats.errors += 1
             self._stats.gh_errors += 1
             logger.error("could not list new issues (gh error): %s", exc)
@@ -481,7 +472,7 @@ class PipelineMonitor:
         await self.github.add_labels("issue", target.number, [self.identity.ownership_label()])
         await self.notifier.issue_picked_up(target.number, target.title, target.url)
         try:
-            # gap #13: atomic — if any step fails we revert the transition
+            # Atomic: if review_callback or final transition fails, revert to WORKFLOW_NEW.
             await self.github.transition_issue(
                 target.number, from_label=WORKFLOW_NEW, to_label=WORKFLOW_REVIEWING
             )
@@ -531,16 +522,13 @@ class PipelineMonitor:
         try:
             issues = await self.github.list_issues_with_label(WORKFLOW_REVIEWED, limit=50)
         except GhCommandError as exc:
-            # gap #17/18
             self._stats.errors += 1
             self._stats.gh_errors += 1
             logger.error("could not list reviewed issues (gh error): %s", exc)
             await self.notifier.error("implement/list", str(exc))
             return
-        # gap #7: accept issues without ~batch: when the ownership label proves this
-        # monitor did the review (e.g. issue manually promoted to ~workflow:revisada
-        # by the operator, or the batch label was removed). An issue must have EITHER
-        # a ~batch: label OR a ~by:<monitor> ownership label to qualify.
+        # Accept issues without ~batch: when the ownership label proves this monitor did the
+        # review (e.g. operator manually promoted to ~workflow:revisada or batch label removed).
         ownership_label = self.identity.ownership_label()
         target = next(
             (
@@ -555,7 +543,8 @@ class PipelineMonitor:
             return
         branch = self.branch_for_issue(target.number)
         await self.notifier.implementation_started(target.number, target.title, branch)
-        # gap #12: force-recreate worktree on retry to avoid stale state from previous run
+        # Re-use an existing worktree when present; force_recreate=True would delete and
+        # re-clone on every attempt which is expensive — reserve for explicit /pipeline reset.
         try:
             worktree = await self.worktrees.create_branch_worktree(
                 branch, force_recreate=False
@@ -571,7 +560,7 @@ class PipelineMonitor:
         result = await self.claude.run(prompt, cwd=worktree.path)
         pr_url = _extract_pr_url(result.stdout)
         if not result.ok:
-            # gap #20: ClaudeDispatcher already logs auth warning; we count it here
+            # ClaudeDispatcher already logs auth-specific warnings when prefer_subscription_auth=True.
             self._stats.errors += 1
             self._stats.claude_errors += 1
             err_detail = result.stderr.strip()[:PIPELINE_MSG_TRUNCATE_CHARS] or "non-zero exit"
@@ -597,7 +586,6 @@ class PipelineMonitor:
         try:
             prs = await self.github.list_open_prs(limit=50)
         except GhCommandError as exc:
-            # gap #17/18
             self._stats.errors += 1
             self._stats.gh_errors += 1
             logger.error("could not list PRs (gh error): %s", exc)
@@ -614,7 +602,6 @@ class PipelineMonitor:
                 and REVIEW_CONCLUDED not in pr.labels
                 and REVIEW_IN_PROGRESS not in pr.labels
                 and pr.batch_id is None
-                # gap #22: pass pr_number so empty head_ref gets logged
                 and self._owns_pr_branch(pr.head_ref, pr_number=pr.number)
             ),
             None,
@@ -665,7 +652,7 @@ class PipelineMonitor:
             self._stats.errors += 1
             self._stats.gh_errors += 1
             logger.error("could not transition PR #%s to concluida: %s", target.number, exc)
-        # gap #9: remove ~batch: label after stage 3 concludes
+        # Remove lock label so the PR doesn't accumulate an orphaned ~batch: forever.
         await self.github.clear_batch_label("pr", target.number)
         self._stats.prs_reviewed += 1
         await self.notifier.pr_reviewed(target.number, target.title, target.url, merged=merged)
