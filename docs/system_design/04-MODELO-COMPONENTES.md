@@ -61,7 +61,7 @@ As cinco tools abaixo expõem o pipeline e o agendador para o LLM, permitindo qu
 | Método principal | `async execute(context: CommandContext) -> CommandResult` |
 | Campos de `CommandResult` | `success`, `content`, `content_type` (`text`/`rich`/`json`/`error`), `status` (`CommandStatus`), `metadata`, `execution_time`, `error` |
 | Construtores prontos | `CommandResult.success_result(...)` e `CommandResult.error_result(...)` |
-| Metadata de CLI flag (decisão #24) | Atributos opcionais de classe lidos pelo CLI builder em `deile/commands/cli_flags.py`: `cli_flag` (ex: `"--status"`), `cli_extra_flags` (dict de sub-flags para um único comando — usado por `ModelCommand` e `PipelineCommand`), `cli_takes_arg` (bool), `cli_arg_metavar` (str), `cli_help` (str), `cli_requires_provider` (bool — default `False`, flag roda sem API key) |
+| Metadata de CLI flag (decisão #24) | Atributos opcionais de classe lidos pelo CLI builder em `deile/commands/cli_flags.py`: `cli_flag` (ex: `"--status"`), `cli_extra_flags` (dict de sub-flags para um único comando — usado por `ModelCommand` e `PipelineCommand`), `cli_takes_arg` (bool), `cli_arg_metavar` (str), `cli_help` (str), `cli_requires_provider` (bool — default `False`, flag roda sem API key), `cli_dispatch` (bool — default `True`; `False` declara flag como *modifier*, ex: `--debug`, registrada no argparse mas não dispara o slash command) |
 
 ### Registry (`CommandRegistry` em `deile/commands/registry.py`)
 

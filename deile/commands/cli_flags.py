@@ -48,6 +48,9 @@ class CLIFlagSpec:
         requires_provider: Whether the flag's slash command needs an LLM
             provider configured. Flags with ``requires_provider=False`` may
             run even when no API keys are set.
+        dispatch: If ``False`` the CLI registers the flag in argparse but
+            does NOT invoke the slash command — the flag behaves as a global
+            modifier (e.g. ``--debug`` only toggles ``Settings.debug_enabled``).
     """
 
     flag: str
@@ -58,6 +61,7 @@ class CLIFlagSpec:
     metavar: Optional[str] = None
     help: Optional[str] = None
     requires_provider: bool = False
+    dispatch: bool = True
 
     @property
     def dest(self) -> str:
@@ -104,6 +108,7 @@ def build_cli_flag_specs(registry: "CommandRegistry") -> List[CLIFlagSpec]:
                     help=getattr(command, "cli_help", None) or command.description,
                     subcommand=getattr(command, "cli_subcommand", None),
                     requires_provider=bool(getattr(command, "cli_requires_provider", False)),
+                    dispatch=bool(getattr(command, "cli_dispatch", True)),
                 ))
 
         # 2) cli_extra_flags: multiple sub-flags fanning out to one slash command
@@ -125,6 +130,7 @@ def build_cli_flag_specs(registry: "CommandRegistry") -> List[CLIFlagSpec]:
                 metavar=meta.get("metavar"),
                 help=meta.get("help"),
                 requires_provider=bool(meta.get("requires_provider", False)),
+                dispatch=bool(meta.get("dispatch", True)),
             ))
 
     # Stable order — alphabetical by flag for deterministic --help.
@@ -163,12 +169,15 @@ def find_active_spec(
     specs: List[CLIFlagSpec],
     args_namespace: Any,
 ) -> Optional[CLIFlagSpec]:
-    """Return the first spec whose argparse value is truthy in *args_namespace*.
+    """Return the first dispatchable spec whose argparse value is truthy.
 
-    Used by the CLI to decide which command to dispatch in one-shot mode.
-    Returns ``None`` if no command flag is set.
+    Modifier flags (``dispatch=False``) are skipped — they are global toggles,
+    not one-shot dispatchers. Used by the CLI to decide which command to
+    invoke in one-shot mode. Returns ``None`` if no dispatchable flag is set.
     """
     for spec in specs:
+        if not spec.dispatch:
+            continue
         value = getattr(args_namespace, spec.dest, None)
         if value:  # store_true=True, or non-empty/non-None string
             return spec

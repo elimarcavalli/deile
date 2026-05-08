@@ -114,6 +114,11 @@ class SlashCommand(ABC):
                                            # (ex: --model-list → "/model list")
         cli_requires_provider: bool        # se o flag exige LLM provider configurado
                                            # (default: False — flag roda offline)
+        cli_dispatch: bool                 # default True. False = "modifier" flag:
+                                           # a CLI registra a flag no argparse mas
+                                           # NÃO invoca o slash command (ex: --debug
+                                           # apenas seta Settings.debug_enabled e
+                                           # devolve o controle ao fluxo padrão).
     """
 
     # CLI flag metadata — defaults; subclasses sobrescrevem conforme necessário.
@@ -124,6 +129,7 @@ class SlashCommand(ABC):
     cli_help: Optional[str] = None
     cli_subcommand: Optional[str] = None
     cli_requires_provider: bool = False
+    cli_dispatch: bool = True
 
     def __init__(self, command_config=None):
         from ..config.manager import CommandConfig

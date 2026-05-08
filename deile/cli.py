@@ -670,12 +670,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             pass
 
     # Did the user pass any --flag bound to a slash command?
-    # NOTE: --debug is a modifier (handled above), not a dispatcher — we
-    # filter it out here so it doesn't trigger one-shot /debug execution.
-    active_spec = None
-    if flag_specs:
-        dispatchable = [s for s in flag_specs if s.flag != "--debug"]
-        active_spec = find_active_spec(dispatchable, args)
+    # find_active_spec already skips modifier flags (cli_dispatch=False),
+    # so --debug never triggers a one-shot /debug invocation.
+    active_spec = find_active_spec(flag_specs, args) if flag_specs else None
 
     if active_spec is not None:
         import logging
