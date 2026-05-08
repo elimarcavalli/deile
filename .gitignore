@@ -57,3 +57,20 @@ config/search.yaml
 /deilebot/
 /deilebot.egg-info/
 .worktrees/
+
+# DEILE runtime under .deile/ (project scope) — not versioned
+.deile/cache/
+.deile/db/
+.deile/logs/
+.deile/memory/
+.deile/pipeline/
+.deile/plugins/
+.deile/runs/
+.deile/tmp/
+.deile/worktrees/
+
+# Legacy root-level dirs (transitioning to .deile/)
+cache/
+PLANS/
+RUNS/
+PATCHES/

@@ -1,13 +1,12 @@
 """Sistema de configurações do DEILE"""
 
-from typing import Dict, Any, Optional, List
-from dataclasses import dataclass, field
-from pathlib import Path
-import os
 import json
 import logging
+import os
+from dataclasses import dataclass, field
 from enum import Enum
-
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -113,9 +112,6 @@ class Settings:
         # Carrega API keys do ambiente se não fornecidas
         if not self.api_keys:
             self.api_keys = self._load_api_keys_from_env()
-        
-        # Cria diretórios se não existem
-        self._create_directories()
     
     def _load_api_keys_from_env(self) -> Dict[str, str]:
         """Carrega API keys das variáveis de ambiente"""

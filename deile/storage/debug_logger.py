@@ -17,7 +17,7 @@ from typing import Any, Dict, Iterable, Optional
 
 from .logs import get_logger
 
-_EVENTS_LOG = Path(__file__).parents[2] / "logs" / "router_events.jsonl"
+_EVENTS_LOG = Path.home() / ".deile" / "logs" / "router_events.jsonl"
 
 
 def is_debug_enabled() -> bool:
