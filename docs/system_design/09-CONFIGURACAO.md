@@ -57,6 +57,62 @@ JSON aninhado por área. Apenas as chaves listadas em `_OVERRIDE_HANDLERS` são 
 
 > Note: `skills_paths` is the only top-level array with union semantics — values from the global layer and the project layer are merged (global first, duplicates removed). All other keys follow standard project-wins-over-global layering.
 
+### Trust-boundary (issue #125)
+
+`<cwd>/.deile/settings.json` is **not** auto-trusted. A repo cloned from a third party can carry a settings file that disables `file_safety.enabled`, flips `debug`, or alters other security-relevant flags — the post-clone `python deile.py` would silently inherit the attacker's preferences. To prevent this, the project layer is gated by an explicit allowlist in the user's global settings:
+
+```json
+{
+  "trust": {
+    "project_layer_dirs": [
+      "/Users/me/dev/my-trusted-repo",
+      "/srv/ci/known-good-project"
+    ],
+    "project_layer_default": "auto"
+  }
+}
+```
+
+| Field | Semantics |
+|---|---|
+| `trust.project_layer_dirs` | List of absolute paths whose `<dir>/.deile/settings.json` is trusted as the project layer. Compared against `Path.cwd().resolve()` at boot time. |
+| `trust.project_layer_default` | Migration knob with two values:<br>• `"auto"` (default) — honor non-allowlisted with a loud `WARNING` so existing CIs do not break instantly.<br>• `"deny"` — silently ignore non-allowlisted (single warning at boot). |
+
+Default behavior in V1: `'auto'` grace period — non-allowlisted projects still apply the project layer but log a clear migration message. The next major release flips the default to `'deny'`. Operators who want strict behavior today can set `trust.project_layer_default: "deny"` in `~/.deile/settings.json`.
+
+| Symbol | Where |
+|---|---|
+| `_is_project_layer_trusted(cwd, allowlist, policy)` | `deile/config/settings.py` |
+| Settings fields | `Settings.trust_project_layer_dirs: List[str]`, `Settings.trust_project_layer_default: str` |
+| Override key handlers | `_OVERRIDE_HANDLERS["trust.project_layer_dirs"]`, `_OVERRIDE_HANDLERS["trust.project_layer_default"]` |
+| Warning text | `"settings: ignoring project layer ... not in 'trust.project_layer_dirs' allowlist"` |
+
+> The trust boundary is read **only** from the user's global layer (`~/.deile/settings.json`). The project layer cannot allowlist itself — that would defeat the purpose.
+
+### Settings writes are fail-closed (issue #125)
+
+`set_setting`, `set_preference`, `add_skills_path`, and `remove_skills_path` route through `PermissionManager.check_permission` before touching disk. The default rule registered in `permissions.py:_load_default_rules` (`settings_write_default`) is `PermissionLevel.READ` — i.e. **deny write**. This matches the security-first principle in `03-PRINCIPIOS-ARQUITETURAIS.md` §5: a missing operator policy must not silently grant write access to security-relevant configuration.
+
+To enable interactive writes (the `/settings`, `/skills add`, `--set` paths), add a policy override to `config/permissions.yaml`:
+
+```yaml
+permission_rules:
+  - id: settings_write_interactive
+    name: Settings Write (Interactive)
+    description: Allow operator-initiated settings writes
+    resource_type: file
+    resource_pattern: '^settings:(global|project):.*$'
+    tool_names: [settings_manager]
+    permission_level: write
+    priority: 40   # lower than the default rule's 50 so this wins
+```
+
+Without this rule, every write attempt logs `permission denied` to the audit (`SECURITY_POLICY_CHANGED`, `result="denied"`) and the calling command surfaces the failure to the user. To go even tighter, narrow the regex (e.g. `^settings:global:.*$` to forbid project-scope writes) or restrict the tool name. To go fully open (not recommended), keep `priority: 40` and `permission_level: write` — the operator owns this risk explicitly.
+
+### Type-safety of legacy `config/settings.json` (issue #125 P1-4)
+
+`Settings.load_from_file` is the legacy fallback path used when neither `~/.deile/settings.json` nor `<cwd>/.deile/settings.json` exists. As of issue #125 patch (review feedback), it now applies the converters from `_OVERRIDE_HANDLERS` to every value it accepts — not just filtering the key allowlist. Strings like `enable_file_safety_checks: "yes-please"` or `trust_project_layer_dirs: "/single"` are rejected with a warning instead of silently colliding with the typed dataclass fields.
+
 ## `ConfigManager` (config estruturada com hot-reload, em `deile/config/manager.py`)
 
 Configura múltiplas seções tipadas:

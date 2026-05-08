@@ -104,6 +104,14 @@ def _mb_to_bytes(value: Any) -> int:
 # Map of nested JSON paths in ``.deile/settings.json`` to ``Settings`` flat
 # fields, with a converter for each. Unknown keys are silently ignored —
 # that's how future-compatible forward-compat works.
+#
+# P2-6: this map shares its key-space with ``_JSON_FIELD_MAP`` further below.
+# ``_OVERRIDE_HANDLERS`` is the strict, type-validating path used by
+# ``apply_overrides`` and ``Settings.load_from_file`` (issue #125 hardening).
+# ``_JSON_FIELD_MAP`` is the looser path used by ``_apply_nested_dict`` for
+# ``_load_layered_settings``. **MUST KEEP IN SYNC** — every key added to
+# one MUST also be added to the other (or, for fields without a strict
+# converter, only to ``_JSON_FIELD_MAP``).
 _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     "logging.level": ("log_level", _to_log_level),
     "logging.to_file": ("log_to_file", _to_bool),
@@ -132,6 +140,13 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     "deile_md.max_bytes": ("deile_md_max_bytes", int),
     "environment": ("environment", str),
     "debug": ("debug", _to_bool),
+    # Trust boundary (issue #125): allowlist of directories whose
+    # ``./.deile/settings.json`` is honored as the project layer.
+    "trust.project_layer_dirs": ("trust_project_layer_dirs", _to_str_list),
+    # Migration knob: 'auto' = honor non-allowlisted with loud warning;
+    # 'deny' = ignore non-allowlisted silently. Default keeps legacy behavior
+    # for one minor version, then flips to 'deny' in the next major.
+    "trust.project_layer_default": ("trust_project_layer_default", str),
 }
 
 
@@ -263,6 +278,16 @@ class Settings:
     profile_name: str = "autonomous_agent"
     skills_paths: List[str] = field(default_factory=list)
 
+    # Trust boundary (issue #125)
+    # `trust.project_layer_dirs` — allowlist of absolute directories whose
+    #   ``./.deile/settings.json`` is honored as the project layer at boot.
+    # `trust.project_layer_default` — migration knob:
+    #   - "auto" (default): honor non-allowlisted with a loud warning.
+    #     Will flip to "deny" in the next major.
+    #   - "deny": ignore non-allowlisted silently (after one warning).
+    trust_project_layer_dirs: List[str] = field(default_factory=list)
+    trust_project_layer_default: str = "auto"
+
     def __post_init__(self) -> None:
         for attr in ("working_directory", "config_directory", "logs_directory", "cache_directory"):
             v = getattr(self, attr)
@@ -371,23 +396,72 @@ class Settings:
 
         Kept so existing callers passing an explicit path don't break;
         ``get_settings()`` no longer routes through this method.
+
+        Hardened (issue #125): the legacy flat-key flow now filters
+        ``config_dict`` against an explicit allowlist of safe attribute
+        names — the same set ``_OVERRIDE_HANDLERS`` accepts in the layered
+        flow. Unknown keys are logged as warning and discarded so a hostile
+        ``config/settings.json`` cannot flip arbitrary internal flags
+        (e.g. ``working_directory='/etc'`` or ``allow_all_file_types=True``).
         """
         try:
             with open(file_path, encoding="utf-8") as f:
                 config_dict = json.load(f)
 
+            if not isinstance(config_dict, dict):
+                logger.warning(
+                    "settings: legacy file %s is not a JSON object; using defaults",
+                    file_path,
+                )
+                return cls()
+
             if "api_keys" in config_dict:
                 logger.warning("API keys found in config file. Ignoring them for security.")
                 del config_dict["api_keys"]
 
-            for key in ("working_directory", "config_directory", "logs_directory", "cache_directory"):
-                if key in config_dict:
-                    config_dict[key] = Path(config_dict[key])
+            # Allowlist filter (issue #125): only attribute names that map
+            # back to a known _OVERRIDE_HANDLERS entry are accepted. The
+            # handler set is the canonical surface for "safe to load from
+            # untrusted JSON".
+            #
+            # P1-4: not just NAMES — VALUES must also pass through the same
+            # type-converters used by ``apply_overrides``. Otherwise
+            # ``enable_file_safety_checks: "yes-please"`` (string) would
+            # land verbatim on a bool-typed field, and
+            # ``trust_project_layer_dirs: "/single"`` (string) would
+            # bypass the list constraint enforced by ``_to_str_list``.
+            reverse_handlers: Dict[str, Callable[[Any], Any]] = {
+                field_name: converter
+                for field_name, converter in _OVERRIDE_HANDLERS.values()
+            }
+            filtered: Dict[str, Any] = {}
+            dropped: List[str] = []
+            invalid: List[str] = []
+            for key, value in config_dict.items():
+                if key not in reverse_handlers:
+                    dropped.append(key)
+                    continue
+                converter = reverse_handlers[key]
+                try:
+                    filtered[key] = converter(value)
+                except (TypeError, ValueError) as exc:
+                    invalid.append(f"{key}({exc})")
+            if dropped:
+                logger.warning(
+                    "settings: legacy file %s contains keys outside the "
+                    "allowlist; ignoring %s",
+                    file_path,
+                    ", ".join(sorted(dropped)),
+                )
+            if invalid:
+                logger.warning(
+                    "settings: legacy file %s contains values that failed "
+                    "type-conversion; ignoring %s",
+                    file_path,
+                    ", ".join(sorted(invalid)),
+                )
 
-            if "log_level" in config_dict:
-                config_dict["log_level"] = LogLevel(config_dict["log_level"])
-
-            settings = cls(**config_dict)
+            settings = cls(**filtered)
             logger.info("Settings loaded from %s", file_path)
             return settings
 
@@ -479,6 +553,13 @@ def _load_json_file(path: Path) -> Dict[str, Any]:
         return {}
 
 
+# P2-6 / S-5: see the ``_OVERRIDE_HANDLERS`` "MUST KEEP IN SYNC" note above.
+# This map is the looser sibling used by ``_apply_nested_dict`` for layered
+# loading; ``_OVERRIDE_HANDLERS`` is the strict path used by ``apply_overrides``
+# and ``Settings.load_from_file``. Trust-boundary keys (issue #125) appear in
+# both — adding new keys here without a matching ``_OVERRIDE_HANDLERS`` entry
+# means the value bypasses strict converters and reaches ``_set_typed``
+# directly, which now refuses obvious type mismatches (issue #125 P1-1).
 _JSON_FIELD_MAP: Dict[str, str] = {
     # flat JSON key → Settings attribute
     "debug.enabled": "debug_enabled",
@@ -526,7 +607,24 @@ _JSON_FIELD_MAP: Dict[str, str] = {
     "pipeline.autostart": "pipeline_autostart",
     "cron.db_path": "cron_db_path",
     "cron.poll_interval": "cron_poll_interval",
+    # Trust boundary (issue #125) — see ``_OVERRIDE_HANDLERS`` for the
+    # strict converters; this map covers the layered-loading path.
+    "trust.project_layer_dirs": "trust_project_layer_dirs",
+    "trust.project_layer_default": "trust_project_layer_default",
 }
+
+
+# P1-1: list-typed Settings attributes. ``_set_typed`` refuses to coerce a
+# non-list into one of these — silently storing a string here turns
+# ``_is_project_layer_trusted`` into a per-character iterator (the original
+# reviewer finding for ``trust_project_layer_dirs``).
+_LIST_ATTRS: frozenset = frozenset({
+    "trust_project_layer_dirs",
+    "allowed_file_extensions",
+    "blocked_directories",
+    "skills_paths",
+    "enabled_tool_categories",
+})
 
 
 def _apply_nested_dict(settings: "Settings", data: Dict[str, Any], prefix: str = "") -> None:
@@ -541,11 +639,61 @@ def _apply_nested_dict(settings: "Settings", data: Dict[str, Any], prefix: str =
 
 
 def _set_typed(settings: "Settings", attr: str, value: Any) -> None:
-    """Set a Settings attribute, coercing types as needed."""
+    """Set a Settings attribute, coercing types as needed.
+
+    P1-1 (issue #125): list-typed attributes (see ``_LIST_ATTRS``) refuse
+    non-list inputs outright. Previously, ``trust.project_layer_dirs:
+    "/single/path"`` (a string instead of a list) was stored verbatim and
+    later iterated character-by-character in
+    ``_is_project_layer_trusted`` — turning a configuration error into
+    nonsensical behavior at best and a trust-boundary bypass at worst.
+    """
+    # P1-1: list-typed attributes — never accept a non-list passthrough.
+    if attr in _LIST_ATTRS:
+        if not isinstance(value, list):
+            logger.warning(
+                "settings: rejecting non-list value for %s (got %s); keeping previous value",
+                attr,
+                type(value).__name__,
+            )
+            return
+        # Coerce list items to str for known str-list fields.
+        try:
+            setattr(settings, attr, [str(v) for v in value])
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("Cannot apply setting %s=<list>: %s", attr, exc)
+        return
+
     current = getattr(settings, attr, None)
     try:
-        if isinstance(current, bool) and not isinstance(value, bool):
-            value = str(value).lower() in {"1", "true", "yes", "on"}
+        if isinstance(current, bool):
+            # P1-1: bool field — only accept actual bools or whitelisted
+            # string literals. ``"yes-please"`` previously slipped through
+            # as truthy (str.lower() not in whitelist → False).
+            if isinstance(value, bool):
+                pass  # already bool
+            elif isinstance(value, str):
+                norm = value.strip().lower()
+                if norm in {"1", "true", "yes", "on"}:
+                    value = True
+                elif norm in {"0", "false", "no", "off"}:
+                    value = False
+                else:
+                    logger.warning(
+                        "settings: rejecting ambiguous bool string for %s=%r",
+                        attr,
+                        value,
+                    )
+                    return
+            elif isinstance(value, (int, float)):
+                value = bool(value)
+            else:
+                logger.warning(
+                    "settings: rejecting non-bool value for %s (got %s)",
+                    attr,
+                    type(value).__name__,
+                )
+                return
         elif isinstance(current, int) and not isinstance(value, bool):
             value = int(value)
         elif isinstance(current, Path) or (current is None and attr in (
@@ -667,13 +815,157 @@ def _apply_env_overrides(settings: "Settings") -> None:
 # ---------------------------------------------------------------------------
 
 
+def _normalize_path_for_comparison(p: Path) -> str:
+    """Return a path string suitable for trust-allowlist equality checks.
+
+    P2-2 (issue #125): on case-insensitive filesystems (macOS HFS+ / APFS,
+    Windows NTFS) ``/Users/me/Project`` and ``/Users/me/project`` reference
+    the same directory, but a naive string compare disagrees. We resolve
+    the path (collapsing symlinks and ``..``) and then apply
+    ``os.path.normcase`` so the same physical directory always produces
+    the same allowlist key, regardless of the case used in the source.
+    """
+    try:
+        resolved = str(p.expanduser().resolve())
+    except OSError:
+        resolved = str(p)
+    return os.path.normcase(resolved)
+
+
+def _is_project_layer_trusted(
+    cwd: Path,
+    allowlist: List[str],
+    default_policy: str,
+) -> Tuple[bool, str]:
+    """Decide whether the project layer at *cwd* should be applied.
+
+    Returns ``(trusted, reason)`` where *reason* is a short tag suitable for
+    the warning log. The allowlist contains absolute path strings; we compare
+    against ``cwd.resolve()`` after running both sides through
+    ``os.path.normcase`` so case-insensitive filesystems match correctly
+    (P2-2). Symlinks are followed (intentional — the user asked for
+    *this directory*, regardless of link traversal).
+
+    Migration knob ``trust.project_layer_default``:
+      - ``"auto"`` (default): honor non-allowlisted with a loud warning so
+        existing CIs do not break instantly. Will flip to ``"deny"`` in the
+        next major release (CHANGELOG).
+      - ``"deny"``: ignore non-allowlisted silently (after one warning).
+
+    Any other value is treated as ``"auto"`` so a typo cannot lock the user
+    out of their own project.
+    """
+    # P1-1 backstop: if the allowlist somehow arrived as a string (a config
+    # bypass we now reject in ``_set_typed`` but defensive coding pays here),
+    # treat it as empty rather than iterating per-character.
+    if not isinstance(allowlist, list):
+        logger.warning(
+            "settings: trust_project_layer_dirs is not a list (got %s); "
+            "treating as empty",
+            type(allowlist).__name__,
+        )
+        allowlist = []
+
+    cwd_key = _normalize_path_for_comparison(cwd)
+
+    normalized_allowlist: List[str] = []
+    for entry in allowlist or []:
+        try:
+            normalized_allowlist.append(_normalize_path_for_comparison(Path(entry)))
+        except OSError:
+            normalized_allowlist.append(os.path.normcase(str(entry)))
+
+    if cwd_key in normalized_allowlist:
+        return True, "allowlisted"
+
+    if default_policy == "deny":
+        return False, "denied_by_policy"
+    # "auto" or unknown — honor with a warning; this will flip to "deny" in
+    # the next major.
+    return True, "auto_grace_period"
+
+
+def _apply_user_layer(settings: "Settings", global_path: Path) -> None:
+    """Apply ``~/.deile/settings.json`` overrides on top of *settings*.
+
+    Always safe to call — a missing file results in a no-op. Loads the
+    trust allowlist as a side effect (consumed by
+    :func:`_apply_project_layer_if_trusted`).
+    """
+    _apply_nested_dict(settings, _load_json_file(global_path))
+
+
+def _apply_project_layer_if_trusted(
+    settings: "Settings", cwd: Path, project_path: Path
+) -> None:
+    """Conditionally apply ``<cwd>/.deile/settings.json`` overrides.
+
+    Trust-boundary (issue #125): ``<cwd>/.deile/settings.json`` is **not**
+    a trusted source. A repo cloned from a third party can carry a
+    settings file that disables ``file_safety``, alters ``working_directory``
+    or ``debug`` — turning the post-clone ``python deile.py`` into an attack
+    vector. The user must opt-in per directory via ``trust.project_layer_dirs``
+    in ``~/.deile/settings.json``.
+    """
+    if not project_path.exists():
+        return
+
+    trusted, reason = _is_project_layer_trusted(
+        cwd,
+        settings.trust_project_layer_dirs,
+        settings.trust_project_layer_default,
+    )
+    if trusted:
+        if reason == "auto_grace_period":
+            logger.warning(
+                "settings: applying project layer %s WITHOUT explicit trust "
+                "(cwd not in 'trust.project_layer_dirs' allowlist). This is "
+                "the V1 grace-period default; the next major release will "
+                "ignore non-allowlisted project layers. Add %s to "
+                "'trust.project_layer_dirs' in ~/.deile/settings.json to "
+                "silence this warning.",
+                project_path,
+                str(cwd),
+            )
+        _apply_nested_dict(settings, _load_json_file(project_path))
+    else:
+        logger.warning(
+            "settings: ignoring project layer %s — cwd %s is not in "
+            "'trust.project_layer_dirs' allowlist (policy=%s). Add the "
+            "directory to ~/.deile/settings.json to enable.",
+            project_path,
+            str(cwd),
+            settings.trust_project_layer_default,
+        )
+
+
+def _apply_legacy_fallback(cwd: Path) -> Optional["Settings"]:
+    """Return ``Settings`` from ``config/settings.json`` if it exists.
+
+    Only used when neither new-layer file (user nor project) is present.
+    Returns ``None`` when no legacy file is found, so the caller knows to
+    keep the dataclass defaults.
+    """
+    legacy_path = cwd / "config" / "settings.json"
+    if not legacy_path.exists():
+        return None
+    logger.warning(
+        "settings: loading legacy %s; migrate to ~/.deile/settings.json (issue #111)",
+        legacy_path,
+    )
+    return Settings.load_from_file(legacy_path)
+
+
 def _load_layered_settings() -> "Settings":
     """Build a fresh ``Settings`` from defaults + ``.deile/settings.json`` layers.
 
     Order:
       1. Defaults from the dataclass.
-      2. Apply ``~/.deile/settings.json`` (user) overrides.
-      3. Apply ``<cwd>/.deile/settings.json`` (project) overrides on top.
+      2. Apply ``~/.deile/settings.json`` (user) overrides — this is also
+         where the trust allowlist (``trust.project_layer_dirs``) is read.
+      3. Conditionally apply ``<cwd>/.deile/settings.json`` (project)
+         overrides on top — only when ``cwd`` is in the allowlist or the
+         migration policy is ``"auto"`` (the default).
       4. Apply DEILE_* env vars as deprecated fallback (win over JSON for
          backward compat).
 
@@ -681,24 +973,21 @@ def _load_layered_settings() -> "Settings":
     present, fall back to it once with a deprecation warning.
     """
     settings = Settings()
+    cwd = Path.cwd()
+    global_path = Path.home() / ".deile" / "settings.json"
+    project_path = cwd / ".deile" / "settings.json"
 
     # Layer 1: global user preferences (~/.deile/settings.json)
-    global_path = Path.home() / ".deile" / "settings.json"
-    _apply_nested_dict(settings, _load_json_file(global_path))
+    _apply_user_layer(settings, global_path)
 
-    # Layer 2: project preferences (./.deile/settings.json — wins over global)
-    project_path = Path.cwd() / ".deile" / "settings.json"
-    _apply_nested_dict(settings, _load_json_file(project_path))
+    # Layer 2: project preferences — gated by trust boundary (issue #125)
+    _apply_project_layer_if_trusted(settings, cwd, project_path)
 
     # Legacy fallback: if neither new-layer file exists, honor config/settings.json
     if not global_path.exists() and not project_path.exists():
-        legacy_path = Path.cwd() / "config" / "settings.json"
-        if legacy_path.exists():
-            logger.warning(
-                "settings: loading legacy %s; migrate to ~/.deile/settings.json (issue #111)",
-                legacy_path,
-            )
-            return Settings.load_from_file(legacy_path)
+        legacy = _apply_legacy_fallback(cwd)
+        if legacy is not None:
+            return legacy
 
     # Layer 3: env vars as deprecated fallback (win over JSON for backward compat)
     _apply_env_overrides(settings)

@@ -3,6 +3,11 @@
 Resets the Settings singleton before and after each test so that
 monkeypatch.setenv / monkeypatch.delenv changes are always picked up
 by modules that call get_settings().
+
+Also redirects the AuditLogger singleton to a per-session tmp directory so
+tests that exercise audit-emitting code (e.g. ``set_setting``,
+``add_skills_path``) do not pollute ``~/.deile/logs/security_audit.log``
+on the developer's HOME (issue #125 reviewer finding).
 """
 from __future__ import annotations
 
@@ -16,3 +21,30 @@ def _reset_settings_singleton():
     reset_settings()
     yield
     reset_settings()
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_audit_logger(tmp_path_factory):
+    """Point the global ``AuditLogger`` at a session-scoped temp dir.
+
+    Without this, every test that hits ``set_setting`` /
+    ``add_skills_path`` / any auditing path appends to
+    ``~/.deile/logs/security_audit.log`` on the real HOME — a confirmed
+    pollution vector during the issue #125 review (369 SECURITY_POLICY_CHANGED
+    entries from a single ``pytest`` run).
+
+    We replace the module-level singleton with one whose ``log_dir`` lives
+    under ``tmp_path_factory`` so the events are still emitted (real audit
+    paths still execute end-to-end) but the file is destroyed with the
+    session.
+    """
+    from deile.security import audit_logger as audit_module
+
+    log_dir = tmp_path_factory.mktemp("audit_logs")
+    isolated = audit_module.AuditLogger(log_dir=str(log_dir))
+    saved = audit_module._audit_logger
+    audit_module._audit_logger = isolated
+    try:
+        yield isolated
+    finally:
+        audit_module._audit_logger = saved

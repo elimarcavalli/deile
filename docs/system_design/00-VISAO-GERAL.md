@@ -94,6 +94,7 @@
 | 23 | Batch ID derivado do número (não título) via `compute_batch_id_for_number` (gap #10 — issue #129) | V1 patch | Arquitetura (02) |
 | 24 | TOCTOU mitigation em `claim_with_batch`: re-fetch após `add_labels` para detectar race condition (gap #11 — issue #132) | V1 patch | Princípios (03), Arquitetura (02) |
 | 25 | Comandos slash declaram CLI flags via metadata (`cli_flag`/`cli_extra_flags`); argparse é gerado pelo registry — issue #126 | V1 | Componentes (04), Arquitetura (02) |
+| 26 | Project layer de `.deile/settings.json` exige opt-in via `trust.project_layer_dirs` + permission/audit em `set_setting` (issue #125) | V1 patch | Segurança (08), Configuração (09) |
 
 ## Estado dos pilares
 

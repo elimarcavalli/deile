@@ -33,7 +33,21 @@ import os
 import tempfile
 import threading
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
+
+# Security helpers extracted to a sibling module (issue #125, S-4):
+# permission gate, audit emission, secret-key check, fingerprinting,
+# dry-run validation. They are re-exported below for the existing test
+# imports (``from deile.commands.settings_manager import _is_secret_key``).
+from ._settings_security_hooks import \
+    check_settings_write_permission as _check_settings_write_permission
+from ._settings_security_hooks import \
+    emit_settings_audit as _emit_settings_audit
+from ._settings_security_hooks import hash_value as _hash_value
+from ._settings_security_hooks import is_secret_key as _is_secret_key
+from ._settings_security_hooks import \
+    validate_against_override_handlers as _validate_against_override_handlers
+from ._settings_security_hooks import value_fingerprint as _value_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -45,9 +59,6 @@ _SENTINEL = object()
 
 # Max size for settings files — prevents memory exhaustion from crafted files.
 _MAX_SETTINGS_BYTES = 1_048_576  # 1 MB
-
-# Secret-looking key patterns — refuse to store these in settings files.
-_SECRET_KEY_PATTERNS = ("token", "key", "secret", "password", "api_")
 
 # Process-wide lock for read-modify-write operations on settings files.
 _file_lock = threading.Lock()
@@ -291,23 +302,98 @@ class SettingsManager:
         """
         from deile.config.settings import reset_settings
 
-        key_lower = key_path.lower()
-        if any(pat in key_lower for pat in _SECRET_KEY_PATTERNS):
+        self._validate_scope(scope)
+        parts = self._split_key_path(key_path)
+
+        # P1-2: secret refusal must emit audit (sec-relevant signal that
+        # someone is trying to stash credentials in settings.json). The
+        # audit payload NEVER includes the raw *value*.
+        if _is_secret_key(key_path):
             logger.error(
                 "set_setting: refusing to store potential secret in key %r"
                 " — use env vars for secrets",
                 key_path,
             )
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail=key_path,
+                action="write",
+                result="refused_secret",
+                details={
+                    "key_path": key_path,
+                    "scope": scope,
+                    "reason": "secret_pattern",
+                },
+            )
             return False
 
-        self._validate_scope(scope)
-        parts = self._split_key_path(key_path)
+        # P2-1: permission check FIRST, before any validation work.
+        # Otherwise a caller without write permission could probe the
+        # validation surface (key existence, expected types) by observing
+        # ``result="invalid"`` vs ``result="denied"``.
+        if not _check_settings_write_permission(scope, key_path):
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail=key_path,
+                action="write",
+                result="denied",
+                details={
+                    "key_path": key_path,
+                    "scope": scope,
+                    "reason": "permission_denied",
+                },
+            )
+            logger.warning(
+                "set_setting: permission denied for %r in %s scope", key_path, scope
+            )
+            return False
+
+        # Dry-run validation against the canonical override handlers (issue #125).
+        # Reject silently-divergent writes like `set_setting('logging.level', 42)`
+        # before touching disk — the on-disk JSON would never round-trip into a
+        # valid Settings field if the converter cannot accept the value.
+        # P0-1: NEITHER log nor audit may carry the raw `value` — callers can
+        # accidentally pass a secret to a non-secret-shaped key. We log a
+        # fingerprint and the converter message is sanitized.
+        validation_error = _validate_against_override_handlers(key_path, value)
+        if validation_error is not None:
+            logger.error(
+                "set_setting: rejecting %r=<fingerprint:%s> in %s — type mismatch with handler",
+                key_path,
+                _value_fingerprint(key_path, value),
+                scope,
+            )
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail=key_path,
+                action="write",
+                result="invalid",
+                details={
+                    "key_path": key_path,
+                    "scope": scope,
+                    "reason": "validation_failed",
+                    "error": validation_error,
+                    "new_value_fingerprint": _value_fingerprint(key_path, value),
+                },
+            )
+            return False
+
         if scope == GLOBAL:
             self._ensure_global_dir()
         path = self._settings_path(scope)
 
         with _file_lock:
             data = self._load(path)
+            # Capture the old value (if any) for the audit fingerprint.
+            old_node: Any = data
+            old_value: Any = None
+            for part in parts:
+                if isinstance(old_node, dict) and part in old_node:
+                    old_node = old_node[part]
+                    old_value = old_node
+                else:
+                    old_value = None
+                    break
             node: dict = data
             for part in parts[:-1]:
                 existing = node.get(part)
@@ -325,6 +411,18 @@ class SettingsManager:
 
         if result:
             reset_settings()
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail=key_path,
+                action="write",
+                result="allowed",
+                details={
+                    "key_path": key_path,
+                    "scope": scope,
+                    "old_value_fingerprint": _value_fingerprint(key_path, old_value),
+                    "new_value_fingerprint": _value_fingerprint(key_path, value),
+                },
+            )
         return result
 
     # ------------------------------------------------------------------
@@ -364,23 +462,40 @@ class SettingsManager:
                 result.append(p)
         return result
 
-    def add_skills_path(self, path: "str | Path", scope: str = GLOBAL) -> bool:
-        """Add *path* to ``skills_paths`` in *scope*.
+    def add_skills_path_detailed(
+        self, path: "str | Path", scope: str = GLOBAL
+    ) -> Tuple[bool, str]:
+        """Add *path* to ``skills_paths`` in *scope* — returns (success, reason).
 
-        Creates the settings file (and parent directories) if absent.
-        Invalidates the in-memory singleton after a successful write.
-
-        Args:
-            path:  Directory path to add.
-            scope: ``"global"`` (default) or ``"project"``.
-
-        Returns:
-            ``True`` if added, ``False`` if already present (no-op).
+        P2-3: callers (notably ``/skills add``) need to tell apart
+        ``"already_present"`` from ``"denied"`` so the UI can render a
+        meaningful message. Reason ∈ {``"added"``, ``"already_present"``,
+        ``"denied"``, ``"io_error"``}.
         """
         from deile.config.settings import reset_settings
 
         self._validate_scope(scope)
-        self._ensure_global_dir()
+        # Permission gate (issue #125) — denial returns (False, "denied").
+        if not _check_settings_write_permission(scope, "skills_paths"):
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail="skills_paths",
+                action="add_skills_path",
+                result="denied",
+                details={
+                    "scope": scope,
+                    "reason": "permission_denied",
+                    "path_fingerprint": _hash_value(str(path)),
+                },
+            )
+            logger.warning(
+                "add_skills_path: permission denied in %s scope", scope
+            )
+            return False, "denied"
+
+        # P2-4: only ensure the global dir when actually writing global.
+        if scope == GLOBAL:
+            self._ensure_global_dir()
         settings_path = self._settings_path(scope)
 
         with _file_lock:
@@ -393,47 +508,103 @@ class SettingsManager:
             except OSError:
                 norm = str(path)
             if norm in existing:
-                return False
+                return False, "already_present"
             existing.append(norm)
             data["skills_paths"] = existing
-            result = self._save(settings_path, data)
+            saved = self._save(settings_path, data)
 
-        if result:
-            reset_settings()
-        return result
+        if not saved:
+            return False, "io_error"
 
-    def remove_skills_path(self, path: "str | Path", scope: str = GLOBAL) -> bool:
-        """Remove *path* from ``skills_paths`` in *scope*.
+        reset_settings()
+        _emit_settings_audit(
+            scope=scope,
+            resource_detail="skills_paths",
+            action="add_skills_path",
+            result="allowed",
+            details={
+                "scope": scope,
+                "operation": "add",
+                "path_fingerprint": _hash_value(norm),
+                "new_count": len(existing),
+            },
+        )
+        return True, "added"
 
-        Invalidates the in-memory singleton after a successful write.
+    def add_skills_path(self, path: "str | Path", scope: str = GLOBAL) -> bool:
+        """Add *path* to ``skills_paths`` in *scope`` — boolean shim.
 
-        Args:
-            path:  Directory path to remove.
-            scope: ``"global"`` (default) or ``"project"``.
+        Backward-compatible wrapper around :meth:`add_skills_path_detailed`.
+        Returns ``True`` only when the path was actually added — preserves
+        the pre-#125 contract for callers that don't need a reason code.
+        """
+        success, _reason = self.add_skills_path_detailed(path, scope=scope)
+        return success
 
-        Returns:
-            ``True`` if removed, ``False`` if path was not found.
+    def remove_skills_path_detailed(
+        self, path: "str | Path", scope: str = GLOBAL
+    ) -> Tuple[bool, str]:
+        """Remove *path* from ``skills_paths`` in *scope* — returns (success, reason).
+
+        Reason ∈ {``"removed"``, ``"not_found"``, ``"denied"``, ``"io_error"``}.
         """
         from deile.config.settings import reset_settings
 
         self._validate_scope(scope)
+        # Permission gate (issue #125) — same contract as add_skills_path.
+        if not _check_settings_write_permission(scope, "skills_paths"):
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail="skills_paths",
+                action="remove_skills_path",
+                result="denied",
+                details={
+                    "scope": scope,
+                    "reason": "permission_denied",
+                    "path_fingerprint": _hash_value(str(path)),
+                },
+            )
+            logger.warning(
+                "remove_skills_path: permission denied in %s scope", scope
+            )
+            return False, "denied"
+
         settings_path = self._settings_path(scope)
 
         with _file_lock:
             data = self._load(settings_path)
             existing = data.get("skills_paths")
             if not isinstance(existing, list):
-                return False
+                return False, "not_found"
             norm = str(path)
             if norm not in existing:
-                return False
+                return False, "not_found"
             existing.remove(norm)
             data["skills_paths"] = existing
-            result = self._save(settings_path, data)
+            saved = self._save(settings_path, data)
 
-        if result:
-            reset_settings()
-        return result
+        if not saved:
+            return False, "io_error"
+
+        reset_settings()
+        _emit_settings_audit(
+            scope=scope,
+            resource_detail="skills_paths",
+            action="remove_skills_path",
+            result="allowed",
+            details={
+                "scope": scope,
+                "operation": "remove",
+                "path_fingerprint": _hash_value(norm),
+                "new_count": len(existing),
+            },
+        )
+        return True, "removed"
+
+    def remove_skills_path(self, path: "str | Path", scope: str = GLOBAL) -> bool:
+        """Remove *path* from ``skills_paths`` in *scope`` — boolean shim."""
+        success, _reason = self.remove_skills_path_detailed(path, scope=scope)
+        return success
 
     def load_all_preferences(self, scope: str = GLOBAL) -> dict:
         """Return the full preference dict for *scope* (raw JSON content).
@@ -475,20 +646,91 @@ class SettingsManager:
 
         Creates the settings file if absent.
 
+        P0-2 (issue #125): this is a public write endpoint into
+        ``~/.deile/settings.json`` and ``<project>/.deile/settings.json``,
+        so it goes through the SAME security pipeline as
+        :meth:`set_setting`:
+          - secret-key blocklist (with audit emission on refusal),
+          - ``PermissionManager`` write check (denial = audit + return False),
+          - audit emission on success with old/new fingerprints.
+
         Args:
             key:   Top-level key in the JSON (e.g. ``"model"``).
             value: JSON-serialisable value.
             scope: ``"global"`` (default) or ``"project"``.
 
         Returns:
-            ``True`` on success, ``False`` on write error.
+            ``True`` on success, ``False`` on refusal, denial, or write error.
         """
+        from deile.config.settings import reset_settings
+
         if scope not in _VALID_SCOPES:
             raise ValueError(f"Invalid scope {scope!r}. Use 'global' or 'project'.")
-        self._ensure_global_dir()
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError("set_preference: key must be a non-empty string")
+
+        # Mirror set_setting: secret refusal -> audit -> deny.
+        if _is_secret_key(key):
+            logger.error(
+                "set_preference: refusing to store potential secret in key %r"
+                " — use env vars for secrets",
+                key,
+            )
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail=key,
+                action="write",
+                result="refused_secret",
+                details={
+                    "key_path": key,
+                    "scope": scope,
+                    "reason": "secret_pattern",
+                },
+            )
+            return False
+
+        # Permission gate FIRST (P2-1 ordering).
+        if not _check_settings_write_permission(scope, key):
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail=key,
+                action="write",
+                result="denied",
+                details={
+                    "key_path": key,
+                    "scope": scope,
+                    "reason": "permission_denied",
+                },
+            )
+            logger.warning(
+                "set_preference: permission denied for %r in %s scope", key, scope
+            )
+            return False
+
+        if scope == GLOBAL:
+            self._ensure_global_dir()
         settings_path = self._settings_path(scope)
-        data = self._load_raw(settings_path)
-        data[key] = value
-        if not isinstance(data.get("skills_paths"), list):
-            data["skills_paths"] = []
-        return self._save(settings_path, data)
+
+        with _file_lock:
+            data = self._load_raw(settings_path)
+            old_value = data.get(key)
+            data[key] = value
+            if not isinstance(data.get("skills_paths"), list):
+                data["skills_paths"] = []
+            saved = self._save(settings_path, data)
+
+        if saved:
+            reset_settings()
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail=key,
+                action="write",
+                result="allowed",
+                details={
+                    "key_path": key,
+                    "scope": scope,
+                    "old_value_fingerprint": _value_fingerprint(key, old_value),
+                    "new_value_fingerprint": _value_fingerprint(key, value),
+                },
+            )
+        return saved

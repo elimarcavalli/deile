@@ -136,7 +136,43 @@ class PermissionManager:
                 tool_names=["*"],
                 permission_level=PermissionLevel.WRITE,
                 priority=100
-            )
+            ),
+
+            # Settings writes (issue #125) — DEFAULT IS FAIL-CLOSED.
+            # The default rule is ``READ`` (i.e. "no writes"), matching the
+            # security-first principle in 03-PRINCIPIOS-ARQUITETURAIS.md
+            # §5: a missing operator policy must not silently grant write
+            # access to security-relevant configuration.
+            #
+            # Operators wiring up an interactive workflow (e.g. /settings,
+            # /skills add, --set logging.level=INFO from the CLI) MUST opt
+            # in by overriding this rule via ``config/permissions.yaml``:
+            #
+            #   permission_rules:
+            #     - id: settings_write_interactive
+            #       name: Settings Write (Interactive)
+            #       description: Allow settings writes from the operator
+            #       resource_type: file
+            #       resource_pattern: '^settings:(global|project):.*$'
+            #       tool_names: [settings_manager]
+            #       permission_level: write
+            #       priority: 40
+            #
+            # See docs/system_design/08-SEGURANCA.md and 09-CONFIGURACAO.md
+            # for the full rationale and snippet.
+            PermissionRule(
+                id="settings_write_default",
+                name="Settings Write Default",
+                description="Deny writes to ~/.deile/settings.json and "
+                            "<project>/.deile/settings.json unless "
+                            "explicitly enabled in config/permissions.yaml "
+                            "(fail-closed; issue #125)",
+                resource_type=ResourceType.FILE,
+                resource_pattern=r"^settings:(global|project):.*$",
+                tool_names=["settings_manager"],
+                permission_level=PermissionLevel.READ,
+                priority=50,
+            ),
         ]
         
         for rule in default_rules:
