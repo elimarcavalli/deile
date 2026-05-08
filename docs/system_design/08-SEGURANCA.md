@@ -16,10 +16,19 @@
 
 | Símbolo | Papel |
 |---|---|
-| `AuditEventType` (enum) | Tipos: `PERMISSION_DENIED`, `SECRET_DETECTED`, `TOOL_EXECUTION`, `PLAN_EXECUTION`, etc. |
+| `AuditEventType` (enum) | Tipos: `PERMISSION_DENIED`, `SECRET_DETECTED`, `TOOL_EXECUTION`, `PLAN_EXECUTION`, `SECURITY_POLICY_CHANGED`, etc. |
 | `SeverityLevel` (enum) | Severidade |
 | `AuditEvent` (dataclass) | Evento tipado com `timestamp`, `event_type`, `severity`, `details`, etc. |
 | `AuditLogger` | Persiste e indexa eventos; singleton via `get_audit_logger()` |
+
+### Emissores de `AuditEventType.SECURITY_POLICY_CHANGED`
+
+| Local | Quando emite |
+|---|---|
+| `deile/commands/settings_manager.py:set_setting` | Toda escrita em `.deile/settings.json` (allowed/denied/invalid). `details` contém `key_path`, `scope`, fingerprint SHA-256 truncado do valor antigo e novo (16 hex chars). Chaves que casam com `_SECRET_KEY_PATTERNS` (`token`, `key`, `secret`, `password`, `api_`) viram `"<redacted>"` em vez de hash — valor cru nunca vai para o log. Issue #125. |
+| `deile/commands/settings_manager.py:add_skills_path` / `remove_skills_path` | Cada modificação de `skills_paths`. `details.path_fingerprint` carrega SHA-256 truncado do path. |
+
+> O resource string segue `settings:<scope>:<detail>` (e.g. `settings:global:logging.level`). Operadores podem refinar a permissão default via `config/permissions.yaml` — a regra `settings_write_default` (`deile/security/permissions.py:_load_default_rules`) é o ponto de partida.
 
 ### Helpers de conveniência
 

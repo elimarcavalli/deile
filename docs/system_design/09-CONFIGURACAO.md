@@ -57,6 +57,38 @@ JSON aninhado por área. Apenas as chaves listadas em `_OVERRIDE_HANDLERS` são 
 
 > Note: `skills_paths` is the only top-level array with union semantics — values from the global layer and the project layer are merged (global first, duplicates removed). All other keys follow standard project-wins-over-global layering.
 
+### Trust-boundary (issue #125)
+
+`<cwd>/.deile/settings.json` is **not** auto-trusted. A repo cloned from a third party can carry a settings file that disables `file_safety.enabled`, flips `debug`, or alters other security-relevant flags — the post-clone `python deile.py` would silently inherit the attacker's preferences. To prevent this, the project layer is gated by an explicit allowlist in the user's global settings:
+
+```json
+{
+  "trust": {
+    "project_layer_dirs": [
+      "/Users/me/dev/my-trusted-repo",
+      "/srv/ci/known-good-project"
+    ],
+    "project_layer_default": "auto"
+  }
+}
+```
+
+| Field | Semantics |
+|---|---|
+| `trust.project_layer_dirs` | List of absolute paths whose `<dir>/.deile/settings.json` is trusted as the project layer. Compared against `Path.cwd().resolve()` at boot time. |
+| `trust.project_layer_default` | Migration knob with two values:<br>• `"auto"` (default) — honor non-allowlisted with a loud `WARNING` so existing CIs do not break instantly.<br>• `"deny"` — silently ignore non-allowlisted (single warning at boot). |
+
+Default behavior in V1: `'auto'` grace period — non-allowlisted projects still apply the project layer but log a clear migration message. The next major release flips the default to `'deny'`. Operators who want strict behavior today can set `trust.project_layer_default: "deny"` in `~/.deile/settings.json`.
+
+| Symbol | Where |
+|---|---|
+| `_is_project_layer_trusted(cwd, allowlist, policy)` | `deile/config/settings.py` |
+| Settings fields | `Settings.trust_project_layer_dirs: List[str]`, `Settings.trust_project_layer_default: str` |
+| Override key handlers | `_OVERRIDE_HANDLERS["trust.project_layer_dirs"]`, `_OVERRIDE_HANDLERS["trust.project_layer_default"]` |
+| Warning text | `"settings: ignoring project layer ... not in 'trust.project_layer_dirs' allowlist"` |
+
+> The trust boundary is read **only** from the user's global layer (`~/.deile/settings.json`). The project layer cannot allowlist itself — that would defeat the purpose.
+
 ## `ConfigManager` (config estruturada com hot-reload, em `deile/config/manager.py`)
 
 Configura múltiplas seções tipadas:

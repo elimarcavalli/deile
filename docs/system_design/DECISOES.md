@@ -315,6 +315,19 @@
 
 ---
 
+## Decisão #26 — Project layer de `.deile/settings.json` exige opt-in explícito por diretório (allowlist)
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 patch |
+| Pilar dono | 08-Segurança, 09-Configuração |
+| Decisão | `_load_layered_settings` em `deile/config/settings.py` deixa de aplicar `<cwd>/.deile/settings.json` incondicionalmente. O usuário declara em `~/.deile/settings.json` a chave `trust.project_layer_dirs: ["<abs-path>", ...]` listando os diretórios cujo project layer ele confia. Diretórios fora da allowlist são tratados conforme `trust.project_layer_default`: `"auto"` (default — aplica com warning ruidoso, grace-period de uma versão minor) ou `"deny"` (ignora silenciosamente após um warning). Adicionalmente, `set_setting`/`add_skills_path`/`remove_skills_path` em `deile/commands/settings_manager.py` agora exigem `PermissionManager.check_permission(resource="settings:<scope>:<detail>", action="write")` antes da escrita e emitem `AuditEvent(SECURITY_POLICY_CHANGED)` no resultado. Valores são fingerprinted via SHA-256 truncado; chaves que casam com `_SECRET_KEY_PATTERNS` viram `"<redacted>"`. `Settings.load_from_file` (caminho legado) filtra `config_dict` por allowlist explícita das chaves do `_OVERRIDE_HANDLERS`. |
+| Evidência | `deile/config/settings.py:_load_layered_settings`, `_is_project_layer_trusted`, `_OVERRIDE_HANDLERS` (chaves `trust.project_layer_dirs`, `trust.project_layer_default`); `deile/commands/settings_manager.py:set_setting`, `add_skills_path`, `remove_skills_path`, `_emit_settings_audit`, `_value_fingerprint`, `_validate_against_override_handlers`; `deile/security/permissions.py:_load_default_rules` (regra `settings_write_default`); `deile/tests/test_settings_manager_audit.py`, `deile/tests/test_settings_layered_trust.py` |
+| Motivação | (1) **Trust-boundary**: um repo de terceiro pode commitar `.deile/settings.json` desligando `file_safety`, ativando `allow_all_file_types`, ou redirecionando `working_directory` — o usuário que clona e roda `python deile.py` perde proteções sem confirmar nada. Igual ao caso de `.deile/skills/` (Pilar 08 §"Skills como fronteira de confiança"), o project layer agora exige opt-in explícito. (2) **Permissão antes da ação** (Pilar 03 §5): mutar `enable_file_safety_checks`, `caching.enabled`, `debug` é mudança de postura de segurança e deve passar pelo gate. (3) **Audit tipado** (Pilar 03 §5): toda escrita em settings é audit-logged via tipo `SECURITY_POLICY_CHANGED` (já existia no enum, ninguém emitia). Valores brutos não vão para o log — só hash + flag de redação para chaves potencialmente sensíveis. (4) **Defesa em profundidade no caminho legado**: `load_from_file` aceitava `cls(**config_dict)` com qualquer chave do dataclass, expondo `working_directory='/etc'` como vetor. A allowlist espelha o `_OVERRIDE_HANDLERS` (canonical-safe set). |
+| Alternativas consideradas | (a) Confirmação interativa via `ApprovalSystem` ao detectar project layer não-confiável: rejeitada por quebrar fluxos automatizados (CI). (b) Usar `_OVERRIDE_HANDLERS` como permissão estática (sem `PermissionManager`): rejeitada por colidir com a regra "Permissão antes da ação" — o gate é runtime-configurável via `config/permissions.yaml`. (c) Migração imediata para `'deny'` por default: rejeitada por quebrar CIs/pipelines em uso hoje sem sinal de transição; o knob `'auto'` dá uma versão de aviso antes do flip. (d) Implementar como `pydantic.BaseSettings`: deferido em `DECISOES.md` #X (escopo de outra issue). |
+
+---
+
 ## Como adicionar uma nova decisão
 
 | # | Passo |
