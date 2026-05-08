@@ -553,8 +553,3 @@ class HTTPHelpers:
         return "\n".join(lines)
 
 
-if __name__ == "__main__":
-    # Test básico
-    tool = HTTPTool()
-    print("HTTP Tool loaded successfully")
-    print("Schema:", tool.get_schema())

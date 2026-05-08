@@ -818,8 +818,3 @@ class GitTool(SyncTool):
             }
 
 
-if __name__ == "__main__":
-    # Test básico
-    tool = GitTool()
-    print("Git Tool loaded successfully")
-    print("Schema:", tool.get_schema())

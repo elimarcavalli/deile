@@ -18,7 +18,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from ..core.exceptions import ToolError
 from .base import DisplayPolicy, SyncTool, ToolContext, ToolResult, ToolStatus
@@ -168,128 +168,25 @@ class SearchTool(SyncTool):
             }
         }
     
-    def _is_binary_file(self, file_path: Path) -> bool:
-        """Check if file is binary"""
-        try:
-            with open(file_path, 'rb') as f:
-                chunk = f.read(512)
-                return b'\0' in chunk
-        except OSError:
-            return True
-    
-    def _should_exclude_path(self, path: Path, exclude_patterns: List[str]) -> bool:
-        """Check if path should be excluded"""
-        path_str = str(path).replace('\\', '/')
-        
-        for pattern in exclude_patterns:
-            # Directory patterns
-            if pattern in path_str.split('/'):
-                return True
-            # Glob patterns
-            if fnmatch.fnmatch(path.name, pattern):
-                return True
-            if fnmatch.fnmatch(path_str, pattern):
-                return True
-                
-        return False
-    
-    def _find_files(self, 
-                   search_path: Path, 
-                   file_pattern: Optional[str],
-                   exclude_patterns: List[str],
-                   include_binary: bool) -> List[Path]:
-        """Find files to search in"""
-        files = []
-        
-        if search_path.is_file():
-            if not self._should_exclude_path(search_path, exclude_patterns):
-                if include_binary or not self._is_binary_file(search_path):
-                    files.append(search_path)
-        else:
-            # Recursively find files
-            try:
-                for file_path in search_path.rglob('*'):
-                    if file_path.is_file():
-                        # Check exclusions
-                        if self._should_exclude_path(file_path, exclude_patterns):
-                            continue
-                            
-                        # Check file pattern
-                        if file_pattern and not fnmatch.fnmatch(file_path.name, file_pattern):
-                            continue
-                            
-                        # Check binary
-                        if not include_binary and self._is_binary_file(file_path):
-                            continue
-                            
-                        files.append(file_path)
-                        
-            except PermissionError as e:
-                logger.warning(f"Permission denied accessing {search_path}: {e}")
-                
-        return files
-    
-    def _search_in_file(self, 
-                       file_path: Path, 
-                       pattern: re.Pattern,
-                       max_context_lines: int) -> List[SearchMatch]:
-        """Search for pattern in a single file"""
-        matches = []
-        
-        try:
-            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                lines = f.readlines()
-                
-            for line_num, line in enumerate(lines, 1):
-                if pattern.search(line):
-                    # Calculate context boundaries
-                    context_start = max(0, line_num - 1 - max_context_lines // 2)
-                    context_end = min(len(lines), line_num + max_context_lines // 2)
-                    
-                    # Extract context
-                    context_before = []
-                    context_after = []
-                    
-                    for i in range(context_start, line_num - 1):
-                        context_before.append(lines[i].rstrip())
-                        
-                    for i in range(line_num, context_end):
-                        context_after.append(lines[i].rstrip())
-                    
-                    match = SearchMatch(
-                        file=str(file_path),
-                        line_number=line_num,
-                        match_text=line.rstrip(),
-                        context_before=context_before,
-                        context_after=context_after,
-                        match_score=1.0
-                    )
-                    
-                    matches.append(match)
-                    
-        except Exception as e:
-            logger.warning(f"Error searching in file {file_path}: {e}")
-            
-        return matches
-    
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Execute search with SITUAÇÃO 6 compliance - max 50 lines per match"""
         try:
             start_time = time.time()
             
             # Extract and validate parameters
-            query = context.get_parameter("query", "")
+            args = context.parsed_args
+            query = args.get("query", "")
             if not query.strip():
                 raise ToolError("Search query cannot be empty")
-                
-            path = context.get_parameter("path", ".")
-            file_patterns = context.get_parameter("file_patterns", [])
-            max_context_lines = min(context.get_parameter("max_context_lines", 25), 50)  # SITUAÇÃO 6: HARD LIMIT
-            max_matches = min(context.get_parameter("max_matches", 20), 50)
-            case_sensitive = context.get_parameter("case_sensitive", False)
-            regex_mode = context.get_parameter("regex_mode", False)
-            exclude_patterns = context.get_parameter("exclude_patterns", [])
-            show_cli = context.get_parameter("show_cli", True)
+
+            path = args.get("path", ".")
+            file_patterns = args.get("file_patterns", [])
+            max_context_lines = min(args.get("max_context_lines", 25), 50)  # hard limit: 50 lines per match
+            max_matches = min(args.get("max_matches", 20), 50)
+            case_sensitive = args.get("case_sensitive", False)
+            regex_mode = args.get("regex_mode", False)
+            exclude_patterns = args.get("exclude_patterns", [])
+            show_cli = args.get("show_cli", True)
             
             # Prepare search pattern
             if regex_mode:
