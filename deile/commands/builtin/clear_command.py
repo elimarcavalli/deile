@@ -106,7 +106,7 @@ class ClearCommand(DirectCommand):
             
             warning_text = "\n".join(warning_content)
             
-            Panel(
+            _warning_panel = Panel(
                 Text(warning_text, style="yellow"),
                 title="⚠️ Complete Session Reset",
                 border_style="red"

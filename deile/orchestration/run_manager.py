@@ -291,8 +291,8 @@ class RunManager:
         
         step_id = step_data.get('id', 'unknown_step')
         tool_name = step_data.get('tool_name', 'unknown_tool')
-        step_data.get('parameters', {})
-        
+        _params = step_data.get('parameters', {})
+
         logger.info(f"Executing step {step_id}: {tool_name}")
         
         start_time = time.time()

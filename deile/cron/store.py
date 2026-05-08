@@ -14,7 +14,6 @@ entries. The ``next_fire_at`` column is denormalized so the runner can
 from __future__ import annotations
 
 import logging
-import os
 import sqlite3
 import threading
 import uuid
@@ -31,13 +30,14 @@ logger = logging.getLogger(__name__)
 
 
 def resolve_db_path() -> Path:
-    """Return the CronStore DB path from env vars or a cwd-relative default."""
-    raw = os.environ.get("DEILE_CRON_DB_PATH")
-    if raw:
-        return Path(raw).resolve()
-    base = os.environ.get("DEILE_PIPELINE_BASE_PATH")
-    if base:
-        return Path(base).resolve() / "data" / "cron.db"
+    """Return the CronStore DB path from settings or a cwd-relative default."""
+    from deile.config.settings import get_settings
+
+    s = get_settings()
+    if s.cron_db_path:
+        return s.cron_db_path.resolve()
+    if s.pipeline_base_path:
+        return s.pipeline_base_path.resolve() / "data" / "cron.db"
     return Path.cwd() / "data" / "cron.db"
 
 

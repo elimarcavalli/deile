@@ -20,8 +20,42 @@
 | `get_settings()` | **Singleton accessor** — única forma de obter a instância |
 | `update_settings(**kwargs)` | Atualiza campos in-place |
 | `reset_settings()` | Reset para defaults (uso em testes) |
+| `Settings.apply_overrides(d)` | Aplica dict aninhado (formato `.deile/settings.json`) sobre os campos planos |
 
 > Regra: **nunca instanciar `Settings()` diretamente**. Sempre via `get_settings()`.
+
+### Camadas (issue #111)
+
+`get_settings()` lê preferências em hierarquia:
+
+```
+1. <projeto>/.deile/settings.json   (override de projeto)
+2. ~/.deile/settings.json           (preferência do usuário)
+3. Defaults da Settings dataclass   (fallback embutido)
+```
+
+A camada de projeto deep-merge sobre a camada do usuário (project wins em conflitos; chaves não-conflitantes coexistem). O legado `config/settings.json` continua sendo aceito como fallback **apenas** quando nenhum dos dois arquivos `.deile/settings.json` existir, com aviso de depreciação no log.
+
+### Schema do `.deile/settings.json`
+
+JSON aninhado por área. Apenas as chaves listadas em `_OVERRIDE_HANDLERS` são aplicadas; chaves desconhecidas são ignoradas (forward-compat). API keys NUNCA são lidas/escritas neste arquivo — secrets continuam em `.env`. Exemplo mínimo:
+
+```json
+{
+  "logging":     { "level": "INFO", "to_file": true, "max_size_mb": 10, "backup_count": 5 },
+  "ui":          { "streaming_enabled": true, "show_tool_details": false },
+  "model":       { "default_provider": "anthropic", "max_context_tokens": 8000 },
+  "caching":     { "enabled": true, "ttl_seconds": 3600 },
+  "concurrency": { "max_concurrent_requests": 10, "request_timeout": 120 },
+  "file_safety": { "enabled": true, "max_file_size_bytes": 1048576 },
+  "deile_md":    { "enabled": true, "max_bytes": 65536 },
+  "skills_paths": [],
+  "environment": "development",
+  "debug":       false
+}
+```
+
+> Note: `skills_paths` is the only top-level array with union semantics — values from the global layer and the project layer are merged (global first, duplicates removed). All other keys follow standard project-wins-over-global layering.
 
 ## `ConfigManager` (config estruturada com hot-reload, em `deile/config/manager.py`)
 
@@ -65,12 +99,13 @@ Configura múltiplas seções tipadas:
 
 ## Arquivos em `config/` (raiz)
 
-| Arquivo | Responsabilidade |
-|---|---|
-| `permissions.yaml` | Regras default de `PermissionManager` |
-| `display.yaml` | Configuração de display/UI |
-| `search.yaml` | Configuração de busca |
-| `settings.json` | Settings serializadas |
+> **Status (issue #111):** este diretório foi limpo. As preferências antes
+> ali agora vivem em `.deile/settings.json` (ver §Camadas). Apenas
+> `config/deile_bot.yaml` permanece tracked (operacional do bot).
+
+`config/settings.json` continua reconhecido como **fallback de leitura**
+quando nenhum `.deile/settings.json` existe — emite aviso de depreciação
+e não é regravado.
 
 ## Variáveis de ambiente
 

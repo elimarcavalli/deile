@@ -30,6 +30,7 @@ class ContextCommand(DirectCommand):
             # Parse arguments
             parts = args.strip().split() if args.strip() else []
             format_type = "summary"  # default
+            _ = False
             show_tokens = False
             
             i = 0
@@ -41,6 +42,7 @@ class ContextCommand(DirectCommand):
                     else:
                         raise CommandError("--format requires a value (summary, detailed, json)")
                 elif parts[i] in ["--export", "-e"]:
+                    _export = True
                     i += 1
                 elif parts[i] in ["--show-tokens", "-t"]:
                     show_tokens = True

@@ -1,0 +1,8 @@
+recurring:
+- id: beta-loop
+  action: implement
+  cron: '*/2 * * * *'
+  enabled: true
+  last_run_at: null
+  replay_all: false
+oneshot: []

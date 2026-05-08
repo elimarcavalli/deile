@@ -1,0 +1,14 @@
+recurring:
+- id: r1
+  action: review
+  cron: '*/5 * * * *'
+  enabled: true
+  last_run_at: null
+  replay_all: false
+oneshot:
+- id: oneshot-implement-1778090400
+  action: implement
+  run_at: '2026-05-06T18:00:00Z'
+  target_issue: 99
+  target_pr: null
+  completed: false

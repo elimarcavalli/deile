@@ -54,7 +54,9 @@ def _sha8(payload: bytes) -> str:
 
 
 def _resolve_vision_model() -> str:
-    return (os.environ.get("DEILE_VISION_MODEL") or _DEFAULT_VISION_MODEL).strip()
+    from deile.config.settings import get_settings
+
+    return get_settings().vision_model or _DEFAULT_VISION_MODEL
 
 
 class VisionDescribeImageTool(Tool):

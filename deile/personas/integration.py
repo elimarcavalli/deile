@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 # TYPE_CHECKING imports to avoid circular dependencies
 if TYPE_CHECKING:
-    from ..core.agent import DeileAgent
+    from ..core.agent import AgentResponse, DeileAgent
     from .base import BasePersona
     from .manager import PersonaManager
 
@@ -113,7 +113,7 @@ class PersonaEnhancedAgent:
         user_input: str,
         session_id: str = "default",
         **kwargs
-    ) -> 'AgentResponse':  # noqa: F821
+    ) -> 'AgentResponse':
         """
         Process input with persona-enhanced behavior
 
@@ -265,10 +265,10 @@ class PersonaEnhancedAgent:
 
     async def _post_process_with_persona(
         self,
-        response: 'AgentResponse',  # noqa: F821
+        response: 'AgentResponse',
         user_input: str,
         session_id: str
-    ) -> 'AgentResponse':  # noqa: F821
+    ) -> 'AgentResponse':
         """Post-process response with persona insights"""
         if not self._has_active_persona():
             return response

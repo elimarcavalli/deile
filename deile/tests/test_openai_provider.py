@@ -213,7 +213,7 @@ async def test_generate_auth_error_raises_envelope(provider):
     mock_response = MagicMock()
     mock_response.status_code = 401
     mock_response.headers = {}
-    MagicMock()
+    _mock_request = MagicMock()
 
     err = _oai.AuthenticationError(
         message="Invalid API key",

@@ -563,7 +563,6 @@ class ApprovalSystem:
         
         while True:
             try:
-                time.time()
                 expired_requests = []
                 
                 # Find expired requests

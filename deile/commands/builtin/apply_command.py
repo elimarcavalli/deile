@@ -306,7 +306,7 @@ class ApplyCommand(DirectCommand):
                     'path': file_path,
                     'action': action,
                     'new_content': '\n'.join(content_lines) if content_lines else '',
-                    'lines_added': len([line for line in lines[i:j] if line.startswith('+') and not line.startswith('+++')])
+                    'lines_added': len([ln for ln in lines[i:j] if ln.startswith('+') and not ln.startswith('+++')])
                 })
                 
                 i = j

@@ -1,6 +1,9 @@
 import random
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from .streaming_renderer import RenderResult
 
 import yaml
 from prompt_toolkit import PromptSession
@@ -403,7 +406,7 @@ class ConsoleUIManager(UIManager):
         """Mostra uma animação de 'carregando' de forma segura."""
         return self.console.status(f"[bold cyan]{message}[/]", spinner="line")
 
-    async def display_streaming_turn(self, event_stream) -> "RenderResult":  # type: ignore[name-defined]  # noqa: F821
+    async def display_streaming_turn(self, event_stream) -> "RenderResult":  # type: ignore[name-defined]
         """Render a streaming agent turn progressively to the console.
 
         Consumes a ``UnifiedStreamEvent`` async iterator and lets the

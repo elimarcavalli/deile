@@ -16,7 +16,10 @@ import asyncio
 import sys
 import time
 from pathlib import Path
-from typing import List
+from typing import TYPE_CHECKING, List
+
+if TYPE_CHECKING:
+    from deilebot.foundation.envelope import MessageEnvelope
 
 # --- path setup ---
 ROOT = Path(__file__).parents[3]
@@ -154,7 +157,7 @@ async def _make_pipeline(store, agent, *, settings=None):
 
 # ─── envelope factories ─────────────────────────────────────────────────────
 
-def _dm_envelope(text: str, user_id: str = "test-user-001") -> "MessageEnvelope":  # noqa: F821
+def _dm_envelope(text: str, user_id: str = "test-user-001") -> "MessageEnvelope":
     from datetime import datetime, timezone
     from types import MappingProxyType
 
@@ -184,7 +187,7 @@ def _dm_envelope(text: str, user_id: str = "test-user-001") -> "MessageEnvelope"
     )
 
 
-def _group_envelope(text: str, *, mention_bot_id: str = "", user_id: str = "test-user-001") -> "MessageEnvelope":  # noqa: F821
+def _group_envelope(text: str, *, mention_bot_id: str = "", user_id: str = "test-user-001") -> "MessageEnvelope":
     from datetime import datetime, timezone
     from types import MappingProxyType
 
@@ -221,7 +224,7 @@ def _group_envelope(text: str, *, mention_bot_id: str = "", user_id: str = "test
     )
 
 
-def _slash_envelope(text: str, user_id: str = "test-user-001") -> "MessageEnvelope":  # noqa: F821
+def _slash_envelope(text: str, user_id: str = "test-user-001") -> "MessageEnvelope":
     from datetime import datetime, timezone
     from types import MappingProxyType
 
@@ -406,6 +409,7 @@ async def run_09_permission_blocklist(pipeline, adapter):
     # We'll use a temporary pipeline with a blocklist
 
     adapter.inbox.clear()
+    _ = "blocked-user-999"
 
     # Inject via settings override: create settings with blocked user
     # (We can't easily override after identity resolution; test via known bot_user_id)

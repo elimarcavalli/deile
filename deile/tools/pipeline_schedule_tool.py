@@ -14,7 +14,6 @@ the next monitor tick.
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,9 +27,11 @@ from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
 
 
 def _resolve_base_path() -> Path:
-    raw = os.environ.get("DEILE_PIPELINE_BASE_PATH")
-    if raw:
-        return Path(raw).resolve()
+    from deile.config.settings import get_settings
+
+    s = get_settings()
+    if s.pipeline_base_path:
+        return s.pipeline_base_path.resolve()
     cwd = Path.cwd()
     for ancestor in (cwd, *cwd.parents):
         if (ancestor / ".git").is_dir() and (ancestor / "deile.py").is_file():
@@ -126,8 +127,7 @@ class PipelineScheduleTool(Tool):
         action = (args.get("action") or "").strip().lower()
 
         identity = MonitorIdentity(
-            monitor_id=args.get("monitor_id")
-            or os.environ.get("DEILE_PIPELINE_MONITOR_ID", "default"),
+            monitor_id=args.get("monitor_id") or "default",
         )
         store = ScheduleStore(_resolve_base_path(), monitor_id=identity.monitor_id)
 

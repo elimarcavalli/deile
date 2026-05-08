@@ -42,7 +42,7 @@ class EmojiManager:
                 return True
             except Exception:
                 return False
-        
+
         # Linux/Mac terminals generally support emojis
         if sys.platform in ["linux", "darwin"]:
             return True
@@ -171,25 +171,14 @@ def format_with_emojis(text: str) -> str:
 
 
 # Common emoji shortcuts
-def SUCCESS():
-    return emoji('success')
-def ERROR():
-    return emoji('error') 
-def WARNING():
-    return emoji('warning')
-def INFO():
-    return emoji('info')
-def SPARKLES():
-    return emoji('sparkles')
-def WAVE():
-    return emoji('wave')
-def ROBOT():
-    return emoji('robot')
-def ROCKET():
-    return emoji('rocket')
-def TOOL():
-    return emoji('tool')
-def CLOCK():
-    return emoji('clock')
-def LIGHTBULB():
-    return emoji('lightbulb')
+def SUCCESS() -> str: return emoji('success')
+def ERROR() -> str: return emoji('error')
+def WARNING() -> str: return emoji('warning')
+def INFO() -> str: return emoji('info')
+def SPARKLES() -> str: return emoji('sparkles')
+def WAVE() -> str: return emoji('wave')
+def ROBOT() -> str: return emoji('robot')
+def ROCKET() -> str: return emoji('rocket')
+def TOOL() -> str: return emoji('tool')
+def CLOCK() -> str: return emoji('clock')
+def LIGHTBULB() -> str: return emoji('lightbulb')

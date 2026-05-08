@@ -250,3 +250,194 @@ class TestGetAllSkillsPaths:
         mgr.add_skills_path("/p1", scope="project")
         paths = [str(p) for p in mgr.get_all_skills_paths()]
         assert "/p1" in paths
+
+
+# ---------------------------------------------------------------------------
+# get_layer / get_merged / get_setting / set_setting (issue #111)
+# ---------------------------------------------------------------------------
+
+
+def _write_layer(mgr: SettingsManager, scope: str, data: dict) -> None:
+    path = mgr.global_settings_path if scope == "global" else mgr.project_settings_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+class TestGetLayer:
+    def test_empty_when_no_file(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        assert mgr.get_layer("global") == {}
+        assert mgr.get_layer("project") == {}
+
+    def test_returns_full_dict(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        _write_layer(mgr, "global", {"logging": {"level": "INFO"}, "skills_paths": ["/x"]})
+        layer = mgr.get_layer("global")
+        assert layer == {"logging": {"level": "INFO"}, "skills_paths": ["/x"]}
+
+    def test_returns_deep_copy_not_reference(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        _write_layer(mgr, "global", {"logging": {"level": "INFO"}})
+        layer = mgr.get_layer("global")
+        layer["logging"]["level"] = "DEBUG"
+        assert mgr.get_layer("global") == {"logging": {"level": "INFO"}}
+
+    def test_invalid_scope_raises(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        with pytest.raises(ValueError, match="Invalid scope"):
+            mgr.get_layer("nope")
+
+
+class TestGetMerged:
+    def test_empty_when_no_files(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        assert mgr.get_merged() == {}
+
+    def test_only_user_layer(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        _write_layer(mgr, "global", {"logging": {"level": "INFO"}})
+        assert mgr.get_merged() == {"logging": {"level": "INFO"}}
+
+    def test_only_project_layer(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        _write_layer(mgr, "project", {"ui": {"streaming_enabled": False}})
+        assert mgr.get_merged() == {"ui": {"streaming_enabled": False}}
+
+    def test_project_wins_at_leaf(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        _write_layer(mgr, "global", {"logging": {"level": "INFO"}})
+        _write_layer(mgr, "project", {"logging": {"level": "DEBUG"}})
+        assert mgr.get_merged() == {"logging": {"level": "DEBUG"}}
+
+    def test_deep_merge_preserves_sibling_keys(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        _write_layer(mgr, "global", {"logging": {"level": "INFO", "to_file": True}})
+        _write_layer(mgr, "project", {"logging": {"level": "DEBUG"}})
+        merged = mgr.get_merged()
+        assert merged == {"logging": {"level": "DEBUG", "to_file": True}}
+
+    def test_lists_replace_no_concat(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        _write_layer(mgr, "global", {"file_safety": {"blocked": ["a", "b"]}})
+        _write_layer(mgr, "project", {"file_safety": {"blocked": ["c"]}})
+        assert mgr.get_merged() == {"file_safety": {"blocked": ["c"]}}
+
+    def test_independent_top_level_keys(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        _write_layer(mgr, "global", {"logging": {"level": "INFO"}})
+        _write_layer(mgr, "project", {"ui": {"streaming_enabled": False}})
+        merged = mgr.get_merged()
+        assert merged["logging"] == {"level": "INFO"}
+        assert merged["ui"] == {"streaming_enabled": False}
+
+    def test_dict_replaces_scalar(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        _write_layer(mgr, "global", {"logging": "INFO"})
+        _write_layer(mgr, "project", {"logging": {"level": "DEBUG"}})
+        assert mgr.get_merged() == {"logging": {"level": "DEBUG"}}
+
+    def test_scalar_replaces_dict(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        _write_layer(mgr, "global", {"logging": {"level": "DEBUG"}})
+        _write_layer(mgr, "project", {"logging": "INFO"})
+        assert mgr.get_merged() == {"logging": "INFO"}
+
+
+class TestGetSetting:
+    def test_default_when_missing(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        assert mgr.get_setting("logging.level", default="WARN") == "WARN"
+
+    def test_returns_value_from_user_layer(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        _write_layer(mgr, "global", {"logging": {"level": "INFO"}})
+        assert mgr.get_setting("logging.level") == "INFO"
+
+    def test_returns_value_from_project_layer(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        _write_layer(mgr, "project", {"ui": {"streaming_enabled": False}})
+        assert mgr.get_setting("ui.streaming_enabled") is False
+
+    def test_project_wins_over_user(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        _write_layer(mgr, "global", {"logging": {"level": "INFO"}})
+        _write_layer(mgr, "project", {"logging": {"level": "DEBUG"}})
+        assert mgr.get_setting("logging.level") == "DEBUG"
+
+    def test_top_level_key(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        _write_layer(mgr, "global", {"environment": "production"})
+        assert mgr.get_setting("environment") == "production"
+
+    def test_intermediate_non_dict_returns_default(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        _write_layer(mgr, "global", {"logging": "INFO"})
+        assert mgr.get_setting("logging.level", default="missing") == "missing"
+
+    def test_empty_key_path_raises(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        with pytest.raises(ValueError):
+            mgr.get_setting("")
+
+    def test_key_path_with_empty_segment_raises(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        with pytest.raises(ValueError):
+            mgr.get_setting("logging..level")
+
+
+class TestSetSetting:
+    def test_creates_file_with_nested_value(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        assert mgr.set_setting("logging.level", "DEBUG", scope="global") is True
+        data = json.loads(mgr.global_settings_path.read_text())
+        assert data == {"logging": {"level": "DEBUG"}}
+
+    def test_writes_to_project_scope(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        mgr.set_setting("ui.streaming_enabled", False, scope="project")
+        data = json.loads(mgr.project_settings_path.read_text())
+        assert data == {"ui": {"streaming_enabled": False}}
+
+    def test_preserves_unrelated_existing_keys(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        _write_layer(mgr, "global", {"skills_paths": ["/x"], "logging": {"to_file": True}})
+        mgr.set_setting("logging.level", "DEBUG", scope="global")
+        data = json.loads(mgr.global_settings_path.read_text())
+        assert data == {
+            "skills_paths": ["/x"],
+            "logging": {"to_file": True, "level": "DEBUG"},
+        }
+
+    def test_overwrites_existing_value(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        mgr.set_setting("logging.level", "INFO")
+        mgr.set_setting("logging.level", "DEBUG")
+        assert mgr.get_setting("logging.level") == "DEBUG"
+
+    def test_top_level_scalar(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        mgr.set_setting("environment", "production")
+        data = json.loads(mgr.global_settings_path.read_text())
+        assert data == {"environment": "production"}
+
+    def test_intermediate_non_dict_raises(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        mgr.set_setting("logging", "INFO")
+        with pytest.raises(ValueError, match="not dict"):
+            mgr.set_setting("logging.level", "DEBUG")
+
+    def test_invalid_scope_raises(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        with pytest.raises(ValueError, match="Invalid scope"):
+            mgr.set_setting("logging.level", "INFO", scope="bad")
+
+    def test_empty_key_path_raises(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        with pytest.raises(ValueError):
+            mgr.set_setting("", "value")
+
+    def test_creates_parent_directories(self, tmp_path):
+        mgr = _make_manager(tmp_path)
+        assert not mgr.global_settings_path.parent.exists()
+        mgr.set_setting("a.b", 1)
+        assert mgr.global_settings_path.parent.is_dir()

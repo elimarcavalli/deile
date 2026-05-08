@@ -61,7 +61,7 @@ class TestRoutingPolicy:
             RoutingPolicy.from_yaml(_YAML_PATH, "nonexistent_policy")
 
     def test_cascade_for_unknown_tier_returns_empty(self):
-        RoutingPolicy.from_yaml(_YAML_PATH, "task_optimized")
+        _policy = RoutingPolicy.from_yaml(_YAML_PATH, "task_optimized")
         # Build a custom policy with only tier_1 to test missing tier
         from deile.core.models.tier_router import RoutingPolicy as RP
         p = RP("test", {ModelTier.TIER_1: ["a:b"]})

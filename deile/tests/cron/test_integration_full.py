@@ -50,7 +50,7 @@ class TestCronEndToEnd:
         agent = MagicMock()
         agent.process_input = AsyncMock(return_value=MagicMock(content="ok"))
 
-        CronRunner(store, fire_callback=make_fire_callback(lambda: asyncio.coroutine(lambda: agent)()))
+        _runner = CronRunner(store, fire_callback=make_fire_callback(lambda: asyncio.coroutine(lambda: agent)()))
 
         # Use a direct callback to capture kwargs
         captured: dict = {}

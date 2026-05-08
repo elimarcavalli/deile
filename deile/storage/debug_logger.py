@@ -10,7 +10,6 @@ Router events are written as newline-delimited JSON to `logs/router_events.jsonl
 from __future__ import annotations
 
 import json
-import os
 import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
@@ -21,7 +20,9 @@ _EVENTS_LOG = Path.home() / ".deile" / "logs" / "router_events.jsonl"
 
 
 def is_debug_enabled() -> bool:
-    return os.getenv("DEILE_DEBUG", "").lower() in {"1", "true", "yes", "on"}
+    from deile.config.settings import get_settings
+
+    return get_settings().debug_enabled
 
 
 class _DebugLogger:

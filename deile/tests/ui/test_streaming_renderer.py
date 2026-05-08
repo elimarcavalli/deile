@@ -771,7 +771,7 @@ async def test_budget_exceeded_error_includes_action_hint():
             },
         ),
     ]
-    await renderer.render(_replay(events))
+    _result = await renderer.render(_replay(events))
     output = console.file.getvalue()
     assert "Session x would exceed limit" in output
     assert "/model budget" in output

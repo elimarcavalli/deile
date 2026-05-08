@@ -440,11 +440,11 @@ class ComprehensiveIntegrationTestSuite:
 
         try:
             # Test original PersonaManager usage patterns
-            len(self.persona_manager._personas)
+            _original_personas_count = len(self.persona_manager._personas)
 
             # Test original methods still work
             has_active = self.persona_manager.has_active_persona()
-            self.persona_manager.get_current_persona()
+            _current_persona = self.persona_manager.get_current_persona()
             available_personas = self.persona_manager.list_personas()
 
             methods_work = isinstance(has_active, bool) and isinstance(available_personas, list)

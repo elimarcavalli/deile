@@ -263,7 +263,7 @@ class MemoryCommand(DirectCommand):
                 audit_logger.recent_events.clear()
             except Exception:
                 pass
-            
+
             cleared_items = total_cleared
             items_description = "all memory components"
         
@@ -348,7 +348,7 @@ class MemoryCommand(DirectCommand):
                     total_impact += 1
         except Exception:
             pass
-        
+
         # Overall recommendation
         if total_impact > 5:
             recommendation = "🔴 **High Impact**: Consider /cls reset or /memory clear all"
@@ -378,7 +378,7 @@ class MemoryCommand(DirectCommand):
     async def _export_memory_state(self, context: CommandContext, args: list) -> CommandResult:
         """Export memory state"""
         
-        args[0] if args else "json"
+        _export_format = args[0] if args else "json"
         
         # This would integrate with the existing export command
         return CommandResult.success_result(

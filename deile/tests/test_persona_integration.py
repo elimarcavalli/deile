@@ -199,7 +199,7 @@ class TestPersonaEnhancedAgent:
         # Mock the _has_active_persona method to return False
         enhanced_agent._has_active_persona = Mock(return_value=False)
 
-        await enhanced_agent.process_input_with_persona("test input")
+        _response = await enhanced_agent.process_input_with_persona("test input")
 
         # Should fallback to base agent
         mock_deile_agent.process_input.assert_called_once_with("test input", "default")
@@ -222,7 +222,7 @@ class TestPersonaEnhancedAgent:
         enhanced_agent._enhance_context_with_persona = AsyncMock(return_value={})
         enhanced_agent._post_process_with_persona = AsyncMock(side_effect=lambda x, *args: x)
 
-        await enhanced_agent.process_input_with_persona("test input")
+        _response = await enhanced_agent.process_input_with_persona("test input")
 
         # Should use enhanced processing
         mock_deile_agent.process_input.assert_called_once()
@@ -462,7 +462,7 @@ class TestEndToEndIntegration:
             mock_persona = MockBasePersona()
             pm._personas["new_persona"] = mock_persona
 
-            await pm.switch_persona("new_persona", "test_session")
+            _result = await pm.switch_persona("new_persona", "test_session")
 
             # Verify memory operations
             mock_context.save_state.assert_called_once()
@@ -484,7 +484,7 @@ class TestIntegrationPerformance:
         enhanced_agent = PersonaEnhancedAgent(mock_deile_agent, faulty_pm)
 
         # Should fallback gracefully
-        await enhanced_agent.process_input_with_persona("test input")
+        _response = await enhanced_agent.process_input_with_persona("test input")
 
         # Should have fallen back to base agent
         mock_deile_agent.process_input.assert_called_once()

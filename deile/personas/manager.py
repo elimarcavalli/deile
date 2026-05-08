@@ -2,7 +2,10 @@
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from ..core.agent import DeileAgent
 
 from ..core.exceptions import (PersonaConfigError, PersonaError,
                                PersonaExecutionError,
@@ -33,7 +36,7 @@ class PersonaManager:
     - Integração com sistema de memória unificado DEILE
     """
 
-    def __init__(self, agent: 'DeileAgent' = None, memory_manager=None):  # noqa: F821
+    def __init__(self, agent: 'DeileAgent' = None, memory_manager=None):
         # UNIFIED CONFIGURATION: Use agent's ConfigManager
         if agent:
             self.agent = agent
@@ -171,7 +174,7 @@ class PersonaManager:
     ) -> BasePersona:
         """Create persona instance with unified configuration"""
         # Create memory layer for this persona
-        PersonaMemoryLayer(self.memory_manager, persona_id)
+        _memory_layer = PersonaMemoryLayer(self.memory_manager, persona_id)
 
         # Load persona instructions
         instructions = await self.loader.load_persona_instructions(persona_id)
