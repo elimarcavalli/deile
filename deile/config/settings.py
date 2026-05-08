@@ -83,7 +83,7 @@ def _to_str_list(value: Any) -> list:
 
 
 def _to_optional_path(value: Any) -> Optional[Path]:
-    """Convert value to Path, hardened against traversal and null bytes."""
+    """Convert value to Path, hardened against null bytes and oversized values."""
     if value is None or (isinstance(value, str) and not value):
         return None
     if not isinstance(value, (str, os.PathLike)):
@@ -93,16 +93,7 @@ def _to_optional_path(value: Any) -> Optional[Path]:
         raise ValueError("path setting contains null byte")
     if len(s) > 4096:
         raise ValueError(f"path setting exceeds 4096 chars (got {len(s)})")
-    p = Path(s).expanduser()
-    # Validate path stays within HOME or CWD (defense against traversal)
-    try:
-        resolved = p.resolve()
-        allowed = (Path.home().resolve(), Path.cwd().resolve())
-        if not any(resolved == a or str(resolved).startswith(str(a) + "/") for a in allowed):
-            raise ValueError(f"path must be inside HOME or CWD, got {resolved}")
-    except (OSError, ValueError) as exc:
-        raise ValueError(f"Invalid path: {exc}") from exc
-    return p
+    return Path(s).expanduser()
 
 
 def _mb_to_bytes(value: Any) -> int:
