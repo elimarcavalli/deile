@@ -640,3 +640,107 @@ class TestGap35ScheduleCoversAllStages:
         assert "review" in actions, "schedule missing 'review'"
         assert "implement" in actions, "schedule missing 'implement'"
         assert "pr_review" in actions, "schedule missing 'pr_review'"
+
+
+# ---------------------------------------------------------------------------
+# Reviewer fixes: bugs found during code review
+# ---------------------------------------------------------------------------
+
+class TestGcCompletedOneshotsNoDuplicateCutoff:
+    """gc_completed_oneshots had a dead first assignment to cutoff (dead code removed)."""
+
+    def test_removes_entries_correctly_with_fixed_cutoff(self):
+        from datetime import timedelta
+
+        from deile.orchestration.pipeline.scheduler import (OneshotEntry,
+                                                            Schedule)
+
+        s = Schedule()
+        old_completed = OneshotEntry(
+            id="o1",
+            action="implement",
+            run_at=datetime.now(timezone.utc) - timedelta(days=30),
+            completed=True,
+        )
+        recent_completed = OneshotEntry(
+            id="o2",
+            action="review",
+            run_at=datetime.now(timezone.utc) - timedelta(days=1),
+            completed=True,
+        )
+        pending = OneshotEntry(
+            id="o3",
+            action="classify",
+            run_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            completed=False,
+        )
+        s.oneshot = [old_completed, recent_completed, pending]
+        removed = s.gc_completed_oneshots(max_age_days=7)
+        assert removed == 1
+        assert len(s.oneshot) == 2
+        remaining_ids = {o.id for o in s.oneshot}
+        assert "o1" not in remaining_ids
+        assert "o2" in remaining_ids
+        assert "o3" in remaining_ids
+
+
+class TestCleanupMergedBranchesNestedPath:
+    """cleanup_merged_branches previously used candidate.name (last component only),
+    which never matched full branch names like 'auto/issue-42'. Now uses relative_to()."""
+
+    async def test_deletes_nested_worktree_when_branch_merged(self, tmp_path):
+        import json as _json
+
+        from deile.orchestration.pipeline.worktree_manager import \
+            WorktreeManager
+
+        # Create a fake git repo
+        (tmp_path / ".git").mkdir()
+        wm = WorktreeManager(base_repo=tmp_path)
+
+        # Simulate a worktree at .worktrees/auto/issue-42 with a .git marker
+        wt_dir = tmp_path / ".worktrees" / "auto" / "issue-42"
+        wt_dir.mkdir(parents=True)
+        (wt_dir / ".git").mkdir()
+
+        merged_prs_json = _json.dumps([{"headRefName": "auto/issue-42"}]).encode()
+
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_proc = MagicMock()
+        mock_proc.communicate = AsyncMock(return_value=(merged_prs_json, b""))
+        mock_proc.returncode = 0
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            deleted = await wm.cleanup_merged_branches("owner/repo")
+
+        assert deleted == 1
+        assert not wt_dir.exists()
+
+    async def test_no_delete_when_branch_not_merged(self, tmp_path):
+        import json as _json
+
+        from deile.orchestration.pipeline.worktree_manager import \
+            WorktreeManager
+
+        (tmp_path / ".git").mkdir()
+        wm = WorktreeManager(base_repo=tmp_path)
+
+        wt_dir = tmp_path / ".worktrees" / "auto" / "issue-99"
+        wt_dir.mkdir(parents=True)
+        (wt_dir / ".git").mkdir()
+
+        # merged list is empty
+        merged_prs_json = _json.dumps([]).encode()
+
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        mock_proc = MagicMock()
+        mock_proc.communicate = AsyncMock(return_value=(merged_prs_json, b""))
+        mock_proc.returncode = 0
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            deleted = await wm.cleanup_merged_branches("owner/repo")
+
+        assert deleted == 0
+        assert wt_dir.exists()
