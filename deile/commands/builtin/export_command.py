@@ -9,7 +9,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from ...core.exceptions import CommandError
-from ..base import DirectCommand
+from ..base import CommandContext, CommandResult, DirectCommand
 
 
 class ExportCommand(DirectCommand):
@@ -28,27 +28,18 @@ class ExportCommand(DirectCommand):
             description="Export conversation history, artifacts, plans and session data in various formats.",
         ))
     
-    async def execute(self, context=None, *_legacy_args, **_legacy_kwargs) -> Any:
+    async def execute(self, context: Optional[CommandContext] = None) -> CommandResult:
         """Execute export command.
 
-        The registry calls this as ``await command.execute(context)``. We
-        accept the older ``(args, context)`` form for backward-compat. (#126)
+        Reads :class:`CommandContext.args` (the registry contract), parses
+        ``--format``/``--path``/inclusion flags, and writes the export.
+        Returns a :class:`CommandResult` whose content is a Rich summary panel.
         """
-        from ..base import CommandResult
-
-        if isinstance(context, str):
-            args = context
-            ctx_obj = _legacy_args[0] if _legacy_args else None
-        else:
-            ctx_obj = context
-            try:
-                args = ctx_obj.args if ctx_obj is not None else ""
-            except AttributeError:
-                args = ""
+        args = (getattr(context, "args", "") or "") if context is not None else ""
 
         try:
             # Parse arguments
-            parts = args.strip().split() if args and args.strip() else []
+            parts = args.strip().split() if args.strip() else []
             format_type = "md"  # default
             export_path = None
             include_artifacts = True
@@ -99,7 +90,7 @@ class ExportCommand(DirectCommand):
             # Perform export
             panel = self._perform_export(
                 format_type, export_path, include_artifacts,
-                include_plans, include_session, ctx_obj
+                include_plans, include_session, context,
             )
             return CommandResult.success_result(panel, "rich")
 

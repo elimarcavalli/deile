@@ -9,7 +9,7 @@ from rich.table import Table
 from rich.text import Text
 
 from ...core.exceptions import CommandError
-from ..base import DirectCommand
+from ..base import CommandContext, CommandResult, DirectCommand
 
 
 class ToolsCommand(DirectCommand):
@@ -25,30 +25,18 @@ class ToolsCommand(DirectCommand):
             name="tools",
             description="Display available tools, their schemas and usage statistics.",
         ))
-    
-    async def execute(self, context=None, *_legacy_args, **_legacy_kwargs) -> Any:
-        """Execute tools command.
 
-        The registry calls this as ``await command.execute(context)`` (a single
-        :class:`CommandContext`). Earlier versions took ``(args, context)`` —
-        we accept both forms for backward-compat. (Issue #126.)
+    async def execute(self, context: Optional[CommandContext] = None) -> CommandResult:
+        """Execute the tools command.
+
+        Reads :class:`CommandContext.args` (the registry contract). Returns a
+        :class:`CommandResult` whose ``content`` is a Rich renderable or a
+        JSON string depending on the requested ``--format``.
         """
-        # Backward-compat: callers passing (args, context) explicitly.
-        if isinstance(context, str):
-            args = context
-            ctx_obj = _legacy_args[0] if _legacy_args else None
-        else:
-            ctx_obj = context
-            try:
-                args = ctx_obj.args if ctx_obj is not None else ""
-            except AttributeError:
-                args = ""
-
-        from ..base import CommandResult
-
+        args = (getattr(context, "args", "") or "") if context is not None else ""
         try:
             # Parse arguments
-            parts = args.strip().split() if args and args.strip() else []
+            parts = args.strip().split() if args.strip() else []
             format_type = "list"  # default
             tool_name = None
             show_schema = False
@@ -82,7 +70,7 @@ class ToolsCommand(DirectCommand):
                 raise CommandError("Format must be one of: list, detailed, json")
 
             # Get tools data from registry (this would be injected in real implementation)
-            tools_data = self._get_tools_data(ctx_obj, tool_name)
+            tools_data = self._get_tools_data(context, tool_name)
 
             if format_type == "json":
                 return CommandResult.success_result(
@@ -114,124 +102,75 @@ class ToolsCommand(DirectCommand):
                 f"Failed to display tools information: {str(e)}", error=e
             )
     
-    def _get_tools_data(self, context: Optional[Dict[str, Any]], tool_name: Optional[str]) -> Dict[str, Any]:
-        """Get tools data from registry (mock implementation)"""
-        
-        # Mock tools data - in real implementation this would come from ToolRegistry
-        all_tools = {
-            "bash_execute": {
-                "name": "bash_execute",
-                "description": "Execute bash commands with PTY support and security controls",
-                "category": "execution",
-                "risk_level": "variable",
-                "display_policy": "system",
-                "parameters": {
-                    "command": {"type": "string", "required": True},
-                    "working_directory": {"type": "string", "required": False},
-                    "timeout": {"type": "number", "default": 60},
-                    "use_pty": {"type": "boolean", "default": False},
-                    "show_cli": {"type": "boolean", "default": True}
-                },
-                "examples": [
-                    {"command": "ls -la", "description": "List files with details"},
-                    {"command": "python3 script.py", "description": "Run Python script"}
-                ],
-                "usage_stats": {"total_calls": 15, "success_rate": 93.3, "avg_duration": 2.4}
-            },
-            "read_file": {
-                "name": "read_file",
-                "description": "Read contents of a file with encoding detection",
-                "category": "file",
-                "risk_level": "safe",
-                "display_policy": "agent",
-                "parameters": {
-                    "path": {"type": "string", "required": True},
-                    "encoding": {"type": "string", "default": "auto"},
-                    "max_size": {"type": "number", "default": 1048576}
-                },
-                "examples": [
-                    {"path": "./config.yaml", "description": "Read configuration file"},
-                    {"path": "logs/app.log", "encoding": "utf-8", "description": "Read log file"}
-                ],
-                "usage_stats": {"total_calls": 12, "success_rate": 100.0, "avg_duration": 0.1}
-            },
-            "write_file": {
-                "name": "write_file", 
-                "description": "Write content to a file with backup and validation",
-                "category": "file",
-                "risk_level": "moderate", 
-                "display_policy": "system",
-                "parameters": {
-                    "path": {"type": "string", "required": True},
-                    "content": {"type": "string", "required": True},
-                    "encoding": {"type": "string", "default": "utf-8"},
-                    "create_backup": {"type": "boolean", "default": True}
-                },
-                "examples": [
-                    {"path": "new_file.txt", "content": "Hello world", "description": "Create new file"},
-                    {"path": "config.json", "content": "{}", "description": "Update config file"}
-                ],
-                "usage_stats": {"total_calls": 8, "success_rate": 87.5, "avg_duration": 0.3}
-            },
-            "list_files": {
-                "name": "list_files",
-                "description": "List files and directories with filtering options",
-                "category": "file", 
-                "risk_level": "safe",
-                "display_policy": "system",
-                "parameters": {
-                    "path": {"type": "string", "default": "."},
-                    "recursive": {"type": "boolean", "default": False},
-                    "show_hidden": {"type": "boolean", "default": False},
-                    "pattern": {"type": "string", "required": False}
-                },
-                "examples": [
-                    {"path": ".", "recursive": True, "description": "List all files recursively"},
-                    {"pattern": "*.py", "description": "List Python files only"}
-                ],
-                "usage_stats": {"total_calls": 7, "success_rate": 100.0, "avg_duration": 0.2}
-            },
-            "find_in_files": {
-                "name": "find_in_files",
-                "description": "Search for text patterns in files with context limits",
-                "category": "search",
-                "risk_level": "safe", 
-                "display_policy": "system",
-                "parameters": {
-                    "pattern": {"type": "string", "required": True},
-                    "path": {"type": "string", "default": "."},
-                    "regex": {"type": "boolean", "default": False},
-                    "max_context_lines": {"type": "number", "default": 5, "max": 50}
-                },
-                "examples": [
-                    {"pattern": "TODO", "description": "Find TODO comments"},
-                    {"pattern": "class \\w+", "regex": True, "description": "Find class definitions"}
-                ],
-                "usage_stats": {"total_calls": 5, "success_rate": 100.0, "avg_duration": 1.8}
-            }
-        }
-        
+    def _get_tools_data(self, context: Optional[CommandContext], tool_name: Optional[str]) -> Dict[str, Any]:
+        """Read tools data from the live :class:`ToolRegistry`.
+
+        Walks every registered tool, extracts schema (parameters, security
+        level, category) and runtime stats (execution_count, enabled). No
+        mock fallback — if the registry is empty, we return an empty set so
+        ``--tools`` honestly reflects the runtime state.
+        """
+        from collections import Counter
+
+        from ...tools.registry import get_tool_registry
+
+        registry = get_tool_registry()
+        if len(registry) == 0:
+            registry.auto_discover()
+
+        tools: Dict[str, Dict[str, Any]] = {}
+        for tool in registry.list_all():
+            tools[tool.name] = self._serialize_tool(tool)
+
         if tool_name:
-            if tool_name in all_tools:
-                return {"tool": all_tools[tool_name]}
-            else:
+            if tool_name not in tools:
                 raise CommandError(f"Tool '{tool_name}' not found")
-        
+            return {"tool": tools[tool_name]}
+
+        by_category = Counter(t["category"] for t in tools.values())
+        by_risk = Counter(t["risk_level"] for t in tools.values())
         return {
-            "tools": all_tools,
+            "tools": tools,
             "summary": {
-                "total_tools": len(all_tools),
-                "by_category": {
-                    "file": 3,
-                    "execution": 1,
-                    "search": 1
-                },
-                "by_risk": {
-                    "safe": 3,
-                    "moderate": 1,
-                    "variable": 1
-                }
-            }
+                "total_tools": len(tools),
+                "by_category": dict(by_category),
+                "by_risk": dict(by_risk),
+            },
+        }
+
+    @staticmethod
+    def _serialize_tool(tool: Any) -> Dict[str, Any]:
+        """Project a :class:`Tool` to the dict shape used by the renderers."""
+        schema = getattr(tool, "schema", None)
+        params: Dict[str, Any] = {}
+        if schema is not None:
+            required = set(schema.required or [])
+            for pname, pspec in (schema.parameters or {}).items():
+                if isinstance(pspec, dict):
+                    entry: Dict[str, Any] = {
+                        "type": pspec.get("type", "any"),
+                        "required": pname in required,
+                    }
+                    if "default" in pspec:
+                        entry["default"] = pspec["default"]
+                    params[pname] = entry
+                else:
+                    params[pname] = {"type": "any", "required": pname in required}
+        risk = getattr(getattr(schema, "security_level", None), "value", "unknown") if schema else "unknown"
+        category = getattr(getattr(schema, "category", None), "value", None) or getattr(tool, "category", "unknown")
+        return {
+            "name": tool.name,
+            "description": getattr(tool, "description", "") or "",
+            "category": str(category),
+            "risk_level": str(risk),
+            "display_policy": "system",
+            "parameters": params,
+            "examples": [],
+            "usage_stats": {
+                "total_calls": int(getattr(tool, "execution_count", 0) or 0),
+                "success_rate": 0.0,
+                "avg_duration": 0.0,
+            },
         }
     
     def _create_single_tool_display(self, tool_data: Dict[str, Any], 

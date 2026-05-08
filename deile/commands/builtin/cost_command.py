@@ -10,14 +10,14 @@ Author: DEILE
 
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from typing import List
 
 from rich.console import Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from deile.commands.base import DirectCommand
+from deile.commands.base import CommandResult, DirectCommand
 from deile.core.context_manager import ContextManager
 from deile.infrastructure.monitoring.cost_tracker import get_cost_tracker
 
@@ -83,66 +83,51 @@ EXAMPLES:
         self.cost_tracker = get_cost_tracker()
         self.context_manager = ContextManager()
 
-    async def execute(self, context=None, *_legacy, **_legacy_kw):
+    async def execute(self, context=None) -> "CommandResult":
         """Execute the cost command.
 
-        Accepts either the registry call signature ``await execute(context)``
-        or the legacy ``execute(args_list)`` for back-compat. (#126)
+        Reads :class:`CommandContext.args`, dispatches to a sub-action, and
+        returns a :class:`CommandResult`. The internal ``_show_*`` helpers
+        return ``CommandResult`` directly.
         """
-        from ..base import CommandResult
 
-        # Normalise input shape — registry passes CommandContext, but legacy
-        # callers may pass a List[str] directly.
-        if isinstance(context, list):
-            args_list: List[str] = list(context)
-        elif context is None:
-            args_list = []
-        else:
-            args_str = getattr(context, "args", "") or ""
-            args_list = args_str.split() if args_str else []
-
-        def _wrap(payload: Dict[str, Any]) -> CommandResult:
-            data = payload.get("data") or {}
-            content = data.get("content") if isinstance(data, dict) else None
-            if payload.get("success"):
-                return CommandResult.success_result(
-                    content if content is not None else "",
-                    "rich" if content is not None else "text",
-                    **{k: v for k, v in (data or {}).items() if k != "content"},
-                )
-            return CommandResult.error_result(payload.get("error", "cost error"))
+        args_str = getattr(context, "args", "") or "" if context is not None else ""
+        args_list: List[str] = args_str.split() if args_str else []
 
         try:
             if not args_list:
-                return _wrap(self._show_cost_summary())
+                return self._show_cost_summary()
 
             action = args_list[0].lower()
 
             if action == "summary":
                 days = int(args_list[1]) if len(args_list) > 1 else 30
-                return _wrap(self._show_cost_summary(days))
-            elif action == "session":
-                return _wrap(self._show_session_costs())
-            elif action == "estimate":
+                return self._show_cost_summary(days)
+            if action == "session":
+                return self._show_session_costs()
+            if action == "estimate":
                 if len(args_list) < 4:
-                    return _wrap(self._error("Usage: /cost estimate <provider> <model> <tokens>"))
+                    return CommandResult.error_result(
+                        "Usage: /cost estimate <provider> <model> <tokens>"
+                    )
                 provider, model, tokens = args_list[1], args_list[2], int(args_list[3])
-                return _wrap(self._show_cost_estimate(provider, model, tokens))
-            else:
-                return _wrap(self._error(f"Unknown action: {action}"))
+                return self._show_cost_estimate(provider, model, tokens)
+            return CommandResult.error_result(f"Unknown action: {action}")
 
-        except ValueError as e:
-            return _wrap(self._error(f"Invalid parameter: {str(e)}"))
-        except Exception as e:
-            logger.error(f"CostCommand execution error: {str(e)}")
-            return _wrap(self._error(f"Command execution failed: {str(e)}"))
+        except ValueError as exc:
+            return CommandResult.error_result(f"Invalid parameter: {exc}")
+        except Exception as exc:
+            logger.error("CostCommand execution error: %s", exc)
+            return CommandResult.error_result(
+                f"Command execution failed: {exc}", error=exc
+            )
 
-    def _show_cost_summary(self, days: int = 30) -> Dict[str, Any]:
+    def _show_cost_summary(self, days: int = 30) -> "CommandResult":
         """Show comprehensive cost summary"""
         try:
             end_time = datetime.now()
             start_time = end_time - timedelta(days=days)
-            
+
             # Get cost summary
             summary = self.cost_tracker.get_cost_summary(start_time, end_time)
             session_cost = self.cost_tracker.get_current_session_cost()
@@ -205,19 +190,23 @@ EXAMPLES:
                 )
                 content = Group(summary_table, "", no_data)
             
-            return self._success({
-                'content': content,
-                'total_amount': float(summary.total_amount),
-                'session_cost': float(session_cost),
-                'period_days': days,
-                'entry_count': summary.entry_count,
-                'categories': {k: float(v) for k, v in summary.categories.items()}
-            })
-            
-        except Exception as e:
-            return self._error(f"Failed to show cost summary: {str(e)}")
+            return CommandResult.success_result(
+                content,
+                "rich",
+                total_amount=float(summary.total_amount),
+                session_cost=float(session_cost),
+                period_days=days,
+                entry_count=summary.entry_count,
+                categories={k: float(v) for k, v in summary.categories.items()},
+            )
 
-    def _show_session_costs(self) -> Dict[str, Any]:
+        except Exception as exc:
+            logger.error("Failed to show cost summary: %s", exc)
+            return CommandResult.error_result(
+                f"Failed to show cost summary: {exc}", error=exc
+            )
+
+    def _show_session_costs(self) -> "CommandResult":
         """Show current session costs"""
         try:
             session_cost = self.cost_tracker.get_current_session_cost()
@@ -246,21 +235,23 @@ EXAMPLES:
                           title="💰 Session Costs",
                           border_style=style)
             
-            return self._success({
-                'content': content,
-                'session_cost': float(session_cost)
-            })
-            
-        except Exception as e:
-            return self._error(f"Failed to show session costs: {str(e)}")
+            return CommandResult.success_result(
+                content, "rich", session_cost=float(session_cost)
+            )
 
-    def _show_cost_estimate(self, provider: str, model: str, tokens: int) -> Dict[str, Any]:
+        except Exception as exc:
+            logger.error("Failed to show session costs: %s", exc)
+            return CommandResult.error_result(
+                f"Failed to show session costs: {exc}", error=exc
+            )
+
+    def _show_cost_estimate(self, provider: str, model: str, tokens: int) -> "CommandResult":
         """Show cost estimate for API call"""
         try:
             estimate = self.cost_tracker.get_pricing_estimate(provider, model, tokens)
-            
-            if 'error' in estimate:
-                return self._error(estimate['error'])
+
+            if "error" in estimate:
+                return CommandResult.error_result(estimate["error"])
             
             # Create estimate table
             estimate_table = Table(title="💰 Cost Estimate", show_header=True, header_style="bold cyan")
@@ -311,32 +302,15 @@ EXAMPLES:
             
             content = Group(estimate_table, "", details_panel)
             
-            return self._success({
-                'content': content,
-                'estimate': estimate
-            })
-            
-        except Exception as e:
-            return self._error(f"Failed to show cost estimate: {str(e)}")
+            return CommandResult.success_result(
+                content, "rich", estimate=estimate
+            )
 
-    def _success(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Return success response"""
-        return {
-            "success": True,
-            "command": self.name,
-            "data": data,
-            "timestamp": datetime.now().isoformat()
-        }
-
-    def _error(self, message: str) -> Dict[str, Any]:
-        """Return error response"""
-        logger.error(f"CostCommand error: {message}")
-        return {
-            "success": False,
-            "command": self.name,
-            "error": message,
-            "timestamp": datetime.now().isoformat()
-        }
+        except Exception as exc:
+            logger.error("Failed to show cost estimate: %s", exc)
+            return CommandResult.error_result(
+                f"Failed to show cost estimate: {exc}", error=exc
+            )
 
 
 # Register the command
