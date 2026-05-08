@@ -291,6 +291,18 @@
 
 ---
 
+## Decisão #24 — TOCTOU mitigation em `claim_with_batch`: re-fetch após `add_labels`
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 patch |
+| Pilar dono | 03-Princípios (Security-First), 02-Arquitetura |
+| Decisão | Após `add_labels(label)` em `claim_with_batch`, o cliente faz um re-fetch da issue/PR e verifica se há labels de batch de outros monitores além do próprio. Se detectado, remove o label próprio e retorna `None` (falha silenciosa). Isso mitiga a race condition TOCTOU onde dois monitores adicionam labels quase simultaneamente (GitHub API não é transacional). |
+| Evidência | `deile/orchestration/pipeline/github_client.py:claim_with_batch` |
+| Motivação | O GitHub REST API não oferece operação atômica "adicionar label apenas se ausente". A janela entre `get_issue` (check) e `add_labels` (use) é explorável. O re-fetch post-add detecta o conflito após o fato e recua, garantindo que apenas um monitor processe o item. O recuo é best-effort (remoção pode falhar em caso de erro de rede). |
+
+---
+
 ## Como adicionar uma nova decisão
 
 | # | Passo |

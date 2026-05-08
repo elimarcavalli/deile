@@ -86,6 +86,11 @@ class PipelineConfig:
     use_pid_lock: bool = True
     # When True, Stage 3 reviews any non-draft PR regardless of head branch origin.
     enable_review_human_prs: bool = False
+    # Limit catch-up to runs missed within the last N hours.  None = no limit (legacy).
+    # Recommended: 1–2 hours so a long outage does not flood the queue.
+    bootstrap_replay_window_hours: Optional[int] = 1
+    # When True, cleanup_merged_branches() runs once on startup.
+    enable_worktree_cleanup: bool = True
 
 
 @dataclass
@@ -103,6 +108,8 @@ class _Stats:
     scheduled_runs: int = 0
     follow_ups_opened: int = 0
     follow_ups_skipped: int = 0
+    # Incremented when a scheduled action is disabled via enable_* config.
+    skipped_runs: int = 0
 
 
 class PipelineMonitor:
@@ -229,13 +236,34 @@ class PipelineMonitor:
 
     async def _catch_up_pending(self) -> None:
         """On startup, drain any schedule entries whose time already passed."""
+        # Opportunistic cleanup: remove on-disk worktrees for already-merged PRs.
+        if self.config.enable_worktree_cleanup:
+            try:
+                deleted = await self.worktrees.cleanup_merged_branches(self.config.repo)
+                if deleted:
+                    logger.info("startup: cleaned up %d merged worktrees", deleted)
+            except Exception as exc:  # noqa: BLE001 — cleanup is best-effort
+                logger.warning("startup worktree cleanup failed: %s", exc)
+
         try:
             schedule = self.schedule_store.load()
         except Exception as exc:  # noqa: BLE001 — schedule errors must not block boot
             logger.warning("schedule load failed; skipping catch-up: %s", exc)
             return
-        pending = schedule.compute_pending()
+
+        # GC completed oneshots so the YAML doesn't grow indefinitely.
+        removed = schedule.gc_completed_oneshots()
+        if removed:
+            logger.info("startup: gc'd %d completed oneshots from schedule", removed)
+
+        pending = schedule.compute_pending(
+            replay_window_hours=self.config.bootstrap_replay_window_hours
+        )
         if not pending:
+            try:
+                self.schedule_store.save(schedule)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("could not persist schedule after startup gc: %s", exc)
             return
         logger.info(
             "monitor %s catching up on %d missed runs",
@@ -252,16 +280,36 @@ class PipelineMonitor:
 
     async def _run_scheduled(self, run: PendingRun) -> None:
         """Execute a single scheduled action by name."""
-        if run.action == "classify" and self.config.enable_classify:
+        _ENABLE_FLAGS = {
+            "classify": self.config.enable_classify,
+            "review": self.config.enable_review,
+            "implement": self.config.enable_implement,
+            "pr_review": self.config.enable_pr_review,
+            "follow_ups": self.config.enable_follow_ups,
+        }
+        flag = _ENABLE_FLAGS.get(run.action)
+        if flag is False:
+            # Operator scheduled this action but disabled it in config — warn loudly.
+            logger.warning(
+                "scheduled action %r is disabled (enable_%s=False); "
+                "skipping run at %s. Remove the schedule entry or re-enable the flag.",
+                run.action, run.action.replace("_", "_"), run.when.isoformat(),
+            )
+            self._stats.skipped_runs += 1
+            return
+
+        if run.action == "classify":
             await self._classify_new_issues()
-        elif run.action == "review" and self.config.enable_review:
+        elif run.action == "review":
             await self._review_one_new_issue()
-        elif run.action == "implement" and self.config.enable_implement:
+        elif run.action == "implement":
             await self._implement_one_reviewed_issue()
-        elif run.action == "pr_review" and self.config.enable_pr_review:
+        elif run.action == "pr_review":
             await self._review_one_open_pr()
+        elif run.action == "follow_ups":
+            await self._standalone_follow_ups()
         else:
-            logger.debug("scheduled action %s skipped (disabled or unknown)", run.action)
+            logger.debug("scheduled action %s unknown; skipped", run.action)
 
     async def stop(self) -> None:
         self._stop_event.set()
@@ -715,6 +763,35 @@ class PipelineMonitor:
             logger.warning("stage 4: could not post follow-up report on PR #%s: %s", pr_number, exc)
 
         await self.notifier.follow_ups_processed(pr_number, len(opened), len(skipped))
+
+    # ----- standalone stage 4: follow_ups action -------------------
+
+    async def _standalone_follow_ups(self) -> None:
+        """Process follow-ups for recently merged PRs that haven't been processed yet.
+
+        This is the standalone version of stage 4, invocable via the schedule
+        without requiring a concurrent stage 3 run.  Idempotency is enforced by
+        the ``~follow_ups:processed`` label: PRs that already have this label
+        are skipped.
+        """
+        _PROCESSED_LABEL = "~follow_ups:processed"
+        try:
+            merged_prs = await self.github.list_recently_merged_prs()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("standalone follow_ups: could not list merged PRs: %s", exc)
+            return
+
+        for pr in merged_prs:
+            if _PROCESSED_LABEL in pr.labels:
+                continue
+            await self._stage4_follow_ups(pr.number, pr.title, pr.url)
+            try:
+                await self.github.add_labels("pr", pr.number, [_PROCESSED_LABEL])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "standalone follow_ups: could not mark PR #%d processed: %s",
+                    pr.number, exc,
+                )
 
 
 # ---------------------------------------------------------------------------

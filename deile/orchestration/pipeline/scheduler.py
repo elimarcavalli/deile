@@ -53,7 +53,7 @@ from deile.orchestration.pipeline.cron import CronExpressionError, next_after
 logger = logging.getLogger(__name__)
 
 
-VALID_ACTIONS = {"review", "implement", "pr_review", "classify"}
+VALID_ACTIONS = {"review", "implement", "pr_review", "classify", "follow_ups"}
 
 
 class ScheduleError(DEILEError):
@@ -203,15 +203,30 @@ class Schedule:
 
     # ---- catch-up + tick selection -------------------------------
 
-    def compute_pending(self, now: Optional[datetime] = None) -> List[PendingRun]:
+    def compute_pending(
+        self,
+        now: Optional[datetime] = None,
+        *,
+        replay_window_hours: Optional[int] = None,
+    ) -> List[PendingRun]:
         """Return all schedule entries whose run time is <= now.
 
         Sorted by ``when`` ascending (oldest miss first). For coalescing
         recurring entries, only ONE PendingRun is emitted per entry —
         the most recent missed slot. With ``replay_all=True``, every
         missed slot becomes its own PendingRun.
+
+        ``replay_window_hours``: when set, recurring entries are only
+        considered "pending" if their missed slot falls within the last
+        *N* hours.  Slots older than the window are skipped (their
+        ``last_run_at`` is still advanced on the next explicit save, so
+        they are not replayed on the following startup).  This limits
+        catch-up after a long outage to at most one run per entry.
+        ``None`` (default) means unlimited look-back — the same as the
+        legacy behaviour.
         """
         now = now or _now_utc()
+        cutoff = (now - timedelta(hours=replay_window_hours)) if replay_window_hours else None
         out: List[PendingRun] = []
 
         for r in self.recurring:
@@ -226,6 +241,18 @@ class Schedule:
                 continue
             if next_at > now:
                 continue  # not due yet
+            if cutoff is not None and next_at < cutoff:
+                # The first pending slot is older than the replay window;
+                # treat it as "already ran" for catch-up purposes — advance
+                # to the latest slot within the window instead.
+                # Re-compute with the cutoff as anchor so we only replay slots
+                # that are recent enough to matter.
+                try:
+                    next_at = next_after(r.cron, cutoff)
+                except CronExpressionError:
+                    continue
+                if next_at > now:
+                    continue
             if not r.replay_all:
                 # Coalesce: collapse N misses to 1, fire at the latest miss.
                 latest = next_at

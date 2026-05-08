@@ -281,23 +281,58 @@ class GitHubClient:
 
         Returns the batch_id on success, or None if the issue already has a
         ``~batch:`` label (someone else picked it up).
+
+        Best-effort TOCTOU mitigation: after ``add_labels`` we re-fetch the
+        item and verify that only OUR batch label is present.  If another
+        ``~batch:`` label appeared between our read and our write we remove the
+        label we just added and yield to the winner.  This is not a true
+        distributed lock (no ``If-Match``/ETag support in ``gh``), but it
+        catches the common case where two monitors overlap on a fast repo.
         """
-        # Re-read the latest labels — list-then-add is racy across runners but
-        # acceptable for a single-instance pipeline (the typical deployment).
-        if kind == "issue":
-            current = await self.get_issue(number)
-        elif kind == "pr":
-            current = await self.get_pr(number)
-            if current is None:
-                return None
-        else:
+        async def _fetch_current():
+            if kind == "issue":
+                return await self.get_issue(number)
+            cur = await self.get_pr(number)
+            return cur  # may be None
+
+        if kind not in ("issue", "pr"):
             raise ValueError(f"kind must be 'issue' or 'pr', got {kind!r}")
+
+        current = await _fetch_current()
+        if current is None:
+            return None
         if current.batch_id is not None:
             return None
+
         batch_id = compute_batch_id_for_number(kind, number)
         label = make_batch_label(batch_id)
         await self._ensure_label(label, color="d73a4a", description="Pipeline batch lock")
         await self.add_labels(kind, number, [label])
+
+        # Re-fetch to verify we are the sole claimant.
+        after = await _fetch_current()
+        if after is None:
+            return None
+        foreign = [
+            lb for lb in after.labels
+            if is_batch_label(lb) and lb != label
+        ]
+        if foreign:
+            # Another monitor also applied a batch label — we lost the race.
+            # Remove ours and yield.
+            logger.warning(
+                "claim_with_batch: TOCTOU race detected on %s #%d; "
+                "foreign labels=%s; removing our label and yielding",
+                kind, number, foreign,
+            )
+            try:
+                await self.remove_labels(kind, number, [label])
+            except GhCommandError as exc:
+                logger.warning(
+                    "claim_with_batch: could not remove our label after race: %s", exc
+                )
+            return None
+
         return batch_id
 
     async def _ensure_label(self, name: str, *, color: str, description: str) -> None:
@@ -453,6 +488,38 @@ class GitHubClient:
                 len(seen), offset + page_size,
             )
         return result
+
+    async def list_recently_merged_prs(self, *, limit: int = 20) -> List[PrRef]:
+        """Return recently merged PRs, ordered most-recent-first.
+
+        Used by standalone stage 4 to find PRs that need follow-up processing.
+        Returns an empty list on ``gh`` error (logged at WARNING).
+        """
+        try:
+            out = await self._run_checked(
+                "pr", "list",
+                "--repo", self.repo,
+                "--state", "merged",
+                "--limit", str(limit),
+                "--json", "number,title,url,labels,headRefName,baseRefName,state,isDraft",
+            )
+        except GhCommandError as exc:
+            logger.warning("list_recently_merged_prs failed: %s", exc)
+            return []
+        data = json.loads(out or "[]")
+        return [
+            PrRef(
+                number=item["number"],
+                title=item["title"],
+                url=item["url"],
+                labels=tuple(lab["name"] for lab in item.get("labels", [])),
+                head_ref=item.get("headRefName", ""),
+                base_ref=item.get("baseRefName", "main"),
+                state=item.get("state", "merged"),
+                is_draft=bool(item.get("isDraft", False)),
+            )
+            for item in data
+        ]
 
     async def clear_batch_label(self, kind: str, number: int) -> None:
         """Remove all ``~batch:*`` labels from an issue or PR (gap #9).
