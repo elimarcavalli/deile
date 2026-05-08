@@ -181,21 +181,41 @@ class SkillsCommand(DirectCommand):
 
         raw_path = remaining[0]
         mgr = self._manager()
-        added = mgr.add_skills_path(raw_path, scope=scope)
+        # P2-3: detailed return tells apart "added" / "already_present" /
+        # "denied" / "io_error" so the rendered panel doesn't lie about
+        # success when a permission denial silently no-op'd the call.
+        added, reason = mgr.add_skills_path_detailed(raw_path, scope=scope)
 
         # SettingsManager resolves the path to absolute; show what was stored.
         stored = mgr.list_skills_paths(scope)[-1] if added else raw_path
 
+        body = Text()
         if added:
             suffix = self._hot_reload(context)
-            body = Text()
             body.append(f"Added to {scope} skills paths.\n", style="bright_green")
             body.append(stored, style="bright_blue")
             if suffix:
                 body.append(f"\n{suffix}", style="dim")
             style = "green"
-        else:
-            body = Text()
+        elif reason == "denied":
+            body.append(
+                "Permission denied — settings writes are fail-closed by "
+                "default (issue #125).\n",
+                style="bright_red",
+            )
+            body.append(
+                "Add a 'settings_write_interactive' rule to "
+                "config/permissions.yaml to enable. See "
+                "docs/system_design/09-CONFIGURACAO.md for the snippet.\n",
+                style="dim",
+            )
+            body.append(raw_path, style="dim")
+            style = "red"
+        elif reason == "io_error":
+            body.append("Write failed — see logs for details.\n", style="bright_red")
+            body.append(raw_path, style="dim")
+            style = "red"
+        else:  # already_present
             body.append("Already present — no change.\n", style="yellow")
             body.append(stored, style="bright_blue")
             style = "yellow"
@@ -219,18 +239,30 @@ class SkillsCommand(DirectCommand):
 
         raw_path = remaining[0]
         mgr = self._manager()
-        removed = mgr.remove_skills_path(raw_path, scope=scope)
+        # P2-3: detailed return — see _add_path.
+        removed, reason = mgr.remove_skills_path_detailed(raw_path, scope=scope)
 
+        body = Text()
         if removed:
             suffix = self._hot_reload(context)
-            body = Text()
             body.append(f"Removed from {scope} skills paths.\n", style="bright_green")
             body.append(raw_path, style="dim")
             if suffix:
                 body.append(f"\n{suffix}", style="dim")
             style = "green"
-        else:
-            body = Text()
+        elif reason == "denied":
+            body.append(
+                "Permission denied — settings writes are fail-closed by "
+                "default (issue #125).\n",
+                style="bright_red",
+            )
+            body.append(raw_path, style="dim")
+            style = "red"
+        elif reason == "io_error":
+            body.append("Write failed — see logs for details.\n", style="bright_red")
+            body.append(raw_path, style="dim")
+            style = "red"
+        else:  # not_found
             body.append("Not found — no change.\n", style="yellow")
             body.append(raw_path, style="dim")
             style = "yellow"
