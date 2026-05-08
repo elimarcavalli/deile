@@ -8,7 +8,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from ...core.exceptions import CommandError
-from ..base import DirectCommand
+from ..base import CommandResult, DirectCommand
 
 
 class ContextCommand(DirectCommand):
@@ -22,7 +22,7 @@ class ContextCommand(DirectCommand):
         )
         super().__init__(config)
     
-    async def execute(self, context) -> Any:
+    async def execute(self, context) -> CommandResult:
         """Execute context command"""
         args = context.args if hasattr(context, 'args') else ""
         
@@ -30,7 +30,7 @@ class ContextCommand(DirectCommand):
             # Parse arguments
             parts = args.strip().split() if args.strip() else []
             format_type = "summary"  # default
-            _ = False
+            _export = False
             show_tokens = False
             
             i = 0
@@ -58,13 +58,25 @@ class ContextCommand(DirectCommand):
             context_data = self._get_context_data(context)
             
             if format_type == "json":
-                return json.dumps(context_data, indent=2, default=str)
+                return CommandResult.success_result(
+                    content=json.dumps(context_data, indent=2, default=str),
+                    content_type="json",
+                    command_name="context",
+                    format="json"
+                )
             
             # Create Rich display
             if format_type == "summary":
-                return self._create_summary_display(context_data, show_tokens)
+                display = self._create_summary_display(context_data, show_tokens)
             else:  # detailed
-                return self._create_detailed_display(context_data, show_tokens)
+                display = self._create_detailed_display(context_data, show_tokens)
+            
+            return CommandResult.success_result(
+                content=display,
+                content_type="rich",
+                command_name="context",
+                format=format_type
+            )
             
         except Exception as e:
             raise CommandError(f"Failed to display context: {str(e)}")
