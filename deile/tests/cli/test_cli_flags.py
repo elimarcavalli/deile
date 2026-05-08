@@ -56,6 +56,23 @@ def _run_cli(argv: List[str]) -> tuple[int, str, str]:
     return code, out.getvalue(), err.getvalue()
 
 
+_PROVIDER_ENV_KEYS = (
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "GOOGLE_API_KEY",
+)
+
+
+@pytest.fixture
+def no_api_keys(monkeypatch):
+    """Strip every provider API key so read-only flags exercise the no-bootstrap path."""
+    for k in _PROVIDER_ENV_KEYS:
+        monkeypatch.delenv(k, raising=False)
+    _purge_registry_singleton()
+    return monkeypatch
+
+
 # ---------------------------------------------------------------------------
 # 1. metadata fields exist on SlashCommand base
 # ---------------------------------------------------------------------------
@@ -194,6 +211,20 @@ class TestArgparseIntegration:
         assert active is not None
         assert active.flag == "--status"
 
+    def test_find_active_spec_skips_modifier_flags(self):
+        """Modifier flags (``dispatch=False``) must NOT be selected for one-shot dispatch."""
+        modifier = CLIFlagSpec(
+            flag="--noop-modifier", command_name="debug", dispatch=False,
+        )
+        dispatchable = CLIFlagSpec(
+            flag="--noop-dispatch", command_name="status",
+        )
+        ns = argparse.Namespace(
+            noop_modifier=True, noop_dispatch=True,
+        )
+        active = find_active_spec([modifier, dispatchable], ns)
+        assert active is dispatchable, "modifier flag must be skipped"
+
     def test_find_active_spec_returns_none_when_no_flag(self):
         registry = _make_registry()
         specs = build_cli_flag_specs(registry)
@@ -276,15 +307,8 @@ _SAFE_FLAGS_NO_ARG: List[str] = [
 
 @pytest.mark.parametrize("flag", _SAFE_FLAGS_NO_ARG)
 class TestFlagSmoke:
-    def test_flag_exits_zero_without_api_keys(self, flag, monkeypatch):
+    def test_flag_exits_zero_without_api_keys(self, flag, no_api_keys):
         """Read-only flags must work even when no provider API key is set."""
-        # Strip every provider key
-        for k in (
-            "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-            "DEEPSEEK_API_KEY", "GOOGLE_API_KEY",
-        ):
-            monkeypatch.delenv(k, raising=False)
-        _purge_registry_singleton()
         code, stdout, stderr = _run_cli([flag])
         assert code == 0, (
             f"`deile {flag}` returned exit={code}\n"
@@ -298,36 +322,24 @@ class TestFlagSmoke:
 
 
 class TestFlagsWithArguments:
-    def test_export_accepts_path_argument(self, tmp_path, monkeypatch):
-        for k in (
-            "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-            "DEEPSEEK_API_KEY", "GOOGLE_API_KEY",
-        ):
-            monkeypatch.delenv(k, raising=False)
-        _purge_registry_singleton()
+    def test_export_accepts_path_argument(self, tmp_path, no_api_keys):
         export_target = tmp_path / "export-out"
-        code, stdout, stderr = _run_cli(["--export", str(export_target)])
+        code, _stdout, stderr = _run_cli(["--export", str(export_target)])
         assert code == 0, f"stderr={stderr}"
 
-    def test_model_strategy_accepts_name_argument(self, monkeypatch):
-        for k in (
-            "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-            "DEEPSEEK_API_KEY", "GOOGLE_API_KEY",
-        ):
-            monkeypatch.delenv(k, raising=False)
-        _purge_registry_singleton()
+    def test_export_accepts_path_via_equals_syntax(self, tmp_path, no_api_keys):
+        """argparse must accept ``--export=PATH`` as well as ``--export PATH``."""
+        export_target = tmp_path / "export-equals"
+        code, _stdout, stderr = _run_cli([f"--export={export_target}"])
+        assert code == 0, f"stderr={stderr}"
+
+    def test_model_strategy_accepts_name_argument(self, no_api_keys):
         code, stdout, stderr = _run_cli(["--model-strategy", "task_optimized"])
         assert code == 0, f"stderr={stderr}"
         assert "Strategy" in stdout or "strategy" in stdout.lower()
 
-    def test_model_strategy_rejects_invalid_name(self, monkeypatch):
-        for k in (
-            "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-            "DEEPSEEK_API_KEY", "GOOGLE_API_KEY",
-        ):
-            monkeypatch.delenv(k, raising=False)
-        _purge_registry_singleton()
-        code, stdout, stderr = _run_cli(["--model-strategy", "bogus_strategy"])
+    def test_model_strategy_rejects_invalid_name(self, no_api_keys):
+        code, _stdout, _stderr = _run_cli(["--model-strategy", "bogus_strategy"])
         assert code != 0
 
 
@@ -345,6 +357,73 @@ class TestErrorPaths:
 
 
 # ---------------------------------------------------------------------------
+# 7b. registry edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestRegistryEdgeCases:
+    def test_empty_registry_yields_empty_specs(self):
+        """``build_cli_flag_specs`` on an empty registry must not raise."""
+        empty = CommandRegistry()  # no auto-discover
+        assert build_cli_flag_specs(empty) == []
+
+    def test_command_without_cli_flag_metadata_is_skipped(self):
+        """Commands that don't declare cli_flag/cli_extra_flags produce no spec."""
+        from deile.commands.base import (CommandContext, CommandResult,
+                                         DirectCommand)
+        from deile.config.manager import CommandConfig
+
+        class _Silent(DirectCommand):
+            def __init__(self):
+                super().__init__(CommandConfig(name="silent_no_flag", description="x"))
+
+            async def execute(self, context: CommandContext) -> CommandResult:
+                return CommandResult.success_result("ok")
+
+        registry = CommandRegistry()
+        registry.register_command(_Silent())
+        specs = build_cli_flag_specs(registry)
+        assert all(s.command_name != "silent_no_flag" for s in specs)
+
+    def test_duplicate_cli_flag_logs_warning_and_first_wins(self, caplog):
+        """Two commands declaring the same cli_flag: builder warns, keeps first."""
+        import logging
+
+        from deile.commands.base import (CommandContext, CommandResult,
+                                         DirectCommand)
+        from deile.config.manager import CommandConfig
+
+        class _A(DirectCommand):
+            cli_flag = "--dup-collision-test"
+            cli_help = "first"
+
+            def __init__(self):
+                super().__init__(CommandConfig(name="dup_a", description="a"))
+
+            async def execute(self, context: CommandContext) -> CommandResult:
+                return CommandResult.success_result("a")
+
+        class _B(DirectCommand):
+            cli_flag = "--dup-collision-test"
+            cli_help = "second"
+
+            def __init__(self):
+                super().__init__(CommandConfig(name="dup_b", description="b"))
+
+            async def execute(self, context: CommandContext) -> CommandResult:
+                return CommandResult.success_result("b")
+
+        registry = CommandRegistry()
+        registry.register_command(_A())
+        registry.register_command(_B())
+        with caplog.at_level(logging.WARNING, logger="deile.commands.cli_flags"):
+            specs = build_cli_flag_specs(registry)
+        flags = [s for s in specs if s.flag == "--dup-collision-test"]
+        assert len(flags) == 1, "duplicate must be deduped (first wins)"
+        assert any("Duplicate CLI flag" in rec.message for rec in caplog.records)
+
+
+# ---------------------------------------------------------------------------
 # 8. /version slash command exists (issue #126 marks it as missing)
 # ---------------------------------------------------------------------------
 
@@ -354,25 +433,17 @@ class TestVersionCommand:
         registry = _make_registry()
         assert registry.has_command("version")
 
-    def test_version_command_returns_version_string(self):
-        import asyncio
-
+    async def test_version_command_returns_version_string(self):
         from deile.commands.base import CommandContext
         from deile.commands.builtin.version_command import VersionCommand
         cmd = VersionCommand()
         ctx = CommandContext(user_input="/version", args="")
-        result = asyncio.run(cmd.execute(ctx))
+        result = await cmd.execute(ctx)
         assert result.success
         from deile.__version__ import __version__
         assert result.metadata.get("version") == __version__
 
-    def test_version_flag_prints_version(self, monkeypatch):
-        for k in (
-            "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-            "DEEPSEEK_API_KEY", "GOOGLE_API_KEY",
-        ):
-            monkeypatch.delenv(k, raising=False)
-        _purge_registry_singleton()
+    def test_version_flag_prints_version(self, no_api_keys):
         code, stdout, _ = _run_cli(["--version"])
         from deile.__version__ import __version__
         assert code == 0
@@ -385,18 +456,12 @@ class TestVersionCommand:
 
 
 class TestDebugFlagIsModifier:
-    def test_debug_alone_does_not_dispatch_one_shot_command(self, monkeypatch):
+    def test_debug_alone_does_not_dispatch_one_shot_command(self, no_api_keys):
         """`deile --debug` (no message) should NOT run /debug as a one-shot.
 
         It must instead enter interactive mode. We patch _DeileCLI to avoid
         actually starting the REPL.
         """
-        for k in (
-            "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-            "DEEPSEEK_API_KEY", "GOOGLE_API_KEY",
-        ):
-            monkeypatch.delenv(k, raising=False)
-        _purge_registry_singleton()
         with patch("deile.cli._DeileCLI") as mock_cli_cls, \
                 patch("sys.stdin.isatty", return_value=True):
             mock_instance = mock_cli_cls.return_value
@@ -409,13 +474,7 @@ class TestDebugFlagIsModifier:
             mock_cli_cls.assert_called_once()
             assert code == 0
 
-    def test_debug_flag_sets_settings_debug_enabled(self, monkeypatch):
-        for k in (
-            "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-            "DEEPSEEK_API_KEY", "GOOGLE_API_KEY",
-        ):
-            monkeypatch.delenv(k, raising=False)
-        _purge_registry_singleton()
+    def test_debug_flag_sets_settings_debug_enabled(self, no_api_keys):
         # Reset settings singleton so we observe the change
         import deile.config.settings as _sm
         _sm._settings = None
