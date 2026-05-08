@@ -25,10 +25,24 @@
 
 | Local | Quando emite |
 |---|---|
-| `deile/commands/settings_manager.py:set_setting` | Toda escrita em `.deile/settings.json` (allowed/denied/invalid). `details` contém `key_path`, `scope`, fingerprint SHA-256 truncado do valor antigo e novo (16 hex chars). Chaves que casam com `_SECRET_KEY_PATTERNS` (`token`, `key`, `secret`, `password`, `api_`) viram `"<redacted>"` em vez de hash — valor cru nunca vai para o log. Issue #125. |
+| `deile/commands/settings_manager.py:set_setting` / `set_preference` | Toda escrita em `.deile/settings.json` (allowed/denied/invalid/refused_secret). `details` contém `key_path`, `scope`, fingerprint SHA-256 truncado do valor antigo e novo (16 hex chars). Chaves que casam com `_SECRET_KEY_PATTERNS` (`token`, `key`, `secret`, `password`, `api_`) viram `"<redacted>"` em vez de hash — valor cru nunca vai para o log nem para `details.error`. Issue #125. |
 | `deile/commands/settings_manager.py:add_skills_path` / `remove_skills_path` | Cada modificação de `skills_paths`. `details.path_fingerprint` carrega SHA-256 truncado do path. |
 
-> O resource string segue `settings:<scope>:<detail>` (e.g. `settings:global:logging.level`). Operadores podem refinar a permissão default via `config/permissions.yaml` — a regra `settings_write_default` (`deile/security/permissions.py:_load_default_rules`) é o ponto de partida.
+> O resource string segue `settings:<scope>:<detail>` (e.g. `settings:global:logging.level`). A regra default `settings_write_default` (`deile/security/permissions.py:_load_default_rules`) é **fail-closed** (`PermissionLevel.READ` = nega `write`) desde a issue #125. Operadores que querem habilitar escrita de settings devem adicionar uma regra explícita ao `config/permissions.yaml`:
+>
+> ```yaml
+> permission_rules:
+>   - id: settings_write_interactive
+>     name: Settings Write (Interactive)
+>     description: Allow operator-initiated settings writes
+>     resource_type: file
+>     resource_pattern: '^settings:(global|project):.*$'
+>     tool_names: [settings_manager]
+>     permission_level: write
+>     priority: 40   # menor que 50 para vencer a regra default
+> ```
+>
+> Sem essa regra, `set_setting`, `set_preference`, `add_skills_path` e `remove_skills_path` retornam `False`, emitem `AuditEvent(result="denied")` e não tocam o disco.
 
 ### Helpers de conveniência
 

@@ -89,6 +89,30 @@ Default behavior in V1: `'auto'` grace period — non-allowlisted projects still
 
 > The trust boundary is read **only** from the user's global layer (`~/.deile/settings.json`). The project layer cannot allowlist itself — that would defeat the purpose.
 
+### Settings writes are fail-closed (issue #125)
+
+`set_setting`, `set_preference`, `add_skills_path`, and `remove_skills_path` route through `PermissionManager.check_permission` before touching disk. The default rule registered in `permissions.py:_load_default_rules` (`settings_write_default`) is `PermissionLevel.READ` — i.e. **deny write**. This matches the security-first principle in `03-PRINCIPIOS-ARQUITETURAIS.md` §5: a missing operator policy must not silently grant write access to security-relevant configuration.
+
+To enable interactive writes (the `/settings`, `/skills add`, `--set` paths), add a policy override to `config/permissions.yaml`:
+
+```yaml
+permission_rules:
+  - id: settings_write_interactive
+    name: Settings Write (Interactive)
+    description: Allow operator-initiated settings writes
+    resource_type: file
+    resource_pattern: '^settings:(global|project):.*$'
+    tool_names: [settings_manager]
+    permission_level: write
+    priority: 40   # lower than the default rule's 50 so this wins
+```
+
+Without this rule, every write attempt logs `permission denied` to the audit (`SECURITY_POLICY_CHANGED`, `result="denied"`) and the calling command surfaces the failure to the user. To go even tighter, narrow the regex (e.g. `^settings:global:.*$` to forbid project-scope writes) or restrict the tool name. To go fully open (not recommended), keep `priority: 40` and `permission_level: write` — the operator owns this risk explicitly.
+
+### Type-safety of legacy `config/settings.json` (issue #125 P1-4)
+
+`Settings.load_from_file` is the legacy fallback path used when neither `~/.deile/settings.json` nor `<cwd>/.deile/settings.json` exists. As of issue #125 patch (review feedback), it now applies the converters from `_OVERRIDE_HANDLERS` to every value it accepts — not just filtering the key allowlist. Strings like `enable_file_safety_checks: "yes-please"` or `trust_project_layer_dirs: "/single"` are rejected with a warning instead of silently colliding with the typed dataclass fields.
+
 ## `ConfigManager` (config estruturada com hot-reload, em `deile/config/manager.py`)
 
 Configura múltiplas seções tipadas:
