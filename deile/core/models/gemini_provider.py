@@ -952,8 +952,8 @@ class GeminiProvider(ModelProvider):
         
         return input_cost + output_cost
     
-    def reload_config(self, gemini_config=None) -> None:
-        """Recarrega configurações do provider"""
+    def reload_config_from_gemini(self, gemini_config=None) -> None:
+        """Recarrega configurações do provider a partir de um gemini_config"""
         if gemini_config is None:
             try:
                 from ...config import get_config_manager

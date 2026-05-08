@@ -39,7 +39,7 @@ def _make_invocation_error(provider_id: str, http_status: int = 401) -> Provider
 
 class TestModelErrorContext:
     def test_model_error_carries_context(self):
-        _make_envelope("anthropic")
+        _envelope = _make_envelope("anthropic")
         errors = {"anthropic": {"error_type": "auth", "http_status": 401, "raw_json": {}}}
         err = ModelError(
             "ALL_TIER_PROVIDERS_FAILED",
@@ -181,7 +181,7 @@ class TestLogRouterEvent:
 
         lines = events_file.read_text().strip().splitlines()
         assert len(lines) == 2
-        events = [json.loads(line)["event"] for line in lines]
+        events = [json.loads(ln)["event"] for ln in lines]
         assert events == ["cascade_fallback", "circuit_breaker_opened"]
 
     @pytest.mark.asyncio

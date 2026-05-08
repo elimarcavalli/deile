@@ -49,11 +49,13 @@ JSON aninhado por área. Apenas as chaves listadas em `_OVERRIDE_HANDLERS` são 
   "concurrency": { "max_concurrent_requests": 10, "request_timeout": 120 },
   "file_safety": { "enabled": true, "max_file_size_bytes": 1048576 },
   "deile_md":    { "enabled": true, "max_bytes": 65536 },
-  "skills":      { "paths": [] },
+  "skills_paths": [],
   "environment": "development",
   "debug":       false
 }
 ```
+
+> Note: `skills_paths` is the only top-level array with union semantics — values from the global layer and the project layer are merged (global first, duplicates removed). All other keys follow standard project-wins-over-global layering.
 
 ## `ConfigManager` (config estruturada com hot-reload, em `deile/config/manager.py`)
 

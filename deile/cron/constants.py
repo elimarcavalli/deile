@@ -1,15 +1,17 @@
 """Central constants for the cron subsystem.
 
-Deployment-tunable values are backed by env vars.  Truncation limits are
-pure Python constants.
+Deployment-tunable values are read from ``~/.deile/settings.json`` (or the
+project-level ``.deile/settings.json``). DEILE_CRON_* env vars remain
+supported as a deprecated fallback.
+Truncation limits are pure Python constants.
 """
 from __future__ import annotations
 
-import os
+from deile.config.settings import get_settings
 
 # ── CronRunner ────────────────────────────────────────────────────────────
 #: Default polling cadence for :class:`CronRunner`.
-CRON_POLL_INTERVAL_SECONDS: int = int(os.environ.get("DEILE_CRON_POLL_INTERVAL", "30"))
+CRON_POLL_INTERVAL_SECONDS: int = get_settings().cron_poll_interval
 #: Seconds ``stop()`` waits for the loop task before cancelling it.
 CRON_STOP_TIMEOUT_SECONDS: int = 5
 

@@ -15,7 +15,6 @@ package. Either path uses ``DEILE_BOT_DISCORD_TOKEN`` from the environment.
 from __future__ import annotations
 
 import logging
-import os
 from typing import Awaitable, Callable, Optional
 
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
@@ -55,7 +54,12 @@ class DiscordNotifier:
         *,
         dm_fn: Optional[Callable[[str, str], Awaitable[dict]]] = None,
     ) -> None:
-        self.user_id = user_id or os.environ.get("DEILE_PIPELINE_NOTIFY_USER_ID", "")
+        if user_id is not None:
+            self.user_id = user_id
+        else:
+            from deile.config.settings import get_settings
+
+            self.user_id = get_settings().pipeline_notify_user_id or ""
         self._dm_fn = dm_fn
 
     @property

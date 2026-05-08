@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -47,14 +46,16 @@ _PROTECTED_SUBDIRS = {"main"}  # worktrees that must never be removed
 def _resolve_base_path(override: Optional[str] = None) -> Path:
     """Return the base repository path.
 
-    Priority: explicit *override* arg > ``DEILE_PIPELINE_BASE_PATH`` env var >
+    Priority: explicit *override* arg > ``pipeline.base_path`` in settings >
     auto-detect by walking CWD ancestors looking for ``.git`` + ``deile.py``.
     """
     if override:
         return Path(override).resolve()
-    raw = os.environ.get("DEILE_PIPELINE_BASE_PATH")
-    if raw:
-        return Path(raw).resolve()
+    from deile.config.settings import get_settings
+
+    s = get_settings()
+    if s.pipeline_base_path:
+        return s.pipeline_base_path.resolve()
     cwd = Path.cwd()
     for ancestor in (cwd, *cwd.parents):
         if (ancestor / ".git").is_dir() and (ancestor / "deile.py").is_file():

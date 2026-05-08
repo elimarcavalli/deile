@@ -57,7 +57,7 @@ class TestProactiveIntent:
         assert intent.action == ProactiveAction.READ_FILE
         assert intent.target == "test.txt"
         assert intent.confidence == 0.95
-        assert not intent.autonomous_eligible  # Default
+        assert not intent.autonomous_eligible   # Default
         assert len(intent.chained_actions) == 0  # Default
 
     def test_intent_with_resolved_file(self):
@@ -321,7 +321,7 @@ class TestProactiveAnalyzer:
             # Higher confidence should generally have higher priority
             if len(intents) > 1:
                 sorted_by_conf = sorted(intents, key=lambda i: i.confidence, reverse=True)
-                sorted(intents, key=lambda i: i.priority, reverse=True)
+                _sorted_by_prio = sorted(intents, key=lambda i: i.priority, reverse=True)
                 # Not always exact match, but should be correlated
                 assert sorted_by_conf[0].priority >= min(i.priority for i in intents)
 

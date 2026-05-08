@@ -323,7 +323,7 @@ async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
     if forced_model:
         session.context_data["forced_model"] = forced_model
     else:
-        preferred = os.environ.get("DEILE_PREFERRED_MODEL")
+        preferred = settings.preferred_model
         if preferred:
             session.context_data["preferred_model"] = preferred
 

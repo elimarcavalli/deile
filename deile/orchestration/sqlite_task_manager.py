@@ -494,7 +494,7 @@ class SQLiteTaskManager:
         if not task_list:
             return None
 
-        await self._get_tasks_for_list(list_id)
+        _tasks = await self._get_tasks_for_list(list_id)
         next_tasks = await self.get_next_tasks(list_id)
 
         return {

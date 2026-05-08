@@ -377,6 +377,7 @@ class TestFileResolverIntegration:
         """Test realistic requirements file resolution"""
         resolver = SmartFileResolver(project_workspace)
 
+        _queries = ["requirements", "deps", "dependencies"]
 
         matches = resolver.resolve_file("requirements")
         assert len(matches) > 0
@@ -447,12 +448,12 @@ class TestFileResolverPerformance:
         # First call (no cache)
         start_time = time.time()
         matches1 = resolver.resolve_file("readme")
-        time.time() - start_time
+        _first_duration = time.time() - start_time
 
         # Second call (with cache)
         start_time = time.time()
         matches2 = resolver.resolve_file("script")
-        time.time() - start_time
+        _second_duration = time.time() - start_time
 
         # Both should complete, second might be faster due to cached directory listing
         assert len(matches1) > 0

@@ -12,7 +12,6 @@ command in the same session sees consistent state.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any, Optional
 
@@ -24,13 +23,17 @@ from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
 
 
 def _resolve_repo() -> str:
-    return os.environ.get("DEILE_PIPELINE_REPO", PIPELINE_DEFAULT_REPO)
+    from deile.config.settings import get_settings
+
+    return get_settings().pipeline_repo or PIPELINE_DEFAULT_REPO
 
 
 def _resolve_base_path() -> Path:
-    raw = os.environ.get("DEILE_PIPELINE_BASE_PATH")
-    if raw:
-        return Path(raw).resolve()
+    from deile.config.settings import get_settings
+
+    s = get_settings()
+    if s.pipeline_base_path:
+        return s.pipeline_base_path.resolve()
     cwd = Path.cwd()
     for ancestor in (cwd, *cwd.parents):
         if (ancestor / ".git").is_dir() and (ancestor / "deile.py").is_file():
@@ -139,10 +142,12 @@ class PipelineTool(Tool):
     def _get_or_create_monitor(agent: Optional[Any]) -> PipelineMonitor:
         if agent is not None and getattr(agent, "pipeline_monitor", None) is not None:
             return agent.pipeline_monitor
+        from deile.config.settings import get_settings
+
         cfg = PipelineConfig(
             repo=_resolve_repo(),
             base_repo_path=_resolve_base_path(),
-            notify_user_id=os.environ.get("DEILE_PIPELINE_NOTIFY_USER_ID"),
+            notify_user_id=get_settings().pipeline_notify_user_id,
         )
         monitor = PipelineMonitor(cfg)
         if agent is not None:

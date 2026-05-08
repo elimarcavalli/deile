@@ -8,7 +8,12 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import (TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional,
+                    Tuple)
+
+if TYPE_CHECKING:
+    from .models.stream_events import UnifiedStreamEvent
+    from .proactive_analyzer import ProactiveIntent
 
 from .exceptions import DEILEError, ModelError
 
@@ -603,7 +608,7 @@ class DeileAgent:
         user_input: str,
         session_id: str = "default",
         **kwargs,
-    ) -> AsyncIterator["UnifiedStreamEvent"]:  # noqa: F821
+    ) -> AsyncIterator["UnifiedStreamEvent"]:
         """Stream the same turn that ``process_input`` would produce — but as
         ``UnifiedStreamEvent`` objects so the UI can render text deltas and
         tool calls as they happen.
@@ -922,7 +927,7 @@ class DeileAgent:
         user_input: str,
         parse_result: Optional[ParseResult],
         session: AgentSession,
-    ) -> AsyncIterator["UnifiedStreamEvent"]:  # noqa: F821
+    ) -> AsyncIterator["UnifiedStreamEvent"]:
         """Stream the chat-with-tools loop for a single provider.
 
         Reuses ``_process_iterative_function_calling``'s setup (tier classify,
@@ -2552,7 +2557,7 @@ class DeileAgent:
         try:
             self.tool_registry.auto_discover()
             self.parser_registry.auto_discover()
-            
+
             # Initialize commands and register actions
             self.command_registry.auto_discover_builtin_commands()
             self.command_registry.load_commands_from_config()
@@ -2780,7 +2785,7 @@ class DeileAgent:
             logger.error(f"Error in autonomous processing: {e}")
             return None
 
-    async def _execute_autonomous_intent(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:  # noqa: F821
+    async def _execute_autonomous_intent(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
         """Execute an autonomous intent with intelligent error recovery"""
         try:
             if intent.action == ProactiveAction.READ_FILE and intent.resolved_file:
@@ -2810,7 +2815,7 @@ class DeileAgent:
 
         return None
 
-    async def _autonomous_read_file(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:  # noqa: F821
+    async def _autonomous_read_file(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
         """Autonomously read a file using resolved file match"""
         if not intent.resolved_file:
             return None
@@ -2831,7 +2836,7 @@ class DeileAgent:
             logger.error(f"Error in autonomous read: {e}")
             return None
 
-    async def _autonomous_suggest_alternatives(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:  # noqa: F821
+    async def _autonomous_suggest_alternatives(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
         """Provide intelligent alternatives when file resolution fails"""
         try:
             # Get file resolver instance
@@ -2859,7 +2864,7 @@ class DeileAgent:
             logger.error(f"Error generating alternatives: {e}")
             return None
 
-    async def _autonomous_chain_list_and_read(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:  # noqa: F821
+    async def _autonomous_chain_list_and_read(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
         """Chain list files → resolve → read operations autonomously"""
         try:
             # First, list files to help with resolution

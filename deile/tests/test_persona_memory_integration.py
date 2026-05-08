@@ -204,7 +204,7 @@ class TestPersonaContextIntegration:
         persona_id = "test_persona"
         session_id = "test_session"
 
-        with patch.object(PersonaMemoryLayer, '__init__', return_value=None):
+        with patch.object(PersonaMemoryLayer, '__init__', return_value=None) as _mock_init:
             mock_layer = Mock(spec=PersonaMemoryLayer)
             mock_layer.get_persona_state = AsyncMock(return_value={'key': 'value'})
             mock_layer.get_persona_preference = AsyncMock(return_value=None)

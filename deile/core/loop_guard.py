@@ -34,17 +34,8 @@ The guard is intentionally framework-agnostic: it knows nothing about
 streams, providers, or tools — it just consumes ``(name, args)`` and
 ``ToolResult`` shapes. That keeps it cheap to wire into every loop site.
 
-Configuration via environment variables (read once at construction):
-
-* ``DEILE_LOOP_GUARD_DISABLE=1`` — disable the guard entirely (escape hatch
-  for diagnostics; never set in production).
-* ``DEILE_LOOP_GUARD_MAX_CALLS`` — override the hard call ceiling.
-* ``DEILE_LOOP_GUARD_REPEAT_THRESHOLD`` — minimum identical consecutive
-  calls to trip rule 2 (default 3).
-* ``DEILE_LOOP_GUARD_WINDOW_SIZE`` / ``DEILE_LOOP_GUARD_WINDOW_THRESHOLD``
-  — sliding window size and minimum repeats (defaults 5 and 3).
-* ``DEILE_LOOP_GUARD_NO_PROGRESS`` — consecutive empty/error results to
-  trip rule 4 (default 6).
+Configuration via ``~/.deile/settings.json`` (``loop_guard.*`` section).
+DEILE_LOOP_GUARD_* env vars still work as deprecated fallback.
 """
 
 from __future__ import annotations
@@ -52,7 +43,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
@@ -146,41 +136,21 @@ class ToolLoopGuard:
     aborted_reason: Optional[AbortReason] = None
 
     def __post_init__(self) -> None:
-        # Allow env-var overrides — read once at construction.
-        env = os.environ.get
-        if env("DEILE_LOOP_GUARD_DISABLE", "").strip() in ("1", "true", "TRUE", "yes"):
+        from deile.config.settings import get_settings
+
+        s = get_settings()
+        if s.loop_guard_disabled:
             self.disabled = True
-        try:
-            if env("DEILE_LOOP_GUARD_MAX_CALLS"):
-                self.max_calls = max(1, int(env("DEILE_LOOP_GUARD_MAX_CALLS", "50")))
-        except ValueError:
-            pass
-        try:
-            if env("DEILE_LOOP_GUARD_REPEAT_THRESHOLD"):
-                self.repeat_threshold = max(
-                    2, int(env("DEILE_LOOP_GUARD_REPEAT_THRESHOLD", "3"))
-                )
-        except ValueError:
-            pass
-        try:
-            if env("DEILE_LOOP_GUARD_WINDOW_SIZE"):
-                self.window_size = max(2, int(env("DEILE_LOOP_GUARD_WINDOW_SIZE", "5")))
-        except ValueError:
-            pass
-        try:
-            if env("DEILE_LOOP_GUARD_WINDOW_THRESHOLD"):
-                self.window_threshold = max(
-                    2, int(env("DEILE_LOOP_GUARD_WINDOW_THRESHOLD", "3"))
-                )
-        except ValueError:
-            pass
-        try:
-            if env("DEILE_LOOP_GUARD_NO_PROGRESS"):
-                self.no_progress_threshold = max(
-                    2, int(env("DEILE_LOOP_GUARD_NO_PROGRESS", "6"))
-                )
-        except ValueError:
-            pass
+        if s.loop_guard_max_calls != 50:
+            self.max_calls = max(1, s.loop_guard_max_calls)
+        if s.loop_guard_repeat_threshold != 3:
+            self.repeat_threshold = max(2, s.loop_guard_repeat_threshold)
+        if s.loop_guard_window_size != 5:
+            self.window_size = max(2, s.loop_guard_window_size)
+        if s.loop_guard_window_threshold != 3:
+            self.window_threshold = max(2, s.loop_guard_window_threshold)
+        if s.loop_guard_no_progress != 6:
+            self.no_progress_threshold = max(2, s.loop_guard_no_progress)
         # window_threshold cannot exceed window_size — clamp so users can't
         # make the rule unreachable by setting threshold > size.
         if self.window_threshold > self.window_size:

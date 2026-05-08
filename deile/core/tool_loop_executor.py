@@ -24,7 +24,6 @@ from deile.tools.base import ToolContext, ToolResult, ToolStatus
 from deile.tools.registry import ToolRegistry, get_tool_registry
 from deile.ui.stage_cascade import cascade_stream, cascade_until
 from deile.ui.stage_messages import get_stage_message  # noqa: F401
-from deile.ui.stage_messages import has_stage_messages  # noqa: F401
 
 # Map tool names (as emitted by the model) to message-library scenario keys.
 # When a tool is registered, use its specific scenario for richer feedback.
@@ -122,7 +121,7 @@ class ToolLoopExecutor:
         produced by this executor for each tool the registry runs.
         """
         history = list(messages)
-        (
+        _ = (
             getattr(provider, "model_name", None)
             or getattr(provider, "provider_id", None)
             or "model"

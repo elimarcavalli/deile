@@ -594,9 +594,9 @@ class ConfigManager:
 
             # Validate required persona fields
             required_fields = ['capabilities', 'communication_style']
-            for field_name in required_fields:
-                if field_name not in persona_config:
-                    self.logger.warning(f"Persona {persona_id} missing recommended field: {field_name}")
+            for required_field in required_fields:
+                if required_field not in persona_config:
+                    self.logger.warning(f"Persona {persona_id} missing recommended field: {required_field}")
 
             # Validate capabilities
             if 'capabilities' in persona_config:

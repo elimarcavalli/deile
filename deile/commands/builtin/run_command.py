@@ -238,7 +238,7 @@ class RunCommand(DirectCommand):
 
         # Start execution with live progress
         try:
-            with Live(progress, refresh_per_second=2):
+            with Live(progress, refresh_per_second=2) as _live:
                 task = progress.add_task(f"[cyan]Iniciando {plan.title}...", total=plan.total_steps)
                 
                 # Execute plan asynchronously and update progress
