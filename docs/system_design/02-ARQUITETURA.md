@@ -113,6 +113,20 @@
 | Command | `SlashCommand.execute()` e `Tool.execute()` encapsulam ações |
 | Circuit Breaker | `_ProviderBreaker` + `CircuitBreaker` em `tier_router.py` |
 
+## Fronteira CLI ↔ Registry (decisão #24)
+
+A fronteira `deile/cli.py` lê o `CommandRegistry` para decidir quais flags expor — não duplica lógica de comandos. Cada subclasse de `SlashCommand` declara metadados `cli_flag`/`cli_extra_flags` e `deile/commands/cli_flags.py:build_cli_flag_specs()` produz a lista de `CLIFlagSpec` consumida por `add_command_flags_to_parser()`. Adicionar flag = adicionar atributo na classe do comando.
+
+| Componente | Arquivo | Responsabilidade |
+|---|---|---|
+| Spec dataclass | `deile/commands/cli_flags.py:CLIFlagSpec` | Mapeia uma flag CLI a um nome de comando + sub-comando opcional + se aceita argumento + se exige provider de LLM |
+| Builder | `deile/commands/cli_flags.py:build_cli_flag_specs(registry)` | Percorre `registry.get_all_commands()`, lê `cli_flag` e `cli_extra_flags`, produz lista ordenada de specs |
+| Bridge para argparse | `deile/commands/cli_flags.py:add_command_flags_to_parser(parser, specs)` | Transforma cada spec em `parser.add_argument(...)` (`store_true` ou positional) |
+| Dispatcher | `deile/cli.py:_run_command_flag()` | Aceita `command_name` + `command_args` + `requires_provider`; bootstrappa providers só se necessário; renderiza `CommandResult` |
+| Help expandido | `deile/cli.py:_format_help_with_commands()` | Anexa o catálogo de slash commands à saída padrão de `--help`, lendo do registry |
+
+Flags com `cli_requires_provider=False` (default) não exigem nenhuma `*_API_KEY` — `--version`, `--status`, `--tools` etc. funcionam offline.
+
 ## Bootstrap em runtime
 
 Sequência implementada em `DeileAgentCLI.initialize` (ou `_run_oneshot`):

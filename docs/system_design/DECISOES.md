@@ -303,6 +303,18 @@
 
 ---
 
+## Decisão #25 — Comandos slash declaram CLI flags via metadata; argparse é gerado pelo registry
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 |
+| Pilar dono | 04-Componentes, 02-Arquitetura |
+| Decisão | Cada subclasse de `SlashCommand` declara atributos opcionais (`cli_flag`, `cli_extra_flags`, `cli_takes_arg`, `cli_arg_metavar`, `cli_help`, `cli_requires_provider`). Em runtime, `deile/commands/cli_flags.py:build_cli_flag_specs(registry)` percorre o registry e produz uma lista de `CLIFlagSpec`; `add_command_flags_to_parser(parser, specs)` injeta cada spec como um argumento argparse. `deile/cli.py` apenas descobre e despacha — nenhuma flag é hardcoded ali. Adicionar nova flag é mudança de metadata, sem editar `cli.py`. |
+| Evidência | `deile/commands/base.py:SlashCommand` (atributos `cli_*`); `deile/commands/cli_flags.py:CLIFlagSpec/build_cli_flag_specs/add_command_flags_to_parser`; `deile/cli.py:main()` (linhas que chamam `build_cli_flag_specs`); `deile/tests/cli/test_cli_flags.py` (smoke + estrutural) |
+| Motivação | (1) Alinhar com Registry Pattern (decisão #3 / princípio 3 em `03-PRINCIPIOS-ARQUITETURAIS.md`): comandos são plugáveis, descobríveis pelo registry; o CLI deve consumir o registry, não duplicar a lista. (2) A issue #126 listou 19 flags faltantes mais um padrão para expansão futura — manualmente listá-las em `cli.py` exigiria sincronização permanente. (3) Flags que não exigem provider de LLM (`cli_requires_provider=False`, default) bypassam `bootstrap_providers()` e funcionam sem API key, preservando UX de diagnóstico (`--version`, `--status`, `--tools`, etc.). |
+
+---
+
 ## Como adicionar uma nova decisão
 
 | # | Passo |
