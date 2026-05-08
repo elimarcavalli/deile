@@ -136,7 +136,23 @@ class PermissionManager:
                 tool_names=["*"],
                 permission_level=PermissionLevel.WRITE,
                 priority=100
-            )
+            ),
+
+            # Settings writes (issue #125) — explicit ALLOW so the gate in
+            # SettingsManager can be wired without breaking the no-rules
+            # default. Operators tightening this can replace the rule via
+            # config/permissions.yaml (e.g. restrict to scope=global).
+            PermissionRule(
+                id="settings_write_default",
+                name="Settings Write Default",
+                description="Allow writes to ~/.deile/settings.json and "
+                            "<project>/.deile/settings.json by default",
+                resource_type=ResourceType.FILE,
+                resource_pattern=r"^settings:(global|project):.*$",
+                tool_names=["settings_manager"],
+                permission_level=PermissionLevel.WRITE,
+                priority=50,
+            ),
         ]
         
         for rule in default_rules:

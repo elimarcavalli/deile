@@ -27,6 +27,7 @@ backward compatibility with the /settings slash command.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -51,6 +52,138 @@ _SECRET_KEY_PATTERNS = ("token", "key", "secret", "password", "api_")
 
 # Process-wide lock for read-modify-write operations on settings files.
 _file_lock = threading.Lock()
+
+
+def _is_secret_key(key_path: str) -> bool:
+    """Return True if *key_path* matches the secret-key blocklist."""
+    key_lower = key_path.lower()
+    return any(pat in key_lower for pat in _SECRET_KEY_PATTERNS)
+
+
+def _hash_value(value: Any) -> str:
+    """Return a SHA-256 truncated hex digest of *value*'s JSON form.
+
+    The raw value is never logged. For values that are not JSON-serializable
+    we fall back to ``repr()`` — still no leakage of secrets because callers
+    redact secret keys before this function is reached.
+    """
+    try:
+        encoded = json.dumps(value, sort_keys=True, default=str).encode("utf-8")
+    except (TypeError, ValueError):
+        encoded = repr(value).encode("utf-8", errors="replace")
+    return hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def _value_fingerprint(key_path: str, value: Any) -> str:
+    """Return ``"<redacted>"`` for secret keys, else a SHA-256 truncated hash.
+
+    ``None`` (no previous value) maps to ``"<absent>"`` so audit consumers
+    can distinguish "first write" from "value mutated".
+    """
+    if value is None:
+        return "<absent>"
+    if _is_secret_key(key_path):
+        return "<redacted>"
+    return _hash_value(value)
+
+
+def _check_settings_write_permission(scope: str, resource_detail: str) -> bool:
+    """Resolve the permission manager (best-effort) and check write access.
+
+    Returns ``True`` when no permission manager is configured (preserves
+    backward-compat for unit-tests that bypass the security stack), and
+    ``True``/``False`` according to the manager's verdict otherwise.
+
+    The resource string follows the convention ``"settings:<scope>:<detail>"``
+    so rule authors can scope policies tighter than "any settings write".
+    """
+    try:
+        from deile.security.permissions import get_permission_manager
+    except ImportError:
+        return True
+    try:
+        pm = get_permission_manager()
+    except Exception:  # pragma: no cover — defensive
+        logger.exception("settings: cannot resolve PermissionManager; allowing write")
+        return True
+    if pm is None:
+        return True
+    resource = f"settings:{scope}:{resource_detail}"
+    try:
+        return bool(
+            pm.check_permission(
+                tool_name="settings_manager",
+                resource=resource,
+                action="write",
+                context={"scope": scope, "detail": resource_detail},
+            )
+        )
+    except Exception:  # pragma: no cover — defensive
+        logger.exception("settings: PermissionManager.check_permission raised; denying")
+        return False
+
+
+def _emit_settings_audit(
+    *,
+    scope: str,
+    resource_detail: str,
+    action: str,
+    result: str,
+    details: dict,
+) -> None:
+    """Emit a typed ``AuditEvent`` for a settings.json mutation (best-effort).
+
+    Uses :class:`AuditEventType.SECURITY_POLICY_CHANGED` because changes to
+    flags like ``file_safety.enabled`` shift the security posture of the
+    process. Failures to emit (logger missing, I/O error) are swallowed —
+    they must never block the caller.
+    """
+    try:
+        from deile.security.audit_logger import (AuditEventType, SeverityLevel,
+                                                 get_audit_logger)
+    except ImportError:
+        return
+    try:
+        logger_obj = get_audit_logger()
+    except Exception:  # pragma: no cover
+        logger.exception("settings: cannot resolve AuditLogger; skipping audit emit")
+        return
+    try:
+        severity = SeverityLevel.INFO if result == "allowed" else SeverityLevel.WARNING
+        logger_obj.log_event(
+            event_type=AuditEventType.SECURITY_POLICY_CHANGED,
+            severity=severity,
+            actor="settings_manager",
+            resource=f"settings:{scope}:{resource_detail}",
+            action=action,
+            result=result,
+            details=details,
+        )
+    except Exception:  # pragma: no cover
+        logger.exception("settings: audit emission failed")
+
+
+def _validate_against_override_handlers(key_path: str, value: Any) -> Optional[str]:
+    """Dry-run validate *value* against ``_OVERRIDE_HANDLERS`` for *key_path*.
+
+    Returns ``None`` when validation passes (or the key has no handler — the
+    handler set is intentionally a subset of valid keys). Returns a human
+    readable error string when the converter rejects the value, so the caller
+    can refuse the write before touching disk.
+    """
+    try:
+        from deile.config.settings import _OVERRIDE_HANDLERS
+    except ImportError:
+        return None
+    handler = _OVERRIDE_HANDLERS.get(key_path)
+    if handler is None:
+        return None
+    _field_name, converter = handler
+    try:
+        converter(value)
+    except (TypeError, ValueError) as exc:
+        return f"{exc}"
+    return None
 
 
 class SettingsManager:
@@ -291,8 +424,7 @@ class SettingsManager:
         """
         from deile.config.settings import reset_settings
 
-        key_lower = key_path.lower()
-        if any(pat in key_lower for pat in _SECRET_KEY_PATTERNS):
+        if _is_secret_key(key_path):
             logger.error(
                 "set_setting: refusing to store potential secret in key %r"
                 " — use env vars for secrets",
@@ -302,12 +434,70 @@ class SettingsManager:
 
         self._validate_scope(scope)
         parts = self._split_key_path(key_path)
+
+        # Dry-run validation against the canonical override handlers (issue #125).
+        # Reject silently-divergent writes like `set_setting('logging.level', 42)`
+        # before touching disk — the on-disk JSON would never round-trip into a
+        # valid Settings field if the converter cannot accept the value.
+        validation_error = _validate_against_override_handlers(key_path, value)
+        if validation_error is not None:
+            logger.error(
+                "set_setting: rejecting %r=%r in %s — type mismatch with handler: %s",
+                key_path,
+                value,
+                scope,
+                validation_error,
+            )
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail=key_path,
+                action="write",
+                result="invalid",
+                details={
+                    "key_path": key_path,
+                    "scope": scope,
+                    "reason": "validation_failed",
+                    "error": validation_error,
+                    "new_value_fingerprint": _value_fingerprint(key_path, value),
+                },
+            )
+            return False
+
+        # Permission gate (issue #125). Denial is a hard stop — no write,
+        # no success-audit, and the audit reflects the denial.
+        if not _check_settings_write_permission(scope, key_path):
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail=key_path,
+                action="write",
+                result="denied",
+                details={
+                    "key_path": key_path,
+                    "scope": scope,
+                    "reason": "permission_denied",
+                },
+            )
+            logger.warning(
+                "set_setting: permission denied for %r in %s scope", key_path, scope
+            )
+            return False
+
         if scope == GLOBAL:
             self._ensure_global_dir()
         path = self._settings_path(scope)
 
         with _file_lock:
             data = self._load(path)
+            # Capture the old value (if any) for the audit fingerprint.
+            old_node: Any = data
+            old_value: Any = None
+            for part in parts:
+                if isinstance(old_node, dict) and part in old_node:
+                    old_node = old_node[part]
+                    old_value = old_node
+                else:
+                    old_value = None
+                    break
             node: dict = data
             for part in parts[:-1]:
                 existing = node.get(part)
@@ -325,6 +515,18 @@ class SettingsManager:
 
         if result:
             reset_settings()
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail=key_path,
+                action="write",
+                result="allowed",
+                details={
+                    "key_path": key_path,
+                    "scope": scope,
+                    "old_value_fingerprint": _value_fingerprint(key_path, old_value),
+                    "new_value_fingerprint": _value_fingerprint(key_path, value),
+                },
+            )
         return result
 
     # ------------------------------------------------------------------
@@ -380,6 +582,26 @@ class SettingsManager:
         from deile.config.settings import reset_settings
 
         self._validate_scope(scope)
+        # Permission gate (issue #125) — denial returns False, no write,
+        # no success-audit. The "duplicate path" no-op below also returns
+        # False, matching the pre-#125 contract.
+        if not _check_settings_write_permission(scope, "skills_paths"):
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail="skills_paths",
+                action="add_skills_path",
+                result="denied",
+                details={
+                    "scope": scope,
+                    "reason": "permission_denied",
+                    "path_fingerprint": _hash_value(str(path)),
+                },
+            )
+            logger.warning(
+                "add_skills_path: permission denied in %s scope", scope
+            )
+            return False
+
         self._ensure_global_dir()
         settings_path = self._settings_path(scope)
 
@@ -400,6 +622,18 @@ class SettingsManager:
 
         if result:
             reset_settings()
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail="skills_paths",
+                action="add_skills_path",
+                result="allowed",
+                details={
+                    "scope": scope,
+                    "operation": "add",
+                    "path_fingerprint": _hash_value(norm),
+                    "new_count": len(existing),
+                },
+            )
         return result
 
     def remove_skills_path(self, path: "str | Path", scope: str = GLOBAL) -> bool:
@@ -417,6 +651,24 @@ class SettingsManager:
         from deile.config.settings import reset_settings
 
         self._validate_scope(scope)
+        # Permission gate (issue #125) — same contract as add_skills_path.
+        if not _check_settings_write_permission(scope, "skills_paths"):
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail="skills_paths",
+                action="remove_skills_path",
+                result="denied",
+                details={
+                    "scope": scope,
+                    "reason": "permission_denied",
+                    "path_fingerprint": _hash_value(str(path)),
+                },
+            )
+            logger.warning(
+                "remove_skills_path: permission denied in %s scope", scope
+            )
+            return False
+
         settings_path = self._settings_path(scope)
 
         with _file_lock:
@@ -433,6 +685,18 @@ class SettingsManager:
 
         if result:
             reset_settings()
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail="skills_paths",
+                action="remove_skills_path",
+                result="allowed",
+                details={
+                    "scope": scope,
+                    "operation": "remove",
+                    "path_fingerprint": _hash_value(norm),
+                    "new_count": len(existing),
+                },
+            )
         return result
 
     def load_all_preferences(self, scope: str = GLOBAL) -> dict:
