@@ -6,7 +6,11 @@ from ..base import CommandContext, CommandResult, DirectCommand
 
 class ConfigCommand(DirectCommand):
     """Comando /config builtin"""
-    
+
+    cli_flag = "--config"
+    cli_help = "Show current DEILE configuration and exit."
+    cli_requires_provider = False
+
     def __init__(self):
         from ...config.manager import CommandConfig
         config = CommandConfig(

@@ -16,7 +16,11 @@ from ..base import CommandContext, CommandResult, DirectCommand
 
 class LogsCommand(DirectCommand):
     """View security audit logs and system events"""
-    
+
+    cli_flag = "--logs"
+    cli_help = "View recent audit logs and system events."
+    cli_requires_provider = False
+
     def __init__(self):
         from ...config.manager import CommandConfig
         config = CommandConfig(

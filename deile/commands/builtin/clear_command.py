@@ -13,7 +13,11 @@ logger = logging.getLogger(__name__)
 
 class ClearCommand(DirectCommand):
     """Clear conversation history and optionally reset entire session"""
-    
+
+    cli_flag = "--clear"
+    cli_help = "Clear conversation history and screen state."
+    cli_requires_provider = False
+
     def __init__(self):
         from ...config.manager import CommandConfig
         config = CommandConfig(

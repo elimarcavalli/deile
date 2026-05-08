@@ -180,7 +180,16 @@ Depois:
 ```sh
 deile                     # modo interativo
 deile "resuma a arquitetura do repositório"   # one-shot
+deile --version           # imprime a versão do DEILE
+deile --status            # painel de saúde do sistema (sem precisar de API key)
+deile --tools             # lista as tools registradas
+deile --model-list        # tabela de modelos disponíveis
+deile --pipeline-status   # status do pipeline autônomo
+deile --export ./BACKUP   # exporta dados da sessão
+deile --help              # lista TODAS as flags + catálogo de slash commands
 ```
+
+> Cada comando slash do REPL tem sua flag CLI correspondente — geradas automaticamente a partir do `CommandRegistry` (decisão #24, issue #126). Adicionar uma nova flag é só declarar `cli_flag = "--foo"` na classe do comando.
 
 Para isolar o app sem mexer no Python do sistema, use [pipx](https://pipx.pypa.io/): `brew install pipx` e depois `pipx install -e .` na raiz do repo.
 

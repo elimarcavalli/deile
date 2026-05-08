@@ -276,6 +276,7 @@ class CommandRegistry:
                 'deile.commands.builtin.run_command',
                 'deile.commands.builtin.sandbox_command',
                 'deile.commands.builtin.skills_command',
+                'deile.commands.builtin.version_command',
                 'deile.commands.builtin.welcome_command',
             ]
             

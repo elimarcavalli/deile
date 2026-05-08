@@ -6,7 +6,14 @@ from ..base import CommandContext, CommandResult, DirectCommand
 
 class HelpCommand(DirectCommand):
     """Comando /help builtin"""
-    
+
+    # CLI flag metadata — argparse owns --help natively, so we do NOT export
+    # a cli_flag here. The CLI's custom help formatter expands argparse's
+    # built-in --help with the slash command catalog (issue #126).
+    cli_flag = None
+    cli_help = "Show this help message and the list of available slash commands."
+    cli_requires_provider = False
+
     def __init__(self):
         from ...config.manager import CommandConfig
         config = CommandConfig(

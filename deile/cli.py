@@ -458,6 +458,125 @@ def _run_self_install() -> int:
     return 0
 
 
+# ── command-flag dispatch (issue #126) ──────────────────────────────────────
+
+
+async def _run_command_flag(
+    command_name: str,
+    command_args: str,
+    requires_provider: bool,
+) -> int:
+    """Dispatch a single slash command in one-shot mode.
+
+    Bootstraps providers only if *requires_provider* is True; otherwise the
+    command runs without any LLM provider and never errors on a missing key.
+    Renders the resulting :class:`CommandResult` to stdout and returns an
+    exit code (0 success / 1 error).
+    """
+    from deile.commands.base import CommandContext
+    from deile.commands.registry import get_command_registry
+    from deile.config.manager import ConfigManager
+    from deile.config.settings import get_settings
+
+    settings = get_settings()
+    settings.working_directory = Path.cwd()
+    config_manager = ConfigManager()
+    try:
+        config_manager.load_config()
+    except Exception:  # noqa: BLE001 — config is best-effort for offline flags
+        pass
+
+    agent = None
+    if requires_provider:
+        # Only spin up the full agent (and require an API key) when the flag
+        # genuinely needs an LLM provider. Most --flags don't.
+        from deile.core.agent import DeileAgent
+        from deile.core.models.bootstrap import bootstrap_providers
+        from deile.core.models.router import get_model_router
+        from deile.parsers.registry import get_parser_registry
+        from deile.tools.registry import get_tool_registry
+
+        model_router = get_model_router()
+        registered = bootstrap_providers(router=model_router)
+        if not registered:
+            print(
+                "ERROR: no provider configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, "
+                "DEEPSEEK_API_KEY, or GOOGLE_API_KEY.",
+                file=sys.stderr,
+            )
+            return 1
+        agent = DeileAgent(
+            model_router=model_router,
+            tool_registry=get_tool_registry(),
+            parser_registry=get_parser_registry(),
+            config_manager=config_manager,
+        )
+        await agent.initialize()
+        registry = agent.command_registry
+    else:
+        registry = get_command_registry(config_manager)
+        if len(registry) == 0:
+            registry.auto_discover_builtin_commands()
+
+    context = CommandContext(
+        user_input=f"/{command_name} {command_args}".strip(),
+        args=command_args,
+        session_id="oneshot_cli_flag",
+        working_directory=str(settings.working_directory),
+    )
+    context.config_manager = config_manager
+    context.agent = agent
+
+    try:
+        result = await registry.execute_command(command_name, context)
+    except Exception as exc:  # noqa: BLE001 — last-resort catcher; logged below
+        print(f"ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+
+    _print_oneshot_content(result.content)
+    return 0 if result.success else 1
+
+
+def _format_help_with_commands(parser: "argparse.ArgumentParser") -> str:
+    """Append the slash-command catalog to argparse's stock --help output.
+
+    Uses the same registry source as ``CommandActions.show_help()`` so the
+    list is generated dynamically (no hardcoded count — see issue #126).
+    """
+    base_help = parser.format_help()
+    try:
+        from deile.commands.registry import get_command_registry
+        registry = get_command_registry()
+        if len(registry) == 0:
+            registry.auto_discover_builtin_commands()
+        commands = sorted(
+            registry.get_enabled_commands(),
+            key=lambda c: c.name,
+        )
+    except Exception as exc:  # noqa: BLE001 — help must never crash
+        return base_help + f"\n[help: command catalog unavailable: {exc}]\n"
+
+    if not commands:
+        return base_help
+
+    name_w = max(len(c.name) for c in commands) + 1
+    lines = [
+        "",
+        "interactive slash commands (also usable inside the REPL):",
+    ]
+    for cmd in commands:
+        cmd_type = "LLM" if cmd.has_prompt_template else "Direct"
+        lines.append(
+            f"  /{cmd.name:<{name_w}}  [{cmd_type:<6}]  {cmd.description}"
+        )
+    lines.append("")
+    lines.append(
+        "Tip: most slash commands also have a CLI flag (run `deile --help` to see "
+        "the full flag list above)."
+    )
+    return base_help + "\n".join(lines) + "\n"
+
+
 # ── main entry point ────────────────────────────────────────────────────────
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -481,9 +600,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         asyncio.run(_DeileCLI().run_interactive())
         return 0
 
+    # Build the parser. We disable argparse's default --help so that we can
+    # print our extended help (with the slash-command catalog appended).
     parser = argparse.ArgumentParser(
         prog="deile",
-        description="DEILE — Run interactively (no args) or send a single message and exit.",
+        description=(
+            "DEILE — Run interactively (no args), send a single message, "
+            "or invoke any slash command via its --flag (issue #126)."
+        ),
+        add_help=False,
+    )
+    parser.add_argument(
+        "-h", "--help",
+        dest="show_help",
+        action="store_true",
+        help="Show this help message (with full slash command catalog) and exit.",
     )
     parser.add_argument(
         "--model",
@@ -496,6 +627,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Install DEILE globally for the current user (`pip install --user -e <repo>`).",
     )
+
+    # Auto-generate one --flag per registered slash command (issue #126).
+    flag_specs: list = []
+    try:
+        from deile.commands.cli_flags import (add_command_flags_to_parser,
+                                              build_cli_flag_specs,
+                                              find_active_spec, get_arg_value)
+        from deile.commands.registry import get_command_registry
+        registry = get_command_registry()
+        if len(registry) == 0:
+            registry.auto_discover_builtin_commands()
+        flag_specs = build_cli_flag_specs(registry)
+        add_command_flags_to_parser(parser, flag_specs)
+    except Exception as exc:  # noqa: BLE001 — never block argparse setup
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "Could not register dynamic command flags: %s", exc
+        )
+
     parser.add_argument(
         "message",
         nargs=argparse.REMAINDER,
@@ -503,14 +653,52 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if getattr(args, "show_help", False):
+        sys.stdout.write(_format_help_with_commands(parser))
+        return 0
+
     if args.install:
         return _run_self_install()
+
+    # --debug is a global modifier: enable debug mode in settings BEFORE any
+    # one-shot dispatch or interactive run, so it actually has an effect.
+    if getattr(args, "debug", False):
+        try:
+            from deile.config.settings import get_settings
+            get_settings().debug_enabled = True
+        except Exception:  # noqa: BLE001 — best-effort
+            pass
+
+    # Did the user pass any --flag bound to a slash command?
+    # find_active_spec already skips modifier flags (cli_dispatch=False),
+    # so --debug never triggers a one-shot /debug invocation.
+    active_spec = find_active_spec(flag_specs, args) if flag_specs else None
+
+    if active_spec is not None:
+        import logging
+        logging.disable()
+        cmd_args = get_arg_value(active_spec, args)
+        return asyncio.run(_run_command_flag(
+            command_name=active_spec.command_name,
+            command_args=cmd_args,
+            requires_provider=active_spec.requires_provider,
+        ))
 
     msg = " ".join(args.message).strip()
     if not msg and not sys.stdin.isatty():
         msg = sys.stdin.read().strip()
     if not msg:
-        parser.error("no message provided (pass as positional arg or via stdin)")
+        # --debug (and possibly --model) without a message → fall through
+        # to interactive mode. Any flag setup already happened above (e.g.
+        # debug toggle), so the REPL inherits it.
+        debug_only = getattr(args, "debug", False) or args.model
+        if debug_only:
+            import logging
+            logging.disable()
+            asyncio.run(_DeileCLI().run_interactive())
+            return 0
+        # No message AND no flag — the user got the invocation wrong.
+        parser.error("no message provided (pass as positional arg, via stdin, or use a --flag)")
 
     import logging
     logging.disable()

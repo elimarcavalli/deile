@@ -11,7 +11,11 @@ from ..base import CommandContext, CommandResult, DirectCommand
 
 class MemoryCommand(DirectCommand):
     """Advanced memory and session state management with granular controls"""
-    
+
+    cli_flag = "--memory"
+    cli_help = "Show memory subsystem status (working, episodic, semantic, procedural)."
+    cli_requires_provider = False
+
     def __init__(self):
         from ...config.manager import CommandConfig
         config = CommandConfig(

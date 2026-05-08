@@ -20,6 +20,10 @@ from ..base import CommandContext, CommandResult, DirectCommand
 class SkillsCommand(DirectCommand):
     """Manage skill directories: list, add, remove skill paths."""
 
+    cli_flag = "--skills"
+    cli_help = "List configured skill directories and exit."
+    cli_requires_provider = False
+
     def __init__(self) -> None:
         from ...config.manager import CommandConfig
 

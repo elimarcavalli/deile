@@ -75,6 +75,30 @@ def _resolve_base_path() -> Path:
 class PipelineCommand(DirectCommand):
     """``/pipeline {start|stop|status|tick|reset}``."""
 
+    # Pipeline exposes 3 CLI flags (one per sub-command), all via cli_extra_flags.
+    cli_flag = None
+    cli_requires_provider = False
+    cli_extra_flags = {
+        "--pipeline-status": {
+            "subcommand": "status",
+            "help": "Show autonomous pipeline status and exit.",
+            "takes_arg": False,
+            "requires_provider": False,
+        },
+        "--pipeline-start": {
+            "subcommand": "start",
+            "help": "Start the autonomous pipeline polling loop and exit.",
+            "takes_arg": False,
+            "requires_provider": False,
+        },
+        "--pipeline-stop": {
+            "subcommand": "stop",
+            "help": "Stop the autonomous pipeline polling loop and exit.",
+            "takes_arg": False,
+            "requires_provider": False,
+        },
+    }
+
     def __init__(self) -> None:
         super().__init__(
             CommandConfig(
@@ -106,7 +130,15 @@ class PipelineCommand(DirectCommand):
                 notify_user_id=get_settings().pipeline_notify_user_id,
             )
             monitor = PipelineMonitor(cfg, review_callback=make_review_callback(agent))
-            agent.pipeline_monitor = monitor  # type: ignore[attr-defined]
+            # Persist on agent so subsequent invocations reuse the instance.
+            # When invoked from CLI one-shot mode (#126) agent may be None —
+            # the monitor is single-use in that case, no caching needed.
+            if agent is not None:
+                try:
+                    agent.pipeline_monitor = monitor  # type: ignore[attr-defined]
+                except (AttributeError, TypeError):
+                    # MagicMock/SimpleNamespace without slots; non-fatal.
+                    pass
 
         if sub == "start":
             flags = _parse_start_flags(tail)
