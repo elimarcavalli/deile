@@ -14,7 +14,13 @@ from ..base import DirectCommand
 
 class ExportCommand(DirectCommand):
     """Export conversation history, artifacts, plans and session data in various formats"""
-    
+
+    cli_flag = "--export"
+    cli_takes_arg = True
+    cli_arg_metavar = "PATH"
+    cli_help = "Export session data to PATH (forwards args to /export)."
+    cli_requires_provider = False
+
     def __init__(self):
         from ...config.manager import CommandConfig
         super().__init__(CommandConfig(
@@ -22,14 +28,27 @@ class ExportCommand(DirectCommand):
             description="Export conversation history, artifacts, plans and session data in various formats.",
         ))
     
-    def execute(self, 
-               args: str = "",
-               context: Optional[Dict[str, Any]] = None) -> Any:
-        """Execute export command"""
-        
+    async def execute(self, context=None, *_legacy_args, **_legacy_kwargs) -> Any:
+        """Execute export command.
+
+        The registry calls this as ``await command.execute(context)``. We
+        accept the older ``(args, context)`` form for backward-compat. (#126)
+        """
+        from ..base import CommandResult
+
+        if isinstance(context, str):
+            args = context
+            ctx_obj = _legacy_args[0] if _legacy_args else None
+        else:
+            ctx_obj = context
+            try:
+                args = ctx_obj.args if ctx_obj is not None else ""
+            except AttributeError:
+                args = ""
+
         try:
             # Parse arguments
-            parts = args.strip().split() if args.strip() else []
+            parts = args.strip().split() if args and args.strip() else []
             format_type = "md"  # default
             export_path = None
             include_artifacts = True
@@ -78,13 +97,16 @@ class ExportCommand(DirectCommand):
                 export_path = f"./EXPORTS/deile_export_{timestamp}"
             
             # Perform export
-            return self._perform_export(
-                format_type, export_path, include_artifacts, 
-                include_plans, include_session, context
+            panel = self._perform_export(
+                format_type, export_path, include_artifacts,
+                include_plans, include_session, ctx_obj
             )
-            
+            return CommandResult.success_result(panel, "rich")
+
         except Exception as e:
-            raise CommandError(f"Failed to export data: {str(e)}")
+            return CommandResult.error_result(
+                f"Failed to export data: {str(e)}", error=e
+            )
     
     def _perform_export(self, format_type: str, export_path: str,
                        include_artifacts: bool, include_plans: bool,

@@ -98,10 +98,33 @@ class CommandResult:
 
 class SlashCommand(ABC):
     """Interface base para comandos slash
-    
+
     Implementa o padrão Strategy para diferentes tipos de comandos.
+
+    CLI flag metadata (decision #24, issue #126):
+        Subclasses pode declarar atributos de classe opcionais para que o
+        ``deile`` CLI gere automaticamente flags argparse a partir do registry:
+
+        cli_flag: Optional[str]            # ex: "--status"
+        cli_flag_aliases: Optional[List[str]]  # ex: ["-s"]
+        cli_takes_arg: bool                # se aceita um valor (--export <path>)
+        cli_arg_metavar: Optional[str]     # nome do argumento no help do argparse
+        cli_help: Optional[str]            # texto custom do help argparse
+        cli_subcommand: Optional[str]      # mapeia para um sub-comando do slash
+                                           # (ex: --model-list → "/model list")
+        cli_requires_provider: bool        # se o flag exige LLM provider configurado
+                                           # (default: False — flag roda offline)
     """
-    
+
+    # CLI flag metadata — defaults; subclasses sobrescrevem conforme necessário.
+    cli_flag: Optional[str] = None
+    cli_flag_aliases: Optional[List[str]] = None
+    cli_takes_arg: bool = False
+    cli_arg_metavar: Optional[str] = None
+    cli_help: Optional[str] = None
+    cli_subcommand: Optional[str] = None
+    cli_requires_provider: bool = False
+
     def __init__(self, command_config=None):
         from ..config.manager import CommandConfig
         

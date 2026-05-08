@@ -22,6 +22,40 @@ logger = logging.getLogger(__name__)
 class ModelCommand(DirectCommand):
     """Multi-provider model management command."""
 
+    # ModelCommand owns FOUR CLI flags (issue #126). cli_flag holds the
+    # canonical one (--model is already handled separately for FORCE-model
+    # syntax in cli.py); the other three sub-flags are declared via the
+    # `cli_extra_flags` dict consumed by the CLI builder.
+    cli_flag = None  # primary "--model PROVIDER:MODEL_ID" handled by cli.py
+    cli_requires_provider = False
+    cli_extra_flags = {
+        "--model-list": {
+            "subcommand": "list",
+            "help": "List all available models in the catalog and exit.",
+            "takes_arg": False,
+            "requires_provider": False,
+        },
+        "--model-current": {
+            "subcommand": "current",
+            "help": "Show the currently active model and routing cascade.",
+            "takes_arg": False,
+            "requires_provider": False,
+        },
+        "--model-strategy": {
+            "subcommand": "strategy",
+            "help": "Switch routing strategy (task_optimized | cost_optimized).",
+            "takes_arg": True,
+            "metavar": "NAME",
+            "requires_provider": False,
+        },
+        "--model-budget": {
+            "subcommand": "budget",
+            "help": "Show budget limits and consumption.",
+            "takes_arg": False,
+            "requires_provider": False,
+        },
+    }
+
     def __init__(self, selector: Optional[InteractiveSelector] = None) -> None:
         config = CommandConfig(
             name="model",

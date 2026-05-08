@@ -14,7 +14,11 @@ from ..base import DirectCommand
 
 class ToolsCommand(DirectCommand):
     """Display available tools, their schemas and usage statistics"""
-    
+
+    cli_flag = "--tools"
+    cli_help = "List registered tools and exit."
+    cli_requires_provider = False
+
     def __init__(self):
         from ...config.manager import CommandConfig
         super().__init__(CommandConfig(
@@ -22,14 +26,29 @@ class ToolsCommand(DirectCommand):
             description="Display available tools, their schemas and usage statistics.",
         ))
     
-    def execute(self, 
-               args: str = "",
-               context: Optional[Dict[str, Any]] = None) -> Any:
-        """Execute tools command"""
-        
+    async def execute(self, context=None, *_legacy_args, **_legacy_kwargs) -> Any:
+        """Execute tools command.
+
+        The registry calls this as ``await command.execute(context)`` (a single
+        :class:`CommandContext`). Earlier versions took ``(args, context)`` —
+        we accept both forms for backward-compat. (Issue #126.)
+        """
+        # Backward-compat: callers passing (args, context) explicitly.
+        if isinstance(context, str):
+            args = context
+            ctx_obj = _legacy_args[0] if _legacy_args else None
+        else:
+            ctx_obj = context
+            try:
+                args = ctx_obj.args if ctx_obj is not None else ""
+            except AttributeError:
+                args = ""
+
+        from ..base import CommandResult
+
         try:
             # Parse arguments
-            parts = args.strip().split() if args.strip() else []
+            parts = args.strip().split() if args and args.strip() else []
             format_type = "list"  # default
             tool_name = None
             show_schema = False
@@ -61,27 +80,39 @@ class ToolsCommand(DirectCommand):
             
             if format_type not in ["list", "detailed", "json"]:
                 raise CommandError("Format must be one of: list, detailed, json")
-            
+
             # Get tools data from registry (this would be injected in real implementation)
-            tools_data = self._get_tools_data(context, tool_name)
-            
+            tools_data = self._get_tools_data(ctx_obj, tool_name)
+
             if format_type == "json":
-                return json.dumps(tools_data, indent=2, default=str)
-            
+                return CommandResult.success_result(
+                    json.dumps(tools_data, indent=2, default=str), "text"
+                )
+
             # Single tool display
             if tool_name:
-                return self._create_single_tool_display(
-                    tools_data.get("tool", {}), show_schema, show_examples
+                return CommandResult.success_result(
+                    self._create_single_tool_display(
+                        tools_data.get("tool", {}), show_schema, show_examples
+                    ),
+                    "rich",
                 )
-            
+
             # Create Rich display for all tools
             if format_type == "list":
-                return self._create_list_display(tools_data)
+                return CommandResult.success_result(
+                    self._create_list_display(tools_data), "rich"
+                )
             else:  # detailed
-                return self._create_detailed_display(tools_data, show_schema, show_examples)
-            
+                return CommandResult.success_result(
+                    self._create_detailed_display(tools_data, show_schema, show_examples),
+                    "rich",
+                )
+
         except Exception as e:
-            raise CommandError(f"Failed to display tools information: {str(e)}")
+            return CommandResult.error_result(
+                f"Failed to display tools information: {str(e)}", error=e
+            )
     
     def _get_tools_data(self, context: Optional[Dict[str, Any]], tool_name: Optional[str]) -> Dict[str, Any]:
         """Get tools data from registry (mock implementation)"""

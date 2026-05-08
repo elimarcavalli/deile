@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 class CostCommand(DirectCommand):
     """
     Command for comprehensive cost management and analytics
-    
+
     Features:
     - Current session and total cost tracking
     - Budget management and alerts
@@ -36,7 +36,11 @@ class CostCommand(DirectCommand):
     - Export capabilities
     - Real-time cost monitoring
     """
-    
+
+    cli_flag = "--cost"
+    cli_help = "Show accumulated session costs and exit."
+    cli_requires_provider = False
+
     def __init__(self):
         super().__init__()
         self.config.description = "Cost tracking, budgets, and financial analytics"
@@ -79,32 +83,59 @@ EXAMPLES:
         self.cost_tracker = get_cost_tracker()
         self.context_manager = ContextManager()
 
-    def execute(self, args: List[str]) -> Dict[str, Any]:
-        """Execute the cost command"""
+    async def execute(self, context=None, *_legacy, **_legacy_kw):
+        """Execute the cost command.
+
+        Accepts either the registry call signature ``await execute(context)``
+        or the legacy ``execute(args_list)`` for back-compat. (#126)
+        """
+        from ..base import CommandResult
+
+        # Normalise input shape — registry passes CommandContext, but legacy
+        # callers may pass a List[str] directly.
+        if isinstance(context, list):
+            args_list: List[str] = list(context)
+        elif context is None:
+            args_list = []
+        else:
+            args_str = getattr(context, "args", "") or ""
+            args_list = args_str.split() if args_str else []
+
+        def _wrap(payload: Dict[str, Any]) -> CommandResult:
+            data = payload.get("data") or {}
+            content = data.get("content") if isinstance(data, dict) else None
+            if payload.get("success"):
+                return CommandResult.success_result(
+                    content if content is not None else "",
+                    "rich" if content is not None else "text",
+                    **{k: v for k, v in (data or {}).items() if k != "content"},
+                )
+            return CommandResult.error_result(payload.get("error", "cost error"))
+
         try:
-            if not args:
-                return self._show_cost_summary()
-            
-            action = args[0].lower()
-            
+            if not args_list:
+                return _wrap(self._show_cost_summary())
+
+            action = args_list[0].lower()
+
             if action == "summary":
-                days = int(args[1]) if len(args) > 1 else 30
-                return self._show_cost_summary(days)
+                days = int(args_list[1]) if len(args_list) > 1 else 30
+                return _wrap(self._show_cost_summary(days))
             elif action == "session":
-                return self._show_session_costs()
+                return _wrap(self._show_session_costs())
             elif action == "estimate":
-                if len(args) < 4:
-                    return self._error("Usage: /cost estimate <provider> <model> <tokens>")
-                provider, model, tokens = args[1], args[2], int(args[3])
-                return self._show_cost_estimate(provider, model, tokens)
+                if len(args_list) < 4:
+                    return _wrap(self._error("Usage: /cost estimate <provider> <model> <tokens>"))
+                provider, model, tokens = args_list[1], args_list[2], int(args_list[3])
+                return _wrap(self._show_cost_estimate(provider, model, tokens))
             else:
-                return self._error(f"Unknown action: {action}")
-                
+                return _wrap(self._error(f"Unknown action: {action}"))
+
         except ValueError as e:
-            return self._error(f"Invalid parameter: {str(e)}")
+            return _wrap(self._error(f"Invalid parameter: {str(e)}"))
         except Exception as e:
             logger.error(f"CostCommand execution error: {str(e)}")
-            return self._error(f"Command execution failed: {str(e)}")
+            return _wrap(self._error(f"Command execution failed: {str(e)}"))
 
     def _show_cost_summary(self, days: int = 30) -> Dict[str, Any]:
         """Show comprehensive cost summary"""
