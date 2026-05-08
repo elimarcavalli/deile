@@ -263,25 +263,6 @@ class BashExecuteTool(SyncTool):
             # Fallback to regular subprocess
             return self._execute_with_subprocess(command, working_dir, env, timeout)
     
-    def _execute_with_pty_windows(self,
-                                 command: str,
-                                 working_dir: Path, 
-                                 env: Dict[str, str],
-                                 timeout: float) -> Tuple[str, str, int, bool]:
-        """Execute command with PTY on Windows systems"""
-        
-        try:
-            # Use standard subprocess for Windows compatibility
-            logger.info("Using standard subprocess for Windows command execution")
-
-            # Fallback to regular subprocess for better compatibility
-            return self._execute_with_subprocess(command, working_dir, env, timeout)
-
-        except Exception as e:
-            logger.error(f"Windows command execution failed: {e}")
-            # Fallback to regular subprocess
-            return self._execute_with_subprocess(command, working_dir, env, timeout)
-    
     def _execute_with_subprocess(self,
                                command: str,
                                working_dir: Path,
@@ -481,15 +462,10 @@ class BashExecuteTool(SyncTool):
             should_use_pty = self._should_use_pty(command, use_pty)
             
             # Execute command
-            if should_use_pty and not sandbox:
-                if self.platform == 'Windows':
-                    stdout, stderr, exit_code, pty_used = self._execute_with_pty_windows(
-                        command, working_dir, env, timeout
-                    )
-                else:
-                    stdout, stderr, exit_code, pty_used = self._execute_with_pty_unix(
-                        command, working_dir, env, timeout
-                    )
+            if should_use_pty and not sandbox and self.platform != 'Windows':
+                stdout, stderr, exit_code, pty_used = self._execute_with_pty_unix(
+                    command, working_dir, env, timeout
+                )
             else:
                 stdout, stderr, exit_code, pty_used = self._execute_with_subprocess(
                     command, working_dir, env, timeout

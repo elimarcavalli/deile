@@ -68,8 +68,6 @@ class ToolRegistry:
                 if alias in self._tool_aliases:
                     logger.warning(f"Alias '{alias}' already exists, overwriting")
                 self._tool_aliases[alias] = tool_name
-        
-        # # # logger.info(f"Registered tool: {tool_name} ({tool.category})")
     
     def unregister(self, tool_name: str) -> bool:
         """Remove uma tool do registry
@@ -101,8 +99,6 @@ class ToolRegistry:
         
         # Remove a tool
         del self._tools[tool_name]
-        
-        # (f"Unregistered tool: {tool_name}")
         return True
     
     def get(self, tool_name: str) -> Optional[Tool]:
@@ -180,7 +176,6 @@ class ToolRegistry:
         
         tool.enable()
         self._enabled_tools.add(tool.name)  # Usa o nome real, não o alias
-        # (f"Enabled tool: {tool.name}")
         return True
     
     def disable_tool(self, tool_name: str) -> bool:
@@ -198,7 +193,6 @@ class ToolRegistry:
         
         tool.disable()
         self._enabled_tools.discard(tool.name)  # Usa o nome real, não o alias
-        # (f"Disabled tool: {tool.name}")
         return True
     
     async def find_suitable_tools(self, user_input: str) -> List[Tool]:
@@ -592,7 +586,10 @@ class ToolRegistry:
         
         # Estatísticas de Function Calling
         tools_with_schemas = sum(1 for tool in self._tools.values() if tool.schema is not None)
-        function_definitions = len(self.get_gemini_functions())
+        function_definitions = sum(
+            1 for name, tool in self._tools.items()
+            if name in self._enabled_tools and tool.get_function_definition() is not None
+        )
         
         return {
             "total_tools": total_tools,
@@ -612,7 +609,6 @@ class ToolRegistry:
         self._tools_by_category.clear()
         self._enabled_tools.clear()
         self._tool_aliases.clear()
-        # ("Cleared all tools from registry")
     
     def disable_auto_discovery(self) -> None:
         """Desabilita descoberta automática"""
@@ -647,7 +643,6 @@ def get_tool_registry() -> ToolRegistry:
         
         # Carrega schemas se diretório existir
         try:
-            from pathlib import Path
             schemas_dir = Path(__file__).parent / "schemas"
             if schemas_dir.exists():
                 _tool_registry.load_schemas_from_directory(schemas_dir)

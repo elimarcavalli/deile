@@ -474,8 +474,6 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
         
         # NOVO: Fallback para user_input se contém referência a arquivo
         if not file_path and context.user_input:
-            import re
-
             # Filler tokens (articles, pronouns) that may appear between a verb
             # and the actual file reference, e.g. "read the readme",
             # "show me the README". Skipping them lets the capture group land
@@ -515,9 +513,6 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
         # NOVO: Smart File Resolution - último fallback antes do erro
         if not file_path and context.user_input:
             try:
-                # Extrai termos que podem ser referências de arquivo do user_input
-                import re
-
                 from ..core.file_resolver import get_file_resolver
 
                 # Filler tokens to skip between verb and file reference
@@ -726,8 +721,6 @@ class WriteFileTool(SyncTool):
     
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Executa escrita de arquivo"""
-        import re
-
         # DEBUG: Log dos argumentos recebidos
         logger.debug(f"WriteFileTool - parsed_args: {context.parsed_args}")
         logger.debug(f"WriteFileTool - user_input: {context.user_input}")
@@ -1055,8 +1048,6 @@ class ListFilesTool(SyncTool):
     
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Executa listagem de arquivos"""
-        import re
-
         # Extração robusta dos argumentos com fallbacks múltiplos
         target_path = "."
         recursive = False
