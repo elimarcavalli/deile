@@ -7,6 +7,12 @@ Covers gap A from the #125 hardening work:
   - Audit details hash secret-keys to ``"<redacted>"`` and other values to
     SHA-256 truncated digests.
   - Dry-run validation against ``_OVERRIDE_HANDLERS`` rejects type mismatches.
+
+Fail-closed default (P1-5 of the review): the bundled
+``settings_write_default`` rule denies writes by default, so most tests
+here install a permissive ``PermissionManager`` (ALLOW write on
+``settings:*``) via the ``allow_settings_writes`` fixture. The handful of
+tests that exercise *denial* construct their own ``MagicMock`` PM.
 """
 
 from __future__ import annotations
@@ -20,6 +26,40 @@ import pytest
 from deile.commands.settings_manager import (SettingsManager, _hash_value,
                                              _is_secret_key,
                                              _value_fingerprint)
+from deile.security.permissions import (PermissionLevel, PermissionRule,
+                                        ResourceType)
+
+pytestmark = pytest.mark.security
+
+
+@pytest.fixture
+def allow_settings_writes():
+    """Replace the settings-write rule with a permissive one for the test.
+
+    Mutates the singleton in place — combined with conftest's session-scoped
+    AuditLogger isolation and per-test Settings reset, this stays clean.
+    """
+    from deile.security import permissions as perm_module
+
+    pm = perm_module.get_permission_manager()
+    saved = pm.get_rule_by_id("settings_write_default")
+    pm.add_rule(
+        PermissionRule(
+            id="settings_write_default",
+            name="Settings Write (Test)",
+            description="Test override — allow settings writes.",
+            resource_type=ResourceType.FILE,
+            resource_pattern=r"^settings:(global|project):.*$",
+            tool_names=["settings_manager"],
+            permission_level=PermissionLevel.WRITE,
+            priority=50,
+        )
+    )
+    try:
+        yield pm
+    finally:
+        if saved is not None:
+            pm.add_rule(saved)
 
 
 def _make_manager(tmp_path: Path) -> SettingsManager:
@@ -90,7 +130,7 @@ class TestSecretKeyHelpers:
 
 
 class TestSetSettingPermissionAndAudit:
-    def test_emits_audit_on_successful_write(self, tmp_path):
+    def test_emits_audit_on_successful_write(self, tmp_path, allow_settings_writes):
         mgr = _make_manager(tmp_path)
         with patch(
             "deile.commands.settings_manager._emit_settings_audit"
@@ -112,7 +152,8 @@ class TestSetSettingPermissionAndAudit:
         pm_mock = MagicMock()
         pm_mock.check_permission.return_value = True
         with patch(
-            "deile.security.permissions.get_permission_manager", return_value=pm_mock
+            "deile.commands._settings_security_hooks.get_permission_manager",
+            return_value=pm_mock,
         ):
             mgr.set_setting("logging.level", "INFO", scope="global")
         pm_mock.check_permission.assert_called_once()
@@ -126,7 +167,8 @@ class TestSetSettingPermissionAndAudit:
         pm_mock = MagicMock()
         pm_mock.check_permission.return_value = False
         with patch(
-            "deile.security.permissions.get_permission_manager", return_value=pm_mock
+            "deile.commands._settings_security_hooks.get_permission_manager",
+            return_value=pm_mock,
         ):
             result = mgr.set_setting("logging.level", "INFO", scope="global")
         assert result is False
@@ -138,7 +180,8 @@ class TestSetSettingPermissionAndAudit:
         pm_mock = MagicMock()
         pm_mock.check_permission.return_value = False
         with patch(
-            "deile.security.permissions.get_permission_manager", return_value=pm_mock
+            "deile.commands._settings_security_hooks.get_permission_manager",
+            return_value=pm_mock,
         ), patch(
             "deile.commands.settings_manager._emit_settings_audit"
         ) as audit_mock:
@@ -160,7 +203,9 @@ class TestSetSettingPermissionAndAudit:
         assert mgr.set_setting("openai_api_key", "sk-secret", scope="global") is False
         assert not mgr.global_settings_path.exists()
 
-    def test_dry_run_validation_rejects_type_mismatch(self, tmp_path):
+    def test_dry_run_validation_rejects_type_mismatch(
+        self, tmp_path, allow_settings_writes
+    ):
         """`logging.level` expects a LogLevel-coercible string. A bare int
         must be rejected before the file is touched."""
         mgr = _make_manager(tmp_path)
@@ -175,17 +220,23 @@ class TestSetSettingPermissionAndAudit:
         assert kwargs["result"] == "invalid"
         assert kwargs["details"]["reason"] == "validation_failed"
 
-    def test_dry_run_validation_accepts_valid_value(self, tmp_path):
+    def test_dry_run_validation_accepts_valid_value(
+        self, tmp_path, allow_settings_writes
+    ):
         mgr = _make_manager(tmp_path)
         assert mgr.set_setting("logging.level", "INFO", scope="global") is True
 
-    def test_dry_run_skipped_for_keys_outside_handlers(self, tmp_path):
+    def test_dry_run_skipped_for_keys_outside_handlers(
+        self, tmp_path, allow_settings_writes
+    ):
         """Keys without an `_OVERRIDE_HANDLERS` entry (e.g. ad-hoc nested
         knobs) must still be writable — dry-run is opt-in coverage."""
         mgr = _make_manager(tmp_path)
         assert mgr.set_setting("custom.nested.value", 123, scope="global") is True
 
-    def test_old_value_fingerprint_recorded_on_overwrite(self, tmp_path):
+    def test_old_value_fingerprint_recorded_on_overwrite(
+        self, tmp_path, allow_settings_writes
+    ):
         mgr = _make_manager(tmp_path)
         mgr.set_setting("logging.level", "INFO", scope="global")
         with patch(
@@ -203,7 +254,7 @@ class TestSetSettingPermissionAndAudit:
 
 
 class TestSkillsPathPermissionAndAudit:
-    def test_add_emits_audit_on_success(self, tmp_path):
+    def test_add_emits_audit_on_success(self, tmp_path, allow_settings_writes):
         mgr = _make_manager(tmp_path)
         target = tmp_path / "skills_a"
         with patch(
@@ -222,7 +273,8 @@ class TestSkillsPathPermissionAndAudit:
         pm_mock = MagicMock()
         pm_mock.check_permission.return_value = False
         with patch(
-            "deile.security.permissions.get_permission_manager", return_value=pm_mock
+            "deile.commands._settings_security_hooks.get_permission_manager",
+            return_value=pm_mock,
         ):
             assert mgr.add_skills_path(tmp_path / "x", scope="global") is False
         assert not mgr.global_settings_path.exists()
@@ -232,7 +284,8 @@ class TestSkillsPathPermissionAndAudit:
         pm_mock = MagicMock()
         pm_mock.check_permission.return_value = False
         with patch(
-            "deile.security.permissions.get_permission_manager", return_value=pm_mock
+            "deile.commands._settings_security_hooks.get_permission_manager",
+            return_value=pm_mock,
         ), patch(
             "deile.commands.settings_manager._emit_settings_audit"
         ) as audit_mock:
@@ -240,7 +293,7 @@ class TestSkillsPathPermissionAndAudit:
         audit_mock.assert_called_once()
         assert audit_mock.call_args.kwargs["result"] == "denied"
 
-    def test_remove_emits_audit_on_success(self, tmp_path):
+    def test_remove_emits_audit_on_success(self, tmp_path, allow_settings_writes):
         mgr = _make_manager(tmp_path)
         # First add a path (this also emits audit; reset mock by re-patching).
         target = "/some/skill/dir"
@@ -267,7 +320,8 @@ class TestSkillsPathPermissionAndAudit:
         pm_mock = MagicMock()
         pm_mock.check_permission.return_value = False
         with patch(
-            "deile.security.permissions.get_permission_manager", return_value=pm_mock
+            "deile.commands._settings_security_hooks.get_permission_manager",
+            return_value=pm_mock,
         ):
             assert mgr.remove_skills_path(target, scope="global") is False
         # File still has the original content

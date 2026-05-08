@@ -320,10 +320,29 @@ class TestSettingsManagerGetAllPreferences:
         assert prefs["pipeline"]["repo"] == "project/repo"
 
     def test_set_preference_persists(self, tmp_path):
+        # set_preference is fail-closed by default (issue #125 P0-2 / P1-5);
+        # install a permissive rule for this test's lifetime.
         from deile.commands.settings_manager import SettingsManager
+        from deile.security.permissions import (PermissionLevel,
+                                                PermissionRule, ResourceType,
+                                                get_permission_manager)
+
+        pm = get_permission_manager()
+        pm.add_rule(
+            PermissionRule(
+                id="settings_write_default",
+                name="Settings Write (Test)",
+                description="permissive override",
+                resource_type=ResourceType.FILE,
+                resource_pattern=r"^settings:(global|project):.*$",
+                tool_names=["settings_manager"],
+                permission_level=PermissionLevel.WRITE,
+                priority=50,
+            )
+        )
 
         mgr = SettingsManager(project_dir=tmp_path / "project", user_home=tmp_path / "home")
-        mgr.set_preference("debug", {"enabled": True})
+        assert mgr.set_preference("debug", {"enabled": True}) is True
         prefs = mgr.get_all_preferences()
         assert prefs["debug"]["enabled"] is True
 
