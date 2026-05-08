@@ -13,17 +13,14 @@ Version: 5.1.0 ULTRA
 """
 
 import logging
-import asyncio
-from typing import Dict, List, Optional, Any, TYPE_CHECKING
 from dataclasses import dataclass, field
-from datetime import datetime
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 # TYPE_CHECKING imports to avoid circular dependencies
 if TYPE_CHECKING:
-    from ..core.agent import DeileAgent, AgentSession
-    from .base import BasePersona, PersonaConfig
+    from ..core.agent import DeileAgent
+    from .base import BasePersona
     from .manager import PersonaManager
-    from .memory.integration import PersonaMemoryLayer
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +113,7 @@ class PersonaEnhancedAgent:
         user_input: str,
         session_id: str = "default",
         **kwargs
-    ) -> 'AgentResponse':
+    ) -> 'AgentResponse':  # noqa: F821
         """
         Process input with persona-enhanced behavior
 
@@ -268,10 +265,10 @@ class PersonaEnhancedAgent:
 
     async def _post_process_with_persona(
         self,
-        response: 'AgentResponse',
+        response: 'AgentResponse',  # noqa: F821
         user_input: str,
         session_id: str
-    ) -> 'AgentResponse':
+    ) -> 'AgentResponse':  # noqa: F821
         """Post-process response with persona insights"""
         if not self._has_active_persona():
             return response

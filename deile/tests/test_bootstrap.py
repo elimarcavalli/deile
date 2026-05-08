@@ -5,8 +5,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from deile.core.models.bootstrap import bootstrap_providers
 
 _YAML_PATH = Path(__file__).parents[2] / "deile" / "config" / "model_providers.yaml"

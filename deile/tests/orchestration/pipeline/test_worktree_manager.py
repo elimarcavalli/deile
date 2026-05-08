@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from deile.orchestration.pipeline.worktree_manager import (Worktree,
-                                                            WorktreeError,
-                                                            WorktreeManager)
+                                                           WorktreeError,
+                                                           WorktreeManager)
 
 
 def _git(cwd: Path, *args: str) -> None:
@@ -31,6 +30,7 @@ def fake_repo(tmp_path: Path) -> Path:
     _git(repo, "init", "--initial-branch=main")
     _git(repo, "config", "user.email", "test@example.com")
     _git(repo, "config", "user.name", "Test")
+    _git(repo, "config", "commit.gpgsign", "false")
     (repo / "README.md").write_text("# fake\n")
     _git(repo, "add", "README.md")
     _git(repo, "commit", "-m", "initial")

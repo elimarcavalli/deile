@@ -14,11 +14,11 @@ from deile.core.models.stream_events import StreamEventType
 
 
 def _make_provider(monkeypatch, provider_cls_name: str = "OpenAIProvider"):
-    from deile.core.models.openai_provider import OpenAIProvider
-    from deile.core.models.deepseek_provider import DeepSeekProvider
     from deile.core.models.catalog import ModelHandle, ModelPricing
-    from deile.core.models.tier import ModelTier
+    from deile.core.models.deepseek_provider import DeepSeekProvider
+    from deile.core.models.openai_provider import OpenAIProvider
     from deile.core.models.provider_config import ProviderConfig
+    from deile.core.models.tier import ModelTier
 
     handle = ModelHandle(
         provider_id="openai",

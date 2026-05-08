@@ -12,7 +12,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DB_PATH = Path(__file__).parents[2] / "data" / "usage.db"
+_DEFAULT_DB_PATH = Path.home() / ".deile" / "db" / "usage.db"
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS usage_records (

@@ -40,7 +40,7 @@ class EmojiManager:
                 subprocess.run(['cmd', '/c', 'chcp', '65001'], capture_output=True, check=False)
                 # Most modern Windows terminals support emojis now
                 return True
-            except:
+            except Exception:
                 return False
         
         # Linux/Mac terminals generally support emojis
@@ -143,7 +143,7 @@ class EmojiManager:
                 os.environ['PYTHONIOENCODING'] = 'utf-8'
                 
                 return True
-            except:
+            except Exception:
                 return False
         return True
 
@@ -171,14 +171,25 @@ def format_with_emojis(text: str) -> str:
 
 
 # Common emoji shortcuts
-SUCCESS = lambda: emoji('success')
-ERROR = lambda: emoji('error') 
-WARNING = lambda: emoji('warning')
-INFO = lambda: emoji('info')
-SPARKLES = lambda: emoji('sparkles')
-WAVE = lambda: emoji('wave')
-ROBOT = lambda: emoji('robot')
-ROCKET = lambda: emoji('rocket')
-TOOL = lambda: emoji('tool')
-CLOCK = lambda: emoji('clock')
-LIGHTBULB = lambda: emoji('lightbulb')
+def SUCCESS():
+    return emoji('success')
+def ERROR():
+    return emoji('error') 
+def WARNING():
+    return emoji('warning')
+def INFO():
+    return emoji('info')
+def SPARKLES():
+    return emoji('sparkles')
+def WAVE():
+    return emoji('wave')
+def ROBOT():
+    return emoji('robot')
+def ROCKET():
+    return emoji('rocket')
+def TOOL():
+    return emoji('tool')
+def CLOCK():
+    return emoji('clock')
+def LIGHTBULB():
+    return emoji('lightbulb')

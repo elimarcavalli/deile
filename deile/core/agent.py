@@ -1,44 +1,44 @@
 """Agent Orchestrator principal do DEILE"""
 
-from typing import Dict, List, Optional, Any, AsyncIterator, Tuple
-from dataclasses import dataclass, field
-from enum import Enum
 import asyncio
 import logging
 import re
 import time
-from pathlib import Path
+from dataclasses import dataclass, field
 from datetime import timedelta
+from enum import Enum
+from pathlib import Path
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
-from .exceptions import DEILEError, ToolError, ParserError, ModelError
+from .exceptions import DEILEError, ModelError
 
 # Module-level import so that `except _BudgetExceeded:` clauses don't NameError
 # if the import inside a try block ever raises (extremely rare but possible).
 try:
-    from deile.storage.usage_repository import BudgetExceeded as _BudgetExceeded
+    from deile.storage.usage_repository import \
+        BudgetExceeded as _BudgetExceeded
 except Exception:  # pragma: no cover — defensive only
     class _BudgetExceeded(Exception):  # type: ignore[no-redef]
         provider_id = None
         limit_type = None
-from .context_manager import ContextManager
-from .models.router import ModelRouter
-from .intent_analyzer import IntentAnalyzer, get_intent_analyzer
-from .proactive_analyzer import ProactiveAnalyzer, get_proactive_analyzer, ProactiveAction
-from .file_resolver import get_file_resolver
-from ..tools.registry import ToolRegistry, get_tool_registry
-from ..tools.base import ToolContext, ToolResult, ToolStatus
-from ..parsers.registry import ParserRegistry, get_parser_registry
-from ..parsers.base import ParseResult, ParseStatus, ParsedCommand
-from ..commands.registry import CommandRegistry, get_command_registry
 from ..commands.actions import CommandActions
-from ..ui.display_manager import DisplayManager
-from ..storage.logs import get_logger
+from ..commands.registry import get_command_registry
 from ..config.settings import get_settings
-from ..personas.manager import PersonaManager
 from ..orchestration.workflow_executor import get_workflow_executor
+from ..parsers.base import ParseResult
+from ..parsers.registry import ParserRegistry, get_parser_registry
+from ..personas.manager import PersonaManager
+from ..storage.logs import get_logger
+from ..tools.base import ToolContext, ToolResult, ToolStatus
+from ..tools.registry import ToolRegistry, get_tool_registry
+from ..ui.display_manager import DisplayManager
 from ..ui.stage_cascade import cascade_until
-from ..ui.stage_messages import get_stage_message, has_stage_messages
-
+from ..ui.stage_messages import get_stage_message
+from .context_manager import ContextManager
+from .intent_analyzer import get_intent_analyzer
+from .models.router import ModelRouter
+from .proactive_analyzer import (ProactiveAction, ProactiveAnalyzer,
+                                 get_proactive_analyzer)
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,8 @@ def _is_permanent_provider_error(exc: Exception) -> bool:
     user so they can correct their configuration instead of silently cascading.
     Transient errors (rate_limit, server) may be retried via cascade.
     """
-    from deile.core.models.errors import ProviderInvocationError  # noqa: PLC0415
+    from deile.core.models.errors import \
+        ProviderInvocationError  # noqa: PLC0415
     if not isinstance(exc, ProviderInvocationError):
         return False
     return exc.envelope.error_type in ("auth", "invalid_request")
@@ -199,7 +200,8 @@ def _select_configured_model_provider(
 def _self_record_circuit(provider_id: str, *, success: bool) -> None:
     """Notify TierRouter's CircuitBreaker of a provider call outcome."""
     try:
-        from deile.core.models.tier_router import get_tier_router  # noqa: PLC0415
+        from deile.core.models.tier_router import \
+            get_tier_router  # noqa: PLC0415
         tr = get_tier_router()
         if success:
             tr.record_success(provider_id)
@@ -212,7 +214,8 @@ def _self_record_circuit(provider_id: str, *, success: bool) -> None:
 async def _emit_router_event(event_type: str, payload: dict) -> None:
     """Best-effort observability emit; never raises."""
     try:
-        from deile.storage.debug_logger import get_debug_logger  # noqa: PLC0415
+        from deile.storage.debug_logger import \
+            get_debug_logger  # noqa: PLC0415
         await get_debug_logger().log_router_event(event_type, payload)
     except Exception:
         pass
@@ -600,7 +603,7 @@ class DeileAgent:
         user_input: str,
         session_id: str = "default",
         **kwargs,
-    ) -> AsyncIterator["UnifiedStreamEvent"]:
+    ) -> AsyncIterator["UnifiedStreamEvent"]:  # noqa: F821
         """Stream the same turn that ``process_input`` would produce — but as
         ``UnifiedStreamEvent`` objects so the UI can render text deltas and
         tool calls as they happen.
@@ -612,11 +615,9 @@ class DeileAgent:
         ``ToolLoopExecutor`` forwards every text/tool event and emits
         TOOL_RESULT after each tool invocation.
         """
-        from deile.core.models.stream_events import (
-            ModelUsageSnapshot,
-            StreamEventType,
-            UnifiedStreamEvent,
-        )
+        from deile.core.models.stream_events import (ModelUsageSnapshot,
+                                                     StreamEventType,
+                                                     UnifiedStreamEvent)
 
         start_time = time.time()
         self._status = AgentStatus.PROCESSING
@@ -921,7 +922,7 @@ class DeileAgent:
         user_input: str,
         parse_result: Optional[ParseResult],
         session: AgentSession,
-    ) -> AsyncIterator["UnifiedStreamEvent"]:
+    ) -> AsyncIterator["UnifiedStreamEvent"]:  # noqa: F821
         """Stream the chat-with-tools loop for a single provider.
 
         Reuses ``_process_iterative_function_calling``'s setup (tier classify,
@@ -936,10 +937,8 @@ class DeileAgent:
         re-issue the turn.
         """
         from deile.core.models.base import ModelMessage as _MM
-        from deile.core.models.stream_events import (
-            StreamEventType,
-            UnifiedStreamEvent,
-        )
+        from deile.core.models.stream_events import (StreamEventType,
+                                                     UnifiedStreamEvent)
         from deile.core.tool_loop_executor import ToolLoopExecutor
         from deile.events.event_bus import Event, EventPriority, EventType
 
@@ -993,9 +992,9 @@ class DeileAgent:
             stage=get_stage_message("budget_guard", "initial"),
         )
         try:
-            from deile.storage.usage_repository import (
-                get_usage_repository, BudgetGuard, BudgetExceeded,
-            )
+            from deile.storage.usage_repository import (BudgetExceeded,
+                                                        BudgetGuard,
+                                                        get_usage_repository)
             _guard: Any = getattr(self, "_budget_guard_singleton", None)
             if _guard is None:
                 _yaml = Path(__file__).resolve().parents[1] / "config" / "model_providers.yaml"
@@ -1045,7 +1044,8 @@ class DeileAgent:
         # EventBus publisher — best-effort, non-blocking.
         async def _publish_tool_event(kind: str, name: str, **kw: Any) -> None:
             try:
-                from deile.events.event_bus import get_event_bus  # type: ignore
+                from deile.events.event_bus import \
+                    get_event_bus  # type: ignore
                 bus = get_event_bus()
                 kind_to_event = {
                     "invoked": EventType.TOOL_INVOKED,
@@ -1424,14 +1424,16 @@ class DeileAgent:
         """Lazy SessionStore singleton."""
         if not hasattr(self, "_session_store") or self._session_store is None:
             try:
-                from deile.core.session_store import SessionStore
                 from deilebot.foundation.settings import get_bot_settings
+
+                from deile.core.session_store import SessionStore
 
                 bot_settings = get_bot_settings()
                 path = bot_settings.foundation.sessions_sqlite_path
             except Exception:
-                from deile.core.session_store import SessionStore
                 from pathlib import Path as _P
+
+                from deile.core.session_store import SessionStore
 
                 path = _P("./data/deile_sessions.sqlite")
             store = SessionStore(path)
@@ -1678,10 +1680,7 @@ class DeileAgent:
             # Budget enforcement — BudgetExceeded must propagate; other errors fail open
             try:
                 from deile.storage.usage_repository import (
-                    get_usage_repository,
-                    BudgetGuard,
-                    BudgetExceeded,
-                )
+                    BudgetExceeded, BudgetGuard, get_usage_repository)
                 _guard: Any = getattr(self, "_budget_guard_singleton", None)
                 if _guard is None:
                     # YAML lives at deile/config/model_providers.yaml; agent.py is at deile/core/agent.py
@@ -1790,7 +1789,8 @@ class DeileAgent:
 
             # ── New providers: Anthropic / OpenAI / DeepSeek via chat_with_tools ─
             elif hasattr(model_provider, 'chat_with_tools'):
-                from deile.core.models.base import ModelMessage  # local import to avoid cycle
+                from deile.core.models.base import \
+                    ModelMessage  # local import to avoid cycle
                 logger.debug("Using chat_with_tools for provider=%s", model_provider.provider_id)
 
                 system_instruction = None
@@ -1834,7 +1834,8 @@ class DeileAgent:
                 MAX_CASCADE_ATTEMPTS = 3  # safe default for tier=None (no cascade) path
                 if model_tier is not None:
                     try:
-                        from deile.core.models.tier_router import get_tier_router as _gtr_init
+                        from deile.core.models.tier_router import \
+                            get_tier_router as _gtr_init
                         cascade_len = len(_gtr_init().policy().cascade_for_tier(model_tier))
                         if cascade_len > 0:
                             MAX_CASCADE_ATTEMPTS = max(cascade_len, 1)
@@ -1887,7 +1888,8 @@ class DeileAgent:
                         ):
                             raise
                         try:
-                            from deile.core.models.tier_router import get_tier_router as _gtr
+                            from deile.core.models.tier_router import \
+                                get_tier_router as _gtr
                             next_provider = _gtr().select(
                                 model_tier, skip_provider_ids=tried_providers
                             )
@@ -2315,7 +2317,7 @@ class DeileAgent:
 
             # Prepara resposta baseada no resultado
             if completion_result['success']:
-                response_content = f"✅ **Workflow concluído com sucesso!**\n\n"
+                response_content = "✅ **Workflow concluído com sucesso!**\n\n"
                 response_content += f"**Objetivo:** {user_input}\n"
                 response_content += f"**Total de etapas:** {workflow_result['total_steps']}\n"
                 response_content += f"**Status:** {completion_result['status']}\n\n"
@@ -2330,7 +2332,7 @@ class DeileAgent:
                 )]
 
             else:
-                response_content = f"❌ **Workflow falhou durante execução**\n\n"
+                response_content = "❌ **Workflow falhou durante execução**\n\n"
                 response_content += f"**Objetivo:** {user_input}\n"
                 response_content += f"**Status:** {completion_result['status']}\n"
                 response_content += f"**Erro:** {completion_result.get('message', 'Erro desconhecido')}\n\n"
@@ -2348,7 +2350,7 @@ class DeileAgent:
         except Exception as e:
             logger.error(f"Workflow execution failed: {e}")
 
-            error_response = f"❌ **Erro na execução do workflow**\n\n"
+            error_response = "❌ **Erro na execução do workflow**\n\n"
             error_response += f"**Erro:** {str(e)}\n"
             error_response += "Executando fallback para processamento tradicional..."
 
@@ -2473,7 +2475,8 @@ class DeileAgent:
         session: AgentSession
     ) -> AsyncIterator[str]:
         """Geração de resposta em streaming — consome UnifiedStreamEvent de qualquer provider."""
-        from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
+        from deile.core.models.stream_events import (StreamEventType,
+                                                     UnifiedStreamEvent)
 
         try:
             context = await self.context_manager.build_context(
@@ -2547,18 +2550,18 @@ class DeileAgent:
     def _auto_discover_components(self) -> None:
         """Descobre automaticamente tools, parsers e comandos"""
         try:
-            tools_discovered = self.tool_registry.auto_discover()
-            parsers_discovered = self.parser_registry.auto_discover()
+            self.tool_registry.auto_discover()
+            self.parser_registry.auto_discover()
             
             # Initialize commands and register actions
-            builtin_commands = self.command_registry.auto_discover_builtin_commands()
-            config_commands = self.command_registry.load_commands_from_config()
+            self.command_registry.auto_discover_builtin_commands()
+            self.command_registry.load_commands_from_config()
             self._register_command_actions()
 
             # Load user/project skills as slash commands
             try:
-                from ..commands.skill_loader import SkillLoader
                 from ..commands.settings_manager import SettingsManager
+                from ..commands.skill_loader import SkillLoader
                 project_dir = getattr(self.settings, "working_directory", None)
                 _settings_mgr = SettingsManager(
                     project_dir=Path(project_dir) if project_dir else None
@@ -2777,7 +2780,7 @@ class DeileAgent:
             logger.error(f"Error in autonomous processing: {e}")
             return None
 
-    async def _execute_autonomous_intent(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
+    async def _execute_autonomous_intent(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:  # noqa: F821
         """Execute an autonomous intent with intelligent error recovery"""
         try:
             if intent.action == ProactiveAction.READ_FILE and intent.resolved_file:
@@ -2807,7 +2810,7 @@ class DeileAgent:
 
         return None
 
-    async def _autonomous_read_file(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
+    async def _autonomous_read_file(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:  # noqa: F821
         """Autonomously read a file using resolved file match"""
         if not intent.resolved_file:
             return None
@@ -2828,7 +2831,7 @@ class DeileAgent:
             logger.error(f"Error in autonomous read: {e}")
             return None
 
-    async def _autonomous_suggest_alternatives(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
+    async def _autonomous_suggest_alternatives(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:  # noqa: F821
         """Provide intelligent alternatives when file resolution fails"""
         try:
             # Get file resolver instance
@@ -2856,7 +2859,7 @@ class DeileAgent:
             logger.error(f"Error generating alternatives: {e}")
             return None
 
-    async def _autonomous_chain_list_and_read(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
+    async def _autonomous_chain_list_and_read(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:  # noqa: F821
         """Chain list files → resolve → read operations autonomously"""
         try:
             # First, list files to help with resolution

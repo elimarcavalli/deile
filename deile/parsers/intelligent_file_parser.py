@@ -1,15 +1,15 @@
 """Parser inteligente para detectar arquivos mencionados (com ou sem @)"""
 
-import re
 import asyncio
 import logging
-from typing import List, Optional, Set, Tuple
+import re
 from pathlib import Path
+from typing import List, Optional, Tuple
 
-from .base import Parser, ParseResult, ParseStatus, ParsedCommand
-from .file_parser import FileParser  
-from ..core.exceptions import ParserError
-from ..infrastructure.google_file_api import GoogleFileUploader, get_file_uploader
+from ..infrastructure.google_file_api import (GoogleFileUploader,
+                                              get_file_uploader)
+from .base import ParsedCommand, Parser, ParseResult, ParseStatus
+from .file_parser import FileParser
 
 logger = logging.getLogger(__name__)
 

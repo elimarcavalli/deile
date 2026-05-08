@@ -70,8 +70,8 @@ class AuditEvent:
 class AuditLogger:
     """Security audit logger with structured logging and redaction tracking"""
     
-    def __init__(self, log_dir: str = "logs", log_file: str = "security_audit.log"):
-        self.log_dir = Path(log_dir)
+    def __init__(self, log_dir: str = "", log_file: str = "security_audit.log"):
+        self.log_dir = Path(log_dir) if log_dir else Path.home() / ".deile" / "logs"
         self.log_file = self.log_dir / log_file
         self.session_id = self._generate_session_id()
         

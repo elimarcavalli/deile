@@ -1,16 +1,15 @@
 """Export Command - Export conversation, artifacts and session data"""
 
-from typing import Dict, Any, Optional
 import json
-import os
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, Optional
+
 from rich.panel import Panel
 from rich.text import Text
-from rich.progress import track
 
-from ..base import DirectCommand
 from ...core.exceptions import CommandError
+from ..base import DirectCommand
 
 
 class ExportCommand(DirectCommand):
@@ -478,9 +477,9 @@ Memory Statistics:
         conv_data = export_data.get("conversation", {})
         
         content_lines = [
-            f"✅ **Export Completed Successfully**",
+            "✅ **Export Completed Successfully**",
             "",
-            f"📊 **Export Statistics**:",
+            "📊 **Export Statistics**:",
             f"  • Messages: {conv_data.get('total_messages', 0)}",
             f"  • Total Tokens: {conv_data.get('total_tokens', {}).get('total', 0):,}",
             f"  • Artifacts: {export_data.get('artifacts', {}).get('total_artifacts', 0)}",
@@ -494,12 +493,12 @@ Memory Statistics:
             try:
                 file_size = Path(file_path).stat().st_size
                 content_lines.append(f"  • {file_name} ({file_size:,} bytes)")
-            except:
+            except Exception:
                 content_lines.append(f"  • {file_name}")
         
         content_lines.extend([
             "",
-            f"🎯 **Export Details**:",
+            "🎯 **Export Details**:",
             f"  • Format: {format_type.upper()}",
             f"  • Export ID: {metadata.get('export_id', 'Unknown')}",
             f"  • Timestamp: {metadata.get('timestamp', 'Unknown')[:19]}",

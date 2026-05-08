@@ -14,7 +14,7 @@ def _ensure_initialized() -> None:
 
     logger = logging.getLogger(_LOGGER_NAME)
     if not logger.handlers:
-        log_dir = Path.cwd() / "logs"
+        log_dir = Path.home() / ".deile" / "logs"
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
             handler = logging.FileHandler(log_dir / "deile.log", encoding="utf-8")

@@ -1,11 +1,10 @@
 """Parser para comandos slash (/comando)"""
 
 import re
-from typing import List, Optional
+from typing import List
 
-from .base import RegexParser, ParseResult, ParseStatus, ParsedCommand
-from ..core.exceptions import ParserError
 from ..commands.registry import get_command_registry
+from .base import ParsedCommand, ParseResult, ParseStatus, RegexParser
 
 
 class CommandParser(RegexParser):

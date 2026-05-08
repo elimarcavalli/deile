@@ -12,9 +12,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # PTY imports for Unix-like systems
 try:
-    import pty
-    import select
-    import tty
+    import pty  # noqa: F401
+    import select  # noqa: F401
+    import tty  # noqa: F401
     PTY_AVAILABLE = True
 except ImportError as e:
     logging.warning(f"PTY modules not available: {e}")
@@ -378,7 +378,7 @@ class BashExecuteTool(SyncTool):
             action="execute",
             context={"working_directory": str(working_dir)}
         ):
-            raise ToolError(f"Permission denied: Command execution not allowed")
+            raise ToolError("Permission denied: Command execution not allowed")
         
         # Check working directory permission
         if not self.permission_manager.check_permission(
@@ -532,7 +532,7 @@ class BashExecuteTool(SyncTool):
             # Determine status
             if exit_code == 0:
                 status = ToolStatus.SUCCESS
-                message = f"Command executed successfully (exit code: 0)"
+                message = "Command executed successfully (exit code: 0)"
             else:
                 status = ToolStatus.ERROR
                 message = f"Command failed with exit code: {exit_code}"

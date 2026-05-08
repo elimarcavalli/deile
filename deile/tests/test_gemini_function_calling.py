@@ -22,7 +22,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from deile.core.models.gemini_provider import GeminiProvider, _stringify_for_model
+from deile.core.models.gemini_provider import (GeminiProvider,
+                                               _stringify_for_model)
 from deile.tools.base import ToolResult, ToolStatus
 
 

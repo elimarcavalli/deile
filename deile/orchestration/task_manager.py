@@ -1,14 +1,14 @@
 """Task Manager - Sistema de TODO lists e validação de execução sequencial"""
 
-from typing import Dict, List, Optional, Any, Union
-from dataclasses import dataclass, field
-from enum import Enum
-from datetime import datetime, timedelta
-import json
 import asyncio
-import uuid
+import json
 import logging
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from enum import Enum
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from ..core.exceptions import DEILEError
 

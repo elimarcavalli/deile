@@ -1,16 +1,16 @@
 """Patch Command - Generate patch files from plan changes"""
 
-from typing import Dict, Any, Optional, List
-import json
-from pathlib import Path
 from datetime import datetime
-from rich.panel import Panel
-from rich.text import Text
-from rich.table import Table
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from ..base import DirectCommand, CommandResult, CommandContext
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import get_plan_manager
+from ..base import CommandContext, CommandResult, DirectCommand
 
 
 class PatchCommand(DirectCommand):
@@ -287,7 +287,7 @@ class PatchCommand(DirectCommand):
         
         if action == 'created':
             return [
-                f"--- /dev/null",
+                "--- /dev/null",
                 f"+++ {path}",
                 f"@@ -0,0 +1,{file_change['lines_added']} @@",
                 f"+{file_change['new_content']}"
@@ -295,7 +295,7 @@ class PatchCommand(DirectCommand):
         elif action == 'deleted':
             return [
                 f"--- {path}",
-                f"+++ /dev/null",
+                "+++ /dev/null",
                 f"@@ -1,{file_change['lines_removed']} +0,0 @@",
                 f"-{file_change['old_content']}"
             ]
@@ -372,7 +372,7 @@ class PatchCommand(DirectCommand):
         summary = changes['summary']
         
         content_lines = [
-            f"📦 **Patch Generated Successfully**",
+            "📦 **Patch Generated Successfully**",
             "",
             f"**Plan:** {plan.title}",
             f"**Plan ID:** {plan.id}",
@@ -380,7 +380,7 @@ class PatchCommand(DirectCommand):
             f"**Format:** {output_format}",
             f"**Size:** {file_size:,} bytes",
             "",
-            f"**Changes Included:**",
+            "**Changes Included:**",
             f"  • Files Modified: {summary['files_modified']} 📝",
             f"  • Files Created: {summary['files_created']} ✨",
             f"  • Files Deleted: {summary['files_deleted']} 🗑️",
@@ -419,7 +419,7 @@ class PatchCommand(DirectCommand):
             "**Apply Patch:**",
             f"  • `/patch-apply {output_path.name}` - Apply to current directory",
             f"  • `git apply {output_path}` - Apply using Git (if git format)",
-            f"  • Manual review recommended before applying",
+            "  • Manual review recommended before applying",
             "",
             "**View Patch:**",
             f"  • View file: `{output_path}`",

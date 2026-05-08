@@ -10,7 +10,6 @@ import pytest
 from deile.cron.agent_bridge import make_fire_callback
 from deile.cron.store import CronEntry
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

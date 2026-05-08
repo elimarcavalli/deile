@@ -17,9 +17,9 @@ pytestmark = pytest.mark.skipif(
 @pytest.mark.asyncio
 async def test_cascade_falls_back_to_openai():
     """Real OpenAI call using gpt-4o-mini — independent of catalog (which uses speculative IDs)."""
-    from deile.core.models.openai_provider import OpenAIProvider
     from deile.core.models.base import ModelMessage
     from deile.core.models.catalog import ModelHandle, ModelPricing
+    from deile.core.models.openai_provider import OpenAIProvider
     from deile.core.models.provider_config import ProviderConfig
     from deile.core.models.tier import ModelTier
 

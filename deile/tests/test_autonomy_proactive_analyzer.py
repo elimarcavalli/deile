@@ -5,19 +5,15 @@ This test suite covers all aspects of the proactive analysis system with
 smart file resolution and chaining capabilities.
 """
 
-import pytest
-import tempfile
 import shutil
+import tempfile
 from pathlib import Path
-from unittest.mock import Mock, patch, AsyncMock
-import asyncio
 
-from deile.core.proactive_analyzer import (
-    ProactiveAnalyzer,
-    ProactiveAction,
-    ProactiveIntent
-)
+import pytest
+
 from deile.core.file_resolver import FileMatch, MatchType
+from deile.core.proactive_analyzer import (ProactiveAction, ProactiveAnalyzer,
+                                           ProactiveIntent)
 
 
 class TestProactiveAction:
@@ -61,7 +57,7 @@ class TestProactiveIntent:
         assert intent.action == ProactiveAction.READ_FILE
         assert intent.target == "test.txt"
         assert intent.confidence == 0.95
-        assert intent.autonomous_eligible == False  # Default
+        assert not intent.autonomous_eligible  # Default
         assert len(intent.chained_actions) == 0  # Default
 
     def test_intent_with_resolved_file(self):
@@ -85,7 +81,7 @@ class TestProactiveIntent:
         )
 
         assert intent.resolved_file == file_match
-        assert intent.autonomous_eligible == True
+        assert intent.autonomous_eligible
 
     def test_intent_with_chained_actions(self):
         """Test intent with chained actions"""
@@ -325,7 +321,7 @@ class TestProactiveAnalyzer:
             # Higher confidence should generally have higher priority
             if len(intents) > 1:
                 sorted_by_conf = sorted(intents, key=lambda i: i.confidence, reverse=True)
-                sorted_by_prio = sorted(intents, key=lambda i: i.priority, reverse=True)
+                sorted(intents, key=lambda i: i.priority, reverse=True)
                 # Not always exact match, but should be correlated
                 assert sorted_by_conf[0].priority >= min(i.priority for i in intents)
 

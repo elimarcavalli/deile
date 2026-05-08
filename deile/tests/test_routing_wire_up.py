@@ -8,13 +8,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from deile.core.models.tier import ModelTier
-from deile.core.models.tier_router import (
-    CircuitBreaker,
-    RoutingPolicy,
-    TierRouter,
-    get_tier_router,
-    reset_tier_router,
-)
+from deile.core.models.tier_router import (CircuitBreaker, RoutingPolicy,
+                                           TierRouter, get_tier_router,
+                                           reset_tier_router)
 
 _YAML_PATH = Path(__file__).parents[2] / "deile" / "config" / "model_providers.yaml"
 

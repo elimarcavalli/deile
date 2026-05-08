@@ -2,8 +2,8 @@
 
 import asyncio
 import logging
-from typing import Dict, List, Optional, Any
-from pathlib import Path
+from typing import Any, Dict
+
 from .self_analyzer import ImprovementOpportunity
 
 logger = logging.getLogger(__name__)

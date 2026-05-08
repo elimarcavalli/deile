@@ -1,10 +1,9 @@
 """Parser para diffs e patches (implementação futura)"""
 
 import re
-from typing import List, Optional
+from typing import List
 
-from .base import RegexParser, ParseResult, ParseStatus, ParsedCommand
-from ..core.exceptions import ParserError
+from .base import ParsedCommand, ParseResult, ParseStatus, RegexParser
 
 
 class DiffParser(RegexParser):

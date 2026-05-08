@@ -4,7 +4,8 @@ import time
 
 import pytest
 
-from deile.core.models.errors import ProviderErrorEnvelope, ProviderInvocationError
+from deile.core.models.errors import (ProviderErrorEnvelope,
+                                      ProviderInvocationError)
 
 
 @pytest.fixture

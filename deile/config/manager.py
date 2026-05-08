@@ -1,17 +1,16 @@
 """Gerenciador central de configurações do DEILE"""
 
-from dataclasses import dataclass, field
-from typing import Dict, Any, Optional, List, Union, Callable
-from pathlib import Path
-import yaml
-import json
-import logging
 import asyncio
+import logging
+from dataclasses import dataclass, field
 from enum import Enum
-from datetime import datetime
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Union
+
+import yaml
 
 try:
-    from ..core.exceptions import ValidationError, DEILEError
+    from ..core.exceptions import DEILEError, ValidationError
 except ImportError:
     # Fallback if exceptions module doesn't exist
     class ValidationError(Exception):
@@ -595,9 +594,9 @@ class ConfigManager:
 
             # Validate required persona fields
             required_fields = ['capabilities', 'communication_style']
-            for field in required_fields:
-                if field not in persona_config:
-                    self.logger.warning(f"Persona {persona_id} missing recommended field: {field}")
+            for field_name in required_fields:
+                if field_name not in persona_config:
+                    self.logger.warning(f"Persona {persona_id} missing recommended field: {field_name}")
 
             # Validate capabilities
             if 'capabilities' in persona_config:
@@ -794,8 +793,8 @@ class ConfigManager:
     async def setup_hot_reload(self) -> None:
         """Setup unified hot-reload for all configuration including personas"""
         try:
-            from watchdog.observers import Observer
             from watchdog.events import FileSystemEventHandler
+            from watchdog.observers import Observer
         except ImportError:
             self.logger.warning("Hot-reload disabled: watchdog not available")
             return

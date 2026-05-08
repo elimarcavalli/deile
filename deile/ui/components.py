@@ -4,11 +4,10 @@ This module contains concrete implementations of UI components
 following the Component pattern for modularity and reusability.
 """
 
-from typing import Optional, Dict, Any, List
 import time
-from contextlib import contextmanager
+from typing import Any, Dict, List, Optional
 
-from .base import UIComponent, UIRenderer, UIStatus, UIMessage, MessageType
+from .base import MessageType, UIComponent, UIMessage, UIRenderer, UIStatus
 
 
 class StatusDisplay(UIComponent):

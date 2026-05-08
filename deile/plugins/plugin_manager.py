@@ -1,15 +1,14 @@
 """Plugin Manager - Gerenciamento completo do ciclo de vida de plugins"""
 
-import asyncio
-import logging
-from typing import Dict, List, Optional, Any, Set, Type
-from dataclasses import dataclass, field
-from pathlib import Path
 import importlib
 import inspect
-from enum import Enum
-import time
 import json
+import logging
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Type
 
 logger = logging.getLogger(__name__)
 

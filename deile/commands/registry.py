@@ -1,15 +1,14 @@
 """Registry para gerenciamento de comandos slash"""
 
-from typing import Dict, List, Optional, Type, Any, Callable
 import asyncio
-import inspect
 import importlib
+import inspect
 import logging
 from collections import defaultdict
+from typing import Any, Callable, Dict, List, Optional, Type
 
-from .base import SlashCommand, CommandContext, CommandResult
 from ..config.manager import CommandConfig
-
+from .base import CommandContext, CommandResult, SlashCommand
 
 logger = logging.getLogger(__name__)
 
@@ -344,7 +343,7 @@ class CommandRegistry:
     def _create_direct_command(self, config: CommandConfig) -> Optional[SlashCommand]:
         """Cria comando direto baseado na configuração"""
         from .base import DirectCommand
-        
+
         # Procura action correspondente
         action_func = self._actions.get(config.action)
         if not action_func:

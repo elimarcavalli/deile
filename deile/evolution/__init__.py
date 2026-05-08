@@ -12,11 +12,11 @@ Sistema de auto-melhoria baseado nas práticas mais avançadas de 2025:
 > Ver issue #56.
 """
 
-from .self_analyzer import SelfAnalyzer
+from .benchmarker import Benchmarker
 from .code_modifier import CodeModifier
 from .improvement_loop import ImprovementLoop
-from .benchmarker import Benchmarker
 from .rollback_manager import RollbackManager
+from .self_analyzer import SelfAnalyzer
 
 __all__ = [
     "SelfAnalyzer",

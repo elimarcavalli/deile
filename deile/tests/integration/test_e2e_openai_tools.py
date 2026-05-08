@@ -28,7 +28,7 @@ _PROVIDER_ID = "openai"
 
 def _make_provider():
     """Build an OpenAIProvider from the real catalog, no router involved."""
-    from deile.core.models.catalog import ModelCatalog, ModelHandle, ModelPricing
+    from deile.core.models.catalog import ModelHandle, ModelPricing
     from deile.core.models.openai_provider import OpenAIProvider
     from deile.core.models.provider_config import ProviderConfig
     from deile.core.models.tier import ModelTier
@@ -55,7 +55,8 @@ def _make_provider():
 
 def _make_echo_registry():
     """Return a fake ToolRegistry that exposes a single 'echo' tool."""
-    from deile.tools.base import Tool, ToolContext, ToolResult, ToolStatus, ToolSchema
+    from deile.tools.base import (Tool, ToolContext, ToolResult, ToolSchema,
+                                  ToolStatus)
 
     class EchoTool(Tool):
         """Returns its input text verbatim."""
@@ -157,7 +158,7 @@ async def test_openai_tool_calling():
     ]
 
     with patch(
-        "deile.core.models.openai_provider.get_tool_registry",
+        "deile.tools.registry.get_tool_registry",
         return_value=fake_registry,
     ):
         _text, tool_results, usage = await provider.chat_with_tools(

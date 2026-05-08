@@ -32,7 +32,6 @@ from typing import Any, Dict, Optional
 
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
 from deile.config.manager import CommandConfig
-from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.tools.base import ToolContext
 from deile.tools.pipeline_schedule_tool import PipelineScheduleTool
 

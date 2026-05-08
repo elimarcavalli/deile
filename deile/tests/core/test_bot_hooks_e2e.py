@@ -8,12 +8,9 @@ structured-output works under realistic flow.
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
 from deile.core.agent import AgentResponse, AgentStatus, DeileAgent
-
 
 pytestmark = pytest.mark.e2e
 

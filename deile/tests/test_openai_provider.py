@@ -3,19 +3,17 @@
 from __future__ import annotations
 
 import json
-from typing import Any, AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deile.core.models.openai_provider import OpenAIProvider
 from deile.core.models.base import ModelMessage, ModelUsage
 from deile.core.models.catalog import ModelHandle, ModelPricing
 from deile.core.models.errors import ProviderInvocationError
+from deile.core.models.openai_provider import OpenAIProvider
 from deile.core.models.provider_config import ProviderConfig
 from deile.core.models.stream_events import StreamEventType
 from deile.core.models.tier import ModelTier
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -215,7 +213,7 @@ async def test_generate_auth_error_raises_envelope(provider):
     mock_response = MagicMock()
     mock_response.status_code = 401
     mock_response.headers = {}
-    mock_request = MagicMock()
+    MagicMock()
 
     err = _oai.AuthenticationError(
         message="Invalid API key",

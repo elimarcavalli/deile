@@ -5,9 +5,9 @@ that any UI implementation must adhere to, ensuring modularity and testability.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Iterator
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Dict, List, Optional
 
 
 class UITheme(Enum):

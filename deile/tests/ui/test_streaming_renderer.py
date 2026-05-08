@@ -8,11 +8,9 @@ from typing import AsyncIterator, List
 import pytest
 from rich.console import Console
 
-from deile.core.models.stream_events import (
-    ModelUsageSnapshot,
-    StreamEventType,
-    UnifiedStreamEvent,
-)
+from deile.core.models.stream_events import (ModelUsageSnapshot,
+                                             StreamEventType,
+                                             UnifiedStreamEvent)
 from deile.ui.streaming_renderer import StreamingRenderer
 
 
@@ -336,6 +334,7 @@ async def test_live_path_refresh_is_driven_from_async_loop():
     auto-refresh thread (so refresh is OUR responsibility, not theirs).
     """
     import inspect
+
     from deile.ui import streaming_renderer as sr_module
 
     src = inspect.getsource(sr_module.StreamingRenderer._render_live)
@@ -580,9 +579,10 @@ async def test_blocks_have_visual_separation_in_compose():
 
     # Build composition manually (don't go through render — we want to
     # introspect the Group children, not measure stdout).
-    from deile.ui.streaming_renderer import _TextBlock, _ToolBlock
     from rich.console import Group
     from rich.text import Text
+
+    from deile.ui.streaming_renderer import _TextBlock, _ToolBlock
 
     blocks = [
         _TextBlock(text="hello"),
@@ -771,7 +771,7 @@ async def test_budget_exceeded_error_includes_action_hint():
             },
         ),
     ]
-    result = await renderer.render(_replay(events))
+    await renderer.render(_replay(events))
     output = console.file.getvalue()
     assert "Session x would exceed limit" in output
     assert "/model budget" in output

@@ -3,8 +3,7 @@
 import json
 import time
 import urllib.parse
-from typing import Dict, List, Optional, Any, Union
-from datetime import datetime
+from typing import Any, Dict, Optional
 
 try:
     import requests
@@ -15,8 +14,8 @@ except ImportError:
     REQUESTS_AVAILABLE = False
     requests = None
 
-from .base import SyncTool, ToolContext, ToolResult, ToolStatus, DisplayPolicy
 from ..security.secrets_scanner import SecretsScanner
+from .base import DisplayPolicy, SyncTool, ToolContext, ToolResult, ToolStatus
 
 
 class HTTPTool(SyncTool):
@@ -350,7 +349,7 @@ class HTTPTool(SyncTool):
                 try:
                     with open(file_path, 'rb') as f:
                         file_objects[key] = f.read()
-                except Exception as e:
+                except Exception:
                     # Log error but continue
                     pass
             if file_objects:
@@ -406,14 +405,14 @@ class HTTPTool(SyncTool):
                 # Try to parse as JSON anyway (some APIs don't set correct content-type)
                 try:
                     result["json"] = response.json()
-                except:
+                except Exception:
                     pass
-        
+
         except Exception as e:
             # Fallback to raw content
             try:
                 result["content"] = response.text
-            except:
+            except Exception:
                 result["content"] = f"<binary content, {len(response.content)} bytes>"
             result["content_error"] = str(e)
         

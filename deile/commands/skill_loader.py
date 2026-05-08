@@ -295,8 +295,9 @@ class SkillLoader:
         Returns:
             Number of skills registered (skipped collisions are NOT counted).
         """
-        from .base import CommandContext, CommandResult, CommandStatus, SlashCommand
         from ..config.manager import CommandConfig
+        from .base import (CommandContext, CommandResult, CommandStatus,
+                           SlashCommand)
 
         skills = self.load_skills()
 

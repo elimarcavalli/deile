@@ -15,7 +15,6 @@ These are pure unit tests with everything mocked — they require no API keys.
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -71,7 +70,8 @@ def _build_minimal_agent_with_mock_provider(provider: _CapturingProvider):
     agent.context_manager = cm
 
     # IntentAnalyzer — minimal stub returning a result classify_tier can consume
-    from deile.core.intent_analyzer import IntentAnalysisResult, IntentCategory, IntentType
+    from deile.core.intent_analyzer import (IntentAnalysisResult,
+                                            IntentCategory, IntentType)
 
     intent = MagicMock()
     intent.analyze = AsyncMock(
@@ -371,7 +371,6 @@ async def test_cascade_retry_succeeds_after_first_provider_fails():
     }
 
     # Patch get_tier_router so the cascade retry sees both providers, with skip semantics
-    from unittest.mock import patch
 
     fake_tier_router = MagicMock()
 
@@ -408,8 +407,8 @@ async def test_cascade_retry_succeeds_after_first_provider_fails():
 @pytest.mark.asyncio
 async def test_process_input_returns_structured_budget_exceeded_metadata():
     """R6-H4: process_input must surface BudgetExceeded with metadata flag the CLI can read."""
+    from deile.core.agent import AgentStatus, DeileAgent
     from deile.storage.usage_repository import BudgetExceeded
-    from deile.core.agent import DeileAgent, AgentStatus
 
     # Build a minimal agent to call process_input
     agent = DeileAgent.__new__(DeileAgent)
@@ -462,8 +461,8 @@ async def test_process_input_returns_structured_budget_exceeded_metadata():
 async def test_process_input_returns_structured_forced_model_metadata():
     """R8-M1: process_input must surface FORCED_MODEL_NOT_REGISTERED with metadata flag
     the CLI uses to render a Rich panel — same pattern as BudgetExceeded."""
+    from deile.core.agent import AgentSession, AgentStatus, DeileAgent
     from deile.core.exceptions import ModelError
-    from deile.core.agent import DeileAgent, AgentStatus, AgentSession
 
     agent = DeileAgent.__new__(DeileAgent)
     agent.logger = MagicMock()

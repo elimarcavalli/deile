@@ -10,13 +10,11 @@ from __future__ import annotations
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import List
 
 import pytest
 
 from deile.cron.store import CronEntry, CronStore, make_id
-
 
 # ---------------------------------------------------------------------------
 # helpers

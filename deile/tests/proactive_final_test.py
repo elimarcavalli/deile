@@ -8,10 +8,9 @@ import asyncio
 import logging
 import math
 import sys
-import tempfile
 import time
-from pathlib import Path
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 # Professional logging setup
 logging.basicConfig(
@@ -22,12 +21,11 @@ logging.basicConfig(
 # File lives at scripts/tests/, project root is two parents up
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from deile.core.agent import DeileAgent, AgentSession
-from deile.core.models.router import get_model_router
-from deile.core.models.gemini_provider import GeminiProvider
-from deile.tools.registry import get_tool_registry
-from deile.parsers.registry import get_parser_registry
-from deile.config.settings import get_settings
+from deile.config.settings import get_settings  # noqa: E402
+from deile.core.agent import AgentSession, DeileAgent  # noqa: E402
+from deile.core.models.router import get_model_router  # noqa: E402
+from deile.parsers.registry import get_parser_registry  # noqa: E402
+from deile.tools.registry import get_tool_registry  # noqa: E402
 
 
 class EnterpriseProactiveValidator:

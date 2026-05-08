@@ -2,13 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
-
-from deile.core.bot_hooks import (
-    get_bot_context,
-    merge_extra_system_prompt,
-    sanitize_extra_system_prompt,
-)
+from deile.core.bot_hooks import (get_bot_context, merge_extra_system_prompt,
+                                  sanitize_extra_system_prompt)
 
 
 class TestSanitize:

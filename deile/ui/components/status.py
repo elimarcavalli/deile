@@ -1,9 +1,10 @@
 """Componente para exibição de status"""
 
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
 from contextlib import contextmanager
 from typing import Optional
+
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn
 
 
 class StatusDisplay:
@@ -21,7 +22,7 @@ class StatusDisplay:
             console=self.console,
             transient=True
         ) as progress:
-            task = progress.add_task(message, total=None)
+            progress.add_task(message, total=None)
             try:
                 yield progress
             finally:

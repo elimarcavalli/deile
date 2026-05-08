@@ -1,15 +1,15 @@
 """Tools Command - Display available tools and their schemas"""
 
-from typing import Dict, Any, Optional
 import json
-from rich.table import Table
-from rich.panel import Panel
-from rich.columns import Columns
-from rich.text import Text
-from rich.syntax import Syntax
+from typing import Any, Dict, Optional
 
-from ..base import DirectCommand
+from rich.columns import Columns
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
 from ...core.exceptions import CommandError
+from ..base import DirectCommand
 
 
 class ToolsCommand(DirectCommand):

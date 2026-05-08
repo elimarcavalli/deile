@@ -1,14 +1,12 @@
 """Clear Command for DEILE"""
 
 import logging
-from typing import Optional
+
 from rich.panel import Panel
 from rich.text import Text
-from rich.prompt import Confirm
 
-from ..base import DirectCommand, CommandResult, CommandContext
 from ...core.exceptions import CommandError
-
+from ..base import CommandContext, CommandResult, DirectCommand
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +106,7 @@ class ClearCommand(DirectCommand):
             
             warning_text = "\n".join(warning_content)
             
-            warning_panel = Panel(
+            Panel(
                 Text(warning_text, style="yellow"),
                 title="⚠️ Complete Session Reset",
                 border_style="red"
@@ -167,7 +165,8 @@ class ClearCommand(DirectCommand):
             
             # 5. Clear approval system state
             try:
-                from ...orchestration.approval_system import get_approval_system
+                from ...orchestration.approval_system import \
+                    get_approval_system
                 approval_system = get_approval_system()
                 
                 # Clear pending requests
@@ -186,10 +185,9 @@ class ClearCommand(DirectCommand):
             
             # 7. Clear temporary files and cache
             try:
-                import tempfile
                 import shutil
                 from pathlib import Path
-                
+
                 # Clear common temporary directories
                 temp_dirs = ["TEMP", "CACHE", ".deile_cache"]
                 for temp_dir in temp_dirs:
@@ -244,7 +242,7 @@ class ClearCommand(DirectCommand):
         except Exception as e:
             # Even if some steps failed, report what was accomplished
             error_content = [
-                f"⚠️ **PARTIAL RESET COMPLETED**",
+                "⚠️ **PARTIAL RESET COMPLETED**",
                 "",
                 f"**Error:** {str(e)}",
                 "",

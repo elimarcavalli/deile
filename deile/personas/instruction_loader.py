@@ -3,7 +3,6 @@
 import logging
 from pathlib import Path
 from typing import Dict, Optional
-import time
 
 logger = logging.getLogger(__name__)
 

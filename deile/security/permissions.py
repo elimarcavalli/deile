@@ -1,13 +1,13 @@
 """Permission System for DEILE"""
 
-from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Pattern
-from enum import Enum
-import re
-import yaml
-from pathlib import Path
 import logging
+import re
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
+import yaml
 
 logger = logging.getLogger(__name__)
 

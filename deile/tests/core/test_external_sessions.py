@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
 from deile.core.agent import AgentSession, DeileAgent
-from deile.core.session_store import SessionStore
 
 
 class TestSnapshot:

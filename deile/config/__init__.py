@@ -1,16 +1,8 @@
 """Sistema de configuração do DEILE"""
 
+from .manager import (AgentConfig, CommandConfig, ConfigManager, DeileConfig,
+                      GeminiConfig, SystemConfig, UIConfig, get_config_manager)
 from .settings import Settings, get_settings
-from .manager import (
-    ConfigManager, 
-    DeileConfig, 
-    GeminiConfig, 
-    SystemConfig,
-    UIConfig,
-    AgentConfig,
-    CommandConfig,
-    get_config_manager
-)
 
 __all__ = [
     # Sistema legado

@@ -4,18 +4,14 @@ Componente core para resolução inteligente de arquivos no DEILE,
 seguindo a arquitetura enterprise-grade e padrões de segurança existentes.
 """
 
-import re
 import fnmatch
-import time
-from pathlib import Path
-from typing import List, Optional, Dict, Set
-from dataclasses import dataclass
-from enum import Enum
-from difflib import SequenceMatcher
 import logging
-
-from ..core.exceptions import ValidationError
-
+import time
+from dataclasses import dataclass
+from difflib import SequenceMatcher
+from enum import Enum
+from pathlib import Path
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 

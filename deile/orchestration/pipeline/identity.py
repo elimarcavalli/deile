@@ -20,7 +20,6 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
-
 _MONITOR_ID_RE = re.compile(r"^[a-zA-Z0-9_\-]{1,32}$")
 
 

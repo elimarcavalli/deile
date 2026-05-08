@@ -617,6 +617,6 @@ class SecretsTool(SyncTool):
 
 
 # Register the tool
-from deile.tools.registry import ToolRegistry
+from deile.tools.registry import ToolRegistry  # noqa: E402
 
 ToolRegistry.register("secrets_scanner", SecretsTool)

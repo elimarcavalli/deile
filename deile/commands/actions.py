@@ -2,11 +2,8 @@
 
 import asyncio
 import logging
-import os
 import sys
-import time
 from pathlib import Path
-from typing import Any, Dict, Optional
 
 from rich import box
 from rich.console import Console
@@ -156,7 +153,7 @@ class CommandActions:
                 try:
                     agent_stats = await self.agent.get_stats()
                     status_data.update(agent_stats)
-                except:
+                except Exception:
                     status_data["agent_status"] = "unavailable"
             
             # Status da configuração
@@ -171,7 +168,7 @@ class CommandActions:
                 import socket
                 socket.create_connection(("8.8.8.8", 53), timeout=3)
                 status_data["connectivity"] = "✅ Online"
-            except:
+            except Exception:
                 status_data["connectivity"] = "❌ Offline"
             
             # Cria tabela rica
@@ -224,7 +221,7 @@ class CommandActions:
                     plan_manager._active_plans.clear()
                     plan_manager._execution_locks.clear()
                     plan_manager._stop_flags.clear()
-                except:
+                except Exception:
                     pass  # Se não conseguir acessar plan manager, continua
                 
                 # Limpa logs de auditoria em memória
@@ -232,9 +229,9 @@ class CommandActions:
                     from ..security.audit_logger import get_audit_logger
                     audit_logger = get_audit_logger()
                     audit_logger.recent_events.clear()
-                except:
+                except Exception:
                     pass
-                
+
                 # Limpa tela
                 if self.ui_manager:
                     self.ui_manager.console.clear()

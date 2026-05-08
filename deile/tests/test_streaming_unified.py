@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 from typing import AsyncIterator
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from deile.core.models.stream_events import (
-    ModelUsageSnapshot,
-    StreamEventType,
-    UnifiedStreamEvent,
-)
-
+from deile.core.models.stream_events import (ModelUsageSnapshot,
+                                             StreamEventType,
+                                             UnifiedStreamEvent)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -163,7 +160,8 @@ class TestThreeProviders:
         chunks_b = list(await _collect_stream(events))
         chunks_c = list(await _collect_stream(events))
         # Extract only plain text chunks (skip banners and whitespace-only)
-        text = lambda cs: "".join(c for c in cs if c.strip() and "tool" not in c and "error" not in c)
+        def text(cs):
+            return "".join(c for c in cs if c.strip() and "tool" not in c and "error" not in c)
         assert text(chunks_a) == text(chunks_b) == text(chunks_c) == "Hello world"
 
 

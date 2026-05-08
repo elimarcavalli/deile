@@ -1,22 +1,20 @@
 """Plan Manager - Sistema de orquestração autônoma com plans e execução"""
 
-from typing import Dict, List, Optional, Any, Union
-from dataclasses import dataclass, field, asdict
-from enum import Enum
-from datetime import datetime, timedelta
-import json
 import asyncio
-import uuid
+import json
 import logging
+import uuid
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta
+from enum import Enum
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from ..core.exceptions import DEILEError
+from ..security import (AuditEventType, SeverityLevel, get_audit_logger,
+                        get_permission_manager)
+from ..tools.base import ToolResult
 from ..tools.registry import get_tool_registry
-from ..tools.base import ToolResult, ToolStatus
-from ..security import (
-    get_permission_manager, get_audit_logger, AuditEventType, SeverityLevel,
-    log_plan_execution, log_tool_execution, log_permission_check
-)
 
 logger = logging.getLogger(__name__)
 
@@ -910,7 +908,7 @@ class PlanManager:
             f"**Status:** {plan.status.value}",
             f"**Created:** {plan.created_at.strftime('%Y-%m-%d %H:%M:%S')}",
             "",
-            f"## Description",
+            "## Description",
             plan.description,
             "",
             f"## Steps ({len(plan.steps)} total)",
@@ -945,9 +943,9 @@ class PlanManager:
             if step.error_message:
                 content.extend([
                     "- **Error:**",
-                    f"  ```",
+                    "  ```",
                     f"  {step.error_message}",
-                    f"  ```"
+                    "  ```"
                 ])
             
             content.append("")

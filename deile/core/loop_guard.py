@@ -386,11 +386,9 @@ class ToolLoopGuard:
         # module-import time (helpful when the guard is used in lightweight
         # tests that don't initialize audit logging).
         try:
-            from deile.security.audit_logger import (
-                AuditEventType,
-                SeverityLevel,
-                get_audit_logger,
-            )
+            from deile.security.audit_logger import (AuditEventType,
+                                                     SeverityLevel,
+                                                     get_audit_logger)
 
             get_audit_logger().log_event(
                 event_type=AuditEventType.SUSPICIOUS_ACTIVITY,
@@ -447,7 +445,8 @@ def tool_result_made_progress(result: Any) -> bool:
     status = getattr(result, "status", None)
     if status is not None:
         try:
-            from deile.tools.base import ToolStatus  # local import to avoid cycle
+            from deile.tools.base import \
+                ToolStatus  # local import to avoid cycle
 
             if status == ToolStatus.ERROR:
                 return False

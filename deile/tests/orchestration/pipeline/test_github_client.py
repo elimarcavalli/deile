@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from deile.orchestration.pipeline.github_client import (GhCommandError,
-                                                        GitHubClient,
-                                                        IssueRef, PrRef,
+                                                        GitHubClient, IssueRef,
+                                                        PrRef,
                                                         compute_batch_id)
 from deile.orchestration.pipeline.labels import (REVIEW_PENDING, WORKFLOW_NEW,
                                                  WORKFLOW_REVIEWED,
@@ -125,6 +125,7 @@ class TestClaimWithBatch:
             labels=(WORKFLOW_NEW,),
         )
         with patch.object(client, "get_issue", new=AsyncMock(return_value=unclaimed)), \
+             patch.object(client, "_run", new=AsyncMock(return_value=(0, "", ""))), \
              patch.object(client, "_run_checked", new=AsyncMock(return_value="")):
             bid = await client.claim_with_batch("issue", 5, "claim me")
         assert bid == compute_batch_id("claim me")
@@ -145,6 +146,7 @@ class TestClaimWithBatch:
         client = GitHubClient("owner/name")
         pr = PrRef(number=7, title="t", url="u", labels=(REVIEW_PENDING,))
         with patch.object(client, "get_pr", new=AsyncMock(return_value=pr)), \
+             patch.object(client, "_run", new=AsyncMock(return_value=(0, "", ""))), \
              patch.object(client, "_run_checked", new=AsyncMock(return_value="")):
             bid = await client.claim_with_batch("pr", 7, "t")
         assert bid is not None

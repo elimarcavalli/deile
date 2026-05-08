@@ -1,19 +1,18 @@
 """Enhanced Display Manager for DEILE - Solves SITUAÇÃO 1-3"""
 
-from typing import Any, Dict, Optional, List
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
-from rich.tree import Tree
-from rich.progress import Progress
-from rich.syntax import Syntax
-from rich.text import Text
-from rich.columns import Columns
 import json
 import logging
+from typing import Any, Dict, Optional
 
-from ..tools.base import ToolResult, DisplayPolicy
+from rich.console import Console
+from rich.panel import Panel
+from rich.progress import Progress
+from rich.syntax import Syntax
+from rich.table import Table
+from rich.text import Text
+from rich.tree import Tree
 
+from ..tools.base import DisplayPolicy, ToolResult
 
 logger = logging.getLogger(__name__)
 

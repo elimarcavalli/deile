@@ -8,14 +8,10 @@ from unittest.mock import patch
 
 import pytest
 
-from deile.storage.usage_repository import (
-    BudgetExceeded,
-    BudgetGuard,
-    UsageRecord,
-    UsageRepository,
-    get_usage_repository,
-    reset_usage_repository,
-)
+from deile.storage.usage_repository import (BudgetExceeded, BudgetGuard,
+                                            UsageRecord, UsageRepository,
+                                            get_usage_repository,
+                                            reset_usage_repository)
 
 _YAML_PATH = Path(__file__).parents[2] / "deile" / "config" / "model_providers.yaml"
 

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -12,7 +10,6 @@ from deile.core.models.base import ModelMessage, ModelSize, ModelType
 from deile.core.models.gemini_provider import GeminiProvider
 from deile.core.models.stream_events import StreamEventType
 from deile.core.models.tier import ModelTier
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

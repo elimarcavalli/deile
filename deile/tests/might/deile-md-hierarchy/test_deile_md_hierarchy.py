@@ -38,7 +38,6 @@ from deile.core.agent import DeileAgent  # noqa: E402
 from deile.core.models.bootstrap import bootstrap_providers  # noqa: E402
 from deile.core.models.router import get_model_router  # noqa: E402
 
-
 # ── Detectores leniente por camada ──────────────────────────────────────────
 
 # CORE: "frase impactante sobre IA autônoma". Aceitamos qualquer menção
