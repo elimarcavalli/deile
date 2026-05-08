@@ -179,14 +179,22 @@ class WorktreeManager:
         if not self.branches_dir.exists():
             return 0
 
-        for candidate in self.branches_dir.iterdir():
+        # Walk recursively: branches are stored at branches_dir / branch_name
+        # where branch_name can contain path separators (e.g. "auto/issue-42").
+        # We need the path relative to branches_dir to reconstruct the branch name.
+        for candidate in self.branches_dir.rglob("*"):
             if not candidate.is_dir():
                 continue
-            branch_name = candidate.name
+            if not (candidate / ".git").exists():
+                continue
+            try:
+                branch_name = str(candidate.relative_to(self.branches_dir))
+            except ValueError:
+                continue
             if branch_name in merged_branches:
                 try:
                     await asyncio.to_thread(_shutil.rmtree, candidate, ignore_errors=False)
-                    logger.info("cleaned up merged worktree: %s", candidate)
+                    logger.info("cleaned up merged worktree: %s (branch=%s)", candidate, branch_name)
                     deleted += 1
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("cleanup_merged_branches: failed to remove %s: %s", candidate, exc)
