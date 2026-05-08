@@ -92,6 +92,7 @@
 | 21 | Schedule padrão completo + fallback legacy para stages ausentes (`tick()` gap #1 — issue #129) | V1 patch | Arquitetura (02), Configuração (09) |
 | 22 | Stage 1 atômico com rollback `em_revisao → nova` em caso de falha (gap #13 — issue #129) | V1 patch | Princípios (03) |
 | 23 | Batch ID derivado do número (não título) via `compute_batch_id_for_number` (gap #10 — issue #129) | V1 patch | Arquitetura (02) |
+| 24 | TOCTOU mitigation em `claim_with_batch`: re-fetch após `add_labels` para detectar race condition (gap #11 — issue #132) | V1 patch | Princípios (03), Arquitetura (02) |
 
 ## Estado dos pilares
 

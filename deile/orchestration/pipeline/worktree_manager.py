@@ -133,6 +133,14 @@ class WorktreeManager:
         # land back there (and from there get pushed to GitHub by the pipeline).
         await self._git_in(target, "remote", "set-url", "origin", str(self.base_repo))
 
+        # Ensure a `github` remote pointing directly at GitHub exists so that
+        # `gh pr create` and `git push github <branch>` work from within the
+        # worktree.  We discover the URL from the base repo's existing `github`
+        # remote (if configured) or fall back to the `origin` remote URL of the
+        # base repo itself.  Errors are non-fatal — Claude can still attempt to
+        # push via `origin` and let `gh` figure it out.
+        await self._ensure_github_remote(target)
+
         # Create / switch to the feature branch.
         rc, _, err = await self._git_in_capture(target, "checkout", "-b", branch)
         if rc != 0:
@@ -200,6 +208,59 @@ class WorktreeManager:
                     logger.warning("cleanup_merged_branches: failed to remove %s: %s", candidate, exc)
 
         return deleted
+
+    async def _ensure_github_remote(self, worktree: Path) -> None:
+        """Add or update the ``github`` remote in *worktree* to point at GitHub.
+
+        Priority order for discovering the GitHub URL:
+        1. The ``github`` remote of the base repo (if it already exists).
+        2. The ``origin`` remote of the base repo (may be a local path).
+        3. No-op: log a warning and leave the worktree without a ``github`` remote.
+
+        This is best-effort: failures are logged at WARNING but never raised.
+        """
+        # Try to get the `github` remote from the base repo first.
+        rc, github_url, _ = await self._git_in_capture(
+            self.base_repo, "remote", "get-url", "github"
+        )
+        if rc != 0 or not github_url.strip():
+            # Fall back to `origin` of the base repo.
+            rc, github_url, _ = await self._git_in_capture(
+                self.base_repo, "remote", "get-url", "origin"
+            )
+        if rc != 0 or not github_url.strip():
+            logger.warning(
+                "_ensure_github_remote: could not determine GitHub URL for %s; "
+                "worktree will lack a 'github' remote. "
+                "Claude may need to configure it manually.",
+                worktree,
+            )
+            return
+
+        github_url = github_url.strip()
+        # Only add if it looks like a real GitHub URL (not a local path).
+        if "github.com" not in github_url:
+            logger.debug(
+                "_ensure_github_remote: base repo origin %r is not a GitHub URL; skipping",
+                github_url[:80],
+            )
+            return
+
+        # Check whether `github` remote already exists in the worktree.
+        rc_existing, existing_url, _ = await self._git_in_capture(
+            worktree, "remote", "get-url", "github"
+        )
+        try:
+            if rc_existing == 0:
+                # Remote exists — update the URL if it changed.
+                if existing_url.strip() != github_url:
+                    await self._git_in(worktree, "remote", "set-url", "github", github_url)
+                    logger.debug("updated 'github' remote in %s to %s", worktree, github_url[:80])
+            else:
+                await self._git_in(worktree, "remote", "add", "github", github_url)
+                logger.debug("added 'github' remote %s to %s", github_url[:80], worktree)
+        except WorktreeError as exc:
+            logger.warning("_ensure_github_remote: could not set remote in %s: %s", worktree, exc)
 
     # ------------------------------------------------------------------
     # Internal helpers

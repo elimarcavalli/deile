@@ -113,9 +113,11 @@ PipelineMonitor
 │   ├── main_branch: str (default "main")
 │   ├── branch_prefix: str (default "auto/issue-")
 │   ├── notify_user_id: Optional[str]
-│   ├── enable_classify/review/implement/pr_review: bool
+│   ├── enable_classify/review/implement/pr_review/follow_ups: bool
 │   ├── enable_review_human_prs: bool (gap #8)
 │   ├── use_pid_lock: bool (default True — gap #27)
+│   ├── bootstrap_replay_window_hours: Optional[int] (default 1 — gap #23/#24)
+│   ├── enable_worktree_cleanup: bool (default True — gap #26)
 │   └── classifiable_labels: set (includes "security" — gap #4)
 ├── identity: MonitorIdentity
 │   ├── monitor_id: str
@@ -127,9 +129,11 @@ PipelineMonitor
 │   ├── ticks, issues_reviewed, issues_classified, issues_implemented
 │   ├── prs_reviewed, errors, gh_errors, claude_errors (gap #18)
 │   ├── catchup_runs, scheduled_runs
+│   └── skipped_runs  # incremented when enable_*=False blocks a scheduled action
 ├── async start() → acquires PID lock → catch_up_pending → create_task(_run_forever)
 ├── async stop() → set stop_event → wait task → release lock
 ├── async tick() → check schedule → run pending + legacy-fallback for missing stages (gap #1)
+│   └── _run_scheduled: if enable_*=False → WARNING + skipped_runs++ (gap #16)
 ├── Stage 0: _classify_new_issues()
 │   ├── list_unclassified_issues() with pagination (gap #30)
 │   ├── identity.owns(issue.title) shard filter
@@ -151,13 +155,18 @@ PipelineMonitor
 │   ├── ClaudeDispatcher.run(implement_prompt, cwd=worktree)
 │   ├── _extract_pr_url uses last match (gap #14)
 │   └── transition revisada → em_pr
-└── Stage 3: _review_one_open_pr()
-    ├── list open PRs not draft, no ~review:concluida, owned branch
-    ├── _owns_pr_branch: warns on empty head_ref (gap #22)
-    ├── claim_with_batch → transition pendente → em_andamento
-    ├── ClaudeDispatcher.run(review_prompt, cwd=worktree)
-    ├── transition em_andamento → concluida
-    └── clear_batch_label("pr", number) after conclude (gap #9)
+├── Stage 3: _review_one_open_pr()
+│   ├── list open PRs not draft, no ~review:concluida, owned branch
+│   ├── _owns_pr_branch: warns on empty head_ref (gap #22)
+│   ├── claim_with_batch → transition pendente → em_andamento
+│   ├── ClaudeDispatcher.run(review_prompt, cwd=worktree)
+│   ├── transition em_andamento → concluida
+│   └── clear_batch_label("pr", number) after conclude (gap #9)
+└── Stage 4: _standalone_follow_ups()  [triggered by action="follow_ups" — gap #32]
+    ├── list_recently_merged_prs() via gh CLI
+    ├── skip if ~follow_ups:processed label already present (idempotent)
+    ├── _stage4_follow_ups(pr.number, pr.title, pr.url)
+    └── add ~follow_ups:processed after completion
 
 CronRunner
 ├── store: CronStore
@@ -217,7 +226,7 @@ CronRunner
 
 | Method | Parameters | Return | Notes |
 |---|---|---|---|
-| `compute_pending(now=None)` | `datetime` | `List[PendingRun]` | Coalesça misseds por padrão; `replay_all=True` replica cada slot |
+| `compute_pending(now=None, *, replay_window_hours=None)` | `datetime`, `Optional[int]` | `List[PendingRun]` | Coalesça misseds por padrão; `replay_all=True` replica cada slot; `replay_window_hours` limita catch-up ao janela de N horas (gap #23/#24) |
 | `mark_run(run, when=None)` | `PendingRun` | `None` | Atualiza last_run_at (recurring) ou completed (oneshot) |
 
 ---
@@ -232,7 +241,7 @@ CronRunner
 # em modo legacy (a cada tick), garantindo que nenhum estágio fique silencioso.
 recurring:
   - id: classify_loop         # str, alphanum + _- obrigatório
-    action: classify          # classify | review | implement | pr_review
+    action: classify          # classify | review | implement | pr_review | follow_ups
     cron: "*/2 * * * *"       # 5-field cron expression em UTC
     enabled: true
     last_run_at: null
@@ -252,6 +261,12 @@ recurring:
   - id: pr_review_loop
     action: pr_review
     cron: "*/4 * * * *"
+    enabled: true
+    last_run_at: null
+    replay_all: false
+  - id: follow_ups_loop       # Stage 4: follow-up automático de issues pós-merge
+    action: follow_ups
+    cron: "*/10 * * * *"
     enabled: true
     last_run_at: null
     replay_all: false
@@ -352,6 +367,12 @@ async def test_monitor_identity_shard():
 # Iniciar o pipeline
 /pipeline start
 
+# Iniciar com identidade e arquivo de schedule customizados (gap #28)
+/pipeline start --identity monitor-prod --schedule-file config/my_schedule.yaml
+
+# Iniciar sem PID lock (útil em dev/teste)
+/pipeline start --no-pid-lock
+
 # Verificar status (inclui gh_errors e claude_errors — gap #18)
 /pipeline status
 
@@ -429,7 +450,7 @@ await cron_runner.start()
 | Cron runner poll | 30s por padrão; configurável em `CronRunner.poll_interval_seconds` |
 | Claude Code timeout | 1800s (30 min) por invocação; configurável em `ClaudeDispatcher.timeout_seconds` |
 | GitHub API | Cada tick faz no máximo 3 chamadas de listagem + N operações de label (N ≤ 3 por issue/PR) |
-| Worktrees | Criados em disco; removidos manualmente (worktree cleanup não é automático — ver § Rollback) |
+| Worktrees | Criados em disco; `cleanup_merged_branches()` removido automaticamente no startup se `enable_worktree_cleanup=True` (gap #26) |
 | `CronStore.list_due` | `O(log N)` via índice `(enabled, next_fire_at)` |
 | Schedule YAML | Parse a cada tick; aceitável para schedules com < 100 entradas |
 | Concorrência | Um monitor por identidade por host; shards rodam em processos/máquinas separadas |
@@ -462,6 +483,7 @@ await cron_runner.start()
 | `claude_errors` | Erros de `ClaudeDispatcher` (rc != 0) — gap #18 |
 | `catchup_runs` | Runs de catch-up executados no startup |
 | `scheduled_runs` | Runs de schedule executados em ticks normais |
+| `skipped_runs` | Runs ignorados porque `enable_*=False` para a action (gap #16) |
 
 ### Discord DMs
 
@@ -486,6 +508,10 @@ await cron_runner.start()
 - **Tools não registradas automaticamente:** `pipeline_tool`, `pipeline_schedule_tool`, `cron_*` requerem registro explícito via `register_tool(...)`. O `auto_discover()` existente não os cobre — o daemon/bootstrap deve registrá-los.
 - **`use_pid_lock` agora `True` por padrão (gap #27):** em deploys que rodavam sem PID lock, isso pode levantar `LockHeldError` se dois processos subirem simultâneamente. Para desabilitar explicitamente: `PipelineConfig(use_pid_lock=False)`.
 - **`compute_batch_id` alterado (gap #10):** o batch ID agora é derivado do número da issue/PR (não do título), eliminando colisões entre issues com o mesmo título. Batch IDs existentes no GitHub continuarão válidos; apenas novos claims usarão o novo cálculo.
+- **`enable_worktree_cleanup=True` por padrão (gap #26):** ao iniciar, o monitor remove worktrees de branches já mergeadas. Para desabilitar: `PipelineConfig(enable_worktree_cleanup=False)`.
+- **`bootstrap_replay_window_hours=1` por padrão (gap #23/#24):** ao iniciar, o catch-up limita-se a slots das últimas 1h. Deploys que esperavam replay ilimitado devem configurar `PipelineConfig(bootstrap_replay_window_hours=None)`.
+- **Nova action `follow_ups` (gap #32):** o `VALID_ACTIONS` do scheduler agora inclui `"follow_ups"`; schedules antigos com `action: follow_ups` (se houver) passarão a ser reconhecidos em vez de ignorados silenciosamente.
+- **`/pipeline start` aceita flags (gap #28):** `--identity`, `--schedule-file`, `--no-pid-lock`. Chamadas existentes sem flags continuam idênticas.
 
 ### Deploy de múltiplos monitores
 
@@ -530,7 +556,10 @@ DEILE_CRON_AUTOSTART=1
 | Issue não é claimed | `batch_id` já presente ou `identity.owns()` retorna False | Verificar `DEILE_PIPELINE_SHARD_*`; inspecionar labels da issue via `gh issue view` |
 | `claude -p` timeout | Log `claude -p timed out after 1800s` | Issue/PR muito complexo; aumentar `ClaudeDispatcher.timeout_seconds` |
 | PR não aberta após implementação | `_extract_pr_url` não encontrou URL no stdout | Claude Code não abriu PR; inspecionar logs do subprocess em `result.stderr` |
-| Worktrees acumulando em disco | Não há cleanup automático | Rodar `git worktree prune` + `git worktree list` manualmente na raiz do repo; ou usar `WorktreeManager.cleanup_merged_branches()` (gap #26) |
+| Worktrees acumulando em disco | `enable_worktree_cleanup=True` mas merge ainda não detectado | Aguardar próximo `start()` ou chamar `WorktreeManager.cleanup_merged_branches()` manualmente; verificar que o branch da PR aparece em `gh pr list --state merged` |
+| `gh pr create` falha no worktree | Worktree sem remote `github` apontando para GitHub | `_ensure_github_remote` (gap #15) tenta configurar automaticamente; verificar que o base repo tem remote `github` ou `origin` apontando para `github.com` |
+| `enable_classify=False` mas classify ainda aparece no schedule | Ação está desabilitada mas ainda está no YAML | Comportamento correto: ação é ignorada com WARNING e `skipped_runs` incrementado (gap #16); remover a entrada do YAML se não quiser o aviso |
+| Catch-up pós-restart dispara ações antigas (horas atrás) | `bootstrap_replay_window_hours` não configurado | Default é 1h; aumentar em `PipelineConfig(bootstrap_replay_window_hours=N)` ou passar `None` para replay ilimitado |
 | `CronStore` falha ao abrir | `data/` não existe ou sem permissão | Verificar `DEILE_CRON_DB_PATH`; criar diretório manualmente |
 | Entry cron nunca dispara | `enabled=0` ou `next_fire_at` no passado sem advance | Usar `cron_list` tool para inspecionar; `cron_delete` + `cron_create` para re-agendar |
 | DMs não chegam | `DEILE_PIPELINE_NOTIFY_USER_ID` não configurado ou `deilebot` offline | Verificar env var; checar log `DiscordNotifier: no DM function available` (gap #19) |
@@ -545,7 +574,7 @@ DEILE_CRON_AUTOSTART=1
 
 | Aspecto | Nota |
 |---|---|
-| Cleanup automático de worktrees | `WorktreeManager` poderia listar e remover worktrees de branches já mergeadas |
+| Cleanup automático de worktrees | Implementado (gap #26): `cleanup_merged_branches()` chamado no startup quando `enable_worktree_cleanup=True` |
 | Retry com backoff | `ClaudeDispatcher` atualmente não retenta; um resultado `ok=False` encerra o estágio sem retry |
 | Dashboard de pipeline | Stats em `PipelineMonitor.stats` são efêmeros (em memória); persistir em SQLite permitiria queries históricas |
 | Cron com suporte a timezones | `CronStore` e `next_after` operam em UTC; UI de Discord pode querer aceitar "às 9h BRT" e converter |
