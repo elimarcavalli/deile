@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -289,10 +289,6 @@ class Schedule:
 
         Returns the number of entries removed.
         """
-        cutoff = _now_utc().replace(
-            hour=0, minute=0, second=0, microsecond=0
-        )
-        from datetime import timedelta
         cutoff = _now_utc() - timedelta(days=max_age_days)
         before = len(self.oneshot)
         self.oneshot = [
