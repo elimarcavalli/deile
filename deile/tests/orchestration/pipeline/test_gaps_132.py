@@ -930,3 +930,120 @@ class TestStandaloneFollowUps:
             claude=AsyncMock(), notifier=AsyncMock(),
         )
         await monitor._standalone_follow_ups()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# #16 — additional stages (implement, pr_review, follow_ups)
+# ---------------------------------------------------------------------------
+
+class TestSkippedRunsWarningAllStages:
+    """Ensure skipped_runs is incremented for ALL scheduled actions, not just classify/review."""
+
+    def _make_monitor(self, tmp_path, **config_overrides):
+        cfg = PipelineConfig(
+            repo="owner/repo",
+            base_repo_path=tmp_path,
+            use_pid_lock=False,
+            **config_overrides,
+        )
+        return PipelineMonitor(
+            cfg,
+            github=AsyncMock(),
+            worktrees=AsyncMock(),
+            claude=AsyncMock(),
+            notifier=AsyncMock(),
+        )
+
+    async def test_disabled_implement_increments_skipped_runs(self, tmp_path):
+        from deile.orchestration.pipeline.scheduler import PendingRun
+
+        monitor = self._make_monitor(tmp_path, enable_implement=False)
+        run = PendingRun(
+            when=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            entry_id="r1",
+            action="implement",
+            is_oneshot=False,
+        )
+        await monitor._run_scheduled(run)
+        assert monitor._stats.skipped_runs == 1
+
+    async def test_disabled_pr_review_increments_skipped_runs(self, tmp_path):
+        from deile.orchestration.pipeline.scheduler import PendingRun
+
+        monitor = self._make_monitor(tmp_path, enable_pr_review=False)
+        run = PendingRun(
+            when=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            entry_id="r1",
+            action="pr_review",
+            is_oneshot=False,
+        )
+        await monitor._run_scheduled(run)
+        assert monitor._stats.skipped_runs == 1
+
+    async def test_disabled_follow_ups_increments_skipped_runs(self, tmp_path):
+        from deile.orchestration.pipeline.scheduler import PendingRun
+
+        monitor = self._make_monitor(tmp_path, enable_follow_ups=False)
+        run = PendingRun(
+            when=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            entry_id="r1",
+            action="follow_ups",
+            is_oneshot=False,
+        )
+        await monitor._run_scheduled(run)
+        assert monitor._stats.skipped_runs == 1
+
+
+# ---------------------------------------------------------------------------
+# #21 — _ensure_label called before add_labels inside claim_with_batch
+# ---------------------------------------------------------------------------
+
+class TestClaimWithBatchLabelOrdering:
+    """Verifies that _ensure_label (label creation) precedes add_labels (label assignment)."""
+
+    async def test_ensure_label_called_before_add_labels(self):
+        client = GitHubClient("owner/repo")
+        unclaimed = IssueRef(number=10, title="t", url="u", labels=(WORKFLOW_NEW,))
+        our_batch = compute_batch_id_for_number("issue", 10)
+        our_label = f"~batch:{our_batch}"
+        after_add = IssueRef(number=10, title="t", url="u", labels=(WORKFLOW_NEW, our_label))
+
+        call_order: list[str] = []
+
+        async def fake_ensure_label(name, *, color, description):
+            call_order.append("ensure_label")
+
+        async def fake_add_labels(kind, number, labels):
+            call_order.append("add_labels")
+
+        with (
+            patch.object(client, "get_issue", new=AsyncMock(side_effect=[unclaimed, after_add])),
+            patch.object(client, "_ensure_label", side_effect=fake_ensure_label),
+            patch.object(client, "add_labels", side_effect=fake_add_labels),
+        ):
+            result = await client.claim_with_batch("issue", 10, "t")
+
+        assert result == our_batch
+        assert "ensure_label" in call_order
+        assert "add_labels" in call_order
+        assert call_order.index("ensure_label") < call_order.index("add_labels")
+
+
+# ---------------------------------------------------------------------------
+# #28 — --schedule-file relative path is resolved via Path()
+# ---------------------------------------------------------------------------
+
+class TestScheduleFileRelativePath:
+    def test_schedule_file_relative_path_stem_is_filename(self):
+        """Path('config/my_sched.yaml').stem == 'my_sched' and .parent == PurePosixPath('config')."""
+        from pathlib import Path
+        p = Path("config/my_sched.yaml")
+        assert p.stem == "my_sched"
+        assert str(p.parent) == "config"
+
+    def test_schedule_file_bare_name_parent_is_dot(self):
+        """A bare filename has parent == '.' (current directory)."""
+        from pathlib import Path
+        p = Path("sched.yaml")
+        assert p.stem == "sched"
+        assert str(p.parent) == "."

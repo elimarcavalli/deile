@@ -293,7 +293,7 @@ class PipelineMonitor:
             logger.warning(
                 "scheduled action %r is disabled (enable_%s=False); "
                 "skipping run at %s. Remove the schedule entry or re-enable the flag.",
-                run.action, run.action.replace("_", "_"), run.when.isoformat(),
+                run.action, run.action, run.when.isoformat(),
             )
             self._stats.skipped_runs += 1
             return
