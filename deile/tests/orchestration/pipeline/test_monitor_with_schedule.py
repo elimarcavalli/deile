@@ -66,6 +66,7 @@ def _make_monitor_sched(
     github.comment_on_issue = AsyncMock()
     github.comment_on_pr = AsyncMock()
     github.list_unclassified_issues = AsyncMock(return_value=[])
+    github.clear_batch_label = AsyncMock()
 
     worktrees = MagicMock()
     worktrees.create_branch_worktree = AsyncMock(

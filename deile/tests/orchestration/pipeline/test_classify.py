@@ -208,17 +208,22 @@ class TestClassifyNewIssues:
         await monitor._classify_new_issues()
         github.add_labels.assert_not_called()
 
-    async def test_skips_issue_with_empty_body(self):
+    async def test_classifies_issue_with_empty_body_and_posts_reminder(self):
+        """gap #5: empty body is accepted — we classify it and post a template reminder."""
         issue = _issue(8, ("intent",), body="")
         monitor, github, notifier = _make_monitor(unclassified=[issue])
         await monitor._classify_new_issues()
-        github.add_labels.assert_not_called()
+        github.add_labels.assert_called_once_with("issue", 8, [WORKFLOW_NEW])
+        # comment should mention the empty body
+        comment_arg = github.comment_on_issue.call_args[0][1]
+        assert "vazio" in comment_arg.lower() or "empty" in comment_arg.lower() or "preencha" in comment_arg.lower()
 
-    async def test_skips_issue_with_whitespace_only_body(self):
+    async def test_classifies_issue_with_whitespace_only_body_and_posts_reminder(self):
+        """gap #5: whitespace-only body is treated as empty and classified."""
         issue = _issue(9, ("intent",), body="   \n\t  ")
         monitor, github, notifier = _make_monitor(unclassified=[issue])
         await monitor._classify_new_issues()
-        github.add_labels.assert_not_called()
+        github.add_labels.assert_called_once_with("issue", 9, [WORKFLOW_NEW])
 
     async def test_skips_issue_with_no_classifiable_label(self):
         issue = _issue(10, ("question", "help-wanted"), body="some body")

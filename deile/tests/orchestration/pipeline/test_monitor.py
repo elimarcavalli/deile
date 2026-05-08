@@ -65,6 +65,7 @@ def _make_monitor(
     github.get_pr_body = AsyncMock(return_value="")
     github.list_pr_comments = AsyncMock(return_value=[])
     github.create_issue = AsyncMock(return_value=0)
+    github.clear_batch_label = AsyncMock()
 
     notifier = MagicMock()
     for attr in (

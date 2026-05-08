@@ -7,10 +7,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from deile.orchestration.pipeline.github_client import (GhCommandError,
-                                                        GitHubClient, IssueRef,
-                                                        PrRef,
-                                                        compute_batch_id)
+from deile.orchestration.pipeline.github_client import (
+    GhCommandError, GitHubClient, IssueRef, PrRef, compute_batch_id,
+    compute_batch_id_for_number)
 from deile.orchestration.pipeline.labels import (REVIEW_PENDING, WORKFLOW_NEW,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING)
@@ -128,7 +127,7 @@ class TestClaimWithBatch:
              patch.object(client, "_run", new=AsyncMock(return_value=(0, "", ""))), \
              patch.object(client, "_run_checked", new=AsyncMock(return_value="")):
             bid = await client.claim_with_batch("issue", 5, "claim me")
-        assert bid == compute_batch_id("claim me")
+        assert bid == compute_batch_id_for_number("issue", 5)
 
     async def test_claim_returns_none_when_already_claimed(self):
         client = GitHubClient("owner/name")

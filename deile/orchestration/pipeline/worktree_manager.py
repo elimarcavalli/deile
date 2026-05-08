@@ -100,19 +100,27 @@ class WorktreeManager:
         await self._git_in(self.main_worktree, "pull", "origin", self.main_branch)
         return self.main_worktree
 
-    async def create_branch_worktree(self, branch: str) -> Worktree:
+    async def create_branch_worktree(
+        self, branch: str, *, force_recreate: bool = False
+    ) -> Worktree:
         """Create ``.worktrees/<branch>`` (filesystem copy of main) + checkout branch.
 
-        If the worktree already exists, this fast-paths and just returns the
-        existing path.
+        If the worktree already exists and ``force_recreate`` is False, this
+        fast-paths and just returns the existing path.  When ``force_recreate``
+        is True the existing worktree is deleted first so the retry starts
+        clean (gap #12: avoids contamination from a previous failed run).
         """
         if not branch or branch == self.main_branch:
             raise WorktreeError(f"branch must be a non-main branch name, got {branch!r}")
         await self.ensure_main()
         target = self.branches_dir / branch
         if (target / ".git").exists():
-            logger.info("worktree %s already exists; reusing", target)
-            return Worktree(path=target, branch=branch, base_repo=self.base_repo)
+            if force_recreate:
+                logger.info("force_recreate=True: removing stale worktree %s", target)
+                await asyncio.to_thread(shutil.rmtree, target, ignore_errors=True)
+            else:
+                logger.info("worktree %s already exists; reusing", target)
+                return Worktree(path=target, branch=branch, base_repo=self.base_repo)
 
         target.parent.mkdir(parents=True, exist_ok=True)
         logger.info("copying %s -> %s", self.main_worktree, target)
@@ -137,6 +145,61 @@ class WorktreeManager:
                     f"create-err={err.strip()[:200]!r} checkout-err={err2.strip()[:200]!r}"
                 )
         return Worktree(path=target, branch=branch, base_repo=self.base_repo)
+
+    async def cleanup_merged_branches(self, repo: str) -> int:
+        """Delete on-disk worktrees whose corresponding PR has been merged (gap #26).
+
+        Queries ``gh pr list --state merged`` for the given *repo* and removes
+        any local ``.worktrees/`` sub-directory whose branch name appears in
+        the merged PR list.  Returns the number of worktrees deleted.
+
+        Best-effort: individual errors are logged at WARNING, never raised.
+        """
+        import json as _json
+        import shutil as _shutil
+
+        deleted = 0
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "gh", "pr", "list",
+                "--repo", repo,
+                "--state", "merged",
+                "--limit", "100",
+                "--json", "headRefName",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout_b, _ = await proc.communicate()
+            data = _json.loads((stdout_b or b"").decode("utf-8", "replace") or "[]")
+            merged_branches = {item.get("headRefName", "") for item in data if item.get("headRefName")}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cleanup_merged_branches: gh pr list failed: %s", exc)
+            return 0
+
+        if not self.branches_dir.exists():
+            return 0
+
+        # Walk recursively: branches are stored at branches_dir / branch_name
+        # where branch_name can contain path separators (e.g. "auto/issue-42").
+        # We need the path relative to branches_dir to reconstruct the branch name.
+        for candidate in self.branches_dir.rglob("*"):
+            if not candidate.is_dir():
+                continue
+            if not (candidate / ".git").exists():
+                continue
+            try:
+                branch_name = str(candidate.relative_to(self.branches_dir))
+            except ValueError:
+                continue
+            if branch_name in merged_branches:
+                try:
+                    await asyncio.to_thread(_shutil.rmtree, candidate, ignore_errors=False)
+                    logger.info("cleaned up merged worktree: %s (branch=%s)", candidate, branch_name)
+                    deleted += 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("cleanup_merged_branches: failed to remove %s: %s", candidate, exc)
+
+        return deleted
 
     # ------------------------------------------------------------------
     # Internal helpers

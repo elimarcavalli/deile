@@ -145,6 +145,10 @@ class _DeileCLI:
                 )
                 await self.agent.initialize()
 
+                # gap #3: autostart the pipeline monitor when DEILE_PIPELINE_AUTOSTART=true
+                if self.settings.pipeline_autostart:
+                    await _autostart_pipeline(self.agent)
+
                 self.default_session = self.agent.create_session(
                     session_id="default_cli_session",
                     working_directory=self.settings.working_directory,
@@ -261,6 +265,44 @@ class _DeileCLI:
             ))
         except Exception as exc:
             self.ui.display_error(f"Ocorreu um erro fatal no loop principal: {exc}")
+
+
+# ── pipeline autostart helper ───────────────────────────────────────────────
+
+
+async def _autostart_pipeline(agent) -> None:  # type: ignore[type-arg]
+    """Start the pipeline monitor in the background when DEILE_PIPELINE_AUTOSTART=true.
+
+    gap #3: operator convenience — set the env var once and every DEILE interactive
+    session auto-starts the polling loop without a manual ``/pipeline start``.
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    try:
+        from deile.config.settings import get_settings
+        from deile.orchestration.pipeline.constants import \
+            PIPELINE_DEFAULT_REPO
+        from deile.orchestration.pipeline.monitor import (PipelineConfig,
+                                                          PipelineMonitor)
+        from deile.orchestration.pipeline.review_callback import \
+            make_review_callback
+        s = get_settings()
+        repo = s.pipeline_repo or PIPELINE_DEFAULT_REPO
+        base_path = s.pipeline_base_path
+        if base_path is None:
+            from pathlib import Path
+            base_path = Path.cwd()
+        cfg = PipelineConfig(
+            repo=repo,
+            base_repo_path=base_path.resolve(),
+            notify_user_id=s.pipeline_notify_user_id,
+        )
+        monitor = PipelineMonitor(cfg, review_callback=make_review_callback(agent))
+        agent.pipeline_monitor = monitor  # type: ignore[attr-defined]
+        await monitor.start()
+        _log.info("pipeline autostarted (repo=%s)", repo)
+    except Exception as exc:  # noqa: BLE001 — autostart is best-effort; never abort CLI
+        _log.warning("pipeline autostart failed: %s", exc)
 
 
 # ── one-shot mode ───────────────────────────────────────────────────────────

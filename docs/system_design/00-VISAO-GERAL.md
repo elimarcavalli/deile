@@ -89,6 +89,9 @@
 | 18 | Hash sharding para execução paralela de monitores (`MonitorIdentity` + `shard_index/shard_count`) | V1 | Princípios (03), Arquitetura (02) |
 | 19 | Cron genérico separado do scheduler do pipeline (`CronStore` SQLite + `CronRunner` vs `ScheduleStore` YAML) | V1 | Componentes (04) |
 | 20 | Strip de `ANTHROPIC_API_KEY` no subprocess do Claude Code (`ClaudeDispatcher.prefer_subscription_auth`) | V1 | Segurança (08) |
+| 21 | Schedule padrão completo + fallback legacy para stages ausentes (`tick()` gap #1 — issue #129) | V1 patch | Arquitetura (02), Configuração (09) |
+| 22 | Stage 1 atômico com rollback `em_revisao → nova` em caso de falha (gap #13 — issue #129) | V1 patch | Princípios (03) |
+| 23 | Batch ID derivado do número (não título) via `compute_batch_id_for_number` (gap #10 — issue #129) | V1 patch | Arquitetura (02) |
 
 ## Estado dos pilares
 
