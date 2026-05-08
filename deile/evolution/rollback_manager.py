@@ -1,12 +1,12 @@
 """Rollback Manager - Gerencia rollbacks seguros de modificações"""
 
 import asyncio
+import json
 import logging
 import time
-from typing import Dict, List, Optional, Any
-from pathlib import Path
-import json
 import uuid
+from pathlib import Path
+from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 

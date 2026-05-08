@@ -8,24 +8,21 @@ system processes with security controls and cross-platform compatibility.
 Author: DEILE
 """
 
-import json
 import logging
 import platform
 import re
 import signal
-import subprocess
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union, Tuple
+from typing import Any, Dict, List, Optional
 
 import psutil
 
+from deile.core.context_manager import ContextManager
 from deile.core.models.base import SyncTool, ToolRegistry
-from deile.core.context_manager import ContextManager  
-from deile.core.exceptions import ToolError
 from deile.infrastructure.security.secrets_scanner import SecretsScanner
 
 logger = logging.getLogger(__name__)
@@ -944,7 +941,7 @@ class ProcessTool(SyncTool):
             import os
             if pid == os.getpid():
                 return True
-        except:
+        except Exception:
             pass
         
         return False

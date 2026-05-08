@@ -9,11 +9,11 @@ Sistema de plugins enterprise-grade com:
 - Auto-discovery de plugins
 """
 
-from .plugin_manager import PluginManager
-from .hot_loader import HotLoader
 from .dependency_resolver import DependencyResolver
-from .sandbox import PluginSandbox
+from .hot_loader import HotLoader
 from .marketplace import PluginMarketplace
+from .plugin_manager import PluginManager
+from .sandbox import PluginSandbox
 
 __all__ = [
     "PluginManager",

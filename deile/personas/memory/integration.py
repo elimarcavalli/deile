@@ -1,8 +1,8 @@
 """Integration layer between personas and DEILE's unified memory system"""
 
-from typing import Dict, Any, List, Optional
-from datetime import datetime
 import logging
+from datetime import datetime
+from typing import Any, Dict, List
 
 # Import only what we need for testing without causing circular imports
 try:

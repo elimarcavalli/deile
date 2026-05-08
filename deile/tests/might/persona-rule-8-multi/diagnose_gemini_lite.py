@@ -21,13 +21,14 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # noqa: E402
+
 load_dotenv(PROJECT_ROOT / ".env")
 
-from deile.config.manager import ConfigManager
-from deile.core.agent import DeileAgent
-from deile.core.models.bootstrap import bootstrap_providers
-from deile.core.models.router import get_model_router
+from deile.config.manager import ConfigManager  # noqa: E402
+from deile.core.agent import DeileAgent  # noqa: E402
+from deile.core.models.bootstrap import bootstrap_providers  # noqa: E402
+from deile.core.models.router import get_model_router  # noqa: E402
 
 THIS_DIR = Path(__file__).resolve().parent
 MODEL_KEY = "gemini:gemini-2.5-flash-lite"
@@ -103,7 +104,7 @@ async def phase_C_raw_sdk(log_lines: list) -> None:
 
     from google import genai
     from google.genai import types
-    from google.genai.types import FunctionDeclaration, Tool, HttpOptions
+    from google.genai.types import FunctionDeclaration, HttpOptions, Tool
 
     api_key = os.getenv("GOOGLE_API_KEY")
     client = genai.Client(api_key=api_key, http_options=HttpOptions(api_version="v1beta"))
@@ -167,7 +168,7 @@ async def phase_D_raw_sdk_no_persona(log_lines: list) -> None:
 
     from google import genai
     from google.genai import types
-    from google.genai.types import FunctionDeclaration, Tool, HttpOptions
+    from google.genai.types import FunctionDeclaration, HttpOptions, Tool
 
     api_key = os.getenv("GOOGLE_API_KEY")
     client = genai.Client(api_key=api_key, http_options=HttpOptions(api_version="v1beta"))

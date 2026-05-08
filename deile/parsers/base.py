@@ -1,10 +1,10 @@
 """Interface base para Parsers do DEILE"""
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Pattern, Union
 from enum import Enum
-import re
+from typing import Any, Dict, List, Optional, Pattern
 
 
 class ParseStatus(Enum):

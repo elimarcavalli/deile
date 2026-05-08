@@ -2,10 +2,11 @@
 
 import asyncio
 import logging
-import time
-from typing import Dict, List, Optional, Any
-import psutil
 import os
+import time
+from typing import Any, Dict
+
+import psutil
 
 logger = logging.getLogger(__name__)
 

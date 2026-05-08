@@ -2,22 +2,15 @@
 
 from __future__ import annotations
 
-import pytest
-from typing import Any, AsyncIterator, List, Optional
+from typing import AsyncIterator, List, Optional
 
-from deile.core.models.base import (
-    ModelMessage,
-    ModelProvider,
-    ModelResponse,
-    ModelSize,
-    ModelTier,
-    ModelType,
-    ModelUsage,
-    tier_to_model_size,
-)
+import pytest
+
+from deile.core.models.base import (ModelMessage, ModelProvider, ModelResponse,
+                                    ModelSize, ModelTier, ModelType,
+                                    ModelUsage, tier_to_model_size)
 from deile.core.models.catalog import ModelPricing
 from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
-
 
 # ---------------------------------------------------------------------------
 # Minimal concrete provider used across all tests

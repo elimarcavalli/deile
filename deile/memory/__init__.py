@@ -8,12 +8,12 @@ Implementa arquitetura de memória multi-camadas com:
 - Memory Consolidation: Otimização e limpeza automática
 """
 
-from .memory_manager import MemoryManager
-from .working_memory import WorkingMemory
 from .episodic_memory import EpisodicMemory
-from .semantic_memory import SemanticMemory
-from .procedural_memory import ProceduralMemory
 from .memory_consolidation import MemoryConsolidator
+from .memory_manager import MemoryManager
+from .procedural_memory import ProceduralMemory
+from .semantic_memory import SemanticMemory
+from .working_memory import WorkingMemory
 
 __all__ = [
     "MemoryManager",

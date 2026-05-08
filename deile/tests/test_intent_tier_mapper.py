@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from deile.core.intent_analyzer import IntentAnalysisResult, IntentCategory, IntentType
+from deile.core.intent_analyzer import (IntentAnalysisResult, IntentCategory,
+                                        IntentType)
 from deile.core.intent_tier_mapper import classify_tier
 from deile.core.models.tier import ModelTier
 

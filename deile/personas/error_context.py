@@ -1,11 +1,11 @@
 """Error context system for persona operations with rich context and recovery support"""
 
+import traceback
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Any, Optional
 from enum import Enum
-import uuid
-import traceback
+from typing import Any, Dict, List, Optional
 
 
 class ErrorSeverity(Enum):
@@ -175,10 +175,11 @@ class ErrorContext:
     @staticmethod
     def _determine_severity_from_error(error) -> ErrorSeverity:
         """Determine severity level from error type"""
-        from ..core.exceptions import (
-            PersonaConfigError, PersonaLoadError, PersonaSwitchError,
-            PersonaExecutionError, PersonaInitializationError, PersonaIntegrationError
-        )
+        from ..core.exceptions import (PersonaConfigError,
+                                       PersonaExecutionError,
+                                       PersonaInitializationError,
+                                       PersonaIntegrationError,
+                                       PersonaLoadError, PersonaSwitchError)
 
         severity_mapping = {
             PersonaConfigError: ErrorSeverity.HIGH,

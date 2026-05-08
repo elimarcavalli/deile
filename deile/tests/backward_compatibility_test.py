@@ -11,9 +11,9 @@ Version: 5.1.0 ULTRA
 """
 
 import asyncio
+import shutil
 import sys
 import tempfile
-import shutil
 from pathlib import Path
 
 # Add the deile package to sys.path (file lives at scripts/tests/, project root is two parents up)

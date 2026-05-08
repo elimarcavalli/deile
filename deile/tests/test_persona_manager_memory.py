@@ -1,15 +1,14 @@
 """Tests for PersonaManager memory integration"""
 
-import pytest
-import asyncio
-from unittest.mock import Mock, AsyncMock, patch
-from datetime import datetime
+from unittest.mock import AsyncMock, Mock, patch
 
-from deile.personas.manager import PersonaManager
-from deile.personas.context import PersonaContext
-from deile.personas.memory.integration import PersonaMemoryLayer
+import pytest
+
 from deile.memory.memory_manager import MemoryManager
 from deile.personas.base import BasePersona
+from deile.personas.context import PersonaContext
+from deile.personas.manager import PersonaManager
+from deile.personas.memory.integration import PersonaMemoryLayer
 
 
 class TestPersonaManagerMemoryIntegration:

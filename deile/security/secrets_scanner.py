@@ -1,12 +1,11 @@
 """Secrets Scanner for DEILE - Detect and redact sensitive information"""
 
+import logging
 import re
-from typing import List, Dict, Any, Optional, Tuple
-from pathlib import Path
 from dataclasses import dataclass
 from enum import Enum
-import logging
-
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -254,9 +253,9 @@ class SecretsScanner:
         try:
             if file_path.stat().st_size > 10 * 1024 * 1024:
                 return True
-        except:
+        except Exception:
             pass
-            
+
         return False
     
     def redact_text(self, text: str, redaction_char: str = '*') -> Tuple[str, List[SecretMatch]]:

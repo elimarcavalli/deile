@@ -55,7 +55,8 @@ def _make_provider():
 
 def _make_echo_registry():
     """Return a fake ToolRegistry that exposes a single 'echo' tool."""
-    from deile.tools.base import Tool, ToolContext, ToolResult, ToolStatus, ToolSchema
+    from deile.tools.base import (Tool, ToolContext, ToolResult, ToolSchema,
+                                  ToolStatus)
 
     class EchoTool(Tool):
         """Returns its input text verbatim."""

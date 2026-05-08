@@ -14,9 +14,9 @@ from typing import AsyncIterator, Tuple
 import pytest
 from aiohttp import web
 from deilebot_client import (BotClientAuthError, BotClientNotReady,
-                                     BotClientRateLimited, BotClientTimeoutError,
-                                     BotClientUpstreamError, BotControlClient,
-                                     BotControlSettings)
+                             BotClientRateLimited, BotClientTimeoutError,
+                             BotClientUpstreamError, BotControlClient,
+                             BotControlSettings)
 
 # --- helpers -----------------------------------------------------------------
 

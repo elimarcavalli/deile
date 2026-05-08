@@ -2,7 +2,6 @@
 
 import os
 import subprocess
-import sys
 from typing import Any, Dict, Optional
 
 from rich.console import Console
@@ -63,14 +62,14 @@ class CLI:
         # Estatísticas de ferramentas
         tools_stats = stats.get('tools', {})
         if tools_stats:
-            self.console.print(f"\n🔧 Ferramentas:")
+            self.console.print("\n🔧 Ferramentas:")
             self.console.print(f"  Total: {tools_stats.get('total_tools', 0)}")
             self.console.print(f"  Habilitadas: {tools_stats.get('enabled_tools', 0)}")
         
         # Estatísticas de parsers
         parsers_stats = stats.get('parsers', {})
         if parsers_stats:
-            self.console.print(f"\n📝 Parsers:")
+            self.console.print("\n📝 Parsers:")
             self.console.print(f"  Total: {parsers_stats.get('total_parsers', 0)}")
             self.console.print(f"  Habilitados: {parsers_stats.get('enabled_parsers', 0)}")
     

@@ -19,7 +19,6 @@ from rich.console import Console
 from deile.commands.base import CommandContext
 from deile.commands.builtin.status_command import StatusCommand
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -1,16 +1,17 @@
 """Run Command - Execute plans autonomously"""
 
-from typing import Dict, Any, Optional
 import asyncio
+from typing import Any, Dict
+
+from rich.live import Live
 from rich.panel import Panel
+from rich.progress import BarColumn, Progress, TextColumn, TimeElapsedColumn
 from rich.table import Table
 from rich.text import Text
-from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
-from rich.live import Live
 
-from ..base import DirectCommand, CommandResult, CommandContext
 from ...core.exceptions import CommandError
-from ...orchestration.plan_manager import get_plan_manager, PlanStatus
+from ...orchestration.plan_manager import PlanStatus, get_plan_manager
+from ..base import CommandContext, CommandResult, DirectCommand
 
 
 class RunCommand(DirectCommand):
@@ -237,7 +238,7 @@ class RunCommand(DirectCommand):
 
         # Start execution with live progress
         try:
-            with Live(progress, refresh_per_second=2) as live:
+            with Live(progress, refresh_per_second=2):
                 task = progress.add_task(f"[cyan]Iniciando {plan.title}...", total=plan.total_steps)
                 
                 # Execute plan asynchronously and update progress
@@ -400,7 +401,7 @@ class RunCommand(DirectCommand):
         
         result_panel = Panel(
             Text(content, style=status_style),
-            title=f"🚀 Execution Result",
+            title="🚀 Execution Result",
             border_style=border_color,
             padding=(1, 2)
         )

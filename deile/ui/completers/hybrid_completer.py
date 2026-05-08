@@ -1,10 +1,11 @@
 """HybridCompleter - Sistema unificado de autocompletar para @ (arquivos) e / (comandos)"""
 
-import os
 import logging
+import os
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple, Iterable
+from typing import Iterable, Optional
+
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 
@@ -182,7 +183,7 @@ class HybridCompleter(Completer):
                             size = item.stat().st_size
                             size_str = self._format_file_size(size)
                             display_meta = f"File ({size_str})"
-                        except:
+                        except Exception:
                             display_meta = "File"
                     
                     yield Completion(

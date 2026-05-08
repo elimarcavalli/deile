@@ -11,12 +11,12 @@ Version: 5.1.0 ULTRA
 """
 
 import asyncio
+import shutil
 import sys
 import tempfile
-import shutil
-import yaml
 from pathlib import Path
-from typing import Dict, Any
+
+import yaml
 
 # Add the deile package to sys.path (file lives at scripts/tests/, project root is two parents up)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -162,7 +162,7 @@ class IsolatedConfigTestSuite:
         print("\n📋 Testing PersonaConfig models in isolation...")
 
         try:
-            from deile.personas.config import PersonaConfig, CommunicationStyle
+            from deile.personas.config import CommunicationStyle, PersonaConfig
 
             # Test PersonaConfig creation
             config = PersonaConfig(

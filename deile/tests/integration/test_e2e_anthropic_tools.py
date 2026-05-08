@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -29,8 +28,8 @@ _PROVIDER_ID = "anthropic"
 
 def _make_provider():
     """Build an AnthropicProvider from the real catalog, no router involved."""
-    from deile.core.models.catalog import ModelCatalog
     from deile.core.models.anthropic_provider import AnthropicProvider
+    from deile.core.models.catalog import ModelCatalog
     from deile.core.models.provider_config import ProviderConfig
 
     catalog = ModelCatalog.from_yaml(_YAML_PATH)
@@ -46,7 +45,8 @@ def _make_provider():
 
 def _make_echo_registry():
     """Return a fake ToolRegistry that exposes a single 'echo' tool."""
-    from deile.tools.base import Tool, ToolContext, ToolResult, ToolStatus, ToolSchema
+    from deile.tools.base import (Tool, ToolContext, ToolResult, ToolSchema,
+                                  ToolStatus)
 
     class EchoTool(Tool):
         """Returns its input text verbatim."""

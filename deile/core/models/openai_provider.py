@@ -10,27 +10,17 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import openai
 
-from deile.core.loop_guard import (
-    format_loop_break_message,
-    make_guard,
-    tool_result_made_progress,
-)
-from deile.core.models.base import (
-    ModelMessage,
-    ModelProvider,
-    ModelResponse,
-    ModelSize,
-    ModelType,
-    ModelUsage,
-)
+from deile.core.loop_guard import (format_loop_break_message, make_guard,
+                                   tool_result_made_progress)
+from deile.core.models.base import (ModelMessage, ModelProvider, ModelResponse,
+                                    ModelSize, ModelType, ModelUsage)
 from deile.core.models.catalog import ModelHandle, ModelPricing
-from deile.core.models.errors import ProviderErrorEnvelope, ProviderInvocationError
+from deile.core.models.errors import (ProviderErrorEnvelope,
+                                      ProviderInvocationError)
 from deile.core.models.provider_config import ProviderConfig
-from deile.core.models.stream_events import (
-    ModelUsageSnapshot,
-    StreamEventType,
-    UnifiedStreamEvent,
-)
+from deile.core.models.stream_events import (ModelUsageSnapshot,
+                                             StreamEventType,
+                                             UnifiedStreamEvent)
 from deile.core.models.tier import ModelTier
 
 logger = logging.getLogger(__name__)

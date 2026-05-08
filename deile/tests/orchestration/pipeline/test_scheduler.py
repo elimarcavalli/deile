@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 
 from deile.orchestration.pipeline.scheduler import (OneshotEntry, PendingRun,
-                                                     RecurringEntry, Schedule,
-                                                     ScheduleError,
-                                                     ScheduleStore)
+                                                    RecurringEntry, Schedule,
+                                                    ScheduleError,
+                                                    ScheduleStore)
 
 
 def _utc(s: str) -> datetime:

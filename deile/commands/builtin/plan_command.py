@@ -1,15 +1,15 @@
 """Plan Command - Create and manage execution plans"""
 
-from typing import Dict, Any, Optional
-import asyncio
+from typing import Optional
+
 from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from rich.text import Text
-from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from ..base import DirectCommand, CommandResult, CommandContext
 from ...core.exceptions import CommandError
-from ...orchestration.plan_manager import get_plan_manager, PlanStatus
+from ...orchestration.plan_manager import PlanStatus, get_plan_manager
+from ..base import CommandContext, CommandResult, DirectCommand
 
 
 class PlanCommand(DirectCommand):
@@ -107,14 +107,14 @@ class PlanCommand(DirectCommand):
         
         # Create success panel
         content_lines = [
-            f"✅ **Plan Created Successfully**",
+            "✅ **Plan Created Successfully**",
             "",
             f"**Plan ID:** `{plan.id}`",
             f"**Title:** {plan.title}",
             f"**Steps:** {plan.total_steps}",
             f"**Estimated Duration:** {plan.estimated_duration.total_seconds():.0f}s",
             "",
-            f"**Next Actions:**",
+            "**Next Actions:**",
             f"• Use `/run {plan.id}` to execute the plan",
             f"• Use `/plan show {plan.id}` to view plan details",
             "",
@@ -136,7 +136,7 @@ class PlanCommand(DirectCommand):
         
         result_panel = Panel(
             Text(content, style="green"),
-            title=f"📋 Plan Created",
+            title="📋 Plan Created",
             border_style="green",
             padding=(1, 2)
         )
@@ -304,7 +304,7 @@ class PlanCommand(DirectCommand):
         
         result_panel = Panel(
             Text(content, style="white"),
-            title=f"📋 Plan Details",
+            title="📋 Plan Details",
             border_style=border_color,
             padding=(1, 2)
         )

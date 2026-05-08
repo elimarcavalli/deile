@@ -28,13 +28,14 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # noqa: E402
+
 load_dotenv(PROJECT_ROOT / ".env")
 
-from deile.config.manager import ConfigManager
-from deile.core.agent import DeileAgent
-from deile.core.models.bootstrap import bootstrap_providers
-from deile.core.models.router import get_model_router
+from deile.config.manager import ConfigManager  # noqa: E402
+from deile.core.agent import DeileAgent  # noqa: E402
+from deile.core.models.bootstrap import bootstrap_providers  # noqa: E402
+from deile.core.models.router import get_model_router  # noqa: E402
 
 THIS_DIR = Path(__file__).resolve().parent
 

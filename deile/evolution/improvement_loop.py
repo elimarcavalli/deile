@@ -3,15 +3,14 @@
 import asyncio
 import logging
 import time
-from typing import Dict, List, Optional, Any
-from dataclasses import dataclass
-from pathlib import Path
 import uuid
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
-from .self_analyzer import SelfAnalyzer, ImprovementOpportunity
-from .code_modifier import CodeModifier
 from .benchmarker import Benchmarker
+from .code_modifier import CodeModifier
 from .rollback_manager import RollbackManager
+from .self_analyzer import ImprovementOpportunity, SelfAnalyzer
 
 logger = logging.getLogger(__name__)
 

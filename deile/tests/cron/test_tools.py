@@ -131,7 +131,7 @@ class TestCronList:
 
     async def test_only_enabled(self, cron_db):
         # Add two, disable one, request only_enabled.
-        c1 = await CronCreateTool().execute(_ctx(
+        await CronCreateTool().execute(_ctx(
             prompt="a", cron="*/5 * * * *", id="r1",
         ))
         await CronCreateTool().execute(_ctx(

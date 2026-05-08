@@ -16,10 +16,10 @@ import pytest
 @pytest.fixture
 def gemini_provider(monkeypatch):
     """Construct a GeminiProvider without hitting the network."""
-    from deile.core.models.gemini_provider import GeminiProvider
     from deile.core.models.catalog import ModelHandle, ModelPricing
-    from deile.core.models.tier import ModelTier
+    from deile.core.models.gemini_provider import GeminiProvider
     from deile.core.models.provider_config import ProviderConfig
+    from deile.core.models.tier import ModelTier
 
     handle = ModelHandle(
         provider_id="gemini",

@@ -1,13 +1,12 @@
 """Loader dinâmico para personas com suporte a diferentes tipos"""
 
-import logging
 import importlib
 import inspect
+import logging
 from pathlib import Path
-from typing import Dict, Any, Type, Optional
-import yaml
+from typing import Any, Dict, Type
 
-from .base import BasePersona, BaseAutonomousPersona
+from .base import BaseAutonomousPersona, BasePersona
 from .config import PersonaConfig  # Use unified configuration
 from .instruction_loader import InstructionLoader
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from typing import Any, AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,7 +13,6 @@ from deile.core.models.errors import ProviderInvocationError
 from deile.core.models.provider_config import ProviderConfig
 from deile.core.models.stream_events import StreamEventType
 from deile.core.models.tier import ModelTier
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

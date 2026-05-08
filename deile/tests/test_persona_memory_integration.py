@@ -1,13 +1,13 @@
 """Tests for PersonaMemoryLayer integration with unified memory"""
 
-import pytest
-import asyncio
-from unittest.mock import Mock, AsyncMock, patch
 from datetime import datetime
+from unittest.mock import AsyncMock, Mock, patch
 
-from deile.personas.memory.integration import PersonaMemoryLayer
+import pytest
+
 from deile.memory.memory_manager import MemoryManager
 from deile.personas.context import PersonaContext
+from deile.personas.memory.integration import PersonaMemoryLayer
 
 
 @pytest.fixture
@@ -204,7 +204,7 @@ class TestPersonaContextIntegration:
         persona_id = "test_persona"
         session_id = "test_session"
 
-        with patch.object(PersonaMemoryLayer, '__init__', return_value=None) as mock_init:
+        with patch.object(PersonaMemoryLayer, '__init__', return_value=None):
             mock_layer = Mock(spec=PersonaMemoryLayer)
             mock_layer.get_persona_state = AsyncMock(return_value={'key': 'value'})
             mock_layer.get_persona_preference = AsyncMock(return_value=None)
@@ -249,7 +249,6 @@ class TestMemoryConsistency:
     async def test_no_duplicate_memory_systems(self):
         """Ensure no duplicate memory systems exist"""
         # This test ensures old memory files don't exist
-        import os
         from pathlib import Path
 
         # Check that old duplicate files are removed

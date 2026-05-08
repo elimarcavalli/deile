@@ -1,14 +1,12 @@
 """Memory Command - Advanced memory and session management"""
 
-from typing import Dict, Any, Optional
-from rich.panel import Panel
-from rich.text import Text
-from rich.table import Table
-from rich.tree import Tree
 from rich.console import Group
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
-from ..base import DirectCommand, CommandResult, CommandContext
 from ...core.exceptions import CommandError
+from ..base import CommandContext, CommandResult, DirectCommand
 
 
 class MemoryCommand(DirectCommand):
@@ -88,7 +86,7 @@ class MemoryCommand(DirectCommand):
             plan_manager = get_plan_manager()
             stats['active_plans'] = len(plan_manager._active_plans)
             stats['total_plans'] = len(await plan_manager.list_plans())
-        except:
+        except Exception:
             stats['active_plans'] = 0
             stats['total_plans'] = 0
         
@@ -97,7 +95,7 @@ class MemoryCommand(DirectCommand):
             from ...security.audit_logger import get_audit_logger
             audit_logger = get_audit_logger()
             stats['audit_events'] = len(audit_logger.recent_events)
-        except:
+        except Exception:
             stats['audit_events'] = 0
         
         # Create status table
@@ -203,7 +201,7 @@ class MemoryCommand(DirectCommand):
                 plan_manager._execution_locks.clear()
                 plan_manager._stop_flags.clear()
                 items_description = "active plans"
-            except:
+            except Exception:
                 cleared_items = 0
                 items_description = "active plans (none found)"
         
@@ -214,7 +212,7 @@ class MemoryCommand(DirectCommand):
                 cleared_items = len(audit_logger.recent_events)
                 audit_logger.recent_events.clear()
                 items_description = "audit log entries"
-            except:
+            except Exception:
                 cleared_items = 0
                 items_description = "audit log entries (none found)"
         
@@ -254,16 +252,16 @@ class MemoryCommand(DirectCommand):
                 plan_manager._active_plans.clear()
                 plan_manager._execution_locks.clear()
                 plan_manager._stop_flags.clear()
-            except:
+            except Exception:
                 pass
-            
+
             # Clear audit logs
             try:
                 from ...security.audit_logger import get_audit_logger
                 audit_logger = get_audit_logger()
                 total_cleared += len(audit_logger.recent_events)
                 audit_logger.recent_events.clear()
-            except:
+            except Exception:
                 pass
             
             cleared_items = total_cleared
@@ -333,9 +331,9 @@ class MemoryCommand(DirectCommand):
                 usage_table.add_row("Active Plans", str(active_count), estimated_size, impact, action)
                 if active_count > 2:
                     total_impact += 3
-        except:
+        except Exception:
             pass
-        
+
         # Audit logs analysis
         try:
             from ...security.audit_logger import get_audit_logger
@@ -348,7 +346,7 @@ class MemoryCommand(DirectCommand):
                 usage_table.add_row("Audit Events", str(audit_count), estimated_size, impact, action)
                 if audit_count > 500:
                     total_impact += 1
-        except:
+        except Exception:
             pass
         
         # Overall recommendation
@@ -380,7 +378,7 @@ class MemoryCommand(DirectCommand):
     async def _export_memory_state(self, context: CommandContext, args: list) -> CommandResult:
         """Export memory state"""
         
-        export_format = args[0] if args else "json"
+        args[0] if args else "json"
         
         # This would integrate with the existing export command
         return CommandResult.success_result(

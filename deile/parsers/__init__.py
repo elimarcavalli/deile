@@ -1,9 +1,9 @@
 """Sistema de Parsers do DEILE"""
 
 from .base import Parser, ParseResult
-from .file_parser import FileParser
 from .command_parser import CommandParser
 from .diff_parser import DiffParser
+from .file_parser import FileParser
 from .intelligent_file_parser import IntelligentFileParser
 
 __all__ = [

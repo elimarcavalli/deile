@@ -7,7 +7,6 @@ from typing import Any, List, Literal, Mapping
 
 from deile.common.markup_ast import MarkupAST
 
-
 ChunkKind = Literal[
     "text",
     "markup_span",

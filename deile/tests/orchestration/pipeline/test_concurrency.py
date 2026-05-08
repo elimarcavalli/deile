@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from deile.orchestration.pipeline.identity import IdentityError, MonitorIdentity
+from deile.orchestration.pipeline.identity import (IdentityError,
+                                                   MonitorIdentity)
 
 
 class TestParallelMonitorSafety:

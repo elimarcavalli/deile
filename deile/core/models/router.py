@@ -1,19 +1,19 @@
 """Model Router para seleção inteligente de modelos"""
 
-from typing import Dict, List, Optional, Any, Callable
+import logging
+import time
 from dataclasses import dataclass
 from enum import Enum
-import logging
-import asyncio
-import time
-from collections import defaultdict
+from typing import Any, Callable, Dict, List, Optional
 
-from .base import ModelProvider, ModelType, ModelSize, ModelMessage, ModelResponse
+from deile.storage.usage_repository import (BudgetExceeded, BudgetGuard,
+                                            get_usage_repository)
+
+from ..exceptions import ModelError
+from .base import (ModelMessage, ModelProvider, ModelResponse, ModelSize,
+                   ModelType)
 from .tier import ModelTier
 from .tier_router import get_tier_router
-from ..exceptions import ModelError, ConfigurationError
-from deile.storage.usage_repository import BudgetGuard, BudgetExceeded, get_usage_repository
-
 
 logger = logging.getLogger(__name__)
 
@@ -369,7 +369,6 @@ class ModelRouter:
             return self._budget_guard
         try:
             from pathlib import Path as _Path
-            import yaml as _yaml
             _yaml_path = _Path(__file__).parents[2] / "config" / "model_providers.yaml"
             repo = get_usage_repository()
             self._budget_guard = BudgetGuard.from_yaml(_yaml_path, repo)

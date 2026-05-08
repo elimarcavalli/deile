@@ -5,22 +5,17 @@ This test suite covers all aspects of the autonomous file resolution system,
 ensuring 95%+ coverage and robustness of the implementation.
 """
 
-import pytest
-import tempfile
 import shutil
-from pathlib import Path
-from unittest.mock import Mock, patch
+import tempfile
 import time
+from pathlib import Path
+from unittest.mock import patch
 
-from deile.core.file_resolver import (
-    SmartFileResolver,
-    FileMatch,
-    MatchType,
-    CommonFilePatterns,
-    get_file_resolver,
-    clear_resolver_cache
-)
-from deile.core.exceptions import ValidationError
+import pytest
+
+from deile.core.file_resolver import (CommonFilePatterns, FileMatch, MatchType,
+                                      SmartFileResolver, clear_resolver_cache,
+                                      get_file_resolver)
 
 
 @pytest.fixture
@@ -382,7 +377,6 @@ class TestFileResolverIntegration:
         """Test realistic requirements file resolution"""
         resolver = SmartFileResolver(project_workspace)
 
-        queries = ["requirements", "deps", "dependencies"]
 
         matches = resolver.resolve_file("requirements")
         assert len(matches) > 0
@@ -453,12 +447,12 @@ class TestFileResolverPerformance:
         # First call (no cache)
         start_time = time.time()
         matches1 = resolver.resolve_file("readme")
-        first_duration = time.time() - start_time
+        time.time() - start_time
 
         # Second call (with cache)
         start_time = time.time()
         matches2 = resolver.resolve_file("script")
-        second_duration = time.time() - start_time
+        time.time() - start_time
 
         # Both should complete, second might be faster due to cached directory listing
         assert len(matches1) > 0

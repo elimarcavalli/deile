@@ -11,23 +11,18 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 from unittest.mock import AsyncMock, MagicMock, call
 
-import pytest
-
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
 from deile.orchestration.pipeline.github_client import IssueRef, PrRef
 from deile.orchestration.pipeline.identity import MonitorIdentity
-from deile.orchestration.pipeline.labels import (
-    REVIEW_CONCLUDED,
-    REVIEW_IN_PROGRESS,
-    REVIEW_PENDING,
-    WORKFLOW_NEW,
-    WORKFLOW_PR,
-    WORKFLOW_REVIEWED,
-    WORKFLOW_REVIEWING,
-)
-from deile.orchestration.pipeline.monitor import PipelineConfig, PipelineMonitor
+from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
+                                                 REVIEW_IN_PROGRESS,
+                                                 REVIEW_PENDING, WORKFLOW_NEW,
+                                                 WORKFLOW_PR,
+                                                 WORKFLOW_REVIEWED,
+                                                 WORKFLOW_REVIEWING)
+from deile.orchestration.pipeline.monitor import (PipelineConfig,
+                                                  PipelineMonitor)
 from deile.orchestration.pipeline.worktree_manager import Worktree
-
 
 # ---------------------------------------------------------------------------
 # helpers

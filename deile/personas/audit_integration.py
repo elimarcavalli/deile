@@ -1,12 +1,13 @@
 """Audit integration for persona errors with comprehensive security event logging"""
 
-from typing import Dict, Any, Optional
 import logging
 from datetime import datetime
+from typing import Any, Dict, Optional
 
-from .error_context import ErrorContext, ErrorSeverity
 from ..core.exceptions import PersonaError
-from ..security.audit_logger import get_audit_logger, AuditEventType, SeverityLevel
+from ..security.audit_logger import (AuditEventType, SeverityLevel,
+                                     get_audit_logger)
+from .error_context import ErrorContext, ErrorSeverity
 
 logger = logging.getLogger(__name__)
 
@@ -258,10 +259,11 @@ class PersonaErrorAuditLogger:
 
     def _determine_event_type(self, error: PersonaError) -> AuditEventType:
         """Determine specific audit event type based on error type"""
-        from ..core.exceptions import (
-            PersonaLoadError, PersonaSwitchError, PersonaConfigError,
-            PersonaExecutionError, PersonaInitializationError, PersonaIntegrationError
-        )
+        from ..core.exceptions import (PersonaConfigError,
+                                       PersonaExecutionError,
+                                       PersonaInitializationError,
+                                       PersonaIntegrationError,
+                                       PersonaLoadError, PersonaSwitchError)
 
         event_type_mapping = {
             PersonaLoadError: AuditEventType.PERSONA_LOAD,

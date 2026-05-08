@@ -282,7 +282,7 @@ def print_results(results):
     passed_tests = sum(1 for _, passed, _ in results if passed)
     failed_tests = total_tests - passed_tests
 
-    print(f"\n📊 TEST RESULTS:")
+    print("\n📊 TEST RESULTS:")
     print(f"   Total: {total_tests}")
     print(f"   ✅ Passed: {passed_tests}")
     print(f"   ❌ Failed: {failed_tests}")

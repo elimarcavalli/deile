@@ -5,18 +5,17 @@ This test suite validates the full autonomous workflow from user input
 to final execution, ensuring all components work together seamlessly.
 """
 
-import pytest
-import tempfile
-import shutil
 import asyncio
+import shutil
+import tempfile
 from pathlib import Path
-from unittest.mock import Mock, patch, AsyncMock
+from unittest.mock import Mock
+
+import pytest
 
 from deile.core.agent import DeileAgent
 from deile.core.context_manager import ContextManager
 from deile.tools.file_tools import ReadFileTool
-from deile.core.agent import AgentSession
-from deile.core.exceptions import ValidationError
 
 
 class TestAutonomyEndToEnd:

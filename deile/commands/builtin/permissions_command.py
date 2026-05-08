@@ -1,18 +1,16 @@
 """Permissions Command - Manage security rules and permissions"""
 
-from typing import Dict, Any, Optional, List
-from rich.panel import Panel
-from rich.text import Text
-from rich.table import Table
-from rich.tree import Tree
-from rich.console import Group
+from typing import List
 
-from ..base import DirectCommand, CommandResult, CommandContext
+from rich.console import Group
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
+
 from ...core.exceptions import CommandError
-from ...security.permissions import (
-    get_permission_manager, PermissionManager, PermissionRule, 
-    PermissionLevel, ResourceType
-)
+from ...security.permissions import (PermissionLevel, ResourceType,
+                                     get_permission_manager)
+from ..base import CommandContext, CommandResult, DirectCommand
 
 
 class PermissionsCommand(DirectCommand):
@@ -202,7 +200,7 @@ class PermissionsCommand(DirectCommand):
         if not rules:
             return CommandResult.success_result(
                 Panel(
-                    Text(f"No permission rules found" + (f" matching filter: {filter_type}" if filter_type else ""), 
+                    Text("No permission rules found" + (f" matching filter: {filter_type}" if filter_type else ""), 
                          style="yellow"),
                     title="🔍 No Results",
                     border_style="yellow"
@@ -212,7 +210,7 @@ class PermissionsCommand(DirectCommand):
         
         # Create rules table
         table = Table(
-            title=f"🛡️ Permission Rules" + (f" (filtered: {filter_type})" if filter_type else f" ({len(rules)} total)"),
+            title="🛡️ Permission Rules" + (f" (filtered: {filter_type})" if filter_type else f" ({len(rules)} total)"),
             show_header=True, 
             header_style="bold cyan"
         )

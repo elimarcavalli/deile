@@ -7,12 +7,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from deile.core.models.tier import ModelTier
-from deile.core.models.tier_router import (
-    CircuitBreaker,
-    NoProviderAvailable,
-    RoutingPolicy,
-    TierRouter,
-)
+from deile.core.models.tier_router import (CircuitBreaker, NoProviderAvailable,
+                                           RoutingPolicy, TierRouter)
 
 
 def _make_provider(provider_id: str, model_name: str) -> MagicMock:

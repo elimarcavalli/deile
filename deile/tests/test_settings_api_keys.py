@@ -1,7 +1,5 @@
 """Tests: Settings.get_api_key covers all four multi-provider keys."""
 
-import os
-import pytest
 
 from deile.config.settings import Settings
 

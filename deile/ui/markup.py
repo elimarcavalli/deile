@@ -15,7 +15,6 @@ from typing import List
 
 from deile.common.markup_ast import MarkupAST, MarkupSpan, SpanKind
 
-
 _FENCE_RE = re.compile(r"```([a-zA-Z0-9_+-]*)\n(.*?)```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`([^`\n]+)`")
 _BOLD_RE = re.compile(r"\*\*([^*\n]+)\*\*")

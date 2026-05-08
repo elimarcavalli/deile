@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import Any, List
 
+from deile.core.models.base import ModelType
 from deile.core.models.catalog import ModelHandle
 from deile.core.models.openai_provider import OpenAIProvider
 from deile.core.models.provider_config import ProviderConfig
-from deile.core.models.base import ModelType
 
 
 class DeepSeekProvider(OpenAIProvider):

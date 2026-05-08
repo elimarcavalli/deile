@@ -1,9 +1,9 @@
 """Plugin Marketplace - Discovery e instalação de plugins"""
 
-import logging
-from typing import Dict, List, Optional, Any
 import json
+import logging
 from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 

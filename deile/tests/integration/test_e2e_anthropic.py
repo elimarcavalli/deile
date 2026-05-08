@@ -16,11 +16,12 @@ pytestmark = pytest.mark.skipif(
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_anthropic_simple_generate():
-    from deile.core.models.catalog import ModelCatalog
+    from pathlib import Path
+
     from deile.core.models.anthropic_provider import AnthropicProvider
     from deile.core.models.base import ModelMessage
+    from deile.core.models.catalog import ModelCatalog
     from deile.core.models.provider_config import ProviderConfig
-    from pathlib import Path
 
     yaml_path = Path(__file__).parents[3] / "deile" / "config" / "model_providers.yaml"
     catalog = ModelCatalog.from_yaml(yaml_path)

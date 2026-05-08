@@ -8,16 +8,15 @@ escalation and audit trail capabilities.
 Author: DEILE
 """
 
-import logging
 import asyncio
+import json
+import logging
 import time
 import uuid
-import json
-from pathlib import Path
-from typing import List, Dict, Any, Optional, Callable, Union
-from dataclasses import dataclass, field, asdict
-from datetime import datetime, timedelta
+from dataclasses import asdict, dataclass, field
 from enum import Enum
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +119,7 @@ class ApprovalRule:
     def matches(self, request: ApprovalRequest) -> bool:
         """Check if rule matches approval request"""
         import re
-        
+
         # Check tool patterns
         if self.tool_patterns:
             tool_match = any(
@@ -564,7 +563,7 @@ class ApprovalSystem:
         
         while True:
             try:
-                current_time = time.time()
+                time.time()
                 expired_requests = []
                 
                 # Find expired requests

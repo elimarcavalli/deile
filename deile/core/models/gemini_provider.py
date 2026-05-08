@@ -1,29 +1,24 @@
 """Provedor Gemini para o sistema de modelos"""
 
-import logging
-from typing import List, Optional, AsyncIterator, Dict, Any, Tuple
-import os
 import asyncio
+import logging
+import os
 import time
 import uuid
-from google import genai
-from google.genai.types import (
-    GenerateContentConfig,
-    Tool,
-    HttpOptions,
-    AutomaticFunctionCallingConfig
-)
-from google.genai import types
-from google.genai import errors as genai_errors
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
-from .base import ModelProvider, ModelType, ModelSize, ModelMessage, ModelResponse, ModelUsage
-from ..exceptions import ModelError, ConfigurationError
-from ..loop_guard import (
-    format_loop_break_message,
-    make_guard,
-    tool_result_made_progress,
-)
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types
+from google.genai.types import (AutomaticFunctionCallingConfig,
+                                GenerateContentConfig, HttpOptions, Tool)
+
 from ...storage.debug_logger import get_debug_logger, is_debug_enabled
+from ..exceptions import ConfigurationError, ModelError
+from ..loop_guard import (format_loop_break_message, make_guard,
+                          tool_result_made_progress)
+from .base import (ModelMessage, ModelProvider, ModelResponse, ModelSize,
+                   ModelType, ModelUsage)
 
 logger = logging.getLogger(__name__)
 
@@ -165,8 +160,8 @@ class GeminiProvider(ModelProvider):
     def _get_tools_for_generate_content(self) -> Optional[List]:
         """Obtém tools no formato correto para generate_content (não Tool objects, mas FunctionDeclaration)"""
         try:
-            from ...tools.registry import get_tool_registry
             from ...tools.base import SecurityLevel
+            from ...tools.registry import get_tool_registry
             
             tool_registry = get_tool_registry()
             
@@ -190,8 +185,8 @@ class GeminiProvider(ModelProvider):
     def _get_available_tools(self) -> Optional[List[Tool]]:
         """Obtém tools disponíveis para Function Calling - Novo SDK"""
         try:
-            from ...tools.registry import get_tool_registry
             from ...tools.base import SecurityLevel
+            from ...tools.registry import get_tool_registry
             
             tool_registry = get_tool_registry()
             
@@ -214,23 +209,23 @@ class GeminiProvider(ModelProvider):
             logger.error(f"Failed to load tools for Function Calling: {e}")
             return None
     
-    def reload_config(self) -> None:
+    def reload_config_from_manager(self) -> None:
         """Recarrega configuração do ConfigManager (hot-reload)"""
         try:
             from ...config.manager import get_config_manager
             config_manager = get_config_manager()
             config_manager.reload_config()
-            
+
             # Atualiza configuração local
             self.gemini_config = config_manager.get_config().gemini
             self.generation_config = self.gemini_config.generation_config.copy()
-            
+
             # Reinicializa ferramentas disponíveis com nova configuração
             self._available_tools = self._get_available_tools()
-            
+
             import logging
             logging.info("GeminiProvider configuration reloaded successfully")
-            
+
         except Exception as e:
             import logging
             logging.error(f"Failed to reload GeminiProvider configuration: {e}")
@@ -372,11 +367,9 @@ class GeminiProvider(ModelProvider):
         TEXT_DELTA after the response completes. This is the documented
         degraded path called out in the streaming-UI design doc.
         """
-        from deile.core.models.stream_events import (
-            ModelUsageSnapshot,
-            StreamEventType,
-            UnifiedStreamEvent,
-        )
+        from deile.core.models.stream_events import (ModelUsageSnapshot,
+                                                     StreamEventType,
+                                                     UnifiedStreamEvent)
 
         if tools:
             # Tool-aware path: build a one-shot chat session with the supplied
@@ -538,7 +531,7 @@ class GeminiProvider(ModelProvider):
         try:
             # Health check simples
             test_messages = [ModelMessage(role="user", content="test")]
-            response = await self.generate(test_messages)
+            await self.generate(test_messages)
             self._is_available = True
             self._last_health_check_time = current_time
             logger.debug("Health check passed")
@@ -623,8 +616,8 @@ class GeminiProvider(ModelProvider):
               Sempre presente; em caso de erro, contém ``{"error": "..."}``
               numa forma que o modelo consegue ler e se recuperar.
         """
-        from ...tools.registry import get_tool_registry
         from ...tools.base import ToolContext, ToolResult, ToolStatus
+        from ...tools.registry import get_tool_registry
 
         registry = get_tool_registry()
         tool = registry.get(function_name) if hasattr(registry, "get") else None

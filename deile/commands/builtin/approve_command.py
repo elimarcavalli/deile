@@ -1,13 +1,12 @@
 """Approve Command - Approve or reject plan steps"""
 
-from typing import Dict, Any, Optional
 from rich.panel import Panel
-from rich.text import Text
 from rich.table import Table
+from rich.text import Text
 
-from ..base import DirectCommand, CommandResult, CommandContext
 from ...core.exceptions import CommandError
-from ...orchestration.plan_manager import get_plan_manager, StepStatus
+from ...orchestration.plan_manager import StepStatus, get_plan_manager
+from ..base import CommandContext, CommandResult, DirectCommand
 
 
 class ApproveCommand(DirectCommand):
@@ -232,7 +231,7 @@ class ApproveCommand(DirectCommand):
                 content_lines.extend([
                     "",
                     f"⚠️ **{remaining_approvals} more steps** in this plan are waiting for approval.",
-                    f"Use `/approve` to see all pending approvals."
+                    "Use `/approve` to see all pending approvals."
                 ])
             else:
                 content_lines.extend([

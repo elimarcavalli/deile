@@ -2,7 +2,7 @@
 
 from .agent import DeileAgent
 from .context_manager import ContextManager
-from .exceptions import DEILEError, ToolError, ParserError
+from .exceptions import DEILEError, ParserError, ToolError
 
 __all__ = [
     "DeileAgent",

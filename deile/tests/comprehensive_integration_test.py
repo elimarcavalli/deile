@@ -11,20 +11,18 @@ Version: 5.1.0 ULTRA
 """
 
 import asyncio
+import logging
+import shutil
 import sys
 import tempfile
-import shutil
-import logging
 from pathlib import Path
-from typing import Dict, Any
-from unittest.mock import Mock, AsyncMock, patch
+from typing import Any, Dict
+from unittest.mock import AsyncMock, Mock
 
 # Add the deile package to sys.path (file lives at scripts/tests/, project root is two parents up)
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from deile.config.manager import ConfigManager
-from deile.personas.config import PersonaConfig, CommunicationStyle
-from deile.personas.manager import PersonaManager
 
 print("🧪 COMPREHENSIVE INTEGRATION TEST SUITE")
 print("=" * 60)
@@ -81,7 +79,6 @@ class ComprehensiveIntegrationTestSuite:
         # Dynamically import modules to catch import errors
         try:
             from deile.config.manager import ConfigManager
-            from deile.personas.config import PersonaConfig, CommunicationStyle
             from deile.personas.manager import PersonaManager
             print("   ✅ All modules imported successfully")
         except Exception as e:
@@ -214,7 +211,7 @@ class ComprehensiveIntegrationTestSuite:
             self.log_result(
                 "Observer add notification",
                 add_notified,
-                f"Add notification received"
+                "Add notification received"
             )
 
             # Test remove persona notification
@@ -229,7 +226,7 @@ class ComprehensiveIntegrationTestSuite:
             self.log_result(
                 "Observer remove notification",
                 remove_notified,
-                f"Remove notification received"
+                "Remove notification received"
             )
 
         except Exception as e:
@@ -443,11 +440,11 @@ class ComprehensiveIntegrationTestSuite:
 
         try:
             # Test original PersonaManager usage patterns
-            original_personas_count = len(self.persona_manager._personas)
+            len(self.persona_manager._personas)
 
             # Test original methods still work
             has_active = self.persona_manager.has_active_persona()
-            current_persona = self.persona_manager.get_current_persona()
+            self.persona_manager.get_current_persona()
             available_personas = self.persona_manager.list_personas()
 
             methods_work = isinstance(has_active, bool) and isinstance(available_personas, list)

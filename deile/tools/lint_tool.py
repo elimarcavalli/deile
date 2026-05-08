@@ -10,18 +10,13 @@ Author: DEILE
 
 import logging
 import subprocess
-import json
-import os
-from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple, Union
-from dataclasses import dataclass, asdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import tempfile
-import shutil
+from dataclasses import asdict, dataclass
 from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from .base import SyncTool, ToolContext, ToolResult, ToolStatus, DisplayPolicy
 from ..core.exceptions import ToolError
+from .base import DisplayPolicy, SyncTool, ToolContext, ToolResult, ToolStatus
 
 logger = logging.getLogger(__name__)
 
@@ -407,7 +402,7 @@ class LintFormatTool(SyncTool):
             result = subprocess.run([tool, '--version'], 
                                   capture_output=True, text=True, timeout=5)
             return result.returncode == 0
-        except:
+        except Exception:
             return False
 
     def _run_specific_linter(self, linter: str, language: str, files: List[Path],
@@ -569,5 +564,6 @@ class LintFormatTool(SyncTool):
 
 
 # Register the tool
-from deile.tools.registry import ToolRegistry
+from deile.tools.registry import ToolRegistry  # noqa: E402
+
 ToolRegistry.register("lint_format", LintFormatTool)
