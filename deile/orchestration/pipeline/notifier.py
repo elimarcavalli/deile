@@ -61,6 +61,9 @@ class DiscordNotifier:
 
             self.user_id = get_settings().pipeline_notify_user_id or ""
         self._dm_fn = dm_fn
+        # Track whether we already warned about missing DM function this session
+        # so we only emit the warning once instead of on every notification.
+        self._warned_no_dm_fn: bool = False
 
     @property
     def enabled(self) -> bool:
@@ -76,7 +79,15 @@ class DiscordNotifier:
                 _DM_FN = _resolve_dm_function()
             fn = _DM_FN
         if fn is None:
-            logger.debug("no DM function available; skipping notification")
+            # Warn once per notifier instance so the operator knows why DMs are absent.
+            if not self._warned_no_dm_fn:
+                logger.warning(
+                    "DiscordNotifier: no DM function available (deilebot not installed or "
+                    "DEILE_BOT_ENDPOINT not set); pipeline notifications silenced. "
+                    "Install deilebot and set DEILE_BOT_ENDPOINT + DEILE_BOT_AUTH_TOKEN "
+                    "to enable Discord notifications."
+                )
+                self._warned_no_dm_fn = True
             return
         try:
             await fn(self.user_id, text)

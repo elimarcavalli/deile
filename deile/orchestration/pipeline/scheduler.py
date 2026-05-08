@@ -284,6 +284,23 @@ class Schedule:
             if r is not None:
                 r.last_run_at = when
 
+    def gc_completed_oneshots(self, *, max_age_days: int = 7) -> int:
+        """Remove completed oneshot entries older than *max_age_days* (gap #25).
+
+        Returns the number of entries removed.
+        """
+        cutoff = _now_utc().replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        from datetime import timedelta
+        cutoff = _now_utc() - timedelta(days=max_age_days)
+        before = len(self.oneshot)
+        self.oneshot = [
+            o for o in self.oneshot
+            if not (o.completed and o.run_at < cutoff)
+        ]
+        return before - len(self.oneshot)
+
 
 # ---------------------------------------------------------------------------
 # Persistence

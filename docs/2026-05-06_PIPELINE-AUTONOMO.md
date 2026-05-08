@@ -113,8 +113,10 @@ PipelineMonitor
 │   ├── main_branch: str (default "main")
 │   ├── branch_prefix: str (default "auto/issue-")
 │   ├── notify_user_id: Optional[str]
-│   ├── enable_review/implement/pr_review: bool
-│   └── use_pid_lock: bool
+│   ├── enable_classify/review/implement/pr_review: bool
+│   ├── enable_review_human_prs: bool (gap #8)
+│   ├── use_pid_lock: bool (default True — gap #27)
+│   └── classifiable_labels: set (includes "security" — gap #4)
 ├── identity: MonitorIdentity
 │   ├── monitor_id: str
 │   ├── shard_index: int
@@ -122,26 +124,40 @@ PipelineMonitor
 │   ├── owns(key: str) -> bool  # SHA-256 % shard_count
 │   └── branch_prefix(action) -> str
 ├── stats: _Stats
-│   ├── ticks, issues_reviewed, issues_implemented
-│   ├── prs_reviewed, errors, catchup_runs, scheduled_runs
+│   ├── ticks, issues_reviewed, issues_classified, issues_implemented
+│   ├── prs_reviewed, errors, gh_errors, claude_errors (gap #18)
+│   ├── catchup_runs, scheduled_runs
 ├── async start() → acquires PID lock → catch_up_pending → create_task(_run_forever)
 ├── async stop() → set stop_event → wait task → release lock
-├── async tick() → check schedule → run pending or run all stages
-├── Stage 1: _review_one_new_issue()
+├── async tick() → check schedule → run pending + legacy-fallback for missing stages (gap #1)
+├── Stage 0: _classify_new_issues()
+│   ├── list_unclassified_issues() with pagination (gap #30)
+│   ├── identity.owns(issue.title) shard filter
+│   ├── claim_with_batch (gap #6) — skip if None (already claimed)
+│   ├── add ~workflow:nova; post reminder comment if empty body (gap #5)
+│   └── empty body accepted — best-effort classification (gap #5)
+├── Stage 1: _review_one_new_issue()  [atomic — gap #13]
 │   ├── list issues with ~workflow:nova
 │   ├── identity.owns(issue.title) filter + shard
 │   ├── claim_with_batch → add ownership label
-│   └── transition nova → em_revisao → revisada
+│   ├── transition nova → em_revisao
+│   ├── review_callback(issue) if wired (gap #2)
+│   ├── transition em_revisao → revisada
+│   └── on failure: revert em_revisao → nova (gap #13)
 ├── Stage 2: _implement_one_reviewed_issue()
-│   ├── list issues with ~workflow:revisada owned by this monitor
-│   ├── WorktreeManager.create_branch_worktree(branch)
+│   ├── list issues with ~workflow:revisada
+│   ├── filter: batch_id present OR ownership label present (gap #7)
+│   ├── WorktreeManager.create_branch_worktree(branch, force_recreate)
 │   ├── ClaudeDispatcher.run(implement_prompt, cwd=worktree)
+│   ├── _extract_pr_url uses last match (gap #14)
 │   └── transition revisada → em_pr
 └── Stage 3: _review_one_open_pr()
     ├── list open PRs not draft, no ~review:concluida, owned branch
+    ├── _owns_pr_branch: warns on empty head_ref (gap #22)
     ├── claim_with_batch → transition pendente → em_andamento
     ├── ClaudeDispatcher.run(review_prompt, cwd=worktree)
-    └── transition em_andamento → concluida
+    ├── transition em_andamento → concluida
+    └── clear_batch_label("pr", number) after conclude (gap #9)
 
 CronRunner
 ├── store: CronStore
@@ -166,8 +182,12 @@ CronRunner
 |---|---|---|---|---|
 | `start()` | — | `None` | Yes | Idempotente; levanta `LockHeldError` se PID lock já ocupado |
 | `stop()` | — | `None` | Yes | Wait 5s, cancela se timeout |
-| `tick()` | — | `None` | Yes | Um ciclo completo dos 3 estágios (ou entradas de schedule) |
-| `stats` | — | `_Stats` | No (property) | Contadores acumulativos |
+| `tick()` | — | `None` | Yes | Um ciclo completo dos 4 estágios (ou entradas de schedule) + legacy fallback (gap #1) |
+| `stats` | — | `_Stats` | No (property) | Contadores acumulativos; inclui `gh_errors` e `claude_errors` (gap #18) |
+| `_classify_new_issues()` | — | `None` | Yes | Stage 0: classifica issues sem label de pipeline |
+| `_review_one_new_issue()` | — | `None` | Yes | Stage 1: atômico — reverte para nova em caso de falha (gap #13) |
+| `_implement_one_reviewed_issue()` | — | `None` | Yes | Stage 2: aceita issues com ownership label sem batch (gap #7) |
+| `_review_one_open_pr()` | — | `None` | Yes | Stage 3: limpa ~batch: após conclusão (gap #9) |
 
 ### ClaudeDispatcher
 
@@ -207,20 +227,36 @@ CronRunner
 ### `config/pipeline_schedule_<monitor_id>.yaml`
 
 ```yaml
+# gap #1: o schedule padrão (pipeline_schedule_default.yaml) inclui todos os
+# 4 estágios. Se uma entrada estiver ausente, o monitor executa aquele estágio
+# em modo legacy (a cada tick), garantindo que nenhum estágio fique silencioso.
 recurring:
-  - id: review_loop           # str, alphanum + _- obrigatório
-    action: review            # review | implement | pr_review
-    cron: "*/5 * * * *"       # 5-field cron expression em UTC
-    enabled: true             # false congela a entrada sem deletar
-    last_run_at: null         # ISO-8601 UTC; null = nunca rodou
-    replay_all: false         # true = replay cada slot missed no downtime
-
-oneshot:
-  - id: oneshot-impl-99
+  - id: classify_loop         # str, alphanum + _- obrigatório
+    action: classify          # classify | review | implement | pr_review
+    cron: "*/2 * * * *"       # 5-field cron expression em UTC
+    enabled: true
+    last_run_at: null
+    replay_all: false
+  - id: review_loop
+    action: review
+    cron: "*/3 * * * *"
+    enabled: true
+    last_run_at: null
+    replay_all: false
+  - id: implement_loop
     action: implement
-    target_issue: 99          # contexto; não modifica o pipeline hoje
-    run_at: "2026-05-06T18:00:00Z"
-    completed: false
+    cron: "*/5 * * * *"
+    enabled: true
+    last_run_at: null
+    replay_all: false
+  - id: pr_review_loop
+    action: pr_review
+    cron: "*/4 * * * *"
+    enabled: true
+    last_run_at: null
+    replay_all: false
+
+oneshot: []
 ```
 
 ### `CronEntry` (SQLite)
@@ -316,15 +352,28 @@ async def test_monitor_identity_shard():
 # Iniciar o pipeline
 /pipeline start
 
-# Verificar status
+# Verificar status (inclui gh_errors e claude_errors — gap #18)
 /pipeline status
 
 # Forçar um tick para depuração
 /pipeline tick
 
+# Desbloquear uma issue travada (remove ~batch: e ~by:* — gap #34)
+/pipeline reset 42
+/pipeline reset #42
+
 # Parar
 /pipeline stop
 ```
+
+### Autostart via env var (gap #3)
+
+```bash
+# Iniciar o pipeline automaticamente ao subir o DEILE
+DEILE_PIPELINE_AUTOSTART=1 python3 deile.py
+```
+
+O monitor é iniciado em background imediatamente após `agent.initialize()`, usando o mesmo `review_callback` wired ao agente (gap #2). O `/pipeline stop` ainda funciona normalmente para parar o loop.
 
 ### Agendamento via LLM (ex.: Discord → DEILE)
 
@@ -404,10 +453,13 @@ await cron_runner.start()
 | Contador | Significado |
 |---|---|
 | `ticks` | Total de ticks executados desde start |
+| `issues_classified` | Issues que passaram pelo estágio 0 com sucesso |
 | `issues_reviewed` | Issues que passaram pelo estágio 1 com sucesso |
 | `issues_implemented` | Issues que passaram pelo estágio 2 com sucesso |
 | `prs_reviewed` | PRs que passaram pelo estágio 3 com sucesso |
-| `errors` | Ticks que levantaram exceção não-esperada |
+| `errors` | Total de erros (soma de gh_errors + claude_errors + outros) |
+| `gh_errors` | Erros de `GhCommandError` (gh CLI falhou) — gap #18 |
+| `claude_errors` | Erros de `ClaudeDispatcher` (rc != 0) — gap #18 |
 | `catchup_runs` | Runs de catch-up executados no startup |
 | `scheduled_runs` | Runs de schedule executados em ticks normais |
 
@@ -432,6 +484,8 @@ await cron_runner.start()
 - **Sem `config/pipeline_schedule_<id>.yaml`:** monitor cai para modo legacy "todas as ações a cada tick".
 - **Sem `DEILE_CRON_DB_PATH`:** CronStore criado em `data/cron.db`; diretório auto-criado.
 - **Tools não registradas automaticamente:** `pipeline_tool`, `pipeline_schedule_tool`, `cron_*` requerem registro explícito via `register_tool(...)`. O `auto_discover()` existente não os cobre — o daemon/bootstrap deve registrá-los.
+- **`use_pid_lock` agora `True` por padrão (gap #27):** em deploys que rodavam sem PID lock, isso pode levantar `LockHeldError` se dois processos subirem simultâneamente. Para desabilitar explicitamente: `PipelineConfig(use_pid_lock=False)`.
+- **`compute_batch_id` alterado (gap #10):** o batch ID agora é derivado do número da issue/PR (não do título), eliminando colisões entre issues com o mesmo título. Batch IDs existentes no GitHub continuarão válidos; apenas novos claims usarão o novo cálculo.
 
 ### Deploy de múltiplos monitores
 
@@ -476,10 +530,14 @@ DEILE_CRON_AUTOSTART=1
 | Issue não é claimed | `batch_id` já presente ou `identity.owns()` retorna False | Verificar `DEILE_PIPELINE_SHARD_*`; inspecionar labels da issue via `gh issue view` |
 | `claude -p` timeout | Log `claude -p timed out after 1800s` | Issue/PR muito complexo; aumentar `ClaudeDispatcher.timeout_seconds` |
 | PR não aberta após implementação | `_extract_pr_url` não encontrou URL no stdout | Claude Code não abriu PR; inspecionar logs do subprocess em `result.stderr` |
-| Worktrees acumulando em disco | Não há cleanup automático | Rodar `git worktree prune` + `git worktree list` manualmente na raiz do repo |
+| Worktrees acumulando em disco | Não há cleanup automático | Rodar `git worktree prune` + `git worktree list` manualmente na raiz do repo; ou usar `WorktreeManager.cleanup_merged_branches()` (gap #26) |
 | `CronStore` falha ao abrir | `data/` não existe ou sem permissão | Verificar `DEILE_CRON_DB_PATH`; criar diretório manualmente |
 | Entry cron nunca dispara | `enabled=0` ou `next_fire_at` no passado sem advance | Usar `cron_list` tool para inspecionar; `cron_delete` + `cron_create` para re-agendar |
-| DMs não chegam | `DEILE_PIPELINE_NOTIFY_USER_ID` não configurado ou `deilebot` offline | Verificar env var; checar log do notifier |
+| DMs não chegam | `DEILE_PIPELINE_NOTIFY_USER_ID` não configurado ou `deilebot` offline | Verificar env var; checar log `DiscordNotifier: no DM function available` (gap #19) |
+| Issue travada (stuck) em `~batch:` ou `~by:` | Monitor caiu no meio de um stage | Usar `/pipeline reset <issue#>` ou `pipeline(action="reset", target=N)` (gap #34) |
+| Pipeline iniciado mas nada acontece | Nenhum estágio no schedule estava `due` E stages sem entry no schedule | Confirmar que `config/pipeline_schedule_default.yaml` tem os 4 estágios (gap #1); ou deletar o arquivo para modo legacy |
+| Issue com `security` label não entra no pipeline | `classifiable_labels` não incluía `security` | Gap #4 corrigido; label `security` incluído por padrão em `PipelineConfig.classifiable_labels` |
+| `stats.gh_errors` > 0 | Erros de `gh` CLI; ver logs `ERROR` | Verificar token GitHub, rate limits, e conectividade; checar `gh auth status` |
 
 ---
 

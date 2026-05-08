@@ -124,10 +124,27 @@ class ClaudeDispatcher:
                 cmd=tuple(cmd),
             )
         duration = loop.time() - start
+        stderr_text = stderr_b.decode("utf-8", "replace")
+        rc = proc.returncode or 0
+        if rc != 0 and self.prefer_subscription_auth:
+            # When we stripped API keys to prefer subscription auth and the
+            # subprocess failed, check for auth-related error messages so we
+            # can surface a clear warning instead of leaving the operator
+            # guessing about the root cause.
+            _auth_hints = ("authentication", "unauthorized", "api key", "login", "sign in", "auth")
+            if any(h in stderr_text.lower() for h in _auth_hints):
+                logger.warning(
+                    "claude -p failed with a possible auth error and "
+                    "prefer_subscription_auth=True (ANTHROPIC_API_KEY was stripped). "
+                    "If you are not logged in with a Claude Pro/Max subscription, "
+                    "set prefer_subscription_auth=False or run `claude login`. "
+                    "stderr: %s",
+                    stderr_text.strip()[:300],
+                )
         return ClaudeRunResult(
-            returncode=proc.returncode or 0,
+            returncode=rc,
             stdout=stdout_b.decode("utf-8", "replace"),
-            stderr=stderr_b.decode("utf-8", "replace"),
+            stderr=stderr_text,
             duration_seconds=duration,
             cmd=tuple(cmd),
         )

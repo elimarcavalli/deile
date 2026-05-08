@@ -255,6 +255,42 @@
 
 ---
 
+## Decisão #21 — Pipeline silenciosamente quebrado (#129): schedule incompleto + fallback gaps
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 patch |
+| Pilar dono | 02-Arquitetura, 09-Configuração |
+| Decisão | O schedule padrão (`config/pipeline_schedule_default.yaml`) deve incluir todos os 4 estágios (classify, review, implement, pr_review). Adicionalmente, o `tick()` executa fallback legacy para qualquer estágio habilitado que tenha entradas `recurring` no schedule mas não inclua aquele estágio específico. Estágios ausentes do schedule não ficam silenciosos. |
+| Evidência | `config/pipeline_schedule_default.yaml` (4 entradas); `deile/orchestration/pipeline/monitor.py:tick()` (fallback block com `scheduled_actions` check) |
+| Motivação | O bug em #129: o schedule só tinha `review` → classify/implement/pr_review nunca rodavam, mas o operador via `pipeline running` e não recebia nenhum erro. A dupla solução (schedule completo + fallback) é defense-in-depth — se o operador editar o schedule e remover uma entrada, o stage ainda roda; não silencia. |
+
+---
+
+## Decisão #22 — Atomicidade de Stage 1 e rollback para nova em caso de falha
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 patch |
+| Pilar dono | 03-Princípios (Orquestração com rollback) |
+| Decisão | Stage 1 (`_review_one_new_issue`) usa try/except/finally onde `review_failed = True` no except aciona, no finally, uma transição de rollback `em_revisao → nova`. Isso garante que uma falha (gh error, callback error, etc.) não deixa a issue presa em `~workflow:em_revisao`. |
+| Evidência | `deile/orchestration/pipeline/monitor.py:_review_one_new_issue()` |
+| Motivação | Issues presas em `em_revisao` bloqueiam o monitor indefinidamente (a issue nunca é reclamável por outro agente). O rollback é best-effort (o `try` interno no finally não propaga) mas garante a melhor tentativa de desbloquear. |
+
+---
+
+## Decisão #23 — Batch ID derivado do número (não do título) para eliminar colisões
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 patch |
+| Pilar dono | 02-Arquitetura |
+| Decisão | `compute_batch_id_for_number(kind, number)` gera o batch ID como SHA-256 de `"kind:number"` (e.g. `"issue:42"`). Substitui `compute_batch_id(title)` que usava o título — sujeito a colisões entre issues com mesmo título (duplicatas, re-criações). |
+| Evidência | `deile/orchestration/pipeline/github_client.py:compute_batch_id_for_number`, `claim_with_batch` |
+| Motivação | Dois issues com títulos idênticos receberiam o mesmo batch ID, permitindo que um monitor claim a issue "errada" silenciosamente. Com o número, o ID é sempre único dentro do repositório. |
+
+---
+
 ## Como adicionar uma nova decisão
 
 | # | Passo |

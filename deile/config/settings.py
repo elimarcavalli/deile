@@ -34,6 +34,7 @@ _DEILE_DEPRECATED_ENV_VARS: Dict[str, str] = {
     "DEILE_PIPELINE_NOTIFY_USER_ID": "pipeline.notify_user_id",
     "DEILE_PIPELINE_POLL_INTERVAL": "pipeline.poll_interval",
     "DEILE_PIPELINE_CLAUDE_TIMEOUT": "pipeline.claude_timeout",
+    "DEILE_PIPELINE_AUTOSTART": "pipeline.autostart",
     "DEILE_CRON_DB_PATH": "cron.db_path",
     "DEILE_CRON_POLL_INTERVAL": "cron.poll_interval",
     "DEILE_DEBUG": "debug.enabled",
@@ -252,6 +253,7 @@ class Settings:
     pipeline_notify_user_id: Optional[str] = None
     pipeline_poll_interval: int = 60
     pipeline_claude_timeout: int = 1800
+    pipeline_autostart: bool = False  # gap #3: set True via DEILE_PIPELINE_AUTOSTART
 
     # Cron
     cron_db_path: Optional[Path] = None
@@ -521,6 +523,7 @@ _JSON_FIELD_MAP: Dict[str, str] = {
     "pipeline.poll_interval": "pipeline_poll_interval",
     "pipeline.claude_timeout": "pipeline_claude_timeout",
     "pipeline.notify_user_id": "pipeline_notify_user_id",
+    "pipeline.autostart": "pipeline_autostart",
     "cron.db_path": "cron_db_path",
     "cron.poll_interval": "cron_poll_interval",
 }
@@ -639,6 +642,10 @@ def _apply_env_overrides(settings: "Settings") -> None:
                 setattr(settings, attr, int(raw))
             except ValueError:
                 pass
+
+    raw = env("DEILE_PIPELINE_AUTOSTART")
+    if raw:
+        settings.pipeline_autostart = raw.lower().strip() in ("1", "true", "yes", "on")
 
     # cron
     raw = env("DEILE_CRON_DB_PATH")

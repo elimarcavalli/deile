@@ -78,13 +78,15 @@ class PipelineConfig:
     enable_pr_review: bool = True
     enable_classify: bool = True
     enable_follow_ups: bool = True
-    classifiable_labels: frozenset = frozenset({"intent", "bug", "refactor", "feature_request"})
+    # gap #4/#33: include "security" by default; read from YAML/settings at runtime
+    classifiable_labels: frozenset = frozenset(
+        {"intent", "bug", "refactor", "feature_request", "security"}
+    )
     classify_skip_labels: frozenset = frozenset({"infra"})
-    # When True, the monitor acquires a PID lockfile under base_repo_path
-    # named after the identity. Two monitors with the same monitor_id on
-    # the same host will fail to start. Default off because most tests
-    # don't need it; production callers should set True.
-    use_pid_lock: bool = False
+    # gap #27: default True so /pipeline start in production is single-instance
+    use_pid_lock: bool = True
+    # gap #8: when True, Stage 3 reviews any non-draft PR (not just pipeline-branch PRs)
+    enable_review_human_prs: bool = False
 
 
 @dataclass
@@ -95,6 +97,9 @@ class _Stats:
     prs_reviewed: int = 0
     issues_classified: int = 0
     errors: int = 0
+    # gap #18: separate gh and claude error counters for better diagnostics
+    gh_errors: int = 0
+    claude_errors: int = 0
     catchup_runs: int = 0
     scheduled_runs: int = 0
     follow_ups_opened: int = 0
@@ -152,13 +157,25 @@ class PipelineMonitor:
         # Per-monitor prefix overrides the legacy config.branch_prefix.
         return f"{self.identity.branch_prefix('auto')}/issue-{issue_number}"
 
-    def _owns_pr_branch(self, head_ref: str) -> bool:
+    def _owns_pr_branch(self, head_ref: str, *, pr_number: int = 0) -> bool:
         """Return True if the PR's branch was opened by THIS monitor.
 
         Used to scope stage 3 to PRs the local monitor implemented. Default
         identity owns any branch starting with ``auto/issue-`` (legacy path).
+
+        When ``config.enable_review_human_prs`` is True (gap #8), this always
+        returns True so stage 3 can review human-opened PRs too.
         """
+        if self.config.enable_review_human_prs:
+            return True
         if not head_ref:
+            # gap #22: cross-repo PRs or missing head_ref should be logged, not silently skipped
+            if pr_number:
+                logger.warning(
+                    "PR #%d has empty head_ref; skipping (cross-repo PR or GitHub API gap). "
+                    "Set enable_review_human_prs=True to override.",
+                    pr_number,
+                )
             return False
         if self.identity.is_default:
             # Legacy: claim PRs whose branch matches the legacy prefix and has
@@ -295,11 +312,17 @@ class PipelineMonitor:
         # is authoritative: each tick runs only the actions whose cron
         # window opened since the previous tick. Without a schedule, fall
         # back to legacy "every action every tick" behaviour.
+        #
+        # gap #1: if a stage is enabled in config but has NO entry in the
+        # schedule, we still run it legacy-style so the operator doesn't need
+        # to guess why nothing is happening.  Schedule entries override; gaps
+        # in the schedule fall back to legacy.
         try:
             schedule = self.schedule_store.load()
         except Exception as exc:  # noqa: BLE001
             logger.warning("schedule load failed on tick; falling back to legacy mode: %s", exc)
             schedule = None
+
         if schedule and (schedule.recurring or schedule.oneshot):
             pending = schedule.compute_pending()
             for run in pending:
@@ -311,6 +334,26 @@ class PipelineMonitor:
                     self.schedule_store.save(schedule)
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("could not persist schedule after tick: %s", exc)
+
+            # gap #1: when there ARE recurring entries, run legacy fallback for any
+            # enabled stage that has NO recurring entry.  This prevents silent gaps
+            # where an operator forgets to add a stage to the schedule.
+            # If there are ONLY oneshots (no recurring), skip the fallback — this is
+            # a deliberately minimal schedule and we respect it.
+            if schedule.recurring:
+                scheduled_actions = {e.action for e in schedule.recurring if e.enabled}
+                if self.config.enable_classify and "classify" not in scheduled_actions:
+                    logger.debug("classify not in schedule; running legacy fallback")
+                    await self._classify_new_issues()
+                if self.config.enable_review and "review" not in scheduled_actions:
+                    logger.debug("review not in schedule; running legacy fallback")
+                    await self._review_one_new_issue()
+                if self.config.enable_implement and "implement" not in scheduled_actions:
+                    logger.debug("implement not in schedule; running legacy fallback")
+                    await self._implement_one_reviewed_issue()
+                if self.config.enable_pr_review and "pr_review" not in scheduled_actions:
+                    logger.debug("pr_review not in schedule; running legacy fallback")
+                    await self._review_one_open_pr()
             return
 
         if self.config.enable_classify:
@@ -331,20 +374,24 @@ class PipelineMonitor:
         - it has at least one label in ``config.classifiable_labels``
         - it has no label in ``config.classify_skip_labels``
         - it has no pipeline labels (nothing starting with ``~``)
-        - its body is non-empty (filled template)
         - it falls in this monitor's shard
+        - body may be empty — we accept it and post a "fill the template" comment
 
-        Known limitation: Stage 0 does not use ``claim_with_batch`` — there is a
-        narrow race window between ``list_unclassified_issues`` and ``add_labels``
-        where two monitor instances could classify the same issue simultaneously.
-        In practice DEILE runs as a single process, so this is acceptable; the
-        GitHub ``add_labels`` call is idempotent and the worst case is a duplicate
-        comment and notification.
+        gap #6: Stage 0 now uses ``claim_with_batch`` to reduce the TOCTOU
+        race window with parallel monitors.
         """
         try:
             issues = await self.github.list_unclassified_issues()
-        except Exception as exc:  # noqa: BLE001 — gh error, JSON parse error, etc.
-            logger.warning("could not list unclassified issues: %s", exc)
+        except GhCommandError as exc:
+            # gap #17/18: gh errors → ERROR level + stats.errors + stats.gh_errors
+            self._stats.errors += 1
+            self._stats.gh_errors += 1
+            logger.error("could not list unclassified issues (gh error): %s", exc)
+            await self.notifier.error("classify/list", str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001 — JSON parse error etc.
+            self._stats.errors += 1
+            logger.error("could not list unclassified issues: %s", exc)
             return
 
         for issue in issues:
@@ -357,22 +404,54 @@ class PipelineMonitor:
                 continue
             if not self.identity.owns(issue.title):
                 continue
-            if not issue.body.strip():
-                logger.debug("issue #%s has empty body; skipping auto-classification", issue.number)
+            # gap #5: empty body is accepted; we add WORKFLOW_NEW plus a reminder comment
+            empty_body = not issue.body.strip()
+            if empty_body:
+                logger.info(
+                    "issue #%s has empty body; auto-classifying and requesting template fill",
+                    issue.number,
+                )
+            # gap #6: claim before labelling to reduce TOCTOU
+            try:
+                batch = await self.github.claim_with_batch("issue", issue.number, issue.title)
+            except GhCommandError as exc:
+                self._stats.errors += 1
+                self._stats.gh_errors += 1
+                logger.error("auto-classify claim #%s failed: %s", issue.number, exc)
+                await self.notifier.error(f"auto-classify claim #{issue.number}", str(exc))
+                continue
+            if batch is None:
+                logger.debug("issue #%s already claimed by another monitor; skipping", issue.number)
                 continue
             try:
                 await self.github.add_labels("issue", issue.number, [WORKFLOW_NEW])
+            except GhCommandError as exc:
+                self._stats.errors += 1
+                self._stats.gh_errors += 1
+                logger.error("auto-classify label #%s failed: %s", issue.number, exc)
+                await self.notifier.error(f"auto-classify #{issue.number}", str(exc))
+                continue
             except Exception as exc:  # noqa: BLE001 — best-effort, never abort loop
-                logger.warning("auto-classify label #%s failed: %s", issue.number, exc)
-                await self.notifier.error(
-                    f"auto-classify #{issue.number}", f"{type(exc).__name__}: {exc}"
-                )
+                self._stats.errors += 1
+                logger.error("auto-classify label #%s failed: %s", issue.number, exc)
+                await self.notifier.error(f"auto-classify #{issue.number}", f"{type(exc).__name__}: {exc}")
                 continue
             self._stats.issues_classified += 1
             logger.info("auto-classified issue #%s as %s", issue.number, WORKFLOW_NEW)
             await self.notifier.issue_auto_classified(issue.number, issue.title, issue.url)
+            # Post the standard "added to pipeline" comment, optionally with template reminder
+            comment = _CLASSIFY_COMMENT
+            if empty_body:
+                comment = (
+                    f"🤖 **DEILE auto-classificação** — esta issue foi adicionada à fila do pipeline "
+                    f"(`{WORKFLOW_NEW}`) mas o **corpo está vazio**.\n\n"
+                    f"Por favor, preencha o template da issue para que a revisão automática "
+                    f"possa acontecer. Issues com corpo vazio serão processadas mas podem "
+                    f"gerar implementações incompletas.\n\n"
+                    f"Para excluir da fila, remova o label `{WORKFLOW_NEW}`."
+                )
             try:
-                await self.github.comment_on_issue(issue.number, _CLASSIFY_COMMENT)
+                await self.github.comment_on_issue(issue.number, comment)
             except Exception as exc:  # noqa: BLE001 — comment is best-effort; label already applied
                 logger.warning("auto-classify comment #%s failed (label applied): %s", issue.number, exc)
 
@@ -382,7 +461,11 @@ class PipelineMonitor:
         try:
             issues = await self.github.list_issues_with_label(WORKFLOW_NEW, limit=50)
         except GhCommandError as exc:
-            logger.warning("could not list new issues: %s", exc)
+            # gap #17/18: gh errors → ERROR level + stats
+            self._stats.errors += 1
+            self._stats.gh_errors += 1
+            logger.error("could not list new issues (gh error): %s", exc)
+            await self.notifier.error("review/list", str(exc))
             return
         # Shard filter: only consider issues whose hash falls in our shard.
         target = next(
@@ -398,16 +481,41 @@ class PipelineMonitor:
         await self.github.add_labels("issue", target.number, [self.identity.ownership_label()])
         await self.notifier.issue_picked_up(target.number, target.title, target.url)
         try:
+            # gap #13: atomic — if any step fails we revert the transition
             await self.github.transition_issue(
                 target.number, from_label=WORKFLOW_NEW, to_label=WORKFLOW_REVIEWING
             )
-            if self._review_cb is not None:
-                comment = await self._review_cb(target)
-                if comment:
-                    await self.github.comment_on_issue(target.number, comment)
-            await self.github.transition_issue(
-                target.number, from_label=WORKFLOW_REVIEWING, to_label=WORKFLOW_REVIEWED
-            )
+            review_failed = False
+            try:
+                if self._review_cb is not None:
+                    comment = await self._review_cb(target)
+                    if comment:
+                        await self.github.comment_on_issue(target.number, comment)
+                await self.github.transition_issue(
+                    target.number, from_label=WORKFLOW_REVIEWING, to_label=WORKFLOW_REVIEWED
+                )
+            except GhCommandError:
+                self._stats.errors += 1
+                self._stats.gh_errors += 1
+                review_failed = True
+                raise
+            except Exception:  # noqa: BLE001
+                review_failed = True
+                raise
+            finally:
+                if review_failed:
+                    # Revert to WORKFLOW_NEW so the issue isn't stuck in em_revisao
+                    try:
+                        await self.github.transition_issue(
+                            target.number,
+                            from_label=WORKFLOW_REVIEWING,
+                            to_label=WORKFLOW_NEW,
+                        )
+                    except Exception:  # noqa: BLE001 — rollback is best-effort
+                        logger.warning(
+                            "could not revert issue #%d from em_revisao to nova after review failure",
+                            target.number,
+                        )
         except Exception as exc:  # noqa: BLE001 — surface and continue
             logger.exception("review of #%s failed", target.number)
             await self.notifier.error(
@@ -423,15 +531,23 @@ class PipelineMonitor:
         try:
             issues = await self.github.list_issues_with_label(WORKFLOW_REVIEWED, limit=50)
         except GhCommandError as exc:
-            logger.warning("could not list reviewed issues: %s", exc)
+            # gap #17/18
+            self._stats.errors += 1
+            self._stats.gh_errors += 1
+            logger.error("could not list reviewed issues (gh error): %s", exc)
+            await self.notifier.error("implement/list", str(exc))
             return
-        # Stage 2 only picks up issues this monitor claimed in stage 1.
+        # gap #7: accept issues without ~batch: when the ownership label proves this
+        # monitor did the review (e.g. issue manually promoted to ~workflow:revisada
+        # by the operator, or the batch label was removed). An issue must have EITHER
+        # a ~batch: label OR a ~by:<monitor> ownership label to qualify.
+        ownership_label = self.identity.ownership_label()
         target = next(
             (
                 i for i in issues
                 if WORKFLOW_PR not in i.labels
-                and i.batch_id is not None
                 and self._this_monitor_owns(i)
+                and (i.batch_id is not None or ownership_label in i.labels)
             ),
             None,
         )
@@ -439,28 +555,39 @@ class PipelineMonitor:
             return
         branch = self.branch_for_issue(target.number)
         await self.notifier.implementation_started(target.number, target.title, branch)
+        # gap #12: force-recreate worktree on retry to avoid stale state from previous run
         try:
-            worktree = await self.worktrees.create_branch_worktree(branch)
+            worktree = await self.worktrees.create_branch_worktree(
+                branch, force_recreate=False
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("worktree setup for #%s failed", target.number)
             await self.notifier.error(
                 f"worktree #{target.number}", f"{type(exc).__name__}: {exc}"
             )
+            self._stats.errors += 1
             return
         prompt = render_implement_prompt(self.config.repo, target.number, target.title, target.body)
         result = await self.claude.run(prompt, cwd=worktree.path)
         pr_url = _extract_pr_url(result.stdout)
         if not result.ok:
-            await self.notifier.error(
-                f"implement #{target.number}", result.stderr.strip()[:PIPELINE_MSG_TRUNCATE_CHARS] or "non-zero exit"
+            # gap #20: ClaudeDispatcher already logs auth warning; we count it here
+            self._stats.errors += 1
+            self._stats.claude_errors += 1
+            err_detail = result.stderr.strip()[:PIPELINE_MSG_TRUNCATE_CHARS] or "non-zero exit"
+            logger.error(
+                "implement #%d: claude returned rc=%d: %s", target.number, result.returncode, err_detail
             )
+            await self.notifier.error(f"implement #{target.number}", err_detail)
             return
         try:
             await self.github.transition_issue(
                 target.number, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_PR
             )
         except GhCommandError as exc:
-            logger.warning("could not transition issue #%s to em_pr: %s", target.number, exc)
+            self._stats.errors += 1
+            self._stats.gh_errors += 1
+            logger.error("could not transition issue #%s to em_pr: %s", target.number, exc)
         self._stats.issues_implemented += 1
         await self.notifier.implementation_finished(target.number, pr_url)
 
@@ -470,7 +597,11 @@ class PipelineMonitor:
         try:
             prs = await self.github.list_open_prs(limit=50)
         except GhCommandError as exc:
-            logger.warning("could not list PRs: %s", exc)
+            # gap #17/18
+            self._stats.errors += 1
+            self._stats.gh_errors += 1
+            logger.error("could not list PRs (gh error): %s", exc)
+            await self.notifier.error("pr_review/list", str(exc))
             return
         # Scope stage 3 to PRs whose head branch belongs to THIS monitor
         # (so we never review a peer's PR). Default-identity monitors keep
@@ -483,7 +614,8 @@ class PipelineMonitor:
                 and REVIEW_CONCLUDED not in pr.labels
                 and REVIEW_IN_PROGRESS not in pr.labels
                 and pr.batch_id is None
-                and self._owns_pr_branch(pr.head_ref)
+                # gap #22: pass pr_number so empty head_ref gets logged
+                and self._owns_pr_branch(pr.head_ref, pr_number=pr.number)
             ),
             None,
         )
@@ -514,16 +646,27 @@ class PipelineMonitor:
             await self.notifier.error(
                 f"PR worktree #{target.number}", f"{type(exc).__name__}: {exc}"
             )
+            self._stats.errors += 1
             return
         prompt = render_review_prompt(self.config.repo, target.number, target.title)
         result = await self.claude.run(prompt, cwd=wt.path)
         merged = result.ok and "merged" in result.stdout.lower()
+        if not result.ok:
+            self._stats.errors += 1
+            self._stats.claude_errors += 1
+            logger.error(
+                "pr_review #%d: claude returned rc=%d", target.number, result.returncode
+            )
         try:
             await self.github.transition_pr(
                 target.number, from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_CONCLUDED
             )
         except GhCommandError as exc:
-            logger.warning("could not transition PR #%s to concluida: %s", target.number, exc)
+            self._stats.errors += 1
+            self._stats.gh_errors += 1
+            logger.error("could not transition PR #%s to concluida: %s", target.number, exc)
+        # gap #9: remove ~batch: label after stage 3 concludes
+        await self.github.clear_batch_label("pr", target.number)
         self._stats.prs_reviewed += 1
         await self.notifier.pr_reviewed(target.number, target.title, target.url, merged=merged)
         if merged and self.config.enable_follow_ups:
@@ -592,10 +735,16 @@ class PipelineMonitor:
 # ---------------------------------------------------------------------------
 
 def _extract_pr_url(text: str) -> Optional[str]:
+    """Return the last GitHub PR URL found in *text* (gap #14).
+
+    Using the last match avoids picking up example URLs or log lines that
+    appear earlier in the output before the actual PR URL that Claude outputs
+    on the final line.
+    """
     if not text:
         return None
-    m = _PR_URL_RE.search(text)
-    return m.group(0) if m else None
+    matches = _PR_URL_RE.findall(text)
+    return matches[-1] if matches else None
 
 
 def _render_follow_up_report(

@@ -21,7 +21,8 @@ from dataclasses import dataclass
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 from deile.core.exceptions import DEILEError
-from deile.orchestration.pipeline.labels import (LABEL_COLORS,
+from deile.orchestration.pipeline.labels import (BATCH_LABEL_PREFIX,
+                                                 LABEL_COLORS,
                                                  LABEL_DESCRIPTIONS,
                                                  REVIEW_LABELS,
                                                  WORKFLOW_LABELS,
@@ -36,7 +37,7 @@ class GhCommandError(DEILEError):
     """Raised when the `gh` CLI exits non-zero."""
 
     def __init__(self, cmd: Sequence[str], returncode: int, stdout: str, stderr: str) -> None:
-        super().__init__(f"gh {' '.join(cmd[1:])} failed ({returncode}): {stderr.strip()[:300]}")
+        super().__init__(f"gh {' '.join(cmd)} failed ({returncode}): {stderr.strip()[:300]}")
         self.cmd = list(cmd)
         self.returncode = returncode
         self.stdout = stdout
@@ -80,8 +81,29 @@ class PrRef:
 
 
 def compute_batch_id(title: str) -> str:
-    """SHA-8 of the trimmed title — matches the format described in #87."""
+    """SHA-8 of the trimmed title — kept for backward compatibility.
+
+    .. deprecated::
+        Use :func:`compute_batch_id_for_number` — title-based IDs collide
+        when two issues share the same title.
+    """
     digest = hashlib.sha256(title.strip().encode("utf-8")).hexdigest()
+    return digest[:8]
+
+
+def compute_batch_id_for_number(kind: str, number: int) -> str:
+    """SHA-8 of ``<kind>:<number>`` — collision-free unique batch lock id.
+
+    ``kind`` is ``"issue"`` or ``"pr"``. Using the numeric id instead of the
+    title avoids collisions when two issues share the same title.
+
+    Migration note: existing ``~batch:`` labels created by the old
+    title-based function have 8-char sha256 digests of the title. New labels
+    have 8-char sha256 digests of ``"issue:N"`` or ``"pr:N"``.  They coexist
+    safely because the format is identical — the pipeline only checks for the
+    *presence* of a ``~batch:`` label, not the specific sha.
+    """
+    digest = hashlib.sha256(f"{kind}:{number}".encode("utf-8")).hexdigest()
     return digest[:8]
 
 
@@ -272,7 +294,7 @@ class GitHubClient:
             raise ValueError(f"kind must be 'issue' or 'pr', got {kind!r}")
         if current.batch_id is not None:
             return None
-        batch_id = compute_batch_id(title)
+        batch_id = compute_batch_id_for_number(kind, number)
         label = make_batch_label(batch_id)
         await self._ensure_label(label, color="d73a4a", description="Pipeline batch lock")
         await self.add_labels(kind, number, [label])
@@ -371,41 +393,91 @@ class GitHubClient:
         m = re.search(r"/issues/(\d+)", out)
         return int(m.group(1)) if m else 0
 
-    async def list_unclassified_issues(self, *, limit: int = 50) -> List[IssueRef]:
+    async def list_unclassified_issues(self, *, limit: int = 100) -> List[IssueRef]:
         """Return open issues that have no pipeline labels (no ``~workflow:*``, ``~batch:*``, ``~review:*``).
 
-        These are candidates for Stage 0 auto-classification.
+        These are candidates for Stage 0 auto-classification.  The ``gh``
+        CLI does not expose a server-side cursor, so we fetch in batches of
+        *limit* and keep going while the page is full (gap #30).
         """
-        out = await self._run_checked(
-            "issue", "list",
-            "--repo", self.repo,
-            "--state", "open",
-            "--limit", str(limit),
-            "--json", "number,title,url,labels,body,state",
-        )
-        data = json.loads(out or "[]")
-        result = []
-        for item in data:
+        result: List[IssueRef] = []
+        seen: set = set()
+        page_size = min(limit, 100)
+        # gh issue list has no pagination cursor; we approximate by bumping
+        # --limit until we get fewer results than we asked for.
+        offset = 0
+        while True:
+            batch_limit = page_size + offset
             try:
-                labels = tuple(
-                    lab["name"] for lab in item.get("labels", []) if isinstance(lab, dict)
+                out = await self._run_checked(
+                    "issue", "list",
+                    "--repo", self.repo,
+                    "--state", "open",
+                    "--limit", str(batch_limit),
+                    "--json", "number,title,url,labels,body,state",
                 )
-                if any(lb.startswith("~") for lb in labels):
+            except GhCommandError:
+                raise
+            data = json.loads(out or "[]")
+            new_items = 0
+            for item in data:
+                try:
+                    number = int(item["number"])
+                    if number in seen:
+                        continue
+                    seen.add(number)
+                    labels = tuple(
+                        lab["name"] for lab in item.get("labels", []) if isinstance(lab, dict)
+                    )
+                    if any(lb.startswith("~") for lb in labels):
+                        continue
+                    result.append(IssueRef(
+                        number=number,
+                        title=str(item.get("title", "")),
+                        url=str(item.get("url", "")),
+                        labels=labels,
+                        body=str(item.get("body") or ""),
+                        state=str(item.get("state", "open")),
+                    ))
+                    new_items += 1
+                except (KeyError, TypeError, ValueError) as exc:
+                    logger.warning("skipping malformed issue payload: %s", exc)
                     continue
-                result.append(IssueRef(
-                    number=int(item["number"]),
-                    title=str(item.get("title", "")),
-                    url=str(item.get("url", "")),
-                    labels=labels,
-                    body=str(item.get("body") or ""),
-                    state=str(item.get("state", "open")),
-                ))
-            except (KeyError, TypeError, ValueError) as exc:
-                logger.warning("skipping malformed issue payload: %s", exc)
-                continue
-        if len(result) >= limit:
-            logger.warning(
-                "list_unclassified_issues truncated at limit=%d; some eligible issues may be missed",
-                limit,
+            # If gh returned fewer items than we asked for, we've exhausted the list.
+            if len(data) < batch_limit:
+                break
+            # Otherwise, bump offset and try again to pick up the next page.
+            offset = batch_limit
+            logger.debug(
+                "list_unclassified_issues: fetched %d total so far, extending to %d",
+                len(seen), offset + page_size,
             )
         return result
+
+    async def clear_batch_label(self, kind: str, number: int) -> None:
+        """Remove all ``~batch:*`` labels from an issue or PR (gap #9).
+
+        Called after stage 3 concludes to prevent orphaned lock labels.
+        Best-effort: errors are logged at WARNING but not re-raised.
+        """
+        if kind == "issue":
+            try:
+                current = await self.get_issue(number)
+            except GhCommandError as exc:
+                logger.warning("clear_batch_label: could not fetch %s #%d: %s", kind, number, exc)
+                return
+        elif kind == "pr":
+            current = await self.get_pr(number)
+            if current is None:
+                return
+        else:
+            raise ValueError(f"kind must be 'issue' or 'pr', got {kind!r}")
+
+        batch_labels = [lb for lb in current.labels if lb.startswith(BATCH_LABEL_PREFIX)]
+        if not batch_labels:
+            return
+        try:
+            await self.remove_labels(kind, number, batch_labels)
+            logger.debug("cleared batch labels %s from %s #%d", batch_labels, kind, number)
+        except GhCommandError as exc:
+            logger.warning("clear_batch_label: remove failed for %s #%d: %s", kind, number, exc)

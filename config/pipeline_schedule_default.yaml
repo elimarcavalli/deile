@@ -1,14 +1,26 @@
 recurring:
-- id: r1
+- id: classify_loop
+  action: classify
+  cron: '*/2 * * * *'
+  enabled: true
+  last_run_at: null
+  replay_all: false
+- id: review_loop
   action: review
+  cron: '*/3 * * * *'
+  enabled: true
+  last_run_at: null
+  replay_all: false
+- id: implement_loop
+  action: implement
   cron: '*/5 * * * *'
   enabled: true
   last_run_at: null
   replay_all: false
-oneshot:
-- id: oneshot-implement-1778090400
-  action: implement
-  run_at: '2026-05-06T18:00:00Z'
-  target_issue: 99
-  target_pr: null
-  completed: false
+- id: pr_review_loop
+  action: pr_review
+  cron: '*/4 * * * *'
+  enabled: true
+  last_run_at: null
+  replay_all: false
+oneshot: []

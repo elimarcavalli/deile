@@ -63,6 +63,10 @@ def _make_monitor_full(
     github.comment_on_issue = AsyncMock()
     github.comment_on_pr = AsyncMock()
     github.list_unclassified_issues = AsyncMock(return_value=[])
+    github.get_pr_body = AsyncMock(return_value="")
+    github.list_pr_comments = AsyncMock(return_value=[])
+    github.create_issue = AsyncMock(return_value=0)
+    github.clear_batch_label = AsyncMock()
 
     worktrees = MagicMock()
     worktrees.create_branch_worktree = AsyncMock(
