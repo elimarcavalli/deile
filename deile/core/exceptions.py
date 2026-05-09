@@ -121,6 +121,35 @@ class CommandError(DEILEError):
             self.context["command_name"] = command_name
 
 
+class DEILEInstallError(DEILEError):
+    """Erro durante o processo de instalação (--install / --install-mode).
+
+    Todas as funções do pipeline de instalação (``_create_venv_with_deile``,
+    ``_link_global_command``, ``_ensure_scripts_dir_on_path``) levantam esta
+    exceção em vez de ``RuntimeError`` stdlib, conforme Pilar 03 §6 (Error
+    Handling tipado) e o template de Pilar 12.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        step: Optional[str] = None,
+        sanitized_path: Optional[str] = None,
+        **kwargs
+    ):
+        super().__init__(
+            message,
+            error_code="DEILE_INSTALL_FAILED",
+            **kwargs
+        )
+        self.step = step
+        self.sanitized_path = sanitized_path
+        if step:
+            self.context["install_step"] = step
+        if sanitized_path:
+            self.context["sanitized_path"] = sanitized_path
+
+
 class PersonaError(DEILEError):
     """Exceção base para erros relacionados ao sistema de personas"""
 
