@@ -120,7 +120,7 @@ class HybridCompleter(Completer):
                     )
                 
         except Exception as e:
-            logger.error(f"Error in command completions: {e}")
+            logger.error("Error in command completions: %s", e)
     
     def _get_file_completions(self, document: Document, complete_event) -> Iterable[Completion]:
         """Completions para arquivos com @"""
@@ -194,7 +194,7 @@ class HybridCompleter(Completer):
                     )
                     
         except Exception as e:
-            logger.error(f"Error in file completions: {e}")
+            logger.error("Error in file completions: %s", e)
     
     def _get_contextual_completions(self, document: Document, complete_event) -> Iterable[Completion]:
         """Completions contextuais gerais"""

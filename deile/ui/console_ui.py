@@ -85,24 +85,14 @@ class ConsoleUIManager(UIManager):
         if working_directory:
             self.working_directory = working_directory
         
-        # SOLUÇÃO ROBUSTA: Fallback completo para Windows
         try:
-            # Primeiro tenta verificar se estamos em um terminal compatível
-            # import os
-            # if os.name == 'nt' and 'TERM' not in os.environ:
-            #     # Windows sem terminal ANSI adequado - usa fallback direto
-            #     self.session = None
-            #     return
-                
             hybrid_completer = HybridCompleter(
                 config_manager=self.config_manager,
                 working_directory=self.working_directory
             )
-            
-            # Tenta configuração mais compatível com Windows
+
             import asyncio
 
-            from prompt_toolkit import PromptSession
             from prompt_toolkit.application import get_app
             from prompt_toolkit.filters import Condition
             from prompt_toolkit.formatted_text import FormattedText
@@ -370,8 +360,6 @@ class ConsoleUIManager(UIManager):
 
     def display_message(self, message: UIMessage):
         """Exibe uma mensagem simples com base no seu tipo."""
-        # CORREÇÃO 2: A função console.print() já interpreta markup por padrão.
-        # Remover o argumento 'style' permite que os emojis e cores no próprio texto sejam renderizados.
         self.console.print(message.content)
 
     def display_error(self, error: str, details: Optional[str] = None):

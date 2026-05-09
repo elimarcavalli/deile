@@ -564,7 +564,7 @@ class StreamingRenderer:
         if block.source == "validation_gate":
             return Panel(
                 Text(text, style="yellow"),
-                title="[yellow]validation gate — corrected reply[/yellow]",
+                title=_VALIDATION_GATE_TITLE,
                 border_style="yellow",
             )
         if block.source == "error":
