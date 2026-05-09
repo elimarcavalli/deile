@@ -1,6 +1,8 @@
-"""Context Command - Display LLM context information"""
+"""Context Command — exibe informações reais do contexto LLM"""
 
 import json
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from rich.columns import Columns
@@ -10,288 +12,391 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ..base import CommandResult, DirectCommand
 
+_INDISPONIVEL = {"status": "indisponível"}
+
+
+def _indisponivel(motivo: str = "") -> Dict[str, Any]:
+    return {"status": "indisponível", "motivo": motivo}
+
+
+def _est_tokens(text: str) -> int:
+    return max(1, len(text) // 4)
+
 
 class ContextCommand(DirectCommand):
-    """Display complete LLM context: system instructions, memory, history, tools and token usage breakdown"""
-    
+    """Exibe contexto LLM completo: instruções, memória, histórico, tools e tokens"""
+
     def __init__(self):
         from ...config.manager import CommandConfig
         config = CommandConfig(
             name="context",
-            description="Display complete LLM context: system instructions, memory, history, tools and token usage breakdown.",
+            description="Exibe o contexto LLM completo: instruções, memória, histórico, tools e uso de tokens.",
         )
         super().__init__(config)
-    
+
     async def execute(self, context) -> CommandResult:
-        """Execute context command"""
-        args = context.args if hasattr(context, 'args') else ""
-        
+        args = context.args if hasattr(context, "args") else ""
+
         try:
-            # Parse arguments
             parts = args.strip().split() if args.strip() else []
-            format_type = "summary"  # default
-            _export = False
+            format_type = "summary"
+            export_format: Optional[str] = None
             show_tokens = False
-            
+
             i = 0
             while i < len(parts):
-                if parts[i] in ["--format", "-f"]:
-                    if i + 1 < len(parts):
-                        format_type = parts[i + 1]
-                        i += 2
-                    else:
-                        raise CommandError("--format requires a value (summary, detailed, json)")
-                elif parts[i] in ["--export", "-e"]:
-                    _export = True
+                p = parts[i]
+                if p in ("--format", "-f") and i + 1 < len(parts):
+                    format_type = parts[i + 1]
+                    i += 2
+                elif p in ("--export", "-e") and i + 1 < len(parts):
+                    export_format = parts[i + 1]
+                    i += 2
+                elif p in ("--export", "-e"):
+                    export_format = "json"
                     i += 1
-                elif parts[i] in ["--show-tokens", "-t"]:
+                elif p in ("--show-tokens", "-t"):
                     show_tokens = True
                     i += 1
-                else:
-                    format_type = parts[i]  # Positional argument
+                elif p in ("summary", "detailed", "json"):
+                    format_type = p
                     i += 1
-            
-            if format_type not in ["summary", "detailed", "json"]:
-                raise CommandError("Format must be one of: summary, detailed, json")
-            
-            # Get context from agent (this would be injected in real implementation)
-            context_data = self._get_context_data(context)
-            
+                else:
+                    i += 1
+
+            if format_type not in ("summary", "detailed", "json"):
+                raise CommandError("Formato deve ser um de: summary, detailed, json")
+
+            context_data = await self._get_context_data(context)
+
+            if export_format:
+                return await self._do_export(context_data, export_format)
+
             if format_type == "json":
                 return CommandResult.success_result(
                     content=json.dumps(context_data, indent=2, default=str),
                     content_type="json",
                     command_name="context",
-                    format="json"
+                    format="json",
                 )
-            
-            # Create Rich display
+
             if format_type == "summary":
                 display = self._create_summary_display(context_data, show_tokens)
-            else:  # detailed
+            else:
                 display = self._create_detailed_display(context_data, show_tokens)
-            
+
             return CommandResult.success_result(
                 content=display,
                 content_type="rich",
                 command_name="context",
-                format=format_type
+                format=format_type,
             )
-            
-        except Exception as e:
-            raise CommandError(f"Failed to display context: {str(e)}")
-    
-    def _get_context_data(self, context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Get context data from agent (mock implementation)"""
-        
-        # In real implementation, this would get data from the agent
-        return {
-            "system_instructions": {
-                "length": 2500,
-                "tokens": 625,
-                "content_preview": "You are DEILE, an AI assistant specialized in software development..."
-            },
-            "persona": {
-                "active": True,
-                "length": 800,
-                "tokens": 200,
-                "name": "Developer Assistant"
-            },
-            "memory": {
-                "short_term": {
-                    "entries": 15,
-                    "tokens": 1200,
-                    "last_update": "2025-09-06T18:45:00"
-                },
-                "long_term": {
-                    "entries": 45,
-                    "tokens": 3500,
-                    "indexed": True
+
+        except CommandError:
+            raise
+        except Exception as exc:
+            raise CommandError(f"Falha ao exibir contexto: {exc}") from exc
+
+    async def _get_context_data(self, context) -> Dict[str, Any]:
+        agent = getattr(context, "agent", None)
+        session = getattr(context, "session", None)
+
+        # --- Persona ---
+        persona_data: Dict[str, Any]
+        try:
+            pm = getattr(agent, "persona_manager", None) if agent else None
+            persona = pm.get_active_persona() if pm else None
+            if persona:
+                persona_data = {
+                    "name": getattr(persona, "name", "desconhecida"),
+                    "active": True,
                 }
-            },
-            "conversation_history": {
-                "messages": 23,
-                "tokens": 8500,
-                "oldest_message": "2025-09-06T15:30:00",
-                "newest_message": "2025-09-06T18:44:30"
-            },
-            "tools": {
-                "total": 12,
-                "enabled": 11,
-                "categories": ["file", "execution", "search", "network"],
-                "total_tokens": 2400
-            },
-            "model": {
-                "name": "gemini-2.5-pro",
-                "max_tokens": 2048000,
-                "temperature": 0.7,
-                "provider": "Google GenAI"
-            },
-            "token_usage": {
-                "total": 16225,
-                "percentage": 0.79,
-                "breakdown": {
-                    "system": 625,
-                    "persona": 200,
-                    "memory": 4700,
-                    "history": 8500,
-                    "tools": 2400
-                }
-            },
-            "session": {
-                "id": "session_20250906_184500",
-                "started": "2025-09-06T15:30:00",
-                "duration": "3h 15m",
-                "requests": 23
+            else:
+                persona_data = {"name": "nenhuma", "active": False}
+        except Exception as exc:
+            persona_data = _indisponivel(str(exc))
+
+        # --- Memória ---
+        memory_data: Dict[str, Any]
+        try:
+            mm = getattr(agent, "memory_manager", None) if agent else None
+            if mm:
+                usage = await mm.get_memory_usage()
+                memory_data = usage
+            else:
+                memory_data = _indisponivel("memory_manager não disponível")
+        except Exception as exc:
+            memory_data = _indisponivel(str(exc))
+
+        # --- Histórico de conversa ---
+        conv_data: Dict[str, Any]
+        try:
+            history = getattr(session, "conversation_history", []) if session else []
+            created_at = getattr(session, "created_at", None) if session else None
+            last_activity = getattr(session, "last_activity", None) if session else None
+
+            oldest = (
+                datetime.fromtimestamp(created_at, tz=timezone.utc).isoformat()
+                if created_at
+                else None
+            )
+            newest = (
+                datetime.fromtimestamp(last_activity, tz=timezone.utc).isoformat()
+                if last_activity
+                else None
+            )
+            conv_data = {
+                "messages": len(history),
+                "oldest_message": oldest,
+                "newest_message": newest,
             }
+        except Exception as exc:
+            conv_data = _indisponivel(str(exc))
+
+        # --- Tools ---
+        tools_data: Dict[str, Any]
+        try:
+            tr = getattr(agent, "tool_registry", None) if agent else None
+            if tr:
+                all_tools = tr.list_all()
+                enabled_tools = tr.list_enabled()
+                categories = list({getattr(t, "category", "other") for t in all_tools})
+                tools_data = {
+                    "total": len(all_tools),
+                    "enabled": len(enabled_tools),
+                    "categories": categories,
+                }
+            else:
+                tools_data = _indisponivel("tool_registry não disponível")
+        except Exception as exc:
+            tools_data = _indisponivel(str(exc))
+
+        # --- Modelo ---
+        model_data: Dict[str, Any]
+        try:
+            mr = getattr(agent, "model_router", None) if agent else None
+            if mr:
+                providers = getattr(mr, "providers", {})
+                provider_names = list(providers.keys())
+                model_data = {
+                    "providers": provider_names,
+                    "strategy": getattr(mr, "strategy", _INDISPONIVEL),
+                }
+            else:
+                model_data = _indisponivel("model_router não disponível")
+        except Exception as exc:
+            model_data = _indisponivel(str(exc))
+
+        # --- Sessão ---
+        session_data: Dict[str, Any]
+        try:
+            if session:
+                session_id = getattr(session, "session_id", "desconhecido")
+                created_at = getattr(session, "created_at", None)
+                session_data = {
+                    "id": session_id,
+                    "started": (
+                        datetime.fromtimestamp(created_at, tz=timezone.utc).isoformat()
+                        if created_at
+                        else None
+                    ),
+                }
+            else:
+                session_data = _indisponivel("sessão não disponível")
+        except Exception as exc:
+            session_data = _indisponivel(str(exc))
+
+        # --- Instruções do sistema (estimativa) ---
+        instructions_data: Dict[str, Any]
+        try:
+            ctx_mgr = getattr(agent, "context_manager", None) if agent else None
+            if ctx_mgr:
+                stats = await ctx_mgr.get_stats()
+                instr_len = stats.get("system_instructions_length", 0)
+                instructions_data = {
+                    "length": instr_len,
+                    "tokens": _est_tokens(" " * instr_len),
+                    "token_count_method": "estimated",
+                }
+            else:
+                instructions_data = _indisponivel("context_manager não disponível")
+        except Exception as exc:
+            instructions_data = _indisponivel(str(exc))
+
+        return {
+            "system_instructions": instructions_data,
+            "persona": persona_data,
+            "memory": memory_data,
+            "conversation_history": conv_data,
+            "tools": tools_data,
+            "model": model_data,
+            "session": session_data,
         }
-    
+
+    async def _do_export(self, context_data: Dict[str, Any], fmt: str) -> CommandResult:
+        if fmt not in ("json", "md"):
+            return CommandResult.error_result(
+                f"Formato de export inválido: '{fmt}'. Use 'json' ou 'md'."
+            )
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fname = f"context_export_{ts}.{fmt}"
+
+        try:
+            if fmt == "json":
+                content = json.dumps(context_data, indent=2, default=str)
+                Path(fname).write_text(content, encoding="utf-8")
+            else:
+                lines = ["# Exportação de Contexto DEILE", ""]
+                session = context_data.get("session", {})
+                lines.append(f"**Sessão:** {session.get('id', 'indisponível')}")
+                lines.append(f"**Iniciado:** {session.get('started', 'indisponível')}")
+                lines.append("")
+
+                persona = context_data.get("persona", {})
+                lines.append(f"## Persona\n- **Nome:** {persona.get('name', 'indisponível')}")
+                lines.append("")
+
+                model = context_data.get("model", {})
+                providers = model.get("providers", "indisponível")
+                lines.append(f"## Modelo\n- **Provedores:** {providers}")
+                lines.append("")
+
+                tools = context_data.get("tools", {})
+                lines.append(
+                    f"## Tools\n- **Total:** {tools.get('total', 'indisponível')}"
+                    f"\n- **Habilitadas:** {tools.get('enabled', 'indisponível')}"
+                )
+                lines.append("")
+
+                conv = context_data.get("conversation_history", {})
+                lines.append(
+                    f"## Histórico\n- **Mensagens:** {conv.get('messages', 'indisponível')}"
+                )
+                content = "\n".join(lines)
+                Path(fname).write_text(content, encoding="utf-8")
+
+            return CommandResult.success_result(
+                content=Panel(
+                    Text(f"✅ Exportado: {fname}", style="green"),
+                    title="📤 Export de Contexto",
+                    border_style="green",
+                ),
+                content_type="rich",
+                command_name="context",
+                exported_file=fname,
+            )
+        except Exception as exc:
+            return CommandResult.error_result(f"Falha ao exportar: {exc}", error=exc)
+
     def _create_summary_display(self, data: Dict[str, Any], show_tokens: bool) -> Panel:
-        """Create summary display"""
-        
-        # Token usage summary
-        token_data = data.get("token_usage", {})
-        total_tokens = token_data.get("total", 0)
-        percentage = token_data.get("percentage", 0) * 100
-        
-        # Create content
-        content_lines = [
-            "📊 **Context Overview**",
-            "",
-            f"🤖 **Model**: {data.get('model', {}).get('name', 'Unknown')}",
-            f"⏱️  **Session**: {data.get('session', {}).get('duration', 'Unknown')}",
-            f"💬 **Messages**: {data.get('conversation_history', {}).get('messages', 0)}",
-            f"🔧 **Tools**: {data.get('tools', {}).get('enabled', 0)}/{data.get('tools', {}).get('total', 0)} enabled"
-        ]
-        
-        if show_tokens:
-            content_lines.extend([
-                "",
-                f"🎯 **Token Usage**: {total_tokens:,} ({percentage:.1f}%)",
-                f"   • System: {token_data.get('breakdown', {}).get('system', 0):,}",
-                f"   • Memory: {token_data.get('breakdown', {}).get('memory', 0):,}",
-                f"   • History: {token_data.get('breakdown', {}).get('history', 0):,}",
-                f"   • Tools: {token_data.get('breakdown', {}).get('tools', 0):,}"
-            ])
-        
-        content = "\n".join(content_lines)
-        
-        return Panel(
-            Text(content, style="white"),
-            title="🧠 LLM Context",
-            border_style="blue",
-            padding=(1, 2)
-        )
-    
-    def _create_detailed_display(self, data: Dict[str, Any], show_tokens: bool) -> Columns:
-        """Create detailed display with multiple panels"""
-        
-        panels = []
-        
-        # System & Model Panel
-        model_info = data.get("model", {})
-        system_info = data.get("system_instructions", {})
-        
-        model_content = [
-            f"**Model**: {model_info.get('name', 'Unknown')}",
-            f"**Provider**: {model_info.get('provider', 'Unknown')}",
-            f"**Max Tokens**: {model_info.get('max_tokens', 0):,}",
-            f"**Temperature**: {model_info.get('temperature', 0.7)}",
-            "",
-            "**System Instructions**:",
-            f"  Length: {system_info.get('length', 0)} chars",
-            f"  Tokens: {system_info.get('tokens', 0):,}"
-        ]
-        
-        panels.append(Panel(
-            "\n".join(model_content),
-            title="🤖 Model & System",
-            border_style="green"
-        ))
-        
-        # Memory Panel
-        memory = data.get("memory", {})
-        short_term = memory.get("short_term", {})
-        long_term = memory.get("long_term", {})
-        
-        memory_content = [
-            "**Short-term Memory**:",
-            f"  Entries: {short_term.get('entries', 0)}",
-            f"  Tokens: {short_term.get('tokens', 0):,}",
-            f"  Updated: {short_term.get('last_update', 'Never')[:16]}",
-            "",
-            "**Long-term Memory**:",
-            f"  Entries: {long_term.get('entries', 0)}",
-            f"  Tokens: {long_term.get('tokens', 0):,}",
-            f"  Indexed: {'Yes' if long_term.get('indexed') else 'No'}"
-        ]
-        
-        panels.append(Panel(
-            "\n".join(memory_content),
-            title="🧠 Memory",
-            border_style="yellow"
-        ))
-        
-        # Tools Panel
+        persona = data.get("persona", {})
+        conv = data.get("conversation_history", {})
         tools = data.get("tools", {})
-        
-        tools_content = [
-            f"**Available Tools**: {tools.get('total', 0)}",
-            f"**Enabled**: {tools.get('enabled', 0)}",
-            f"**Categories**: {', '.join(tools.get('categories', []))}",
-            f"**Schema Tokens**: {tools.get('total_tokens', 0):,}"
+        model = data.get("model", {})
+        session = data.get("session", {})
+
+        providers = model.get("providers", ["indisponível"])
+        model_str = ", ".join(providers) if isinstance(providers, list) else str(providers)
+
+        lines = [
+            "📊 **Visão Geral do Contexto**",
+            "",
+            f"🤖 **Modelo/Provedores**: {model_str}",
+            f"👤 **Persona**: {persona.get('name', 'indisponível')}",
+            f"🆔 **Sessão**: {session.get('id', 'indisponível')}",
+            f"💬 **Mensagens**: {conv.get('messages', 'indisponível')}",
+            f"🔧 **Tools**: {tools.get('enabled', '?')}/{tools.get('total', '?')} habilitadas",
         ]
-        
-        panels.append(Panel(
-            "\n".join(tools_content),
-            title="🔧 Tools",
-            border_style="cyan"
-        ))
-        
+
         if show_tokens:
-            # Token Usage Panel
-            token_data = data.get("token_usage", {})
-            breakdown = token_data.get("breakdown", {})
-            
-            token_content = [
-                f"**Total**: {token_data.get('total', 0):,} tokens",
-                f"**Usage**: {token_data.get('percentage', 0) * 100:.1f}%",
+            instr = data.get("system_instructions", {})
+            lines.extend([
                 "",
-                "**Breakdown**:",
-                f"  System: {breakdown.get('system', 0):,}",
-                f"  Persona: {breakdown.get('persona', 0):,}",
-                f"  Memory: {breakdown.get('memory', 0):,}", 
-                f"  History: {breakdown.get('history', 0):,}",
-                f"  Tools: {breakdown.get('tools', 0):,}"
-            ]
-            
-            panels.append(Panel(
-                "\n".join(token_content),
-                title="🎯 Token Usage",
-                border_style="red"
-            ))
-        
+                "🎯 **Tokens (estimativa)**:",
+                f"   • Instruções: {instr.get('tokens', 'indisponível')}",
+                f"   • Método: {instr.get('token_count_method', 'indisponível')}",
+            ])
+
+        return Panel(
+            Text("\n".join(lines), style="white"),
+            title="🧠 Contexto LLM",
+            border_style="blue",
+            padding=(1, 2),
+        )
+
+    def _create_detailed_display(self, data: Dict[str, Any], show_tokens: bool) -> Columns:
+        panels = []
+
+        model = data.get("model", {})
+        instr = data.get("system_instructions", {})
+        providers = model.get("providers", ["indisponível"])
+        model_str = ", ".join(providers) if isinstance(providers, list) else str(providers)
+
+        model_content = [
+            f"**Provedores**: {model_str}",
+            f"**Estratégia**: {model.get('strategy', 'indisponível')}",
+            "",
+            "**Instruções do Sistema**:",
+            f"  Tamanho: {instr.get('length', 'indisponível')} chars",
+        ]
+        if show_tokens:
+            model_content.append(f"  Tokens: {instr.get('tokens', 'indisponível')}")
+        panels.append(Panel("\n".join(model_content), title="🤖 Modelo", border_style="green"))
+
+        memory = data.get("memory", {})
+        if memory.get("status") == "indisponível":
+            mem_content = [f"**Status**: {memory.get('motivo', 'indisponível')}"]
+        else:
+            mem_total = memory.get("total_memory_mb", "indisponível")
+            components = memory.get("components", {})
+            mem_content = [f"**Total**: {mem_total} MB", ""]
+            for layer, stats in components.items():
+                entries = stats.get("total_entries", stats.get("count", "?"))
+                mem_content.append(f"  {layer}: {entries} entradas")
+        panels.append(Panel("\n".join(mem_content), title="🧠 Memória", border_style="yellow"))
+
+        tools = data.get("tools", {})
+        cats = tools.get("categories", [])
+        tools_content = [
+            f"**Total**: {tools.get('total', 'indisponível')}",
+            f"**Habilitadas**: {tools.get('enabled', 'indisponível')}",
+            f"**Categorias**: {', '.join(cats) if cats else 'indisponível'}",
+        ]
+        panels.append(Panel("\n".join(tools_content), title="🔧 Tools", border_style="cyan"))
+
+        conv = data.get("conversation_history", {})
+        persona = data.get("persona", {})
+        session = data.get("session", {})
+        session_content = [
+            f"**ID**: {session.get('id', 'indisponível')}",
+            f"**Iniciado**: {session.get('started', 'indisponível')}",
+            "",
+            f"**Persona**: {persona.get('name', 'indisponível')}",
+            f"**Mensagens**: {conv.get('messages', 'indisponível')}",
+            f"**Última msg**: {conv.get('newest_message', 'indisponível')}",
+        ]
+        panels.append(Panel("\n".join(session_content), title="📋 Sessão", border_style="magenta"))
+
         return Columns(panels, equal=True, expand=True)
-    
+
     def get_help(self) -> str:
-        """Get command help"""
-        return """Display LLM context information
+        return """Exibe informações do contexto LLM
 
-Usage:
-  /context [format] [options]
+Uso:
+  /context [formato] [opções]
 
-Formats:
-  summary   Show summary view (default)
-  detailed  Show detailed breakdown
-  json      Export as JSON
+Formatos:
+  summary   Visão resumida (padrão)
+  detailed  Detalhamento por componente
+  json      Exportar como JSON no terminal
 
-Options:
-  --show-tokens, -t    Show detailed token usage
-  --export, -e         Export context to file
-  --format FORMAT, -f  Specify output format
+Opções:
+  --show-tokens, -t         Exibe estimativa de tokens
+  --export json|md, -e      Exporta contexto para arquivo
+  --format FORMATO, -f      Especifica o formato de saída
 
-Examples:
-  /context                    Show summary
-  /context detailed -t        Show detailed view with tokens
-  /context json               Export as JSON
-  /context --show-tokens      Show summary with token breakdown"""
+Exemplos:
+  /context                         Resumo
+  /context detailed -t             Detalhado com tokens
+  /context --export json           Exporta contexto para JSON"""

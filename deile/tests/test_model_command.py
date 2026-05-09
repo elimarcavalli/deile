@@ -11,7 +11,8 @@ import pytest
 
 from deile.commands.builtin.model_command import ModelCommand
 from deile.core.interfaces.selector import (InteractiveSelector,
-                                         SelectorNotSupported, SelectorOption)
+                                            SelectorNotSupported,
+                                            SelectorOption)
 
 _YAML_PATH = Path(__file__).parents[2] / "deile" / "config" / "model_providers.yaml"
 
