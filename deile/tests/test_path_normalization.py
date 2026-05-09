@@ -26,8 +26,9 @@ from pathlib import Path
 import pytest
 
 from deile.tools.base import ToolContext
-from deile.tools.file_tools import (ListFilesTool, LocalFileAccessViolation,
-                                    ReadFileTool, ResolvedPath, WriteFileTool,
+from deile.tools.file_tools import (DeleteFileTool, ListFilesTool,
+                                    LocalFileAccessViolation, ReadFileTool,
+                                    ResolvedPath, WriteFileTool,
                                     _looks_like_outside_project,
                                     _resolve_project_path,
                                     _validate_path_within_working_directory)
@@ -567,3 +568,97 @@ def test_path_normalization_idempotent_via_file_path(tmp_path):
     assert res2.is_success
     assert res2.metadata["path_normalization_note"] is None
     assert res2.data == "ok"
+
+
+# ---------------------------------------------------------------------------
+# 5. Tier-1: bash_execute hint consistency across path tools (issue #149)
+#
+# Every path-tool must include "bash_execute" in its error message when
+# the supplied path looks like it targets outside the project CWD.  Two
+# flavours are tested per tool:
+#   - out_of_cwd_absolute: leading '/' that normalises to a non-existent
+#     project-relative path (the file was never created inside the project).
+#   - parent_relative: '..' that escapes the project root →
+#     LocalFileAccessViolation (message already enriched in PR #151).
+# ---------------------------------------------------------------------------
+
+
+# --- read_file ---------------------------------------------------------------
+
+
+def test_read_file_out_of_cwd_absolute_hints_bash(tmp_path):
+    """read_file(path='/tmp/nonexistent.py') → file not found after
+    normalization → error message must contain 'bash_execute'."""
+    tool = ReadFileTool()
+    ctx = _ctx(tmp_path, file_path="/tmp/nonexistent_file_xyz.py")
+    result = tool.execute_sync(ctx)
+
+    assert result.is_error
+    assert "not found" in result.message.lower()
+    assert "bash_execute" in result.message
+
+
+def test_read_file_parent_relative_hints_bash(tmp_path):
+    """read_file(path='../../etc/passwd') → LocalFileAccessViolation →
+    message (enriched by resolver) must contain 'bash_execute'."""
+    tool = ReadFileTool()
+    ctx = _ctx(tmp_path, file_path="../../etc/passwd")
+    result = tool.execute_sync(ctx)
+
+    assert result.is_error
+    assert "OUTSIDE" in result.message or "outside" in result.message.lower()
+    assert "bash_execute" in result.message
+
+
+# --- write_file ---------------------------------------------------------------
+
+
+def test_write_file_parent_relative_hints_bash(tmp_path):
+    """write_file(path='../../etc/crontab') → LocalFileAccessViolation →
+    message must contain 'bash_execute'."""
+    tool = WriteFileTool()
+    ctx = _ctx(tmp_path, file_path="../../etc/crontab", content="bad")
+    result = tool.execute_sync(ctx)
+
+    assert result.is_error
+    assert "OUTSIDE" in result.message or "outside" in result.message.lower()
+    assert "bash_execute" in result.message
+
+
+def test_write_file_out_of_cwd_absolute_bash_in_normalized_success(tmp_path):
+    """write_file(path='/tmp/foo.py') succeeds (normalised to project-relative),
+    but the PATH_NORMALIZED warning must mention 'bash_execute' so the LLM
+    knows to use it if the intention was to write outside the project."""
+    tool = WriteFileTool()
+    ctx = _ctx(tmp_path, file_path="/tmp/outside_hint_test.py", content="# ok")
+    result = tool.execute_sync(ctx)
+
+    assert result.is_success
+    assert "bash_execute" in result.message
+
+
+# --- delete_file -------------------------------------------------------------
+
+
+def test_delete_file_out_of_cwd_absolute_hints_bash(tmp_path):
+    """delete_file(path='/tmp/phantom.py') → file not found after normalization
+    → error message must contain 'bash_execute'."""
+    tool = DeleteFileTool()
+    ctx = _ctx(tmp_path, file_path="/tmp/phantom_delete_test.py")
+    result = tool.execute_sync(ctx)
+
+    assert result.is_error
+    assert "not found" in result.message.lower()
+    assert "bash_execute" in result.message
+
+
+def test_delete_file_parent_relative_hints_bash(tmp_path):
+    """delete_file(path='../../important.conf') → LocalFileAccessViolation →
+    message must contain 'bash_execute'."""
+    tool = DeleteFileTool()
+    ctx = _ctx(tmp_path, file_path="../../important_delete_test.conf", force=True)
+    result = tool.execute_sync(ctx)
+
+    assert result.is_error
+    assert "OUTSIDE" in result.message or "outside" in result.message.lower()
+    assert "bash_execute" in result.message
