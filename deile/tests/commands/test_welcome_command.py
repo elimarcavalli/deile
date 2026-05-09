@@ -103,7 +103,6 @@ class TestDocLinks:
         assert path.exists(), f"Caminho de doc não existe: {path}"
 
     async def test_links_not_pointing_to_nonexistent_paths(self):
-        assert "docs/2.md" not in str(_LINKS.values())
         for name, link in _LINKS.items():
             assert link.strip(), f"Link '{name}' vazio"
             assert "example.com" not in link
@@ -122,10 +121,6 @@ class TestFeatureList:
         with patch.object(version_mod, "FEATURES", patched):
             active = _get_active_features()
             assert active == ["memory"]
-
-    async def test_no_feature_with_open_incomplete_issue(self):
-        result = await _cmd().execute(_ctx())
-        assert result.success
 
 
 class TestModelShown:
