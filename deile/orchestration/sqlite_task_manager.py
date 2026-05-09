@@ -294,11 +294,25 @@ class SQLiteTaskManager:
         logger.info(f"Created task list {list_id}: {title}")
         return task_list
 
+    async def activate_task_list(self, list_id: str) -> None:
+        """Marca lista como ativa no banco de dados."""
+        async with self._db_lock:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    "UPDATE task_lists SET active = TRUE, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (list_id,)
+                )
+                await db.commit()
+        self._invalidate_cache(list_id)
+        logger.info("Activated task list %s", list_id)
+
     async def add_task_to_list(self, list_id: str, title: str, description: str = "",
                               depends_on: Optional[List[str]] = None,
                               priority: TaskPriority = TaskPriority.MEDIUM,
-                              estimated_duration: Optional[timedelta] = None) -> Task:
-        """Adiciona task a uma lista com validação de integridade"""
+                              estimated_duration: Optional[timedelta] = None,
+                              metadata: Optional[Dict[str, Any]] = None,
+                              tags: Optional[List[str]] = None) -> Task:
+        """Adiciona task a uma lista com validação de integridade."""
 
         # Verifica se lista existe
         task_list = await self.load_task_list(list_id)
@@ -312,7 +326,9 @@ class SQLiteTaskManager:
             description=description,
             depends_on=depends_on or [],
             priority=priority,
-            estimated_duration=estimated_duration
+            estimated_duration=estimated_duration,
+            metadata=metadata or {},
+            tags=tags or [],
         )
 
         # Validação de dependências (só valida se as dependências não estão vazias e existem)
