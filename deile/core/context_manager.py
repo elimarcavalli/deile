@@ -367,7 +367,7 @@ class ContextManager:
                 "logs",
                 ".claude",
                 "cache", ".cache",
-                "deile_bot",           # separate repo, irrelevant to file nav
+                "deilebot", "deile_bot",  # separate repo (canonical + transitional names)
                 "work_items",          # large planning docs, not project code
                 "test-your-might",     # sandbox output dir
                 "dist", "build", "site-packages",

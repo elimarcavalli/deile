@@ -6,10 +6,10 @@ log a warning but never abort the pipeline.
 
 Wiring
 ------
-At runtime we rely on ``deile_bot.bridge.dm_tool.send_discord_dm`` (when the
-deile-bot package is importable; that's the standard local-dev configuration)
-or fall back to the ``deilebot.bridge.dm_tool`` import path for the renamed
-package. Either path uses ``DEILE_BOT_DISCORD_TOKEN`` from the environment.
+At runtime we resolve the DM sender from ``deilebot.bridge.dm_tool.send_discord_dm``.
+The ``deilebot`` package must be importable (installed via ``pip install -e .[bot]``
+or the local-dev clone described in CLAUDE.md). The sender uses
+``DEILE_BOT_DISCORD_TOKEN`` from the environment.
 """
 
 from __future__ import annotations
@@ -26,20 +26,13 @@ _DM_FN: Optional[Callable[[str, str], Awaitable[dict]]] = None
 
 
 def _resolve_dm_function() -> Optional[Callable[[str, str], Awaitable[dict]]]:
-    """Pick the best available DM sender.
+    """Resolve the DM sender from ``deilebot.bridge.dm_tool``.
 
-    Tries the new ``deilebot.bridge.dm_tool`` first (current package name),
-    then falls back to the legacy ``deile_bot.bridge.dm_tool`` for older
-    local installs. Returns None if neither is importable — in that case the
+    Returns None if ``deilebot`` is not importable — in that case the
     notifier silently no-ops.
     """
     try:
         from deilebot.bridge.dm_tool import send_discord_dm  # type: ignore
-        return send_discord_dm
-    except Exception:  # noqa: BLE001 — fall back, log later
-        pass
-    try:
-        from deile_bot.bridge.dm_tool import send_discord_dm  # type: ignore
         return send_discord_dm
     except Exception:  # noqa: BLE001
         return None

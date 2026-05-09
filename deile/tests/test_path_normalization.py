@@ -344,7 +344,7 @@ def test_write_file_blocks_parent_escape_with_clear_message(tmp_path):
 
 def test_outside_project_violation_points_to_bash_execute(tmp_path):
     """Regression guard for the second-/EVOLVE-run trace: when DEILE was
-    launched from ``deile_bot/`` (a subdir of the deile parent repo) and
+    launched from ``deilebot/`` (a sibling clone of the deile parent repo) and
     asked to read templates at ``../.github/ISSUE_TEMPLATE/``, the path
     resolver rejected it with a generic "OUTSIDE the project" message that
     didn't tell the LLM HOW to recover. The model then looped on the same
