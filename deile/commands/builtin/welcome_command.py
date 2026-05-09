@@ -1,4 +1,12 @@
-"""Welcome Command - Show welcome message and getting started guide"""
+"""Comando /welcome — mensagem de boas-vindas e guia de início rápido (issue #174).
+
+Exibe dados dinâmicos reais: versão de __version__, modelo ativo via contexto,
+quick start gerada via CommandRegistry, e feature list baseada em FEATURES reais.
+"""
+
+from __future__ import annotations
+
+import logging
 
 from rich.columns import Columns
 from rich.console import Group
@@ -8,198 +16,230 @@ from rich.text import Text
 
 from ..base import CommandContext, CommandResult, DirectCommand
 
+logger = logging.getLogger(__name__)
+
+# Mapeamento de feature flags para descrições PTBR.
+# Ao adicionar nova flag em __version__.py, adicione também a descrição aqui.
+_FLAG_DESCRICOES_PTBR: dict[str, str] = {
+    "orchestration": "Orquestração multi-step e gestão de planos",
+    "security": "Permissões, audit log e sandbox",
+    "ui_polish": "Interface polida e atalhos de teclado",
+    "testing": "Suíte de testes automatizados",
+    "ci_cd": "Integração e entrega contínua",
+    "documentation": "Documentação estruturada por pilares",
+    "events": "Arquitetura orientada a eventos",
+    "evolution": "Motor de auto-aprendizado",
+    "memory": "Memória em quatro camadas (working/episodic/semantic/procedural)",
+    "personas": "Troca dinâmica de personas",
+    "plugins": "Arquitetura extensível de plugins",
+    "config_profiles": "Perfis de configuração por ambiente",
+}
+
+# Quick start candidates — verificados contra CommandRegistry em runtime.
+# Ordem define a prioridade de exibição.
+_QUICK_START_CANDIDATES = [
+    {"nome": "help", "acao": "Listar todos os comandos", "descricao": "Ajuda completa"},
+    {"nome": "status", "acao": "Checar status do sistema", "descricao": "Visão geral do DEILE"},
+    {"nome": "version", "acao": "Exibir versão e build", "descricao": "Informações de versão"},
+    {"nome": "plan", "acao": "Cria e executa fluxos autônomos", "descricao": "Iniciar fluxo autônomo"},
+    {"nome": "memory", "acao": "Ver memória da sessão", "descricao": "Estado da memória"},
+    {"nome": "permissions", "acao": "Gerenciar permissões", "descricao": "Configuração de segurança"},
+    {"nome": "cost", "acao": "Ver custos e tokens", "descricao": "Uso e custo estimado"},
+    {"nome": "context", "acao": "Ver contexto atual", "descricao": "Contexto da sessão"},
+]
+
+_LINKS = {
+    "Repositório": "https://github.com/elimarcavalli/deile",
+    "Documentação": "docs/system_design/00-VISAO-GERAL.md",
+    "Licença": "MIT",
+    "Issues": "https://github.com/elimarcavalli/deile/issues",
+}
+
+_WORKFLOWS = [
+    ("Análise e refatoração", "/find 'TODO|FIXME' → /plan create → /run"),
+    ("Fluxo de desenvolvimento", "/bash 'git status' → /plan create 'Deploy' → /approve"),
+    ("Segurança e monitoramento", "/permissions → /logs security → /sandbox on"),
+    ("Gestão de sessão", "/memory status → /export → /cls reset"),
+]
+
+_DICAS = [
+    "Use '/help <comando>' para ajuda detalhada de um comando específico.",
+    "Digite '/' para ver todos os comandos disponíveis.",
+    "Use '@' para autocompletar caminhos de arquivo em comandos.",
+    "Operações de alto risco requerem aprovação manual (/approve).",
+    "Salve seu trabalho com /memory save antes de alterações importantes.",
+    "Use '/cls reset' para um início limpo se necessário.",
+]
+
+
+def _get_version() -> str:
+    try:
+        from deile.__version__ import __version__
+        return __version__
+    except Exception as exc:
+        logger.debug("Não foi possível obter versão: %s", exc)
+        return "—"
+
+
+def _get_active_features() -> list[str]:
+    try:
+        from deile.__version__ import FEATURES
+        return [k for k, v in FEATURES.items() if v]
+    except Exception as exc:
+        logger.debug("Não foi possível obter features: %s", exc)
+        return []
+
+
+def _get_active_model(context: CommandContext) -> str:
+    try:
+        agent = context.agent
+        if agent is not None:
+            router = getattr(agent, "model_router", None) or getattr(agent, "tier_router", None)
+            if router is not None:
+                model = getattr(router, "current_model", None) or getattr(router, "default_model", None)
+                if model:
+                    return str(model)
+        return "—"
+    except Exception as exc:
+        logger.debug("Não foi possível obter modelo ativo: %s", exc)
+        return "—"
+
+
+def _get_quick_start_verified(context: CommandContext) -> list[dict[str, str]]:
+    """Retorna candidates filtrados pelos que existem no CommandRegistry."""
+    try:
+        from deile.commands.registry import get_command_registry
+        registry = get_command_registry(context.config_manager)
+        registered = {cmd.name for cmd in registry.get_all_commands()}
+        return [c for c in _QUICK_START_CANDIDATES if c["nome"] in registered]
+    except Exception as exc:
+        logger.warning("Não foi possível verificar CommandRegistry: %s", exc)
+        return []
+
 
 class WelcomeCommand(DirectCommand):
-    """Show welcome message and getting started guide for new users"""
-    
-    def __init__(self):
+    """``/welcome`` — boas-vindas e guia de início rápido do DEILE."""
+
+    def __init__(self) -> None:
         from ...config.manager import CommandConfig
         config = CommandConfig(
             name="welcome",
-            description="Show welcome message and getting started guide.",
+            description="Exibe mensagem de boas-vindas e guia de início rápido.",
         )
         super().__init__(config)
-    
+
     async def execute(self, context: CommandContext) -> CommandResult:
-        """Execute welcome command"""
-        
-        # Create welcome header
-        welcome_text = Text()
-        welcome_text.append("🚀 ", style="bright_blue")
-        welcome_text.append("Welcome to ", style="white")
-        welcome_text.append("D.E.I.L.E. ", style="bold cyan")
-        welcome_text.append("v5.1 ULTRA", style="bright_green")
-        welcome_text.append("\n\n")
-        welcome_text.append("Your AI-powered development assistant with autonomous execution capabilities!", style="dim")
-        
-        welcome_panel = Panel(
-            welcome_text,
-            title="[bold bright_blue]🎯 DEILE - Development Environment Intelligence & Learning Engine[/bold bright_blue]",
-            border_style="bright_blue",
-            padding=(1, 2)
+        """Renderiza o guia de boas-vindas com dados dinâmicos reais."""
+        version = _get_version()
+        active_model = _get_active_model(context)
+        active_features = _get_active_features()
+        quick_start = _get_quick_start_verified(context)
+
+        # --- Cabeçalho ---
+        header = Text()
+        header.append("Bem-vindo ao ", style="white")
+        header.append("DEILE ", style="bold cyan")
+        header.append(f"v{version}", style="bold bright_green")
+        header.append("\n\n")
+        header.append(
+            "Seu assistente autônomo de desenvolvimento com execução inteligente.",
+            style="dim",
         )
-        
-        # Quick start guide
-        quickstart_table = Table(title="⚡ Quick Start Guide", show_header=True, header_style="bold yellow")
-        quickstart_table.add_column("Action", style="cyan", width=25)
-        quickstart_table.add_column("Command", style="green", width=20)
-        quickstart_table.add_column("Description", style="white", width=30)
-        
-        quickstart_table.add_row("Get help", "/help", "List all available commands")
-        quickstart_table.add_row("System status", "/status", "Check DEILE system status")
-        quickstart_table.add_row("Create plan", "/plan create", "Start autonomous workflow")
-        quickstart_table.add_row("Execute bash", "/bash <command>", "Run shell commands safely")
-        quickstart_table.add_row("Search files", "/find <pattern>", "Search in project files")
-        quickstart_table.add_row("View memory", "/memory", "Check memory usage")
-        quickstart_table.add_row("Security", "/permissions", "Manage security settings")
-        
-        # Key features
+        if active_model != "—":
+            header.append("\n\nModelo ativo: ", style="dim")
+            header.append(active_model)
+
+        header_panel = Panel(
+            header,
+            title="[bold bright_blue]DEILE — Development Environment Intelligence & Learning Engine[/bold bright_blue]",
+            border_style="bright_blue",
+            padding=(1, 2),
+        )
+
+        # --- Início rápido ---
+        qs_table = Table(
+            title="Início Rápido",
+            show_header=True,
+            header_style="bold yellow",
+        )
+        qs_table.add_column("Ação", style="cyan", width=25)
+        qs_table.add_column("Comando", style="green", width=22)
+        qs_table.add_column("Descrição", style="white", width=30)
+        for entry in quick_start:
+            qs_table.add_row(entry["descricao"], f"/{entry['nome']}", entry["acao"])
+
+        # --- Features ativas ---
         features_text = Text()
-        features_text.append("🔧 ", style="yellow")
-        features_text.append("Autonomous Orchestration", style="bold")
-        features_text.append(" - Create and execute multi-step plans\n", style="dim")
-        
-        features_text.append("🛡️ ", style="red")  
-        features_text.append("Security & Permissions", style="bold")
-        features_text.append(" - Granular access control and audit logs\n", style="dim")
-        
-        features_text.append("📊 ", style="blue")
-        features_text.append("Rich UI & Monitoring", style="bold")
-        features_text.append(" - Beautiful tables, progress bars, and status panels\n", style="dim")
-        
-        features_text.append("🔍 ", style="green")
-        features_text.append("Intelligent File Operations", style="bold")
-        features_text.append(" - Smart search, edit, and context awareness\n", style="dim")
-        
-        features_text.append("💾 ", style="magenta")
-        features_text.append("Memory Management", style="bold")
-        features_text.append(" - Advanced session state and checkpoint system\n", style="dim")
-        
-        features_text.append("🚀 ", style="bright_cyan")
-        features_text.append("Export & Integration", style="bold")
-        features_text.append(" - Export conversations, plans, and artifacts", style="dim")
-        
+        for flag in active_features:
+            desc = _FLAG_DESCRICOES_PTBR.get(flag, flag)
+            features_text.append("✅ ", style="green")
+            features_text.append(f"{desc}\n")
+        if not active_features:
+            features_text.append("(nenhuma feature ativa)", style="dim")
+
         features_panel = Panel(
             features_text,
-            title="✨ Key Features",
-            border_style="yellow"
+            title="Capacidades Ativas",
+            border_style="yellow",
         )
-        
-        # Common workflows
+
+        # --- Fluxos comuns ---
         workflows_text = Text()
-        workflows_text.append("1️⃣ ", style="bright_blue")
-        workflows_text.append("Code Analysis & Refactoring\n", style="bold")
-        workflows_text.append("   /find 'TODO|FIXME' → /plan create → /run\n\n", style="dim")
-        
-        workflows_text.append("2️⃣ ", style="bright_green")
-        workflows_text.append("Development Workflow\n", style="bold")
-        workflows_text.append("   /bash 'git status' → /plan create 'Deploy' → /approve\n\n", style="dim")
-        
-        workflows_text.append("3️⃣ ", style="bright_red")
-        workflows_text.append("Security & Monitoring\n", style="bold")
-        workflows_text.append("   /permissions → /logs security → /sandbox on\n\n", style="dim")
-        
-        workflows_text.append("4️⃣ ", style="bright_yellow")
-        workflows_text.append("Session Management\n", style="bold")
-        workflows_text.append("   /memory status → /export → /cls reset", style="dim")
-        
+        for i, (nome, fluxo) in enumerate(_WORKFLOWS, 1):
+            workflows_text.append(f"{i}. ", style="bright_blue")
+            workflows_text.append(f"{nome}\n", style="bold")
+            workflows_text.append(f"   {fluxo}\n\n", style="dim")
+
         workflows_panel = Panel(
             workflows_text,
-            title="🔄 Common Workflows",
-            border_style="green"
+            title="Fluxos Comuns",
+            border_style="green",
         )
-        
-        # Pro tips
-        tips_text = Text()
-        tips_text.append("💡 ", style="yellow")
-        tips_text.append("Use '/help <command>' to see detailed help for a command\n", style="dim")
 
-        tips_text.append("🎯 ", style="blue")
-        tips_text.append("Type '/' to see all available commands\n", style="dim")
-        
-        tips_text.append("📝 ", style="green")
-        tips_text.append("Use '@' to autocomplete file paths in commands\n", style="dim")
-        
-        tips_text.append("🔐 ", style="red")
-        tips_text.append("High-risk operations require manual approval (/approve)\n", style="dim")
-        
-        tips_text.append("💾 ", style="magenta")
-        tips_text.append("Save your work with /memory save before major changes\n", style="dim")
-        
-        tips_text.append("🚨 ", style="bright_red")
-        tips_text.append("Use '/cls reset' for a fresh start if things get messy", style="dim")
-        
-        tips_panel = Panel(
-            tips_text,
-            title="💡 Pro Tips",
-            border_style="magenta"
+        # --- Dicas ---
+        dicas_text = Text()
+        for dica in _DICAS:
+            dicas_text.append("• ", style="yellow")
+            dicas_text.append(f"{dica}\n", style="dim")
+
+        dicas_panel = Panel(
+            dicas_text,
+            title="Dicas",
+            border_style="magenta",
         )
-        
-        # Support information  
-        support_text = Text()
-        support_text.append("📚 ", style="blue")
-        support_text.append("Documentation: ", style="bold")
-        support_text.append("docs/2.md (Architecture Overview)\n", style="dim")
-        
-        support_text.append("🔧 ", style="green")
-        support_text.append("Debug Mode: ", style="bold")
-        support_text.append("/debug on (Enable detailed logging)\n", style="dim")
-        
-        support_text.append("📊 ", style="yellow")
-        support_text.append("System Info: ", style="bold")
-        support_text.append("/status (Version, connectivity, tools)\n", style="dim")
-        
-        support_text.append("💰 ", style="magenta")
-        support_text.append("Usage Tracking: ", style="bold")
-        support_text.append("/cost (Tokens and estimated costs)", style="dim")
-        
-        support_panel = Panel(
-            support_text,
-            title="🆘 Getting Help",
-            border_style="cyan"
+
+        # --- Ajuda e links ---
+        ajuda_text = Text()
+        ajuda_text.append("📚 ", style="blue")
+        ajuda_text.append("Documentação: ", style="bold")
+        ajuda_text.append(f"{_LINKS['Documentação']}\n", style="dim")
+        ajuda_text.append("🔧 ", style="green")
+        ajuda_text.append("Modo debug: ", style="bold")
+        ajuda_text.append("/debug on (ativa log detalhado)\n", style="dim")
+        ajuda_text.append("📊 ", style="yellow")
+        ajuda_text.append("Info do sistema: ", style="bold")
+        ajuda_text.append("/status (versão, conectividade, tools)\n", style="dim")
+        ajuda_text.append("💰 ", style="magenta")
+        ajuda_text.append("Rastreamento de uso: ", style="bold")
+        ajuda_text.append("/cost (tokens e custo estimado)\n", style="dim")
+        ajuda_text.append("🐛 ", style="red")
+        ajuda_text.append("Issues: ", style="bold")
+        ajuda_text.append(_LINKS["Issues"], style="dim")
+
+        ajuda_panel = Panel(
+            ajuda_text,
+            title="Ajuda e Suporte",
+            border_style="cyan",
         )
-        
-        # Combine all panels
+
         content = Group(
-            welcome_panel,
+            header_panel,
             "",
-            quickstart_table,
+            qs_table,
             "",
             Columns([features_panel, workflows_panel]),
             "",
-            Columns([tips_panel, support_panel])
+            Columns([dicas_panel, ajuda_panel]),
         )
-        
+
         return CommandResult.success_result(content, "rich")
-    
-    def get_help(self) -> str:
-        """Get command help"""
-        return """Show welcome message and getting started guide
-
-Usage:
-  /welcome              Show complete welcome guide and overview
-  /welcome              Same as above (no additional options)
-
-What This Shows:
-  • Welcome message and DEILE overview
-  • Quick start guide with essential commands
-  • Key features and capabilities overview
-  • Common workflow examples
-  • Pro tips for efficient usage
-  • Support and documentation information
-
-Perfect For:
-  • First time users getting started
-  • Refreshing knowledge of available features
-  • Quick reference of common workflows
-  • Understanding DEILE's capabilities
-
-The welcome guide provides a comprehensive overview of DEILE's features
-including autonomous orchestration, security management, memory control,
-and rich UI capabilities.
-
-Related Commands:
-  • /help - List all commands
-  • /status - System status  
-  • /memory - Session management
-  • /context - Current context info"""
