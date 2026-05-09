@@ -147,6 +147,10 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     # 'deny' = ignore non-allowlisted silently. Default keeps legacy behavior
     # for one minor version, then flips to 'deny' in the next major.
     "trust.project_layer_default": ("trust_project_layer_default", str),
+    # Enterprise/security profile settings (issue #138)
+    "security.sandbox_code_execution": ("sandbox_code_execution", _to_bool),
+    "security.encrypt_logs": ("encrypt_logs", _to_bool),
+    "monitoring.generate_compliance_reports": ("generate_compliance_reports", _to_bool),
 }
 
 
@@ -287,6 +291,12 @@ class Settings:
     #   - "deny": ignore non-allowlisted silently (after one warning).
     trust_project_layer_dirs: List[str] = field(default_factory=list)
     trust_project_layer_default: str = "auto"
+
+    # Enterprise/security profile settings (issue #138)
+    # When True these flags gate behavior in bash_tool, logs, and audit_logger.
+    sandbox_code_execution: bool = False
+    encrypt_logs: bool = False
+    generate_compliance_reports: bool = False
 
     def __post_init__(self) -> None:
         for attr in ("working_directory", "config_directory", "logs_directory", "cache_directory"):
@@ -611,6 +621,10 @@ _JSON_FIELD_MAP: Dict[str, str] = {
     # strict converters; this map covers the layered-loading path.
     "trust.project_layer_dirs": "trust_project_layer_dirs",
     "trust.project_layer_default": "trust_project_layer_default",
+    # Enterprise/security profile settings (issue #138)
+    "security.sandbox_code_execution": "sandbox_code_execution",
+    "security.encrypt_logs": "encrypt_logs",
+    "monitoring.generate_compliance_reports": "generate_compliance_reports",
 }
 
 
@@ -885,6 +899,39 @@ def _is_project_layer_trusted(
     return True, "auto_grace_period"
 
 
+def _peek_profile_name(global_path: Path) -> str:
+    """Read only ``profile.name`` from the user settings file, without applying
+    any other overrides.  Used to resolve the profile YAML before the full
+    layered-load so that profile settings are the lowest-priority layer.
+    """
+    data = _load_json_file(global_path)
+    found, value = _resolve_dotted(data, "profile.name")
+    return str(value) if found and value else "autonomous_agent"
+
+
+def _apply_profile_layer(settings: "Settings") -> None:
+    """Apply ``deile/config/profiles/{profile_name}.yaml`` as the lowest-priority
+    settings layer.  The YAML uses the same nested key structure as the profile
+    files (``security.sandbox_code_execution``, etc.) and is processed through
+    ``_apply_nested_dict`` → ``_JSON_FIELD_MAP`` so only mapped keys are applied.
+
+    A missing profile file is silently ignored (keeps dataclass defaults).
+    """
+    profiles_dir = Path(__file__).parent / "profiles"
+    profile_path = profiles_dir / f"{settings.profile_name}.yaml"
+    if not profile_path.exists():
+        logger.debug("settings: profile file not found: %s", profile_path)
+        return
+    try:
+        import yaml  # noqa: PLC0415 — lazy import; PyYAML is a required dep
+
+        data = yaml.safe_load(profile_path.read_text(encoding="utf-8")) or {}
+        _apply_nested_dict(settings, data)
+        logger.debug("settings: applied profile %s", profile_path.name)
+    except Exception as exc:  # pragma: no cover
+        logger.warning("settings: cannot apply profile %s: %s", profile_path, exc)
+
+
 def _apply_user_layer(settings: "Settings", global_path: Path) -> None:
     """Apply ``~/.deile/settings.json`` overrides on top of *settings*.
 
@@ -977,7 +1024,12 @@ def _load_layered_settings() -> "Settings":
     global_path = Path.home() / ".deile" / "settings.json"
     project_path = cwd / ".deile" / "settings.json"
 
-    # Layer 1: global user preferences (~/.deile/settings.json)
+    # Layer 0: profile preset — peek at profile.name from user settings first
+    # so the right YAML is loaded, then apply it at lowest priority.
+    settings.profile_name = _peek_profile_name(global_path)
+    _apply_profile_layer(settings)
+
+    # Layer 1: global user preferences (~/.deile/settings.json) — wins over profile
     _apply_user_layer(settings, global_path)
 
     # Layer 2: project preferences — gated by trust boundary (issue #125)

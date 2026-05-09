@@ -20,6 +20,7 @@ except ImportError as e:
     logging.warning(f"PTY modules not available: {e}")
     PTY_AVAILABLE = False
 
+from ..config.settings import get_settings
 from ..core.exceptions import ToolError
 from ..orchestration.artifact_manager import ArtifactManager
 from ..security.permissions import PermissionManager
@@ -432,7 +433,11 @@ class BashExecuteTool(SyncTool):
             
             if not command or not command.strip():
                 raise ToolError("Command cannot be empty")
-            
+
+            # Enforce sandbox_code_execution profile setting (issue #138)
+            if get_settings().sandbox_code_execution:
+                sandbox = True
+
             # Prepare working directory
             working_dir = Path(working_directory).resolve()
             if not working_dir.exists():

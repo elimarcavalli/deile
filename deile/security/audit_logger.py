@@ -1,5 +1,6 @@
 """Audit Logger for DEILE Security Events"""
 
+import atexit
 import json
 import logging
 from dataclasses import asdict, dataclass
@@ -100,23 +101,76 @@ class AuditLogger:
         # Track events in memory for quick access
         self.recent_events: List[AuditEvent] = []
         self.max_memory_events = 1000
-        
+
         # Initialize with session start event
         self.log_event(
             event_type=AuditEventType.TOOL_EXECUTION,
             severity=SeverityLevel.INFO,
             actor="system",
-            resource="audit_logger", 
+            resource="audit_logger",
             action="initialize",
             result="success",
             details={"session_id": self.session_id, "log_file": str(self.log_file)}
         )
+
+        # Register session-end compliance report when the profile requests it (issue #138).
+        self._compliance_report_registered = False
+        self._maybe_register_compliance_report()
     
     def _generate_session_id(self) -> str:
-        """Generate unique session identifier"""
-        from datetime import datetime
         return f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    
+
+    def _maybe_register_compliance_report(self) -> None:
+        """Register an atexit handler to write a compliance report at session end
+        when ``generate_compliance_reports=True`` is set in the active profile.
+        """
+        if self._compliance_report_registered:
+            return
+        try:
+            from ..config.settings import get_settings  # noqa: PLC0415
+
+            if not get_settings().generate_compliance_reports:
+                return
+        except Exception:  # pragma: no cover
+            return
+        atexit.register(self._write_compliance_report)
+        self._compliance_report_registered = True
+        logging.getLogger("deile.security.audit").info(
+            "Compliance report generation enabled; report will be written at session end."
+        )
+
+    def generate_compliance_report(self, output_dir: Optional[Path] = None) -> Path:
+        """Write a JSON compliance summary for the current session.
+
+        The report contains the security summary produced by
+        ``get_security_summary()`` plus the full list of audit events.
+        Returns the path of the written file.
+        """
+        target_dir = output_dir or self.log_dir
+        target_dir.mkdir(parents=True, exist_ok=True)
+        report_path = target_dir / f"compliance_report_{self.session_id}.json"
+        report = {
+            "session_id": self.session_id,
+            "generated_at": datetime.now().isoformat(),
+            "summary": self.get_security_summary(),
+            "events": [e.to_dict() for e in self.recent_events],
+        }
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        logging.getLogger("deile.security.audit").info(
+            "Compliance report written: %s", report_path
+        )
+        return report_path
+
+    def _write_compliance_report(self) -> None:
+        """atexit callback — silently swallow errors so shutdown is never blocked."""
+        try:
+            self.generate_compliance_report()
+        except Exception:  # pragma: no cover
+            pass
+
+
     def log_event(self, 
                   event_type: AuditEventType,
                   severity: SeverityLevel,
