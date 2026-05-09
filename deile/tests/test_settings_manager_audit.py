@@ -26,40 +26,13 @@ import pytest
 from deile.commands.settings_manager import (SettingsManager, _hash_value,
                                              _is_secret_key,
                                              _value_fingerprint)
-from deile.security.permissions import (PermissionLevel, PermissionRule,
-                                        ResourceType)
 
 pytestmark = pytest.mark.security
 
-
-@pytest.fixture
-def allow_settings_writes():
-    """Replace the settings-write rule with a permissive one for the test.
-
-    Mutates the singleton in place — combined with conftest's session-scoped
-    AuditLogger isolation and per-test Settings reset, this stays clean.
-    """
-    from deile.security import permissions as perm_module
-
-    pm = perm_module.get_permission_manager()
-    saved = pm.get_rule_by_id("settings_write_default")
-    pm.add_rule(
-        PermissionRule(
-            id="settings_write_default",
-            name="Settings Write (Test)",
-            description="Test override — allow settings writes.",
-            resource_type=ResourceType.FILE,
-            resource_pattern=r"^settings:(global|project):.*$",
-            tool_names=["settings_manager"],
-            permission_level=PermissionLevel.WRITE,
-            priority=50,
-        )
-    )
-    try:
-        yield pm
-    finally:
-        if saved is not None:
-            pm.add_rule(saved)
+# ``allow_settings_writes`` lives in ``deile/tests/conftest.py`` (issue #125
+# follow-up) — single source of truth for the permissive override. The
+# tests below inject it as a parameter; the handful that test denial paths
+# build a ``MagicMock`` PermissionManager instead.
 
 
 def _make_manager(tmp_path: Path) -> SettingsManager:

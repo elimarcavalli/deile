@@ -1,4 +1,10 @@
-"""Tests: /skills command — issue #104."""
+"""Tests: /skills command — issue #104.
+
+Uses the centralized ``allow_settings_writes`` fixture (root conftest)
+module-wide via ``pytestmark`` because every test below assumes
+``set_setting`` / ``add_skills_path`` writes succeed (issue #125 made them
+fail-closed by default).
+"""
 
 from __future__ import annotations
 
@@ -12,34 +18,8 @@ from rich.console import Console
 from deile.commands.base import CommandContext
 from deile.commands.builtin.skills_command import SkillsCommand
 from deile.commands.settings_manager import SettingsManager
-from deile.security.permissions import (PermissionLevel, PermissionRule,
-                                        ResourceType, get_permission_manager)
 
-
-@pytest.fixture(autouse=True)
-def _allow_settings_writes_for_skills_tests():
-    """Issue #125: settings writes are fail-closed by default. The /skills
-    UX tests assume writes succeed, so we install a permissive rule for
-    the duration of each test in this module."""
-    pm = get_permission_manager()
-    saved = pm.get_rule_by_id("settings_write_default")
-    pm.add_rule(
-        PermissionRule(
-            id="settings_write_default",
-            name="Settings Write (Skills test)",
-            description="Test override — allow settings writes.",
-            resource_type=ResourceType.FILE,
-            resource_pattern=r"^settings:(global|project):.*$",
-            tool_names=["settings_manager"],
-            permission_level=PermissionLevel.WRITE,
-            priority=50,
-        )
-    )
-    try:
-        yield
-    finally:
-        if saved is not None:
-            pm.add_rule(saved)
+pytestmark = pytest.mark.usefixtures("allow_settings_writes")
 
 
 def _render(content) -> str:
