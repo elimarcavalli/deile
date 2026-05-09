@@ -24,16 +24,19 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from deile.orchestration.pipeline.claude_dispatcher import (
-    ClaudeDispatcher, render_implement_prompt, render_review_prompt)
+    ClaudeDispatcher, render_implement_prompt, render_mention_prompt,
+    render_review_prompt)
 from deile.orchestration.pipeline.constants import (
     PIPELINE_MSG_TRUNCATE_CHARS, PIPELINE_POLL_INTERVAL_SECONDS,
     PIPELINE_STOP_TIMEOUT_SECONDS)
 from deile.orchestration.pipeline.follow_up_detector import detect_follow_ups
-from deile.orchestration.pipeline.github_client import (GhCommandError,
+from deile.orchestration.pipeline.github_client import (CommentRef,
+                                                        GhCommandError,
                                                         GitHubClient, IssueRef)
 from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
@@ -82,6 +85,9 @@ class PipelineConfig:
         {"intent", "bug", "refactor", "feature_request", "security"}
     )
     classify_skip_labels: frozenset = frozenset({"infra"})
+    enable_pr_triage: bool = True
+    enable_mention_handling: bool = True
+    mention_handle: str = "@deile-one"
     # Default True: two simultaneous /pipeline start on the same host fail fast.
     use_pid_lock: bool = True
     # When True, Stage 3 reviews any non-draft PR regardless of head branch origin.
@@ -110,6 +116,8 @@ class _Stats:
     follow_ups_skipped: int = 0
     # Incremented when a scheduled action is disabled via enable_* config.
     skipped_runs: int = 0
+    prs_classified: int = 0
+    mentions_processed: int = 0
 
 
 class PipelineMonitor:
@@ -124,6 +132,7 @@ class PipelineMonitor:
         claude: Optional[ClaudeDispatcher] = None,
         notifier: Optional[DiscordNotifier] = None,
         review_callback: Optional[Callable[[IssueRef], Awaitable[str]]] = None,
+        post_merge_callback: Optional[Callable[[int, str, str], Awaitable[None]]] = None,
         identity: Optional[MonitorIdentity] = None,
         schedule_store: Optional[ScheduleStore] = None,
     ) -> None:
@@ -142,6 +151,9 @@ class PipelineMonitor:
         self._stop_event = asyncio.Event()
         self._task: Optional[asyncio.Task] = None
         self._held_lock: Optional[Path] = None
+        self._post_merge_cb = post_merge_callback
+        self._mention_cursor_path = Path(config.base_repo_path) / "data" / "mention_cursor.txt"
+        self._mention_cursor: Optional[datetime] = None
         # Schedule store — when present, schedule entries drive when each
         # action fires (instead of the fixed poll interval). On startup the
         # monitor first drains any catch-up queue (entries whose run time
@@ -286,6 +298,8 @@ class PipelineMonitor:
             "implement": self.config.enable_implement,
             "pr_review": self.config.enable_pr_review,
             "follow_ups": self.config.enable_follow_ups,
+            "pr_triage": self.config.enable_pr_triage,
+            "mention_handling": self.config.enable_mention_handling,
         }
         flag = _ENABLE_FLAGS.get(run.action)
         if flag is False:
@@ -308,6 +322,10 @@ class PipelineMonitor:
             await self._review_one_open_pr()
         elif run.action == "follow_ups":
             await self._standalone_follow_ups()
+        elif run.action == "pr_triage":
+            await self._classify_new_prs()
+        elif run.action == "mention_handling":
+            await self._process_mentions()
         else:
             logger.debug("scheduled action %s unknown; skipped", run.action)
 
@@ -396,6 +414,10 @@ class PipelineMonitor:
                 if self.config.enable_pr_review and "pr_review" not in scheduled_actions:
                     logger.debug("pr_review not in schedule; running legacy fallback")
                     await self._review_one_open_pr()
+                if self.config.enable_pr_triage:
+                    await self._classify_new_prs()
+                if self.config.enable_mention_handling:
+                    await self._process_mentions()
             return
 
         if self.config.enable_classify:
@@ -406,6 +428,10 @@ class PipelineMonitor:
             await self._implement_one_reviewed_issue()
         if self.config.enable_pr_review:
             await self._review_one_open_pr()
+        if self.config.enable_pr_triage:
+            await self._classify_new_prs()
+        if self.config.enable_mention_handling:
+            await self._process_mentions()
 
     # ----- stage 0: auto-classify new issues -----------------------
 
@@ -494,6 +520,103 @@ class PipelineMonitor:
                 await self.github.comment_on_issue(issue.number, comment)
             except Exception as exc:  # noqa: BLE001 — comment is best-effort; label already applied
                 logger.warning("auto-classify comment #%s failed (label applied): %s", issue.number, exc)
+
+    # ----- PR triage: classify open non-draft PRs with no pipeline labels ----
+
+    async def _classify_new_prs(self) -> None:
+        """Apply ``~review:pendente`` to open non-draft PRs that have no pipeline labels."""
+        try:
+            prs = await self.github.list_unclassified_prs()
+        except GhCommandError as exc:
+            self._stats.errors += 1
+            self._stats.gh_errors += 1
+            logger.error("could not list unclassified PRs (gh error): %s", exc)
+            await self.notifier.error("pr_triage/list", str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001
+            self._stats.errors += 1
+            logger.error("could not list unclassified PRs: %s", exc)
+            return
+
+        for pr in prs:
+            if any(lb.startswith("~") for lb in pr.labels):
+                continue
+            try:
+                batch = await self.github.claim_with_batch("pr", pr.number, pr.title)
+            except GhCommandError as exc:
+                self._stats.errors += 1
+                self._stats.gh_errors += 1
+                logger.error("pr_triage claim #%s failed: %s", pr.number, exc)
+                continue
+            if batch is None:
+                logger.debug("PR #%s already claimed; skipping pr_triage", pr.number)
+                continue
+            try:
+                await self.github.add_labels("pr", pr.number, [REVIEW_PENDING])
+            except GhCommandError as exc:
+                self._stats.errors += 1
+                self._stats.gh_errors += 1
+                logger.error("pr_triage label #%s failed: %s", pr.number, exc)
+                await self.notifier.error(f"pr_triage #{pr.number}", str(exc))
+                continue
+            self._stats.prs_classified += 1
+            logger.info("pr_triage: classified PR #%s with %s", pr.number, REVIEW_PENDING)
+            await self.notifier.pr_auto_classified(pr.number, pr.title, pr.url)
+
+    # ----- mention handling: dispatch @deile-one comments to Claude ----------
+
+    def _load_mention_cursor(self) -> datetime:
+        try:
+            if self._mention_cursor is not None:
+                return self._mention_cursor
+            if self._mention_cursor_path.exists():
+                raw = self._mention_cursor_path.read_text().strip()
+                return datetime.fromisoformat(raw).astimezone(timezone.utc)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mention cursor load failed; using 30-min lookback: %s", exc)
+        return datetime.now(tz=timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=30)
+
+    def _save_mention_cursor(self, ts: datetime) -> None:
+        try:
+            self._mention_cursor_path.parent.mkdir(parents=True, exist_ok=True)
+            self._mention_cursor_path.write_text(ts.isoformat())
+            self._mention_cursor = ts
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mention cursor save failed: %s", exc)
+
+    async def _process_mentions(self) -> None:
+        """Poll issue/PR comments since cursor, dispatch @deile-one mentions to Claude."""
+        since = self._load_mention_cursor()
+        handle = self.config.mention_handle.lower()
+        try:
+            issue_comments = await self.github.list_issue_comments_since(since)
+            pr_comments = await self.github.list_pr_review_comments_since(since)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mention poll failed: %s", exc)
+            return
+        all_comments: list[CommentRef] = issue_comments + pr_comments
+        now = datetime.now(tz=timezone.utc)
+        for ref in all_comments:
+            if handle not in ref.body.lower():
+                continue
+            prompt = render_mention_prompt(
+                self.config.repo, ref.html_url, ref.body, ref.author
+            )
+            try:
+                result = await self.claude.run(prompt, cwd=self.config.base_repo_path)
+                if not result.ok:
+                    logger.warning(
+                        "mention dispatch failed (rc=%d) for %s",
+                        result.returncode, ref.html_url,
+                    )
+                    continue
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("mention dispatch error for %s: %s", ref.html_url, exc)
+                continue
+            self._stats.mentions_processed += 1
+            logger.info("mention processed: %s by @%s", ref.html_url, ref.author)
+            await self.notifier.mention_processed(ref.html_url, ref.author)
+        self._save_mention_cursor(now)
 
     # ----- stage 1: review ------------------------------------------
 
@@ -706,7 +829,11 @@ class PipelineMonitor:
         await self.notifier.pr_reviewed(target.number, target.title, target.url, merged=merged)
         if merged and self.config.enable_follow_ups:
             await self._stage4_follow_ups(target.number, target.title, target.url)
-
+        if merged and self._post_merge_cb is not None:
+            try:
+                await self._post_merge_cb(target.number, target.title, target.url)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("post_merge_callback failed for PR #%d: %s", target.number, exc)
 
     # ----- stage 4: follow-up issues from merged PR ----------------
 

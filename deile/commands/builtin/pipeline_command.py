@@ -121,6 +121,8 @@ class PipelineCommand(DirectCommand):
 
         if monitor is None:
             from deile.config.settings import get_settings
+            from deile.orchestration.pipeline.post_merge_callback import \
+                make_post_merge_callback
             from deile.orchestration.pipeline.review_callback import \
                 make_review_callback
 
@@ -129,7 +131,11 @@ class PipelineCommand(DirectCommand):
                 base_repo_path=_resolve_base_path(),
                 notify_user_id=get_settings().pipeline_notify_user_id,
             )
-            monitor = PipelineMonitor(cfg, review_callback=make_review_callback(agent))
+            monitor = PipelineMonitor(
+                cfg,
+                review_callback=make_review_callback(agent),
+                post_merge_callback=make_post_merge_callback(agent),
+            )
             # Persist on agent so subsequent invocations reuse the instance.
             # When invoked from CLI one-shot mode (#126) agent may be None —
             # the monitor is single-use in that case, no caching needed.
@@ -147,6 +153,8 @@ class PipelineCommand(DirectCommand):
                 from deile.config.settings import get_settings
                 from deile.orchestration.pipeline.identity import \
                     MonitorIdentity
+                from deile.orchestration.pipeline.post_merge_callback import \
+                    make_post_merge_callback
                 from deile.orchestration.pipeline.review_callback import \
                     make_review_callback
                 from deile.orchestration.pipeline.scheduler import \
@@ -176,6 +184,7 @@ class PipelineCommand(DirectCommand):
                     identity=identity,
                     schedule_store=schedule_store,
                     review_callback=make_review_callback(agent),
+                    post_merge_callback=make_post_merge_callback(agent),
                 )
                 agent.pipeline_monitor = monitor  # type: ignore[attr-defined]
             await monitor.start()
