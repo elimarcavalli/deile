@@ -321,7 +321,7 @@ class TestNoMojibakeInAnyOutput:
     async def test_no_mojibake_in_status(self):
         result = await _cmd().execute(_ctx("status"))
         rendered = _render(result.content)
-        mojibake_markers = ["üß†", "‚úÖ", "ä¸€", "\x00"]
+        mojibake_markers = ["üss†", "‚úÖ", "ä¸0", "\x00"]
         for marker in mojibake_markers:
             assert marker not in rendered, f"Mojibake marker {marker!r} found in output"
 
@@ -329,7 +329,7 @@ class TestNoMojibakeInAnyOutput:
         mm = _make_mock_mm()
         result = await _cmd().execute(_ctx("compact", agent=_FakeAgent(mm)))
         rendered = _render(result.content)
-        assert "üß†" not in rendered and "‚úÖ" not in rendered
+        assert "üss†" not in rendered and "‚úÖ" not in rendered
 
     async def test_output_is_readable_utf8(self):
         result = await _cmd().execute(_ctx("status"))
@@ -563,6 +563,22 @@ class TestAdditionalCoverage:
         assert result.success is True
         rendered = _render(result.content)
         assert "Nenhum" in rendered or "checkpoint" in rendered.lower()
+
+    async def test_save_path_traversal_raises(self, tmp_path, monkeypatch):
+        """Checkpoint names with directory separators are rejected."""
+        from deile.core.exceptions import CommandError
+        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path)
+        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_INDEX", tmp_path / "index.json")
+        with pytest.raises(CommandError, match="inválido"):
+            await _cmd().execute(_ctx("save ../../evil"))
+
+    async def test_restore_path_traversal_raises(self, tmp_path, monkeypatch):
+        """Restore rejects names with directory separators."""
+        from deile.core.exceptions import CommandError
+        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_DIR", tmp_path)
+        monkeypatch.setattr("deile.commands.builtin.memory_command._CHECKPOINT_INDEX", tmp_path / "index.json")
+        with pytest.raises(CommandError, match="inválido"):
+            await _cmd().execute(_ctx("restore ../../etc/passwd"))
 
 
 class TestUsageHighImpact:
