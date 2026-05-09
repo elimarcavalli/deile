@@ -8,7 +8,8 @@ import pytest
 from rich.console import Console
 
 from deile.commands.base import CommandContext
-from deile.commands.builtin.logs_command import MAX_SAFE_LIMIT, LogsCommand
+from deile.commands.builtin.logs_command import (_VALID_EXPORT_FORMATS,
+                                                 MAX_SAFE_LIMIT, LogsCommand)
 from deile.security.audit_logger import (AuditEventType, AuditLogger,
                                          SeverityLevel)
 
@@ -61,6 +62,7 @@ def _log(audit_logger: AuditLogger, severity: SeverityLevel, event_type: AuditEv
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 class TestClearUsesPublicMethod:
     async def test_clear_calls_clear_events(self):
         """_clear_logs() must delegate to audit_logger.clear_events(), not .recent_events.clear()."""
@@ -96,6 +98,7 @@ class TestClearUsesPublicMethod:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 class TestClearReturnsRealCount:
     async def test_clear_shows_correct_count(self):
         al = _fresh_audit_logger()
@@ -136,6 +139,7 @@ class TestClearReturnsRealCount:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 class TestRecentLimitCappedAtMaxSafe:
     async def test_max_safe_limit_constant_is_500(self):
         assert MAX_SAFE_LIMIT == 500
@@ -182,6 +186,7 @@ class TestRecentLimitCappedAtMaxSafe:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 class TestRecentShowsWarningWhenCapped:
     async def test_warning_shown_when_limit_exceeds_max(self):
         al = _fresh_audit_logger()
@@ -205,17 +210,18 @@ class TestRecentShowsWarningWhenCapped:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 class TestOverviewNoCrashWithZeroEvents:
     async def test_zero_events_does_not_crash(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx(""))
         assert result.success is True
 
     async def test_zero_events_renders_without_repr_artifacts(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx(""))
         rendered = _render(result.content)
@@ -224,7 +230,7 @@ class TestOverviewNoCrashWithZeroEvents:
 
     async def test_zero_events_shows_zero_total(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx(""))
         rendered = _render(result.content)
@@ -236,6 +242,7 @@ class TestOverviewNoCrashWithZeroEvents:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 class TestOverviewNoCrashWhenSummaryIsString:
     async def test_string_summary_does_not_crash(self):
         al = _fresh_audit_logger()
@@ -258,10 +265,11 @@ class TestOverviewNoCrashWhenSummaryIsString:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 class TestErrorsDefaultShowsAllSeverities:
     async def test_default_shows_warning(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         _log(al, SeverityLevel.WARNING)
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx("errors"))
@@ -271,7 +279,7 @@ class TestErrorsDefaultShowsAllSeverities:
 
     async def test_default_shows_error(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         _log(al, SeverityLevel.ERROR)
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx("errors"))
@@ -281,7 +289,7 @@ class TestErrorsDefaultShowsAllSeverities:
 
     async def test_default_shows_critical(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         _log(al, SeverityLevel.CRITICAL)
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx("errors"))
@@ -295,10 +303,11 @@ class TestErrorsDefaultShowsAllSeverities:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 class TestErrorsFilteredBySeverity:
     async def _setup_all_severities(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         _log(al, SeverityLevel.WARNING)
         _log(al, SeverityLevel.ERROR)
         _log(al, SeverityLevel.CRITICAL)
@@ -358,23 +367,12 @@ class TestErrorsFilteredBySeverity:
         assert SeverityLevel.WARNING not in captured
         assert SeverityLevel.ERROR not in captured
 
-    async def test_unknown_severity_falls_back_to_all(self):
+    async def test_unknown_severity_raises_command_error(self):
+        from deile.core.exceptions import CommandError
         al = await self._setup_all_severities()
         cmd = _cmd_with_logger(al)
-        captured: list = []
-        original = al.get_recent_events
-
-        def _spy(limit=100, severity=None, **kwargs):
-            captured.append(severity)
-            return original(limit=limit, severity=severity, **kwargs)
-
-        al.get_recent_events = _spy  # type: ignore[method-assign]
-
-        result = await cmd.execute(_ctx("errors --severity unknown_level"))
-        assert result.success is True
-        assert SeverityLevel.WARNING in captured
-        assert SeverityLevel.ERROR in captured
-        assert SeverityLevel.CRITICAL in captured
+        with pytest.raises(CommandError, match="Severidade inválida"):
+            await cmd.execute(_ctx("errors --severity unknown_level"))
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +418,7 @@ _ENGLISH_FORBIDDEN = [
 ]
 
 
+@pytest.mark.unit
 class TestAllUIStringsInPortuguese:
     async def test_overview_has_no_english_strings(self):
         al = _fresh_audit_logger()
@@ -439,7 +438,7 @@ class TestAllUIStringsInPortuguese:
 
     async def test_errors_empty_has_no_english_strings(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx("errors"))
         rendered = _render(result.content)
@@ -448,7 +447,7 @@ class TestAllUIStringsInPortuguese:
 
     async def test_recent_empty_has_no_english_strings(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx("recent"))
         rendered = _render(result.content)
@@ -467,6 +466,7 @@ class TestAllUIStringsInPortuguese:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 class TestAuditLoggerClearEvents:
     def test_clear_events_returns_count(self):
         al = _fresh_audit_logger()
@@ -484,7 +484,7 @@ class TestAuditLoggerClearEvents:
 
     def test_clear_events_returns_zero_when_already_empty(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         count = al.clear_events()
         assert count == 0
 
@@ -539,16 +539,17 @@ class TestAuditLoggerEventCount:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 class TestGetSecuritySummaryZeroEvents:
     def test_zero_events_returns_dict(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         summary = al.get_security_summary()
         assert isinstance(summary, dict)
 
     def test_zero_events_has_required_keys(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         summary = al.get_security_summary()
         required = {"total_events", "session_id", "event_types", "permission_denials",
                     "secret_detections", "recent_critical_events", "log_file"}
@@ -557,7 +558,7 @@ class TestGetSecuritySummaryZeroEvents:
 
     def test_zero_events_totals_are_zero(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         summary = al.get_security_summary()
         assert summary["total_events"] == 0
         assert summary["permission_denials"] == 0
@@ -570,6 +571,7 @@ class TestGetSecuritySummaryZeroEvents:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 class TestLogsCommandSmoke:
     async def test_no_args_returns_success(self):
         result = await LogsCommand().execute(_ctx(""))
@@ -637,14 +639,47 @@ class TestLogsCommandSmoke:
 
 
 # ---------------------------------------------------------------------------
+# Test: /logs summary with zero events
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestSummaryZeroEvents:
+    async def test_summary_with_zero_events_returns_success(self):
+        al = _fresh_audit_logger()
+        al.clear_events()
+        cmd = _cmd_with_logger(al)
+        result = await cmd.execute(_ctx("summary"))
+        assert result.success is True
+
+    async def test_summary_with_zero_events_renders_without_crash(self):
+        al = _fresh_audit_logger()
+        al.clear_events()
+        cmd = _cmd_with_logger(al)
+        result = await cmd.execute(_ctx("summary"))
+        rendered = _render(result.content)
+        assert rendered.strip()
+        assert "<rich." not in rendered
+
+    async def test_summary_with_zero_events_shows_zero(self):
+        al = _fresh_audit_logger()
+        al.clear_events()
+        cmd = _cmd_with_logger(al)
+        result = await cmd.execute(_ctx("summary"))
+        rendered = _render(result.content)
+        assert "0" in rendered
+
+
+# ---------------------------------------------------------------------------
 # Test: non-empty paths for each subcommand
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.unit
 class TestNonEmptyPaths:
     async def test_security_logs_with_security_event(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         _log(al, SeverityLevel.WARNING, AuditEventType.PERMISSION_DENIED)
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx("security"))
@@ -654,7 +689,7 @@ class TestNonEmptyPaths:
 
     async def test_security_logs_with_secret_detected(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         al.log_secret_detection("myfile.py", "api_key", 42, 0.99, redacted=False)
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx("security"))
@@ -662,7 +697,7 @@ class TestNonEmptyPaths:
 
     async def test_security_logs_with_secret_redacted(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         al.log_secret_detection("myfile.py", "token", 10, 0.95, redacted=True)
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx("security"))
@@ -670,7 +705,7 @@ class TestNonEmptyPaths:
 
     async def test_permission_logs_with_events(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         al.log_permission_check("my_tool", "/etc/passwd", "read", allowed=True)
         al.log_permission_check("my_tool", "/etc/shadow", "read", allowed=False)
         cmd = _cmd_with_logger(al)
@@ -681,7 +716,7 @@ class TestNonEmptyPaths:
 
     async def test_secret_logs_with_events(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         al.log_secret_detection("config.py", "password", 5, 0.88, redacted=True)
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx("secrets"))
@@ -691,7 +726,7 @@ class TestNonEmptyPaths:
 
     async def test_tool_logs_empty(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx("tools"))
         assert result.success is True
@@ -700,7 +735,7 @@ class TestNonEmptyPaths:
 
     async def test_tool_logs_with_events(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         al.log_tool_execution("bash_tool", "ls /tmp", True, duration_ms=42, exit_code=0)
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx("tools"))
@@ -710,7 +745,7 @@ class TestNonEmptyPaths:
 
     async def test_plan_logs_with_events(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         al.log_plan_execution("plan-abc", "start", "success", step_count=3)
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx("plans"))
@@ -720,7 +755,7 @@ class TestNonEmptyPaths:
 
     async def test_plan_logs_with_approval_events(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         al.log_approval_event("plan-xyz", "step-1", "required", "bash_tool", "high")
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx("plans"))
@@ -737,34 +772,20 @@ class TestNonEmptyPaths:
         assert "%" in rendered
 
     async def test_export_json_success(self):
-        import os
-        import tempfile
         al = _fresh_audit_logger()
         cmd = _cmd_with_logger(al)
-        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
-            path = f.name
-        try:
-            result = await cmd.execute(_ctx(f"export {path}"))
-            assert result.success is True
-            rendered = _render(result.content)
-            assert "Exportad" in rendered
-        finally:
-            if os.path.exists(path):
-                os.unlink(path)
+        result = await cmd.execute(_ctx("export test_audit.json"))
+        assert result.success is True
+        rendered = _render(result.content)
+        assert "Exportad" in rendered
+        (al.log_dir / "test_audit.json").unlink(missing_ok=True)
 
     async def test_export_csv_success(self):
-        import os
-        import tempfile
         al = _fresh_audit_logger()
         cmd = _cmd_with_logger(al)
-        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as f:
-            path = f.name
-        try:
-            result = await cmd.execute(_ctx(f"export {path} csv"))
-            assert result.success is True
-        finally:
-            if os.path.exists(path):
-                os.unlink(path)
+        result = await cmd.execute(_ctx("export test_audit.csv csv"))
+        assert result.success is True
+        (al.log_dir / "test_audit.csv").unlink(missing_ok=True)
 
     async def test_export_failure_raises_command_error(self):
         from deile.core.exceptions import CommandError
@@ -776,11 +797,11 @@ class TestNonEmptyPaths:
         al.export_audit_log = _bad_export
         cmd = _cmd_with_logger(al)
         with pytest.raises(CommandError, match="Falha ao exportar"):
-            await cmd.execute(_ctx("export /tmp/test_export.json"))
+            await cmd.execute(_ctx("export test_export.json"))
 
     async def test_recent_capped_with_events(self):
         al = _fresh_audit_logger()
-        al.recent_events.clear()
+        al.clear_events()
         for _ in range(5):
             _log(al, SeverityLevel.INFO)
         cmd = _cmd_with_logger(al)
@@ -797,3 +818,68 @@ class TestNonEmptyPaths:
         assert result.success is True
         rendered = _render(result.content)
         assert rendered.strip()
+
+
+# ---------------------------------------------------------------------------
+# Test: export security — path traversal and format validation (blockers #179)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+class TestExportSecurity:
+    async def test_valid_formats_constant(self):
+        assert _VALID_EXPORT_FORMATS == {"json", "csv"}
+
+    async def test_invalid_format_raises_command_error(self):
+        from deile.core.exceptions import CommandError
+        al = _fresh_audit_logger()
+        cmd = _cmd_with_logger(al)
+        with pytest.raises(CommandError, match="Formato inválido"):
+            await cmd.execute(_ctx("export output.txt xml"))
+
+    async def test_path_traversal_rejected_via_double_dot(self):
+        al = _fresh_audit_logger()
+        cmd = _cmd_with_logger(al)
+        # ../../.env should be stripped to .env, written inside log_dir — not crash
+        result = await cmd.execute(_ctx("export ../../.env"))
+        assert result.success is True
+        # Confirm the file was written inside log_dir, not at the traversal path
+        import os
+        assert not os.path.exists("../../.env")
+
+    async def test_absolute_path_resolved_to_log_dir(self):
+        al = _fresh_audit_logger()
+        cmd = _cmd_with_logger(al)
+        result = await cmd.execute(_ctx("export /etc/cron.d/pwned"))
+        assert result.success is True
+        # Confirm /etc/cron.d/pwned was NOT written
+        import os
+        assert not os.path.exists("/etc/cron.d/pwned")
+
+    async def test_empty_filename_raises_command_error(self):
+        from deile.core.exceptions import CommandError
+        al = _fresh_audit_logger()
+        cmd = _cmd_with_logger(al)
+        # Path("/").name == "" which triggers the "Nome de arquivo inválido" guard
+        with pytest.raises(CommandError, match="inválido"):
+            await cmd.execute(_ctx("export /"))
+
+    async def test_export_writes_to_log_dir(self):
+        al = _fresh_audit_logger()
+        cmd = _cmd_with_logger(al)
+        result = await cmd.execute(_ctx("export test_output.json"))
+        assert result.success is True
+        expected = al.log_dir / "test_output.json"
+        assert expected.exists(), f"Expected export at {expected}"
+        expected.unlink()
+
+    async def test_audit_logger_export_resolves_against_log_dir(self):
+        al = _fresh_audit_logger()
+        # Even with a path traversal string, the file lands in log_dir
+        exported = al.export_audit_log("../../dangerous.json")
+        from pathlib import Path
+        result_path = Path(exported)
+        assert result_path.parent == al.log_dir
+        assert result_path.name == "dangerous.json"
+        if result_path.exists():
+            result_path.unlink()

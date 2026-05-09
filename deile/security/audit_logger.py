@@ -437,9 +437,8 @@ class AuditLogger:
 
     def clear_events(self) -> int:
         """Remove all in-memory events. Returns the count removed."""
-        count = len(self.recent_events)
-        self.recent_events.clear()
-        return count
+        old, self.recent_events = self.recent_events, []
+        return len(old)
 
     def export_audit_log(self,
                         output_file: str,
@@ -447,7 +446,7 @@ class AuditLogger:
                         include_details: bool = True) -> str:
         """Export audit log to file"""
         
-        output_path = Path(output_file)
+        output_path = self.log_dir / Path(output_file).name
         
         if format.lower() == "json":
             # Export as JSON lines

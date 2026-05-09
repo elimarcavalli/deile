@@ -1,6 +1,8 @@
 """Logs Command — Visualização de logs de auditoria de segurança e eventos do sistema."""
 
+import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List
 
 from rich.console import Group
@@ -12,6 +14,8 @@ from ...core.exceptions import CommandError
 from ...security.audit_logger import (AuditEvent, AuditEventType,
                                       SeverityLevel, get_audit_logger)
 from ..base import CommandContext, CommandResult, DirectCommand
+
+logger = logging.getLogger(__name__)
 
 MAX_SAFE_LIMIT = 500
 
@@ -42,6 +46,8 @@ _SEVERITY_FILTER_MAP: Dict[str, List[SeverityLevel]] = {
     "error": [SeverityLevel.ERROR],
     "critical": [SeverityLevel.CRITICAL],
 }
+
+_VALID_EXPORT_FORMATS = {"json", "csv"}
 
 _TYPE_DESCRIPTIONS = {
     "permission_check": "Validação de controle de acesso",
@@ -101,8 +107,13 @@ class LogsCommand(DirectCommand):
             elif action == "export":
                 if len(parts) < 2:
                     raise CommandError("logs export requer nome de arquivo: /logs export <arquivo> [formato]")
+                safe_name = Path(parts[1]).name
+                if not safe_name:
+                    raise CommandError("Nome de arquivo inválido")
                 format_type = parts[2] if len(parts) > 2 else "json"
-                return await self._export_logs(parts[1], format_type)
+                if format_type not in _VALID_EXPORT_FORMATS:
+                    raise CommandError(f"Formato inválido. Use: {', '.join(sorted(_VALID_EXPORT_FORMATS))}")
+                return await self._export_logs(safe_name, format_type)
             elif action == "clear":
                 return await self._clear_logs()
             else:
@@ -111,6 +122,7 @@ class LogsCommand(DirectCommand):
         except CommandError:
             raise
         except Exception as e:
+            logger.error("Falha inesperada no comando logs: %s", e, exc_info=True)
             raise CommandError(f"Falha ao executar comando logs: {str(e)}")
 
     async def _show_logs_overview(self) -> CommandResult:
@@ -219,7 +231,7 @@ class LogsCommand(DirectCommand):
                 "/logs export <arquivo>  - Exportar logs para arquivo\n\n"
                 "📊 **Filtros Disponíveis**\n"
                 "Tipo: permission, secret, tool, plan, approval\n"
-                "Severidade: debug, info, warning, error, critical\n"
+                "Severidade: warning, error, critical\n"
                 "Ator: nome_da_ferramenta, user, system",
                 style="dim",
             ),
@@ -290,7 +302,7 @@ class LogsCommand(DirectCommand):
         renderables.append(log_table)
         return CommandResult.success_result(Group(*renderables), "rich")
 
-    async def _show_security_logs(self, filters: List[str]) -> CommandResult:
+    async def _show_security_logs(self, _filters: List[str]) -> CommandResult:
         security_event_types = [
             AuditEventType.PERMISSION_DENIED,
             AuditEventType.SECRET_DETECTED,
@@ -300,7 +312,7 @@ class LogsCommand(DirectCommand):
 
         all_events = []
         for event_type in security_event_types:
-            all_events.extend(self.audit_logger.get_recent_events(event_type=event_type))
+            all_events.extend(self.audit_logger.get_recent_events(MAX_SAFE_LIMIT, event_type=event_type))
         all_events.sort(key=lambda e: e.timestamp, reverse=True)
 
         if not all_events:
@@ -354,9 +366,9 @@ class LogsCommand(DirectCommand):
 
         return CommandResult.success_result(security_table, "rich")
 
-    async def _show_permission_logs(self, filters: List[str]) -> CommandResult:
-        permission_events = self.audit_logger.get_recent_events(event_type=AuditEventType.PERMISSION_CHECK)
-        denied_events = self.audit_logger.get_recent_events(event_type=AuditEventType.PERMISSION_DENIED)
+    async def _show_permission_logs(self, _filters: List[str]) -> CommandResult:
+        permission_events = self.audit_logger.get_recent_events(MAX_SAFE_LIMIT, event_type=AuditEventType.PERMISSION_CHECK)
+        denied_events = self.audit_logger.get_recent_events(MAX_SAFE_LIMIT, event_type=AuditEventType.PERMISSION_DENIED)
 
         all_events = permission_events + denied_events
         all_events.sort(key=lambda e: e.timestamp, reverse=True)
@@ -415,10 +427,10 @@ class LogsCommand(DirectCommand):
 
         return CommandResult.success_result(Group(stats_panel, "", perm_table), "rich")
 
-    async def _show_secret_logs(self, filters: List[str]) -> CommandResult:
+    async def _show_secret_logs(self, _filters: List[str]) -> CommandResult:
         secret_events: List[AuditEvent] = []
         for event_type in (AuditEventType.SECRET_DETECTED, AuditEventType.SECRET_REDACTED):
-            secret_events.extend(self.audit_logger.get_recent_events(event_type=event_type))
+            secret_events.extend(self.audit_logger.get_recent_events(MAX_SAFE_LIMIT, event_type=event_type))
 
         if not secret_events:
             return CommandResult.success_result(
@@ -463,8 +475,8 @@ class LogsCommand(DirectCommand):
 
         return CommandResult.success_result(secrets_table, "rich")
 
-    async def _show_tool_logs(self, filters: List[str]) -> CommandResult:
-        tool_events = self.audit_logger.get_recent_events(event_type=AuditEventType.TOOL_EXECUTION)
+    async def _show_tool_logs(self, _filters: List[str]) -> CommandResult:
+        tool_events = self.audit_logger.get_recent_events(MAX_SAFE_LIMIT, event_type=AuditEventType.TOOL_EXECUTION)
 
         if not tool_events:
             return CommandResult.success_result(
@@ -510,12 +522,12 @@ class LogsCommand(DirectCommand):
 
         return CommandResult.success_result(tools_table, "rich")
 
-    async def _show_plan_logs(self, filters: List[str]) -> CommandResult:
-        plan_events = self.audit_logger.get_recent_events(event_type=AuditEventType.PLAN_EXECUTION)
+    async def _show_plan_logs(self, _filters: List[str]) -> CommandResult:
+        plan_events = self.audit_logger.get_recent_events(MAX_SAFE_LIMIT, event_type=AuditEventType.PLAN_EXECUTION)
         approval_events: List[AuditEvent] = [
             e
             for et in _APPROVAL_TYPES
-            for e in self.audit_logger.get_recent_events(event_type=et)
+            for e in self.audit_logger.get_recent_events(MAX_SAFE_LIMIT, event_type=et)
         ]
 
         all_events = plan_events + approval_events
@@ -578,11 +590,16 @@ class LogsCommand(DirectCommand):
         if "--severity" in filters:
             idx = filters.index("--severity")
             if idx + 1 < len(filters):
-                target_severities = _SEVERITY_FILTER_MAP.get(filters[idx + 1].lower(), all_severities)
+                filter_val = filters[idx + 1].lower()
+                mapped = _SEVERITY_FILTER_MAP.get(filter_val)
+                if mapped is None:
+                    valid = ", ".join(sorted(_SEVERITY_FILTER_MAP))
+                    raise CommandError(f"Severidade inválida '{filter_val}'. Use: {valid}")
+                target_severities = mapped
 
         error_events: List[AuditEvent] = []
         for severity in target_severities:
-            error_events.extend(self.audit_logger.get_recent_events(severity=severity))
+            error_events.extend(self.audit_logger.get_recent_events(MAX_SAFE_LIMIT, severity=severity))
         error_events.sort(key=lambda e: e.timestamp, reverse=True)
 
         if not error_events:
@@ -630,6 +647,11 @@ class LogsCommand(DirectCommand):
         stats_table.add_column("Percentual", style="yellow", width=15)
 
         total_events = len(recent_events)
+
+        if not recent_events:
+            stats_table.add_row("Total de Eventos", "0", "—")
+            return CommandResult.success_result(stats_table, "rich")
+
         type_counts: Dict[str, int] = {}
         for event in recent_events:
             key = event.event_type.value
@@ -647,8 +669,8 @@ class LogsCommand(DirectCommand):
 
     async def _export_logs(self, filename: str, format_type: str) -> CommandResult:
         try:
-            exported_file = self.audit_logger.export_audit_log(filename, format_type)
             event_count = self.audit_logger.event_count()
+            exported_file = self.audit_logger.export_audit_log(filename, format_type)
 
             return CommandResult.success_result(
                 Panel(
@@ -666,7 +688,10 @@ class LogsCommand(DirectCommand):
                 "rich",
             )
 
+        except CommandError:
+            raise
         except Exception as e:
+            logger.error("Falha ao exportar logs: %s", e, exc_info=True)
             raise CommandError(f"Falha ao exportar logs: {str(e)}")
 
     async def _clear_logs(self) -> CommandResult:
