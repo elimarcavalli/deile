@@ -14,13 +14,13 @@ to invoke DEILE anywhere:
 """
 
 from __future__ import annotations
-import venv as _venv  # noqa: N812 — local alias for testability (patched as deile.cli._venv)
 
 import argparse
 import asyncio
 import os
 import subprocess
 import sys
+import venv as _venv  # noqa: N812 — local alias for testability (patched as deile.cli._venv)
 from pathlib import Path
 from typing import List, Optional
 

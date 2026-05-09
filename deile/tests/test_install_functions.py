@@ -63,7 +63,7 @@ class TestWrapperTargetDir:
         """On Windows, delegates to _user_scripts_dir()."""
         from deile.cli import _wrapper_target_dir
 
-        mock_user_scripts.return_value = Path("C:/Users/test/AppData/Roaming/Python/Scripts")
+        mock_user_scripts.return_value = MagicMock()
         result = _wrapper_target_dir()
         assert result == mock_user_scripts.return_value
 
