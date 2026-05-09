@@ -1,4 +1,4 @@
-"""Enhanced Display Manager for DEILE - Solves SITUAÇÃO 1-3"""
+"""Enhanced Display Manager for DEILE"""
 
 import json
 import logging
@@ -23,12 +23,12 @@ class DisplayManager:
     def __init__(self, console: Console):
         self.console = console
         
-    def display_tool_result(self, 
+    def display_tool_result(self,
                            tool_name: str,
                            result: ToolResult,
                            display_policy: Optional[str] = None) -> None:
-        """Display tool result according to policy - SOLVES SITUAÇÃO 2 & 3"""
-        
+        """Display tool result according to policy"""
+
         # Use result's display policy or parameter override
         policy = DisplayPolicy(display_policy) if display_policy else result.display_policy
         
@@ -51,7 +51,7 @@ class DisplayManager:
             self._display_generic_tool_result(tool_name, result)
             
     def _display_list_files(self, result: ToolResult) -> None:
-        """Format file listing without broken characters - SOLVES SITUAÇÃO 1"""
+        """Format file listing as a tree."""
         
         if not result.data:
             self.console.print("[yellow]No files found[/yellow]")
@@ -171,19 +171,14 @@ class DisplayManager:
         
         self.console.print(f"\n[dim]{footer_text}[/dim]")
         
+    _STATUS_DISPLAY = {
+        "success": ("green", "✅"),
+        "error": ("red", "❌"),
+    }
+
     def _display_generic_tool_result(self, tool_name: str, result: ToolResult) -> None:
         """Generic tool result display"""
-        
-        # Status indicator
-        if result.status.value == "success":
-            status_style = "green"
-            status_icon = "✅"
-        elif result.status.value == "error":
-            status_style = "red"
-            status_icon = "❌"
-        else:
-            status_style = "yellow"
-            status_icon = "⏳"
+        status_style, status_icon = self._STATUS_DISPLAY.get(result.status.value, ("yellow", "⏳"))
             
         # Tool header
         header = f"{status_icon} {tool_name.replace('_', ' ').title()}"
@@ -216,7 +211,7 @@ class DisplayManager:
             self.console.print(error_panel)
             
     def format_list_files_safe(self, files_data: Dict[str, Any]) -> Tree:
-        """Format file listing without broken line characters - SITUAÇÃO 1 FIX"""
+        """Format file listing as a flat tree."""
         
         tree = Tree("📁 Files", style="blue bold")
         
