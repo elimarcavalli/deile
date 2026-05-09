@@ -319,27 +319,12 @@ class TestSettingsManagerGetAllPreferences:
         prefs = mgr.get_all_preferences()
         assert prefs["pipeline"]["repo"] == "project/repo"
 
-    def test_set_preference_persists(self, tmp_path):
-        # set_preference is fail-closed by default (issue #125 P0-2 / P1-5);
-        # install a permissive rule for this test's lifetime.
+    def test_set_preference_persists(self, tmp_path, allow_settings_writes):
+        # ``set_preference`` is fail-closed by default (issue #125 P0-2 / P1-5);
+        # the ``allow_settings_writes`` fixture (root conftest) installs a
+        # permissive override and restores the saved rule on teardown so the
+        # mutation never leaks into neighboring test files.
         from deile.commands.settings_manager import SettingsManager
-        from deile.security.permissions import (PermissionLevel,
-                                                PermissionRule, ResourceType,
-                                                get_permission_manager)
-
-        pm = get_permission_manager()
-        pm.add_rule(
-            PermissionRule(
-                id="settings_write_default",
-                name="Settings Write (Test)",
-                description="permissive override",
-                resource_type=ResourceType.FILE,
-                resource_pattern=r"^settings:(global|project):.*$",
-                tool_names=["settings_manager"],
-                permission_level=PermissionLevel.WRITE,
-                priority=50,
-            )
-        )
 
         mgr = SettingsManager(project_dir=tmp_path / "project", user_home=tmp_path / "home")
         assert mgr.set_preference("debug", {"enabled": True}) is True

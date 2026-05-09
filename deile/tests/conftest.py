@@ -48,3 +48,46 @@ def _isolate_audit_logger(tmp_path_factory):
         yield isolated
     finally:
         audit_module._audit_logger = saved
+
+
+@pytest.fixture
+def allow_settings_writes():
+    """Install a permissive ``settings_write_default`` rule for the test.
+
+    Issue #125 made the default rule fail-closed (``PermissionLevel.READ``).
+    Tests that exercise ``set_setting`` / ``add_skills_path`` / ``set_preference``
+    happy paths need a permissive override; tests that exercise denial paths
+    construct their own ``MagicMock`` PM instead.
+
+    The fixture snapshots the existing rule, replaces it with a WRITE rule,
+    and restores the snapshot on teardown — so the singleton is left clean
+    even when tests run standalone. Centralized here (issue #125 follow-up)
+    so individual test files do not need to copy-paste the rule definition,
+    and so a forgotten cleanup (one polluted singleton) cannot mask a real
+    regression in unrelated test files.
+    """
+    from deile.security import permissions as perm_module
+    from deile.security.permissions import (PermissionLevel, PermissionRule,
+                                            ResourceType)
+
+    pm = perm_module.get_permission_manager()
+    saved = pm.get_rule_by_id("settings_write_default")
+    pm.add_rule(
+        PermissionRule(
+            id="settings_write_default",
+            name="Settings Write (Test)",
+            description="Test override — allow settings writes.",
+            resource_type=ResourceType.FILE,
+            resource_pattern=r"^settings:(global|project):.*$",
+            tool_names=["settings_manager"],
+            permission_level=PermissionLevel.WRITE,
+            priority=50,
+        )
+    )
+    try:
+        yield pm
+    finally:
+        if saved is not None:
+            pm.add_rule(saved)
+        else:
+            pm.remove_rule("settings_write_default")

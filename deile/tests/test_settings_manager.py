@@ -1,4 +1,12 @@
-"""Tests: SettingsManager — issue #104."""
+"""Tests: SettingsManager — issue #104.
+
+These tests cover the JSON-persistence semantics of ``SettingsManager``;
+the permission-gate / audit emission added by issue #125 is exercised in
+``test_settings_manager_audit.py``. Apply ``allow_settings_writes`` (root
+conftest) module-wide so the legacy happy-path tests below run regardless
+of the fail-closed default introduced by #125 — without depending on test
+order in the broader suite.
+"""
 
 from __future__ import annotations
 
@@ -8,6 +16,8 @@ from pathlib import Path
 import pytest
 
 from deile.commands.settings_manager import SettingsManager
+
+pytestmark = pytest.mark.usefixtures("allow_settings_writes")
 
 # ---------------------------------------------------------------------------
 # Helpers

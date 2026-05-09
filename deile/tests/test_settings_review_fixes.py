@@ -27,41 +27,21 @@ import pytest
 from deile.commands.settings_manager import SettingsManager
 from deile.config.settings import (LogLevel, Settings,
                                    _is_project_layer_trusted, _set_typed)
-from deile.security.permissions import (PermissionLevel, PermissionManager,
-                                        PermissionRule, ResourceType)
+from deile.security.permissions import PermissionLevel, PermissionManager
 
 pytestmark = pytest.mark.security
 
 
 # ---------------------------------------------------------------------------
-# Fixtures
+# Fixtures — ``allow_writes`` is an alias for the centralized
+# ``allow_settings_writes`` (root conftest). The shorter local name is kept
+# for diff-friendliness with the existing review-fix assertions.
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def allow_writes():
-    """Install a permissive settings-write rule for the test."""
-    from deile.security import permissions as perm_module
-
-    pm = perm_module.get_permission_manager()
-    saved = pm.get_rule_by_id("settings_write_default")
-    pm.add_rule(
-        PermissionRule(
-            id="settings_write_default",
-            name="Settings Write (Test)",
-            description="Test override — allow settings writes.",
-            resource_type=ResourceType.FILE,
-            resource_pattern=r"^settings:(global|project):.*$",
-            tool_names=["settings_manager"],
-            permission_level=PermissionLevel.WRITE,
-            priority=50,
-        )
-    )
-    try:
-        yield pm
-    finally:
-        if saved is not None:
-            pm.add_rule(saved)
+def allow_writes(allow_settings_writes):
+    return allow_settings_writes
 
 
 def _make_manager(tmp_path: Path) -> SettingsManager:

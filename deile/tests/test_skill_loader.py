@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from deile.commands.skill_loader import (SkillLoader, _normalize_name,
                                          _parse_skill_file)
 
@@ -160,8 +162,14 @@ class TestSkillLoaderLoadSkills:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("allow_settings_writes")
 class TestSkillLoaderExtraPaths:
-    """SkillLoader reads extra directories from SettingsManager."""
+    """SkillLoader reads extra directories from SettingsManager.
+
+    Issue #125 made ``add_skills_path`` permission-gated (fail-closed by
+    default), so the tests in this class need the centralized permissive
+    rule installed for the duration of each test.
+    """
 
     def _write_skill(self, directory: Path, filename: str, name: str, body: str) -> None:
         directory.mkdir(parents=True, exist_ok=True)
