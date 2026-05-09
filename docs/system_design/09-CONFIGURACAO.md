@@ -148,10 +148,16 @@ Configura múltiplas seções tipadas:
 
 | Arquivo | Aplicação |
 |---|---|
-| `autonomous_agent.yaml` | Profile aplicável a `ConfigManager` |
-| `enterprise.yaml` | Profile aplicável a `ConfigManager` |
+| `autonomous_agent.yaml` | Profile default (aplicado por `_apply_profile_layer` em `settings.py`) |
+| `enterprise.yaml` | Profile opt-in (aplicado por `_apply_profile_layer` em `settings.py`) |
 
-> São profiles para alterar comportamento sem editar os YAMLs base.
+> Profiles são a camada de **menor** prioridade; são sobrescritos por
+> `~/.deile/settings.json`, pelo `<cwd>/.deile/settings.json` (se trusted)
+> e por env vars. Apenas chaves listadas em `_JSON_FIELD_MAP`
+> (`deile/config/settings.py`) são aplicadas — qualquer outra chave no
+> YAML é silenciosamente ignorada (issue #139). Adicionar uma chave nova
+> ao profile sem entrada correspondente em `_JSON_FIELD_MAP` resulta em
+> configuração morta.
 
 ## Arquivos em `config/` (raiz)
 
