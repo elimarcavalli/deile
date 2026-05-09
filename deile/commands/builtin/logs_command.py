@@ -108,9 +108,9 @@ class LogsCommand(DirectCommand):
             else:
                 raise CommandError(f"Ação desconhecida: {action}")
 
+        except CommandError:
+            raise
         except Exception as e:
-            if isinstance(e, CommandError):
-                raise
             raise CommandError(f"Falha ao executar comando logs: {str(e)}")
 
     async def _show_logs_overview(self) -> CommandResult:
@@ -622,7 +622,7 @@ class LogsCommand(DirectCommand):
         return CommandResult.success_result(errors_table, "rich")
 
     async def _show_summary(self) -> CommandResult:
-        recent_events = self.audit_logger.get_recent_events(self.audit_logger.max_memory_events)
+        recent_events = self.audit_logger.get_recent_events(MAX_SAFE_LIMIT)
 
         stats_table = Table(title="📊 Estatísticas Detalhadas de Auditoria", show_header=False)
         stats_table.add_column("Métrica", style="bold cyan", width=25)
@@ -648,7 +648,7 @@ class LogsCommand(DirectCommand):
     async def _export_logs(self, filename: str, format_type: str) -> CommandResult:
         try:
             exported_file = self.audit_logger.export_audit_log(filename, format_type)
-            event_count = len(self.audit_logger.recent_events)
+            event_count = self.audit_logger.event_count()
 
             return CommandResult.success_result(
                 Panel(

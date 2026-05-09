@@ -490,6 +490,51 @@ class TestAuditLoggerClearEvents:
 
 
 # ---------------------------------------------------------------------------
+# Test: AuditLogger.event_count() and max_events property
+# ---------------------------------------------------------------------------
+
+
+class TestAuditLoggerEventCount:
+    def test_event_count_matches_len_recent_events(self):
+        al = _fresh_audit_logger()
+        before = al.event_count()
+        assert before == len(al.recent_events)
+        _log(al, SeverityLevel.INFO)
+        _log(al, SeverityLevel.INFO)
+        assert al.event_count() == before + 2
+
+    def test_event_count_after_clear_is_zero(self):
+        al = _fresh_audit_logger()
+        _log(al, SeverityLevel.INFO)
+        al.clear_events()
+        assert al.event_count() == 0
+
+    def test_max_events_property_equals_max_memory_events(self):
+        al = _fresh_audit_logger()
+        assert al.max_events == al.max_memory_events
+
+    def test_export_uses_event_count_not_direct_access(self):
+        """_export_logs must use event_count() — not len(recent_events)."""
+        import inspect
+
+        from deile.commands.builtin.logs_command import LogsCommand as LC
+        source = inspect.getsource(LC._export_logs)
+        assert "recent_events" not in source, (
+            "Found recent_events in _export_logs — must use event_count()"
+        )
+
+    def test_show_summary_uses_max_safe_limit(self):
+        """_show_summary must not access max_memory_events directly."""
+        import inspect
+
+        from deile.commands.builtin.logs_command import LogsCommand as LC
+        source = inspect.getsource(LC._show_summary)
+        assert "max_memory_events" not in source, (
+            "Found max_memory_events in _show_summary — must use MAX_SAFE_LIMIT or max_events property"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Test: AuditLogger.get_security_summary() with zero events
 # ---------------------------------------------------------------------------
 

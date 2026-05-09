@@ -426,6 +426,15 @@ class AuditLogger:
             "log_file": str(self.log_file),
         }
     
+    def event_count(self) -> int:
+        """Return the current number of in-memory events."""
+        return len(self.recent_events)
+
+    @property
+    def max_events(self) -> int:
+        """Maximum number of events retained in memory."""
+        return self.max_memory_events
+
     def clear_events(self) -> int:
         """Remove all in-memory events. Returns the count removed."""
         count = len(self.recent_events)
