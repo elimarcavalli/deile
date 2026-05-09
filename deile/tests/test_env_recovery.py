@@ -31,10 +31,9 @@ from __future__ import annotations
 import importlib.util
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -258,7 +257,7 @@ class TestRunEnvRecovery:
                     "",                    # DEEPSEEK_API_KEY   (empty)
                     "",                    # GOOGLE_API_KEY     (empty)
                 ]
-                with patch("dotenv.load_dotenv") as ld:
+                with patch("dotenv.load_dotenv") as _:
                     result = _cli._run_env_recovery()
 
         assert result is True
@@ -305,7 +304,7 @@ class TestRunEnvRecovery:
                     "",              # DEEPSEEK_API_KEY   (empty)
                     "g-new-key",     # GOOGLE_API_KEY     → new value
                 ]
-                with patch("dotenv.load_dotenv") as ld:
+                with patch("dotenv.load_dotenv") as _:
                     result = _cli._run_env_recovery()
 
         assert result is True
@@ -348,7 +347,7 @@ class TestRunEnvRecovery:
                     "",    # DEEPSEEK
                     "",    # GOOGLE
                 ]
-                with patch("dotenv.load_dotenv") as ld:
+                with patch("dotenv.load_dotenv") as _:
                     result = _cli._run_env_recovery()
 
         assert result is True
@@ -380,7 +379,7 @@ class TestRunEnvRecovery:
                 with patch(
                     "dotenv.load_dotenv",
                     side_effect=ImportError("no dotenv"),
-                ) as ld:
+                ) as _:
                     result = _cli._run_env_recovery()
 
         assert result is True
@@ -411,7 +410,7 @@ class TestRunEnvRecovery:
                     "",
                     "",
                 ]
-                with patch("dotenv.load_dotenv") as ld:
+                with patch("dotenv.load_dotenv") as _:
                     result = _cli._run_env_recovery()
 
         assert result is True
