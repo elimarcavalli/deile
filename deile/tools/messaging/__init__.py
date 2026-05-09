@@ -22,6 +22,7 @@ from .discord_react import DiscordReactTool
 from .discord_send_dm import DiscordSendDMTool
 from .discord_send_message import DiscordSendMessageTool
 from .discord_start_thread import DiscordStartThreadTool
+from .whatsapp_send_template import WhatsAppSendTemplateTool
 
 __all__ = [
     "MessagingTool",
@@ -32,5 +33,6 @@ __all__ = [
     "DiscordPinMessageTool",
     "DiscordMentionRoleTool",
     "DiscordGetUserProfileTool",
+    "WhatsAppSendTemplateTool",
     "register_messaging_tools",
 ]

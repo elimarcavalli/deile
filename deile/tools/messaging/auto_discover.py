@@ -34,6 +34,7 @@ _TOOL_CLASSES = (
     "DiscordPinMessageTool",
     "DiscordMentionRoleTool",
     "DiscordGetUserProfileTool",
+    "WhatsAppSendTemplateTool",
 )
 
 
@@ -59,7 +60,8 @@ def register_messaging_tools(registry: "ToolRegistry") -> int:
     # deilebot never breaks the deile import chain.
     from . import (DiscordGetUserProfileTool, DiscordMentionRoleTool,
                    DiscordPinMessageTool, DiscordReactTool, DiscordSendDMTool,
-                   DiscordSendMessageTool, DiscordStartThreadTool)
+                   DiscordSendMessageTool, DiscordStartThreadTool,
+                   WhatsAppSendTemplateTool)
 
     candidates = [
         DiscordSendMessageTool(),
@@ -69,6 +71,7 @@ def register_messaging_tools(registry: "ToolRegistry") -> int:
         DiscordPinMessageTool(),
         DiscordMentionRoleTool(),
         DiscordGetUserProfileTool(),
+        WhatsAppSendTemplateTool(),
     ]
 
     registered = 0

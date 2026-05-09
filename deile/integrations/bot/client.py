@@ -121,6 +121,9 @@ class BotClientFacade:
     async def get_user(self, user_id: str):
         return await self._ensure_client().get_user_profile(user_id)
 
+    async def whatsapp_send_template(self, **kwargs):
+        return await self._ensure_client().whatsapp_send_template(**kwargs)
+
 
 def get_bot_client(settings: Optional[BotIntegrationSettings] = None) -> BotClientFacade:
     """Process-wide singleton. Pass settings only to override (tests)."""
