@@ -41,7 +41,7 @@ _QUICK_START_CANDIDATES = [
     {"nome": "help", "acao": "Listar todos os comandos", "descricao": "Ajuda completa"},
     {"nome": "status", "acao": "Checar status do sistema", "descricao": "Visão geral do DEILE"},
     {"nome": "version", "acao": "Exibir versão e build", "descricao": "Informações de versão"},
-    {"nome": "plan", "acao": "/plan create", "descricao": "Iniciar fluxo autônomo"},
+    {"nome": "plan", "acao": "Cria e executa fluxos autônomos", "descricao": "Iniciar fluxo autônomo"},
     {"nome": "memory", "acao": "Ver memória da sessão", "descricao": "Estado da memória"},
     {"nome": "permissions", "acao": "Gerenciar permissões", "descricao": "Configuração de segurança"},
     {"nome": "cost", "acao": "Ver custos e tokens", "descricao": "Uso e custo estimado"},
@@ -144,7 +144,8 @@ class WelcomeCommand(DirectCommand):
             style="dim",
         )
         if active_model != "—":
-            header.append(f"\n\n[dim]Modelo ativo:[/dim] {active_model}", style="")
+            header.append("\n\nModelo ativo: ", style="dim")
+            header.append(active_model)
 
         header_panel = Panel(
             header,
@@ -163,11 +164,7 @@ class WelcomeCommand(DirectCommand):
         qs_table.add_column("Comando", style="green", width=22)
         qs_table.add_column("Descrição", style="white", width=30)
         for entry in quick_start:
-            cmd_display = f"/{entry['nome']}"
-            acao_display = entry.get("acao", cmd_display)
-            if not acao_display.startswith("/"):
-                acao_display = cmd_display
-            qs_table.add_row(entry["descricao"], acao_display, entry["acao"])
+            qs_table.add_row(entry["descricao"], f"/{entry['nome']}", entry["acao"])
 
         # --- Features ativas ---
         features_text = Text()
