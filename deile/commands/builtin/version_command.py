@@ -149,7 +149,8 @@ class VersionCommand(DirectCommand):
                 ("Arquivos de teste", str(METRICS.get("test_files", "—"))),
                 ("Cobertura", str(METRICS.get("coverage", "—"))),
             ]
-        except Exception:
+        except Exception as exc:
+            logger.warning("Métricas indisponíveis: %s", exc)
             metrics_rows = [("Métricas", "indisponível")]
         metrics_table = _build_info_table(metrics_rows)
 
