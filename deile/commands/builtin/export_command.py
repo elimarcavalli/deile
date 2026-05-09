@@ -1,556 +1,453 @@
-"""Export Command - Export conversation, artifacts and session data"""
+"""Comando /export — exporta histórico de conversa e dados da sessão"""
 
 import json
-from datetime import datetime
+import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from rich.panel import Panel
 from rich.text import Text
+
+from deile.__version__ import __version__
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
 
 
 class ExportCommand(DirectCommand):
-    """Export conversation history, artifacts, plans and session data in various formats"""
+    """Exporta histórico de conversa, planos e dados da sessão em vários formatos"""
 
     cli_flag = "--export"
     cli_takes_arg = True
-    cli_arg_metavar = "PATH"
-    cli_help = "Export session data to PATH (forwards args to /export)."
+    cli_arg_metavar = "CAMINHO"
+    cli_help = "Exporta dados da sessão para CAMINHO (repassa args ao /export)."
     cli_requires_provider = False
 
     def __init__(self):
         from ...config.manager import CommandConfig
         super().__init__(CommandConfig(
             name="export",
-            description="Export conversation history, artifacts, plans and session data in various formats.",
+            description="Exporta histórico de conversa, planos e dados da sessão em vários formatos.",
         ))
-    
-    async def execute(self, context: Optional[CommandContext] = None) -> CommandResult:
-        """Execute export command.
 
-        Reads :class:`CommandContext.args` (the registry contract), parses
-        ``--format``/``--path``/inclusion flags, and writes the export.
-        Returns a :class:`CommandResult` whose content is a Rich summary panel.
-        """
+    async def execute(self, context: Optional[CommandContext] = None) -> CommandResult:
         args = (getattr(context, "args", "") or "") if context is not None else ""
 
         try:
-            # Parse arguments
             parts = args.strip().split() if args.strip() else []
-            format_type = "md"  # default
+            format_type = "md"
             export_path = None
             include_artifacts = True
             include_plans = True
             include_session = True
-            
+
             i = 0
             while i < len(parts):
-                if parts[i] in ["--format", "-f"]:
-                    if i + 1 < len(parts):
-                        format_type = parts[i + 1]
-                        i += 2
-                    else:
-                        raise CommandError("--format requires a value (txt, md, json, zip)")
-                elif parts[i] in ["--path", "-p"]:
-                    if i + 1 < len(parts):
-                        export_path = parts[i + 1]
-                        i += 2
-                    else:
-                        raise CommandError("--path requires a directory path")
-                elif parts[i] == "--no-artifacts":
+                p = parts[i]
+                if p in ("--format", "-f") and i + 1 < len(parts):
+                    format_type = parts[i + 1]
+                    i += 2
+                elif p in ("--path", "-p") and i + 1 < len(parts):
+                    export_path = parts[i + 1]
+                    i += 2
+                elif p == "--no-artifacts":
                     include_artifacts = False
                     i += 1
-                elif parts[i] == "--no-plans":
+                elif p == "--no-plans":
                     include_plans = False
                     i += 1
-                elif parts[i] == "--no-session":
+                elif p == "--no-session":
                     include_session = False
                     i += 1
-                elif parts[i].startswith("--"):
-                    raise CommandError(f"Unknown option: {parts[i]}")
+                elif p.startswith("--"):
+                    raise CommandError(f"Opção desconhecida: {p}")
                 else:
-                    # Positional argument - format or path
-                    if format_type == "md" and parts[i] in ["txt", "md", "json", "zip"]:
-                        format_type = parts[i]
+                    if format_type == "md" and p in ("txt", "md", "json", "zip"):
+                        format_type = p
                     else:
-                        export_path = parts[i]
+                        export_path = p
                     i += 1
-            
-            if format_type not in ["txt", "md", "json", "zip"]:
-                raise CommandError("Format must be one of: txt, md, json, zip")
-            
-            # Set default path if not provided
+
+            if format_type not in ("txt", "md", "json", "zip"):
+                raise CommandError("Formato deve ser um de: txt, md, json, zip")
+
             if not export_path:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                export_path = f"./EXPORTS/deile_export_{timestamp}"
-            
-            # Perform export
-            panel = self._perform_export(
-                format_type, export_path, include_artifacts,
-                include_plans, include_session, context,
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                export_path = f"./EXPORTS/deile_export_{ts}"
+
+            panel = await self._perform_export(
+                format_type, export_path, include_artifacts, include_plans, include_session, context
             )
             return CommandResult.success_result(panel, "rich")
 
-        except Exception as e:
-            return CommandResult.error_result(
-                f"Failed to export data: {str(e)}", error=e
-            )
-    
-    def _perform_export(self, format_type: str, export_path: str,
-                       include_artifacts: bool, include_plans: bool,
-                       include_session: bool, context: Optional[Dict[str, Any]]) -> Panel:
-        """Perform the actual export operation"""
-        
-        # Get export data
-        export_data = self._get_export_data(context, include_artifacts, 
-                                          include_plans, include_session)
-        
-        # Create export directory
+        except CommandError:
+            raise
+        except Exception as exc:
+            return CommandResult.error_result(f"Falha ao exportar dados: {exc}", error=exc)
+
+    async def _perform_export(
+        self,
+        format_type: str,
+        export_path: str,
+        include_artifacts: bool,
+        include_plans: bool,
+        include_session: bool,
+        context: Optional[Any],
+    ) -> Panel:
+        export_data = await self._get_export_data(
+            context, include_artifacts, include_plans, include_session
+        )
         export_dir = Path(export_path)
         export_dir.mkdir(parents=True, exist_ok=True)
-        
-        exported_files = []
-        
+
         if format_type == "zip":
-            # Create comprehensive zip export
-            zip_path = self._create_zip_export(export_data, export_dir)
-            exported_files.append(str(zip_path))
+            exported_files = [str(self._create_zip_export(export_data, export_dir))]
         else:
-            # Create individual files
-            exported_files = self._create_individual_exports(
-                export_data, export_dir, format_type
-            )
-        
-        # Generate summary
+            exported_files = self._create_individual_exports(export_data, export_dir, format_type)
+
         return self._create_export_summary(exported_files, export_data, format_type)
-    
-    def _get_export_data(self, context: Optional[Dict[str, Any]], 
-                        include_artifacts: bool, include_plans: bool,
-                        include_session: bool) -> Dict[str, Any]:
-        """Get data to export (mock implementation)"""
-        
-        data = {
+
+    async def _get_export_data(
+        self,
+        context: Optional[Any],
+        include_artifacts: bool,
+        include_plans: bool,
+        include_session: bool,
+    ) -> Dict[str, Any]:
+        agent = getattr(context, "agent", None) if context else None
+        session = getattr(context, "session", None) if context else None
+
+        # --- Sessão e histórico ---
+        session_id = getattr(session, "session_id", None) if session else None
+        history: List[Dict[str, Any]] = getattr(session, "conversation_history", []) if session else []
+        created_at = getattr(session, "created_at", None) if session else None
+
+        messages: List[Dict[str, Any]] = []
+        for idx, msg in enumerate(history):
+            messages.append({
+                "id": idx + 1,
+                "role": msg.get("role", "unknown"),
+                "content": msg.get("content", ""),
+                "timestamp": msg.get("timestamp", None),
+            })
+
+        data: Dict[str, Any] = {
             "export_metadata": {
-                "timestamp": datetime.now().isoformat(),
-                "deile_version": "4.0.0",
-                "export_id": f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                "format_version": "1.0"
+                "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+                "deile_version": __version__,
+                "session_id": session_id or "indisponível",
+                "format_version": "2.0",
+                "data_sources": ["AgentSession"],
             },
             "conversation": {
-                "session_id": "session_20250906_184500",
-                "started": "2025-09-06T15:30:00",
-                "total_messages": 23,
-                "messages": [
-                    {
-                        "id": 1,
-                        "timestamp": "2025-09-06T15:30:00",
-                        "role": "user",
-                        "content": "Analyze the current architecture and implement improvements",
-                        "tokens": 12
-                    },
-                    {
-                        "id": 2,
-                        "timestamp": "2025-09-06T15:30:15",
-                        "role": "assistant", 
-                        "content": "I'll analyze the architecture and implement the requested improvements...",
-                        "tokens": 156,
-                        "tool_calls": [
-                            {"tool": "read_file", "params": {"path": "docs/2.md"}, "result": "success"}
-                        ]
-                    },
-                    # More messages would be here in real implementation
-                ],
-                "total_tokens": {
-                    "prompt": 12500,
-                    "completion": 3725,
-                    "total": 16225
-                }
-            }
+                "session_id": session_id or "indisponível",
+                "started": (
+                    datetime.fromtimestamp(created_at, tz=timezone.utc).isoformat()
+                    if created_at
+                    else "indisponível"
+                ),
+                "total_messages": len(messages),
+                "messages": messages,
+            },
         }
-        
+
         if include_session:
+            # Modelo ativo
+            model_name = "indisponível"
+            try:
+                mr = getattr(agent, "model_router", None)
+                if mr:
+                    providers = getattr(mr, "providers", {})
+                    model_name = ", ".join(providers.keys()) if providers else "indisponível"
+            except Exception:
+                pass
+
+            # Persona ativa
+            persona_name = "indisponível"
+            try:
+                pm = getattr(agent, "persona_manager", None)
+                if pm:
+                    persona = pm.get_active_persona()
+                    if persona:
+                        persona_name = getattr(persona, "name", "indisponível")
+            except Exception:
+                pass
+
+            # Memória
+            memory_stats: Dict[str, Any] = {"status": "indisponível"}
+            try:
+                mm = getattr(agent, "memory_manager", None)
+                if mm:
+                    memory_stats = await mm.get_memory_usage()
+            except Exception:
+                pass
+
             data["session_info"] = {
-                "model": "gemini-2.5-pro",
-                "temperature": 0.7,
-                "system_instructions": "You are DEILE, an AI assistant specialized in software development...",
-                "persona": {
-                    "active": True,
-                    "name": "Developer Assistant",
-                    "description": "Expert in Python, software architecture, and best practices"
-                },
-                "memory": {
-                    "short_term_entries": 15,
-                    "long_term_entries": 45,
-                    "total_memory_tokens": 4700
-                }
+                "model": model_name,
+                "persona": {"name": persona_name},
+                "memory": memory_stats,
             }
-        
+            data["export_metadata"]["data_sources"].append("PersonaManager")
+            data["export_metadata"]["data_sources"].append("MemoryManager")
+
         if include_artifacts:
+            artifacts: List[Dict[str, Any]] = []
+            try:
+                artifacts_dir = Path("ARTIFACTS")
+                if artifacts_dir.exists():
+                    for run_dir in sorted(artifacts_dir.iterdir()):
+                        if run_dir.is_dir():
+                            for af in run_dir.glob("*.json"):
+                                artifacts.append({"path": str(af), "size": af.stat().st_size})
+                data["export_metadata"]["data_sources"].append("ArtifactManager")
+            except Exception:
+                pass
             data["artifacts"] = {
-                "total_artifacts": 8,
-                "artifacts": [
-                    {
-                        "id": "artifact_001",
-                        "name": "bash_execute_output.txt",
-                        "tool": "bash_execute",
-                        "timestamp": "2025-09-06T16:45:00",
-                        "size": 1024,
-                        "path": "ARTIFACTS/session_20250906_184500/artifact_001.txt"
-                    },
-                    {
-                        "id": "artifact_002", 
-                        "name": "file_list_output.json",
-                        "tool": "list_files",
-                        "timestamp": "2025-09-06T17:15:00", 
-                        "size": 512,
-                        "path": "ARTIFACTS/session_20250906_184500/artifact_002.json"
-                    }
-                ]
+                "count": len(artifacts),
+                "items": artifacts,
+                "note": "nenhum artifact nesta sessão" if not artifacts else "",
             }
-        
+
         if include_plans:
+            plans: List[Dict[str, Any]] = []
+            try:
+                from deile.orchestration.plan_manager import get_plan_manager
+                pm_inst = get_plan_manager()
+                raw_plans = await pm_inst.list_plans()
+                plans = raw_plans if raw_plans else []
+                data["export_metadata"]["data_sources"].append("PlanManager")
+            except Exception:
+                pass
             data["plans"] = {
-                "total_plans": 3,
-                "plans": [
-                    {
-                        "id": "plan_001",
-                        "name": "Architecture Improvements",
-                        "created": "2025-09-06T15:45:00",
-                        "status": "completed",
-                        "steps": 8,
-                        "path": "PLANS/plan_001.json"
-                    }
-                ]
+                "count": len(plans),
+                "items": plans,
+                "note": "nenhum plano nesta sessão" if not plans else "",
             }
-        
+
         return data
-    
-    def _create_individual_exports(self, data: Dict[str, Any], 
-                                 export_dir: Path, format_type: str) -> list:
-        """Create individual export files"""
-        
-        exported_files = []
-        
+
+    def _create_individual_exports(
+        self, data: Dict[str, Any], export_dir: Path, format_type: str
+    ) -> List[str]:
+        exported = []
+
         if format_type == "json":
-            # Single JSON file with all data
-            json_file = export_dir / "deile_export_complete.json"
-            with open(json_file, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, default=str)
-            exported_files.append(str(json_file))
-        
-        elif format_type in ["txt", "md"]:
-            # Create separate readable files
-            
-            # Conversation export
+            jf = export_dir / "deile_export_complete.json"
+            jf.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+            exported.append(str(jf))
+        else:
             conv_file = export_dir / f"conversation.{format_type}"
-            self._write_conversation_file(data.get("conversation", {}), conv_file, format_type)
-            exported_files.append(str(conv_file))
-            
-            # Session info
+            conv_file.write_text(
+                self._format_conversation(data.get("conversation", {}), format_type),
+                encoding="utf-8",
+            )
+            exported.append(str(conv_file))
+
             if "session_info" in data:
-                session_file = export_dir / f"session_info.{format_type}"
-                self._write_session_file(data["session_info"], session_file, format_type)
-                exported_files.append(str(session_file))
-            
-            # Artifacts manifest
-            if "artifacts" in data:
-                artifacts_file = export_dir / f"artifacts_manifest.{format_type}"
-                self._write_artifacts_file(data["artifacts"], artifacts_file, format_type)
-                exported_files.append(str(artifacts_file))
-            
-            # Plans manifest
-            if "plans" in data:
-                plans_file = export_dir / f"plans_manifest.{format_type}"
-                self._write_plans_file(data["plans"], plans_file, format_type)
-                exported_files.append(str(plans_file))
-        
-        return exported_files
-    
+                sf = export_dir / f"session_info.{format_type}"
+                sf.write_text(
+                    self._format_session(data["session_info"], format_type), encoding="utf-8"
+                )
+                exported.append(str(sf))
+
+            if "artifacts" in data and data["artifacts"].get("count", 0) > 0:
+                af = export_dir / f"artifacts_manifest.{format_type}"
+                af.write_text(
+                    self._format_artifacts(data["artifacts"], format_type), encoding="utf-8"
+                )
+                exported.append(str(af))
+
+            if "plans" in data and data["plans"].get("count", 0) > 0:
+                pf = export_dir / f"plans_manifest.{format_type}"
+                pf.write_text(
+                    self._format_plans(data["plans"], format_type), encoding="utf-8"
+                )
+                exported.append(str(pf))
+
+        return exported
+
     def _create_zip_export(self, data: Dict[str, Any], export_dir: Path) -> Path:
-        """Create comprehensive zip export"""
-        import zipfile
-        
         zip_path = export_dir / "deile_complete_export.zip"
-        
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            # Add JSON data
-            zipf.writestr("data/complete_export.json", 
-                         json.dumps(data, indent=2, default=str))
-            
-            # Add readable formats
-            conv_content = self._format_conversation_content(data.get("conversation", {}), "md")
-            zipf.writestr("conversation.md", conv_content)
-            
+
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("data/complete_export.json", json.dumps(data, indent=2, default=str))
+            zf.writestr("conversation.md", self._format_conversation(data.get("conversation", {}), "md"))
             if "session_info" in data:
-                session_content = self._format_session_content(data["session_info"], "md")
-                zipf.writestr("session_info.md", session_content)
-            
-            # Add manifest
-            manifest = self._create_export_manifest(data)
-            zipf.writestr("MANIFEST.json", json.dumps(manifest, indent=2, default=str))
-        
+                zf.writestr("session_info.md", self._format_session(data["session_info"], "md"))
+            manifest = {
+                "generated_at": data["export_metadata"]["generated_at"],
+                "deile_version": __version__,
+                "session_id": data["export_metadata"]["session_id"],
+                "data_sources": data["export_metadata"].get("data_sources", []),
+            }
+            zf.writestr("MANIFEST.json", json.dumps(manifest, indent=2, default=str))
+
         return zip_path
-    
-    def _write_conversation_file(self, conv_data: Dict[str, Any], 
-                               file_path: Path, format_type: str):
-        """Write conversation to file"""
-        content = self._format_conversation_content(conv_data, format_type)
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-    
-    def _format_conversation_content(self, conv_data: Dict[str, Any], format_type: str) -> str:
-        """Format conversation content"""
-        if format_type == "md":
+
+    def _format_conversation(self, conv: Dict[str, Any], fmt: str) -> str:
+        session_id = conv.get("session_id", "indisponível")
+        started = conv.get("started", "indisponível")
+        total = conv.get("total_messages", 0)
+        messages = conv.get("messages", [])
+
+        if fmt == "md":
             lines = [
-                "# DEILE Conversation Export",
+                "# Exportação de Conversa DEILE",
                 "",
-                f"**Session ID:** {conv_data.get('session_id', 'Unknown')}",
-                f"**Started:** {conv_data.get('started', 'Unknown')}",
-                f"**Total Messages:** {conv_data.get('total_messages', 0)}",
-                f"**Total Tokens:** {conv_data.get('total_tokens', {}).get('total', 0):,}",
+                f"**ID da Sessão:** {session_id}",
+                f"**Início:** {started}",
+                f"**Total de Mensagens:** {total}",
                 "",
-                "## Messages",
-                ""
+                "## Mensagens",
+                "",
             ]
-        else:  # txt
+            for msg in messages:
+                lines += [
+                    f"### Mensagem {msg.get('id', '')} — {msg.get('role', '').title()}",
+                    f"**Momento:** {msg.get('timestamp', 'desconhecido')}",
+                    "",
+                    str(msg.get("content", "")),
+                    "",
+                ]
+        else:
             lines = [
-                "DEILE CONVERSATION EXPORT",
+                "EXPORTAÇÃO DE CONVERSA DEILE",
                 "=" * 50,
                 "",
-                f"Session ID: {conv_data.get('session_id', 'Unknown')}",
-                f"Started: {conv_data.get('started', 'Unknown')}",
-                f"Total Messages: {conv_data.get('total_messages', 0)}",
-                f"Total Tokens: {conv_data.get('total_tokens', {}).get('total', 0):,}",
+                f"ID da Sessão: {session_id}",
+                f"Início: {started}",
+                f"Total de Mensagens: {total}",
                 "",
-                "MESSAGES:",
+                "MENSAGENS:",
                 "-" * 20,
-                ""
+                "",
             ]
-        
-        # Add messages
-        for msg in conv_data.get("messages", []):
-            if format_type == "md":
-                lines.extend([
-                    f"### Message {msg.get('id', '')} - {msg.get('role', '').title()}",
-                    f"**Time:** {msg.get('timestamp', '')}",
-                    f"**Tokens:** {msg.get('tokens', 0)}",
-                    "",
-                    msg.get('content', ''),
-                    ""
-                ])
-            else:  # txt
-                lines.extend([
+            for msg in messages:
+                lines += [
                     f"[{msg.get('timestamp', '')}] {msg.get('role', '').upper()}:",
-                    msg.get('content', ''),
-                    f"(Tokens: {msg.get('tokens', 0)})",
+                    str(msg.get("content", "")),
                     "",
-                ])
-        
+                ]
+
         return "\n".join(lines)
-    
-    def _write_session_file(self, session_data: Dict[str, Any], 
-                          file_path: Path, format_type: str):
-        """Write session info to file"""
-        content = self._format_session_content(session_data, format_type)
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-    
-    def _format_session_content(self, session_data: Dict[str, Any], format_type: str) -> str:
-        """Format session content"""
-        if format_type == "md":
-            return f"""# Session Information
 
-## Model Configuration
-- **Model:** {session_data.get('model', 'Unknown')}
-- **Temperature:** {session_data.get('temperature', 0.7)}
+    def _format_session(self, session_info: Dict[str, Any], fmt: str) -> str:
+        model = session_info.get("model", "indisponível")
+        persona = session_info.get("persona", {}).get("name", "indisponível")
+        memory = session_info.get("memory", {})
+        total_mb = memory.get("total_memory_mb", "indisponível") if isinstance(memory, dict) else "indisponível"
 
-## System Instructions
-```
-{session_data.get('system_instructions', 'No system instructions')}
-```
-
-## Persona
-- **Active:** {session_data.get('persona', {}).get('active', False)}
-- **Name:** {session_data.get('persona', {}).get('name', 'None')}
-- **Description:** {session_data.get('persona', {}).get('description', 'None')}
-
-## Memory Statistics
-- **Short-term entries:** {session_data.get('memory', {}).get('short_term_entries', 0)}
-- **Long-term entries:** {session_data.get('memory', {}).get('long_term_entries', 0)}
-- **Total memory tokens:** {session_data.get('memory', {}).get('total_memory_tokens', 0):,}
-"""
-        else:  # txt
-            return f"""SESSION INFORMATION
-==================
-
-Model: {session_data.get('model', 'Unknown')}
-Temperature: {session_data.get('temperature', 0.7)}
-
-System Instructions:
-{session_data.get('system_instructions', 'No system instructions')}
-
-Persona:
-- Active: {session_data.get('persona', {}).get('active', False)}
-- Name: {session_data.get('persona', {}).get('name', 'None')}
-- Description: {session_data.get('persona', {}).get('description', 'None')}
-
-Memory Statistics:
-- Short-term entries: {session_data.get('memory', {}).get('short_term_entries', 0)}
-- Long-term entries: {session_data.get('memory', {}).get('long_term_entries', 0)}
-- Total memory tokens: {session_data.get('memory', {}).get('total_memory_tokens', 0):,}
-"""
-    
-    def _write_artifacts_file(self, artifacts_data: Dict[str, Any], 
-                            file_path: Path, format_type: str):
-        """Write artifacts manifest to file"""
-        content = "# Artifacts Manifest\n\n" if format_type == "md" else "ARTIFACTS MANIFEST\n=================\n\n"
-        
-        content += f"Total artifacts: {artifacts_data.get('total_artifacts', 0)}\n\n"
-        
-        for artifact in artifacts_data.get('artifacts', []):
-            if format_type == "md":
-                content += f"""## {artifact.get('name', 'Unknown')}
-- **ID:** {artifact.get('id', '')}
-- **Tool:** {artifact.get('tool', '')}
-- **Created:** {artifact.get('timestamp', '')}
-- **Size:** {artifact.get('size', 0)} bytes
-- **Path:** {artifact.get('path', '')}
-
-"""
-            else:
-                content += f"""Artifact: {artifact.get('name', 'Unknown')}
-  ID: {artifact.get('id', '')}
-  Tool: {artifact.get('tool', '')}
-  Created: {artifact.get('timestamp', '')}
-  Size: {artifact.get('size', 0)} bytes
-  Path: {artifact.get('path', '')}
-
-"""
-        
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-    
-    def _write_plans_file(self, plans_data: Dict[str, Any], 
-                         file_path: Path, format_type: str):
-        """Write plans manifest to file"""
-        content = "# Plans Manifest\n\n" if format_type == "md" else "PLANS MANIFEST\n==============\n\n"
-        
-        content += f"Total plans: {plans_data.get('total_plans', 0)}\n\n"
-        
-        for plan in plans_data.get('plans', []):
-            if format_type == "md":
-                content += f"""## {plan.get('name', 'Unknown')}
-- **ID:** {plan.get('id', '')}
-- **Created:** {plan.get('created', '')}
-- **Status:** {plan.get('status', '')}
-- **Steps:** {plan.get('steps', 0)}
-- **Path:** {plan.get('path', '')}
-
-"""
-            else:
-                content += f"""Plan: {plan.get('name', 'Unknown')}
-  ID: {plan.get('id', '')}
-  Created: {plan.get('created', '')}
-  Status: {plan.get('status', '')}
-  Steps: {plan.get('steps', 0)}
-  Path: {plan.get('path', '')}
-
-"""
-        
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write(content)
-    
-    def _create_export_manifest(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create export manifest"""
-        return {
-            "export_info": data.get("export_metadata", {}),
-            "contents": {
-                "conversation": "conversation.md",
-                "session_info": "session_info.md" if "session_info" in data else None,
-                "artifacts": "artifacts_manifest.md" if "artifacts" in data else None,
-                "plans": "plans_manifest.md" if "plans" in data else None,
-                "raw_data": "data/complete_export.json"
-            },
-            "statistics": {
-                "total_messages": data.get("conversation", {}).get("total_messages", 0),
-                "total_tokens": data.get("conversation", {}).get("total_tokens", {}).get("total", 0),
-                "total_artifacts": data.get("artifacts", {}).get("total_artifacts", 0),
-                "total_plans": data.get("plans", {}).get("total_plans", 0)
-            }
-        }
-    
-    def _create_export_summary(self, exported_files: list, 
-                             export_data: Dict[str, Any], format_type: str) -> Panel:
-        """Create export summary panel"""
-        
-        metadata = export_data.get("export_metadata", {})
-        conv_data = export_data.get("conversation", {})
-        
-        content_lines = [
-            "✅ **Export Completed Successfully**",
-            "",
-            "📊 **Export Statistics**:",
-            f"  • Messages: {conv_data.get('total_messages', 0)}",
-            f"  • Total Tokens: {conv_data.get('total_tokens', {}).get('total', 0):,}",
-            f"  • Artifacts: {export_data.get('artifacts', {}).get('total_artifacts', 0)}",
-            f"  • Plans: {export_data.get('plans', {}).get('total_plans', 0)}",
-            "",
-            f"📁 **Exported Files ({len(exported_files)}):**"
-        ]
-        
-        for file_path in exported_files:
-            file_name = Path(file_path).name
-            try:
-                file_size = Path(file_path).stat().st_size
-                content_lines.append(f"  • {file_name} ({file_size:,} bytes)")
-            except Exception:
-                content_lines.append(f"  • {file_name}")
-        
-        content_lines.extend([
-            "",
-            "🎯 **Export Details**:",
-            f"  • Format: {format_type.upper()}",
-            f"  • Export ID: {metadata.get('export_id', 'Unknown')}",
-            f"  • Timestamp: {metadata.get('timestamp', 'Unknown')[:19]}",
-            f"  • Location: {Path(exported_files[0]).parent if exported_files else 'Unknown'}"
-        ])
-        
-        content = "\n".join(content_lines)
-        
-        return Panel(
-            Text(content, style="green"),
-            title="📤 Export Complete",
-            border_style="green",
-            padding=(1, 2)
+        if fmt == "md":
+            return (
+                "# Informações da Sessão\n\n"
+                f"## Modelo\n- **Provedores:** {model}\n\n"
+                f"## Persona\n- **Nome:** {persona}\n\n"
+                f"## Memória\n- **Total:** {total_mb} MB\n"
+            )
+        return (
+            "INFORMAÇÕES DA SESSÃO\n"
+            "====================\n\n"
+            f"Provedores: {model}\n"
+            f"Persona: {persona}\n"
+            f"Memória Total: {total_mb} MB\n"
         )
-    
+
+    def _format_artifacts(self, artifacts: Dict[str, Any], fmt: str) -> str:
+        count = artifacts.get("count", 0)
+        items = artifacts.get("items", [])
+        header = "# Manifesto de Artifacts\n\n" if fmt == "md" else "MANIFESTO DE ARTIFACTS\n=====================\n\n"
+        content = header + f"Total: {count}\n\n"
+        for af in items:
+            path = af.get("path", "—")
+            size = af.get("size", 0)
+            if fmt == "md":
+                content += f"- **{path}** ({size} bytes)\n"
+            else:
+                content += f"Arquivo: {path} ({size} bytes)\n"
+        return content
+
+    def _format_plans(self, plans: Dict[str, Any], fmt: str) -> str:
+        count = plans.get("count", 0)
+        items = plans.get("items", [])
+        header = "# Manifesto de Planos\n\n" if fmt == "md" else "MANIFESTO DE PLANOS\n===================\n\n"
+        content = header + f"Total: {count}\n\n"
+        for plan in items:
+            name = plan.get("name", plan.get("id", "—"))
+            status = plan.get("status", "—")
+            if fmt == "md":
+                content += f"- **{name}** (status: {status})\n"
+            else:
+                content += f"Plano: {name} (status: {status})\n"
+        return content
+
+    def _create_export_summary(
+        self, exported_files: List[str], export_data: Dict[str, Any], format_type: str
+    ) -> Panel:
+        metadata = export_data.get("export_metadata", {})
+        conv = export_data.get("conversation", {})
+        artifacts = export_data.get("artifacts", {})
+        plans = export_data.get("plans", {})
+
+        lines = [
+            "✅ **Exportação Concluída**",
+            "",
+            "📊 **Estatísticas**:",
+            f"  • Mensagens: {conv.get('total_messages', 0)}",
+            f"  • Artifacts: {artifacts.get('count', 0)}",
+            f"  • Planos: {plans.get('count', 0)}",
+            f"  • Versão DEILE: {metadata.get('deile_version', __version__)}",
+            f"  • ID da Sessão: {metadata.get('session_id', 'indisponível')}",
+            "",
+            f"📁 **Arquivos exportados ({len(exported_files)}):**",
+        ]
+
+        for fp in exported_files:
+            fname = Path(fp).name
+            try:
+                size = Path(fp).stat().st_size
+                lines.append(f"  • {fname} ({size:,} bytes)")
+            except Exception:
+                lines.append(f"  • {fname}")
+
+        lines += [
+            "",
+            "🎯 **Detalhes**:",
+            f"  • Formato: {format_type.upper()}",
+            f"  • Gerado em: {metadata.get('generated_at', '')[:19]}",
+            f"  • Fontes: {', '.join(metadata.get('data_sources', []))}",
+        ]
+
+        return Panel(
+            Text("\n".join(lines), style="green"),
+            title="📤 Export Concluído",
+            border_style="green",
+            padding=(1, 2),
+        )
+
     def get_help(self) -> str:
-        """Get command help"""
-        return """Export conversation history, artifacts, plans and session data
+        return """Exporta histórico de conversa e dados da sessão
 
-Usage:
-  /export [format] [options]
+Uso:
+  /export [formato] [opções]
 
-Formats:
-  txt      Export as plain text files
-  md       Export as Markdown files (default) 
-  json     Export as JSON file
-  zip      Export as comprehensive zip archive
+Formatos:
+  txt      Texto simples
+  md       Markdown (padrão)
+  json     JSON completo
+  zip      Arquivo zip com todos os dados
 
-Options:
-  --path PATH, -p PATH     Export directory path
-  --no-artifacts           Exclude artifacts from export
-  --no-plans               Exclude plans from export  
-  --no-session             Exclude session info from export
-  --format FORMAT, -f      Specify export format
+Opções:
+  --path CAMINHO, -p CAMINHO   Diretório de destino
+  --no-artifacts               Exclui artifacts
+  --no-plans                   Exclui planos
+  --no-session                 Exclui info da sessão
+  --format FORMATO, -f         Especifica o formato
 
-Examples:
-  /export                           Export as Markdown to default location
-  /export zip                       Export as comprehensive zip
-  /export json --path ./backups     Export JSON to custom path
-  /export md --no-artifacts         Export without artifacts
-  
-Default path: ./EXPORTS/deile_export_TIMESTAMP/"""
+Exemplos:
+  /export                           Exporta Markdown para caminho padrão
+  /export zip                       Zip completo
+  /export json --path ./backups     JSON em diretório customizado
+  /export md --no-artifacts         Sem artifacts
+
+Caminho padrão: ./EXPORTS/deile_export_TIMESTAMP/"""

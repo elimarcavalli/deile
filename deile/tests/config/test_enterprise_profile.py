@@ -9,19 +9,13 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from deile.config.settings import (
-    Settings,
-    _apply_nested_dict,
-    _apply_profile_layer,
-    reset_settings,
-)
+from deile.config.settings import (Settings, _apply_nested_dict,
+                                   _apply_profile_layer)
 from deile.security.audit_logger import AuditLogger
-
 
 # ---------------------------------------------------------------------------
 # Settings: profile fields land in Settings
