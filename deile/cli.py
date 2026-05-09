@@ -20,6 +20,7 @@ import asyncio
 import os
 import subprocess
 import sys
+import tempfile
 import venv as _venv  # noqa: N812 — local alias for testability (patched as deile.cli._venv)
 from pathlib import Path
 from typing import List, Optional
@@ -156,7 +157,7 @@ def _run_env_recovery() -> bool:
     return True
 
 
-# ── interactive mode ────────────────────────────────────────────────────────
+# ── interactive mode ─────────────────────────────────────────────────────────
 
 class _DeileCLI:
     """Thin wrapper that reuses the DEILE agent + UI stack."""
@@ -361,7 +362,7 @@ class _DeileCLI:
             self.ui.display_error(f"Ocorreu um erro fatal no loop principal: {exc}")
 
 
-# ── pipeline autostart helper ───────────────────────────────────────────────
+# ── pipeline autostart helper ────────────────────────────────────────────────
 
 
 async def _autostart_pipeline(agent) -> None:  # type: ignore[type-arg]
@@ -399,7 +400,7 @@ async def _autostart_pipeline(agent) -> None:  # type: ignore[type-arg]
         _log.warning("pipeline autostart failed: %s", exc)
 
 
-# ── one-shot mode ───────────────────────────────────────────────────────────
+# ── one-shot mode ────────────────────────────────────────────────────────────
 
 
 def _print_oneshot_content(content) -> None:
@@ -479,58 +480,7 @@ async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
     return 0 if status != "error" else 1
 
 
-def _ensure_scripts_dir_on_path(scripts_dir: Path) -> tuple[bool, Optional[Path], str]:
-    """Append `export PATH=...` to the user's shell rc file if not already there.
-
-    Returns (modified, rc_path, fallback_hint):
-      modified=True            → rc file was edited.
-      modified=False, rc set, hint==""  → already configured in rc; just needs reload.
-      modified=False, rc=None  → could not auto-edit (Windows / unknown shell);
-                                 caller should print fallback_hint.
-      modified=False, rc set, hint!=""  → tried but failed (perm/IO); print hint.
-    """
-    export_line_posix = f'export PATH="{scripts_dir}:$PATH"'
-
-    if os.name == "nt":
-        hint = (
-            f'PowerShell: $env:Path = "{scripts_dir};$env:Path"\n'
-            "  (persist via System Properties → Environment Variables)"
-        )
-        return (False, None, hint)
-
-    shell = os.path.basename(os.environ.get("SHELL", ""))
-    home = Path.home()
-
-    if shell == "zsh":
-        rc = home / ".zshrc"
-        export_line = export_line_posix
-    elif shell == "bash":
-        rc = home / (".bash_profile" if sys.platform == "darwin" else ".bashrc")
-        export_line = export_line_posix
-    elif shell == "fish":
-        rc = home / ".config" / "fish" / "config.fish"
-        export_line = f'set -gx PATH "{scripts_dir}" $PATH'
-    else:
-        return (False, None, f'Add to your shell rc:\n    {export_line_posix}')
-
-    try:
-        existing = rc.read_text(encoding="utf-8") if rc.exists() else ""
-    except OSError as exc:
-        return (False, rc, f"Could not read {rc}: {exc}.\nAdd manually:\n    {export_line}")
-
-    if str(scripts_dir) in existing:
-        return (False, rc, "")  # idempotent — already configured
-
-    marker = "# Added by `deile --install` — places the `deile` command on PATH"
-    new_content = (existing.rstrip("\n") + "\n\n" if existing else "") + marker + "\n" + export_line + "\n"
-
-    try:
-        rc.parent.mkdir(parents=True, exist_ok=True)
-        rc.write_text(new_content, encoding="utf-8")
-    except OSError as exc:
-        return (False, rc, f"Could not write {rc}: {exc}.\nAdd manually:\n    {export_line}")
-
-    return (True, rc, "")
+# ── install helpers ──────────────────────────────────────────────────────────
 
 
 def _user_scripts_dir() -> Path:
@@ -566,7 +516,26 @@ def _wrapper_target_dir() -> Path:
     return Path.home() / ".local" / "bin"
 
 
-def _create_venv_with_deile(venv_dir: Path, repo_root: Path, mode_label: str) -> Path:
+async def _pip_run(*args: str, step: str, sanitized_path: Optional[str] = None) -> None:
+    """Run a pip sub-command; raise DEILEInstallError on non-zero exit."""
+    from deile.core.exceptions import DEILEInstallError
+
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        stderr_text = (stderr or b"").decode("utf-8", errors="replace")[:500]
+        raise DEILEInstallError(
+            f"pip {step} failed (rc={proc.returncode}): {stderr_text}",
+            step=step,
+            sanitized_path=sanitized_path,
+        )
+
+
+async def _create_venv_with_deile(venv_dir: Path, repo_root: Path, mode_label: str) -> Path:
     """Ensure an isolated venv at ``venv_dir`` has DEILE + deps installed.
 
     Steps (idempotent):
@@ -578,46 +547,81 @@ def _create_venv_with_deile(venv_dir: Path, repo_root: Path, mode_label: str) ->
 
     Returns the absolute path to ``<venv>/bin/deile`` (or ``Scripts\\deile.exe``).
     """
+    from deile.core.exceptions import DEILEInstallError
+
+    # Canonicalize paths to prevent injection / traversal (Pilar 08)
+    try:
+        venv_dir = venv_dir.resolve()
+        repo_root = repo_root.resolve()
+    except OSError as exc:
+        raise DEILEInstallError(
+            f"failed to resolve path: {exc}",
+            step="resolve_paths",
+            sanitized_path=venv_dir.name,
+        ) from exc
+
+    # Safety: ensure venv_dir is within a reasonable location
+    home = Path.home().resolve()
+    if not (str(venv_dir).startswith(str(repo_root)) or str(venv_dir).startswith(str(home))):
+        raise DEILEInstallError(
+            "venv_dir is outside allowed locations (must be under repo or home)",
+            step="validate_venv_path",
+        )
+
     venv_py = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
-    if not venv_py.exists():
-        print(f"[{mode_label}] Creating venv at {venv_dir}…")
-        venv_dir.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            _venv.EnvBuilder(with_pip=True).create(str(venv_dir))
-        except Exception as exc:
-            raise RuntimeError(f"failed to create venv at {venv_dir}: {exc}") from exc
-    else:
-        print(f"[{mode_label}] Reusing existing venv at {venv_dir}")
+    try:
+        if not venv_py.exists():
+            print(f"[{mode_label}] Creating venv…")
+            venv_dir.parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(
+                _venv.EnvBuilder(with_pip=True).create, str(venv_dir)
+            )
+        else:
+            print(f"[{mode_label}] Reusing existing venv")
 
-    print(f"[{mode_label}] Upgrading pip…")
-    subprocess.run(
-        [str(venv_py), "-m", "pip", "install", "--disable-pip-version-check", "-q", "--upgrade", "pip"],
-        check=False,
-    )
+        print(f"[{mode_label}] Upgrading pip…")
+        await _pip_run(
+            str(venv_py), "-m", "pip", "install",
+            "--disable-pip-version-check", "-q", "--upgrade", "pip",
+            step="upgrade_pip", sanitized_path=venv_dir.name,
+        )
 
-    requirements = repo_root / "requirements.txt"
-    if requirements.exists():
-        print(f"[{mode_label}] Installing dependencies from {requirements.name} (this can take a while on first run)…")
-        rc = subprocess.run(
-            [str(venv_py), "-m", "pip", "install", "--disable-pip-version-check", "-r", str(requirements)],
-        ).returncode
-        if rc != 0:
-            raise RuntimeError(f"pip install -r {requirements.name} failed (rc={rc})")
-    else:
-        print(f"[{mode_label}] WARNING: no requirements.txt at {repo_root} — skipping dep install")
+        requirements = repo_root / "requirements.txt"
+        if requirements.exists():
+            print(f"[{mode_label}] Installing dependencies from {requirements.name}…")
+            await _pip_run(
+                str(venv_py), "-m", "pip", "install",
+                "--disable-pip-version-check", "-r", str(requirements),
+                step="install_deps", sanitized_path=requirements.name,
+            )
+        else:
+            print(f"[{mode_label}] WARNING: no requirements.txt — skipping dep install")
 
-    print(f"[{mode_label}] Registering DEILE entry script (editable, no-deps)…")
-    rc = subprocess.run(
-        [str(venv_py), "-m", "pip", "install", "--disable-pip-version-check", "-q", "--no-deps", "-e", str(repo_root)],
-    ).returncode
-    if rc != 0:
-        raise RuntimeError(f"pip install --no-deps -e {repo_root} failed (rc={rc})")
+        print(f"[{mode_label}] Registering DEILE entry script (editable, no-deps)…")
+        await _pip_run(
+            str(venv_py), "-m", "pip", "install",
+            "--disable-pip-version-check", "-q", "--no-deps", "-e", str(repo_root),
+            step="install_editable",
+        )
 
-    deile_script = venv_dir / ("Scripts/deile.exe" if os.name == "nt" else "bin/deile")
-    if not deile_script.exists():
-        raise RuntimeError(f"console script not created at {deile_script}")
-    return deile_script
+        deile_script = venv_dir / ("Scripts/deile.exe" if os.name == "nt" else "bin/deile")
+        if not deile_script.exists():
+            raise DEILEInstallError(
+                "console script not created",
+                step="verify_script",
+                sanitized_path=deile_script.name,
+            )
+        return deile_script
+
+    except DEILEInstallError:
+        raise
+    except Exception as exc:
+        raise DEILEInstallError(
+            f"venv creation failed: {exc}",
+            step="create_venv",
+            sanitized_path=venv_dir.name,
+        ) from exc
 
 
 def _link_global_command(target_dir: Path, source_script: Path, *, force: bool = False) -> Path:
@@ -629,28 +633,39 @@ def _link_global_command(target_dir: Path, source_script: Path, *, force: bool =
     If a file/symlink already exists at the target, we ask before replacing
     (or replace silently when ``force=True``).
     """
+    from deile.core.exceptions import DEILEInstallError
+
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / ("deile.cmd" if os.name == "nt" else "deile")
 
     if target.exists() or target.is_symlink():
         if target.is_symlink():
             try:
-                existing = f"symlink → {os.readlink(target)}"
+                existing = "symlink"
+                # Don't leak the real path in user-facing messages
             except OSError:
-                existing = "symlink (unreadable target)"
+                existing = "symlink (unreadable)"
         else:
             existing = "regular file"
         if not force:
             try:
-                ans = input(f"  {target} already exists ({existing}). Replace? [Y/n]: ").strip().lower()
+                ans = input(f"  {target.name} already exists ({existing}). Replace? [Y/n]: ").strip().lower()
             except (KeyboardInterrupt, EOFError):
                 ans = "n"
             if ans not in ("", "y", "yes"):
-                raise RuntimeError(f"refusing to overwrite {target}")
+                raise DEILEInstallError(
+                    "refusing to overwrite existing shim",
+                    step="link_command",
+                    sanitized_path=target.name,
+                )
         try:
             target.unlink()
         except OSError as exc:
-            raise RuntimeError(f"could not remove existing {target}: {exc}") from exc
+            raise DEILEInstallError(
+                f"could not remove existing shim: {exc}",
+                step="unlink_old_shim",
+                sanitized_path=target.name,
+            ) from exc
 
     if os.name == "nt":
         target.write_text(f'@echo off\r\n"{source_script}" %*\r\n', encoding="utf-8")
@@ -658,8 +673,98 @@ def _link_global_command(target_dir: Path, source_script: Path, *, force: bool =
         try:
             target.symlink_to(source_script)
         except OSError as exc:
-            raise RuntimeError(f"could not create symlink {target} → {source_script}: {exc}") from exc
+            raise DEILEInstallError(
+                f"could not create symlink: {exc}",
+                step="create_symlink",
+                sanitized_path=target.name,
+            ) from exc
     return target
+
+
+def _ensure_scripts_dir_on_path(scripts_dir: Path) -> tuple[bool, Optional[Path], str]:
+    """Append ``export PATH=...`` to the user's shell rc file if not already there.
+
+    Returns (modified, rc_path, fallback_hint):
+      modified=True            → rc file was edited.
+      modified=False, rc set, hint==""  → already configured in rc; just needs reload.
+      modified=False, rc=None  → could not auto-edit (Windows / unknown shell);
+                                 caller should print fallback_hint.
+      modified=False, rc set, hint!=""  → tried but failed (perm/IO); print hint.
+
+    Security (Pilar 08):
+      - The rc file path is resolved to canonical form (no symlink traversal).
+      - Writing is atomic: tempfile in same directory, then os.replace().
+      - The check for already-configured is line-by-line (not substring match).
+
+    """
+    from deile.core.exceptions import DEILEInstallError
+
+    export_line_posix = f'export PATH="{scripts_dir}:$PATH"'
+
+    if os.name == "nt":
+        hint = (
+            f'PowerShell: $env:Path = "{scripts_dir};$env:Path"\n'
+            "  (persist via System Properties → Environment Variables)"
+        )
+        return (False, None, hint)
+
+    shell = os.path.basename(os.environ.get("SHELL", ""))
+    home = Path.home().resolve()  # canonical home
+
+    if shell == "zsh":
+        rc = (home / ".zshrc").resolve()
+        export_line = export_line_posix
+    elif shell == "bash":
+        rc = (home / (".bash_profile" if sys.platform == "darwin" else ".bashrc")).resolve()
+        export_line = export_line_posix
+    elif shell == "fish":
+        rc = (home / ".config" / "fish" / "config.fish").resolve()
+        export_line = f'set -gx PATH "{scripts_dir}" $PATH'
+    else:
+        return (False, None, f'Add to your shell rc:\n    {export_line_posix}')
+
+    # Safety: rc file must be within $HOME (prevent symlink traversal out of home)
+    if not str(rc).startswith(str(home)):
+        raise DEILEInstallError(
+            "rc file resolves outside of home directory",
+            step="validate_rc_path",
+            sanitized_path=rc.name,
+        )
+
+    try:
+        existing = rc.read_text(encoding="utf-8") if rc.exists() else ""
+    except OSError as exc:
+        return (False, rc, f"Could not read {rc.name}: {exc}.\nAdd manually:\n    {export_line}")
+
+    # ── Idempotency: line-by-line check (not substring) ──
+    scripts_dir_str = str(scripts_dir)
+    for line in existing.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue  # skip commented-out lines
+        if scripts_dir_str in stripped and "PATH" in stripped.upper():
+            return (False, rc, "")  # already configured
+
+    marker = "# Added by `deile --install` — places the `deile` command on PATH\n"
+    new_content = (existing.rstrip("\n") + "\n\n" if existing else "") + marker + export_line + "\n"
+
+    # ── Atomic write: tempfile in same directory, then os.replace ──
+    try:
+        rc.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=str(rc.parent), prefix=".deile_rc_", suffix=".tmp")
+        try:
+            os.write(fd, new_content.encode("utf-8"))
+        finally:
+            os.close(fd)
+        os.replace(tmp_path, str(rc))  # atomic on POSIX
+    except OSError as exc:
+        raise DEILEInstallError(
+            f"Could not write {rc.name}: {exc}",
+            step="write_rc_file",
+            sanitized_path=rc.name,
+        ) from exc
+
+    return (True, rc, "")
 
 
 def _prompt_install_mode() -> Optional[str]:
@@ -692,7 +797,7 @@ def _prompt_install_mode() -> Optional[str]:
         print(f"Unrecognized choice: {choice!r}. Please answer g, l, or q.")
 
 
-def _run_self_install(mode: Optional[str] = None) -> int:
+async def _run_self_install_async(mode: Optional[str] = None) -> int:
     """Install DEILE so `deile` is reachable from any working directory.
 
     Two modes (interactive prompt unless ``mode`` is provided):
@@ -707,6 +812,8 @@ def _run_self_install(mode: Optional[str] = None) -> int:
     %USERPROFILE%/.../Scripts/deile.cmd (Windows) so the command works from
     any directory without polluting site-packages.
     """
+    from deile.core.exceptions import DEILEInstallError
+
     repo_root = _PROJECT_ROOT
 
     if mode is None:
@@ -726,29 +833,33 @@ def _run_self_install(mode: Optional[str] = None) -> int:
     print()
     print(f"Installing DEILE — mode: {mode}")
     print(f"  repo: {repo_root}")
-    print(f"  venv: {venv_dir}")
 
     try:
-        deile_script = _create_venv_with_deile(venv_dir, repo_root, mode)
-    except Exception as exc:  # noqa: BLE001 — surface message, not traceback
-        print(f"ERROR: {exc}", file=sys.stderr)
+        deile_script = await _create_venv_with_deile(venv_dir, repo_root, mode)
+    except DEILEInstallError as exc:
+        # Sanitize: never leak full paths in user-facing error messages
+        detail = exc.sanitized_path or "unknown"
+        print(f"ERROR: {exc.message} ({detail})", file=sys.stderr)
         return 1
 
     target_dir = _wrapper_target_dir()
     try:
         wrapper = _link_global_command(target_dir, deile_script)
-    except RuntimeError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
+    except DEILEInstallError as exc:
+        detail = exc.sanitized_path or "unknown"
+        print(f"ERROR: {exc.message} ({detail})", file=sys.stderr)
         return 1
 
     print()
     print("DEILE installed successfully.")
-    print(f"  shim:   {wrapper}")
-    print(f"  target: {deile_script}")
+    print(f"  shim:   {wrapper.name} (in {wrapper.parent})")
+    print("  target: venv")
 
     if os.name != "nt":
-        which = subprocess.run(
-            ["/usr/bin/env", "which", "deile"], text=True, capture_output=True, check=False
+        which = await asyncio.to_thread(
+            subprocess.run,
+            ["/usr/bin/env", "which", "deile"],
+            text=True, capture_output=True, check=False,
         )
         on_path_now = which.returncode == 0 and which.stdout.strip() == str(wrapper)
     else:
@@ -760,14 +871,19 @@ def _run_self_install(mode: Optional[str] = None) -> int:
         return 0
 
     print()
-    print(f"Note: {target_dir} is not active in your current PATH.")
-    modified, rc_path, hint = _ensure_scripts_dir_on_path(target_dir)
+    try:
+        modified, rc_path, hint = _ensure_scripts_dir_on_path(target_dir)
+    except DEILEInstallError as exc:
+        print(f"Note: could not auto-configure PATH ({exc.message}).")
+        print(f"Add {target_dir.name} to your PATH manually.")
+        return 0
+
     if modified:
-        print(f"Added PATH export to {rc_path}.")
+        print(f"Added PATH export to {rc_path.name}.")
         print(f"Run:  source {rc_path}   (or open a new terminal)")
         print("Then: deile --help")
     elif rc_path is not None and not hint:
-        print(f"PATH already configured in {rc_path}, but not in current shell session.")
+        print(f"PATH already configured in {rc_path.name}, but not in current shell session.")
         print(f"Run:  source {rc_path}   (or open a new terminal)")
         print("Then: deile --help")
     else:
@@ -775,7 +891,12 @@ def _run_self_install(mode: Optional[str] = None) -> int:
     return 0
 
 
-# ── command-flag dispatch (issue #126) ──────────────────────────────────────
+def _run_self_install(mode: Optional[str] = None) -> int:
+    """Synchronous wrapper around _run_self_install_async for CLI entry point."""
+    return asyncio.run(_run_self_install_async(mode))
+
+
+# ── command-flag dispatch (issue #126) ───────────────────────────────────────
 
 
 async def _run_command_flag(
@@ -894,7 +1015,7 @@ def _format_help_with_commands(parser: "argparse.ArgumentParser") -> str:
     return base_help + "\n".join(lines) + "\n"
 
 
-# ── main entry point ────────────────────────────────────────────────────────
+# ── main entry point ─────────────────────────────────────────────────────────
 
 def main(argv: Optional[List[str]] = None) -> int:
     """`deile` console_script entry point.
