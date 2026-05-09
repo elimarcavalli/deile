@@ -76,7 +76,8 @@ def _get_version() -> str:
     try:
         from deile.__version__ import __version__
         return __version__
-    except Exception:
+    except Exception as exc:
+        logger.debug("Não foi possível obter versão: %s", exc)
         return "—"
 
 
@@ -84,7 +85,8 @@ def _get_active_features() -> list[str]:
     try:
         from deile.__version__ import FEATURES
         return [k for k, v in FEATURES.items() if v]
-    except Exception:
+    except Exception as exc:
+        logger.debug("Não foi possível obter features: %s", exc)
         return []
 
 
@@ -98,7 +100,8 @@ def _get_active_model(context: CommandContext) -> str:
                 if model:
                     return str(model)
         return "—"
-    except Exception:
+    except Exception as exc:
+        logger.debug("Não foi possível obter modelo ativo: %s", exc)
         return "—"
 
 
@@ -106,13 +109,12 @@ def _get_quick_start_verified(context: CommandContext) -> list[dict[str, str]]:
     """Retorna candidates filtrados pelos que existem no CommandRegistry."""
     try:
         from deile.commands.registry import get_command_registry
-        registry = get_command_registry(
-            getattr(context, "config_manager", None)
-        )
+        registry = get_command_registry(context.config_manager)
         registered = {cmd.name for cmd in registry.get_all_commands()}
         return [c for c in _QUICK_START_CANDIDATES if c["nome"] in registered]
-    except Exception:
-        return _QUICK_START_CANDIDATES
+    except Exception as exc:
+        logger.warning("Não foi possível verificar CommandRegistry: %s", exc)
+        return []
 
 
 class WelcomeCommand(DirectCommand):

@@ -69,7 +69,7 @@ def _detect_install_info() -> dict[str, str]:
         return {"modo": "indisponível", "versao_pkg": "indisponível", "diretorio": "indisponível"}
 
 
-def _build_info_table(title: str, rows: list[tuple[str, str]]) -> Table:
+def _build_info_table(rows: list[tuple[str, str]]) -> Table:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="dim", no_wrap=True)
     grid.add_column()
@@ -122,14 +122,14 @@ class VersionCommand(DirectCommand):
             ("Build", f"{__build_number__}  •  {__build_date__}"),
             ("Licença", __license__),
         ]
-        info_table = _build_info_table("info", info_rows)
+        info_table = _build_info_table(info_rows)
 
         # --- Seção: Ambiente ---
         env_rows = [
             ("Python", f"{py_ver} ({py_impl})"),
             ("Plataforma", plat_str),
         ]
-        env_table = _build_info_table("env", env_rows)
+        env_table = _build_info_table(env_rows)
 
         # --- Seção: Instalação ---
         install_rows = [
@@ -137,7 +137,7 @@ class VersionCommand(DirectCommand):
             ("Pacote", f"deile {install_info['versao_pkg']}"),
             ("Diretório", install_info["diretorio"]),
         ]
-        install_table = _build_info_table("install", install_rows)
+        install_table = _build_info_table(install_rows)
 
         # --- Seção: Métricas ---
         try:
@@ -151,7 +151,7 @@ class VersionCommand(DirectCommand):
             ]
         except Exception:
             metrics_rows = [("Métricas", "indisponível")]
-        metrics_table = _build_info_table("metrics", metrics_rows)
+        metrics_table = _build_info_table(metrics_rows)
 
         # --- Seção: Feature flags ativas ---
         active_flags = [k for k, v in FEATURES.items() if v]
