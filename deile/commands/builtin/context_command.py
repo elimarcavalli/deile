@@ -218,12 +218,20 @@ class ContextCommand(DirectCommand):
         elif isinstance(raw_stats, Exception):
             instructions_data = _indisponivel(str(raw_stats))
         else:
-            instr_len = raw_stats.get("system_instructions_length", 0)
-            instructions_data = {
-                "length": instr_len,
-                "tokens": _est_tokens(instr_len),
-                "token_count_method": "estimated",
-            }
+            instr_len = raw_stats.get("system_instructions_length")
+            if instr_len is not None:
+                instructions_data = {
+                    "length": instr_len,
+                    "tokens": _est_tokens(instr_len),
+                    "token_count_method": "estimated",
+                }
+            else:
+                # context_manager.get_stats() exposes context window limit, not instruction length
+                instructions_data = {
+                    "max_context_tokens": raw_stats.get("max_context_tokens", "indisponível"),
+                    "context_builds": raw_stats.get("context_builds", 0),
+                    "token_count_method": "not_available",
+                }
 
         return {
             "system_instructions": instructions_data,
@@ -340,10 +348,10 @@ class ContextCommand(DirectCommand):
             f"**Estratégia**: {model.get('strategy', 'indisponível')}",
             "",
             "**Instruções do Sistema**:",
-            f"  Tamanho: {instr.get('length', 'indisponível')} chars",
+            f"  Tamanho: {instr.get('length', instr.get('max_context_tokens', 'indisponível'))} chars",
         ]
         if show_tokens:
-            model_content.append(f"  Tokens: {instr.get('tokens', 'indisponível')}")
+            model_content.append(f"  Tokens: {instr.get('tokens', instr.get('token_count_method', 'indisponível'))}")
         panels.append(Panel("\n".join(model_content), title="🤖 Modelo", border_style="green"))
 
         memory = data.get("memory", {})

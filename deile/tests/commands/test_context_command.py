@@ -56,7 +56,12 @@ def _make_agent(
 
     agent.model_router.providers = {"openai": MagicMock()}
     agent.model_router.strategy = MagicMock()
-    agent.context_manager.get_stats = AsyncMock(return_value={"system_instructions_length": 1000})
+    agent.context_manager.get_stats = AsyncMock(return_value={
+        "context_builds": 3,
+        "max_context_tokens": 200000,
+        "chat_session_mode": True,
+        "simplified": True,
+    })
 
     return agent
 
