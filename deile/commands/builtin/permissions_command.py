@@ -1,5 +1,8 @@
-"""Permissions Command - Manage security rules and permissions"""
+"""Permissions Command — manage security rules with real persistence."""
 
+from __future__ import annotations
+
+from datetime import datetime
 from typing import List
 
 from rich.console import Group
@@ -8,14 +11,21 @@ from rich.table import Table
 from rich.text import Text
 
 from ...core.exceptions import CommandError
-from ...security.permissions import (PermissionLevel, ResourceType,
-                                     get_permission_manager)
+from ...security.permissions import (PermissionLevel, PermissionRule,
+                                     ResourceType, get_permission_manager)
 from ..base import CommandContext, CommandResult, DirectCommand
 
 
+def _persist(pm) -> None:
+    """Save rules to disk if config_path is configured."""
+    if pm.config_path:
+        pm.config_path.parent.mkdir(parents=True, exist_ok=True)
+        pm.save_rules_to_config(pm.config_path)
+
+
 class PermissionsCommand(DirectCommand):
-    """Manage security rules and permissions for tools and resources"""
-    
+    """Manage security rules and permissions for tools and resources."""
+
     def __init__(self):
         from ...config.manager import CommandConfig
         config = CommandConfig(
@@ -24,506 +34,459 @@ class PermissionsCommand(DirectCommand):
         )
         super().__init__(config)
         self.permission_manager = get_permission_manager()
-    
+
     async def execute(self, context: CommandContext) -> CommandResult:
-        """Execute permissions command"""
-        args = context.args if hasattr(context, 'args') else ""
-        
+        args = context.args
         try:
-            # Parse arguments
             parts = args.strip().split() if args.strip() else []
-            
             if not parts:
-                # Show permissions overview
                 return await self._show_permissions_overview()
-            
             action = parts[0].lower()
-            
-            if action == "list":
-                return await self._list_rules(parts[1:])
-            elif action == "show":
-                if len(parts) < 2:
-                    raise CommandError("permissions show requires rule ID: /permissions show <rule_id>")
-                return await self._show_rule(parts[1])
-            elif action == "check":
-                if len(parts) < 4:
-                    raise CommandError("permissions check requires: /permissions check <tool> <resource> <action>")
-                return await self._check_permission(parts[1], parts[2], parts[3])
-            elif action == "add":
-                if len(parts) < 6:
-                    raise CommandError("permissions add requires: /permissions add <id> <name> <type> <pattern> <level> [tool1,tool2,...]")
-                return await self._add_rule(parts[1:])
-            elif action == "enable":
-                if len(parts) < 2:
-                    raise CommandError("permissions enable requires rule ID: /permissions enable <rule_id>")
-                return await self._enable_rule(parts[1], True)
-            elif action == "disable":
-                if len(parts) < 2:
-                    raise CommandError("permissions disable requires rule ID: /permissions disable <rule_id>")
-                return await self._enable_rule(parts[1], False)
-            elif action == "remove":
-                if len(parts) < 2:
-                    raise CommandError("permissions remove requires rule ID: /permissions remove <rule_id>")
-                return await self._remove_rule(parts[1])
-            elif action == "audit":
-                return await self._show_audit_log(parts[1:])
-            elif action == "sandbox":
-                if len(parts) < 2:
-                    raise CommandError("permissions sandbox requires: /permissions sandbox <on|off|status>")
-                return await self._manage_sandbox(parts[1])
-            else:
-                raise CommandError(f"Unknown permissions action: {action}")
-                
-        except Exception as e:
-            if isinstance(e, CommandError):
+            dispatch = {
+                "list": lambda: self._list_rules(parts[1:]),
+                "show": lambda: self._show_rule(parts[1]) if len(parts) >= 2 else self._err("show requer ID: /permissions show <id>"),
+                "check": lambda: self._check_permission(parts[1], parts[2], parts[3]) if len(parts) >= 4 else self._err("check requer: /permissions check <tool> <resource> <action>"),
+                "add": lambda: self._add_rule(parts[1:]) if len(parts) >= 6 else self._err("add requer: /permissions add <id> <nome> <tipo> <padrão> <nível> [tools]"),
+                "enable": lambda: self._enable_rule(parts[1], True) if len(parts) >= 2 else self._err("enable requer ID"),
+                "disable": lambda: self._enable_rule(parts[1], False) if len(parts) >= 2 else self._err("disable requer ID"),
+                "remove": lambda: self._remove_rule(parts[1], "--confirm" in parts) if len(parts) >= 2 else self._err("remove requer ID"),
+                "audit": lambda: self._show_audit_log(parts[1:]),
+                "sandbox": lambda: self._manage_sandbox(parts[1]) if len(parts) >= 2 else self._err("sandbox requer: on|off|status"),
+                "help": lambda: self._show_help(),
+            }
+            handler = dispatch.get(action)
+            if not handler:
+                raise CommandError(f"Ação desconhecida: {action}")
+            return await handler()
+        except Exception as exc:
+            if isinstance(exc, CommandError):
                 raise
-            raise CommandError(f"Failed to execute permissions command: {str(e)}")
-    
+            raise CommandError(f"Falha ao executar /permissions: {exc}") from exc
+
+    async def _err(self, msg: str) -> CommandResult:
+        raise CommandError(msg)
+
+    # ------------------------------------------------------------------
+    # Overview
+    # ------------------------------------------------------------------
+
     async def _show_permissions_overview(self) -> CommandResult:
-        """Show overall permissions status and summary"""
-        
-        # Gather statistics
-        total_rules = len(self.permission_manager.rules)
-        enabled_rules = len([r for r in self.permission_manager.rules if r.enabled])
-        disabled_rules = total_rules - enabled_rules
-        
-        # Count by resource type
-        type_counts = {}
-        for rule in self.permission_manager.rules:
-            res_type = rule.resource_type.value
-            type_counts[res_type] = type_counts.get(res_type, 0) + 1
-        
-        # Count by permission level
-        level_counts = {}
-        for rule in self.permission_manager.rules:
-            level = rule.permission_level.value
-            level_counts[level] = level_counts.get(level, 0) + 1
-        
-        # Create overview table
-        overview_table = Table(title="🛡️ Security & Permissions Overview", show_header=False)
-        overview_table.add_column("Metric", style="bold cyan", width=20)
-        overview_table.add_column("Value", style="green", width=15)
-        overview_table.add_column("Details", style="dim", width=30)
-        
-        overview_table.add_row("Total Rules", str(total_rules), "Active security rules")
-        overview_table.add_row("Enabled", str(enabled_rules), "Currently enforced")
-        overview_table.add_row("Disabled", str(disabled_rules), "Temporarily inactive")
-        overview_table.add_row("Default Level", self.permission_manager.default_permission.value, "Fallback permission")
-        overview_table.add_row("Sandbox", "🟢 Available" if hasattr(self.permission_manager, 'sandbox_enabled') else "🟡 Not configured", "Isolation mode")
-        
-        # Resource types breakdown
-        types_table = Table(title="📁 Protected Resource Types", show_header=True, header_style="bold yellow")
-        types_table.add_column("Type", style="cyan")
-        types_table.add_column("Rules", style="green", justify="center")
-        types_table.add_column("Description", style="dim")
-        
-        type_descriptions = {
-            "file": "Individual files and patterns",
-            "directory": "Directory hierarchies", 
-            "command": "System commands and tools",
-            "network": "Network resources and APIs",
-            "system": "System-level operations"
-        }
-        
+        pm = self.permission_manager
+        total = len(pm.rules)
+        enabled = sum(1 for r in pm.rules if r.enabled)
+        disabled = total - enabled
+
+        type_counts: dict = {}
+        for rule in pm.rules:
+            rt = rule.resource_type.value
+            type_counts[rt] = type_counts.get(rt, 0) + 1
+
+        level_counts: dict = {}
+        for rule in pm.rules:
+            lv = rule.permission_level.value
+            level_counts[lv] = level_counts.get(lv, 0) + 1
+
+        overview = Table(title="🛡️ Visão Geral de Permissões", show_header=False)
+        overview.add_column("Métrica", style="bold cyan", width=20)
+        overview.add_column("Valor", style="green", width=15)
+        overview.add_column("Detalhes", style="dim", width=30)
+        overview.add_row("Total de Regras", str(total), "Regras de segurança ativas")
+        overview.add_row("Habilitadas", str(enabled), "Aplicadas atualmente")
+        overview.add_row("Desabilitadas", str(disabled), "Temporariamente inativas")
+        overview.add_row("Nível Padrão", pm.default_permission.value, "Permissão de fallback")
+        sandbox_label = "🟢 Ativo" if pm.sandbox_enabled else "🔴 Inativo"
+        overview.add_row("Sandbox", sandbox_label, "Modo de isolamento")
+
+        types_table = Table(title="📁 Tipos de Recurso Protegidos", show_header=True, header_style="bold yellow")
+        types_table.add_column("Tipo", style="cyan")
+        types_table.add_column("Regras", style="green", justify="center")
         for res_type, count in sorted(type_counts.items()):
-            types_table.add_row(
-                res_type.title(),
-                str(count),
-                type_descriptions.get(res_type, "Custom resource type")
-            )
-        
-        # Permission levels breakdown
-        levels_table = Table(title="🔐 Permission Levels", show_header=True, header_style="bold red")
-        levels_table.add_column("Level", style="red")
-        levels_table.add_column("Rules", style="green", justify="center")
-        levels_table.add_column("Access Rights", style="dim")
-        
-        level_descriptions = {
-            "none": "No access permitted",
-            "read": "Read-only access",
-            "write": "Read and write access",
-            "execute": "Execute and modify permissions",
-            "admin": "Full administrative access"
-        }
-        
+            types_table.add_row(res_type.title(), str(count))
+
+        levels_table = Table(title="🔐 Níveis de Permissão", show_header=True, header_style="bold red")
+        levels_table.add_column("Nível", style="red")
+        levels_table.add_column("Regras", style="green", justify="center")
         for level, count in sorted(level_counts.items()):
-            levels_table.add_row(
-                level.title(),
-                str(count),
-                level_descriptions.get(level, "Custom access level")
-            )
-        
-        # Usage instructions
-        usage_panel = Panel(
+            levels_table.add_row(level.title(), str(count))
+
+        usage = Panel(
             Text(
-                "📖 Usage Instructions\n\n"
-                "/permissions                    - Show this overview\n"
-                "/permissions list [type|level]  - List all rules with optional filter\n"
-                "/permissions show <rule_id>     - Show detailed rule information\n"
-                "/permissions check <tool> <resource> <action> - Test permission\n"
-                "/permissions add <id> <name> <type> <pattern> <level> [tools] - Add rule\n"
-                "/permissions enable/disable <rule_id> - Toggle rule status\n"
-                "/permissions remove <rule_id>   - Remove rule permanently\n"
-                "/permissions audit [limit]      - Show recent permission events\n"
-                "/permissions sandbox <on|off>   - Control sandbox mode\n\n"
-                "📋 Quick Examples:\n"
-                "/permissions check bash_execute /etc/passwd read\n"
-                "/permissions list file\n"
-                "/permissions sandbox on",
-                style="dim"
+                "/permissions list [filtro]           — listar regras\n"
+                "/permissions show <id>              — detalhes da regra\n"
+                "/permissions add <id> <nome> <tipo> <padrão> <nível> [tools]\n"
+                "/permissions enable/disable <id>    — ativar/desativar\n"
+                "/permissions remove <id> [--confirm]\n"
+                "/permissions audit [limite]         — log de auditoria\n"
+                "/permissions sandbox on|off|status\n"
+                "/permissions help",
+                style="dim",
             ),
-            title="Commands Reference",
-            border_style="blue"
+            title="Referência",
+            border_style="blue",
         )
-        
-        # Combine all content
-        content = Group(overview_table, "", types_table, "", levels_table, "", usage_panel)
-        
-        return CommandResult.success_result(content, "rich")
-    
+
+        return CommandResult.success_result(Group(overview, "", types_table, "", levels_table, "", usage), "rich")
+
+    # ------------------------------------------------------------------
+    # List
+    # ------------------------------------------------------------------
+
     async def _list_rules(self, filters: List[str]) -> CommandResult:
-        """List permission rules with optional filtering"""
-        
-        rules = self.permission_manager.rules
+        rules = list(self.permission_manager.rules)
         filter_type = filters[0] if filters else None
-        
-        # Apply filters
         if filter_type:
             if filter_type in [rt.value for rt in ResourceType]:
                 rules = [r for r in rules if r.resource_type.value == filter_type]
             elif filter_type in [pl.value for pl in PermissionLevel]:
                 rules = [r for r in rules if r.permission_level.value == filter_type]
             else:
-                # Filter by rule name or ID
                 rules = [r for r in rules if filter_type.lower() in r.id.lower() or filter_type.lower() in r.name.lower()]
-        
+
         if not rules:
             return CommandResult.success_result(
-                Panel(
-                    Text("No permission rules found" + (f" matching filter: {filter_type}" if filter_type else ""), 
-                         style="yellow"),
-                    title="🔍 No Results",
-                    border_style="yellow"
-                ),
-                "rich"
+                Panel(Text(f"Nenhuma regra encontrada{(' (filtro: ' + filter_type + ')') if filter_type else ''}.", style="yellow"),
+                      title="🔍 Sem Resultados", border_style="yellow"),
+                "rich",
             )
-        
-        # Create rules table
+
         table = Table(
-            title="🛡️ Permission Rules" + (f" (filtered: {filter_type})" if filter_type else f" ({len(rules)} total)"),
-            show_header=True, 
-            header_style="bold cyan"
+            title=f"🛡️ Regras de Permissão ({len(rules)} encontradas)",
+            show_header=True,
+            header_style="bold cyan",
         )
         table.add_column("ID", style="cyan", width=15)
-        table.add_column("Name", style="white", width=20)
-        table.add_column("Type", style="yellow", width=8)
-        table.add_column("Level", style="red", width=8)
-        table.add_column("Tools", style="green", width=15)
+        table.add_column("Nome", style="white", width=20)
+        table.add_column("Tipo", style="yellow", width=10)
+        table.add_column("Nível", style="red", width=10)
         table.add_column("Status", style="blue", width=8)
-        table.add_column("Priority", style="magenta", width=8)
-        
+        table.add_column("Prioridade", style="magenta", width=10)
+
         for rule in sorted(rules, key=lambda r: r.priority):
-            # Status emoji
-            status_emoji = "✅" if rule.enabled else "❌"
-            status_text = f"{status_emoji} {'On' if rule.enabled else 'Off'}"
-            
-            # Tools list (truncate if too long)
-            tools_text = ", ".join(rule.tool_names[:2])
-            if len(rule.tool_names) > 2:
-                tools_text += f" +{len(rule.tool_names) - 2}"
-            if "*" in rule.tool_names:
-                tools_text = "* (all)"
-            
-            # Truncate long names
-            name = rule.name[:18] + "..." if len(rule.name) > 18 else rule.name
-            rule_id = rule.id[:13] + "..." if len(rule.id) > 13 else rule.id
-            
-            table.add_row(
-                rule_id,
-                name,
-                rule.resource_type.value.title(),
-                rule.permission_level.value.title(),
-                tools_text,
-                status_text,
-                str(rule.priority)
-            )
-        
+            status = "✅ On" if rule.enabled else "❌ Off"
+            rule_id = rule.id[:13] + "…" if len(rule.id) > 13 else rule.id
+            name = rule.name[:18] + "…" if len(rule.name) > 18 else rule.name
+            table.add_row(rule_id, name, rule.resource_type.value, rule.permission_level.value, status, str(rule.priority))
+
         return CommandResult.success_result(table, "rich")
-    
+
+    # ------------------------------------------------------------------
+    # Show
+    # ------------------------------------------------------------------
+
     async def _show_rule(self, rule_id: str) -> CommandResult:
-        """Show detailed information about a specific rule"""
-        
-        rule = self.permission_manager.get_rule(rule_id)
+        rule = self.permission_manager.get_rule_by_id(rule_id)
         if not rule:
-            raise CommandError(f"Rule '{rule_id}' not found")
-        
-        # Rule details table
-        details_table = Table(title=f"🛡️ Rule Details: {rule.name}", show_header=False)
-        details_table.add_column("Property", style="bold cyan", width=18)
-        details_table.add_column("Value", style="white", width=40)
-        details_table.add_column("Description", style="dim", width=25)
-        
-        details_table.add_row("ID", rule.id, "Unique identifier")
-        details_table.add_row("Name", rule.name, "Human-readable name")
-        details_table.add_row("Description", rule.description, "Rule purpose")
-        details_table.add_row("Resource Type", rule.resource_type.value, "What this rule protects")
-        details_table.add_row("Pattern", rule.resource_pattern, "Matching regex pattern")
-        details_table.add_row("Permission Level", rule.permission_level.value, "Access level granted")
-        details_table.add_row("Priority", str(rule.priority), "Rule precedence (lower = higher)")
-        details_table.add_row("Status", "✅ Enabled" if rule.enabled else "❌ Disabled", "Current state")
-        details_table.add_row("Tools", ", ".join(rule.tool_names) if "*" not in rule.tool_names else "* (all tools)", "Applicable tools")
-        
-        # Conditions (if any)
+            raise CommandError(f"Regra '{rule_id}' não encontrada")
+
+        table = Table(title=f"🛡️ Regra: {rule.name}", show_header=False)
+        table.add_column("Propriedade", style="bold cyan", width=18)
+        table.add_column("Valor", style="white", width=40)
+        table.add_row("ID", rule.id)
+        table.add_row("Nome", rule.name)
+        table.add_row("Descrição", rule.description)
+        table.add_row("Tipo de Recurso", rule.resource_type.value)
+        table.add_row("Padrão", rule.resource_pattern)
+        table.add_row("Nível de Permissão", rule.permission_level.value)
+        table.add_row("Prioridade", str(rule.priority))
+        table.add_row("Status", "✅ Habilitada" if rule.enabled else "❌ Desabilitada")
+        tools_text = "* (todas)" if "*" in rule.tool_names else ", ".join(rule.tool_names)
+        table.add_row("Tools", tools_text)
         if rule.conditions:
-            conditions_text = "\n".join([f"{k}: {v}" for k, v in rule.conditions.items()])
-            details_table.add_row("Conditions", conditions_text, "Additional constraints")
-        
-        # Test examples
-        examples_panel = Panel(
-            Text(
-                f"🧪 Test Examples:\n\n"
-                f"/permissions check write_file '/path/file.txt' write\n"
-                f"/permissions check bash_execute '/bin/ls' execute\n"
-                f"/permissions check {rule.tool_names[0] if rule.tool_names and rule.tool_names[0] != '*' else 'any_tool'} <resource> <action>\n\n"
-                f"Pattern will match resources like:\n"
-                f"• Regex: {rule.resource_pattern}\n"
-                f"• Example matches: depends on pattern complexity",
-                style="dim"
-            ),
-            title="Testing This Rule",
-            border_style="green"
-        )
-        
-        content = Group(details_table, "", examples_panel)
-        
-        return CommandResult.success_result(content, "rich")
-    
+            table.add_row("Condições", str(rule.conditions))
+
+        return CommandResult.success_result(table, "rich")
+
+    # ------------------------------------------------------------------
+    # Check
+    # ------------------------------------------------------------------
+
     async def _check_permission(self, tool: str, resource: str, action: str) -> CommandResult:
-        """Check if a specific permission is allowed"""
-        
-        # Perform the permission check
         allowed = self.permission_manager.check_permission(tool, resource, action)
-        
-        # Find which rule was applied
-        applicable_rules = [
-            rule for rule in sorted(self.permission_manager.rules, key=lambda r: r.priority)
-            if rule.enabled and rule.applies_to_tool(tool) and rule.matches_resource(resource)
+        applicable = [
+            r for r in sorted(self.permission_manager.rules, key=lambda r: r.priority)
+            if r.enabled and r.applies_to_tool(tool) and r.matches_resource(resource)
         ]
-        
-        applied_rule = applicable_rules[0] if applicable_rules else None
-        
-        # Result styling
-        result_emoji = "✅" if allowed else "❌"
-        result_color = "green" if allowed else "red"
-        result_text = "ALLOWED" if allowed else "DENIED"
-        
-        # Create result table
-        result_table = Table(title=f"{result_emoji} Permission Check Result", show_header=False)
-        result_table.add_column("Property", style="bold cyan", width=15)
-        result_table.add_column("Value", style=result_color, width=30)
-        result_table.add_column("Details", style="dim", width=25)
-        
-        result_table.add_row("Tool", tool, "Requesting tool")
-        result_table.add_row("Resource", resource, "Target resource")
-        result_table.add_row("Action", action, "Requested action")
-        result_table.add_row("Result", f"{result_emoji} {result_text}", "Final decision")
-        
+        applied_rule = applicable[0] if applicable else None
+
+        icon = "✅" if allowed else "❌"
+        color = "green" if allowed else "red"
+        result_text = "PERMITIDO" if allowed else "NEGADO"
+
+        table = Table(title=f"{icon} Verificação de Permissão — {result_text}", show_header=False)
+        table.add_column("Propriedade", style="bold cyan", width=15)
+        table.add_column("Valor", style=color, width=35)
+        table.add_row("Tool", tool)
+        table.add_row("Recurso", resource)
+        table.add_row("Ação", action)
+        table.add_row("Resultado", f"{icon} {result_text}")
         if applied_rule:
-            result_table.add_row("Applied Rule", applied_rule.id, "Rule that made decision")
-            result_table.add_row("Rule Priority", str(applied_rule.priority), "Rule precedence")
-            result_table.add_row("Permission Level", applied_rule.permission_level.value, "Granted access level")
+            table.add_row("Regra Aplicada", applied_rule.id)
+            table.add_row("Nível", applied_rule.permission_level.value)
         else:
-            result_table.add_row("Applied Rule", "Default", "No specific rule matched")
-            result_table.add_row("Default Level", self.permission_manager.default_permission.value, "Fallback permission")
-        
-        # Explanation panel
-        if allowed:
-            explanation = f"✅ **Access Granted**\n\nThe tool '{tool}' is permitted to perform '{action}' on resource '{resource}'."
-            if applied_rule:
-                explanation += f"\n\n🛡️ **Applied Rule**: {applied_rule.name}\n📝 **Description**: {applied_rule.description}"
-                explanation += f"\n🔢 **Priority**: {applied_rule.priority} (rules with lower numbers take precedence)"
-            else:
-                explanation += f"\n\n🔄 **Default Permission**: {self.permission_manager.default_permission.value}\n📝 No specific rules matched this request."
-        else:
-            explanation = f"❌ **Access Denied**\n\nThe tool '{tool}' is NOT permitted to perform '{action}' on resource '{resource}'."
-            if applied_rule:
-                explanation += f"\n\n🚫 **Blocking Rule**: {applied_rule.name}\n📝 **Description**: {applied_rule.description}"
-                explanation += f"\n🔢 **Priority**: {applied_rule.priority}\n💡 **Tip**: You can modify the rule with '/permissions show {applied_rule.id}'"
-            else:
-                explanation += f"\n\n🔄 **Default Permission**: {self.permission_manager.default_permission.value}\n📝 Default settings deny this action."
-        
-        explanation_panel = Panel(
-            Text(explanation, style=result_color),
-            title="📋 Explanation",
-            border_style=result_color
-        )
-        
-        content = Group(result_table, "", explanation_panel)
-        
-        return CommandResult.success_result(content, "rich")
-    
+            table.add_row("Regra Aplicada", "Padrão")
+            table.add_row("Nível Padrão", self.permission_manager.default_permission.value)
+
+        return CommandResult.success_result(table, "rich")
+
+    # ------------------------------------------------------------------
+    # Add
+    # ------------------------------------------------------------------
+
     async def _add_rule(self, args: List[str]) -> CommandResult:
-        """Add a new permission rule"""
-        # This is a simplified version - in production you'd want more validation
-        raise CommandError("Rule creation not implemented in this demo. Use configuration files to add rules.")
-    
-    async def _enable_rule(self, rule_id: str, enabled: bool) -> CommandResult:
-        """Enable or disable a rule"""
-        
-        rule = self.permission_manager.get_rule(rule_id)
-        if not rule:
-            raise CommandError(f"Rule '{rule_id}' not found")
-        
-        old_status = rule.enabled
-        rule.enabled = enabled
-        
-        action_text = "enabled" if enabled else "disabled"
-        emoji = "✅" if enabled else "❌"
-        color = "green" if enabled else "red"
-        
-        if old_status == enabled:
-            return CommandResult.success_result(
-                Panel(
-                    Text(f"Rule '{rule_id}' is already {action_text}.", style=color),
-                    title=f"{emoji} No Change",
-                    border_style=color
-                ),
-                "rich"
-            )
-        
-        # Success message
-        content_lines = [
-            f"{emoji} **Rule {action_text.title()} Successfully**",
-            "",
-            f"**Rule ID**: {rule_id}",
-            f"**Rule Name**: {rule.name}",
-            f"**Description**: {rule.description}",
-            f"**Resource Type**: {rule.resource_type.value}",
-            f"**Permission Level**: {rule.permission_level.value}",
-            f"**Priority**: {rule.priority}",
-            "",
-            f"**Status**: {action_text.title()}",
-            f"**Effect**: This rule is now {'active' if enabled else 'inactive'} and {'will' if enabled else 'will not'} be enforced."
-        ]
-        
-        content = "\n".join(content_lines)
-        
-        result_panel = Panel(
-            Text(content, style=color),
-            title=f"⚡ Rule {action_text.title()}",
-            border_style=color,
-            padding=(1, 2)
+        rule_id = args[0]
+        name = args[1]
+        resource_type_str = args[2]
+        pattern = args[3]
+        level_str = args[4]
+        tool_names = args[5].split(",") if len(args) > 5 else ["*"]
+
+        try:
+            resource_type = ResourceType(resource_type_str)
+        except ValueError:
+            valid = [rt.value for rt in ResourceType]
+            raise CommandError(f"Tipo de recurso inválido '{resource_type_str}'. Válidos: {valid}") from None
+
+        try:
+            permission_level = PermissionLevel(level_str)
+        except ValueError:
+            valid = [pl.value for pl in PermissionLevel]
+            raise CommandError(f"Nível de permissão inválido '{level_str}'. Válidos: {valid}") from None
+
+        if self.permission_manager.get_rule_by_id(rule_id) is not None:
+            raise CommandError(f"Regra com ID '{rule_id}' já existe. Use outro ID.")
+
+        rule = PermissionRule(
+            id=rule_id,
+            name=name,
+            description=f"Regra criada via /permissions add em {datetime.now().isoformat()}",
+            resource_type=resource_type,
+            resource_pattern=pattern,
+            tool_names=tool_names,
+            permission_level=permission_level,
+            priority=100,
         )
-        
-        return CommandResult.success_result(result_panel, "rich")
-    
-    async def _remove_rule(self, rule_id: str) -> CommandResult:
-        """Remove a rule"""
-        # This is a simplified version - in production you'd want confirmation
-        raise CommandError("Rule removal not implemented in this demo. Use configuration files to remove rules.")
-    
-    async def _show_audit_log(self, args: List[str]) -> CommandResult:
-        """Show permission audit log"""
-        # This would show recent permission checks and their results
+        self.permission_manager.add_rule(rule)
+        _persist(self.permission_manager)
+        self._emit_audit_event("add", rule_id, f"Regra adicionada: {name}")
+
         return CommandResult.success_result(
             Panel(
-                Text("Audit logging not yet implemented. Will show recent permission checks, denials, and security events.", 
-                     style="yellow"),
-                title="🔍 Audit Log",
-                border_style="yellow"
+                Text(
+                    f"✅ Regra criada com sucesso\n\n"
+                    f"ID: {rule_id}\nNome: {name}\n"
+                    f"Tipo: {resource_type.value}\nNível: {permission_level.value}\n"
+                    f"Tools: {', '.join(tool_names)}",
+                    style="green",
+                ),
+                title="Regra Adicionada",
+                border_style="green",
             ),
-            "rich"
+            "rich",
         )
-    
+
+    # ------------------------------------------------------------------
+    # Enable / Disable
+    # ------------------------------------------------------------------
+
+    async def _enable_rule(self, rule_id: str, enabled: bool) -> CommandResult:
+        rule = self.permission_manager.get_rule_by_id(rule_id)
+        if not rule:
+            raise CommandError(f"Regra '{rule_id}' não encontrada")
+
+        if rule.enabled == enabled:
+            state = "habilitada" if enabled else "desabilitada"
+            return CommandResult.success_result(
+                Panel(Text(f"Regra '{rule_id}' já está {state}.", style="dim"), title="Sem Alteração", border_style="dim"),
+                "rich",
+            )
+
+        rule.enabled = enabled
+        _persist(self.permission_manager)
+        action_str = "habilitada" if enabled else "desabilitada"
+        self._emit_audit_event("enable" if enabled else "disable", rule_id, f"Regra {action_str}")
+
+        color = "green" if enabled else "red"
+        icon = "✅" if enabled else "❌"
+        return CommandResult.success_result(
+            Panel(
+                Text(f"{icon} Regra '{rule_id}' {action_str} com sucesso.\nNome: {rule.name}", style=color),
+                title=f"Regra {action_str.title()}",
+                border_style=color,
+            ),
+            "rich",
+        )
+
+    # ------------------------------------------------------------------
+    # Remove
+    # ------------------------------------------------------------------
+
+    async def _remove_rule(self, rule_id: str, confirmed: bool) -> CommandResult:
+        rule = self.permission_manager.get_rule_by_id(rule_id)
+        if not rule:
+            raise CommandError(f"Regra '{rule_id}' não encontrada")
+
+        if not confirmed:
+            return CommandResult.success_result(
+                Panel(
+                    Text(
+                        f"⚠️  Você está prestes a remover permanentemente a regra:\n\n"
+                        f"  ID: {rule_id}\n  Nome: {rule.name}\n\n"
+                        f"Para confirmar, execute:\n"
+                        f"  /permissions remove {rule_id} --confirm",
+                        style="yellow",
+                    ),
+                    title="Confirmação Necessária",
+                    border_style="yellow",
+                ),
+                "rich",
+            )
+
+        removed = self.permission_manager.remove_rule(rule_id)
+        if not removed:
+            raise CommandError(f"Falha ao remover regra '{rule_id}'")
+
+        _persist(self.permission_manager)
+        self._emit_audit_event("remove", rule_id, f"Regra removida: {rule.name}")
+
+        return CommandResult.success_result(
+            Panel(
+                Text(f"✅ Regra '{rule_id}' ({rule.name}) removida com sucesso.", style="green"),
+                title="Regra Removida",
+                border_style="green",
+            ),
+            "rich",
+        )
+
+    # ------------------------------------------------------------------
+    # Audit log
+    # ------------------------------------------------------------------
+
+    async def _show_audit_log(self, args: List[str]) -> CommandResult:
+        try:
+            from ...security.audit_logger import (AuditEventType,
+                                                  get_audit_logger)
+            limit = int(args[0]) if args and args[0].isdigit() else 50
+            audit_logger = get_audit_logger()
+            events = audit_logger.get_recent_events(
+                event_type=AuditEventType.SECURITY_POLICY_CHANGED,
+                limit=limit,
+            )
+            if not events:
+                events = audit_logger.get_recent_events(limit=limit)
+            events = [
+                e for e in events
+                if e.event_type in (
+                    AuditEventType.SECURITY_POLICY_CHANGED,
+                    AuditEventType.PERMISSION_CHECK,
+                    AuditEventType.PERMISSION_DENIED,
+                )
+            ]
+        except Exception as exc:
+            return CommandResult.success_result(
+                Panel(Text(f"Erro ao ler log de auditoria: {exc}", style="red"), title="🔍 Auditoria", border_style="red"),
+                "rich",
+            )
+
+        if not events:
+            return CommandResult.success_result(
+                Panel(Text("Nenhum evento de permissão registrado ainda.", style="dim"), title="🔍 Auditoria", border_style="dim"),
+                "rich",
+            )
+
+        table = Table(title=f"🔍 Log de Auditoria de Permissões ({len(events)} eventos)", show_header=True, header_style="bold cyan")
+        table.add_column("Timestamp", style="dim", width=20)
+        table.add_column("Tipo", style="cyan", width=22)
+        table.add_column("Actor", style="yellow", width=15)
+        table.add_column("Recurso", style="white", width=20)
+        table.add_column("Resultado", style="green", width=12)
+
+        for event in events[-limit:]:
+            ts = event.timestamp.strftime("%Y-%m-%d %H:%M:%S") if hasattr(event.timestamp, "strftime") else str(event.timestamp)[:19]
+            table.add_row(ts, event.event_type.value, event.actor, event.resource[:18], event.result)
+
+        return CommandResult.success_result(table, "rich")
+
+    # ------------------------------------------------------------------
+    # Sandbox
+    # ------------------------------------------------------------------
+
     async def _manage_sandbox(self, mode: str) -> CommandResult:
-        """Manage sandbox mode"""
-        
-        if mode.lower() == "status":
-            # Show current sandbox status
-            content = Panel(
-                Text("Sandbox enforcement will be integrated with tool execution system.\n\n"
-                     "Features:\n"
-                     "• Isolated execution environments\n"
-                     "• Resource access controls\n" 
-                     "• Network restrictions\n"
-                     "• Temporary file systems\n\n"
-                     "Status: Available for integration", 
-                     style="blue"),
-                title="🏗️ Sandbox Status",
-                border_style="blue"
-            )
-            return CommandResult.success_result(content, "rich")
-        elif mode.lower() in ["on", "enable"]:
+        pm = self.permission_manager
+        mode_lower = mode.lower()
+
+        if mode_lower == "status":
+            state = "ATIVO" if pm.sandbox_enabled else "INATIVO"
+            icon = "🟢" if pm.sandbox_enabled else "🔴"
             return CommandResult.success_result(
-                Panel(
-                    Text("Sandbox mode configuration will be integrated with execution system.", 
-                         style="green"),
-                    title="✅ Sandbox Configuration",
-                    border_style="green"
-                ),
-                "rich"
+                Panel(Text(f"{icon} Sandbox: {state}", style="green" if pm.sandbox_enabled else "red"),
+                      title="Status do Sandbox", border_style="dim"),
+                "rich",
             )
-        elif mode.lower() in ["off", "disable"]:
+
+        if mode_lower in ("on", "enable"):
+            pm.sandbox_enabled = True
+            _persist(pm)
+            self._emit_audit_event("sandbox_on", "sandbox", "Sandbox ativado")
             return CommandResult.success_result(
-                Panel(
-                    Text("Sandbox mode would be disabled (not recommended for production).", 
-                         style="yellow"),
-                    title="⚠️ Sandbox Disabled",
-                    border_style="yellow"
-                ),
-                "rich"
+                Panel(Text("✅ Sandbox ativado.", style="green"), title="Sandbox", border_style="green"),
+                "rich",
             )
-        else:
-            raise CommandError(f"Invalid sandbox mode: {mode}. Use 'on', 'off', or 'status'.")
-    
+
+        if mode_lower in ("off", "disable"):
+            pm.sandbox_enabled = False
+            _persist(pm)
+            self._emit_audit_event("sandbox_off", "sandbox", "Sandbox desativado")
+            return CommandResult.success_result(
+                Panel(Text("⚠️  Sandbox desativado.", style="yellow"), title="Sandbox", border_style="yellow"),
+                "rich",
+            )
+
+        raise CommandError(f"Modo inválido: '{mode}'. Use: on, off, status")
+
+    # ------------------------------------------------------------------
+    # Help
+    # ------------------------------------------------------------------
+
+    async def _show_help(self) -> CommandResult:
+        help_text = (
+            "/permissions                           — visão geral\n"
+            "/permissions list [filtro]             — listar regras\n"
+            "/permissions show <id>                — detalhes da regra\n"
+            "/permissions check <tool> <res> <ação> — verificar permissão\n"
+            "/permissions add <id> <nome> <tipo> <padrão> <nível> [tools]\n"
+            "/permissions enable <id>              — habilitar regra\n"
+            "/permissions disable <id>             — desabilitar regra\n"
+            "/permissions remove <id> [--confirm]  — remover regra\n"
+            "/permissions audit [limite]           — log de auditoria\n"
+            "/permissions sandbox on|off|status    — modo sandbox\n"
+            "\nTipos de recurso: file, directory, command, network, system\n"
+            "Níveis de permissão: none, read, write, execute, admin"
+        )
+        return CommandResult.success_result(
+            Panel(Text(help_text, style="dim"), title="📖 Ajuda — /permissions", border_style="blue"),
+            "rich",
+        )
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _emit_audit_event(self, action: str, resource: str, details_msg: str) -> None:
+        try:
+            from ...security.audit_logger import (AuditEventType,
+                                                  SeverityLevel,
+                                                  get_audit_logger)
+            get_audit_logger().log_event(
+                event_type=AuditEventType.SECURITY_POLICY_CHANGED,
+                severity=SeverityLevel.WARNING,
+                actor="user",
+                resource=resource,
+                action=action,
+                result="success",
+                details={"message": details_msg},
+            )
+        except Exception:
+            pass
+
     def get_help(self) -> str:
-        """Get command help"""
-        return """Manage security rules and permissions for tools and resources
-
-Usage:
-  /permissions                           Show permissions overview and status
-  /permissions list [filter]             List all rules (filter by type/level/name)
-  /permissions show <rule_id>            Show detailed rule information
-  /permissions check <tool> <resource> <action>  Test permission check
-  /permissions enable <rule_id>          Enable a rule
-  /permissions disable <rule_id>         Disable a rule
-  /permissions audit [limit]             Show recent permission events
-  /permissions sandbox <on|off|status>   Manage sandbox mode
-
-Filters for 'list':
-  file, directory, command, network, system    - Filter by resource type
-  none, read, write, execute, admin            - Filter by permission level
-  any_text                                     - Filter by rule name/ID
-
-Permission Check Examples:
-  /permissions check bash_execute "/bin/ls" execute
-  /permissions check write_file "config.yaml" write
-  /permissions check read_file "/etc/passwd" read
-
-Resource Types:
-  • file      - Individual files and file patterns
-  • directory - Directory trees and paths
-  • command   - System commands and executables
-  • network   - Network endpoints and APIs
-  • system    - System-level resources
-
-Permission Levels:
-  • none      - No access allowed
-  • read      - Read-only access
-  • write     - Read and write access  
-  • execute   - Execute and administrative access
-  • admin     - Full administrative access
-
-Security Features:
-  • Rule-based access control with priority system
-  • Pattern matching for flexible resource definitions
-  • Tool-specific permission enforcement
-  • Sandbox isolation support
-  • Audit logging of permission events
-  • Default permission fallback
-
-Related Commands:
-  • /sandbox - Quick sandbox toggle
-  • /tools - List available tools and their requirements
-  • /run - Execute plans with permission enforcement
-  • /approve - Manual approval for high-risk operations"""
+        return "Gerenciar regras de segurança e permissões para tools e recursos."

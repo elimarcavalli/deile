@@ -69,7 +69,9 @@ class PermissionManager:
     def __init__(self, config_path: Optional[Path] = None):
         self.rules: List[PermissionRule] = []
         self.default_permission = PermissionLevel.READ
-        
+        self.sandbox_enabled: bool = False
+        self.config_path: Optional[Path] = config_path
+
         if config_path and config_path.exists():
             self.load_rules_from_config(config_path)
         else:
@@ -350,9 +352,12 @@ class PermissionManager:
 _permission_manager: Optional[PermissionManager] = None
 
 
+_DEFAULT_PERMISSIONS_CONFIG = Path(__file__).parent.parent.parent / "config" / "permissions.yaml"
+
+
 def get_permission_manager() -> PermissionManager:
-    """Returns singleton instance of PermissionManager"""
+    """Returns singleton instance of PermissionManager."""
     global _permission_manager
     if _permission_manager is None:
-        _permission_manager = PermissionManager()
+        _permission_manager = PermissionManager(config_path=_DEFAULT_PERMISSIONS_CONFIG)
     return _permission_manager
