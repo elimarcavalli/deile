@@ -26,8 +26,9 @@ from pathlib import Path
 import pytest
 
 from deile.tools.base import ToolContext
-from deile.tools.file_tools import (LocalFileAccessViolation, ReadFileTool,
-                                    ResolvedPath, WriteFileTool,
+from deile.tools.file_tools import (ListFilesTool, LocalFileAccessViolation,
+                                    ReadFileTool, ResolvedPath, WriteFileTool,
+                                    _looks_like_outside_project,
                                     _resolve_project_path,
                                     _validate_path_within_working_directory)
 
@@ -338,6 +339,139 @@ def test_write_file_blocks_parent_escape_with_clear_message(tmp_path):
     result = tool.execute_sync(ctx)
     assert result.is_error
     assert "OUTSIDE the project" in result.message
+
+
+def test_outside_project_violation_points_to_bash_execute(tmp_path):
+    """Regression guard for the second-/EVOLVE-run trace: when DEILE was
+    launched from ``deile_bot/`` (a subdir of the deile parent repo) and
+    asked to read templates at ``../.github/ISSUE_TEMPLATE/``, the path
+    resolver rejected it with a generic "OUTSIDE the project" message that
+    didn't tell the LLM HOW to recover. The model then looped on the same
+    broken call.
+
+    The fix surfaces, inside the LocalFileAccessViolation message, an
+    explicit pointer to ``bash_execute`` — the only tool in DEILE that has
+    no working-directory sandbox and CAN access parent / sibling repos.
+    """
+    with pytest.raises(LocalFileAccessViolation) as exc:
+        _resolve_project_path("../.github/ISSUE_TEMPLATE/", str(tmp_path))
+    msg = str(exc.value)
+    assert "OUTSIDE the project" in msg
+    assert "bash_execute" in msg
+    # Must include a concrete example so the LLM can copy-paste — `ls` or `cat`
+    assert "`ls " in msg or "`cat " in msg
+    assert "no working-directory sandbox" in msg
+
+
+# ---------------------------------------------------------------------------
+# 2b. _looks_like_outside_project heuristic — pure-string detector that
+#     decides whether to attach a bash_execute hint to "Path not found"
+#     messages from list_files / read_file.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/Users/x/foo.txt",
+        "/etc/passwd",
+        "/tmp/foo",
+        "..",
+        "../sibling/file.py",
+        "../../parent/of/parent.txt",
+        "~",
+        "~/foo.py",
+    ],
+)
+def test_looks_like_outside_project_true(path):
+    assert _looks_like_outside_project(path) is True
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "foo.py",
+        "src/main.py",
+        "./local.py",
+        "a/../b.py",   # internal .. doesn't trigger heuristic
+        ".github/ISSUE_TEMPLATE/",
+        "",
+        "   ",
+    ],
+)
+def test_looks_like_outside_project_false(path):
+    assert _looks_like_outside_project(path) is False
+
+
+def test_looks_like_outside_project_handles_non_string():
+    assert _looks_like_outside_project(None) is False
+    assert _looks_like_outside_project(42) is False  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# 2c. ListFilesTool — surface normalization note + bash_execute hint
+# ---------------------------------------------------------------------------
+
+
+def test_list_files_not_found_for_normalized_absolute_path_hints_bash(tmp_path):
+    """Direct repro of the second-run failure mode.
+
+    User launches DEILE from a subdir, then asks it to read
+    ``/Users/.../parent_repo/.github/ISSUE_TEMPLATE/``. The resolver strips
+    the leading ``/`` (treating it as a project-relative typo), the
+    resulting path doesn't exist inside CWD, and ``list_files`` returns
+    "Path not found".
+
+    Before the fix: the LLM saw only "Path not found: /Users/...", didn't
+    realize the path had been mangled, and looped on the same call.
+
+    After the fix: the message includes (a) the normalization note so the
+    LLM SEES the slash was stripped, and (b) an explicit pointer to
+    ``bash_execute`` so it knows exactly which tool to use instead.
+    """
+    tool = ListFilesTool()
+    nonexistent_abs = "/some/system/path/that/does/not/exist/anywhere"
+    ctx = _ctx(tmp_path, path=nonexistent_abs)
+    result = tool.execute_sync(ctx)
+
+    assert result.is_error
+    assert "Path not found" in result.message
+    # (a) Normalization note must be visible
+    assert "leading '/' stripped" in result.message
+    # (b) bash_execute hint must be visible
+    assert "bash_execute" in result.message
+
+
+def test_list_files_not_found_for_parent_relative_path_hints_bash(tmp_path):
+    """Same idea but for ``../parent_repo/...`` — the resolver raises
+    LocalFileAccessViolation here. The list_files tool catches it and
+    surfaces the violation message, which the resolver enriched with the
+    bash_execute hint.
+    """
+    tool = ListFilesTool()
+    ctx = _ctx(tmp_path, path="../escape/.github")
+    result = tool.execute_sync(ctx)
+
+    assert result.is_error
+    assert "OUTSIDE the project" in result.message
+    assert "bash_execute" in result.message
+
+
+def test_list_files_not_found_for_clean_relative_path_no_bash_hint(tmp_path):
+    """Negative case: when the LLM asks for a non-existent project-relative
+    path (a typo like ``misspelled_dir/``), we still want a clear "Path
+    not found" — but we should NOT spam the bash_execute hint, because
+    the path is conceptually correct (project-scoped) and just doesn't
+    exist yet. Adding the hint here would mislead the LLM into reaching
+    for bash when ``write_file`` / ``mkdir`` is the right answer.
+    """
+    tool = ListFilesTool()
+    ctx = _ctx(tmp_path, path="misspelled_dir/")
+    result = tool.execute_sync(ctx)
+
+    assert result.is_error
+    assert "Path not found" in result.message
+    assert "bash_execute" not in result.message
 
 
 def test_write_file_at_prefix_normalized(tmp_path):

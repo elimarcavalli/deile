@@ -73,13 +73,21 @@ class AbortReason:
     detail: str
 
     def user_message(self) -> str:
-        """One-paragraph user-visible explanation of the loop break."""
+        """One-paragraph user-visible explanation of the loop break.
+
+        For path-related tool loops we additionally point at ``bash_execute``
+        — observed real failure mode: the model loops on ``list_files`` with
+        a path that the sandbox keeps rejecting, when the user actually
+        wanted a parent-repo / system-absolute path that only ``bash_execute``
+        can reach.
+        """
+        suffix = _bash_failover_hint(self.tool_name, self.args_preview)
         if self.kind is AbortKind.MAX_CALLS:
             return (
                 "I stopped because I exceeded the maximum number of tool calls "
                 f"allowed for a single turn ({self.total_calls}). The last call "
                 f"was {self.tool_name}({self.args_preview}). Please rephrase your "
-                "request or break it into smaller steps."
+                "request or break it into smaller steps." + suffix
             )
         if self.kind is AbortKind.IDENTICAL_REPEAT:
             return (
@@ -87,22 +95,53 @@ class AbortReason:
                 f"same arguments {self.repeat_count} times in a row "
                 f"({self.args_preview}). That is almost certainly a loop, so I "
                 "stopped before wasting more tokens. Please try a different phrasing "
-                "or be more specific about what you want."
+                "or be more specific about what you want." + suffix
             )
         if self.kind is AbortKind.SLIDING_WINDOW:
             return (
                 f"I detected that '{self.tool_name}' had been called {self.repeat_count} "
                 "times with the same arguments in a small window of recent calls "
                 f"({self.args_preview}). That looks like a loop, so I stopped. "
-                "Please rephrase your request."
+                "Please rephrase your request." + suffix
             )
         # NO_PROGRESS
         return (
             f"I made {self.repeat_count} consecutive tool calls without producing "
             "any useful result (the calls returned empty or errored). Rather than "
             "keep retrying, I stopped. Please check the most recent tool errors "
-            "and try a different approach."
+            "and try a different approach." + suffix
         )
+
+
+# Tools whose arguments include a ``path``/``file_path``/``directory`` field
+# and whose loops typically come from a sandbox-rejected path the user actually
+# wanted resolved system-wide. When one of these loops, hint at bash_execute.
+_PATH_TOOL_NAMES = frozenset({
+    "list_files", "read_file", "write_file", "delete_file", "edit_file",
+})
+
+# Substrings in args_preview that indicate the LLM was reaching for a path
+# outside the working_directory — leading slash (system-absolute), parent
+# traversal, or home shorthand.
+_OUTSIDE_PROJECT_MARKERS = ('"/', "'/", '"..', "'..", '"~', "'~")
+
+
+def _bash_failover_hint(tool_name: str, args_preview: str) -> str:
+    """Return a one-line addendum suggesting ``bash_execute`` when the
+    looping call looks like a sandboxed path-tool reaching outside CWD.
+
+    Pure string check — never raises, returns ``""`` when no hint applies.
+    """
+    if tool_name not in _PATH_TOOL_NAMES:
+        return ""
+    if not args_preview or not any(m in args_preview for m in _OUTSIDE_PROJECT_MARKERS):
+        return ""
+    return (
+        " HINT: the path looks like it targets OUTSIDE the project working "
+        "directory. file_tools cannot escape the sandbox — use `bash_execute` "
+        "with the absolute path instead (e.g. `bash_execute(command=\"ls "
+        "<abs_path>\")` or `bash_execute(command=\"cat <abs_path>\")`)."
+    )
 
 
 @dataclass
