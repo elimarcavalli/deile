@@ -68,7 +68,7 @@ class StatusCommand(DirectCommand):
 
     async def execute(self, context: CommandContext) -> CommandResult:
         self._emit_audit_event(context)
-        args = context.args if hasattr(context, "args") else ""
+        args = context.args
         try:
             parts = args.strip().split() if args.strip() else []
             if not parts:

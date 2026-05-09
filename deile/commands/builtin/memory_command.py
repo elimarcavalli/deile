@@ -59,7 +59,7 @@ class MemoryCommand(DirectCommand):
         super().__init__(config)
 
     async def execute(self, context: CommandContext) -> CommandResult:
-        args = context.args if hasattr(context, "args") else ""
+        args = context.args
         try:
             parts = args.strip().split() if args.strip() else []
             if not parts:

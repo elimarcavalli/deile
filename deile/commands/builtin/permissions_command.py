@@ -36,7 +36,7 @@ class PermissionsCommand(DirectCommand):
         self.permission_manager = get_permission_manager()
 
     async def execute(self, context: CommandContext) -> CommandResult:
-        args = context.args if hasattr(context, "args") else ""
+        args = context.args
         try:
             parts = args.strip().split() if args.strip() else []
             if not parts:
@@ -46,7 +46,7 @@ class PermissionsCommand(DirectCommand):
                 "list": lambda: self._list_rules(parts[1:]),
                 "show": lambda: self._show_rule(parts[1]) if len(parts) >= 2 else self._err("show requer ID: /permissions show <id>"),
                 "check": lambda: self._check_permission(parts[1], parts[2], parts[3]) if len(parts) >= 4 else self._err("check requer: /permissions check <tool> <resource> <action>"),
-                "add": lambda: self._add_rule(parts[1:]) if len(parts) >= 6 else self._err("add requer: /permissions add <id> <name> <type> <pattern> <level> [tools]"),
+                "add": lambda: self._add_rule(parts[1:]) if len(parts) >= 6 else self._err("add requer: /permissions add <id> <nome> <tipo> <padrão> <nível> [tools]"),
                 "enable": lambda: self._enable_rule(parts[1], True) if len(parts) >= 2 else self._err("enable requer ID"),
                 "disable": lambda: self._enable_rule(parts[1], False) if len(parts) >= 2 else self._err("disable requer ID"),
                 "remove": lambda: self._remove_rule(parts[1], "--confirm" in parts) if len(parts) >= 2 else self._err("remove requer ID"),
