@@ -40,6 +40,7 @@ def _make_monitor(*, unclassified_prs: list | None = None) -> tuple[PipelineMoni
     github.add_labels = AsyncMock()
     github.comment_on_issue = AsyncMock()
     github.comment_on_pr = AsyncMock()
+    github.clear_batch_label = AsyncMock()
     github.list_issue_comments_since = AsyncMock(return_value=[])
     github.list_pr_review_comments_since = AsyncMock(return_value=[])
 
@@ -73,6 +74,7 @@ class TestClassifyNewPrs:
         monitor, github, notifier = _make_monitor(unclassified_prs=[pr])
         await monitor._classify_new_prs()
         github.add_labels.assert_called_once_with("pr", 42, [REVIEW_PENDING])
+        github.clear_batch_label.assert_called_once_with("pr", 42)
         notifier.pr_auto_classified.assert_called_once_with(42, pr.title, pr.url)
         assert monitor.stats.prs_classified == 1
 

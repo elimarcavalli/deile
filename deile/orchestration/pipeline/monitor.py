@@ -559,6 +559,8 @@ class PipelineMonitor:
                 logger.error("pr_triage label #%s failed: %s", pr.number, exc)
                 await self.notifier.error(f"pr_triage #{pr.number}", str(exc))
                 continue
+            # Release the batch claim so Stage 3 can pick this PR up via its own claim.
+            await self.github.clear_batch_label("pr", pr.number)
             self._stats.prs_classified += 1
             logger.info("pr_triage: classified PR #%s with %s", pr.number, REVIEW_PENDING)
             await self.notifier.pr_auto_classified(pr.number, pr.title, pr.url)
