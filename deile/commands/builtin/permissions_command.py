@@ -86,7 +86,7 @@ class PermissionsCommand(DirectCommand):
             lv = rule.permission_level.value
             level_counts[lv] = level_counts.get(lv, 0) + 1
 
-        overview = Table(title="🛡️ Visão Geral de Permissões", show_header=False)
+        overview = Table(title="\U0001f6e1️ Visão Geral de Permissões", show_header=False)
         overview.add_column("Métrica", style="bold cyan", width=20)
         overview.add_column("Valor", style="green", width=15)
         overview.add_column("Detalhes", style="dim", width=30)
@@ -94,20 +94,36 @@ class PermissionsCommand(DirectCommand):
         overview.add_row("Habilitadas", str(enabled), "Aplicadas atualmente")
         overview.add_row("Desabilitadas", str(disabled), "Temporariamente inativas")
         overview.add_row("Nível Padrão", pm.default_permission.value, "Permissão de fallback")
-        sandbox_label = "🟢 Ativo" if pm.sandbox_enabled else "🔴 Inativo"
+        sandbox_label = "\U0001f7e2 Ativo" if pm.sandbox_enabled else "\U0001f534 Inativo"
         overview.add_row("Sandbox", sandbox_label, "Modo de isolamento")
 
-        types_table = Table(title="📁 Tipos de Recurso Protegidos", show_header=True, header_style="bold yellow")
+        _type_descriptions = {
+            "file": "Arquivos individuais e padrões",
+            "directory": "Hierarquias de diretórios",
+            "command": "Comandos do sistema e tools",
+            "network": "Recursos de rede e APIs",
+            "system": "Operações de nível de sistema",
+        }
+        types_table = Table(title="\U0001f4c1 Tipos de Recurso Protegidos", show_header=True, header_style="bold yellow")
         types_table.add_column("Tipo", style="cyan")
         types_table.add_column("Regras", style="green", justify="center")
+        types_table.add_column("Descrição", style="dim")
         for res_type, count in sorted(type_counts.items()):
-            types_table.add_row(res_type.title(), str(count))
+            types_table.add_row(res_type.title(), str(count), _type_descriptions.get(res_type, "Tipo customizado"))
 
-        levels_table = Table(title="🔐 Níveis de Permissão", show_header=True, header_style="bold red")
+        _level_descriptions = {
+            "none": "Sem acesso permitido",
+            "read": "Acesso somente leitura",
+            "write": "Acesso de leitura e escrita",
+            "execute": "Executar e modificar permissões",
+            "admin": "Acesso administrativo completo",
+        }
+        levels_table = Table(title="\U0001f510 Níveis de Permissão", show_header=True, header_style="bold red")
         levels_table.add_column("Nível", style="red")
         levels_table.add_column("Regras", style="green", justify="center")
+        levels_table.add_column("Direitos", style="dim")
         for level, count in sorted(level_counts.items()):
-            levels_table.add_row(level.title(), str(count))
+            levels_table.add_row(level.title(), str(count), _level_descriptions.get(level, "Nível customizado"))
 
         usage = Panel(
             Text(
@@ -145,27 +161,34 @@ class PermissionsCommand(DirectCommand):
         if not rules:
             return CommandResult.success_result(
                 Panel(Text(f"Nenhuma regra encontrada{(' (filtro: ' + filter_type + ')') if filter_type else ''}.", style="yellow"),
-                      title="🔍 Sem Resultados", border_style="yellow"),
+                      title="\U0001f50d Sem Resultados", border_style="yellow"),
                 "rich",
             )
 
         table = Table(
-            title=f"🛡️ Regras de Permissão ({len(rules)} encontradas)",
+            title=f"\U0001f6e1️ Regras de Permissão ({len(rules)} encontradas)",
             show_header=True,
             header_style="bold cyan",
         )
         table.add_column("ID", style="cyan", width=15)
-        table.add_column("Nome", style="white", width=20)
+        table.add_column("Nome", style="white", width=18)
         table.add_column("Tipo", style="yellow", width=10)
         table.add_column("Nível", style="red", width=10)
+        table.add_column("Tools", style="green", width=14)
         table.add_column("Status", style="blue", width=8)
-        table.add_column("Prioridade", style="magenta", width=10)
+        table.add_column("Prior.", style="magenta", width=7)
 
         for rule in sorted(rules, key=lambda r: r.priority):
             status = "✅ On" if rule.enabled else "❌ Off"
             rule_id = rule.id[:13] + "…" if len(rule.id) > 13 else rule.id
-            name = rule.name[:18] + "…" if len(rule.name) > 18 else rule.name
-            table.add_row(rule_id, name, rule.resource_type.value, rule.permission_level.value, status, str(rule.priority))
+            name = rule.name[:16] + "…" if len(rule.name) > 16 else rule.name
+            if "*" in rule.tool_names:
+                tools_text = "* (todas)"
+            else:
+                tools_text = ", ".join(rule.tool_names[:2])
+                if len(rule.tool_names) > 2:
+                    tools_text += f" +{len(rule.tool_names) - 2}"
+            table.add_row(rule_id, name, rule.resource_type.value, rule.permission_level.value, tools_text, status, str(rule.priority))
 
         return CommandResult.success_result(table, "rich")
 
@@ -178,21 +201,22 @@ class PermissionsCommand(DirectCommand):
         if not rule:
             raise CommandError(f"Regra '{rule_id}' não encontrada")
 
-        table = Table(title=f"🛡️ Regra: {rule.name}", show_header=False)
+        table = Table(title=f"\U0001f6e1️ Regra: {rule.name}", show_header=False)
         table.add_column("Propriedade", style="bold cyan", width=18)
-        table.add_column("Valor", style="white", width=40)
-        table.add_row("ID", rule.id)
-        table.add_row("Nome", rule.name)
-        table.add_row("Descrição", rule.description)
-        table.add_row("Tipo de Recurso", rule.resource_type.value)
-        table.add_row("Padrão", rule.resource_pattern)
-        table.add_row("Nível de Permissão", rule.permission_level.value)
-        table.add_row("Prioridade", str(rule.priority))
-        table.add_row("Status", "✅ Habilitada" if rule.enabled else "❌ Desabilitada")
+        table.add_column("Valor", style="white", width=35)
+        table.add_column("Detalhes", style="dim", width=25)
+        table.add_row("ID", rule.id, "Identificador único")
+        table.add_row("Nome", rule.name, "Nome legível")
+        table.add_row("Descrição", rule.description, "Propósito da regra")
+        table.add_row("Tipo de Recurso", rule.resource_type.value, "O que esta regra protege")
+        table.add_row("Padrão", rule.resource_pattern, "Padrão regex de correspondência")
+        table.add_row("Nível de Permissão", rule.permission_level.value, "Nível de acesso concedido")
+        table.add_row("Prioridade", str(rule.priority), "Precedência (menor = maior)")
+        table.add_row("Status", "✅ Habilitada" if rule.enabled else "❌ Desabilitada", "Estado atual")
         tools_text = "* (todas)" if "*" in rule.tool_names else ", ".join(rule.tool_names)
-        table.add_row("Tools", tools_text)
+        table.add_row("Tools", tools_text, "Tools aplicáveis")
         if rule.conditions:
-            table.add_row("Condições", str(rule.conditions))
+            table.add_row("Condições", str(rule.conditions), "Restrições adicionais")
 
         return CommandResult.success_result(table, "rich")
 
@@ -383,17 +407,17 @@ class PermissionsCommand(DirectCommand):
             ]
         except Exception as exc:
             return CommandResult.success_result(
-                Panel(Text(f"Erro ao ler log de auditoria: {exc}", style="red"), title="🔍 Auditoria", border_style="red"),
+                Panel(Text(f"Erro ao ler log de auditoria: {exc}", style="red"), title="\U0001f50d Auditoria", border_style="red"),
                 "rich",
             )
 
         if not events:
             return CommandResult.success_result(
-                Panel(Text("Nenhum evento de permissão registrado ainda.", style="dim"), title="🔍 Auditoria", border_style="dim"),
+                Panel(Text("Nenhum evento de permissão registrado ainda.", style="dim"), title="\U0001f50d Auditoria", border_style="dim"),
                 "rich",
             )
 
-        table = Table(title=f"🔍 Log de Auditoria de Permissões ({len(events)} eventos)", show_header=True, header_style="bold cyan")
+        table = Table(title=f"\U0001f50d Log de Auditoria de Permissões ({len(events)} eventos)", show_header=True, header_style="bold cyan")
         table.add_column("Timestamp", style="dim", width=20)
         table.add_column("Tipo", style="cyan", width=22)
         table.add_column("Actor", style="yellow", width=15)
@@ -416,7 +440,7 @@ class PermissionsCommand(DirectCommand):
 
         if mode_lower == "status":
             state = "ATIVO" if pm.sandbox_enabled else "INATIVO"
-            icon = "🟢" if pm.sandbox_enabled else "🔴"
+            icon = "\U0001f7e2" if pm.sandbox_enabled else "\U0001f534"
             return CommandResult.success_result(
                 Panel(Text(f"{icon} Sandbox: {state}", style="green" if pm.sandbox_enabled else "red"),
                       title="Status do Sandbox", border_style="dim"),
@@ -463,7 +487,7 @@ class PermissionsCommand(DirectCommand):
             "Níveis de permissão: none, read, write, execute, admin"
         )
         return CommandResult.success_result(
-            Panel(Text(help_text, style="dim"), title="📖 Ajuda — /permissions", border_style="blue"),
+            Panel(Text(help_text, style="dim"), title="\U0001f4d6 Ajuda — /permissions", border_style="blue"),
             "rich",
         )
 

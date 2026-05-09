@@ -8,7 +8,7 @@ import socket
 import sys
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import psutil
 from rich.columns import Columns
@@ -138,7 +138,7 @@ class StatusCommand(DirectCommand):
                 "• /status performance   — métricas de performance",
                 style="dim",
             ),
-            title="📋 Seções de Status",
+            title="\U0001f4cb Seções de Status",
             border_style="dim",
         )
 
@@ -187,14 +187,39 @@ class StatusCommand(DirectCommand):
             from ...core.models.router import get_model_router
             router = get_model_router()
             providers = list(router.providers.keys())
-            active_key = providers[0] if providers else None
-            active_provider = active_key.split(":", 1)[0] if active_key else _indisponivel("nenhum provedor")
-            active_model = active_key.split(":", 1)[1] if active_key and ":" in active_key else (active_key or _indisponivel("nenhum modelo"))
+
+            # Last-used = provider with highest non-zero last_used timestamp in metrics
+            last_used_key: Optional[str] = None
+            last_used_ts = 0.0
+            for key, m in router.metrics.items():
+                if m.last_used > last_used_ts:
+                    last_used_ts = m.last_used
+                    last_used_key = key
+
+            if last_used_key:
+                parts = last_used_key.split(":", 1)
+                last_provider = parts[0]
+                last_model = parts[1] if len(parts) > 1 else last_used_key
+            else:
+                # No requests yet — show tier_1 first candidate from TierRouter cascade
+                last_provider = "—"
+                last_model = _indisponivel("nenhuma requisição nesta sessão")
+                try:
+                    from ...core.models.tier import ModelTier
+                    from ...core.models.tier_router import get_tier_router
+                    tier_router = get_tier_router()
+                    candidate = tier_router.select(ModelTier.TIER_1)
+                    last_provider = candidate.provider_id
+                    last_model = f"{getattr(candidate, 'model_name', '?')} (próximo para tier_1)"
+                except Exception:
+                    pass
+
             return {
-                "active_model": active_model,
-                "active_provider": active_provider,
+                "last_used_model": last_model,
+                "last_used_provider": last_provider,
                 "total_providers": len(providers),
                 "providers": providers,
+                "strategy": router.strategy.value,
             }
         except Exception as exc:
             return {"error": str(exc)}
@@ -256,59 +281,60 @@ class StatusCommand(DirectCommand):
 
     def _create_system_panel(self, info: Dict[str, Any]) -> Panel:
         if "error" in info:
-            return Panel(Text(f"Erro: {info['error']}", style="red"), title="🖥️ Sistema", border_style="red")
+            return Panel(Text(f"Erro: {info['error']}", style="red"), title="\U0001f5a5️ Sistema", border_style="red")
         content = (
-            f"💻 DEILE v{info.get('deile_version', '?')}\n\n"
-            f"🐍 Python: {info.get('python_version', '?')}\n"
-            f"🖥️  SO: {info.get('platform', '?')} {info.get('platform_release', '')}\n"
-            f"🏗️  Arch: {info.get('architecture', '?')}\n"
-            f"🌐 Host: {info.get('hostname', '?')}\n\n"
+            f"\U0001f4bb DEILE v{info.get('deile_version', '?')}\n\n"
+            f"\U0001f40d Python: {info.get('python_version', '?')}\n"
+            f"\U0001f5a5️  SO: {info.get('platform', '?')} {info.get('platform_release', '')}\n"
+            f"\U0001f3d7️  Arch: {info.get('architecture', '?')}\n"
+            f"\U0001f310 Host: {info.get('hostname', '?')}\n\n"
             f"⏱️  Uptime: {info.get('uptime', '?')}\n"
-            f"🧮 CPUs: {info.get('cpu_count', '?')}\n"
-            f"💾 Memória: {info.get('memory_percent', 0):.1f}% usada\n"
-            f"💿 Disco: {info.get('disk_usage', 0):.1f}% usado"
+            f"\U0001f9ee CPUs: {info.get('cpu_count', '?')}\n"
+            f"\U0001f4be Memória: {info.get('memory_percent', 0):.1f}% usada\n"
+            f"\U0001f4bf Disco: {info.get('disk_usage', 0):.1f}% usado"
         )
-        return Panel(Text(content, style="green"), title="🖥️ Sistema", border_style="green")
+        return Panel(Text(content, style="green"), title="\U0001f5a5️ Sistema", border_style="green")
 
     def _create_models_panel(self, info: Dict[str, Any]) -> Panel:
         if "error" in info:
-            return Panel(Text(f"Erro: {info['error']}", style="red"), title="🤖 Modelos", border_style="red")
+            return Panel(Text(f"Erro: {info['error']}", style="red"), title="\U0001f916 Modelos", border_style="red")
         content = (
-            f"🟢 Modelo: {info.get('active_model', '?')}\n"
-            f"🏢 Provedor: {info.get('active_provider', '?')}\n"
-            f"📊 Provedores: {info.get('total_providers', 0)}"
+            f"⏱️  Último: {info.get('last_used_model', '?')}\n"
+            f"\U0001f3e2 Provedor: {info.get('last_used_provider', '?')}\n"
+            f"\U0001f4ca Provedores: {info.get('total_providers', 0)}\n"
+            f"\U0001f500 Estratégia: {info.get('strategy', '?')}"
         )
-        return Panel(Text(content, style="cyan"), title="🤖 Modelos IA", border_style="cyan")
+        return Panel(Text(content, style="cyan"), title="\U0001f916 Modelos IA", border_style="cyan")
 
     def _create_tools_panel(self, info: Dict[str, Any]) -> Panel:
         if "error" in info:
-            return Panel(Text(f"Erro: {info['error']}", style="red"), title="🔧 Tools", border_style="red")
+            return Panel(Text(f"Erro: {info['error']}", style="red"), title="\U0001f527 Tools", border_style="red")
         content = (
-            f"🔧 Total: {info.get('total_tools', 0)}\n"
+            f"\U0001f527 Total: {info.get('total_tools', 0)}\n"
             f"✅ Habilitadas: {info.get('enabled_tools', 0)}\n"
             f"⛔ Desabilitadas: {info.get('disabled_tools', 0)}\n\n"
-            f"📂 Categorias: {info.get('categories', 0)}\n"
-            f"📋 Schemas: {info.get('tools_with_schemas', 0)}\n"
-            f"🔄 Funções: {info.get('function_definitions', 0)}"
+            f"\U0001f4c2 Categorias: {info.get('categories', 0)}\n"
+            f"\U0001f4cb Schemas: {info.get('tools_with_schemas', 0)}\n"
+            f"\U0001f504 Funções: {info.get('function_definitions', 0)}"
         )
-        return Panel(Text(content, style="yellow"), title="🔧 Tools", border_style="yellow")
+        return Panel(Text(content, style="yellow"), title="\U0001f527 Tools", border_style="yellow")
 
     def _create_health_panel(self, info: Dict[str, Any]) -> Panel:
         status = info.get("overall_status", "desconhecido")
-        color_map = {"saudável": ("🟢", "green"), "atenção": ("🟡", "yellow"), "crítico": ("🔴", "red")}
+        color_map = {"saudável": ("\U0001f7e2", "green"), "atenção": ("\U0001f7e1", "yellow"), "crítico": ("\U0001f534", "red")}
         icon, color = color_map.get(status, ("⚪", "dim"))
         content = (
             f"{icon} Status: {status.title()}\n"
-            f"📊 Score: {info.get('health_score', 0)}/100\n\n"
-            f"💻 CPU: {info.get('cpu_usage', 0):.1f}%\n"
-            f"💾 Memória: {info.get('memory_usage', 0):.1f}%\n"
+            f"\U0001f4ca Score: {info.get('health_score', 0)}/100\n\n"
+            f"\U0001f4bb CPU: {info.get('cpu_usage', 0):.1f}%\n"
+            f"\U0001f4be Memória: {info.get('memory_usage', 0):.1f}%\n"
             f"⏱️  Uptime: {info.get('uptime', '?')}"
         )
         if info.get("warnings"):
             content += "\n\n⚠️ Avisos:\n" + "".join(f"  • {w}\n" for w in info["warnings"])
         else:
             content += "\n\n✨ Todos os sistemas normais"
-        return Panel(Text(content, style=color), title="🩺 Saúde", border_style=color)
+        return Panel(Text(content, style=color), title="\U0001fa7a Saúde", border_style=color)
 
     # ------------------------------------------------------------------
     # /status system
@@ -316,7 +342,7 @@ class StatusCommand(DirectCommand):
 
     async def _show_system_status(self, context: CommandContext) -> CommandResult:
         info = self._get_system_info()
-        table = Table(title="💻 Informações Detalhadas do Sistema", show_header=True, header_style="bold green")
+        table = Table(title="\U0001f4bb Informações Detalhadas do Sistema", show_header=True, header_style="bold green")
         table.add_column("Componente", style="cyan", width=20)
         table.add_column("Valor", style="white", width=30)
         table.add_column("Detalhes", style="dim", width=25)
@@ -339,35 +365,60 @@ class StatusCommand(DirectCommand):
     async def _show_models_status(self, context: CommandContext) -> CommandResult:
         try:
             from ...core.models.router import get_model_router
-            from ...core.models.tier_router import get_tier_router
             router = get_model_router()
-            tier_router = get_tier_router()
 
-            table = Table(title="🤖 Provedores de IA Registrados", show_header=True, header_style="bold cyan")
-            table.add_column("Chave", style="cyan", width=35)
-            table.add_column("Provedor", style="white", width=15)
-            table.add_column("Modelo", style="green", width=25)
+            table = Table(title="\U0001f916 Provedores de IA Registrados", show_header=True, header_style="bold cyan")
+            table.add_column("Chave", style="cyan", width=32)
+            table.add_column("Provedor", style="white", width=13)
+            table.add_column("Modelo", style="green", width=22)
+            table.add_column("Requisições", style="yellow", width=12, justify="right")
+            table.add_column("Último uso", style="dim", width=20)
+            table.add_column("Erro?", style="red", width=7)
 
             providers = router.providers
             if not providers:
-                providers_by_id = getattr(tier_router, "_providers_by_id", {})
-                for pid, prov in providers_by_id.items():
-                    model = getattr(prov, "model_name", "?")
-                    table.add_row(f"{pid}:{model}", pid, str(model))
+                table.add_row(_indisponivel("nenhum provedor registrado"), "—", "—", "—", "—", "—")
             else:
-                for key, prov in providers.items():
+                for key, _prov in providers.items():
                     parts = key.split(":", 1)
                     provider_id = parts[0]
                     model_id = parts[1] if len(parts) > 1 else "?"
-                    table.add_row(key, provider_id, model_id)
+                    metrics = router.metrics.get(key)
+                    if metrics:
+                        req_count = str(getattr(metrics, "total_requests", 0))
+                        last_ts = getattr(metrics, "last_used", 0.0)
+                        if last_ts:
+                            from datetime import datetime as _dt
+                            last_str = _dt.fromtimestamp(last_ts).strftime("%Y-%m-%d %H:%M:%S")
+                        else:
+                            last_str = "nunca"
+                        error_count = getattr(metrics, "error_count", 0)
+                        err_str = str(error_count) if error_count else "—"
+                    else:
+                        req_count = "0"
+                        last_str = "nunca"
+                        err_str = "—"
+                    table.add_row(key, provider_id, model_id, req_count, last_str, err_str)
 
-            if table.row_count == 0:
-                table.add_row(_indisponivel("nenhum provedor registrado"), "—", "—")
+            # Find the actually-last-used provider and highlight it
+            last_used_key: Optional[str] = None
+            last_used_ts = 0.0
+            for key, m in router.metrics.items():
+                if m.last_used > last_used_ts:
+                    last_used_ts = m.last_used
+                    last_used_key = key
 
-            return CommandResult.success_result(table, "rich")
+            summary_lines: List[str] = [f"Estratégia: {router.strategy.value}"]
+            if last_used_key:
+                summary_lines.append(f"Último modelo usado: {last_used_key}")
+            else:
+                summary_lines.append("Nenhuma requisição feita nesta sessão.")
+
+            summary = Panel(Text("\n".join(summary_lines), style="dim"), border_style="dim")
+            return CommandResult.success_result(Group(table, summary), "rich")
         except Exception as exc:
             return CommandResult.success_result(
-                Panel(Text(f"Erro ao obter informações de modelos: {exc}", style="red"), title="🤖 Modelos", border_style="red"),
+                Panel(Text(f"Erro ao obter informações de modelos: {exc}", style="red"), title="\U0001f916 Modelos", border_style="red"),
                 "rich",
             )
 
@@ -383,7 +434,7 @@ class StatusCommand(DirectCommand):
             enabled_names = {t.name for t in registry.list_enabled()}
 
             table = Table(
-                title=f"🔧 Tools Registradas ({stats['total_tools']} total)",
+                title=f"\U0001f527 Tools Registradas ({stats['total_tools']} total)",
                 show_header=True,
                 header_style="bold yellow",
             )
@@ -407,7 +458,7 @@ class StatusCommand(DirectCommand):
             return CommandResult.success_result(Group(table, summary), "rich")
         except Exception as exc:
             return CommandResult.success_result(
-                Panel(Text(f"Erro ao obter tools: {exc}", style="red"), title="🔧 Tools", border_style="red"),
+                Panel(Text(f"Erro ao obter tools: {exc}", style="red"), title="\U0001f527 Tools", border_style="red"),
                 "rich",
             )
 
@@ -423,7 +474,7 @@ class StatusCommand(DirectCommand):
         if memory_manager is None:
             content = _indisponivel("MemoryManager não acessível neste contexto")
             return CommandResult.success_result(
-                Panel(Text(content, style="yellow"), title="💾 Memória", border_style="yellow"), "rich"
+                Panel(Text(content, style="yellow"), title="\U0001f4be Memória", border_style="yellow"), "rich"
             )
 
         try:
@@ -433,16 +484,16 @@ class StatusCommand(DirectCommand):
 
         if "error" in usage:
             return CommandResult.success_result(
-                Panel(Text(f"Erro: {usage['error']}", style="red"), title="💾 Memória", border_style="red"), "rich"
+                Panel(Text(f"Erro: {usage['error']}", style="red"), title="\U0001f4be Memória", border_style="red"), "rich"
             )
 
         if usage.get("status") == "not_initialized":
             return CommandResult.success_result(
-                Panel(Text(_indisponivel("MemoryManager não inicializado"), style="yellow"), title="💾 Memória", border_style="yellow"),
+                Panel(Text(_indisponivel("MemoryManager não inicializado"), style="yellow"), title="\U0001f4be Memória", border_style="yellow"),
                 "rich",
             )
 
-        table = Table(title="💾 Uso de Memória por Camada", show_header=True, header_style="bold blue")
+        table = Table(title="\U0001f4be Uso de Memória por Camada", show_header=True, header_style="bold blue")
         table.add_column("Camada", style="cyan", width=25)
         table.add_column("Entradas", style="green", width=12, justify="right")
         table.add_column("Tamanho (MB)", style="yellow", width=15, justify="right")
@@ -469,7 +520,7 @@ class StatusCommand(DirectCommand):
             all_plans = await plan_manager.list_plans()
 
             table = Table(
-                title=f"📋 Planos ({len(active_plans)} ativos / {len(all_plans)} total)",
+                title=f"\U0001f4cb Planos ({len(active_plans)} ativos / {len(all_plans)} total)",
                 show_header=True,
                 header_style="bold magenta",
             )
@@ -485,7 +536,7 @@ class StatusCommand(DirectCommand):
                 total = plan_data.get("total_steps", 0)
                 done = plan_data.get("completed_steps", 0)
                 is_active = any(p.id == plan_data.get("id") for p in active_plans)
-                status_display = f"{'🔄 ' if is_active else ''}{status}"
+                status_display = f"{'\U0001f504 ' if is_active else ''}{status}"
                 table.add_row(plan_id, title, status_display, f"{done}/{total}")
 
             if not all_plans:
@@ -494,7 +545,7 @@ class StatusCommand(DirectCommand):
             return CommandResult.success_result(table, "rich")
         except Exception as exc:
             return CommandResult.success_result(
-                Panel(Text(f"Erro ao obter planos: {exc}", style="red"), title="📋 Planos", border_style="red"), "rich"
+                Panel(Text(f"Erro ao obter planos: {exc}", style="red"), title="\U0001f4cb Planos", border_style="red"), "rich"
             )
 
     # ------------------------------------------------------------------
@@ -530,7 +581,7 @@ class StatusCommand(DirectCommand):
             else:
                 probe_results[pid] = result
 
-        table = Table(title="🌐 Conectividade com Provedores", show_header=True, header_style="bold cyan")
+        table = Table(title="\U0001f310 Conectividade com Provedores", show_header=True, header_style="bold cyan")
         table.add_column("Provedor", style="cyan", width=20)
         table.add_column("Host", style="dim", width=40)
         table.add_column("Status", style="green", width=12)
@@ -538,7 +589,7 @@ class StatusCommand(DirectCommand):
 
         for pid, (ok, latency) in sorted(probe_results.items()):
             host = hosts_to_probe.get(pid, "?")
-            status_icon = "🟢 OK" if ok else "🔴 FALHOU"
+            status_icon = "\U0001f7e2 OK" if ok else "\U0001f534 FALHOU"
             latency_str = f"{latency:.0f}" if ok else "—"
             table.add_row(pid, host, status_icon, latency_str)
 
@@ -565,7 +616,7 @@ class StatusCommand(DirectCommand):
         cpu_percent = psutil.cpu_percent(interval=0)
         memory = psutil.virtual_memory()
 
-        table = Table(title="📊 Performance do Sistema", show_header=True, header_style="bold green")
+        table = Table(title="\U0001f4ca Performance do Sistema", show_header=True, header_style="bold green")
         table.add_column("Métrica", style="cyan", width=25)
         table.add_column("Valor", style="white", width=20)
 
@@ -596,6 +647,6 @@ Uso:
   /status performance         Métricas de performance
 
 Indicadores de Saúde:
-  🟢 Saudável — todos os sistemas normais
-  🟡 Atenção   — problemas detectados
-  🔴 Crítico   — atenção imediata necessária"""
+  \U0001f7e2 Saudável — todos os sistemas normais
+  \U0001f7e1 Atenção   — problemas detectados
+  \U0001f534 Crítico   — atenção imediata necessária"""
