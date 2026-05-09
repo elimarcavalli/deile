@@ -119,7 +119,7 @@ Confirme: título correto, body não-truncado, labels aplicadas.
 
 ---
 
-## Fase 7c — REVISÃO mecanizada obrigatória
+## Fase 7b — REVISÃO mecanizada obrigatória
 
 Para cada issue criada, registre no relatório final com coluna `Status` usando enum:
 

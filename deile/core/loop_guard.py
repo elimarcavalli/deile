@@ -235,8 +235,12 @@ class ToolLoopGuard:
 
         # Rule 0 — HARD_STOP escalation. When the guard has already aborted
         # this turn and the model issues the SAME (tool, args) hash again,
-        # it "rephrased" without changing strategy. Terminate immediately so
-        # the broken call never runs a third time.
+        # terminate immediately so the broken call never runs a third time.
+        # NOTE: this only fires on exact arg-hash matches. A model that
+        # "rephrases" with a slightly different argument (e.g. trailing slash
+        # stripped, capitalisation change) produces a different hash and will
+        # not be caught here — see error_signature fast-trip in record_result()
+        # for the complementary protection against near-miss repeated errors.
         if (
             self.aborted_reason is not None
             and self.aborted_reason.args_hash == args_hash
@@ -433,8 +437,16 @@ class ToolLoopGuard:
         return preview
 
     def _record_abort(self, reason: AbortReason) -> None:
-        """Log + audit + cache the abort. Idempotent for the same hash."""
-        # If we've already aborted on this hash, don't re-fire audit events.
+        """Log + audit + cache the abort.
+
+        Idempotent for the same (hash, kind) pair — this allows kind
+        escalation on the same hash (e.g., IDENTICAL_REPEAT → HARD_STOP)
+        while still suppressing duplicate audit events for the exact same
+        (hash, kind) combination.
+        """
+        # If we've already aborted on this exact (hash, kind), don't re-fire
+        # audit events — but a different kind on the same hash is allowed
+        # through (that is the HARD_STOP escalation path).
         if (
             self.aborted_reason is not None
             and self.aborted_reason.args_hash == reason.args_hash

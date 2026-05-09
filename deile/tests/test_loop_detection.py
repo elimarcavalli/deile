@@ -586,7 +586,8 @@ async def test_executor_breaks_on_no_progress_streak():
     provider = FakeProvider(iterations=iterations)
 
     class AlwaysErroring:
-        seen: List[str] = []
+        def __init__(self):
+            self.seen: List[str] = []
 
         async def execute_tool(self, name, ctx):
             self.seen.append(name)
@@ -723,12 +724,14 @@ def test_guard_hard_stop_message_contains_tool_family_hint():
 
 def test_guard_record_result_error_signature_fast_trips_no_progress():
     """When record_result is called with the same error_signature twice in a
-    row, the guard must fast-trip NO_PROGRESS on the NEXT check() call even
-    though the normal no_progress_threshold (6) hasn't been reached yet.
+    row, the guard must fast-trip NO_PROGRESS on the very next check() call,
+    even though the normal no_progress_threshold (6) hasn't been reached.
 
-    This reproduces the run-2 pattern: 3 consecutive errors all carrying
-    error_signature='path_not_found:/Users/x/.github/' — the guard should
-    abort on the 3rd call, not the 7th.
+    Timeline: check()/record_result×2 same-sig → _consecutive_empty reaches
+    threshold → check() #3 returns NO_PROGRESS abort.  Two record_result
+    failures with the same signature are sufficient; a third call is not
+    needed.  This is intentional — structural errors (same path, same
+    rejection) should be short-circuited well before the generic threshold.
     """
     guard = make_guard()
     guard.no_progress_threshold = 6

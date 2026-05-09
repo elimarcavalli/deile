@@ -634,7 +634,7 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
                 )
                 bash_hint = (
                     " If the file lives OUTSIDE the project, use "
-                    f"bash_execute(command=\"cat {resolved.input}\") instead — "
+                    f"bash_execute(command=\"cat {resolved.absolute}\") instead — "
                     "bash_execute has no working-directory sandbox."
                     if (resolved.note or _looks_like_outside_project(file_path))
                     else ""
@@ -1396,7 +1396,7 @@ class DeleteFileTool(SyncTool):
                 )
                 bash_hint = (
                     " If the file lives OUTSIDE the project, use "
-                    f"bash_execute(command=\"rm {resolved.input}\") instead — "
+                    f"bash_execute(command=\"rm {resolved.absolute}\") instead — "
                     "bash_execute has no working-directory sandbox."
                     if (resolved.note or _looks_like_outside_project(file_path))
                     else ""

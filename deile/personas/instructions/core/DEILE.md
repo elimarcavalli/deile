@@ -179,7 +179,7 @@ Quando uma **família de ferramentas** (file_tools / http / db / shell) falha **
 
 | Família que falhou | Família para tentar |
 |---|---|
-| `file_tools` (`Path not found`, `OUTSIDE project`, sandbox) | `bash_execute` com o path absoluto |
+| `file_tools` (`Path not found`, `OUTSIDE project`, sandbox) | `bash_execute` com o path absoluto — ver protocolo detalhado em **REGRA #4** |
 | `http_*` (timeout, 4xx, 5xx no mesmo host) | `bash_execute` + curl, ou pedir credencial ao usuário |
 | `db_*` (auth, connection refused) | `bash_execute` + cliente CLI, OU avisar operador |
 | `bash_execute` (permission denied, command not found) | Alternativa CLI diferente, OU pedir permissão ao usuário |

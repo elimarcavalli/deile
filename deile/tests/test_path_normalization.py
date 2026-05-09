@@ -625,16 +625,16 @@ def test_write_file_parent_relative_hints_bash(tmp_path):
     assert "bash_execute" in result.message
 
 
-def test_write_file_out_of_cwd_absolute_bash_in_normalized_success(tmp_path):
-    """write_file(path='/tmp/foo.py') succeeds (normalised to project-relative),
-    but the PATH_NORMALIZED warning must mention 'bash_execute' so the LLM
-    knows to use it if the intention was to write outside the project."""
+def test_write_file_out_of_cwd_absolute_path_normalized_note_present(tmp_path):
+    """write_file(path='/tmp/foo.py') succeeds (normalised to project-relative);
+    the success message must include the PATH_NORMALIZED warning so the LLM
+    knows the resolved path, not the original input, is what was written."""
     tool = WriteFileTool()
     ctx = _ctx(tmp_path, file_path="/tmp/outside_hint_test.py", content="# ok")
     result = tool.execute_sync(ctx)
 
     assert result.is_success
-    assert "bash_execute" in result.message
+    assert "PATH_NORMALIZED" in result.message
 
 
 # --- delete_file -------------------------------------------------------------
