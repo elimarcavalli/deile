@@ -40,7 +40,10 @@ def _save_index(index: Dict[str, Any]) -> None:
 
 
 def _checkpoint_path(name: str) -> Path:
-    return _CHECKPOINT_DIR / f"{name}.json"
+    safe = Path(name).name  # strip any directory components
+    if not safe or safe != name:
+        raise CommandError(f"Nome de checkpoint inválido: '{name}'")
+    return _CHECKPOINT_DIR / f"{safe}.json"
 
 
 class MemoryCommand(DirectCommand):
@@ -457,12 +460,14 @@ class MemoryCommand(DirectCommand):
         return CommandResult.success_result(
             Panel(
                 Text(
-                    f"🔄 Checkpoint '{name}' carregado\n\n"
+                    f"📂 Checkpoint '{name}' carregado\n\n"
                     f"Salvo em: {saved_at}\n\n"
-                    f"Estado de memória restaurado do disco.",
+                    f"Snapshot disponível para consulta.\n"
+                    f"Nota: a reinjeção automática de estado de memória\n"
+                    f"requer reinicialização do agente com este checkpoint.",
                     style="blue",
                 ),
-                title="Checkpoint Restaurado",
+                title="Checkpoint Carregado",
                 border_style="blue",
             ),
             "rich",
