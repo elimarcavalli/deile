@@ -14,6 +14,7 @@ to invoke DEILE anywhere:
 """
 
 from __future__ import annotations
+import venv as _venv  # noqa: N812 — local alias for testability (patched as deile.cli._venv)
 
 import argparse
 import asyncio
@@ -582,7 +583,6 @@ def _create_venv_with_deile(venv_dir: Path, repo_root: Path, mode_label: str) ->
     if not venv_py.exists():
         print(f"[{mode_label}] Creating venv at {venv_dir}…")
         venv_dir.parent.mkdir(parents=True, exist_ok=True)
-        import venv as _venv
         try:
             _venv.EnvBuilder(with_pip=True).create(str(venv_dir))
         except Exception as exc:
