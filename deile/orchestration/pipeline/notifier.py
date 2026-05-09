@@ -138,3 +138,13 @@ class DiscordNotifier:
 
     async def error(self, where: str, detail: str) -> None:
         await self._send(f"⚠️ **Pipeline error** em `{where}`:\n```\n{detail[:PIPELINE_MSG_TRUNCATE_CHARS]}\n```")
+
+    async def pr_auto_classified(self, number: int, title: str, url: str) -> None:
+        await self._send(
+            f"🏷️ **PR auto-triaged** #{number}: {title[:100]}\n🔗 {url}"
+        )
+
+    async def mention_processed(self, context_url: str, author: str) -> None:
+        await self._send(
+            f"💬 **Menção de @{author} processada**\n🔗 {context_url}"
+        )

@@ -204,3 +204,17 @@ def render_implement_prompt(repo: str, number: int, title: str, issue_body: str)
 
 def render_review_prompt(repo: str, number: int, title: str) -> str:
     return REVIEW_PROMPT_TEMPLATE.format(repo=repo, number=number, title=title)
+
+
+def render_mention_prompt(repo: str, context_url: str, comment_body: str, author: str) -> str:
+    """Build a prompt for the agent to respond to a @deile-one mention."""
+    return (
+        f"Você foi mencionado por @{author} em {context_url} "
+        f"(repositório: {repo}).\n\n"
+        f"Mensagem recebida:\n{comment_body}\n\n"
+        f"Responda diretamente ao que foi solicitado com uma ação concreta. "
+        f"Se for pedido de revisão de código, analise e comente. "
+        f"Se for uma pergunta, responda com precisão e clareza. "
+        f"Ao final, poste sua resposta como comentário em {context_url} "
+        f"usando a ferramenta gh (ex: gh issue comment ou gh pr review)."
+    )
