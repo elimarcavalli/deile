@@ -478,78 +478,300 @@ async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
     return 0 if status != "error" else 1
 
 
-def _run_self_install() -> int:
-    """Install DEILE globally for the current user via pip editable mode."""
-    python_exe = sys.executable
-    project_root = _PROJECT_ROOT
+def _ensure_scripts_dir_on_path(scripts_dir: Path) -> tuple[bool, Optional[Path], str]:
+    """Append `export PATH=...` to the user's shell rc file if not already there.
 
-    base_install_cmd = [
-        python_exe,
-        "-m",
-        "pip",
-        "install",
-        "--user",
-        "-e",
-        str(project_root),
-    ]
+    Returns (modified, rc_path, fallback_hint):
+      modified=True            → rc file was edited.
+      modified=False, rc set, hint==""  → already configured in rc; just needs reload.
+      modified=False, rc=None  → could not auto-edit (Windows / unknown shell);
+                                 caller should print fallback_hint.
+      modified=False, rc set, hint!=""  → tried but failed (perm/IO); print hint.
+    """
+    export_line_posix = f'export PATH="{scripts_dir}:$PATH"'
 
-    print(f"Installing DEILE from: {project_root}")
-    print(f"Running: {' '.join(base_install_cmd)}")
+    if os.name == "nt":
+        hint = (
+            f'PowerShell: $env:Path = "{scripts_dir};$env:Path"\n'
+            "  (persist via System Properties → Environment Variables)"
+        )
+        return (False, None, hint)
+
+    shell = os.path.basename(os.environ.get("SHELL", ""))
+    home = Path.home()
+
+    if shell == "zsh":
+        rc = home / ".zshrc"
+        export_line = export_line_posix
+    elif shell == "bash":
+        rc = home / (".bash_profile" if sys.platform == "darwin" else ".bashrc")
+        export_line = export_line_posix
+    elif shell == "fish":
+        rc = home / ".config" / "fish" / "config.fish"
+        export_line = f'set -gx PATH "{scripts_dir}" $PATH'
+    else:
+        return (False, None, f'Add to your shell rc:\n    {export_line_posix}')
 
     try:
-        result = subprocess.run(
-            base_install_cmd,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-    except Exception as exc:
-        print(f"ERROR: failed to run pip: {type(exc).__name__}: {exc}", file=sys.stderr)
+        existing = rc.read_text(encoding="utf-8") if rc.exists() else ""
+    except OSError as exc:
+        return (False, rc, f"Could not read {rc}: {exc}.\nAdd manually:\n    {export_line}")
+
+    if str(scripts_dir) in existing:
+        return (False, rc, "")  # idempotent — already configured
+
+    marker = "# Added by `deile --install` — places the `deile` command on PATH"
+    new_content = (existing.rstrip("\n") + "\n\n" if existing else "") + marker + "\n" + export_line + "\n"
+
+    try:
+        rc.parent.mkdir(parents=True, exist_ok=True)
+        rc.write_text(new_content, encoding="utf-8")
+    except OSError as exc:
+        return (False, rc, f"Could not write {rc}: {exc}.\nAdd manually:\n    {export_line}")
+
+    return (True, rc, "")
+
+
+def _user_scripts_dir() -> Path:
+    """Return the directory where `pip install --user` places console scripts.
+
+    Picks the right sysconfig scheme per platform:
+      - Linux:        posix_user           → ~/.local/bin
+      - macOS (framework Python):
+                      osx_framework_user   → ~/Library/Python/X.Y/bin
+      - Windows:      nt_user              → %APPDATA%\\Python\\PythonXY\\Scripts
+    """
+    import sysconfig
+
+    if hasattr(sysconfig, "get_preferred_scheme"):
+        scheme = sysconfig.get_preferred_scheme("user")
+    elif os.name == "nt":
+        scheme = "nt_user"
+    elif sys.platform == "darwin" and getattr(sys, "_framework", ""):
+        scheme = "osx_framework_user"
+    else:
+        scheme = "posix_user"
+    return Path(sysconfig.get_path("scripts", scheme=scheme))
+
+
+def _wrapper_target_dir() -> Path:
+    """Pick the directory where the global `deile` wrapper should land.
+
+    On POSIX, prefer ~/.local/bin (commonly already on PATH). On Windows or if
+    ~/.local/bin is unusable, fall back to the sysconfig user-scripts dir.
+    """
+    if os.name == "nt":
+        return _user_scripts_dir()
+    return Path.home() / ".local" / "bin"
+
+
+def _create_venv_with_deile(venv_dir: Path, repo_root: Path, mode_label: str) -> Path:
+    """Ensure an isolated venv at ``venv_dir`` has DEILE + deps installed.
+
+    Steps (idempotent):
+      1. Create the venv if missing.
+      2. Upgrade pip.
+      3. Install ``requirements.txt`` (frozen versions — same set the bootstrap uses).
+      4. Register the deile package editable with ``--no-deps`` so the
+         ``deile`` console script is created without disturbing pinned deps.
+
+    Returns the absolute path to ``<venv>/bin/deile`` (or ``Scripts\\deile.exe``).
+    """
+    venv_py = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+    if not venv_py.exists():
+        print(f"[{mode_label}] Creating venv at {venv_dir}…")
+        venv_dir.parent.mkdir(parents=True, exist_ok=True)
+        import venv as _venv
+        try:
+            _venv.EnvBuilder(with_pip=True).create(str(venv_dir))
+        except Exception as exc:
+            raise RuntimeError(f"failed to create venv at {venv_dir}: {exc}") from exc
+    else:
+        print(f"[{mode_label}] Reusing existing venv at {venv_dir}")
+
+    print(f"[{mode_label}] Upgrading pip…")
+    subprocess.run(
+        [str(venv_py), "-m", "pip", "install", "--disable-pip-version-check", "-q", "--upgrade", "pip"],
+        check=False,
+    )
+
+    requirements = repo_root / "requirements.txt"
+    if requirements.exists():
+        print(f"[{mode_label}] Installing dependencies from {requirements.name} (this can take a while on first run)…")
+        rc = subprocess.run(
+            [str(venv_py), "-m", "pip", "install", "--disable-pip-version-check", "-r", str(requirements)],
+        ).returncode
+        if rc != 0:
+            raise RuntimeError(f"pip install -r {requirements.name} failed (rc={rc})")
+    else:
+        print(f"[{mode_label}] WARNING: no requirements.txt at {repo_root} — skipping dep install")
+
+    print(f"[{mode_label}] Registering DEILE entry script (editable, no-deps)…")
+    rc = subprocess.run(
+        [str(venv_py), "-m", "pip", "install", "--disable-pip-version-check", "-q", "--no-deps", "-e", str(repo_root)],
+    ).returncode
+    if rc != 0:
+        raise RuntimeError(f"pip install --no-deps -e {repo_root} failed (rc={rc})")
+
+    deile_script = venv_dir / ("Scripts/deile.exe" if os.name == "nt" else "bin/deile")
+    if not deile_script.exists():
+        raise RuntimeError(f"console script not created at {deile_script}")
+    return deile_script
+
+
+def _link_global_command(target_dir: Path, source_script: Path, *, force: bool = False) -> Path:
+    """Create the user-facing `deile` shim that points at ``source_script``.
+
+    On POSIX: a symlink at ``target_dir/deile``.
+    On Windows: a ``.cmd`` shim that execs the source script.
+
+    If a file/symlink already exists at the target, we ask before replacing
+    (or replace silently when ``force=True``).
+    """
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / ("deile.cmd" if os.name == "nt" else "deile")
+
+    if target.exists() or target.is_symlink():
+        if target.is_symlink():
+            try:
+                existing = f"symlink → {os.readlink(target)}"
+            except OSError:
+                existing = "symlink (unreadable target)"
+        else:
+            existing = "regular file"
+        if not force:
+            try:
+                ans = input(f"  {target} already exists ({existing}). Replace? [Y/n]: ").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                ans = "n"
+            if ans not in ("", "y", "yes"):
+                raise RuntimeError(f"refusing to overwrite {target}")
+        try:
+            target.unlink()
+        except OSError as exc:
+            raise RuntimeError(f"could not remove existing {target}: {exc}") from exc
+
+    if os.name == "nt":
+        target.write_text(f'@echo off\r\n"{source_script}" %*\r\n', encoding="utf-8")
+    else:
+        try:
+            target.symlink_to(source_script)
+        except OSError as exc:
+            raise RuntimeError(f"could not create symlink {target} → {source_script}: {exc}") from exc
+    return target
+
+
+def _prompt_install_mode() -> Optional[str]:
+    """Interactively pick install mode. Returns 'global', 'local', or None."""
+    print()
+    print("Install mode:")
+    print()
+    print("  [g] Global  — isolated venv at ~/.deile/venv/")
+    print("                Recommended. DEILE deps don't touch your system or user-site Python.")
+    print("                Works no matter where you cd to.")
+    print()
+    print("  [l] Local   — uses this repo's .venv/")
+    print("                The `deile` command points at this specific clone. If you")
+    print("                move or delete this directory, the command stops working.")
+    print()
+    print("  [q] Quit")
+    print()
+    while True:
+        try:
+            choice = input("Choice [g/l/q] (default g): ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return None
+        if choice in ("", "g", "global"):
+            return "global"
+        if choice in ("l", "local"):
+            return "local"
+        if choice in ("q", "quit", "exit"):
+            return None
+        print(f"Unrecognized choice: {choice!r}. Please answer g, l, or q.")
+
+
+def _run_self_install(mode: Optional[str] = None) -> int:
+    """Install DEILE so `deile` is reachable from any working directory.
+
+    Two modes (interactive prompt unless ``mode`` is provided):
+
+      global → creates an isolated venv at ~/.deile/venv/ that is dedicated
+               to DEILE. Your system / user-site Python is untouched.
+
+      local  → uses <repo>/.venv/ (created on the fly if missing). The
+               `deile` command is bound to *this* clone of the repo.
+
+    Both modes drop a thin shim at ~/.local/bin/deile (POSIX) or
+    %USERPROFILE%/.../Scripts/deile.cmd (Windows) so the command works from
+    any directory without polluting site-packages.
+    """
+    repo_root = _PROJECT_ROOT
+
+    if mode is None:
+        mode = _prompt_install_mode()
+        if mode is None:
+            print("Cancelled.")
+            return 1
+
+    if mode == "global":
+        venv_dir = Path.home() / ".deile" / "venv"
+    elif mode == "local":
+        venv_dir = repo_root / ".venv"
+    else:
+        print(f"ERROR: unknown install mode {mode!r} (expected 'global' or 'local').", file=sys.stderr)
+        return 2
+
+    print()
+    print(f"Installing DEILE — mode: {mode}")
+    print(f"  repo: {repo_root}")
+    print(f"  venv: {venv_dir}")
+
+    try:
+        deile_script = _create_venv_with_deile(venv_dir, repo_root, mode)
+    except Exception as exc:  # noqa: BLE001 — surface message, not traceback
+        print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
-    stderr = result.stderr.strip() or "(no stderr)"
-    is_pep668 = "externally-managed-environment" in stderr or "PEP 668" in stderr
-    if result.returncode != 0 and is_pep668:
-        fallback_cmd = [
-            python_exe,
-            "-m",
-            "pip",
-            "install",
-            "--user",
-            "--break-system-packages",
-            "-e",
-            str(project_root),
-        ]
-        print(
-            "Detected externally-managed Python. Retrying with --break-system-packages..."
-        )
-        print(f"Running: {' '.join(fallback_cmd)}")
-        result = subprocess.run(
-            fallback_cmd,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        stderr = result.stderr.strip() or "(no stderr)"
+    target_dir = _wrapper_target_dir()
+    try:
+        wrapper = _link_global_command(target_dir, deile_script)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
 
-    if result.returncode != 0:
-        print("ERROR: installation failed.", file=sys.stderr)
-        print(stderr, file=sys.stderr)
-        if "externally-managed-environment" in stderr or "PEP 668" in stderr:
-            print(
-                "Tip: this Python is externally managed. "
-                "Use pipx (`brew install pipx && pipx install -e .`) if needed.",
-                file=sys.stderr,
-            )
-        return result.returncode or 1
-
-    which_cmd = ["/usr/bin/env", "which", "deile"]
-    which_result = subprocess.run(which_cmd, text=True, capture_output=True, check=False)
-    deile_path = which_result.stdout.strip() if which_result.returncode == 0 else "not found in PATH"
-
+    print()
     print("DEILE installed successfully.")
-    print(f"deile path: {deile_path}")
-    print("Try: deile --help")
+    print(f"  shim:   {wrapper}")
+    print(f"  target: {deile_script}")
+
+    if os.name != "nt":
+        which = subprocess.run(
+            ["/usr/bin/env", "which", "deile"], text=True, capture_output=True, check=False
+        )
+        on_path_now = which.returncode == 0 and which.stdout.strip() == str(wrapper)
+    else:
+        on_path_now = False  # PowerShell `where.exe` lookup not implemented here
+
+    if on_path_now:
+        print()
+        print("Try: deile --help")
+        return 0
+
+    print()
+    print(f"Note: {target_dir} is not active in your current PATH.")
+    modified, rc_path, hint = _ensure_scripts_dir_on_path(target_dir)
+    if modified:
+        print(f"Added PATH export to {rc_path}.")
+        print(f"Run:  source {rc_path}   (or open a new terminal)")
+        print("Then: deile --help")
+    elif rc_path is not None and not hint:
+        print(f"PATH already configured in {rc_path}, but not in current shell session.")
+        print(f"Run:  source {rc_path}   (or open a new terminal)")
+        print("Then: deile --help")
+    else:
+        print(hint)
     return 0
 
 
@@ -721,7 +943,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--install",
         action="store_true",
-        help="Install DEILE globally for the current user (`pip install --user -e <repo>`).",
+        help="Install DEILE so `deile` is reachable from any directory. Prompts for global "
+             "(isolated venv at ~/.deile/venv/) or local (uses <repo>/.venv/). Use --install-mode "
+             "to skip the prompt.",
+    )
+    parser.add_argument(
+        "--install-mode",
+        choices=("global", "local"),
+        default=None,
+        help="Non-interactive install target for --install. 'global' = isolated venv at "
+             "~/.deile/venv/. 'local' = <repo>/.venv/. Both write a shim to ~/.local/bin/deile.",
     )
 
     # Auto-generate one --flag per registered slash command (issue #126).
@@ -754,7 +985,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     if args.install:
-        return _run_self_install()
+        return _run_self_install(mode=args.install_mode)
+    if args.install_mode and not args.install:
+        print("ERROR: --install-mode requires --install.", file=sys.stderr)
+        return 2
 
     # --debug is a global modifier: enable debug mode in settings BEFORE any
     # one-shot dispatch or interactive run, so it actually has an effect.
