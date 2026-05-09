@@ -193,8 +193,6 @@ EXAMPLES:
             )
 
         selector = self._resolve_selector()
-        if not selector.is_supported():
-            return await self._list_with_fallback_hint(context)
 
         yaml_path = Path(__file__).parents[2] / "config" / "model_providers.yaml"
         catalog = ModelCatalog.from_yaml(yaml_path)

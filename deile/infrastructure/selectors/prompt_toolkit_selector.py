@@ -39,9 +39,16 @@ class PromptToolkitSelector(InteractiveSelector):
     """Default :class:`InteractiveSelector` implementation backed by prompt_toolkit."""
 
     def is_supported(self) -> bool:
+        # Dual check: the Python wrapper (mockable in tests) AND the raw fd
+        # (survives prompt_toolkit Application teardown on macOS/Linux).
+        # If either says TTY, we trust it — false negatives are worse than
+        # false positives here since select() has its own guard.
         try:
-            return bool(sys.stdin.isatty() and sys.stdout.isatty())
-        except (AttributeError, ValueError):
+            import os as _os
+            tty_stdin = sys.stdin.isatty() or _os.isatty(sys.stdin.fileno())
+            tty_stdout = sys.stdout.isatty() or _os.isatty(sys.stdout.fileno())
+            return bool(tty_stdin and tty_stdout)
+        except (AttributeError, ValueError, OSError):
             return False
 
     async def select(

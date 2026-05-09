@@ -10,7 +10,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from deile.commands.builtin.model_command import ModelCommand
-from deile.core.interfaces.selector import InteractiveSelector, SelectorOption
+from deile.core.interfaces.selector import (InteractiveSelector,
+                                         SelectorNotSupported, SelectorOption)
 
 _YAML_PATH = Path(__file__).parents[2] / "deile" / "config" / "model_providers.yaml"
 
@@ -337,6 +338,10 @@ class _StubSelector(InteractiveSelector):
         self.calls.append(
             {"options": list(options), "prompt": prompt, "default_index": default_index}
         )
+        # Mirror the real adapter: raise SelectorNotSupported when unsupported,
+        # so consumers that removed the pre-check still get the right fallback.
+        if not self._supported:
+            raise SelectorNotSupported("stub: not supported")
         return self._choice
 
 
@@ -355,7 +360,11 @@ class TestModelSelect:
         assert result.content.caption is not None
         assert "no TTY" in str(result.content.caption)
         assert result.metadata.get("interactive_unavailable") is True
-        assert sel.calls == []
+        # No pre-check anymore — select() is attempted, stub raises
+        # SelectorNotSupported, and the command catches it to produce
+        # the fallback.
+        assert len(sel.calls) == 1
+        assert "options" in sel.calls[0]  # got called with catalog options
 
     @pytest.mark.asyncio
     async def test_select_falls_back_when_adapter_raises_not_supported(self):
