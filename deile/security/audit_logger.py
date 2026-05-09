@@ -24,6 +24,8 @@ class AuditEventType(Enum):
     SECURITY_POLICY_CHANGED = "security_policy_changed"
     SUSPICIOUS_ACTIVITY = "suspicious_activity"
 
+    COMMAND_EXECUTED = "command_executed"
+
     # Persona-specific audit events
     PERSONA_ERROR = "persona_error"
     PERSONA_LOAD = "persona_load"
