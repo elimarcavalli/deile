@@ -105,6 +105,33 @@ class FakeBotClient:
             is_bot=False,
         )
 
+    async def whatsapp_send_template(
+        self,
+        *,
+        to,
+        template_name,
+        language,
+        body_params=None,
+        header_params=None,
+        category="utility",
+    ):
+        self._record(
+            "whatsapp_send_template",
+            to=to,
+            template_name=template_name,
+            language=language,
+            body_params=list(body_params or []),
+            header_params=list(header_params or []),
+            category=category,
+        )
+        return _DummyResp(
+            message_id=f"wamid.tpl-{len(self.calls)}",
+            to=to,
+            template_name=template_name,
+            language=language,
+            sent_at=_now(),
+        )
+
 
 class FakePermissionManager:
     def __init__(self, allow: bool = True):

@@ -8,7 +8,8 @@ from deile.tools.messaging import (DiscordGetUserProfileTool,
                                    DiscordMentionRoleTool,
                                    DiscordPinMessageTool, DiscordReactTool,
                                    DiscordSendDMTool, DiscordSendMessageTool,
-                                   DiscordStartThreadTool)
+                                   DiscordStartThreadTool,
+                                   WhatsAppSendTemplateTool)
 
 ALL_TOOLS = [
     DiscordSendMessageTool,
@@ -18,6 +19,7 @@ ALL_TOOLS = [
     DiscordPinMessageTool,
     DiscordMentionRoleTool,
     DiscordGetUserProfileTool,
+    WhatsAppSendTemplateTool,
 ]
 
 
