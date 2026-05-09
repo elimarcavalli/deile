@@ -255,6 +255,65 @@ def test_user_message_mentions_kind_and_tool():
     assert AbortKind.IDENTICAL_REPEAT.value in formatted
 
 
+def test_user_message_hints_bash_when_path_tool_loops_outside_cwd():
+    """Regression guard for the second-/EVOLVE-run trace.
+
+    When the model loops on a path-tool with arguments that look like they
+    target OUTSIDE the working directory (leading slash, ``..``, ``~``),
+    the loop-break message must point at ``bash_execute`` — that's the only
+    DEILE tool with no working_directory sandbox.
+
+    Without this hint, the model receives the loop-break, "rephrases", and
+    keeps trying the same family of broken paths because nothing told it
+    the sandbox is the actual blocker. With the hint, the next iteration
+    has explicit guidance to switch tools.
+    """
+    guard = ToolLoopGuard()
+    guard.check("list_files", {"path": "/Users/x/parent_repo/.github"})
+    guard.check("list_files", {"path": "/Users/x/parent_repo/.github"})
+    abort = guard.check("list_files", {"path": "/Users/x/parent_repo/.github"})
+    assert abort is not None
+    msg = abort.user_message()
+    assert "bash_execute" in msg
+    assert "OUTSIDE the project working" in msg
+
+
+def test_user_message_hints_bash_for_parent_relative_path_loops():
+    """Same as above but for ``../parent/...`` paths (parent-relative form
+    the user typically uses when redirecting from a subproject)."""
+    guard = ToolLoopGuard()
+    guard.check("read_file", {"file_path": "../parent_repo/README.md"})
+    guard.check("read_file", {"file_path": "../parent_repo/README.md"})
+    abort = guard.check("read_file", {"file_path": "../parent_repo/README.md"})
+    assert abort is not None
+    assert "bash_execute" in abort.user_message()
+
+
+def test_user_message_no_bash_hint_for_clean_relative_path_loops():
+    """When the loop is on a project-relative path (no leading /, no ..,
+    no ~), the bash hint would mislead the model — clean-relative paths
+    that loop usually mean "the file you keep listing doesn't exist", not
+    "use a different tool". Stay quiet on the bash hint there."""
+    guard = ToolLoopGuard()
+    guard.check("list_files", {"path": "src/components"})
+    guard.check("list_files", {"path": "src/components"})
+    abort = guard.check("list_files", {"path": "src/components"})
+    assert abort is not None
+    assert "bash_execute" not in abort.user_message()
+
+
+def test_user_message_no_bash_hint_for_non_path_tool_loops():
+    """The bash failover hint applies only to file/path tools. A loop on
+    e.g. ``http_get`` shouldn't suggest bash — that's a different family
+    of failures (network, auth) where bash isn't the answer."""
+    guard = ToolLoopGuard()
+    guard.check("http_get", {"url": "https://example.com/api"})
+    guard.check("http_get", {"url": "https://example.com/api"})
+    abort = guard.check("http_get", {"url": "https://example.com/api"})
+    assert abort is not None
+    assert "bash_execute" not in abort.user_message()
+
+
 def test_tool_result_made_progress_helper():
     assert tool_result_made_progress(
         ToolResult(status=ToolStatus.SUCCESS, data={"x": 1})

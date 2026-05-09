@@ -85,6 +85,36 @@ _DANGEROUS_PATH_CHARS = re.compile(r"[\x00<>|*?]")
 _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]+")
 
 
+def _looks_like_outside_project(path: Optional[str]) -> bool:
+    """Heuristic: did the LLM attempt a path that clearly targets outside the
+    project working directory?
+
+    Used to decide whether ``Path not found`` errors should include a hint
+    pointing at ``bash_execute`` (which has no working-directory sandbox).
+    Triggers on:
+
+    * Leading ``/`` (system-absolute, e.g. ``/Users/...``, ``/etc/...``).
+    * Leading ``..`` (parent-relative, e.g. ``../sibling/file``).
+    * Leading ``~`` (home, e.g. ``~/foo`` — note: file_tools does NOT expand
+      ``~``; we still treat it as a clear "outside" intent).
+
+    Pure-string check, no I/O. Conservative on purpose — false positives just
+    add a helpful hint to a real error message, never block legitimate paths.
+    """
+    if not isinstance(path, str):
+        return False
+    stripped = path.strip()
+    if not stripped:
+        return False
+    if stripped.startswith("/"):
+        return True
+    if stripped.startswith("..") and (len(stripped) == 2 or stripped[2] in ("/", "\\")):
+        return True
+    if stripped.startswith("~"):
+        return True
+    return False
+
+
 def _resolve_absolute_or_strip(
     candidate: str, work_dir: Path, raw: str
 ) -> Tuple[str, Optional[Path], Optional[str]]:
@@ -205,7 +235,11 @@ def _resolve_project_path(file_path: str, working_directory: str) -> ResolvedPat
         raise LocalFileAccessViolation(
             f"path {raw!r} resolves to {target}, which is OUTSIDE the project "
             f"working directory {work_dir}. Use a project-relative path "
-            f"(e.g. drop any leading '..' that escapes the project root)."
+            f"(e.g. drop any leading '..' that escapes the project root). "
+            f"For files OUTSIDE the project (parent repo, sibling project, "
+            f"system paths like /etc/), use `bash_execute` (e.g. "
+            f"`ls {target}` or `cat {target}`) — bash_execute has no "
+            f"working-directory sandbox."
         )
 
     # POSIX-style relative for display (works across platforms in messages)
@@ -1103,45 +1137,68 @@ class ListFilesTool(SyncTool):
                         logger.debug(f"ListFilesTool: Extracted path from user_input: {target_path}")
                         break
         
-        # ROBUSTEZ: Múltiplas tentativas de validação de path
-        validation_attempts = [
-            target_path,
-            ".",  # Fallback para diretório atual
-            context.working_directory,  # Fallback para working_directory explícito
-        ]
-        
+        # Resolve the LLM-supplied target_path through the canonical resolver
+        # so we capture the normalization ``note`` (e.g. "leading '/' stripped"
+        # or "@ prefix stripped") AND surface sandbox violations cleanly.
+        #
+        # IMPORTANT: when the LLM EXPLICITLY supplies a path that violates the
+        # sandbox (``../parent_repo/.github`` or system-absolute outside CWD),
+        # we MUST surface that violation — never silently fall back to CWD,
+        # which would list unrelated content and mislead the model into a
+        # tighter loop. Fallbacks are only useful when the LLM omitted the
+        # argument entirely (target_path stayed at default "." which always
+        # resolves cleanly).
         full_path = None
+        resolved_obj: Optional[ResolvedPath] = None
         working_dir = Path(context.working_directory).resolve()
-        
+
         logger.debug(f"ListFilesTool - target_path: {target_path}, working_directory: {context.working_directory}")
-        
-        for attempt_path in validation_attempts:
-            try:
-                logger.debug(f"ListFilesTool - trying validation for: {attempt_path}")
-                validated_path = _validate_path_within_working_directory(
-                    attempt_path, context.working_directory
-                )
-                full_path = Path(validated_path)
-                logger.debug(f"ListFilesTool - validation successful: {full_path}")
-                break
-            except LocalFileAccessViolation as e:
-                logger.debug(f"ListFilesToool - validation failed for {attempt_path}: {e}")
-                continue
-            except Exception as e:
-                logger.debug(f"ListFilesTool - unexpected error for {attempt_path}: {e}")
-                continue
-        
-        if full_path is None:
-            # ÚLTIMO RECURSO: Usa working_directory diretamente (sem validação)
-            logger.warning("All path validations failed, using working_directory directly")
-            full_path = working_dir
-        
+
         try:
-            
+            resolved_obj = _resolve_project_path(
+                target_path, context.working_directory
+            )
+            full_path = Path(resolved_obj.absolute)
+            logger.debug(f"ListFilesTool - validation successful: {full_path}")
+        except LocalFileAccessViolation as e:
+            logger.debug(f"ListFilesTool - sandbox violation for {target_path!r}: {e}")
+            return ToolResult(
+                status=ToolStatus.ERROR,
+                message=str(e),
+                error=e,
+            )
+        except Exception as e:
+            logger.debug(f"ListFilesTool - unexpected resolver error for {target_path!r}: {e}")
+            # Fall through to the working_directory fallback below — this
+            # branch should be unreachable in normal operation, but keeping
+            # the safety net avoids a hard 500 on resolver bugs.
+            full_path = working_dir
+
+        try:
+
             if not full_path.exists():
+                # Surface the normalization note (e.g. "leading '/' stripped")
+                # AND a bash-execute hint when the user clearly asked for a
+                # system-absolute or parent-relative path. Without this, the
+                # LLM gets only "Path not found: <garbage>" and loops on the
+                # same broken call (observed in the second-run trace).
+                hint = ""
+                if resolved_obj is not None and resolved_obj.note:
+                    hint += (
+                        f" (input was {resolved_obj.input!r} → "
+                        f"{resolved_obj.note})"
+                    )
+                if _looks_like_outside_project(target_path):
+                    hint += (
+                        ". For paths OUTSIDE the project working directory "
+                        "(parent repo, sibling project, /etc/, ~/...), use "
+                        "`bash_execute` (e.g. `ls <abs_path>` or "
+                        "`cat <abs_path>`) — bash_execute has no "
+                        "working-directory sandbox."
+                    )
                 return ToolResult(
                     status=ToolStatus.ERROR,
-                    message=f"Path not found: {target_path}",
+                    message=f"Path not found: {target_path}{hint}",
                     error=FileNotFoundError(f"Path '{target_path}' not found")
                 )
             

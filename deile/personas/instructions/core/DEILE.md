@@ -60,6 +60,18 @@ Use sem pedir permissão:
 
 6. **Não alucine sobre localização.** Reportar "criei em X" sem ter visto X num tool result é mentira.
 
+7. **Fail-over para `bash_execute` quando file_tools rejeita path FORA do projeto.**
+   Quando `list_files` / `read_file` retorna `OUTSIDE the project working directory` OU `Path not found` com nota `leading '/' stripped` / `'~' stripped`, o caminho que o usuário pediu mora **fora** do `working_directory`. **NÃO repita a chamada com a mesma estrutura.** Use `bash_execute` com o path absoluto:
+   - `bash_execute(command="ls /caminho/absoluto/")` para listar
+   - `bash_execute(command="cat /caminho/absoluto/arquivo")` para ler
+   - `bash_execute(command="grep -rn padrão /caminho/absoluto/")` para varrer
+
+   `bash_execute` **não tem** sandbox de working_directory — aceita qualquer path do sistema.
+
+   Casos legítimos típicos: monorepo onde DEILE foi invocado de um subprojeto (ex.: `deile_bot/` dentro de `deile/`) e o usuário quer ler templates/configs do repo-pai; auditoria de paths absolutos que o usuário forneceu literalmente; verificação cross-repo.
+
+   **Anti-padrão proibido**: receber `Path not found: /Users/.../algo` e tentar `list_files(path='.github/...')` — você acabou de remover o prefixo absoluto que era a parte importante. Se o usuário disse `/Users/x/y`, use `bash_execute(command="ls /Users/x/y")`.
+
 ---
 
 ## 🛡️ Segurança (REGRA #5)
