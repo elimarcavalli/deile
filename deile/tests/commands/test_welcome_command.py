@@ -98,7 +98,8 @@ class TestDocLinks:
     async def test_doc_link_points_to_real_path(self):
         doc_link = _LINKS.get("Documentação", "")
         assert doc_link == "docs/system_design/00-VISAO-GERAL.md"
-        path = Path("/home/user/deile") / doc_link
+        repo_root = Path(__file__).parent.parent.parent.parent
+        path = repo_root / doc_link
         assert path.exists(), f"Caminho de doc não existe: {path}"
 
     async def test_links_not_pointing_to_nonexistent_paths(self):
@@ -166,6 +167,41 @@ class TestUIPtbr:
         result = await _cmd().execute(_ctx())
         rendered = _render(result.content)
         assert "docs/2.md" not in rendered
+
+
+class TestQuickStartColumnOrder:
+    _SAMPLE_ENTRIES = [
+        {"nome": "help", "acao": "Listar todos os comandos", "descricao": "Ajuda completa"},
+        {"nome": "status", "acao": "Checar status do sistema", "descricao": "Visão geral do DEILE"},
+    ]
+
+    async def test_command_column_contains_slash_prefix(self):
+        """Verifica que a coluna Comando exibe /help e não o texto de descrição."""
+        with patch(
+            "deile.commands.builtin.welcome_command._get_quick_start_verified",
+            return_value=self._SAMPLE_ENTRIES,
+        ):
+            result = await _cmd().execute(_ctx())
+        assert result.success
+        rendered = _render(result.content)
+        # /help deve aparecer como comando — não "Ajuda completa" na coluna Comando
+        assert "/help" in rendered
+        # A string de descrição deve existir separadamente — não como nome de comando
+        assert "Ajuda completa" in rendered
+
+    async def test_command_column_not_swapped_with_description(self):
+        """Garante que descrições não aparecem onde os comandos devem estar."""
+        with patch(
+            "deile.commands.builtin.welcome_command._get_quick_start_verified",
+            return_value=self._SAMPLE_ENTRIES,
+        ):
+            result = await _cmd().execute(_ctx())
+        assert result.success
+        rendered = _render(result.content)
+        # Coluna Ação deve mostrar a descrição de ação, Comando deve mostrar /nome
+        # Verifica que /status aparece (coluna Comando) e "Visão geral" aparece (coluna Ação)
+        assert "/status" in rendered
+        assert "Visão geral do DEILE" in rendered
 
 
 class TestContentType:

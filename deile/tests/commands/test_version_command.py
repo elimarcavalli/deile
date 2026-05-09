@@ -18,7 +18,7 @@ import platform
 import sys
 import time
 from io import StringIO
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from rich.console import Console
 
@@ -147,6 +147,19 @@ class TestInstallInfo:
         with patch.object(im, "distribution", side_effect=Exception("not found")):
             result = await _cmd().execute(_ctx())
             assert result.success
+
+    async def test_install_info_malformed_direct_url_json(self):
+        """Verifica graceful fallback quando direct_url.json contém JSON inválido."""
+        import importlib.metadata as im
+        mock_dist = MagicMock()
+        mock_dist.metadata = {"Version": "1.0.0"}
+        mock_dist.locate_file.return_value = MagicMock(__str__=lambda self: "/fake/path")
+        mock_dist.read_text.return_value = 'invalid json {'
+        with patch.object(im, "distribution", return_value=mock_dist):
+            info = _detect_install_info()
+            assert info["modo"] == "indisponível"
+            assert info["versao_pkg"] == "indisponível"
+            assert info["diretorio"] == "indisponível"
 
 
 class TestLinks:
