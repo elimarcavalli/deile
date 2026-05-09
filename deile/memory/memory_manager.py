@@ -315,11 +315,18 @@ class MemoryManager:
             return {"error": str(e)}
 
     async def consolidate(self, older_than_days: int = 7) -> Dict[str, Any]:
-        """Consolida memória, priorizando entradas com mais de older_than_days dias.
+        """Aciona consolidação de memória e retorna relatório.
+
+        O parâmetro older_than_days é registrado no relatório para rastreabilidade.
+        A limpeza efetiva é baseada em TTL das entradas de working memory (não em
+        idade absoluta de dias) — o parâmetro não altera o escopo de limpeza na
+        implementação atual do MemoryConsolidator.
 
         Returns:
             Dict com older_than_days, entries_before, entries_processed, total_time_s.
         """
+        if not self._is_initialized:
+            await self.initialize()
         report = await self.optimize_memory(force=True)
         return {
             "older_than_days": older_than_days,

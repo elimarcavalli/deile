@@ -1,5 +1,6 @@
 """Comando /compact — gerenciamento de memória e histórico de sessões."""
 
+import asyncio
 import csv
 import json
 import logging
@@ -28,8 +29,8 @@ async def _get_session_store(context: CommandContext) -> Optional[Any]:
     if hasattr(agent, "_get_session_store"):
         try:
             return await agent._get_session_store()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Falha ao obter SessionStore do agente: %s", exc)
     return getattr(agent, "_session_store", None)
 
 
@@ -174,6 +175,11 @@ class CompactCommand(DirectCommand):
     async def _cmd_purge(
         self, context: CommandContext, days: int, confirm: bool
     ) -> CommandResult:
+        if days < 1:
+            return CommandResult.error_result(
+                "Limiar mínimo de expurgo é 1 dia. Use /compact purge <dias> com dias ≥ 1."
+            )
+
         ss = await _get_session_store(context)
         if ss is None:
             return CommandResult.error_result(
@@ -261,28 +267,33 @@ class CompactCommand(DirectCommand):
         table = Table(title="Análise de Sessões", show_header=True, header_style="bold cyan")
         table.add_column("Métrica", style="white")
         table.add_column("Valor", style="green")
+        table.add_column("Detalhes", style="dim")
 
-        table.add_row("Total de sessões", str(len(sessions)))
+        table.add_row("Total de sessões", str(len(sessions)), "")
 
         if dates:
             oldest = min(dates)
             newest = max(dates)
             span_days = (newest - oldest).days
-            table.add_row("Sessão mais antiga", oldest.strftime("%Y-%m-%d"))
-            table.add_row("Sessão mais recente", newest.strftime("%Y-%m-%d"))
-            table.add_row("Intervalo total", f"{span_days} dia(s)")
+            table.add_row("Sessão mais antiga", oldest.strftime("%Y-%m-%d"), "")
+            table.add_row("Sessão mais recente", newest.strftime("%Y-%m-%d"), "")
+            table.add_row("Intervalo total", f"{span_days} dia(s)", "")
 
             hour_counts: Counter = Counter(d.hour for d in dates)
             if hour_counts:
                 peak_hour, peak_n = hour_counts.most_common(1)[0]
                 peak_pct = 100 * peak_n / len(dates)
-                table.add_row("Hora mais ativa", f"{peak_hour:02d}:00", f"{peak_pct:.1f}% das sessões")
+                table.add_row(
+                    "Hora mais ativa",
+                    f"{peak_hour:02d}:00",
+                    f"{peak_pct:.1f}% das sessões",
+                )
 
         if len(sessions) < 5:
             tópicos_msg = f"dados insuficientes ({len(sessions)} sessão(ões) encontradas)"
         else:
             tópicos_msg = f"baseada em {len(sessions)} sessões de metadados reais"
-        table.add_row("Análise de tópicos", tópicos_msg)
+        table.add_row("Análise de tópicos", tópicos_msg, "")
 
         return CommandResult.success_result(
             content=table,
@@ -317,28 +328,32 @@ class CompactCommand(DirectCommand):
             return CommandResult.error_result("Nenhuma sessão encontrada para exportar")
 
         if not filename:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             filename = f"deile_sessoes_{ts}.{fmt}"
 
         export_path = Path(filename)
 
         try:
             if fmt == "json":
-                export_path.write_text(
-                    json.dumps(sessions, indent=2, ensure_ascii=False), encoding="utf-8"
-                )
+                content = json.dumps(sessions, indent=2, ensure_ascii=False)
+                await asyncio.to_thread(export_path.write_text, content, "utf-8")
             elif fmt == "text":
                 lines = []
                 for s in sessions:
                     lines.append(f"Sessão: {s['session_id']}")
                     lines.append(f"Último uso: {s['last_used_at']}")
                     lines.append("-" * 50)
-                export_path.write_text("\n".join(lines), encoding="utf-8")
+                await asyncio.to_thread(export_path.write_text, "\n".join(lines), "utf-8")
             elif fmt == "csv":
-                with open(export_path, "w", newline="", encoding="utf-8") as f:
-                    writer = csv.DictWriter(f, fieldnames=["session_id", "last_used_at"])
-                    writer.writeheader()
-                    writer.writerows(sessions)
+                fields = list(sessions[0].keys()) if sessions else ["session_id", "last_used_at"]
+
+                def _write_csv() -> None:
+                    with open(export_path, "w", newline="", encoding="utf-8") as f:
+                        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+                        writer.writeheader()
+                        writer.writerows(sessions)
+
+                await asyncio.to_thread(_write_csv)
         except Exception as exc:
             return CommandResult.error_result(f"Falha ao escrever arquivo: {exc}")
 
@@ -387,10 +402,14 @@ class CompactCommand(DirectCommand):
 
         try:
             if suffix == "json":
-                sessions = json.loads(import_path.read_text(encoding="utf-8"))
+                raw = await asyncio.to_thread(import_path.read_text, "utf-8")
+                sessions = json.loads(raw)
             else:
-                with open(import_path, encoding="utf-8") as f:
-                    sessions = list(csv.DictReader(f))
+                def _read_csv() -> list:
+                    with open(import_path, encoding="utf-8") as f:
+                        return list(csv.DictReader(f))
+
+                sessions = await asyncio.to_thread(_read_csv)
         except Exception as exc:
             return CommandResult.error_result(f"Falha ao ler arquivo: {exc}")
 

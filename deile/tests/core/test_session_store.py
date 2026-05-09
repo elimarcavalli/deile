@@ -54,6 +54,91 @@ class TestStore:
         assert "token" in row.context_data
 
 
+class TestGetStats:
+    async def test_empty_store_returns_zero_count(self, store):
+        stats = await store.get_stats()
+        assert stats["session_count"] == 0
+        assert stats["oldest_last_used"] is None
+        assert stats["newest_last_used"] is None
+
+    async def test_count_reflects_upserted_sessions(self, store):
+        await store.upsert("s1", "/a", {})
+        await store.upsert("s2", "/b", {})
+        stats = await store.get_stats()
+        assert stats["session_count"] == 2
+
+    async def test_oldest_and_newest_populated(self, store):
+        await store.upsert("s1", "/a", {})
+        await store.upsert("s2", "/b", {})
+        stats = await store.get_stats()
+        assert stats["oldest_last_used"] is not None
+        assert stats["newest_last_used"] is not None
+
+
+class TestCountSessionsBefore:
+    async def test_empty_store_returns_zero(self, store):
+        from datetime import datetime, timezone
+        cutoff = datetime.now(timezone.utc)
+        count = await store.count_sessions_before(cutoff)
+        assert count == 0
+
+    async def test_new_session_not_counted_as_before_now(self, store):
+        from datetime import datetime, timedelta, timezone
+        await store.upsert("s1", "/a", {})
+        future = datetime.now(timezone.utc) + timedelta(hours=1)
+        count = await store.count_sessions_before(future)
+        assert count >= 1
+
+    async def test_far_future_cutoff_counts_all(self, store):
+        from datetime import datetime, timedelta, timezone
+        await store.upsert("s1", "/a", {})
+        await store.upsert("s2", "/b", {})
+        future = datetime.now(timezone.utc) + timedelta(days=9999)
+        count = await store.count_sessions_before(future)
+        assert count == 2
+
+    async def test_past_cutoff_counts_zero_for_new_sessions(self, store):
+        from datetime import datetime, timedelta, timezone
+        await store.upsert("s1", "/a", {})
+        past = datetime.now(timezone.utc) - timedelta(days=365)
+        count = await store.count_sessions_before(past)
+        assert count == 0
+
+
+class TestDeleteSessionsBefore:
+    async def test_empty_store_returns_zero(self, store):
+        from datetime import datetime, timezone
+        cutoff = datetime.now(timezone.utc)
+        deleted = await store.delete_sessions_before(cutoff)
+        assert deleted == 0
+
+    async def test_deletes_sessions_before_cutoff(self, store):
+        from datetime import datetime, timedelta, timezone
+        await store.upsert("s1", "/a", {})
+        await store.upsert("s2", "/b", {})
+        future = datetime.now(timezone.utc) + timedelta(days=9999)
+        deleted = await store.delete_sessions_before(future)
+        assert deleted == 2
+        stats = await store.get_stats()
+        assert stats["session_count"] == 0
+
+    async def test_does_not_delete_sessions_after_cutoff(self, store):
+        from datetime import datetime, timedelta, timezone
+        await store.upsert("s1", "/a", {})
+        past = datetime.now(timezone.utc) - timedelta(days=365)
+        deleted = await store.delete_sessions_before(past)
+        assert deleted == 0
+        stats = await store.get_stats()
+        assert stats["session_count"] == 1
+
+    async def test_partial_delete(self, store):
+        from datetime import datetime, timedelta, timezone
+        await store.upsert("recent", "/a", {})
+        future = datetime.now(timezone.utc) + timedelta(days=9999)
+        deleted = await store.delete_sessions_before(future)
+        assert deleted >= 1
+
+
 class TestPersistAcrossReinit:
     async def test_persist_then_reopen(self, tmp_path):
         path = tmp_path / "p.sqlite"
