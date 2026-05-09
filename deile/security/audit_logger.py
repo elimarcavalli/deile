@@ -374,7 +374,16 @@ class AuditLogger:
         
         total_events = len(self.recent_events)
         if total_events == 0:
-            return {"total_events": 0, "summary": "No events recorded"}
+            return {
+                "total_events": 0,
+                "session_id": self.session_id,
+                "event_types": {},
+                "severity_levels": {},
+                "permission_denials": 0,
+                "secret_detections": 0,
+                "recent_critical_events": 0,
+                "log_file": str(self.log_file),
+            }
         
         # Count by type
         type_counts = {}
@@ -414,11 +423,17 @@ class AuditLogger:
             "permission_denials": permission_denials,
             "secret_detections": secret_detections,
             "recent_critical_events": len(critical_events),
-            "log_file": str(self.log_file)
+            "log_file": str(self.log_file),
         }
     
-    def export_audit_log(self, 
-                        output_file: str, 
+    def clear_events(self) -> int:
+        """Remove all in-memory events. Returns the count removed."""
+        count = len(self.recent_events)
+        self.recent_events.clear()
+        return count
+
+    def export_audit_log(self,
+                        output_file: str,
                         format: str = "json",
                         include_details: bool = True) -> str:
         """Export audit log to file"""
