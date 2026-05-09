@@ -53,12 +53,15 @@ def _make_monitor(*, unclassified: list | None = None) -> tuple[PipelineMonitor,
     github.add_labels = AsyncMock()
     github.comment_on_issue = AsyncMock()
     github.comment_on_pr = AsyncMock()
+    github.list_unclassified_prs = AsyncMock(return_value=[])
+    github.list_issue_comments_since = AsyncMock(return_value=[])
+    github.list_pr_review_comments_since = AsyncMock(return_value=[])
 
     notifier = MagicMock()
     for attr in (
         "issue_picked_up", "issue_reviewed", "implementation_started",
         "implementation_finished", "pr_picked_up", "pr_reviewed",
-        "issue_auto_classified", "error",
+        "issue_auto_classified", "error", "pr_auto_classified", "mention_processed",
     ):
         setattr(notifier, attr, AsyncMock())
 
@@ -388,11 +391,15 @@ class TestSchedulerClassifyAction:
         github.transition_issue = AsyncMock()
         github.transition_pr = AsyncMock()
 
+        github.list_unclassified_prs = AsyncMock(return_value=[])
+        github.list_issue_comments_since = AsyncMock(return_value=[])
+        github.list_pr_review_comments_since = AsyncMock(return_value=[])
+
         notifier = MagicMock()
         for attr in (
             "issue_picked_up", "issue_reviewed", "implementation_started",
             "implementation_finished", "pr_picked_up", "pr_reviewed",
-            "issue_auto_classified", "error",
+            "issue_auto_classified", "error", "pr_auto_classified", "mention_processed",
         ):
             setattr(notifier, attr, AsyncMock())
 

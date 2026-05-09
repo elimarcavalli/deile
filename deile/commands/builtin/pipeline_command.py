@@ -121,6 +121,8 @@ class PipelineCommand(DirectCommand):
 
         if monitor is None:
             from deile.config.settings import get_settings
+            from deile.orchestration.pipeline.post_merge_callback import \
+                make_post_merge_callback
             from deile.orchestration.pipeline.review_callback import \
                 make_review_callback
 
@@ -129,7 +131,11 @@ class PipelineCommand(DirectCommand):
                 base_repo_path=_resolve_base_path(),
                 notify_user_id=get_settings().pipeline_notify_user_id,
             )
-            monitor = PipelineMonitor(cfg, review_callback=make_review_callback(agent))
+            monitor = PipelineMonitor(
+                cfg,
+                review_callback=make_review_callback(agent),
+                post_merge_callback=make_post_merge_callback(agent),
+            )
             # Persist on agent so subsequent invocations reuse the instance.
             # When invoked from CLI one-shot mode (#126) agent may be None —
             # the monitor is single-use in that case, no caching needed.
@@ -147,6 +153,8 @@ class PipelineCommand(DirectCommand):
                 from deile.config.settings import get_settings
                 from deile.orchestration.pipeline.identity import \
                     MonitorIdentity
+                from deile.orchestration.pipeline.post_merge_callback import \
+                    make_post_merge_callback
                 from deile.orchestration.pipeline.review_callback import \
                     make_review_callback
                 from deile.orchestration.pipeline.scheduler import \
@@ -176,18 +184,48 @@ class PipelineCommand(DirectCommand):
                     identity=identity,
                     schedule_store=schedule_store,
                     review_callback=make_review_callback(agent),
+                    post_merge_callback=make_post_merge_callback(agent),
                 )
                 agent.pipeline_monitor = monitor  # type: ignore[attr-defined]
             await monitor.start()
+
+            # Wire CronRunner so scheduled tasks fire alongside the pipeline.
+            from deile.cron.agent_bridge import \
+                make_fire_callback as _make_cron_cb
+            from deile.cron.runner import CronRunner  # noqa: PLC0415
+            from deile.cron.store import CronStore, resolve_db_path
+
+            _cron_store = CronStore(resolve_db_path())
+
+            async def _cron_agent_provider():
+                return agent
+
+            cron_runner = CronRunner(
+                _cron_store,
+                fire_callback=_make_cron_cb(_cron_agent_provider),
+            )
+            await cron_runner.start()
+            if agent is not None:
+                try:
+                    agent.cron_runner = cron_runner  # type: ignore[attr-defined]
+                except (AttributeError, TypeError):
+                    pass
+            logger.info("cron runner started (db=%s)", _cron_store.db_path)
+
             return CommandResult(
                 success=True,
                 content=(
                     f"✅ pipeline iniciado (repo={monitor.config.repo}, "
                     f"interval={monitor.config.poll_interval_seconds}s, "
-                    f"identity={monitor.identity.monitor_id})"
+                    f"identity={monitor.identity.monitor_id}) | "
+                    f"cron iniciado (db={_cron_store.db_path})"
                 ),
             )
         if sub == "stop":
+            _cron_runner = getattr(agent, "cron_runner", None) if agent is not None else None
+            if _cron_runner is not None and _cron_runner.is_running:
+                await _cron_runner.stop()
+                logger.info("cron runner stopped")
             await monitor.stop()
             return CommandResult(success=True, content="🛑 pipeline parado")
         if sub == "tick":
@@ -219,6 +257,11 @@ class PipelineCommand(DirectCommand):
         # default: status
         s = monitor.stats
         running = monitor.is_running
+        cron_runner = getattr(agent, "cron_runner", None) if agent is not None else None
+        cron_state = ""
+        if cron_runner is not None:
+            state = "rodando" if cron_runner.is_running else "parado"
+            cron_state = f"\n  cron={state} fired={cron_runner.fired_count}"
         return CommandResult(
             success=True,
             content=(
@@ -226,6 +269,7 @@ class PipelineCommand(DirectCommand):
                 f"  ticks={s.ticks}  reviewed={s.issues_reviewed}  "
                 f"implemented={s.issues_implemented}  prs={s.prs_reviewed}  "
                 f"errors={s.errors}  gh_errors={s.gh_errors}  claude_errors={s.claude_errors}"
+                f"{cron_state}"
             ),
         )
 
