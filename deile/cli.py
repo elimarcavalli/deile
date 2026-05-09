@@ -74,6 +74,21 @@ def _silence_genai_shutdown_noise() -> None:
     _gc.Client.__del__ = _safe_del
 
 
+
+def _load_exported_env_vars() -> None:
+    """Load env vars from ~/.deile/settings.json env.exports into os.environ.
+
+    Preferred alternative to .env files: variables stored via /env set KEY=VALUE
+    are exported here, before provider bootstrap.
+    Missing or malformed settings are silently ignored.
+    """
+    try:
+        from deile.config.env_store import load_exported_vars
+        load_exported_vars()
+    except Exception:
+        pass
+
+
 def _run_env_recovery() -> bool:
     """Interactive wizard: prompt for API keys, write .env, reload os.environ.
 
@@ -665,6 +680,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     Returns exit code (0 = success, 1 = error).
     """
     _load_dotenv()
+    _load_exported_env_vars()
     _silence_genai_shutdown_noise()
 
     # Ensure deile package is importable
