@@ -57,6 +57,12 @@ config/search.yaml
 /deilebot/
 /deilebot.egg-info/
 .worktrees/
+# Export artifacts from /cost, /context, /export commands
+costs_export_*.json
+context_export_*.json
+context_export_*.md
+session_export_*/
+session_export_*.zip
 
 # DEILE runtime under .deile/ (project scope) — not versioned
 .deile/cache/
