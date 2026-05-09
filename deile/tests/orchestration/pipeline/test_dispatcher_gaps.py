@@ -1,7 +1,8 @@
 """Tests for render_mention_prompt added for issue #164 (gap 4)."""
 from __future__ import annotations
 
-from deile.orchestration.pipeline.claude_dispatcher import render_mention_prompt
+from deile.orchestration.pipeline.claude_dispatcher import \
+    render_mention_prompt
 
 
 class TestRenderMentionPrompt:

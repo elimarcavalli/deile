@@ -7,10 +7,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from deile.orchestration.pipeline.github_client import (
-    GhCommandError,
-    GitHubClient,
-)
+from deile.orchestration.pipeline.github_client import (GhCommandError,
+                                                        GitHubClient)
 
 
 class TestListUnclassifiedPrs:
