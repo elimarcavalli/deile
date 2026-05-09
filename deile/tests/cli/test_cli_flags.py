@@ -145,7 +145,7 @@ class TestBuildSpecsFromRegistry:
         specs = build_cli_flag_specs(registry)
         by_flag = {s.flag: s for s in specs}
         assert by_flag["--export"].takes_arg is True
-        assert by_flag["--export"].metavar == "PATH"
+        assert by_flag["--export"].metavar == "CAMINHO"
 
     def test_model_strategy_takes_arg(self):
         registry = _make_registry()

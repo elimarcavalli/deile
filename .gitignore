@@ -74,3 +74,6 @@ cache/
 PLANS/
 RUNS/
 PATCHES/
+# Runtime cost export artifacts
+costs_export_*.json
+EXPORTS/
