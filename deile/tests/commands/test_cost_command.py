@@ -101,10 +101,9 @@ async def test_version_from_version_module():
 async def test_categories_from_real_database():
     cats = {"api_calls": Decimal("2.0"), "model_usage": Decimal("1.0")}
     summary = _make_summary(total="3.0", categories=cats)
-    cat_summary = _make_summary(total="2.0", entry_count=3)
 
     cmd = CostCommand()
-    with patch.object(cmd.cost_tracker, "get_cost_summary", side_effect=[summary, cat_summary, cat_summary]):
+    with patch.object(cmd.cost_tracker, "get_cost_summary", return_value=summary):
         result = await cmd.execute(_make_context("categories"))
     assert result.success
     rendered = _render_rich(result.content)

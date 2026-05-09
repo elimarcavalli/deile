@@ -4,7 +4,8 @@ Comando /cost — rastreamento de custos, orçamentos e análise financeira
 
 import logging
 from datetime import datetime, timedelta
-from typing import List
+from pathlib import Path
+from typing import List, Tuple
 
 from rich.console import Group
 from rich.panel import Panel
@@ -18,6 +19,13 @@ from deile.infrastructure.monitoring.cost_tracker import get_cost_tracker
 logger = logging.getLogger(__name__)
 
 _FORECAST_MIN_DAYS = 7
+
+
+def _safe_summary_values(summary) -> Tuple[int, float]:
+    """Extract (entry_count, total_amount) safely from a CostSummary."""
+    count = getattr(summary, "entry_count", 0) or 0
+    total = float(summary.total_amount) if summary.total_amount else 0.0
+    return count, total
 
 
 class CostCommand(DirectCommand):
@@ -133,8 +141,7 @@ EXEMPLOS:
             summary = self.cost_tracker.get_cost_summary(start_time, end_time)
             session_cost = self.cost_tracker.get_current_session_cost()
 
-            entry_count = getattr(summary, "entry_count", 0) or 0
-            total_amount = float(summary.total_amount) if summary.total_amount else 0.0
+            entry_count, total_amount = _safe_summary_values(summary)
             session_cost_f = float(session_cost) if session_cost else 0.0
 
             summary_table = Table(
@@ -263,17 +270,14 @@ EXEMPLOS:
             )
             table.add_column("Categoria", style="cyan", width=24)
             table.add_column("Valor", style="green", width=14)
-            table.add_column("Transações", style="white", width=14)
+            table.add_column("Percentual", style="white", width=12)
 
-            total_amount = float(summary.total_amount) if summary.total_amount else 0.0
+            _, total_amount = _safe_summary_values(summary)
 
             for category in sorted(summary.categories, key=lambda c: summary.categories[c], reverse=True):
-                cat_summary = self.cost_tracker.get_cost_summary(
-                    start_time, end_time, category=category
-                )
-                cat_count = getattr(cat_summary, "entry_count", 0) or 0
                 cat_amount = float(summary.categories[category])
-                table.add_row(category, f"${cat_amount:.4f}", str(cat_count))
+                pct = cat_amount / total_amount * 100 if total_amount > 0 else 0.0
+                table.add_row(category, f"${cat_amount:.4f}", f"{pct:.1f}%")
 
             return CommandResult.success_result(table, "rich", total=total_amount)
 
@@ -352,10 +356,8 @@ EXEMPLOS:
             hist_start = hist_end - timedelta(days=30)
             summary = self.cost_tracker.get_cost_summary(hist_start, hist_end)
 
-            entry_count = getattr(summary, "entry_count", 0) or 0
-            total_amount = float(summary.total_amount) if summary.total_amount else 0.0
+            entry_count, total_amount = _safe_summary_values(summary)
 
-            # Verifica se há dados históricos suficientes (ao menos _FORECAST_MIN_DAYS de dados)
             if entry_count == 0 or total_amount == 0.0:
                 return CommandResult.success_result(
                     Panel(
@@ -417,7 +419,6 @@ EXEMPLOS:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             ext = "csv" if fmt == "csv" else "json"
             fname = f"costs_export_{ts}.{ext}"
-            from pathlib import Path
             Path(fname).write_text(data, encoding="utf-8")
 
             msg = (

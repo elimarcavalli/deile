@@ -1,5 +1,6 @@
 """Context Command — exibe informações reais do contexto LLM"""
 
+import asyncio
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,15 +13,13 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ..base import CommandResult, DirectCommand
 
-_INDISPONIVEL = {"status": "indisponível"}
-
 
 def _indisponivel(motivo: str = "") -> Dict[str, Any]:
     return {"status": "indisponível", "motivo": motivo}
 
 
-def _est_tokens(text: str) -> int:
-    return max(1, len(text) // 4)
+def _est_tokens(char_count: int) -> int:
+    return max(1, char_count // 4)
 
 
 class ContextCommand(DirectCommand):
@@ -101,6 +100,15 @@ class ContextCommand(DirectCommand):
         agent = getattr(context, "agent", None)
         session = getattr(context, "session", None)
 
+        # Fan out the two independent async subsystems in parallel
+        mm = getattr(agent, "memory_manager", None) if agent else None
+        ctx_mgr = getattr(agent, "context_manager", None) if agent else None
+        raw_memory, raw_stats = await asyncio.gather(
+            mm.get_memory_usage() if mm else asyncio.sleep(0),
+            ctx_mgr.get_stats() if ctx_mgr else asyncio.sleep(0),
+            return_exceptions=True,
+        )
+
         # --- Persona ---
         persona_data: Dict[str, Any]
         try:
@@ -118,15 +126,12 @@ class ContextCommand(DirectCommand):
 
         # --- Memória ---
         memory_data: Dict[str, Any]
-        try:
-            mm = getattr(agent, "memory_manager", None) if agent else None
-            if mm:
-                usage = await mm.get_memory_usage()
-                memory_data = usage
-            else:
-                memory_data = _indisponivel("memory_manager não disponível")
-        except Exception as exc:
-            memory_data = _indisponivel(str(exc))
+        if not mm:
+            memory_data = _indisponivel("memory_manager não disponível")
+        elif isinstance(raw_memory, Exception):
+            memory_data = _indisponivel(str(raw_memory))
+        else:
+            memory_data = raw_memory
 
         # --- Histórico de conversa ---
         conv_data: Dict[str, Any]
@@ -180,7 +185,7 @@ class ContextCommand(DirectCommand):
                 provider_names = list(providers.keys())
                 model_data = {
                     "providers": provider_names,
-                    "strategy": getattr(mr, "strategy", _INDISPONIVEL),
+                    "strategy": getattr(mr, "strategy", _indisponivel("strategy não disponível")),
                 }
             else:
                 model_data = _indisponivel("model_router não disponível")
@@ -208,20 +213,17 @@ class ContextCommand(DirectCommand):
 
         # --- Instruções do sistema (estimativa) ---
         instructions_data: Dict[str, Any]
-        try:
-            ctx_mgr = getattr(agent, "context_manager", None) if agent else None
-            if ctx_mgr:
-                stats = await ctx_mgr.get_stats()
-                instr_len = stats.get("system_instructions_length", 0)
-                instructions_data = {
-                    "length": instr_len,
-                    "tokens": _est_tokens(" " * instr_len),
-                    "token_count_method": "estimated",
-                }
-            else:
-                instructions_data = _indisponivel("context_manager não disponível")
-        except Exception as exc:
-            instructions_data = _indisponivel(str(exc))
+        if not ctx_mgr:
+            instructions_data = _indisponivel("context_manager não disponível")
+        elif isinstance(raw_stats, Exception):
+            instructions_data = _indisponivel(str(raw_stats))
+        else:
+            instr_len = raw_stats.get("system_instructions_length", 0)
+            instructions_data = {
+                "length": instr_len,
+                "tokens": _est_tokens(instr_len),
+                "token_count_method": "estimated",
+            }
 
         return {
             "system_instructions": instructions_data,
