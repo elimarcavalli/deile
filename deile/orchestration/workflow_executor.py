@@ -40,6 +40,10 @@ class WorkflowExecutor:
             'command': self._execute_command_action,
             'validation': self._execute_validation_action,
         }
+        # Keeps background loop tasks alive (prevents GC cancellation)
+        self._running_loops: set = set()
+        # In-memory store for Callables that cannot be JSON-serialized to SQLite
+        self._step_funcs: Dict[str, Dict[str, Optional[Callable]]] = {}
 
     async def create_workflow_from_objective(self, objective: str,
                                            context: Optional[Dict[str, Any]] = None) -> TaskList:
@@ -74,8 +78,9 @@ class WorkflowExecutor:
 
             result = await handler(action_name, params, task)
 
-            if task.metadata.get('validation_func'):
-                validation_result = await self._run_validation(task, result)
+            step_funcs = self._step_funcs.get(task.id, {})
+            if step_funcs.get('validation_func'):
+                validation_result = await self._run_validation(task, result, step_funcs['validation_func'])
                 if not validation_result['success']:
                     raise DEILEError(f"Validation failed: {validation_result['error']}")
 
@@ -88,9 +93,10 @@ class WorkflowExecutor:
         except Exception as e:
             logger.error("Task execution failed: %s", e)
 
-            if task.metadata.get('rollback_func'):
+            step_funcs = self._step_funcs.get(task.id, {})
+            if step_funcs.get('rollback_func'):
                 try:
-                    await self._run_rollback(task)
+                    await self._run_rollback(task, step_funcs['rollback_func'])
                     logger.info("Rollback completed for task %s", task.id)
                 except Exception as rollback_error:
                     logger.error("Rollback failed: %s", rollback_error)
@@ -106,7 +112,9 @@ class WorkflowExecutor:
         """Inicia execução completa de workflow baseado em objetivo."""
         task_list = await self.create_workflow_from_objective(objective, context)
         await self.task_manager.activate_task_list(task_list.id)
-        asyncio.create_task(self._execute_task_list_loop(task_list.id))
+        loop_task = asyncio.create_task(self._execute_task_list_loop(task_list.id))
+        self._running_loops.add(loop_task)
+        loop_task.add_done_callback(self._running_loops.discard)
         return {
             'workflow_id': task_list.id,
             'status': 'started',
@@ -120,29 +128,32 @@ class WorkflowExecutor:
 
     async def _execute_task_list_loop(self, list_id: str) -> None:
         """Executa tasks da lista sequencialmente respeitando dependências."""
-        while True:
-            ready_tasks = await self.task_manager.get_next_tasks(list_id)
-            if not ready_tasks:
-                break
-
-            task = ready_tasks[0]
-            result = await self.execute_task(task)
-
-            await self.task_manager.mark_task_completed(
-                list_id=list_id,
-                task_id=task.id,
-                success=result['success'],
-                result_data=result.get('data') if isinstance(result.get('data'), dict) else None,
-                error_message=result.get('error'),
-            )
-
-            if not result['success']:
-                task_list = await self.task_manager.load_task_list(list_id)
-                if task_list and task_list.stop_on_failure:
-                    logger.info(
-                        "Stopping workflow %s on step failure (stop_on_failure=True)", list_id
-                    )
+        try:
+            while True:
+                ready_tasks = await self.task_manager.get_next_tasks(list_id)
+                if not ready_tasks:
                     break
+
+                task = ready_tasks[0]
+                result = await self.execute_task(task)
+
+                await self.task_manager.mark_task_completed(
+                    list_id=list_id,
+                    task_id=task.id,
+                    success=result['success'],
+                    result_data=result.get('data') if isinstance(result.get('data'), dict) else None,
+                    error_message=result.get('error'),
+                )
+
+                if not result['success']:
+                    task_list = await self.task_manager.load_task_list(list_id)
+                    if task_list and task_list.stop_on_failure:
+                        logger.info(
+                            "Stopping workflow %s on step failure (stop_on_failure=True)", list_id
+                        )
+                        break
+        except Exception as exc:
+            logger.error("Workflow loop %s aborted due to infrastructure error: %s", list_id, exc)
 
     async def monitor_workflow_progress(self, workflow_id: str) -> Dict[str, Any]:
         """Monitora progresso de um workflow."""
@@ -266,11 +277,9 @@ class WorkflowExecutor:
             'params': step.params or {},
             'timeout': step.timeout,
             'retry_count': step.retry_count,
-            'validation_func': step.validation,
-            'rollback_func': step.rollback,
         }
 
-        return await self.task_manager.add_task_to_list(
+        task = await self.task_manager.add_task_to_list(
             list_id=list_id,
             title=step.description or f"Step {index + 1}: {step.action}",
             description=step.description,
@@ -280,6 +289,15 @@ class WorkflowExecutor:
             metadata=task_metadata,
             tags=['workflow', f'action:{step.action}'],
         )
+
+        # Callables cannot be JSON-serialized to SQLite — store in memory keyed by task.id
+        if step.validation is not None or step.rollback is not None:
+            self._step_funcs[task.id] = {
+                'validation_func': step.validation,
+                'rollback_func': step.rollback,
+            }
+
+        return task
 
     async def _execute_tool_action(self, action_name: str, params: Dict[str, Any], task: Task) -> Any:
         """Executa ação usando tool registry."""
@@ -329,12 +347,8 @@ class WorkflowExecutor:
 
         return {'validation_passed': True, 'message': 'All previous steps completed successfully'}
 
-    async def _run_validation(self, task: Task, result: Any) -> Dict[str, Any]:
+    async def _run_validation(self, task: Task, result: Any, validation_func: Callable) -> Dict[str, Any]:
         """Executa validação do resultado de uma task."""
-        validation_func = task.metadata.get('validation_func')
-        if not validation_func:
-            return {'success': True, 'message': 'No validation specified'}
-
         try:
             if asyncio.iscoroutinefunction(validation_func):
                 validation_result = await validation_func(result)
@@ -344,11 +358,8 @@ class WorkflowExecutor:
         except Exception as e:
             return {'success': False, 'error': str(e)}
 
-    async def _run_rollback(self, task: Task) -> None:
+    async def _run_rollback(self, task: Task, rollback_func: Callable) -> None:
         """Executa rollback de uma task."""
-        rollback_func = task.metadata.get('rollback_func')
-        if not rollback_func:
-            return
         if asyncio.iscoroutinefunction(rollback_func):
             await rollback_func(task)
         else:

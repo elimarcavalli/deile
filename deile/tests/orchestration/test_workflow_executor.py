@@ -153,7 +153,7 @@ async def test_execute_task_list_loop_stops_on_failure():
     })
     tl = _make_task_list()
     tl.stop_on_failure = True
-    mgr = _make_task_manager(task_list=tl, tasks_sequence=[[task], []])
+    mgr = _make_task_manager(task_list=tl, tasks_sequence=[[task]])
     executor = _make_executor(task_manager=mgr)
 
     async def failing_execute(t):
