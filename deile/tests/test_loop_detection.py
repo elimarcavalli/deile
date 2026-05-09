@@ -586,7 +586,8 @@ async def test_executor_breaks_on_no_progress_streak():
     provider = FakeProvider(iterations=iterations)
 
     class AlwaysErroring:
-        seen: List[str] = []
+        def __init__(self):
+            self.seen: List[str] = []
 
         async def execute_tool(self, name, ctx):
             self.seen.append(name)
@@ -660,3 +661,113 @@ def test_make_guard_returns_independent_instances():
     g1.check("x", {})
     assert len(g1.history) == 1
     assert len(g2.history) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tier-2 tests — HARD_STOP escalation + error_signature fast-trip (issue #149)
+# ---------------------------------------------------------------------------
+
+
+def test_guard_escalates_to_hard_stop_on_same_hash_after_abort():
+    """Reproduce the run-2 failure mode: guard aborts on iteration N with
+    IDENTICAL_REPEAT; LLM 'rephrases' with the SAME arguments on iteration
+    N+1; guard must return HARD_STOP immediately instead of the same soft
+    abort reason, so the executor knows to end the turn.
+
+    Sequence:
+      call 1: list_files(path="/Users/x/.github") — ok, add to history
+      call 2: list_files(path="/Users/x/.github") — ok
+      call 3: list_files(path="/Users/x/.github") — IDENTICAL_REPEAT (threshold=3)
+      call 4: list_files(path="/Users/x/.github") — HARD_STOP (same hash, guard
+              already aborted on it)
+    """
+    guard = make_guard()
+    guard.repeat_threshold = 3
+    args = {"path": "/Users/x/.github/ISSUE_TEMPLATE/"}
+
+    r1 = guard.check("list_files", args)
+    assert r1 is None
+
+    r2 = guard.check("list_files", args)
+    assert r2 is None
+
+    r3 = guard.check("list_files", args)
+    assert r3 is not None
+    assert r3.kind is AbortKind.IDENTICAL_REPEAT
+
+    r4 = guard.check("list_files", args)
+    assert r4 is not None
+    assert r4.kind is AbortKind.HARD_STOP, (
+        f"Expected HARD_STOP on 4th call with same hash, got {r4.kind}"
+    )
+    assert "HARD STOP" in r4.user_message() or "hard" in r4.user_message().lower()
+
+
+def test_guard_hard_stop_message_contains_tool_family_hint():
+    """HARD_STOP user_message() must mention switching to a different tool
+    so the LLM has a concrete next action."""
+    guard = make_guard()
+    guard.repeat_threshold = 2
+    args = {"path": "/etc/hosts"}
+
+    guard.check("read_file", args)
+    r = guard.check("read_file", args)
+    assert r is not None
+    assert r.kind is AbortKind.IDENTICAL_REPEAT
+
+    r2 = guard.check("read_file", args)
+    assert r2 is not None
+    assert r2.kind is AbortKind.HARD_STOP
+    msg = r2.user_message()
+    assert "bash_execute" in msg or "switch" in msg.lower() or "tool" in msg.lower()
+
+
+def test_guard_record_result_error_signature_fast_trips_no_progress():
+    """When record_result is called with the same error_signature twice in a
+    row, the guard must fast-trip NO_PROGRESS on the very next check() call,
+    even though the normal no_progress_threshold (6) hasn't been reached.
+
+    Timeline: check()/record_result×2 same-sig → _consecutive_empty reaches
+    threshold → check() #3 returns NO_PROGRESS abort.  Two record_result
+    failures with the same signature are sufficient; a third call is not
+    needed.  This is intentional — structural errors (same path, same
+    rejection) should be short-circuited well before the generic threshold.
+    """
+    guard = make_guard()
+    guard.no_progress_threshold = 6
+    sig = "path_not_found:/Users/x/.github/ISSUE_TEMPLATE/"
+
+    r1 = guard.check("list_files", {"path": "/a"})
+    assert r1 is None
+    guard.record_result(made_progress=False, error_signature=sig)
+
+    r2 = guard.check("list_files", {"path": "/b"})
+    assert r2 is None
+    guard.record_result(made_progress=False, error_signature=sig)
+
+    r3 = guard.check("list_files", {"path": "/c"})
+    assert r3 is not None
+    assert r3.kind is AbortKind.NO_PROGRESS, (
+        f"Expected NO_PROGRESS fast-trip after 2 same-sig errors, got {r3.kind}"
+    )
+
+
+def test_guard_error_signature_resets_on_progress():
+    """A successful call must reset the error_signature streak so a later
+    failure with the same signature starts a new streak."""
+    guard = make_guard()
+    guard.no_progress_threshold = 6
+    sig = "path_not_found:/x"
+
+    guard.check("list_files", {"path": "/a"})
+    guard.record_result(made_progress=False, error_signature=sig)
+
+    guard.check("list_files", {"path": "/b"})
+    guard.record_result(made_progress=True)
+
+    guard.check("list_files", {"path": "/c"})
+    guard.record_result(made_progress=False, error_signature=sig)
+    assert guard._consecutive_same_error == 1
+
+    r4 = guard.check("list_files", {"path": "/d"})
+    assert r4 is None, "Should not abort after progress reset the streak"

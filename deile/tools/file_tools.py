@@ -627,17 +627,24 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
 
             # Verifica se arquivo existe
             if not full_path.exists():
-                hint = (
+                norm_hint = (
                     f" (input was {resolved.input!r} → {resolved.note})"
                     if resolved.note
+                    else ""
+                )
+                bash_hint = (
+                    " If the file lives OUTSIDE the project, use "
+                    f"bash_execute(command=\"cat {resolved.absolute}\") instead — "
+                    "bash_execute has no working-directory sandbox."
+                    if (resolved.note or _looks_like_outside_project(file_path))
                     else ""
                 )
                 return ToolResult(
                     status=ToolStatus.ERROR,
                     message=(
                         f"File not found: {resolved.relative_to_cwd}"
-                        f"{hint}. Use list_files to inspect the project tree before "
-                        f"assuming a path."
+                        f"{norm_hint}. Use list_files to inspect the project tree "
+                        f"before assuming a path.{bash_hint}"
                     ),
                     error=FileNotFoundError(
                         f"File '{resolved.relative_to_cwd}' not found"
@@ -1378,17 +1385,29 @@ class DeleteFileTool(SyncTool):
                 )
         
         try:
-            # Valida segurança do caminho
-            validated_path = _validate_path_within_working_directory(
-                file_path, context.working_directory
-            )
-            full_path = Path(validated_path)
-            
+            resolved = _resolve_project_path(file_path, context.working_directory)
+            full_path = Path(resolved.absolute)
+
             if not full_path.exists():
+                norm_hint = (
+                    f" (input was {resolved.input!r} → {resolved.note})"
+                    if resolved.note
+                    else ""
+                )
+                bash_hint = (
+                    " If the file lives OUTSIDE the project, use "
+                    f"bash_execute(command=\"rm {resolved.absolute}\") instead — "
+                    "bash_execute has no working-directory sandbox."
+                    if (resolved.note or _looks_like_outside_project(file_path))
+                    else ""
+                )
                 return ToolResult(
                     status=ToolStatus.ERROR,
-                    message=f"File not found: {file_path}",
-                    error=FileNotFoundError(f"File '{file_path}' not found")
+                    message=(
+                        f"File not found: {resolved.relative_to_cwd}"
+                        f"{norm_hint}.{bash_hint}"
+                    ),
+                    error=FileNotFoundError(f"File '{resolved.relative_to_cwd}' not found"),
                 )
             
             # Registra informações antes de deletar

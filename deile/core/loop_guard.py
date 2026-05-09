@@ -58,6 +58,7 @@ class AbortKind(Enum):
     IDENTICAL_REPEAT = "identical_call_repeated"
     SLIDING_WINDOW = "sliding_window_repeats"
     NO_PROGRESS = "no_progress"
+    HARD_STOP = "hard_stop"
 
 
 @dataclass
@@ -104,12 +105,23 @@ class AbortReason:
                 f"({self.args_preview}). That looks like a loop, so I stopped. "
                 "Please rephrase your request." + suffix
             )
-        # NO_PROGRESS
+        if self.kind is AbortKind.NO_PROGRESS:
+            return (
+                f"I made {self.repeat_count} consecutive tool calls without producing "
+                "any useful result (the calls returned empty or errored). Rather than "
+                "keep retrying, I stopped. Please check the most recent tool errors "
+                "and try a different approach." + suffix
+            )
+        # HARD_STOP — same error/loop tripped the guard a second time after a
+        # previous abort. This means the model rephrased the broken call
+        # instead of switching strategy.
         return (
-            f"I made {self.repeat_count} consecutive tool calls without producing "
-            "any useful result (the calls returned empty or errored). Rather than "
-            "keep retrying, I stopped. Please check the most recent tool errors "
-            "and try a different approach." + suffix
+            f"HARD STOP: the guard already aborted this turn once for "
+            f"'{self.tool_name}' ({self.args_preview}) and the model rephrased "
+            "instead of switching to a different approach. The turn is being "
+            "terminated immediately. Do NOT rephrase the same call — switch "
+            "to a different tool family (e.g. bash_execute for filesystem "
+            "access, http_request for network)." + suffix
         )
 
 
@@ -172,6 +184,8 @@ class ToolLoopGuard:
     _consecutive_repeat: int = 0
     _last_hash: Optional[str] = None
     _consecutive_empty: int = 0
+    _last_error_signature: Optional[str] = None
+    _consecutive_same_error: int = 0
     aborted_reason: Optional[AbortReason] = None
 
     def __post_init__(self) -> None:
@@ -218,6 +232,34 @@ class ToolLoopGuard:
         args_hash = self._hash_args(tool_name, args)
         args_preview = self._preview_args(args)
         total_after = len(self.history) + 1
+
+        # Rule 0 — HARD_STOP escalation. When the guard has already aborted
+        # this turn and the model issues the SAME (tool, args) hash again,
+        # terminate immediately so the broken call never runs a third time.
+        # NOTE: this only fires on exact arg-hash matches. A model that
+        # "rephrases" with a slightly different argument (e.g. trailing slash
+        # stripped, capitalisation change) produces a different hash and will
+        # not be caught here — see error_signature fast-trip in record_result()
+        # for the complementary protection against near-miss repeated errors.
+        if (
+            self.aborted_reason is not None
+            and self.aborted_reason.args_hash == args_hash
+        ):
+            reason = AbortReason(
+                kind=AbortKind.HARD_STOP,
+                tool_name=tool_name,
+                args_hash=args_hash,
+                args_preview=args_preview,
+                repeat_count=self.aborted_reason.repeat_count + 1,
+                total_calls=total_after,
+                detail=(
+                    f"guard already aborted on hash {args_hash} with "
+                    f"kind={self.aborted_reason.kind.value}; HARD_STOP issued "
+                    "to terminate turn — model must switch tool family"
+                ),
+            )
+            self._record_abort(reason)
+            return reason
 
         # Rule 1 — hard ceiling. We compare against the count *after* this
         # call would be added so the cap is "do not exceed", not "must
@@ -318,7 +360,11 @@ class ToolLoopGuard:
         self._last_hash = args_hash
         return None
 
-    def record_result(self, made_progress: bool) -> None:
+    def record_result(
+        self,
+        made_progress: bool,
+        error_signature: Optional[str] = None,
+    ) -> None:
         """Update the no-progress counter with the latest tool result.
 
         Pass ``made_progress=True`` if the tool returned non-empty,
@@ -327,13 +373,33 @@ class ToolLoopGuard:
         caller decides what counts as progress, since "empty" depends
         on the tool (e.g., ``list_files`` returning ``[]`` is empty,
         but ``http_get`` returning ``""`` may also be empty).
+
+        ``error_signature`` is an optional opaque string identifying the
+        *type* of error (e.g. ``"path_not_found:/Users/x/y"``).  When two
+        or more consecutive calls fail with the **same** signature, the
+        guard treats this as a structural error loop and fast-trips
+        NO_PROGRESS (sets the streak to the threshold immediately) so the
+        model stops re-trying with trivial argument variations.
         """
         if self.disabled:
             return
         if made_progress:
             self._consecutive_empty = 0
+            self._last_error_signature = None
+            self._consecutive_same_error = 0
         else:
             self._consecutive_empty += 1
+            if error_signature is not None:
+                if error_signature == self._last_error_signature:
+                    self._consecutive_same_error += 1
+                    if self._consecutive_same_error >= 2:
+                        self._consecutive_empty = self.no_progress_threshold
+                else:
+                    self._last_error_signature = error_signature
+                    self._consecutive_same_error = 1
+            else:
+                self._last_error_signature = None
+                self._consecutive_same_error = 0
 
     # ------------------------------------------------------------------
     # internals
@@ -371,8 +437,16 @@ class ToolLoopGuard:
         return preview
 
     def _record_abort(self, reason: AbortReason) -> None:
-        """Log + audit + cache the abort. Idempotent for the same hash."""
-        # If we've already aborted on this hash, don't re-fire audit events.
+        """Log + audit + cache the abort.
+
+        Idempotent for the same (hash, kind) pair — this allows kind
+        escalation on the same hash (e.g., IDENTICAL_REPEAT → HARD_STOP)
+        while still suppressing duplicate audit events for the exact same
+        (hash, kind) combination.
+        """
+        # If we've already aborted on this exact (hash, kind), don't re-fire
+        # audit events — but a different kind on the same hash is allowed
+        # through (that is the HARD_STOP escalation path).
         if (
             self.aborted_reason is not None
             and self.aborted_reason.args_hash == reason.args_hash
