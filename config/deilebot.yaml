@@ -1,7 +1,7 @@
-# Example config for deile_bot. Copy to config/deile_bot.yaml and edit.
+# Example config for deilebot. Copy to config/deilebot.yaml and edit.
 
 foundation:
-  sqlite_path: data/deile_bot.sqlite
+  sqlite_path: data/deilebot.sqlite
   sessions_sqlite_path: data/deile_sessions.sqlite
   data_retention_days: 90
   default_persona: developer
@@ -17,7 +17,7 @@ foundation:
   session_strategy: per_user
 
 permissions:
-  # ULIDs from data/deile_bot.sqlite — discord:1475913578648436909 (elimar) + discord:1244112295261503573 (ZeZiNHo_HiPPie)
+  # ULIDs from data/deilebot.sqlite — discord:1475913578648436909 (elimar) + discord:1244112295261503573 (ZeZiNHo_HiPPie)
   owners:
     - "01KQMMWKRHG0HJD6PQ7J2S8JY4"
     - "01KQMNJQ24GNA1X2RQ4VHTQSCH"

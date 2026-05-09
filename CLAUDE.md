@@ -75,6 +75,8 @@ Entry point: `python3 deile.py` (CLI shell in `DeileAgentCLI`; all logic lives i
   ```
   Pip detects `deilebot` already installed and ignores the extra. The `deilebot/` folder is gitignored.
 
+  > **Migration note (issue #159):** the canonical clone path is `deilebot/` (no separator). If you have a legacy `deile_bot/` clone, run `mv deile_bot deilebot` and re-run `pip install -e ./deilebot`. Run the bot from the `deile/` repo root (`python3 -m deilebot run --provider discord`) — running from inside the clone shadows the parent `deile.config` package via the partial `deilebot/deile/` overrides.
+
   **Both cases:** configure `DEILE_BOT_ENDPOINT` + `DEILE_BOT_AUTH_TOKEN` (see `.env.example`). The `messaging.discord_*` tools auto-register only when `import deilebot` succeeds and both env vars are set.
 - **If you're touching messaging tools**, open [`08-SEGURANCA.md`](docs/system_design/08-SEGURANCA.md) **before** writing code — DM and role-mention tools are gated by `ApprovalSystem` by design and changes to that gate are non-trivial.
 - **Two `config/` directories**: `./config/` (runtime YAML/JSON) vs `./deile/config/` (package code + `settings.py` + YAML configs like `intent_patterns.yaml`). Don't conflate.

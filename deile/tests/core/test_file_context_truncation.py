@@ -84,8 +84,12 @@ def project_with_ignored_dirs(tmp_path: Path) -> Path:
                 },
             },
             "deile_bot/": {
-                "bot.py": "# separate repo",
+                "bot.py": "# legacy clone name (transitional)",
                 "requirements.txt": "discord.py",
+            },
+            "deilebot/": {
+                "daemon.py": "# canonical clone name",
+                "pyproject.toml": "[project]\nname = \"deilebot\"",
             },
             "node_modules/": {
                 "lodash/": {
@@ -146,6 +150,7 @@ async def test_ignored_dirs_are_pruned(
     assert "HEAD" not in result, ".git was not pruned"
     assert "pyvenv.cfg" not in result, "venv was not pruned"
     assert "bot.py" not in result, "deile_bot was not pruned"
+    assert "daemon.py" not in result, "deilebot was not pruned"
     assert "lodash" not in result, "node_modules was not pruned"
     assert "PLAN.md" not in result, "work_items was not pruned"
 

@@ -45,7 +45,7 @@ deilebot.yaml
 config/settings.json
 config/permissions.yaml
 config/persona_config.yaml
-config/deile_bot.yaml
+config/deilebot.yaml
 # Dead duplicates of deile/config/* — code never reads these
 config/api_config.yaml
 config/commands.yaml

@@ -157,7 +157,7 @@ Configura múltiplas seções tipadas:
 
 > **Status (issue #111):** este diretório foi limpo. As preferências antes
 > ali agora vivem em `.deile/settings.json` (ver §Camadas). Apenas
-> `config/deile_bot.yaml` permanece tracked (operacional do bot).
+> `config/deilebot.yaml` permanece tracked (operacional do bot — carregado por `deilebot/foundation/settings.py` em `_YAML_PATH`).
 
 `config/settings.json` continua reconhecido como **fallback de leitura**
 quando nenhum `.deile/settings.json` existe — emite aviso de depreciação

@@ -68,7 +68,7 @@ Use sem pedir permissão:
 
    `bash_execute` **não tem** sandbox de working_directory — aceita qualquer path do sistema.
 
-   Casos legítimos típicos: monorepo onde DEILE foi invocado de um subprojeto (ex.: `deile_bot/` dentro de `deile/`) e o usuário quer ler templates/configs do repo-pai; auditoria de paths absolutos que o usuário forneceu literalmente; verificação cross-repo.
+   Casos legítimos típicos: monorepo onde DEILE foi invocado de um subprojeto (ex.: `deilebot/` dentro de `deile/`) e o usuário quer ler templates/configs do repo-pai; auditoria de paths absolutos que o usuário forneceu literalmente; verificação cross-repo.
 
    **Anti-padrão proibido**: receber `Path not found: /Users/.../algo` e tentar `list_files(path='.github/...')` — você acabou de remover o prefixo absoluto que era a parte importante. Se o usuário disse `/Users/x/y`, use `bash_execute(command="ls /Users/x/y")`.
 
