@@ -18,8 +18,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import venv as _venv  # noqa: N812 — local alias for testability (patched as deile.cli._venv)
 from pathlib import Path
@@ -29,6 +31,9 @@ from typing import List, Optional
 _PACKAGE_ROOT = Path(__file__).parent.resolve()
 _PROJECT_ROOT = _PACKAGE_ROOT.parent  # repo root when editable, same when installed
 _ENV_KEY_NAMES = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY")
+
+# ── install helpers — module-level constants ─────────────────────────────────
+_KNOWN_SHELLS = frozenset({"zsh", "bash", "fish"})
 _TTY = sys.stdout.isatty()
 _RESET = "\033[0m" if _TTY else ""
 _BOLD = "\033[1m" if _TTY else ""
@@ -492,8 +497,6 @@ def _user_scripts_dir() -> Path:
                       osx_framework_user   → ~/Library/Python/X.Y/bin
       - Windows:      nt_user              → %APPDATA%\\Python\\PythonXY\\Scripts
     """
-    import sysconfig
-
     if hasattr(sysconfig, "get_preferred_scheme"):
         scheme = sysconfig.get_preferred_scheme("user")
     elif os.name == "nt":
@@ -699,6 +702,15 @@ def _ensure_scripts_dir_on_path(scripts_dir: Path) -> tuple[bool, Optional[Path]
     """
     from deile.core.exceptions import DEILEInstallError
 
+    # double-quote would break `export PATH="..."` syntax; newline would split the rc line.
+    scripts_dir_str = str(scripts_dir)
+    if '"' in scripts_dir_str or "\n" in scripts_dir_str:
+        return (
+            False, None,
+            f"Path contains unsupported characters for auto-configuration.\n"
+            f"Add manually:\n    export PATH=\"{scripts_dir_str}:$PATH\""
+        )
+
     export_line_posix = f'export PATH="{scripts_dir}:$PATH"'
 
     if os.name == "nt":
@@ -709,6 +721,9 @@ def _ensure_scripts_dir_on_path(scripts_dir: Path) -> tuple[bool, Optional[Path]
         return (False, None, hint)
 
     shell = os.path.basename(os.environ.get("SHELL", ""))
+    if shell not in _KNOWN_SHELLS:
+        return (False, None, f'Add to your shell rc:\n    {export_line_posix}')
+
     home = Path.home().resolve()  # canonical home
 
     if shell == "zsh":
@@ -717,11 +732,9 @@ def _ensure_scripts_dir_on_path(scripts_dir: Path) -> tuple[bool, Optional[Path]
     elif shell == "bash":
         rc = (home / (".bash_profile" if sys.platform == "darwin" else ".bashrc")).resolve()
         export_line = export_line_posix
-    elif shell == "fish":
+    else:  # fish
         rc = (home / ".config" / "fish" / "config.fish").resolve()
         export_line = f'set -gx PATH "{scripts_dir}" $PATH'
-    else:
-        return (False, None, f'Add to your shell rc:\n    {export_line_posix}')
 
     # Safety: rc file must be within $HOME (prevent symlink traversal out of home)
     if not str(rc).startswith(str(home)):
@@ -737,7 +750,6 @@ def _ensure_scripts_dir_on_path(scripts_dir: Path) -> tuple[bool, Optional[Path]
         return (False, rc, f"Could not read {rc.name}: {exc}.\nAdd manually:\n    {export_line}")
 
     # ── Idempotency: line-by-line check (not substring) ──
-    scripts_dir_str = str(scripts_dir)
     for line in existing.splitlines():
         stripped = line.strip()
         if stripped.startswith("#"):
@@ -834,10 +846,13 @@ async def _run_self_install_async(mode: Optional[str] = None) -> int:
     print(f"Installing DEILE — mode: {mode}")
     print(f"  repo: {repo_root}")
 
+    created_venv: Optional[Path] = None
+
     try:
         deile_script = await _create_venv_with_deile(venv_dir, repo_root, mode)
+        # Capture resolved path for rollback; success guarantees venv exists.
+        created_venv = deile_script.parent.parent
     except DEILEInstallError as exc:
-        # Sanitize: never leak full paths in user-facing error messages
         detail = exc.sanitized_path or "unknown"
         print(f"ERROR: {exc.message} ({detail})", file=sys.stderr)
         return 1
@@ -846,8 +861,11 @@ async def _run_self_install_async(mode: Optional[str] = None) -> int:
     try:
         wrapper = _link_global_command(target_dir, deile_script)
     except DEILEInstallError as exc:
+        # Roll back the venv to avoid a partially-installed state (Princípio 9).
+        if created_venv is not None:
+            shutil.rmtree(created_venv, ignore_errors=True)
         detail = exc.sanitized_path or "unknown"
-        print(f"ERROR: {exc.message} ({detail})", file=sys.stderr)
+        print(f"ERROR: {exc.message} ({detail}) — rolled back venv.", file=sys.stderr)
         return 1
 
     print()
@@ -861,7 +879,21 @@ async def _run_self_install_async(mode: Optional[str] = None) -> int:
             ["/usr/bin/env", "which", "deile"],
             text=True, capture_output=True, check=False,
         )
-        on_path_now = which.returncode == 0 and which.stdout.strip() == str(wrapper)
+        if which.returncode == 0:
+            found_path = Path(which.stdout.strip())
+            # Resolve symlink to confirm it points to the venv we just installed
+            try:
+                on_path_now = found_path.resolve() == wrapper.resolve()
+            except OSError:
+                on_path_now = False
+            if not on_path_now and found_path.exists():
+                # A stale or different `deile` binary is on PATH — warn the user.
+                print(
+                    f"Note: `which deile` returned {found_path.name!r} which does not "
+                    "point to the newly installed wrapper. You may have a stale binary."
+                )
+        else:
+            on_path_now = False
     else:
         on_path_now = False  # PowerShell `where.exe` lookup not implemented here
 
@@ -1105,11 +1137,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         sys.stdout.write(_format_help_with_commands(parser))
         return 0
 
-    if args.install:
-        return _run_self_install(mode=args.install_mode)
     if args.install_mode and not args.install:
         print("ERROR: --install-mode requires --install.", file=sys.stderr)
         return 2
+    if args.install:
+        return _run_self_install(mode=args.install_mode)
 
     # --debug is a global modifier: enable debug mode in settings BEFORE any
     # one-shot dispatch or interactive run, so it actually has an effect.
