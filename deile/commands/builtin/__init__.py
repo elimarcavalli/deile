@@ -9,6 +9,7 @@ from .context_command import ContextCommand
 from .cost_command import CostCommand
 from .debug_command import DebugCommand
 from .diff_command import DiffCommand
+from .env_command import EnvCommand
 from .export_command import ExportCommand
 from .help_command import HelpCommand
 from .model_command import ModelCommand
@@ -55,4 +56,5 @@ __all__ = [
     "WelcomeCommand",
     "PipelineCommand",
     "PipelineScheduleCommand",
+    "EnvCommand",
 ]
