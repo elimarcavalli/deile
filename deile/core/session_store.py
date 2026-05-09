@@ -152,6 +152,46 @@ class SessionStore:
         await cur.close()
         return [{"session_id": r[0], "last_used_at": r[1]} for r in rows]
 
+    async def get_stats(self) -> dict:
+        """Returns session count, oldest and newest last_used_at timestamps."""
+        db = self._require()
+        cur = await db.execute(
+            "SELECT COUNT(*), MIN(last_used_at), MAX(last_used_at) FROM persisted_session"
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        return {
+            "session_count": row[0] or 0,
+            "oldest_last_used": row[1],
+            "newest_last_used": row[2],
+        }
+
+    async def count_sessions_before(self, cutoff_date: datetime) -> int:
+        """Count sessions with last_used_at before cutoff_date (without deleting)."""
+        db = self._require()
+        cutoff_iso = cutoff_date.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        cur = await db.execute(
+            "SELECT COUNT(*) FROM persisted_session WHERE last_used_at < ?",
+            (cutoff_iso,),
+        )
+        row = await cur.fetchone()
+        await cur.close()
+        return row[0] or 0
+
+    async def delete_sessions_before(self, cutoff_date: datetime) -> int:
+        """Delete sessions with last_used_at before cutoff_date. Returns count deleted."""
+        async with self._lock:
+            db = self._require()
+            cutoff_iso = cutoff_date.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            cur = await db.execute(
+                "DELETE FROM persisted_session WHERE last_used_at < ?",
+                (cutoff_iso,),
+            )
+            removed = cur.rowcount or 0
+            await cur.close()
+            await db.commit()
+            return removed
+
     @staticmethod
     def _safe_serialize(context_data: Dict[str, Any]) -> str:
         """Serialize dict to JSON; redact obvious secrets via secrets_scanner."""

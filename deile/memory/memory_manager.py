@@ -314,6 +314,20 @@ class MemoryManager:
             logger.error(f"Erro ao obter estatísticas de memória: {e}")
             return {"error": str(e)}
 
+    async def consolidate(self, older_than_days: int = 7) -> Dict[str, Any]:
+        """Consolida memória, priorizando entradas com mais de older_than_days dias.
+
+        Returns:
+            Dict com older_than_days, entries_before, entries_processed, total_time_s.
+        """
+        report = await self.optimize_memory(force=True)
+        return {
+            "older_than_days": older_than_days,
+            "entries_before": report.get("working_memory", {}).get("entries_before", 0),
+            "entries_processed": report.get("working_memory", {}).get("expired_cleaned", 0),
+            "total_time_s": report.get("total_time", 0.0),
+        }
+
     async def optimize_memory(self, force: bool = False) -> Dict[str, Any]:
         """Executa otimização manual da memória
 
