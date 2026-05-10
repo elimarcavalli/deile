@@ -26,7 +26,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import logging
+import socket
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse as _urlparse
@@ -56,6 +58,13 @@ _ALLOWED_VISION_MODELS: frozenset[str] = frozenset({
     "gemini-1.5-flash-8b",
     "gemini-1.5-flash",
 })
+_MAGIC_BYTES: dict[str, bytes] = {
+    "image/png": b"\x89PNG",
+    "image/jpeg": b"\xff\xd8\xff",
+    "image/gif": b"GIF8",
+    "image/webp": b"RIFF",
+}
+
 _DEFAULT_PROMPT = (
     "Descreva exatamente o que está nesta imagem em 2-4 linhas em português. "
     "Inclua: objetos visíveis, texto legível (transcreva), pessoas (sem identificar), "
@@ -66,7 +75,11 @@ _DEFAULT_PROMPT = (
 def _resolve_vision_model() -> str:
     from deile.config.settings import get_settings
 
-    return get_settings().vision_model or _DEFAULT_VISION_MODEL
+    model = get_settings().vision_model or _DEFAULT_VISION_MODEL
+    if model not in _ALLOWED_VISION_MODELS:
+        logger.warning("DEILE_VISION_MODEL %r not in allowlist; using default", model)
+        return _DEFAULT_VISION_MODEL
+    return model
 
 
 class VisionToolError(DEILEError):
@@ -213,6 +226,11 @@ class VisionDescribeImageTool(Tool):
         except VisionToolError as e:
             return ToolResult.error_result(str(e), error_code=e.code, error=e)
         except PathContainmentError as e:
+            _try_audit_blocked(
+                resource=path or url or "unknown",
+                action="describe",
+                details={"error_code": "VISION_BAD_INPUT", "reason": "path_containment", "path": path},
+            )
             return ToolResult.error_result(str(e), error_code="VISION_BAD_INPUT", error=e)
         except Exception as e:
             logger.exception("vision image acquisition failed")
@@ -227,6 +245,11 @@ class VisionDescribeImageTool(Tool):
                 f"image exceeds {_MAX_IMAGE_BYTES} bytes ({len(image_bytes)} bytes)",
                 error_code="VISION_IMAGE_TOO_LARGE",
             )
+
+        try:
+            _validate_magic_bytes(image_bytes, mime)
+        except VisionToolError as e:
+            return ToolResult.error_result(str(e), error_code=e.code, error=e)
 
         sha8 = _sha8(image_bytes)
         try:
@@ -251,6 +274,8 @@ class VisionDescribeImageTool(Tool):
             },
             message=f"vision_describe_image ok ({model}, {len(image_bytes)} B, sha8={sha8})",
         )
+        # Strip query params before logging (CDN tokens must not reach the audit log)
+        _audit_resource = url.split("?")[0] if url else (path or f"base64:{mime}")
         try:
             from deile.security.audit_logger import (AuditEventType,
                                                      SeverityLevel,
@@ -260,7 +285,7 @@ class VisionDescribeImageTool(Tool):
                 event_type=AuditEventType.TOOL_EXECUTION,
                 severity=SeverityLevel.INFO,
                 actor="vision_describe_image",
-                resource=url or path or f"base64:{mime}",
+                resource=_audit_resource,
                 action="describe",
                 result="success",
                 details={"sha8": sha8, "mime_type": mime, "size_bytes": len(image_bytes), "model": model, "source": _source},
@@ -295,7 +320,7 @@ async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes
     """
     if path.startswith("file://"):
         _parsed = _urlparse(path)
-        if _parsed.netloc and _parsed.netloc not in ("", "localhost"):
+        if _parsed.netloc and _parsed.netloc.lower() not in ("", "localhost"):
             raise VisionToolError(
                 "VISION_BAD_INPUT",
                 f"file:// URI with non-localhost authority is not supported: {path!r}",
@@ -340,10 +365,84 @@ async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes
     return bytes(buf), mime_hint
 
 
+def _try_audit_blocked(resource: str, action: str, details: dict) -> None:
+    """Emit a WARNING audit event for a security-relevant rejection (never raises)."""
+    try:
+        from deile.security.audit_logger import (AuditEventType, SeverityLevel,
+                                                 get_audit_logger)
+        get_audit_logger().log_event(
+            event_type=AuditEventType.TOOL_EXECUTION,
+            severity=SeverityLevel.WARNING,
+            actor="vision_describe_image",
+            resource=resource,
+            action=action,
+            result="blocked",
+            details=details,
+            tool_name="vision_describe_image",
+        )
+    except Exception:
+        logger.debug("blocked-audit emission failed", exc_info=True)
+
+
+async def _check_ssrf(url: str) -> None:
+    """Reject URLs that target private/loopback/reserved IP space (direct SSRF).
+
+    ``follow_redirects=False`` stops redirect-chain SSRF; this guard stops
+    direct requests to RFC-1918, link-local, and loopback addresses.
+    Monkeypatchable so tests that use 127.0.0.1 servers can bypass it.
+    """
+    parsed = _urlparse(url)
+    host = parsed.hostname or ""
+    if not host:
+        raise VisionToolError("VISION_BAD_INPUT", "cannot parse hostname from URL")
+    # Fast path: bare IP literals can be checked without DNS
+    try:
+        ip = ipaddress.ip_address(host)
+        if not ip.is_global:
+            raise VisionToolError("VISION_BAD_INPUT", f"image_url targets non-public IP: {ip}")
+        return
+    except ValueError:
+        pass
+    # Hostname: resolve and validate every returned address
+    try:
+        infos = await asyncio.to_thread(socket.getaddrinfo, host, None, 0, socket.SOCK_STREAM)
+    except OSError as exc:
+        raise VisionToolError("VISION_DOWNLOAD_FAILED", f"DNS resolution failed for {host!r}: {exc}")
+    for *_, sockaddr in infos:
+        try:
+            ip = ipaddress.ip_address(sockaddr[0])
+            if not ip.is_global:
+                raise VisionToolError(
+                    "VISION_BAD_INPUT",
+                    f"image_url {host!r} resolves to non-public IP {ip}",
+                )
+        except ValueError:
+            continue
+
+
+def _validate_magic_bytes(image_bytes: bytes, mime: str) -> None:
+    """Verify image bytes carry the expected magic signature for the declared MIME.
+
+    Detects MIME spoofing: a server (or caller) claiming image/png while
+    returning JavaScript/polyglot bytes. WebP needs two checks:
+    b[0:4]==RIFF and b[8:12]==WEBP.
+    """
+    magic = _MAGIC_BYTES.get(mime)
+    if not magic:
+        return
+    if mime == "image/webp":
+        ok = image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP"
+    else:
+        ok = image_bytes[:len(magic)] == magic
+    if not ok:
+        raise VisionToolError("VISION_BAD_INPUT", f"image bytes do not match declared MIME {mime!r}")
+
+
 async def _download_image(url: str) -> tuple[bytes, str]:
     """Fetch the image, capping size and time. Returns (bytes, mime_type)."""
     if not url.startswith(("http://", "https://")):
         raise VisionToolError("VISION_BAD_INPUT", "image_url must be http(s)")
+    await _check_ssrf(url)
     async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT_S, follow_redirects=False) as client:
         async with client.stream("GET", url) as resp:
             if resp.status_code >= 300:

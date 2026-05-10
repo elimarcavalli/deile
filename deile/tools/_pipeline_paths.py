@@ -32,7 +32,14 @@ def _assert_safe_root(path: Path) -> None:
     within a trusted directory before any filesystem access.
     """
     path = path.resolve()
-    safe_roots = [Path.home().resolve()]
+    home = Path.home().resolve()
+    if home == Path("/"):
+        raise PathContainmentError(
+            "Home directory resolves to filesystem root; path containment cannot be enforced.",
+            path=str(path),
+            safe_roots=[],
+        )
+    safe_roots = [home]
     cwd = Path.cwd()
     for ancestor in (cwd, *cwd.parents):
         if (ancestor / ".git").exists():

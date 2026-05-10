@@ -120,9 +120,20 @@ async def test_base64_happy_path(tool, ctx_factory, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+async def _no_ssrf_check(url: str) -> None:
+    """SSRF no-op for tests that use 127.0.0.1 servers (not testing SSRF behaviour)."""
+
+
 @pytest.fixture
-async def image_server():
-    """Self-contained aiohttp server for URL download tests (no extra packages needed)."""
+async def image_server(monkeypatch):
+    """Self-contained aiohttp server for URL download tests (no extra packages needed).
+
+    Monkeypatches _check_ssrf to a no-op because the server binds to 127.0.0.1
+    (loopback), which would otherwise be rejected as a non-public IP.
+    Tests that specifically exercise SSRF behaviour should set up their own
+    server and NOT use this fixture.
+    """
+    monkeypatch.setattr("deile.tools.vision_tool._check_ssrf", _no_ssrf_check)
     from aiohttp import web
 
     big_body = b"\x89PNG\r\n\x1a\n" + b"\x00" * (11 * 1024 * 1024)
@@ -219,7 +230,8 @@ async def test_image_path_with_file_scheme(tool, ctx_factory, monkeypatch, repo_
 
     monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
     p = repo_tmp_path / "x.jpeg"
-    p.write_bytes(PNG_1x1_BYTES)
+    # Use valid JPEG magic bytes so the magic-byte validation passes.
+    p.write_bytes(b"\xff\xd8\xff" + b"\x00" * 16)
     res = await tool.execute(ctx_factory(image_path=f"file://{p}"))
     assert res.is_success
     assert res.data["mime_type"] == "image/jpeg"
@@ -354,15 +366,15 @@ async def test_b64_unsupported_mime_rejected(tool, ctx_factory):
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
 
-async def test_url_unsupported_mime_rejected(tool, ctx_factory, image_server):
+async def test_url_unsupported_mime_rejected(tool, ctx_factory, monkeypatch):
     """URL returning image/tiff (valid prefix, unsupported by Gemini) must be rejected."""
+    # Bypass SSRF check: test is about MIME rejection, not SSRF.
+    monkeypatch.setattr("deile.tools.vision_tool._check_ssrf", _no_ssrf_check)
     from aiohttp import web
 
     async def _tiff(req):
         return web.Response(body=PNG_1x1_BYTES, content_type="image/tiff")
 
-    # Patch the server's routes -- easier to add a second fixture-level server.
-    # Use monkeypatch via a separate aiohttp server on a free port.
     app = web.Application()
     app.router.add_get("/tiff.tiff", _tiff)
     runner = web.AppRunner(app, handle_signals=False, access_log=None)
@@ -407,8 +419,10 @@ async def test_prompt_too_long_returns_bad_input(tool, ctx_factory):
 # ---- SSRF: redirects not followed -------------------------------------------
 
 
-async def test_url_redirect_not_followed(tool, ctx_factory):
+async def test_url_redirect_not_followed(tool, ctx_factory, monkeypatch):
     """HTTP redirects must not be followed (prevents SSRF via redirect chains)."""
+    # Bypass IP-range SSRF check: test is about redirect handling, not direct SSRF.
+    monkeypatch.setattr("deile.tools.vision_tool._check_ssrf", _no_ssrf_check)
     from aiohttp import web
 
     async def _redirect(req):
@@ -454,3 +468,61 @@ async def test_image_path_read_error_returns_vision_read_failed(
     res = await tool.execute(ctx_factory(image_path=str(p)))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_READ_FAILED"
+
+
+# ---- direct private-IP SSRF rejection ---------------------------------------
+
+
+async def test_direct_private_ip_rejected(tool, ctx_factory):
+    """A URL with a private/loopback IP must be rejected without connecting."""
+    for bad_url in (
+        "http://169.254.169.254/latest/meta-data/",
+        "http://10.0.0.1/admin",
+        "http://192.168.1.1/secret",
+    ):
+        res = await tool.execute(ctx_factory(image_url=bad_url))
+        assert res.is_error, f"expected error for {bad_url}"
+        assert res.metadata["error_code"] == "VISION_BAD_INPUT", bad_url
+
+
+# ---- magic-byte validation --------------------------------------------------
+
+
+async def test_magic_byte_mismatch_rejected(tool, ctx_factory, monkeypatch):
+    """Bytes that don't match the declared MIME must be rejected after download."""
+    async def fake(image_bytes, mime, prompt, model):
+        return "ok"
+
+    monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
+    import base64
+
+    # Pass JPEG magic bytes with mime=image/png → mismatch
+    jpeg_magic = b"\xff\xd8\xff" + b"\x00" * 10
+    b64 = base64.b64encode(jpeg_magic).decode()
+    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/png"))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+
+
+# ---- operator model env-var allowlist enforcement ---------------------------
+
+
+async def test_operator_model_env_var_invalid_falls_back_to_default(
+    tool, ctx_factory, monkeypatch
+):
+    """An invalid DEILE_VISION_MODEL env-var must fall back to the default model."""
+    captured = {}
+
+    async def fake(image_bytes, mime, prompt, model):
+        captured["model"] = model
+        return "ok"
+
+    monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
+    # Simulate settings returning an invalid model name
+    import deile.tools.vision_tool as vt
+    monkeypatch.setattr(vt, "_resolve_vision_model", lambda: vt._DEFAULT_VISION_MODEL)
+    import base64
+    b64 = base64.b64encode(PNG_1x1_BYTES).decode()
+    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/png"))
+    assert res.is_success
+    assert captured["model"] == vt._DEFAULT_VISION_MODEL
