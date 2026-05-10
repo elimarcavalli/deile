@@ -14,7 +14,7 @@ from rich.table import Table
 from rich.text import Text
 
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args
+from ._shared import get_agent, split_args
 
 
 class SkillsCommand(DirectCommand):
@@ -158,7 +158,7 @@ class SkillsCommand(DirectCommand):
     @staticmethod
     def _hot_reload(context: "CommandContext") -> str:
         """Trigger skills reload on the running agent. Returns a status suffix."""
-        agent = getattr(context, "agent", None)
+        agent = get_agent(context)
         if agent is None:
             return ""
         reload_fn = getattr(agent, "reload_skills", None)

@@ -108,10 +108,26 @@ def emit_audit_event(
         logger.debug("emit_audit_event falhou: %s", exc)
 
 
+def get_agent(context: CommandContext | None) -> Any | None:
+    """Retorna ``context.agent`` ou ``None`` quando ausente — pattern duplicado
+    em context, cost, export, memory, model, skills commands. Aceita ``None``
+    para casos em que ``context`` pode não ter sido construído ainda."""
+    if context is None:
+        return None
+    return getattr(context, "agent", None)
+
+
+def get_session(context: CommandContext | None) -> Any | None:
+    """Retorna ``context.session`` ou ``None`` — companion de :func:`get_agent`."""
+    if context is None:
+        return None
+    return getattr(context, "session", None)
+
+
 def get_memory_manager(context: CommandContext) -> MemoryManager | None:
     """Retorna ``context.agent.memory_manager`` ou ``None`` quando ausente —
     padrão antes duplicado em compact, memory e status commands."""
-    agent = getattr(context, "agent", None)
+    agent = get_agent(context)
     return getattr(agent, "memory_manager", None) if agent else None
 
 

@@ -15,8 +15,8 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import (export_timestamp, get_memory_manager, split_args,
-                      success_panel)
+from ._shared import (export_timestamp, get_memory_manager, get_session,
+                      split_args, success_panel)
 
 _CHECKPOINT_DIR = Path.home() / ".deile" / "checkpoints"
 _CHECKPOINT_INDEX = _CHECKPOINT_DIR / "index.json"
@@ -118,7 +118,7 @@ class MemoryCommand(DirectCommand):
             table.add_row("MemoryManager", f"[INDISPONÍVEL: {real_usage['error'][:40]}]", "")
         else:
             # Fallback to session-level data
-            session = getattr(context, "session", None)
+            session = get_session(context)
             conv = len(getattr(session, "conversation_history", None) or []) if session else 0
             table.add_row("Conversa", str(conv), "Mensagens no histórico")
 
@@ -163,7 +163,7 @@ class MemoryCommand(DirectCommand):
     async def _clear_memory_type(self, context: CommandContext, memory_type: str) -> CommandResult:
         cleared = 0
         desc = ""
-        session = getattr(context, "session", None)
+        session = get_session(context)
 
         if memory_type in ("conversation", "conv", "history"):
             history = getattr(session, "conversation_history", None) if session else None
@@ -274,7 +274,7 @@ class MemoryCommand(DirectCommand):
         table.add_column("Impacto", style="red", width=12)
 
         total_impact = 0
-        session = getattr(context, "session", None)
+        session = get_session(context)
         if session:
             history = getattr(session, "conversation_history", None)
             if history:

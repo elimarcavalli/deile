@@ -16,7 +16,7 @@ from ...core.interfaces.selector import (InteractiveSelector,
 from ...core.models.tier_router import get_tier_router, reset_tier_router
 from ...storage.usage_repository import BudgetGuard, get_usage_repository
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import error_panel, split_args
+from ._shared import error_panel, get_agent, split_args
 
 logger = logging.getLogger(__name__)
 
@@ -368,7 +368,7 @@ EXAMPLES:
         # dict; MagicMock-based test contexts skip validation (they don't bootstrap
         # any providers anyway).
         forced_provider_id, forced_model_id = target.split(":", 1)
-        agent_obj = getattr(context, "agent", None)
+        agent_obj = get_agent(context)
         registered: Optional[dict] = None
         if agent_obj is not None and hasattr(agent_obj, "model_router"):
             providers_attr = getattr(agent_obj.model_router, "providers", None)
@@ -456,7 +456,7 @@ EXAMPLES:
         # Sync the legacy ModelRouter.strategy (consulted when tier classification fails)
         try:
             from deile.core.models.router import RoutingStrategy as _RS
-            agent_obj = getattr(context, "agent", None)
+            agent_obj = get_agent(context)
             if agent_obj is None:
                 # Fall back: try common aliases on the context
                 agent_obj = getattr(context, "deile_agent", None)
