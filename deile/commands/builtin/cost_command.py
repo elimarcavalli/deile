@@ -13,7 +13,7 @@ from rich.table import Table
 from rich.text import Text
 
 from deile.__version__ import __version__
-from deile.commands.base import CommandResult, DirectCommand
+from deile.commands.base import CommandContext, CommandResult, DirectCommand
 from deile.commands.builtin._shared import export_timestamp, success_panel
 from deile.infrastructure.monitoring.cost_tracker import get_cost_tracker
 
@@ -75,11 +75,10 @@ EXEMPLOS:
 """
         self.cost_tracker = get_cost_tracker()
 
-    async def execute(self, context=None) -> "CommandResult":
-        args_str = getattr(context, "args", "") or "" if context is not None else ""
-        args_list: List[str] = args_str.split() if args_str else []
+    async def execute(self, context: CommandContext) -> CommandResult:
+        args_list: List[str] = (context.args or "").split()
 
-        session = getattr(context, "session", None) if context else None
+        session = getattr(context, "session", None)
         session_id = getattr(session, "session_id", None) if session else None
 
         try:

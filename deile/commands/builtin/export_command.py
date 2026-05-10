@@ -32,9 +32,9 @@ class ExportCommand(DirectCommand):
             description="Exporta histórico de conversa, planos e dados da sessão em vários formatos.",
         ))
 
-    async def execute(self, context: Optional[CommandContext] = None) -> CommandResult:
+    async def execute(self, context: CommandContext) -> CommandResult:
         try:
-            parts = split_args(context) if context is not None else []
+            parts = split_args(context)
             format_type = "md"
             export_path = None
             include_artifacts = True

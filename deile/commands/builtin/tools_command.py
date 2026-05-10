@@ -27,7 +27,7 @@ class ToolsCommand(DirectCommand):
             description="Display available tools, their schemas and usage statistics.",
         ))
 
-    async def execute(self, context: Optional[CommandContext] = None) -> CommandResult:
+    async def execute(self, context: CommandContext) -> CommandResult:
         """Execute the tools command.
 
         Reads :class:`CommandContext.args` (the registry contract). Returns a
@@ -35,7 +35,7 @@ class ToolsCommand(DirectCommand):
         JSON string depending on the requested ``--format``.
         """
         try:
-            parts = split_args(context) if context is not None else []
+            parts = split_args(context)
             format_type = "list"  # default
             tool_name = None
             show_schema = False
