@@ -16,7 +16,7 @@ from rich.text import Text
 from deile.__version__ import __version__
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
 from deile.commands.builtin._shared import (export_timestamp, get_session,
-                                              split_args, success_panel)
+                                            split_args, success_panel)
 
 logger = logging.getLogger(__name__)
 

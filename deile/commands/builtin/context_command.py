@@ -12,8 +12,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandResult, DirectCommand
-from ._shared import get_agent, get_session
-from ._shared import export_timestamp, split_args
+from ._shared import export_timestamp, get_agent, get_session, split_args
 
 
 def _indisponivel(motivo: str = "") -> Dict[str, Any]:

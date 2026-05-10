@@ -6,7 +6,6 @@ import asyncio
 import socket
 import sys
 import time
-from datetime import datetime
 from typing import Any, Dict, Tuple
 
 import psutil
@@ -16,15 +15,12 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from deile.__version__ import __version__
-
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import (emit_audit_event, error_panel, get_memory_manager,
                       split_args, success_panel, warning_panel)
 from ._status_collectors import (collect_health_info, collect_models_info,
-                                  collect_system_info, collect_tools_info,
-                                  get_system_uptime)
+                                 collect_system_info, collect_tools_info)
 
 _PROVIDER_HOSTS: Dict[str, str] = {
     "openai": "api.openai.com",

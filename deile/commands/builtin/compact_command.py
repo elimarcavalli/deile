@@ -17,7 +17,7 @@ from rich.text import Text
 
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
 from deile.commands.builtin._shared import (export_timestamp,
-                                              get_memory_manager, split_args)
+                                            get_memory_manager, split_args)
 
 logger = logging.getLogger(__name__)
 

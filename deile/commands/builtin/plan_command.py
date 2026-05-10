@@ -10,9 +10,9 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import PlanStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import (plan_status_emoji, risk_emoji, split_args, step_status_emoji,
-                      success_panel, truncate, warning_panel,
-                      wrap_command_errors)
+from ._shared import (plan_status_emoji, risk_emoji, split_args,
+                      step_status_emoji, success_panel, truncate,
+                      warning_panel, wrap_command_errors)
 
 
 class PlanCommand(DirectCommand):
@@ -234,7 +234,7 @@ class PlanCommand(DirectCommand):
             for step in status['current_steps']:
                 emoji = step_status_emoji(step['status'])
                 approval_text = " (needs approval)" if step['requires_approval'] else ""
-                content_lines.append(f"  • {status_emoji} {step['description']}{approval_text}")
+                content_lines.append(f"  • {emoji} {step['description']}{approval_text}")
         
         # Recent steps (last 5)
         content_lines.extend([
