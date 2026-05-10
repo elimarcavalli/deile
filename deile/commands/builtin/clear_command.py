@@ -108,12 +108,6 @@ class ClearCommand(DirectCommand):
             
             warning_text = "\n".join(warning_content)
             
-            _warning_panel = Panel(
-                Text(warning_text, style="yellow"),
-                title="⚠️ Complete Session Reset",
-                border_style="red"
-            )
-            
             # In a real interactive environment, you'd prompt the user
             # For now, we'll assume confirmation
             confirmed = True  # In real implementation: Confirm.ask("Continue?")
