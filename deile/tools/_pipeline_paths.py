@@ -58,7 +58,9 @@ def resolve_base_path(override: Optional[str] = None) -> Path:
 
     s = get_settings()
     if s.pipeline_base_path:
-        return s.pipeline_base_path.resolve()
+        resolved = s.pipeline_base_path.resolve()
+        _assert_safe_root(resolved)
+        return resolved
     cwd = Path.cwd()
     for ancestor in (cwd, *cwd.parents):
         if (ancestor / ".git").is_dir() and (ancestor / "deile.py").is_file():
