@@ -525,18 +525,38 @@ async def test_direct_ipv6_private_rejected(tool, ctx_factory):
 # ---- magic-byte validation --------------------------------------------------
 
 
-async def test_magic_byte_mismatch_rejected(tool, ctx_factory, monkeypatch):
-    """Bytes that don't match the declared MIME must be rejected after download."""
+async def test_magic_byte_mismatch_rejected(tool, ctx_factory):
+    """Bytes that don't match the declared MIME must be rejected before the LLM call."""
+    import base64
+
+    # Pass JPEG magic bytes with mime=image/png -> mismatch; _gemini_describe is never reached
+    jpeg_magic = b"\xff\xd8\xff" + b"\x00" * 10
+    b64 = base64.b64encode(jpeg_magic).decode()
+    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/png"))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+
+
+async def test_webp_valid_magic_passes(tool, ctx_factory, monkeypatch):
+    """RIFF????WEBP (WebP compound magic) must pass validation."""
     async def fake(image_bytes, mime, prompt, model):
         return "ok"
 
     monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
     import base64
+    # Minimal WebP: RIFF + 4-byte size + WEBP fourcc
+    webp_bytes = b"RIFF" + b"\x00" * 4 + b"WEBP" + b"\x00" * 10
+    b64 = base64.b64encode(webp_bytes).decode()
+    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/webp"))
+    assert res.is_success
 
-    # Pass JPEG magic bytes with mime=image/png → mismatch
-    jpeg_magic = b"\xff\xd8\xff" + b"\x00" * 10
-    b64 = base64.b64encode(jpeg_magic).decode()
-    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/png"))
+
+async def test_webp_riff_without_webp_fourcc_rejected(tool, ctx_factory):
+    """RIFF container with non-WEBP fourcc (e.g. AVI) must fail magic-byte check."""
+    import base64
+    riff_avi = b"RIFF" + b"\x00" * 4 + b"AVI " + b"\x00" * 10
+    b64 = base64.b64encode(riff_avi).decode()
+    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/webp"))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 

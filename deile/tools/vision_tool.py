@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_VISION_MODEL = "gemini-2.5-flash-lite"
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MiB
 _DOWNLOAD_TIMEOUT_S = 15.0
+_DNS_TIMEOUT_S = 5.0
 _GEMINI_TIMEOUT_S = 60.0
 _MAX_PROMPT_BYTES = 8192
 _ALLOWED_MIME_PREFIXES = ("image/",)
@@ -73,7 +74,7 @@ _EXT_TO_MIME = {
 }
 _GEMINI_SUPPORTED_MIMES = frozenset(_EXT_TO_MIME.values())
 # IPv6 ranges that Python's ipaddress reports as is_global=True but must be blocked for SSRF.
-# fec0::/10 is the deprecated site-local range (RFC 3879); Python ≤3.13 lacks a dedicated
+# fec0::/10 is the deprecated site-local range (RFC 3879); Python <=3.13 lacks a dedicated
 # is_site_local attribute and does not exclude it from is_global.
 _SSRF_BLOCKED_IPV6_NETS: tuple[ipaddress.IPv6Network, ...] = (
     ipaddress.IPv6Network("fec0::/10"),
@@ -243,9 +244,13 @@ class VisionDescribeImageTool(Tool):
             _try_audit_blocked(
                 resource=path or url or "unknown",
                 action="describe",
-                details={"error_code": "VISION_BAD_INPUT", "reason": "path_containment", "path": path},
+                details={"reason": "path_containment", "path": path},
             )
-            return ToolResult.error_result(str(e), error_code="VISION_BAD_INPUT", error=e)
+            return ToolResult.error_result(
+                "image_path is outside allowed directories",
+                error_code="VISION_BAD_INPUT",
+                error=e,
+            )
         except Exception as e:
             logger.exception("vision image acquisition failed")
             return ToolResult.error_result(
@@ -419,7 +424,7 @@ def _is_ssrf_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     Additional IPv6 checks:
     - ``is_multicast``: Python 3.11 reports all ff00::/8 multicast as ``is_global=True``.
     - ``_SSRF_BLOCKED_IPV6_NETS``: covers ``fec0::/10`` deprecated site-local (RFC 3879),
-      which Python ≤3.13 also reports as ``is_global=True``.
+      which Python <=3.13 also reports as ``is_global=True``.
     """
     if (
         not ip.is_global
@@ -475,7 +480,12 @@ async def _check_ssrf(url: str) -> None:
         pass
     # Hostname: resolve and validate every returned address
     try:
-        infos = await asyncio.to_thread(socket.getaddrinfo, host, None, 0, socket.SOCK_STREAM)
+        infos = await asyncio.wait_for(
+            asyncio.to_thread(socket.getaddrinfo, host, None, 0, socket.SOCK_STREAM),
+            timeout=_DNS_TIMEOUT_S,
+        )
+    except TimeoutError:
+        raise VisionToolError("VISION_DOWNLOAD_FAILED", f"DNS resolution timed out for {host!r}")
     except OSError as exc:
         raise VisionToolError("VISION_DOWNLOAD_FAILED", f"DNS resolution failed for {host!r}: {exc}")
     for *_, sockaddr in infos:

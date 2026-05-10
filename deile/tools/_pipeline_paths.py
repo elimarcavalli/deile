@@ -11,9 +11,12 @@ Resolution order:
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from deile.core.exceptions import PathContainmentError
+
+logger = logging.getLogger(__name__)
 
 
 def _assert_safe_root(path: Path) -> None:
@@ -48,7 +51,7 @@ def _assert_safe_root(path: Path) -> None:
                 if not (ancestor.stat().st_mode & 0o002):
                     safe_roots.append(ancestor)
             except OSError:
-                pass
+                logger.debug("stat() failed for git root %s; not adding to safe roots", ancestor, exc_info=True)
             break
 
     for root in safe_roots:
