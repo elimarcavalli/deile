@@ -14,6 +14,7 @@ from ...core.exceptions import CommandError
 from ...security.permissions import (PermissionLevel, PermissionRule,
                                      ResourceType, get_permission_manager)
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import split_args
 
 
 def _persist(pm) -> None:
@@ -36,9 +37,8 @@ class PermissionsCommand(DirectCommand):
         self.permission_manager = get_permission_manager()
 
     async def execute(self, context: CommandContext) -> CommandResult:
-        args = context.args
         try:
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
             if not parts:
                 return await self._show_permissions_overview()
             action = parts[0].lower()

@@ -12,6 +12,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandResult, DirectCommand
+from ._shared import split_args
 
 
 def _indisponivel(motivo: str = "") -> Dict[str, Any]:
@@ -34,10 +35,8 @@ class ContextCommand(DirectCommand):
         super().__init__(config)
 
     async def execute(self, context) -> CommandResult:
-        args = context.args if hasattr(context, "args") else ""
-
         try:
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
             format_type = "summary"
             export_format: Optional[str] = None
             show_tokens = False

@@ -14,6 +14,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import split_args
 
 _CHECKPOINT_DIR = Path.home() / ".deile" / "checkpoints"
 _CHECKPOINT_INDEX = _CHECKPOINT_DIR / "index.json"
@@ -62,9 +63,8 @@ class MemoryCommand(DirectCommand):
         super().__init__(config)
 
     async def execute(self, context: CommandContext) -> CommandResult:
-        args = context.args
         try:
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
             if not parts:
                 return await self._show_memory_status(context)
             action = parts[0].lower()

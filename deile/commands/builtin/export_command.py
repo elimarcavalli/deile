@@ -13,6 +13,7 @@ from deile.__version__ import __version__
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import split_args
 
 
 class ExportCommand(DirectCommand):
@@ -32,10 +33,8 @@ class ExportCommand(DirectCommand):
         ))
 
     async def execute(self, context: Optional[CommandContext] = None) -> CommandResult:
-        args = (getattr(context, "args", "") or "") if context is not None else ""
-
         try:
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context) if context is not None else []
             format_type = "md"
             export_path = None
             include_artifacts = True

@@ -14,6 +14,7 @@ from ...core.exceptions import CommandError
 from ...security.audit_logger import (AuditEvent, AuditEventType,
                                       SeverityLevel, get_audit_logger)
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import split_args
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +78,8 @@ class LogsCommand(DirectCommand):
         self.audit_logger = get_audit_logger()
 
     async def execute(self, context: CommandContext) -> CommandResult:
-        args = context.args if hasattr(context, "args") else ""
-
         try:
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
 
             if not parts:
                 return await self._show_logs_overview()

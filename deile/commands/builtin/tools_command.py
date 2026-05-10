@@ -10,6 +10,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import split_args
 
 
 class ToolsCommand(DirectCommand):
@@ -33,10 +34,8 @@ class ToolsCommand(DirectCommand):
         :class:`CommandResult` whose ``content`` is a Rich renderable or a
         JSON string depending on the requested ``--format``.
         """
-        args = (getattr(context, "args", "") or "") if context is not None else ""
         try:
-            # Parse arguments
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context) if context is not None else []
             format_type = "list"  # default
             tool_name = None
             show_schema = False

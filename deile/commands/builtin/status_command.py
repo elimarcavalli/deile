@@ -21,6 +21,7 @@ from deile.__version__ import __version__
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import split_args
 
 _PROVIDER_HOSTS: Dict[str, str] = {
     "openai": "api.openai.com",
@@ -68,9 +69,8 @@ class StatusCommand(DirectCommand):
 
     async def execute(self, context: CommandContext) -> CommandResult:
         self._emit_audit_event(context)
-        args = context.args
         try:
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
             if not parts:
                 return await self._show_complete_status(context)
             section = parts[0].lower()

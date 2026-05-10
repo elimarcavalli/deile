@@ -7,6 +7,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import split_args
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +30,8 @@ class ClearCommand(DirectCommand):
     
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute clear command with enhanced reset functionality"""
-        args = context.args if hasattr(context, 'args') else ""
-        
         try:
-            # Parse arguments
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
             
             if not parts:
                 # Standard clear - just clear screen and history

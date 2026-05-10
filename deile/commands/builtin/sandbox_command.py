@@ -18,6 +18,7 @@ from rich.text import Text
 from ...config.manager import CommandConfig
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import split_args
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +34,7 @@ class SandboxCommand(DirectCommand):
         self.sandbox_enabled = False
 
     async def execute(self, context: CommandContext) -> CommandResult:
-        args = context.args if hasattr(context, "args") else ""
-        parts: List[str] = args.strip().split() if args.strip() else []
+        parts: List[str] = split_args(context)
 
         if not parts:
             return await self._show_sandbox_status()

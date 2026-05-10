@@ -11,6 +11,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import split_args
 
 
 class ApplyCommand(DirectCommand):
@@ -28,11 +29,8 @@ class ApplyCommand(DirectCommand):
     
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute apply command"""
-        args = context.args if hasattr(context, 'args') else ""
-        
         try:
-            # Parse arguments
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
             
             if not parts:
                 # Show available patches to apply

@@ -10,6 +10,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import PlanStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import split_args
 
 
 class PlanCommand(DirectCommand):
@@ -26,11 +27,8 @@ class PlanCommand(DirectCommand):
     
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute plan command"""
-        args = context.args if hasattr(context, 'args') else ""
-        
         try:
-            # Parse arguments
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
             
             if not parts:
                 # List existing plans
