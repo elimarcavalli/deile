@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from typing import Any, List, Optional
 
 from rich.panel import Panel
@@ -489,7 +490,6 @@ EXAMPLES:
         table.add_column("Cost $", justify="right")
 
         # Group by provider+model
-        from collections import defaultdict
         agg: dict = defaultdict(lambda: {"calls": 0, "in": 0, "out": 0, "cost": 0.0})
         for r in records:
             key = (r.provider_id, r.model_id)
