@@ -14,12 +14,9 @@ from rich.table import Table
 from rich.text import Text
 
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
+from deile.commands.builtin._shared import get_memory_manager
 
 logger = logging.getLogger(__name__)
-
-
-def _get_memory_manager(context: CommandContext) -> Optional[Any]:
-    return getattr(context.agent, "memory_manager", None) if context.agent else None
 
 
 async def _get_session_store(context: CommandContext) -> Optional[Any]:
@@ -89,7 +86,7 @@ class CompactCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     async def _cmd_summary(self, context: CommandContext) -> CommandResult:
-        mm = _get_memory_manager(context)
+        mm = get_memory_manager(context)
         ss = await _get_session_store(context)
 
         table = Table(title="Resumo de Memória e Sessões", show_header=True, header_style="bold cyan")
@@ -138,7 +135,7 @@ class CompactCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     async def _cmd_compress(self, context: CommandContext, days: int) -> CommandResult:
-        mm = _get_memory_manager(context)
+        mm = get_memory_manager(context)
         if mm is None:
             return CommandResult.error_result(
                 "MemoryManager não acessível — compactação indisponível"

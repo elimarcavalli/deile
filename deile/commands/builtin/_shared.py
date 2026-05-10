@@ -66,6 +66,17 @@ FLAG_DESCRICOES_PTBR: Dict[str, str] = {
 }
 
 
+def get_memory_manager(context: CommandContext) -> Optional[Any]:
+    """Recupera o `memory_manager` exposto pelo agente do contexto.
+
+    Centraliza a busca padrão `getattr(context.agent, "memory_manager",
+    None) if context.agent else None` que apareceu duplicada em
+    compact, memory e status commands.
+    """
+    agent = getattr(context, "agent", None)
+    return getattr(agent, "memory_manager", None) if agent else None
+
+
 def split_args(context: CommandContext) -> List[str]:
     """Tokeniza `context.args` em uma lista de palavras.
 

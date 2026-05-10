@@ -14,16 +14,10 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args, success_panel
+from ._shared import get_memory_manager, split_args, success_panel
 
 _CHECKPOINT_DIR = Path.home() / ".deile" / "checkpoints"
 _CHECKPOINT_INDEX = _CHECKPOINT_DIR / "index.json"
-
-
-def _get_memory_manager(context: CommandContext):
-    if context.agent:
-        return getattr(context.agent, "memory_manager", None)
-    return None
 
 
 def _load_index() -> Dict[str, Any]:
@@ -95,7 +89,7 @@ class MemoryCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     async def _show_memory_status(self, context: CommandContext) -> CommandResult:
-        mm = _get_memory_manager(context)
+        mm = get_memory_manager(context)
 
         real_usage: Optional[Dict[str, Any]] = None
         if mm is not None:
@@ -336,7 +330,7 @@ class MemoryCommand(DirectCommand):
         output_path_str = args[0] if args else f"memory_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         output_path = Path(output_path_str)
 
-        mm = _get_memory_manager(context)
+        mm = get_memory_manager(context)
         usage: Dict[str, Any] = {}
         if mm is not None:
             try:
@@ -368,7 +362,7 @@ class MemoryCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     async def _compact_memory(self, context: CommandContext) -> CommandResult:
-        mm = _get_memory_manager(context)
+        mm = get_memory_manager(context)
         if mm is None:
             return CommandResult.success_result(
                 Panel(
@@ -398,7 +392,7 @@ class MemoryCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     async def _save_checkpoint(self, context: CommandContext, name: str) -> CommandResult:
-        mm = _get_memory_manager(context)
+        mm = get_memory_manager(context)
         usage: Dict[str, Any] = {}
         if mm is not None:
             try:

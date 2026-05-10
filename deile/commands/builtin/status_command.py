@@ -21,7 +21,8 @@ from deile.__version__ import __version__
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import error_panel, split_args, success_panel, warning_panel
+from ._shared import (error_panel, get_memory_manager, split_args,
+                      success_panel, warning_panel)
 
 _PROVIDER_HOSTS: Dict[str, str] = {
     "openai": "api.openai.com",
@@ -416,9 +417,7 @@ class StatusCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     async def _show_memory_status(self, context: CommandContext) -> CommandResult:
-        memory_manager = None
-        if context.agent:
-            memory_manager = getattr(context.agent, "memory_manager", None)
+        memory_manager = get_memory_manager(context)
 
         if memory_manager is None:
             content = _indisponivel("MemoryManager não acessível neste contexto")
