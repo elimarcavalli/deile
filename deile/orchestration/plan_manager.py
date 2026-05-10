@@ -437,19 +437,61 @@ class PlanManager:
     
     async def stop_plan(self, plan_id: str) -> bool:
         """Para a execução de um plano"""
-        
+
         if plan_id not in self._active_plans:
             return False
-        
+
         self._stop_flags[plan_id] = True
-        
+
         plan = self._active_plans[plan_id]
         plan.status = PlanStatus.CANCELLED
         await self._save_plan(plan)
-        
+
         logger.info(f"Stopped execution of plan {plan_id}")
         return True
-    
+
+    # ------------------------------------------------------------------
+    # Public read/clear helpers — substituem o acesso direto a
+    # ``_active_plans``/``_execution_locks``/``_stop_flags`` em comandos
+    # builtin (clear, memory, status) e em ``commands.actions``. Encapsulam
+    # a estrutura interna para respeitar Clean Architecture (pilar 03 §2).
+    # ------------------------------------------------------------------
+
+    def active_plan_count(self) -> int:
+        """Quantidade de planos ativos (em memória) no momento."""
+        return len(self._active_plans)
+
+    def get_active_plans(self) -> List[ExecutionPlan]:
+        """Snapshot dos planos atualmente ativos."""
+        return list(self._active_plans.values())
+
+    def list_active_plan_ids(self) -> List[str]:
+        """IDs dos planos atualmente ativos."""
+        return list(self._active_plans.keys())
+
+    async def clear_active_state(self, *, stop_running: bool = True) -> int:
+        """Limpa os registros internos de execução de planos.
+
+        Quando ``stop_running=True`` (padrão), cada plano ativo recebe
+        ``stop_plan`` antes de ser despejado para que coroutines em
+        execução vejam o stop-flag e desliguem ordenadamente. Retorna a
+        quantidade de planos que estavam ativos antes do clear.
+        """
+        count = len(self._active_plans)
+        if stop_running:
+            for plan_id in list(self._active_plans.keys()):
+                try:
+                    await self.stop_plan(plan_id)
+                except Exception as exc:
+                    logger.warning(
+                        "stop_plan(%s) falhou durante clear_active_state: %s",
+                        plan_id, exc,
+                    )
+        self._active_plans.clear()
+        self._execution_locks.clear()
+        self._stop_flags.clear()
+        return count
+
     async def approve_step(self, plan_id: str, step_id: str, approved: bool = True) -> bool:
         """Aprova ou rejeita um step que requer aprovação"""
         

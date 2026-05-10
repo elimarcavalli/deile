@@ -125,7 +125,7 @@ class MemoryCommand(DirectCommand):
         try:
             from ...orchestration.plan_manager import get_plan_manager
             pm = get_plan_manager()
-            active = len(pm._active_plans)
+            active = pm.active_plan_count()
             total_plans = len(await pm.list_plans())
             table.add_row("Planos Ativos", str(active), f"Total: {total_plans}")
         except Exception:
@@ -134,7 +134,7 @@ class MemoryCommand(DirectCommand):
         # Audit events
         try:
             from ...security.audit_logger import get_audit_logger
-            audit_count = len(get_audit_logger().recent_events)
+            audit_count = get_audit_logger().event_count()
             table.add_row("Eventos de Auditoria", str(audit_count), "Buffer em memória")
         except Exception:
             pass
@@ -188,13 +188,7 @@ class MemoryCommand(DirectCommand):
         elif memory_type in ("plans", "plan"):
             try:
                 from ...orchestration.plan_manager import get_plan_manager
-                pm = get_plan_manager()
-                cleared = len(pm._active_plans)
-                for plan_id in list(pm._active_plans.keys()):
-                    await pm.stop_plan(plan_id)
-                pm._active_plans.clear()
-                pm._execution_locks.clear()
-                pm._stop_flags.clear()
+                cleared = await get_plan_manager().clear_active_state()
                 desc = "planos ativos"
             except Exception:
                 desc = "planos (nenhum encontrado)"
@@ -202,9 +196,7 @@ class MemoryCommand(DirectCommand):
         elif memory_type in ("audit", "logs"):
             try:
                 from ...security.audit_logger import get_audit_logger
-                al = get_audit_logger()
-                cleared = len(al.recent_events)
-                al.recent_events.clear()
+                cleared = get_audit_logger().clear_events()
                 desc = "eventos de auditoria"
             except Exception:
                 desc = "eventos de auditoria"
@@ -222,20 +214,12 @@ class MemoryCommand(DirectCommand):
                         setattr(session, attr, 0 if attr == "tokens" else 0.0)
             try:
                 from ...orchestration.plan_manager import get_plan_manager
-                pm = get_plan_manager()
-                total += len(pm._active_plans)
-                for plan_id in list(pm._active_plans.keys()):
-                    await pm.stop_plan(plan_id)
-                pm._active_plans.clear()
-                pm._execution_locks.clear()
-                pm._stop_flags.clear()
+                total += await get_plan_manager().clear_active_state()
             except Exception:
                 pass
             try:
                 from ...security.audit_logger import get_audit_logger
-                al = get_audit_logger()
-                total += len(al.recent_events)
-                al.recent_events.clear()
+                total += get_audit_logger().clear_events()
             except Exception:
                 pass
             cleared = total
@@ -291,8 +275,7 @@ class MemoryCommand(DirectCommand):
 
         try:
             from ...orchestration.plan_manager import get_plan_manager
-            pm = get_plan_manager()
-            active = len(pm._active_plans)
+            active = get_plan_manager().active_plan_count()
             if active > 0:
                 impact = "Alto" if active > 5 else "Médio" if active > 2 else "Baixo"
                 table.add_row("Planos Ativos", str(active), f"{active * 1000}B", impact)
@@ -302,7 +285,7 @@ class MemoryCommand(DirectCommand):
 
         try:
             from ...security.audit_logger import get_audit_logger
-            audit_count = len(get_audit_logger().recent_events)
+            audit_count = get_audit_logger().event_count()
             if audit_count > 0:
                 impact = "Médio" if audit_count > 500 else "Baixo"
                 table.add_row("Eventos de Auditoria", str(audit_count), f"{audit_count * 300}B", impact)

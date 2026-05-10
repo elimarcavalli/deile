@@ -117,12 +117,11 @@ class ClearCommand(DirectCommand):
             # 4. Clear active plans and orchestration
             try:
                 from ...orchestration.plan_manager import get_plan_manager
-                plan_manager = get_plan_manager()
-                
-                # Clear active plans (but don't delete saved plans)
-                plan_manager._active_plans.clear()
-                plan_manager._execution_locks.clear()
-                plan_manager._stop_flags.clear()
+
+                # Encapsula `_active_plans`/`_execution_locks`/`_stop_flags`.
+                # `stop_running=False` preserva o comportamento original de
+                # /clear: limpa estado in-memory sem disparar stop_plan().
+                await get_plan_manager().clear_active_state(stop_running=False)
                 reset_steps.append("✅ Active plans cleared")
                 
             except Exception as e:

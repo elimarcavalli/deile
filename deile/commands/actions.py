@@ -214,21 +214,14 @@ class CommandActions:
                 # Limpa planos ativos se disponível
                 try:
                     from ..orchestration.plan_manager import get_plan_manager
-                    plan_manager = get_plan_manager()
-                    # Para todos os planos ativos
-                    for plan_id in list(plan_manager._active_plans.keys()):
-                        await plan_manager.stop_plan(plan_id)
-                    plan_manager._active_plans.clear()
-                    plan_manager._execution_locks.clear()
-                    plan_manager._stop_flags.clear()
+                    await get_plan_manager().clear_active_state()
                 except Exception:
                     pass  # Se não conseguir acessar plan manager, continua
-                
+
                 # Limpa logs de auditoria em memória
                 try:
                     from ..security.audit_logger import get_audit_logger
-                    audit_logger = get_audit_logger()
-                    audit_logger.recent_events.clear()
+                    get_audit_logger().clear_events()
                 except Exception:
                     pass
 
