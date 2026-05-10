@@ -837,13 +837,36 @@ async def test_file_uri_remote_authority_audit_resource_sanitised(tool, ctx_fact
     calls = []
 
     def _fake_audit(resource, action, details, suspicious=False):
-        calls.append({"resource": resource, "suspicious": suspicious})
+        calls.append({"resource": resource, "details": details, "suspicious": suspicious})
 
     monkeypatch.setattr("deile.tools.vision_tool._try_audit_blocked", _fake_audit)
     res = await tool.execute(ctx_factory(image_path="file://user:secret@remotehost/etc/passwd"))
     assert res.is_error
     assert calls, "_try_audit_blocked was not called"
     assert "secret" not in calls[0]["resource"], "credentials leaked to audit resource"
+    assert "secret" not in calls[0]["details"].get("authority", ""), "credentials leaked to audit details.authority"
+
+
+# ---- DNS OSError (NXDOMAIN / gaierror) yields VISION_DOWNLOAD_FAILED -------
+
+
+async def test_dns_oserror_returns_download_failed(monkeypatch):
+    """socket.gaierror (NXDOMAIN etc.) from DNS lookup must yield VISION_DOWNLOAD_FAILED."""
+    import socket as _socket
+    from deile.tools.vision_tool import _check_ssrf, VisionToolError
+
+    async def _raise_gaierror(awaitable, timeout):
+        try:
+            awaitable.close()
+        except AttributeError:
+            pass
+        raise _socket.gaierror("Name or service not known")
+
+    monkeypatch.setattr("deile.tools.vision_tool.asyncio.wait_for", _raise_gaierror)
+    with pytest.raises(VisionToolError) as exc_info:
+        await _check_ssrf("http://no-such-host.example.com/img.png")
+    assert exc_info.value.code == "VISION_DOWNLOAD_FAILED"
+    assert "DNS resolution failed" in str(exc_info.value)
 
 
 # ---- DNS zone-ID addresses are blocked, not skipped -------------------------

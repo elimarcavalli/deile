@@ -354,7 +354,7 @@ async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes
             _try_audit_blocked(
                 resource=_sanitise_url_for_audit(path),
                 action="describe",
-                details={"reason": "file_uri_remote_authority", "authority": _parsed.netloc},
+                details={"reason": "file_uri_remote_authority", "authority": _parsed.hostname or ""},
                 suspicious=True,
             )
             raise VisionToolError(
