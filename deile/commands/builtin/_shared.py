@@ -160,6 +160,29 @@ RISK_EMOJI: dict[str, str] = {
 """Emojis canônicos por nível de risco — approve/plan/run commands."""
 
 
+PLAN_STATUS_EMOJI: dict[str, str] = {
+    "draft": "📝",
+    "ready": "⚡",
+    "running": "🔄",
+    "paused": "⏸️",
+    "completed": "✅",
+    "failed": "❌",
+    "cancelled": "🚫",
+}
+"""Emojis canônicos para ``PlanStatus`` — plan/run/stop commands."""
+
+
+STEP_STATUS_EMOJI: dict[str, str] = {
+    "pending": "⏳",
+    "running": "🔄",
+    "completed": "✅",
+    "failed": "❌",
+    "skipped": "⏭️",
+    "requires_approval": "⚠️",
+}
+"""Emojis canônicos para ``StepStatus`` — plan_command (steps recentes/atuais)."""
+
+
 def file_action_emoji(action: str) -> str:
     """Resolve emoji para a ação de arquivo; fallback ``❓`` para desconhecidos."""
     return FILE_ACTION_EMOJI.get(action, "❓")
@@ -168,6 +191,16 @@ def file_action_emoji(action: str) -> str:
 def risk_emoji(risk_level: str) -> str:
     """Resolve emoji para o nível de risco; fallback ``❓`` para desconhecidos."""
     return RISK_EMOJI.get(risk_level, "❓")
+
+
+def plan_status_emoji(status: str) -> str:
+    """Resolve emoji para ``PlanStatus``; fallback ``❓`` para desconhecidos."""
+    return PLAN_STATUS_EMOJI.get(status, "❓")
+
+
+def step_status_emoji(status: str) -> str:
+    """Resolve emoji para ``StepStatus``; fallback ``❓`` para desconhecidos."""
+    return STEP_STATUS_EMOJI.get(status, "❓")
 
 
 def truncate(text: str | None, max_chars: int, suffix: str = "...") -> str:

@@ -10,8 +10,8 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import PlanStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import (risk_emoji, split_args, success_panel, truncate,
-                      warning_panel)
+from ._shared import (plan_status_emoji, risk_emoji, split_args, step_status_emoji,
+                      success_panel, truncate, warning_panel)
 
 
 class PlanCommand(DirectCommand):
@@ -166,18 +166,7 @@ class PlanCommand(DirectCommand):
         table.add_column("Created", style="dim", width=16)
         
         for plan in plans:
-            # Status with emoji
-            status_emojis = {
-                "draft": "📝",
-                "ready": "⚡",
-                "running": "🔄",
-                "paused": "⏸️",
-                "completed": "✅",
-                "failed": "❌",
-                "cancelled": "🚫"
-            }
-            
-            status_emoji = status_emojis.get(plan["status"], "❓")
+            status_emoji = plan_status_emoji(plan["status"])
             status_text = f"{status_emoji} {plan['status']}"
             
             # Progress calculation
@@ -253,11 +242,7 @@ class PlanCommand(DirectCommand):
                 "**Current Steps:**"
             ])
             for step in status['current_steps']:
-                status_emoji = {
-                    "running": "🔄",
-                    "requires_approval": "⚠️"
-                }.get(step['status'], "❓")
-                
+                emoji = step_status_emoji(step['status'])
                 approval_text = " (needs approval)" if step['requires_approval'] else ""
                 content_lines.append(f"  • {status_emoji} {step['description']}{approval_text}")
         
@@ -269,16 +254,7 @@ class PlanCommand(DirectCommand):
         
         recent_steps = plan.steps[-5:] if len(plan.steps) > 5 else plan.steps
         for step in recent_steps:
-            status_emojis = {
-                "pending": "⏳",
-                "running": "🔄",
-                "completed": "✅",
-                "failed": "❌",
-                "skipped": "⏭️",
-                "requires_approval": "⚠️"
-            }
-            
-            emoji = status_emojis.get(step.status.value, "❓")
+            emoji = step_status_emoji(step.status.value)
             risk_indicator = {"high": "🔴", "critical": "🚨"}.get(step.risk_level.value, "")
             
             content_lines.append(f"  • {emoji} {step.description} {risk_indicator}")
