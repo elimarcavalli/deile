@@ -31,7 +31,8 @@ import logging
 import socket
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote as _urlunquote, urlparse as _urlparse
+from urllib.parse import unquote as _urlunquote
+from urllib.parse import urlparse as _urlparse
 
 import aiofiles
 import httpx

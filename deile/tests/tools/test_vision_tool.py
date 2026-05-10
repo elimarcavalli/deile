@@ -588,6 +588,7 @@ async def test_webp_valid_magic_passes(tool, ctx_factory, monkeypatch):
 
     monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
     import base64
+
     # Minimal WebP: RIFF + 4-byte size + WEBP fourcc
     webp_bytes = b"RIFF" + b"\x00" * 4 + b"WEBP" + b"\x00" * 10
     b64 = base64.b64encode(webp_bytes).decode()
@@ -620,8 +621,7 @@ async def test_gif87a_valid_magic_passes(tool, ctx_factory, monkeypatch):
 
 async def test_gif89a_valid_magic_passes(tool, ctx_factory, monkeypatch):
     """GIF89a 6-byte magic must pass validation."""
-    async def fake(image_bytes, mime, prompt, model):
-        return "ok"
+    async def fake(image_bytes, mime, prompt, model):        return "ok"
 
     monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
     import base64
@@ -695,7 +695,8 @@ async def test_dns_asyncio_timeout_returns_download_failed(monkeypatch):
     verifies the handler uses ``except asyncio.TimeoutError``.
     """
     import asyncio as _asyncio
-    from deile.tools.vision_tool import _check_ssrf, VisionToolError
+
+    from deile.tools.vision_tool import VisionToolError, _check_ssrf
 
     async def _timeout(awaitable, timeout):
         try:
@@ -853,7 +854,8 @@ async def test_file_uri_remote_authority_audit_resource_sanitised(tool, ctx_fact
 async def test_dns_oserror_returns_download_failed(monkeypatch):
     """socket.gaierror (NXDOMAIN etc.) from DNS lookup must yield VISION_DOWNLOAD_FAILED."""
     import socket as _socket
-    from deile.tools.vision_tool import _check_ssrf, VisionToolError
+
+    from deile.tools.vision_tool import VisionToolError, _check_ssrf
 
     async def _raise_gaierror(awaitable, timeout):
         try:
@@ -878,8 +880,7 @@ async def test_dns_zone_id_address_blocked(monkeypatch):
     ipaddress.ip_address() does not accept zone IDs and raises ValueError; the
     fix strips the zone ID before parsing so link-local addrs are still caught.
     """
-    import socket as _socket
-    from deile.tools.vision_tool import _check_ssrf, VisionToolError
+    from deile.tools.vision_tool import VisionToolError, _check_ssrf
 
     async def _fake_getaddrinfo(host, port, family=0, type=0):
         # Simulate resolver returning an IPv6 link-local with zone ID
