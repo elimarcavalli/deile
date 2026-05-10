@@ -84,93 +84,26 @@ class ClearCommand(DirectCommand):
             raise CommandError(f"Failed to clear screen and history: {str(e)}")
     
     async def _clear_reset(self, context: CommandContext, force: bool = False) -> CommandResult:
-        """Complete session reset - SOLVES SITUAÇÃO 7"""
-        
-        # Confirmation stub: in a real interactive environment this would
-        # prompt the user before clearing. For now, `--force` is the guard.
-        # In real implementation: confirmed = Confirm.ask("Continue?")
-        if not force:
-            pass  # non-forced path falls through to reset below
-        
+        """Complete session reset - SOLVES SITUAÇÃO 7
+
+        ``force`` is currently a no-op placeholder for a future interactive
+        confirmation prompt; the parameter is kept to preserve the public
+        ``/cls reset --force`` CLI surface.
+        """
+        del force  # interactive-confirm prompt not yet implemented (issue tracked separately)
+
         try:
-            reset_steps = []
-            
-            # 1. Clear conversation history and context
-            if hasattr(context, 'agent') and context.agent:
-                context.agent.clear_conversation_history()
-                context.agent.clear_context()
-                reset_steps.append("✅ Conversation history cleared")
-                reset_steps.append("✅ Agent context cleared")
-            
-            # 2. Clear session memory and cache
-            if hasattr(context, 'agent') and context.agent:
-                if hasattr(context.agent, 'clear_session_memory'):
-                    context.agent.clear_session_memory()
-                    reset_steps.append("✅ Session memory cleared")
-            
-            # 3. Reset token counters and cost tracking
-            if hasattr(context, 'agent') and context.agent:
-                if hasattr(context.agent, 'reset_token_counters'):
-                    context.agent.reset_token_counters()
-                    reset_steps.append("✅ Token counters reset")
-            
-            # 4. Clear active plans and orchestration
-            try:
-                from ...orchestration.plan_manager import get_plan_manager
-                plan_manager = get_plan_manager()
-                
-                # Clear active plans (but don't delete saved plans)
-                plan_manager._active_plans.clear()
-                plan_manager._execution_locks.clear()
-                plan_manager._stop_flags.clear()
-                reset_steps.append("✅ Active plans cleared")
-                
-            except Exception as e:
-                logger.warning(f"Could not clear orchestration state: {e}")
-                reset_steps.append("⚠️ Orchestration state partially cleared")
-            
-            # 5. Clear approval system state
-            try:
-                from ...orchestration.approval_system import \
-                    get_approval_system
-                approval_system = get_approval_system()
-                
-                # Clear pending requests
-                approval_system.pending_requests.clear()
-                approval_system.request_futures.clear()
-                reset_steps.append("✅ Approval requests cleared")
-                
-            except Exception as e:
-                logger.warning(f"Could not clear approval state: {e}")
-                reset_steps.append("⚠️ Approval state partially cleared")
-            
-            # 6. Clear UI and screen
+            reset_steps: list[str] = []
+            reset_steps.extend(self._reset_agent(context))
+            reset_steps.extend(self._reset_plans())
+            reset_steps.extend(self._reset_approvals())
+
             if hasattr(context, 'ui_manager') and context.ui_manager:
                 context.ui_manager.clear_screen()
                 reset_steps.append("✅ Screen display cleared")
-            
-            # 7. Clear temporary files and cache
-            try:
-                import shutil
-                from pathlib import Path
 
-                # Clear common temporary directories
-                temp_dirs = ["TEMP", "CACHE", ".deile_cache"]
-                for temp_dir in temp_dirs:
-                    temp_path = Path(temp_dir)
-                    if temp_path.exists():
-                        shutil.rmtree(temp_path, ignore_errors=True)
-                        reset_steps.append(f"✅ Temporary directory {temp_dir} cleared")
-                        
-            except Exception as e:
-                logger.warning(f"Could not clear temporary files: {e}")
-                reset_steps.append("⚠️ Temporary files partially cleared")
-            
-            # 8. Reset session ID and timestamps
-            if hasattr(context, 'session_id'):
-                import uuid
-                context.session_id = str(uuid.uuid4())
-                reset_steps.append("✅ Session ID regenerated")
+            reset_steps.extend(self._reset_temp_files())
+            reset_steps.extend(self._reset_session_id(context))
             
             # Create success report
             success_content = [
@@ -236,6 +169,83 @@ class ClearCommand(DirectCommand):
                 "rich"
             )
     
+    @staticmethod
+    def _reset_agent(context: CommandContext) -> list[str]:
+        """Steps 1-3: clear agent conversation/context/memory/token counters.
+
+        Returns the list of human-readable step lines that were performed.
+        Each call to a ``hasattr``-gated method is best-effort: missing
+        methods simply skip the corresponding step.
+        """
+        steps: list[str] = []
+        agent = getattr(context, 'agent', None)
+        if not agent:
+            return steps
+        agent.clear_conversation_history()
+        agent.clear_context()
+        steps.append("✅ Conversation history cleared")
+        steps.append("✅ Agent context cleared")
+        if hasattr(agent, 'clear_session_memory'):
+            agent.clear_session_memory()
+            steps.append("✅ Session memory cleared")
+        if hasattr(agent, 'reset_token_counters'):
+            agent.reset_token_counters()
+            steps.append("✅ Token counters reset")
+        return steps
+
+    @staticmethod
+    def _reset_plans() -> list[str]:
+        """Step 4: clear active plans/locks/stop-flags from PlanManager singleton."""
+        try:
+            from ...orchestration.plan_manager import get_plan_manager
+            pm = get_plan_manager()
+            pm._active_plans.clear()
+            pm._execution_locks.clear()
+            pm._stop_flags.clear()
+            return ["✅ Active plans cleared"]
+        except Exception as exc:
+            logger.warning("Could not clear orchestration state: %s", exc)
+            return ["⚠️ Orchestration state partially cleared"]
+
+    @staticmethod
+    def _reset_approvals() -> list[str]:
+        """Step 5: clear pending approval requests + futures."""
+        try:
+            from ...orchestration.approval_system import get_approval_system
+            approval_system = get_approval_system()
+            approval_system.pending_requests.clear()
+            approval_system.request_futures.clear()
+            return ["✅ Approval requests cleared"]
+        except Exception as exc:
+            logger.warning("Could not clear approval state: %s", exc)
+            return ["⚠️ Approval state partially cleared"]
+
+    @staticmethod
+    def _reset_temp_files() -> list[str]:
+        """Step 7: rm -rf well-known temp dirs (TEMP / CACHE / .deile_cache)."""
+        steps: list[str] = []
+        try:
+            import shutil
+            from pathlib import Path
+            for temp_dir in ("TEMP", "CACHE", ".deile_cache"):
+                temp_path = Path(temp_dir)
+                if temp_path.exists():
+                    shutil.rmtree(temp_path, ignore_errors=True)
+                    steps.append(f"✅ Temporary directory {temp_dir} cleared")
+        except Exception as exc:
+            logger.warning("Could not clear temporary files: %s", exc)
+            steps.append("⚠️ Temporary files partially cleared")
+        return steps
+
+    @staticmethod
+    def _reset_session_id(context: CommandContext) -> list[str]:
+        """Step 8: regenerate session UUID when present on the context."""
+        if not hasattr(context, 'session_id'):
+            return []
+        import uuid
+        context.session_id = str(uuid.uuid4())
+        return ["✅ Session ID regenerated"]
+
     async def _clear_history_only(self, context: CommandContext) -> CommandResult:
         """Clear only conversation history"""
         
