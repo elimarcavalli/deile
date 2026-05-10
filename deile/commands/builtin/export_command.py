@@ -13,7 +13,7 @@ from deile.__version__ import __version__
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args
+from ._shared import export_timestamp, split_args
 
 
 class ExportCommand(DirectCommand):
@@ -72,8 +72,7 @@ class ExportCommand(DirectCommand):
                 raise CommandError("Formato deve ser um de: txt, md, json, zip")
 
             if not export_path:
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                export_path = f"./EXPORTS/deile_export_{ts}"
+                export_path = f"./EXPORTS/deile_export_{export_timestamp()}"
 
             panel = await self._perform_export(
                 format_type, export_path, include_artifacts, include_plans, include_session, context

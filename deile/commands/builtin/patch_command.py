@@ -11,7 +11,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args
+from ._shared import export_timestamp, split_args
 
 
 class PatchCommand(DirectCommand):
@@ -163,8 +163,7 @@ class PatchCommand(DirectCommand):
         
         # Determine output path
         if not output_path:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_path = self.patches_dir / f"plan_{plan_id}_{timestamp}.patch"
+            output_path = self.patches_dir / f"plan_{plan_id}_{export_timestamp()}.patch"
         else:
             output_path = Path(output_path)
         

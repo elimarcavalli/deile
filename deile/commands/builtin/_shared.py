@@ -7,12 +7,23 @@ que apareciam duplicados em vários `*_command.py`.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from rich.panel import Panel
 from rich.text import Text
 
 from ..base import CommandContext
+
+
+def export_timestamp() -> str:
+    """Timestamp local YYYYMMDD_HHMMSS para nomes de arquivos exportados.
+
+    Centraliza o formato compartilhado por /context, /cost, /export e
+    /patch — qualquer mudança futura (timezone-aware, UTC, etc.) é uma
+    edição única.
+    """
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
 def colored_panel(message: str, title: Optional[str], color: str) -> Panel:

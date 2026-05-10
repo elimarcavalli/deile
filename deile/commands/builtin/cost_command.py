@@ -14,7 +14,7 @@ from rich.text import Text
 
 from deile.__version__ import __version__
 from deile.commands.base import CommandResult, DirectCommand
-from deile.commands.builtin._shared import success_panel
+from deile.commands.builtin._shared import export_timestamp, success_panel
 from deile.infrastructure.monitoring.cost_tracker import get_cost_tracker
 
 logger = logging.getLogger(__name__)
@@ -417,9 +417,8 @@ EXEMPLOS:
                     "rich",
                 )
 
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             ext = "csv" if fmt == "csv" else "json"
-            fname = f"costs_export_{ts}.{ext}"
+            fname = f"costs_export_{export_timestamp()}.{ext}"
             Path(fname).write_text(data, encoding="utf-8")
 
             msg = (

@@ -12,7 +12,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandResult, DirectCommand
-from ._shared import split_args
+from ._shared import export_timestamp, split_args
 
 
 def _indisponivel(motivo: str = "") -> Dict[str, Any]:
@@ -248,8 +248,7 @@ class ContextCommand(DirectCommand):
                 f"Formato de export inválido: '{fmt}'. Use 'json' ou 'md'."
             )
 
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        fname = f"context_export_{ts}.{fmt}"
+        fname = f"context_export_{export_timestamp()}.{fmt}"
 
         try:
             if fmt == "json":
