@@ -80,6 +80,13 @@ _SSRF_BLOCKED_IPV6_NETS: tuple[ipaddress.IPv6Network, ...] = (
     ipaddress.IPv6Network("fec0::/10"),
 )
 
+def _sanitise_url_for_audit(url: str) -> str:
+    """Strip userinfo, query, and fragment from URL before writing to audit log."""
+    p = _urlparse(url)
+    netloc = (p.hostname or "") + (f":{p.port}" if p.port else "")
+    return p._replace(netloc=netloc, params="", query="", fragment="").geturl()
+
+
 _DEFAULT_PROMPT = (
     "Descreva exatamente o que está nesta imagem em 2-4 linhas em português. "
     "Inclua: objetos visíveis, texto legível (transcreva), pessoas (sem identificar), "
@@ -221,7 +228,7 @@ class VisionDescribeImageTool(Tool):
                     image_bytes = base64.b64decode(b64, validate=True)
                 except Exception as e:
                     return ToolResult.error_result(
-                        f"invalid base64: {e}", error_code="VISION_BAD_INPUT", error=e
+                        f"invalid base64: {type(e).__name__}", error_code="VISION_BAD_INPUT", error=e
                     )
                 if not mime.startswith(_ALLOWED_MIME_PREFIXES):
                     return ToolResult.error_result(
@@ -267,7 +274,7 @@ class VisionDescribeImageTool(Tool):
 
         # Pre-compute audit resource here so both the magic-byte block and the
         # success audit path use the same sanitised value.
-        _audit_resource = url.split("?")[0].split("#")[0] if url else (path or f"base64:{mime}")
+        _audit_resource = _sanitise_url_for_audit(url) if url else (path or f"base64:{mime}")
         try:
             _validate_magic_bytes(image_bytes, mime)
         except VisionToolError as e:
@@ -348,8 +355,13 @@ async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes
                 f"file:// URI with non-localhost authority is not supported: {path!r}",
             )
         path = _urlunquote(_parsed.path)
-    p = Path(path).resolve()
-    await asyncio.to_thread(_assert_safe_root, p)
+
+    def _resolve_and_check(path_str: str) -> Path:
+        resolved = Path(path_str).resolve()
+        _assert_safe_root(resolved)
+        return resolved
+
+    p = await asyncio.to_thread(_resolve_and_check, path)
     if not await asyncio.to_thread(p.is_file):
         raise VisionToolError("VISION_BAD_INPUT", f"image_path not found: {path!r}")
     if not mime_hint:
@@ -466,7 +478,7 @@ async def _check_ssrf(url: str) -> None:
     that is out of scope for this PR. Operators in high-threat environments
     should run DEILE behind an egress proxy that enforces IP-range policies.
     """
-    _audit_url = url.split("?")[0].split("#")[0]
+    _audit_url = _sanitise_url_for_audit(url)
     parsed = _urlparse(url)
     host = parsed.hostname or ""
     if not host:
@@ -547,6 +559,12 @@ async def _download_image(url: str) -> tuple[bytes, str]:
     async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT_S, follow_redirects=False) as client:
         async with client.stream("GET", url) as resp:
             if 300 <= resp.status_code < 400:
+                _try_audit_blocked(
+                    resource=_sanitise_url_for_audit(url),
+                    action="download",
+                    details={"reason": "redirect", "status": resp.status_code},
+                    suspicious=True,
+                )
                 raise VisionToolError(
                     "VISION_DOWNLOAD_FAILED",
                     f"image_url redirects (status {resp.status_code}; follow_redirects disabled)",
@@ -602,6 +620,9 @@ async def _gemini_describe(
         )
 
     def _call() -> Any:
+        # If asyncio.wait_for cancels the outer coroutine, this thread continues
+        # until _call returns; genai.Client.__exit__ fires on the thread but
+        # socket cleanup is deferred to thread completion (threads cannot be cancelled).
         with genai.Client(api_key=api_key) as client:
             return client.models.generate_content(
                 model=model,

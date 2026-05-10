@@ -757,3 +757,36 @@ async def test_url_redirect_distinct_error_message(tool, ctx_factory, monkeypatc
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_DOWNLOAD_FAILED"
     assert "redirect" in res.message
+
+
+async def test_url_redirect_emits_suspicious_audit(tool, ctx_factory, monkeypatch):
+    """3xx redirect must emit _try_audit_blocked(suspicious=True) for SSRF-via-redirect audit trail."""
+    monkeypatch.setattr("deile.tools.vision_tool._check_ssrf", _no_ssrf_check)
+    calls = []
+
+    def _fake_audit(resource, action, details, suspicious=False):
+        calls.append({"suspicious": suspicious, "action": action, "details": details})
+
+    monkeypatch.setattr("deile.tools.vision_tool._try_audit_blocked", _fake_audit)
+    from aiohttp import web
+
+    async def _redirect_handler(req):
+        raise web.HTTPFound(location="http://169.254.169.254/")
+
+    app = web.Application()
+    app.router.add_get("/redirect.png", _redirect_handler)
+    runner = web.AppRunner(app, handle_signals=False, access_log=None)
+    await runner.setup()
+    site = web.TCPSite(runner, host="127.0.0.1", port=0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    url = f"http://127.0.0.1:{port}/redirect.png"
+    try:
+        res = await tool.execute(ctx_factory(image_url=url))
+    finally:
+        await runner.cleanup()
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_DOWNLOAD_FAILED"
+    assert calls, "_try_audit_blocked was not called on 3xx redirect"
+    assert calls[0]["suspicious"] is True
+    assert calls[0]["details"]["reason"] == "redirect"
