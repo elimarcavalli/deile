@@ -16,7 +16,7 @@ from rich.table import Table
 from rich.text import Text
 
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
-from deile.commands.builtin._shared import get_memory_manager
+from deile.commands.builtin._shared import get_memory_manager, split_args
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class CompactCommand(DirectCommand):
         }
 
     async def execute(self, context: CommandContext) -> CommandResult:
-        parts: list[str] = context.args.split() if context.args else []
+        parts: list[str] = split_args(context)
         action = parts[0].lower() if parts else "summary"
 
         try:

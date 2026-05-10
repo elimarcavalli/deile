@@ -16,7 +16,7 @@ from ...core.interfaces.selector import (InteractiveSelector,
 from ...core.models.tier_router import get_tier_router, reset_tier_router
 from ...storage.usage_repository import BudgetGuard, get_usage_repository
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import error_panel
+from ._shared import error_panel, split_args
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +88,7 @@ EXAMPLES:
 """
 
     async def execute(self, context: CommandContext) -> CommandResult:
-        args = context.args.strip().split() if context.args.strip() else []
+        args = split_args(context)
         action = args[0].lower() if args else "list"
 
         try:
