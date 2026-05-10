@@ -15,7 +15,8 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import get_memory_manager, split_args, success_panel
+from ._shared import (export_timestamp, get_memory_manager, split_args,
+                      success_panel)
 
 _CHECKPOINT_DIR = Path.home() / ".deile" / "checkpoints"
 _CHECKPOINT_INDEX = _CHECKPOINT_DIR / "index.json"
@@ -328,7 +329,7 @@ class MemoryCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     async def _export_memory_state(self, context: CommandContext, args: list) -> CommandResult:
-        output_path_str = args[0] if args else f"memory_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        output_path_str = args[0] if args else f"memory_export_{export_timestamp()}.json"
         output_path = Path(output_path_str)
 
         mm = get_memory_manager(context)

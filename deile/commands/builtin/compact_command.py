@@ -16,7 +16,8 @@ from rich.table import Table
 from rich.text import Text
 
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
-from deile.commands.builtin._shared import get_memory_manager, split_args
+from deile.commands.builtin._shared import (export_timestamp,
+                                              get_memory_manager, split_args)
 
 logger = logging.getLogger(__name__)
 
@@ -327,8 +328,7 @@ class CompactCommand(DirectCommand):
             return CommandResult.error_result("Nenhuma sessão encontrada para exportar")
 
         if not filename:
-            ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-            filename = f"deile_sessoes_{ts}.{fmt}"
+            filename = f"deile_sessoes_{export_timestamp()}.{fmt}"
 
         export_path = Path(filename)
 
