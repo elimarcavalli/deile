@@ -203,6 +203,79 @@ def step_status_emoji(status: str) -> str:
     return STEP_STATUS_EMOJI.get(status, "❓")
 
 
+def analyze_plan_changes_stub(plan_id: str) -> dict[str, Any]:
+    """STUB — fixed mock describing hypothetical changes from a plan.
+
+    /diff and /patch both shipped private ``_analyze_plan_changes`` mocks
+    with identical hardcoded paths (``src/main.py``,
+    ``config/settings.json``, ``tests/test_main.py``) and artifact
+    references (``ARTIFACTS/session_123/...``). Diverging copies risk
+    silently misreporting different "changes" depending on which
+    command the user invokes.
+
+    Centralizing here keeps the placeholder identical until the real
+    implementation arrives — the real version will scan the plan's
+    persisted artifacts dir and the corresponding ``RUNS/`` log.
+    The return value is a superset of all fields any current caller
+    consumes; callers project the keys they need.
+    """
+    return {
+        "has_changes": True,
+        "plan_id": plan_id,
+        "summary": {
+            "files_modified": 3,
+            "files_created": 1,
+            "files_deleted": 0,
+            "lines_added": 45,
+            "lines_removed": 12,
+        },
+        "files_modified": 3,
+        "files_created": 1,
+        "files_deleted": 0,
+        "files_affected": 4,
+        "lines_added": 45,
+        "lines_removed": 12,
+        "total_changes": 57,
+        "file_changes": [
+            {
+                "path": "src/main.py",
+                "action": "modified",
+                "old_content": 'def main():\n    print("Hello")\n    return 0',
+                "new_content": 'def main():\n    print("Hello World")\n    logging.info("Application started")\n    return 0',
+                "lines_added": 15,
+                "lines_removed": 5,
+                "preview": "Added error handling and logging",
+            },
+            {
+                "path": "config/settings.json",
+                "action": "modified",
+                "old_content": '{"debug": false}',
+                "new_content": '{"debug": false, "log_level": "INFO"}',
+                "lines_added": 3,
+                "lines_removed": 2,
+                "preview": "Updated database configuration",
+            },
+            {
+                "path": "tests/test_main.py",
+                "action": "created",
+                "old_content": "",
+                "new_content": "import unittest\nfrom src.main import main\n\nclass TestMain(unittest.TestCase):\n    def test_main(self):\n        self.assertEqual(main(), 0)",
+                "lines_added": 27,
+                "lines_removed": 0,
+                "preview": "New unit tests for main module",
+            },
+        ],
+        "artifacts": [
+            "ARTIFACTS/session_123/bash_output_001.txt",
+            "ARTIFACTS/session_123/file_list_002.json",
+        ],
+        "artifacts_generated": [
+            "ARTIFACTS/session_123/bash_output_001.txt",
+            "ARTIFACTS/session_123/file_list_002.json",
+        ],
+    }
+
+
 def truncate(text: str | None, max_chars: int, suffix: str = "...") -> str:
     """Recorta ``text`` para ``max_chars`` caracteres + ``suffix`` quando excede.
 

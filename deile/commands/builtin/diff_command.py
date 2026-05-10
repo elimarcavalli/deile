@@ -13,7 +13,8 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import file_action_emoji, split_args, truncate
+from ._shared import (analyze_plan_changes_stub, file_action_emoji, split_args,
+                      truncate)
 
 
 class DiffCommand(DirectCommand):
@@ -197,61 +198,12 @@ class DiffCommand(DirectCommand):
         return await self._format_file_change_history(file_path, plans_affecting_file, format_type, show_content)
     
     def _analyze_plan_changes(self, plan_id: str) -> dict[str, Any]:
-        """Analyze changes made by a plan (simplified version)"""
-        
-        # Mock implementation - in real version would analyze artifacts
-        return {
-            'files_modified': 3,
-            'files_created': 1,
-            'files_deleted': 0,
-            'files_affected': 4,
-            'lines_added': 45,
-            'lines_removed': 12,
-            'total_changes': 57
-        }
-    
+        """Summary view of plan changes (stub — see analyze_plan_changes_stub)."""
+        return analyze_plan_changes_stub(plan_id)
+
     async def _analyze_plan_changes_detailed(self, plan_id: str) -> dict[str, Any]:
-        """Detailed analysis of plan changes"""
-        
-        # Mock detailed changes analysis
-        return {
-            'has_changes': True,
-            'plan_id': plan_id,
-            'summary': {
-                'files_modified': 3,
-                'files_created': 1,
-                'files_deleted': 0,
-                'lines_added': 45,
-                'lines_removed': 12
-            },
-            'file_changes': [
-                {
-                    'path': 'src/main.py',
-                    'action': 'modified',
-                    'lines_added': 15,
-                    'lines_removed': 5,
-                    'preview': 'Added error handling and logging'
-                },
-                {
-                    'path': 'config/settings.json',
-                    'action': 'modified',
-                    'lines_added': 3,
-                    'lines_removed': 2,
-                    'preview': 'Updated database configuration'
-                },
-                {
-                    'path': 'tests/test_main.py',
-                    'action': 'created',
-                    'lines_added': 27,
-                    'lines_removed': 0,
-                    'preview': 'New unit tests for main module'
-                }
-            ],
-            'artifacts_generated': [
-                'ARTIFACTS/session_123/bash_output_001.txt',
-                'ARTIFACTS/session_123/file_list_002.json'
-            ]
-        }
+        """Detailed view of plan changes (stub — see analyze_plan_changes_stub)."""
+        return analyze_plan_changes_stub(plan_id)
     
     async def _find_plans_affecting_file(self, file_path: str) -> list[dict[str, Any]]:
         """Find plans that affected a specific file"""
