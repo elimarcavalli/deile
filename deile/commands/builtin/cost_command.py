@@ -2,6 +2,7 @@
 Comando /cost — rastreamento de custos, orçamentos e análise financeira
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -120,7 +121,7 @@ EXEMPLOS:
             if action == "export":
                 fmt = args_list[1] if len(args_list) > 1 else "json"
                 days = int(args_list[2]) if len(args_list) > 2 else 30
-                return self._export_costs(fmt, days)
+                return await self._export_costs(fmt, days)
             if action == "estimate":
                 if len(args_list) < 4:
                     return CommandResult.error_result(
@@ -409,7 +410,7 @@ EXEMPLOS:
             logger.error("Falha ao calcular previsão: %s", exc)
             return CommandResult.error_result(f"Falha ao calcular previsão: {exc}", error=exc)
 
-    def _export_costs(self, fmt: str = "json", days: int = 30) -> "CommandResult":
+    async def _export_costs(self, fmt: str = "json", days: int = 30) -> "CommandResult":
         try:
             end_time = datetime.now()
             start_time = end_time - timedelta(days=days)
@@ -427,7 +428,7 @@ EXEMPLOS:
 
             ext = "csv" if fmt == "csv" else "json"
             fname = f"costs_export_{export_timestamp()}.{ext}"
-            Path(fname).write_text(data, encoding="utf-8")
+            await asyncio.to_thread(Path(fname).write_text, data, encoding="utf-8")
 
             msg = (
                 f"✅ Exportado: {fname}\n"

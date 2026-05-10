@@ -1,59 +1,58 @@
 """Helpers compartilhados pelos comandos builtin.
 
-Centraliza padrões repetidos (parsing de args, painéis Rich, mapas
-PT-BR de descrições, recuperação de subsistemas via `context.agent`)
-que apareciam duplicados em vários `*_command.py`.
+Ponto único de mudança para padrões que se repetiam em 6+ comandos
+(parsing de ``context.args``, painéis Rich coloridos, auditoria,
+recuperação de subsistemas, mapas PT-BR de descrições).
 """
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
 
 from rich.panel import Panel
 from rich.text import Text
 
 from ..base import CommandContext
 
+if TYPE_CHECKING:
+    from ...memory.memory_manager import MemoryManager
+    from ...security.audit_logger import AuditEventType, SeverityLevel
+
+logger = logging.getLogger(__name__)
+
 
 def export_timestamp() -> str:
-    """Timestamp local YYYYMMDD_HHMMSS para nomes de arquivos exportados.
-
-    Centraliza o formato compartilhado por /context, /cost, /export e
-    /patch — qualquer mudança futura (timezone-aware, UTC, etc.) é uma
-    edição única.
-    """
+    """Formato único ``YYYYMMDD_HHMMSS`` para nomes de arquivos exportados —
+    ponto único de mudança caso o projeto adote UTC/TZ-aware no futuro."""
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
-def colored_panel(message: str, title: Optional[str], color: str) -> Panel:
-    """Cria um Rich Panel onde texto e borda usam a mesma cor.
-
-    Substitui o padrão repetido `Panel(Text(msg, style=COLOR), title=T,
-    border_style=COLOR)` que aparecia em ~26 sítios cross-arquivo.
-    """
+def colored_panel(message: str, title: str | None, color: str) -> Panel:
+    """Wrapper para o padrão ``Panel(Text(msg, style=C), title=T,
+    border_style=C)`` — texto e borda compartilham a mesma cor."""
     return Panel(Text(message, style=color), title=title, border_style=color)
 
 
-def error_panel(message: str, title: Optional[str] = "Erro") -> Panel:
-    """Painel de erro (texto + borda vermelhos)."""
+def error_panel(message: str, title: str | None = "Erro") -> Panel:
+    """Painel vermelho — usado em paths de falha."""
     return colored_panel(message, title, "red")
 
 
-def warning_panel(message: str, title: Optional[str]) -> Panel:
-    """Painel de aviso (texto + borda amarelos)."""
+def warning_panel(message: str, title: str | None = "Aviso") -> Panel:
+    """Painel amarelo — usado em paths de aviso/indisponível."""
     return colored_panel(message, title, "yellow")
 
 
-def success_panel(message: str, title: Optional[str]) -> Panel:
-    """Painel de sucesso (texto + borda verdes)."""
+def success_panel(message: str, title: str | None = "Sucesso") -> Panel:
+    """Painel verde — usado em paths de sucesso."""
     return colored_panel(message, title, "green")
 
 
-# Descrições PT-BR para cada feature flag declarada em `deile.__version__.FEATURES`.
-# Consumido pelos comandos /version e /welcome — mantenha em sincronia com
-# `__version__.FEATURES`.
-PROJECT_LINKS: Dict[str, str] = {
+# Mapa canônico consumido por /version e /welcome — manter em sync
+# com ``deile.__version__.FEATURES``.
+PROJECT_LINKS: dict[str, str] = {
     "Repositório": "https://github.com/elimarcavalli/deile",
     "Documentação": "docs/system_design/00-VISAO-GERAL.md",
     "Licença": "MIT — https://opensource.org/licenses/MIT",
@@ -61,7 +60,7 @@ PROJECT_LINKS: Dict[str, str] = {
 }
 
 
-FLAG_DESCRICOES_PTBR: Dict[str, str] = {
+FLAG_DESCRICOES_PTBR: dict[str, str] = {
     "orchestration": "Orquestração multi-step e gestão de planos",
     "security": "Permissões, audit log e sandbox",
     "ui_polish": "Interface polida e atalhos de teclado",
@@ -79,20 +78,19 @@ FLAG_DESCRICOES_PTBR: Dict[str, str] = {
 
 def emit_audit_event(
     *,
-    event_type: Any,
-    severity: Any,
+    event_type: AuditEventType,
+    severity: SeverityLevel,
     resource: str,
     action: str,
     result: str = "initiated",
-    details: Optional[Dict[str, Any]] = None,
+    details: dict[str, Any] | None = None,
     actor: str = "user",
 ) -> None:
-    """Loga um evento de auditoria, falhando silenciosamente.
+    """Auditoria best-effort — falhas no logger NUNCA propagam ao comando.
 
-    Centraliza o try/except + lazy-import + ``log_event`` que aparecia
-    duplicado em ``permissions_command.py`` e ``status_command.py``.
-    Mantém a semântica fail-silent original (qualquer falha de import
-    ou no logger é engolida).
+    Pilar 03 §6 proíbe ``except Exception: pass``: registramos a falha em
+    nível DEBUG antes de suprimir, preservando o contrato fail-silent que
+    `permissions_command` e `status_command` exigiam originalmente.
     """
     try:
         from ...security.audit_logger import get_audit_logger
@@ -105,27 +103,23 @@ def emit_audit_event(
             result=result,
             details=details or {},
         )
-    except Exception:
-        pass
+    except Exception as exc:  # audit é best-effort — nunca aborta o comando
+        logger.debug("emit_audit_event falhou: %s", exc)
 
 
-def get_memory_manager(context: CommandContext) -> Optional[Any]:
-    """Recupera o `memory_manager` exposto pelo agente do contexto.
-
-    Centraliza a busca padrão `getattr(context.agent, "memory_manager",
-    None) if context.agent else None` que apareceu duplicada em
-    compact, memory e status commands.
-    """
+def get_memory_manager(context: CommandContext) -> MemoryManager | None:
+    """Retorna ``context.agent.memory_manager`` ou ``None`` quando ausente —
+    padrão antes duplicado em compact, memory e status commands."""
     agent = getattr(context, "agent", None)
     return getattr(agent, "memory_manager", None) if agent else None
 
 
-def split_args(context: CommandContext) -> List[str]:
-    """Tokeniza `context.args` em uma lista de palavras.
+def split_args(context: CommandContext) -> list[str]:
+    """Tokeniza ``context.args``; trata ``None``/vazio/só-espaços como ``[]``.
 
-    Trata `args` ausente, vazio ou só com espaços como `[]`. Substitui
-    o idioma `args = context.args if hasattr(context, "args") else ""`
-    seguido de `parts = args.strip().split() if args.strip() else []`.
+    Substitui a duplicação ``args = context.args if hasattr(...) else ""``
+    seguida de ``parts = args.strip().split() if args.strip() else []``
+    que aparecia em 16 comandos.
     """
     raw = getattr(context, "args", "") or ""
     stripped = raw.strip()
