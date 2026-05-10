@@ -15,25 +15,9 @@ from rich.table import Table
 from rich.text import Text
 
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import FLAG_DESCRICOES_PTBR as _FLAG_DESCRICOES_PTBR
 
 logger = logging.getLogger(__name__)
-
-# Mapeamento de feature flags para descrições PTBR.
-# Ao adicionar nova flag em __version__.py, adicione também a descrição aqui.
-_FLAG_DESCRICOES_PTBR: dict[str, str] = {
-    "orchestration": "Orquestração multi-step e gestão de planos",
-    "security": "Permissões, audit log e sandbox",
-    "ui_polish": "Interface polida e atalhos de teclado",
-    "testing": "Suíte de testes automatizados",
-    "ci_cd": "Integração e entrega contínua",
-    "documentation": "Documentação estruturada por pilares",
-    "events": "Arquitetura orientada a eventos",
-    "evolution": "Motor de auto-aprendizado",
-    "memory": "Memória em quatro camadas (working/episodic/semantic/procedural)",
-    "personas": "Troca dinâmica de personas",
-    "plugins": "Arquitetura extensível de plugins",
-    "config_profiles": "Perfis de configuração por ambiente",
-}
 
 # Quick start candidates — verificados contra CommandRegistry em runtime.
 # Ordem define a prioridade de exibição.
