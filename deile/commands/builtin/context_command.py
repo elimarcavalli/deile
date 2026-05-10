@@ -253,7 +253,6 @@ class ContextCommand(DirectCommand):
         try:
             if fmt == "json":
                 content = json.dumps(context_data, indent=2, default=str)
-                Path(fname).write_text(content, encoding="utf-8")
             else:
                 lines = ["# Exportação de Contexto DEILE", ""]
                 session = context_data.get("session", {})
@@ -282,7 +281,7 @@ class ContextCommand(DirectCommand):
                     f"## Histórico\n- **Mensagens:** {conv.get('messages', 'indisponível')}"
                 )
                 content = "\n".join(lines)
-                Path(fname).write_text(content, encoding="utf-8")
+            await asyncio.to_thread(Path(fname).write_text, content, encoding="utf-8")
 
             return CommandResult.success_result(
                 content=Panel(
