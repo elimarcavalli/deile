@@ -14,6 +14,8 @@ from ...core.exceptions import CommandError
 from ...security.permissions import (PermissionLevel, PermissionRule,
                                      ResourceType, get_permission_manager)
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import (emit_audit_event, error_panel, split_args, success_panel,
+                      warning_panel)
 
 
 def _persist(pm) -> None:
@@ -36,9 +38,8 @@ class PermissionsCommand(DirectCommand):
         self.permission_manager = get_permission_manager()
 
     async def execute(self, context: CommandContext) -> CommandResult:
-        args = context.args
         try:
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
             if not parts:
                 return await self._show_permissions_overview()
             action = parts[0].lower()
@@ -383,7 +384,7 @@ class PermissionsCommand(DirectCommand):
             ]
         except Exception as exc:
             return CommandResult.success_result(
-                Panel(Text(f"Erro ao ler log de auditoria: {exc}", style="red"), title="🔍 Auditoria", border_style="red"),
+                error_panel(f"Erro ao ler log de auditoria: {exc}", title="🔍 Auditoria"),
                 "rich",
             )
 
@@ -428,7 +429,7 @@ class PermissionsCommand(DirectCommand):
             _persist(pm)
             self._emit_audit_event("sandbox_on", "sandbox", "Sandbox ativado")
             return CommandResult.success_result(
-                Panel(Text("✅ Sandbox ativado.", style="green"), title="Sandbox", border_style="green"),
+                success_panel("✅ Sandbox ativado.", title="Sandbox"),
                 "rich",
             )
 
@@ -437,7 +438,7 @@ class PermissionsCommand(DirectCommand):
             _persist(pm)
             self._emit_audit_event("sandbox_off", "sandbox", "Sandbox desativado")
             return CommandResult.success_result(
-                Panel(Text("⚠️  Sandbox desativado.", style="yellow"), title="Sandbox", border_style="yellow"),
+                warning_panel("⚠️  Sandbox desativado.", title="Sandbox"),
                 "rich",
             )
 
@@ -472,21 +473,15 @@ class PermissionsCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     def _emit_audit_event(self, action: str, resource: str, details_msg: str) -> None:
-        try:
-            from ...security.audit_logger import (AuditEventType,
-                                                  SeverityLevel,
-                                                  get_audit_logger)
-            get_audit_logger().log_event(
-                event_type=AuditEventType.SECURITY_POLICY_CHANGED,
-                severity=SeverityLevel.WARNING,
-                actor="user",
-                resource=resource,
-                action=action,
-                result="success",
-                details={"message": details_msg},
-            )
-        except Exception:
-            pass
+        from ...security.audit_logger import AuditEventType, SeverityLevel
+        emit_audit_event(
+            event_type=AuditEventType.SECURITY_POLICY_CHANGED,
+            severity=SeverityLevel.WARNING,
+            resource=resource,
+            action=action,
+            result="success",
+            details={"message": details_msg},
+        )
 
     def get_help(self) -> str:
         return "Gerenciar regras de segurança e permissões para tools e recursos."

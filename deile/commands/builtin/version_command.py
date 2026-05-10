@@ -20,33 +20,10 @@ from rich.table import Table
 from rich.text import Text
 
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import FLAG_DESCRICOES_PTBR as _FLAG_DESCRICOES
+from ._shared import PROJECT_LINKS as _LINKS
 
 logger = logging.getLogger(__name__)
-
-# Descrições PTBR para cada feature flag (mantidas em sync com __version__.FEATURES).
-# Ao adicionar nova flag em __version__.py, adicione a descrição correspondente aqui.
-_FLAG_DESCRICOES: dict[str, str] = {
-    "orchestration": "orquestração multi-step e gestão de planos",
-    "security": "permissões, audit log e sandbox",
-    "ui_polish": "interface polida e atalhos de teclado",
-    "testing": "suíte de testes automatizados",
-    "ci_cd": "integração e entrega contínua",
-    "documentation": "documentação estruturada por pilares",
-    "events": "arquitetura orientada a eventos",
-    "evolution": "motor de auto-aprendizado",
-    "memory": "memória em quatro camadas (working/episodic/semantic/procedural)",
-    "personas": "troca dinâmica de personas",
-    "plugins": "arquitetura extensível de plugins",
-    "config_profiles": "perfis de configuração por ambiente",
-}
-
-_LINKS = {
-    "Repositório": "https://github.com/elimarcavalli/deile",
-    "Documentação": "docs/system_design/00-VISAO-GERAL.md",
-    "Licença": "MIT — https://opensource.org/licenses/MIT",
-    "Issues": "https://github.com/elimarcavalli/deile/issues",
-}
-
 
 def _detect_install_info() -> dict[str, str]:
     """Detecta modo de instalação via importlib.metadata (sem subprocess)."""

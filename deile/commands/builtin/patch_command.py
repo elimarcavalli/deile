@@ -1,5 +1,6 @@
 """Patch Command - Generate patch files from plan changes"""
 
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -11,6 +12,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import export_timestamp, split_args
 
 
 class PatchCommand(DirectCommand):
@@ -30,11 +32,8 @@ class PatchCommand(DirectCommand):
     
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute patch command"""
-        args = context.args if hasattr(context, 'args') else ""
-        
         try:
-            # Parse arguments
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
             
             if not parts:
                 # List available patches
@@ -165,20 +164,15 @@ class PatchCommand(DirectCommand):
         
         # Determine output path
         if not output_path:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_path = self.patches_dir / f"plan_{plan_id}_{timestamp}.patch"
+            output_path = self.patches_dir / f"plan_{plan_id}_{export_timestamp()}.patch"
         else:
             output_path = Path(output_path)
         
         # Write patch file
         try:
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(patch_content)
-            
-            # Generate summary
+            await asyncio.to_thread(output_path.write_text, patch_content, encoding='utf-8')
             return await self._format_patch_result(plan, changes, output_path, output_format, include_artifacts)
-            
         except Exception as e:
             raise CommandError(f"Failed to write patch file: {str(e)}")
     

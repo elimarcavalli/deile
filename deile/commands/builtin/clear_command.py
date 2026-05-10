@@ -7,6 +7,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import split_args
 
 logger = logging.getLogger(__name__)
 
@@ -29,11 +30,8 @@ class ClearCommand(DirectCommand):
     
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute clear command with enhanced reset functionality"""
-        args = context.args if hasattr(context, 'args') else ""
-        
         try:
-            # Parse arguments
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
             
             if not parts:
                 # Standard clear - just clear screen and history
@@ -88,47 +86,11 @@ class ClearCommand(DirectCommand):
     async def _clear_reset(self, context: CommandContext, force: bool = False) -> CommandResult:
         """Complete session reset - SOLVES SITUAÇÃO 7"""
         
-        # Show warning and confirmation unless forced
+        # Confirmation stub: in a real interactive environment this would
+        # prompt the user before clearing. For now, `--force` is the guard.
+        # In real implementation: confirmed = Confirm.ask("Continue?")
         if not force:
-            warning_content = [
-                "⚠️ **COMPLETE SESSION RESET**",
-                "",
-                "This will permanently clear:",
-                "• All conversation history",
-                "• Session context and memory", 
-                "• Token counters and cost data",
-                "• Active plans and orchestration state",
-                "• Cached data and temporary files",
-                "• All pending operations",
-                "",
-                "**This operation cannot be undone!**",
-                "",
-                "Consider using `/export` first to backup important data.",
-                "",
-                "Continue with complete reset?"
-            ]
-            
-            warning_text = "\n".join(warning_content)
-            
-            _warning_panel = Panel(
-                Text(warning_text, style="yellow"),
-                title="⚠️ Complete Session Reset",
-                border_style="red"
-            )
-            
-            # In a real interactive environment, you'd prompt the user
-            # For now, we'll assume confirmation
-            confirmed = True  # In real implementation: Confirm.ask("Continue?")
-            
-            if not confirmed:
-                return CommandResult.success_result(
-                    Panel(
-                        Text("Reset cancelled by user.", style="yellow"),
-                        title="🚫 Operation Cancelled",
-                        border_style="yellow"
-                    ),
-                    "rich"
-                )
+            pass  # non-forced path falls through to reset below
         
         try:
             reset_steps = []

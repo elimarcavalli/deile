@@ -7,6 +7,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import StepStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import split_args
 
 
 class ApproveCommand(DirectCommand):
@@ -23,11 +24,8 @@ class ApproveCommand(DirectCommand):
     
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute approve command"""
-        args = context.args if hasattr(context, 'args') else ""
-        
         try:
-            # Parse arguments
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
             
             if not parts:
                 # Show pending approvals

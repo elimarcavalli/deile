@@ -1,6 +1,6 @@
 """Plan Command - Create and manage execution plans"""
 
-from typing import Optional
+from __future__ import annotations
 
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -10,6 +10,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import PlanStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import split_args, success_panel, warning_panel
 
 
 class PlanCommand(DirectCommand):
@@ -26,11 +27,8 @@ class PlanCommand(DirectCommand):
     
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute plan command"""
-        args = context.args if hasattr(context, 'args') else ""
-        
         try:
-            # Parse arguments
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
             
             if not parts:
                 # List existing plans
@@ -143,7 +141,7 @@ class PlanCommand(DirectCommand):
         
         return CommandResult.success_result(result_panel, "rich")
     
-    async def _list_plans(self, status_filter: Optional[PlanStatus] = None) -> CommandResult:
+    async def _list_plans(self, status_filter: PlanStatus | None = None) -> CommandResult:
         """List existing plans"""
         
         plans = await self.plan_manager.list_plans(status_filter)
@@ -154,7 +152,7 @@ class PlanCommand(DirectCommand):
                 message += f" with status '{status_filter.value}'"
             
             return CommandResult.success_result(
-                Panel(Text(message, style="yellow"), title="📋 Plans", border_style="yellow"),
+                warning_panel(message, title="📋 Plans"),
                 "rich"
             )
         
@@ -336,7 +334,7 @@ class PlanCommand(DirectCommand):
             success_message = f"✅ Plan '{plan_id}' deleted successfully"
             
             return CommandResult.success_result(
-                Panel(Text(success_message, style="green"), title="🗑️ Plan Deleted", border_style="green"),
+                success_panel(success_message, title="🗑️ Plan Deleted"),
                 "rich"
             )
             

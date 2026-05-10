@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from typing import Any, List, Optional
 
 from rich.panel import Panel
@@ -15,6 +16,7 @@ from ...core.interfaces.selector import (InteractiveSelector,
 from ...core.models.tier_router import get_tier_router, reset_tier_router
 from ...storage.usage_repository import BudgetGuard, get_usage_repository
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import error_panel
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +120,7 @@ EXAMPLES:
             logger.error("ModelCommand error: %s", exc)
             return CommandResult(
                 success=False,
-                content=Panel(Text(str(exc), style="red"), title="Error", border_style="red"),
+                content=error_panel(str(exc), title="Error"),
             )
 
     # ------------------------------------------------------------------
@@ -488,7 +490,6 @@ EXAMPLES:
         table.add_column("Cost $", justify="right")
 
         # Group by provider+model
-        from collections import defaultdict
         agg: dict = defaultdict(lambda: {"calls": 0, "in": 0, "out": 0, "cost": 0.0})
         for r in records:
             key = (r.provider_id, r.model_id)
@@ -578,13 +579,3 @@ EXAMPLES:
             return context.session.session_id
         except AttributeError:
             return "default"
-
-
-# Register
-try:
-    from deile.commands.registry import StaticCommandRegistry
-    StaticCommandRegistry.register("model", ModelCommand)
-    StaticCommandRegistry.register("models", ModelCommand)
-    StaticCommandRegistry.register("m", ModelCommand)
-except ImportError:
-    pass

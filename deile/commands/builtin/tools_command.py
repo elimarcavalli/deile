@@ -1,7 +1,9 @@
 """Tools Command - Display available tools and their schemas"""
 
+from __future__ import annotations
+
 import json
-from typing import Any, Dict, Optional
+from typing import Any
 
 from rich.columns import Columns
 from rich.panel import Panel
@@ -10,6 +12,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import split_args
 
 
 class ToolsCommand(DirectCommand):
@@ -26,17 +29,15 @@ class ToolsCommand(DirectCommand):
             description="Display available tools, their schemas and usage statistics.",
         ))
 
-    async def execute(self, context: Optional[CommandContext] = None) -> CommandResult:
+    async def execute(self, context: CommandContext) -> CommandResult:
         """Execute the tools command.
 
         Reads :class:`CommandContext.args` (the registry contract). Returns a
         :class:`CommandResult` whose ``content`` is a Rich renderable or a
         JSON string depending on the requested ``--format``.
         """
-        args = (getattr(context, "args", "") or "") if context is not None else ""
         try:
-            # Parse arguments
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
             format_type = "list"  # default
             tool_name = None
             show_schema = False
@@ -102,7 +103,7 @@ class ToolsCommand(DirectCommand):
                 f"Failed to display tools information: {str(e)}", error=e
             )
     
-    def _get_tools_data(self, context: Optional[CommandContext], tool_name: Optional[str]) -> Dict[str, Any]:
+    def _get_tools_data(self, context: CommandContext | None, tool_name: str | None) -> dict[str, Any]:
         """Read tools data from the live :class:`ToolRegistry`.
 
         Walks every registered tool, extracts schema (parameters, security
@@ -118,7 +119,7 @@ class ToolsCommand(DirectCommand):
         if len(registry) == 0:
             registry.auto_discover()
 
-        tools: Dict[str, Dict[str, Any]] = {}
+        tools: dict[str, dict[str, Any]] = {}
         for tool in registry.list_all():
             tools[tool.name] = self._serialize_tool(tool)
 
@@ -139,15 +140,15 @@ class ToolsCommand(DirectCommand):
         }
 
     @staticmethod
-    def _serialize_tool(tool: Any) -> Dict[str, Any]:
+    def _serialize_tool(tool: Any) -> dict[str, Any]:
         """Project a :class:`Tool` to the dict shape used by the renderers."""
         schema = getattr(tool, "schema", None)
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if schema is not None:
             required = set(schema.required or [])
             for pname, pspec in (schema.parameters or {}).items():
                 if isinstance(pspec, dict):
-                    entry: Dict[str, Any] = {
+                    entry: dict[str, Any] = {
                         "type": pspec.get("type", "any"),
                         "required": pname in required,
                     }
@@ -173,7 +174,7 @@ class ToolsCommand(DirectCommand):
             },
         }
     
-    def _create_single_tool_display(self, tool_data: Dict[str, Any], 
+    def _create_single_tool_display(self, tool_data: dict[str, Any], 
                                   show_schema: bool, show_examples: bool) -> Panel:
         """Create display for a single tool"""
         
@@ -244,7 +245,7 @@ class ToolsCommand(DirectCommand):
             padding=(1, 2)
         )
     
-    def _create_list_display(self, data: Dict[str, Any]) -> Table:
+    def _create_list_display(self, data: dict[str, Any]) -> Table:
         """Create list display for all tools"""
         
         table = Table(title="🔧 Available Tools", show_header=True, header_style="bold magenta")
@@ -270,7 +271,7 @@ class ToolsCommand(DirectCommand):
         
         return table
     
-    def _create_detailed_display(self, data: Dict[str, Any], 
+    def _create_detailed_display(self, data: dict[str, Any], 
                                show_schema: bool, show_examples: bool) -> Columns:
         """Create detailed display with multiple panels"""
         

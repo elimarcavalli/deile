@@ -1,5 +1,7 @@
 """Comando /compact — gerenciamento de memória e histórico de sessões."""
 
+from __future__ import annotations
+
 import asyncio
 import csv
 import json
@@ -7,19 +9,16 @@ import logging
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
+from deile.commands.builtin._shared import get_memory_manager
 
 logger = logging.getLogger(__name__)
-
-
-def _get_memory_manager(context: CommandContext) -> Optional[Any]:
-    return getattr(context.agent, "memory_manager", None) if context.agent else None
 
 
 async def _get_session_store(context: CommandContext) -> Optional[Any]:
@@ -40,7 +39,7 @@ class CompactCommand(DirectCommand):
     def __init__(self) -> None:
         super().__init__()
         self.config.description = "Gerenciar memória e histórico de sessões"
-        self.compact_config: Dict[str, Any] = {
+        self.compact_config: dict[str, Any] = {
             "auto_compress": True,
             "compress_threshold_days": 7,
             "purge_threshold_days": 30,
@@ -48,7 +47,7 @@ class CompactCommand(DirectCommand):
         }
 
     async def execute(self, context: CommandContext) -> CommandResult:
-        parts: List[str] = context.args.split() if context.args else []
+        parts: list[str] = context.args.split() if context.args else []
         action = parts[0].lower() if parts else "summary"
 
         try:
@@ -89,7 +88,7 @@ class CompactCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     async def _cmd_summary(self, context: CommandContext) -> CommandResult:
-        mm = _get_memory_manager(context)
+        mm = get_memory_manager(context)
         ss = await _get_session_store(context)
 
         table = Table(title="Resumo de Memória e Sessões", show_header=True, header_style="bold cyan")
@@ -138,7 +137,7 @@ class CompactCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     async def _cmd_compress(self, context: CommandContext, days: int) -> CommandResult:
-        mm = _get_memory_manager(context)
+        mm = get_memory_manager(context)
         if mm is None:
             return CommandResult.error_result(
                 "MemoryManager não acessível — compactação indisponível"
@@ -255,7 +254,7 @@ class CompactCommand(DirectCommand):
                 session_count=0,
             )
 
-        dates: List[datetime] = []
+        dates: list[datetime] = []
         for s in sessions:
             raw = s.get("last_used_at", "")
             if raw:
@@ -487,8 +486,3 @@ class CompactCommand(DirectCommand):
             setting=key,
             new_value=new_val,
         )
-
-
-from deile.commands.registry import StaticCommandRegistry  # noqa: E402
-
-StaticCommandRegistry.register("compact", CompactCommand)

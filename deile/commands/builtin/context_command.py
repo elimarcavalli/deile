@@ -12,6 +12,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandResult, DirectCommand
+from ._shared import export_timestamp, split_args
 
 
 def _indisponivel(motivo: str = "") -> Dict[str, Any]:
@@ -34,10 +35,8 @@ class ContextCommand(DirectCommand):
         super().__init__(config)
 
     async def execute(self, context) -> CommandResult:
-        args = context.args if hasattr(context, "args") else ""
-
         try:
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
             format_type = "summary"
             export_format: Optional[str] = None
             show_tokens = False
@@ -249,13 +248,11 @@ class ContextCommand(DirectCommand):
                 f"Formato de export inválido: '{fmt}'. Use 'json' ou 'md'."
             )
 
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        fname = f"context_export_{ts}.{fmt}"
+        fname = f"context_export_{export_timestamp()}.{fmt}"
 
         try:
             if fmt == "json":
                 content = json.dumps(context_data, indent=2, default=str)
-                Path(fname).write_text(content, encoding="utf-8")
             else:
                 lines = ["# Exportação de Contexto DEILE", ""]
                 session = context_data.get("session", {})
@@ -284,7 +281,7 @@ class ContextCommand(DirectCommand):
                     f"## Histórico\n- **Mensagens:** {conv.get('messages', 'indisponível')}"
                 )
                 content = "\n".join(lines)
-                Path(fname).write_text(content, encoding="utf-8")
+            await asyncio.to_thread(Path(fname).write_text, content, encoding="utf-8")
 
             return CommandResult.success_result(
                 content=Panel(

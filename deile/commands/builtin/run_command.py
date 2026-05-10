@@ -1,7 +1,9 @@
 """Run Command - Execute plans autonomously"""
 
+from __future__ import annotations
+
 import asyncio
-from typing import Any, Dict
+from typing import Any
 
 from rich.live import Live
 from rich.panel import Panel
@@ -12,6 +14,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import PlanStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import split_args
 
 
 class RunCommand(DirectCommand):
@@ -28,11 +31,8 @@ class RunCommand(DirectCommand):
     
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute run command"""
-        args = context.args if hasattr(context, 'args') else ""
-        
         try:
-            # Parse arguments
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
             
             if not parts:
                 # Show running plans
@@ -266,7 +266,7 @@ class RunCommand(DirectCommand):
             raise CommandError(f"Failed to execute plan '{plan_id}': {str(e)}")
     
     async def _execute_with_progress(self, plan_id: str, auto_approve_low_risk: bool,
-                                   progress: Progress, task) -> Dict[str, Any]:
+                                   progress: Progress, task) -> dict[str, Any]:
         """Execute plan with progress updates"""
         
         # Start execution task
@@ -304,7 +304,7 @@ class RunCommand(DirectCommand):
         # Get final result
         return await execution_task
     
-    async def _format_execution_result(self, result: Dict[str, Any]) -> CommandResult:
+    async def _format_execution_result(self, result: dict[str, Any]) -> CommandResult:
         """Format the execution result"""
         
         plan_summary = result.get('plan_summary', {})
