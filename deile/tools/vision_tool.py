@@ -62,7 +62,7 @@ _ALLOWED_VISION_MODELS: frozenset[str] = frozenset({
 _MAGIC_BYTES: dict[str, bytes] = {
     "image/png": b"\x89PNG",
     "image/jpeg": b"\xff\xd8\xff",
-    "image/gif": b"GIF8",  # matches both GIF87a and GIF89a (first 4 bytes identical)
+    "image/gif": b"GIF8",  # first 4 bytes shared; _validate_magic_bytes checks full 6-byte sig
     "image/webp": b"RIFF",
 }
 _EXT_TO_MIME = {
@@ -343,7 +343,7 @@ async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes
             )
         path = _parsed.path
     p = Path(path).resolve()
-    _assert_safe_root(p)
+    await asyncio.to_thread(_assert_safe_root, p)
     if not await asyncio.to_thread(p.is_file):
         raise VisionToolError("VISION_BAD_INPUT", f"image_path not found: {path!r}")
     if not mime_hint:
@@ -510,13 +510,16 @@ def _validate_magic_bytes(image_bytes: bytes, mime: str) -> None:
 
     Detects MIME spoofing: a server (or caller) claiming image/png while
     returning JavaScript/polyglot bytes. WebP needs two checks:
-    b[0:4]==RIFF and b[8:12]==WEBP.
+    b[0:4]==RIFF and b[8:12]==WEBP. GIF checks the full 6-byte signature
+    (GIF87a or GIF89a) to block GIF8<junk> polyglot files.
     """
     magic = _MAGIC_BYTES.get(mime)
     if not magic:
         return
     if mime == "image/webp":
         ok = image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP"
+    elif mime == "image/gif":
+        ok = image_bytes[:6] in (b"GIF87a", b"GIF89a")
     else:
         ok = image_bytes[:len(magic)] == magic
     if not ok:

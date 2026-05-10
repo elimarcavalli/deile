@@ -309,6 +309,19 @@ async def test_llm_failure_returns_typed_error(tool, ctx_factory, monkeypatch):
     assert "quota" in res.message
 
 
+async def test_llm_generic_exception_returns_vision_llm_failed(tool, ctx_factory, monkeypatch):
+    """A non-VisionToolError from _gemini_describe must return VISION_LLM_FAILED."""
+    async def fail(image_bytes, mime, prompt, model):
+        raise RuntimeError("unexpected SDK error")
+
+    monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fail)
+    import base64
+    b64 = base64.b64encode(PNG_1x1_BYTES).decode()
+    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/png"))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_LLM_FAILED"
+
+
 # ---- registry ---------------------------------------------------------------
 
 
@@ -485,13 +498,14 @@ async def test_path_containment_emits_blocked_audit(tool, ctx_factory, monkeypat
     calls = []
 
     def _fake_audit(resource, action, details, suspicious=False):
-        calls.append({"resource": resource, "action": action, "details": details})
+        calls.append({"resource": resource, "action": action, "details": details, "suspicious": suspicious})
 
     monkeypatch.setattr("deile.tools.vision_tool._try_audit_blocked", _fake_audit)
     res = await tool.execute(ctx_factory(image_path="/etc/passwd"))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
     assert calls, "_try_audit_blocked was not called on path containment violation"
+    assert calls[0]["suspicious"] is False
 
 
 # ---- direct private-IP SSRF rejection ---------------------------------------
@@ -520,6 +534,20 @@ async def test_direct_ipv6_private_rejected(tool, ctx_factory):
         res = await tool.execute(ctx_factory(image_url=bad_url))
         assert res.is_error, f"expected error for {bad_url}"
         assert res.metadata["error_code"] == "VISION_BAD_INPUT", bad_url
+
+
+async def test_direct_ip_ssrf_emits_suspicious_audit(tool, ctx_factory, monkeypatch):
+    """SSRF rejection of a private IP literal must emit _try_audit_blocked(suspicious=True)."""
+    calls = []
+
+    def _fake_audit(resource, action, details, suspicious=False):
+        calls.append({"suspicious": suspicious, "action": action})
+
+    monkeypatch.setattr("deile.tools.vision_tool._try_audit_blocked", _fake_audit)
+    res = await tool.execute(ctx_factory(image_url="http://169.254.169.254/"))
+    assert res.is_error
+    assert calls, "_try_audit_blocked was not called on SSRF rejection"
+    assert calls[0]["suspicious"] is True
 
 
 # ---- magic-byte validation --------------------------------------------------
