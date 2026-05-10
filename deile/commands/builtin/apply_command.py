@@ -178,23 +178,22 @@ class ApplyCommand(DirectCommand):
         validation = await self._validate_patch_application(patch_data, target_path)
         
         if validation['has_conflicts'] and not force:
-            return await self._format_patch_conflicts(validation, patch_file)
-        
+            return self._format_patch_conflicts(validation, patch_file)
+
         # Show preview if dry run
         if dry_run:
-            return await self._format_dry_run_result(patch_data, target_path, validation)
-        
+            return self._format_dry_run_result(patch_data, target_path, validation)
+
         # Ask for confirmation unless force is used
         if not force:
             # In a real implementation, this would use a proper confirmation UI
             # For now, we'll show what would be confirmed
-            preview_result = await self._format_apply_preview(patch_data, target_path, validation)
-            return preview_result
-        
+            return self._format_apply_preview(patch_data, target_path, validation)
+
         # Apply the patch
         try:
             apply_result = await self._perform_patch_application(patch_data, target_path, backup)
-            return await self._format_apply_result(apply_result, patch_file, target_dir)
+            return self._format_apply_result(apply_result, patch_file, target_dir)
         
         except Exception as e:
             raise CommandError(f"Failed to apply patch: {str(e)}")
@@ -429,8 +428,9 @@ class ApplyCommand(DirectCommand):
             'files_affected': len(patch_data['file_changes'])
         }
     
-    async def _format_patch_conflicts(self, validation: Dict[str, Any], patch_file: str) -> CommandResult:
-        """Format patch conflict information"""
+    @staticmethod
+    def _format_patch_conflicts(validation: Dict[str, Any], patch_file: str) -> CommandResult:
+        """Format patch conflict information (pure helper — no I/O, no self)."""
         
         content_lines = [
             "⚠️ **Patch Conflicts Detected**",
@@ -474,9 +474,10 @@ class ApplyCommand(DirectCommand):
         
         return CommandResult.success_result(result_panel, "rich")
     
-    async def _format_dry_run_result(self, patch_data: Dict[str, Any], 
-                                   target_path: Path, validation: Dict[str, Any]) -> CommandResult:
-        """Format dry run preview"""
+    @staticmethod
+    def _format_dry_run_result(patch_data: Dict[str, Any],
+                               target_path: Path, validation: Dict[str, Any]) -> CommandResult:
+        """Format dry run preview (pure helper — no I/O, no self)."""
         
         metadata = patch_data.get('metadata', {})
         
@@ -547,9 +548,10 @@ class ApplyCommand(DirectCommand):
         
         return CommandResult.success_result(result_panel, "rich")
     
-    async def _format_apply_preview(self, patch_data: Dict[str, Any], 
-                                  target_path: Path, validation: Dict[str, Any]) -> CommandResult:
-        """Format apply confirmation preview"""
+    @staticmethod
+    def _format_apply_preview(patch_data: Dict[str, Any],
+                              target_path: Path, validation: Dict[str, Any]) -> CommandResult:
+        """Format apply confirmation preview (pure helper — no I/O, no self)."""
         
         content_lines = [
             "📋 **Ready to Apply Patch**",
@@ -642,9 +644,10 @@ class ApplyCommand(DirectCommand):
             'success': len(errors) == 0
         }
     
-    async def _format_apply_result(self, result: Dict[str, Any], 
-                                 patch_file: str, target_dir: str) -> CommandResult:
-        """Format the final application result"""
+    @staticmethod
+    def _format_apply_result(result: Dict[str, Any],
+                             patch_file: str, target_dir: str) -> CommandResult:
+        """Format the final application result (pure helper — no I/O, no self)."""
         
         success = result['success']
         applied_files = result['applied_files']
