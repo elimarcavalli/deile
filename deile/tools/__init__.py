@@ -6,21 +6,19 @@ from .execution_tools import EnhancedExecutionTool as ExecutionTool
 from .file_tools import ListFilesTool, ReadFileTool, WriteFileTool
 from .registry import ToolRegistry
 from .search_tool import SearchTool as FindInFilesTool
-from .slash_command_executor import SlashCommandExecutor
 
 __all__ = [
     "Tool",
-    "ToolContext", 
+    "ToolContext",
     "ToolResult",
     "ToolStatus",
     "ToolCategory",
     "DisplayPolicy",
-    "ShowCliPolicy", 
+    "ShowCliPolicy",
     "ToolRegistry",
     "ReadFileTool",
-    "WriteFileTool", 
+    "WriteFileTool",
     "ListFilesTool",
     "ExecutionTool",
-    "SlashCommandExecutor",
     "FindInFilesTool"
 ]
