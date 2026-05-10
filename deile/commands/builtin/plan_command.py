@@ -10,15 +10,8 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import PlanStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import (
-    PLAN_STATUS_EMOJI,
-    RISK_EMOJI,
-    STEP_STATUS_EMOJI,
-    risk_indicator,
-    split_args,
-    success_panel,
-    warning_panel,
-)
+from ._shared import (PLAN_STATUS_EMOJI, RISK_EMOJI, STEP_STATUS_EMOJI,
+                      risk_indicator, split_args, success_panel, warning_panel)
 
 
 class PlanCommand(DirectCommand):
