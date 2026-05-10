@@ -14,7 +14,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import PlanStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args
+from ._shared import PLAN_STATUS_EMOJI, RISK_EMOJI, split_args
 
 
 class RunCommand(DirectCommand):
@@ -148,13 +148,8 @@ class RunCommand(DirectCommand):
             step_queue = step_queue[plan.max_concurrent_steps:]
             
             for step in current_steps:
-                # Risk indicators
-                risk_emoji = {
-                    "low": "🟢",
-                    "medium": "🟡", 
-                    "high": "🔴",
-                    "critical": "🚨"
-                }.get(step.risk_level.value, "❓")
+                # Risk indicators (mapa canônico em _shared.RISK_EMOJI)
+                risk_emoji = RISK_EMOJI.get(step.risk_level.value, "❓")
                 
                 approval_text = " ⚠️ (needs approval)" if step.requires_approval else ""
                 deps_text = f" (depends on: {', '.join(step.depends_on)})" if step.depends_on else ""
@@ -315,21 +310,18 @@ class RunCommand(DirectCommand):
         status = plan_summary.get('status', 'unknown')
         success = status == 'completed'
         
-        # Status emoji and color
+        # Status emoji (mapa canônico) e cores
+        status_emoji = PLAN_STATUS_EMOJI.get(status, "❓")
         if success:
-            status_emoji = "✅"
             border_color = "green"
             status_style = "green"
         elif status == 'failed':
-            status_emoji = "❌"
             border_color = "red"
             status_style = "red"
         elif status == 'cancelled':
-            status_emoji = "🚫"
             border_color = "yellow"
             status_style = "yellow"
         else:
-            status_emoji = "❓"
             border_color = "blue"
             status_style = "blue"
         

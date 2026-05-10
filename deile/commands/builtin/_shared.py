@@ -125,3 +125,57 @@ def split_args(context: CommandContext) -> list[str]:
     raw = getattr(context, "args", "") or ""
     stripped = raw.strip()
     return stripped.split() if stripped else []
+
+
+# ---------------------------------------------------------------------------
+# Mapas de emojis canônicos compartilhados pelos comandos builtin.
+#
+# Antes desta centralização cada comando redefinia o seu próprio dict inline,
+# divergindo em pequenas variações (ex.: "running" como "🔄" em plan/run vs
+# "⚡" no spec do projeto). Estas constantes resolvem essa inconsistência:
+# qualquer comando novo que precise mostrar status/risco/ação importa daqui.
+# ---------------------------------------------------------------------------
+
+RISK_EMOJI: dict[str, str] = {
+    "low": "🟢",
+    "medium": "🟡",
+    "high": "🔴",
+    "critical": "🚨",
+}
+
+ACTION_EMOJI: dict[str, str] = {
+    "modified": "📝",
+    "created": "✨",
+    "deleted": "🗑️",
+}
+
+PLAN_STATUS_EMOJI: dict[str, str] = {
+    "draft": "📝",
+    "ready": "🚀",
+    "running": "⚡",
+    "paused": "⏸️",
+    "completed": "✅",
+    "failed": "❌",
+    "cancelled": "🚫",
+}
+
+STEP_STATUS_EMOJI: dict[str, str] = {
+    "pending": "⏳",
+    "running": "⚡",
+    "completed": "✅",
+    "failed": "❌",
+    "skipped": "⏭️",
+    "requires_approval": "⏸️",
+}
+
+
+def risk_indicator(level: str) -> str:
+    """Retorna emoji de destaque apenas para risco ``high``/``critical``.
+
+    Usado quando queremos sinalizar visualmente apenas riscos relevantes —
+    para a renderização completa (incluindo ``low``/``medium``) use
+    diretamente ``RISK_EMOJI``.
+    """
+    if level in ("high", "critical"):
+        return RISK_EMOJI[level]
+    return ""

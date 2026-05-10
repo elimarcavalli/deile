@@ -7,7 +7,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import StepStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args
+from ._shared import RISK_EMOJI, split_args
 
 
 class ApproveCommand(DirectCommand):
@@ -102,13 +102,8 @@ class ApproveCommand(DirectCommand):
         table.add_column("Action", style="blue", width=20)
         
         for approval in pending_approvals:
-            # Risk level emoji
-            risk_emoji = {
-                "low": "🟢",
-                "medium": "🟡",
-                "high": "🔴",
-                "critical": "🚨"
-            }.get(approval['risk_level'], "❓")
+            # Risk level emoji (mapa canônico em _shared.RISK_EMOJI)
+            risk_emoji = RISK_EMOJI.get(approval['risk_level'], "❓")
             
             # Truncate long descriptions
             description = approval['step_description']

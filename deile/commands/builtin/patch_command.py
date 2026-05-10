@@ -12,7 +12,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import export_timestamp, split_args
+from ._shared import ACTION_EMOJI, export_timestamp, split_args
 
 
 class PatchCommand(DirectCommand):
@@ -387,12 +387,8 @@ class PatchCommand(DirectCommand):
         if changes['file_changes']:
             content_lines.append("**Files in Patch:**")
             for file_change in changes['file_changes'][:5]:  # Show first 5
-                action_emoji = {
-                    'modified': '📝',
-                    'created': '✨',
-                    'deleted': '🗑️'
-                }.get(file_change['action'], '❓')
-                
+                action_emoji = ACTION_EMOJI.get(file_change['action'], '❓')
+
                 content_lines.append(f"  {action_emoji} {file_change['path']}")
             
             if len(changes['file_changes']) > 5:

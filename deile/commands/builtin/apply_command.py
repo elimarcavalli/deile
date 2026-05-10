@@ -14,7 +14,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args
+from ._shared import ACTION_EMOJI, split_args
 
 
 class ApplyCommand(DirectCommand):
@@ -496,12 +496,8 @@ class ApplyCommand(DirectCommand):
             content_lines.append("**Changes Preview:**")
             
             for file_change in patch_data['file_changes']:
-                action_emoji = {
-                    'modified': '📝',
-                    'created': '✨',
-                    'deleted': '🗑️'
-                }.get(file_change['action'], '❓')
-                
+                action_emoji = ACTION_EMOJI.get(file_change['action'], '❓')
+
                 content_lines.append(f"  {action_emoji} {file_change['action'].title()}: {file_change['path']}")
                 
                 # Show content preview for small changes
@@ -570,7 +566,7 @@ class ApplyCommand(DirectCommand):
         
         content_lines.append("**Summary of Changes:**")
         for action, count in actions_count.items():
-            emoji = {'modified': '📝', 'created': '✨', 'deleted': '🗑️'}.get(action, '❓')
+            emoji = ACTION_EMOJI.get(action, '❓')
             content_lines.append(f"  {emoji} {action.title()}: {count} files")
         
         content_lines.extend([
@@ -681,11 +677,7 @@ class ApplyCommand(DirectCommand):
         if applied_files:
             content_lines.append("**Changes Applied:**")
             for file_path, action in applied_files:
-                action_emoji = {
-                    'modified': '📝',
-                    'created': '✨',
-                    'deleted': '🗑️'
-                }.get(action, '❓')
+                action_emoji = ACTION_EMOJI.get(action, '❓')
                 content_lines.append(f"  {action_emoji} {action.title()}: {file_path}")
             content_lines.append("")
         
