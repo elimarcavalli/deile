@@ -1,5 +1,7 @@
 """Comando /compact — gerenciamento de memória e histórico de sessões."""
 
+from __future__ import annotations
+
 import asyncio
 import csv
 import json
@@ -7,7 +9,7 @@ import logging
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
 from rich.panel import Panel
 from rich.table import Table
@@ -37,7 +39,7 @@ class CompactCommand(DirectCommand):
     def __init__(self) -> None:
         super().__init__()
         self.config.description = "Gerenciar memória e histórico de sessões"
-        self.compact_config: Dict[str, Any] = {
+        self.compact_config: dict[str, Any] = {
             "auto_compress": True,
             "compress_threshold_days": 7,
             "purge_threshold_days": 30,
@@ -45,7 +47,7 @@ class CompactCommand(DirectCommand):
         }
 
     async def execute(self, context: CommandContext) -> CommandResult:
-        parts: List[str] = context.args.split() if context.args else []
+        parts: list[str] = context.args.split() if context.args else []
         action = parts[0].lower() if parts else "summary"
 
         try:
@@ -252,7 +254,7 @@ class CompactCommand(DirectCommand):
                 session_count=0,
             )
 
-        dates: List[datetime] = []
+        dates: list[datetime] = []
         for s in sessions:
             raw = s.get("last_used_at", "")
             if raw:
