@@ -10,7 +10,9 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import PlanStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args, success_panel, warning_panel
+from ._shared import (plan_status_emoji, risk_emoji, split_args,
+                      step_status_emoji, success_panel, truncate,
+                      warning_panel, wrap_command_errors)
 
 
 class PlanCommand(DirectCommand):
@@ -25,57 +27,46 @@ class PlanCommand(DirectCommand):
         super().__init__(config)
         self.plan_manager = get_plan_manager()
     
+    @wrap_command_errors("plan")
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute plan command"""
-        try:
-            parts = split_args(context)
-            
-            if not parts:
-                # List existing plans
-                return await self._list_plans()
-            
-            command = parts[0]
-            
-            if command == "create":
-                # Create new plan
-                if len(parts) < 2:
-                    raise CommandError("create command requires objective: /plan create <objective>")
-                objective = " ".join(parts[1:])
-                return await self._create_plan(objective, context)
-            
-            elif command == "show" or command == "status":
-                # Show plan details
-                if len(parts) < 2:
-                    raise CommandError("show command requires plan ID: /plan show <plan_id>")
-                plan_id = parts[1]
-                return await self._show_plan(plan_id)
-            
-            elif command == "list":
-                # Explicit list command
-                status_filter = None
-                if len(parts) > 1:
-                    try:
-                        status_filter = PlanStatus(parts[1])
-                    except ValueError:
-                        raise CommandError(f"Invalid status filter: {parts[1]}")
-                return await self._list_plans(status_filter)
-            
-            elif command == "delete":
-                # Delete plan
-                if len(parts) < 2:
-                    raise CommandError("delete command requires plan ID: /plan delete <plan_id>")
-                plan_id = parts[1]
-                return await self._delete_plan(plan_id)
-            
-            else:
-                # Assume it's an objective for creating a plan
-                objective = " ".join(parts)
-                return await self._create_plan(objective, context)
-            
-        except Exception as e:
-            if isinstance(e, CommandError):
-                raise
-            raise CommandError(f"Failed to execute plan command: {str(e)}")
+        parts = split_args(context)
+
+        if not parts:
+            return await self._list_plans()
+
+        command = parts[0]
+
+        if command == "create":
+            if len(parts) < 2:
+                raise CommandError("create command requires objective: /plan create <objective>")
+            objective = " ".join(parts[1:])
+            return await self._create_plan(objective, context)
+
+        if command == "show" or command == "status":
+            if len(parts) < 2:
+                raise CommandError("show command requires plan ID: /plan show <plan_id>")
+            plan_id = parts[1]
+            return await self._show_plan(plan_id)
+
+        if command == "list":
+            status_filter = None
+            if len(parts) > 1:
+                try:
+                    status_filter = PlanStatus(parts[1])
+                except ValueError:
+                    raise CommandError(f"Invalid status filter: {parts[1]}")
+            return await self._list_plans(status_filter)
+
+        if command == "delete":
+            if len(parts) < 2:
+                raise CommandError("delete command requires plan ID: /plan delete <plan_id>")
+            plan_id = parts[1]
+            return await self._delete_plan(plan_id)
+
+        # Assume it's an objective for creating a plan
+        objective = " ".join(parts)
+        return await self._create_plan(objective, context)
     
     async def _create_plan(self, objective: str, context: CommandContext) -> CommandResult:
         """Create a new execution plan"""
@@ -121,8 +112,7 @@ class PlanCommand(DirectCommand):
         
         # Add step summary
         for i, step in enumerate(plan.steps[:5], 1):  # Show first 5 steps
-            risk_emoji = {"low": "🟢", "medium": "🟡", "high": "🔴", "critical": "🚨"}
-            emoji = risk_emoji.get(step.risk_level.value, "❓")
+            emoji = risk_emoji(step.risk_level.value)
             approval = " ⚠️" if step.requires_approval else ""
             
             content_lines.append(f"  {i}. {emoji} {step.description}{approval}")
@@ -166,18 +156,7 @@ class PlanCommand(DirectCommand):
         table.add_column("Created", style="dim", width=16)
         
         for plan in plans:
-            # Status with emoji
-            status_emojis = {
-                "draft": "📝",
-                "ready": "⚡",
-                "running": "🔄",
-                "paused": "⏸️",
-                "completed": "✅",
-                "failed": "❌",
-                "cancelled": "🚫"
-            }
-            
-            status_emoji = status_emojis.get(plan["status"], "❓")
+            status_emoji = plan_status_emoji(plan["status"])
             status_text = f"{status_emoji} {plan['status']}"
             
             # Progress calculation
@@ -191,7 +170,7 @@ class PlanCommand(DirectCommand):
             
             table.add_row(
                 plan["id"],
-                plan["title"][:30] + ("..." if len(plan["title"]) > 30 else ""),
+                truncate(plan["title"], 30),
                 status_text,
                 str(total),
                 progress_text,
@@ -253,13 +232,9 @@ class PlanCommand(DirectCommand):
                 "**Current Steps:**"
             ])
             for step in status['current_steps']:
-                status_emoji = {
-                    "running": "🔄",
-                    "requires_approval": "⚠️"
-                }.get(step['status'], "❓")
-                
+                emoji = step_status_emoji(step['status'])
                 approval_text = " (needs approval)" if step['requires_approval'] else ""
-                content_lines.append(f"  • {status_emoji} {step['description']}{approval_text}")
+                content_lines.append(f"  • {emoji} {step['description']}{approval_text}")
         
         # Recent steps (last 5)
         content_lines.extend([
@@ -269,16 +244,7 @@ class PlanCommand(DirectCommand):
         
         recent_steps = plan.steps[-5:] if len(plan.steps) > 5 else plan.steps
         for step in recent_steps:
-            status_emojis = {
-                "pending": "⏳",
-                "running": "🔄",
-                "completed": "✅",
-                "failed": "❌",
-                "skipped": "⏭️",
-                "requires_approval": "⚠️"
-            }
-            
-            emoji = status_emojis.get(step.status.value, "❓")
+            emoji = step_status_emoji(step.status.value)
             risk_indicator = {"high": "🔴", "critical": "🚨"}.get(step.risk_level.value, "")
             
             content_lines.append(f"  • {emoji} {step.description} {risk_indicator}")

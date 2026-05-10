@@ -15,7 +15,8 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import get_memory_manager, split_args, success_panel
+from ._shared import (export_timestamp, get_memory_manager, get_session,
+                      split_args, success_panel)
 
 _CHECKPOINT_DIR = Path.home() / ".deile" / "checkpoints"
 _CHECKPOINT_INDEX = _CHECKPOINT_DIR / "index.json"
@@ -117,7 +118,7 @@ class MemoryCommand(DirectCommand):
             table.add_row("MemoryManager", f"[INDISPONÍVEL: {real_usage['error'][:40]}]", "")
         else:
             # Fallback to session-level data
-            session = getattr(context, "session", None)
+            session = get_session(context)
             conv = len(getattr(session, "conversation_history", None) or []) if session else 0
             table.add_row("Conversa", str(conv), "Mensagens no histórico")
 
@@ -125,17 +126,15 @@ class MemoryCommand(DirectCommand):
         try:
             from ...orchestration.plan_manager import get_plan_manager
             pm = get_plan_manager()
-            active = len(pm._active_plans)
             total_plans = len(await pm.list_plans())
-            table.add_row("Planos Ativos", str(active), f"Total: {total_plans}")
+            table.add_row("Planos Ativos", str(pm.active_plan_count()), f"Total: {total_plans}")
         except Exception:
             table.add_row("Planos", "[INDISPONÍVEL]", "")
 
         # Audit events
         try:
             from ...security.audit_logger import get_audit_logger
-            audit_count = len(get_audit_logger().recent_events)
-            table.add_row("Eventos de Auditoria", str(audit_count), "Buffer em memória")
+            table.add_row("Eventos de Auditoria", str(get_audit_logger().event_count()), "Buffer em memória")
         except Exception:
             pass
 
@@ -162,7 +161,7 @@ class MemoryCommand(DirectCommand):
     async def _clear_memory_type(self, context: CommandContext, memory_type: str) -> CommandResult:
         cleared = 0
         desc = ""
-        session = getattr(context, "session", None)
+        session = get_session(context)
 
         if memory_type in ("conversation", "conv", "history"):
             history = getattr(session, "conversation_history", None) if session else None
@@ -189,12 +188,9 @@ class MemoryCommand(DirectCommand):
             try:
                 from ...orchestration.plan_manager import get_plan_manager
                 pm = get_plan_manager()
-                cleared = len(pm._active_plans)
-                for plan_id in list(pm._active_plans.keys()):
+                for plan_id in pm.active_plan_ids():
                     await pm.stop_plan(plan_id)
-                pm._active_plans.clear()
-                pm._execution_locks.clear()
-                pm._stop_flags.clear()
+                cleared = pm.clear_active_state()
                 desc = "planos ativos"
             except Exception:
                 desc = "planos (nenhum encontrado)"
@@ -202,9 +198,7 @@ class MemoryCommand(DirectCommand):
         elif memory_type in ("audit", "logs"):
             try:
                 from ...security.audit_logger import get_audit_logger
-                al = get_audit_logger()
-                cleared = len(al.recent_events)
-                al.recent_events.clear()
+                cleared = get_audit_logger().clear_events()
                 desc = "eventos de auditoria"
             except Exception:
                 desc = "eventos de auditoria"
@@ -223,19 +217,14 @@ class MemoryCommand(DirectCommand):
             try:
                 from ...orchestration.plan_manager import get_plan_manager
                 pm = get_plan_manager()
-                total += len(pm._active_plans)
-                for plan_id in list(pm._active_plans.keys()):
+                for plan_id in pm.active_plan_ids():
                     await pm.stop_plan(plan_id)
-                pm._active_plans.clear()
-                pm._execution_locks.clear()
-                pm._stop_flags.clear()
+                total += pm.clear_active_state()
             except Exception:
                 pass
             try:
                 from ...security.audit_logger import get_audit_logger
-                al = get_audit_logger()
-                total += len(al.recent_events)
-                al.recent_events.clear()
+                total += get_audit_logger().clear_events()
             except Exception:
                 pass
             cleared = total
@@ -273,7 +262,7 @@ class MemoryCommand(DirectCommand):
         table.add_column("Impacto", style="red", width=12)
 
         total_impact = 0
-        session = getattr(context, "session", None)
+        session = get_session(context)
         if session:
             history = getattr(session, "conversation_history", None)
             if history:
@@ -291,8 +280,7 @@ class MemoryCommand(DirectCommand):
 
         try:
             from ...orchestration.plan_manager import get_plan_manager
-            pm = get_plan_manager()
-            active = len(pm._active_plans)
+            active = get_plan_manager().active_plan_count()
             if active > 0:
                 impact = "Alto" if active > 5 else "Médio" if active > 2 else "Baixo"
                 table.add_row("Planos Ativos", str(active), f"{active * 1000}B", impact)
@@ -302,7 +290,7 @@ class MemoryCommand(DirectCommand):
 
         try:
             from ...security.audit_logger import get_audit_logger
-            audit_count = len(get_audit_logger().recent_events)
+            audit_count = get_audit_logger().event_count()
             if audit_count > 0:
                 impact = "Médio" if audit_count > 500 else "Baixo"
                 table.add_row("Eventos de Auditoria", str(audit_count), f"{audit_count * 300}B", impact)
@@ -328,7 +316,7 @@ class MemoryCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     async def _export_memory_state(self, context: CommandContext, args: list) -> CommandResult:
-        output_path_str = args[0] if args else f"memory_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        output_path_str = args[0] if args else f"memory_export_{export_timestamp()}.json"
         output_path = Path(output_path_str)
 
         mm = get_memory_manager(context)

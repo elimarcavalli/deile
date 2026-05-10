@@ -7,13 +7,15 @@ recuperação de subsistemas, mapas PT-BR de descrições).
 
 from __future__ import annotations
 
+import functools
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from rich.panel import Panel
 from rich.text import Text
 
+from ...core.exceptions import CommandError
 from ..base import CommandContext
 
 if TYPE_CHECKING:
@@ -108,11 +110,69 @@ def emit_audit_event(
         logger.debug("emit_audit_event falhou: %s", exc)
 
 
+def get_agent(context: CommandContext | None) -> Any | None:
+    """Retorna ``context.agent`` ou ``None`` quando ausente — pattern duplicado
+    em context, cost, export, memory, model, skills commands. Aceita ``None``
+    para casos em que ``context`` pode não ter sido construído ainda."""
+    if context is None:
+        return None
+    return getattr(context, "agent", None)
+
+
+def get_session(context: CommandContext | None) -> Any | None:
+    """Retorna ``context.session`` ou ``None`` — companion de :func:`get_agent`."""
+    if context is None:
+        return None
+    return getattr(context, "session", None)
+
+
 def get_memory_manager(context: CommandContext) -> MemoryManager | None:
     """Retorna ``context.agent.memory_manager`` ou ``None`` quando ausente —
     padrão antes duplicado em compact, memory e status commands."""
-    agent = getattr(context, "agent", None)
+    agent = get_agent(context)
     return getattr(agent, "memory_manager", None) if agent else None
+
+
+def wrap_command_errors(
+    name: str,
+    *,
+    message_template: str = "Failed to execute {name} command: {exc}",
+) -> Callable[[Callable[..., Awaitable[Any]]], Callable[..., Awaitable[Any]]]:
+    """Decorator for ``SlashCommand.execute`` that wraps unexpected exceptions.
+
+    Pattern duplicated 8x in builtin commands:
+
+        try:
+            ... logic ...
+        except Exception as exc:
+            if isinstance(exc, CommandError):
+                raise
+            raise CommandError(f"Failed to execute X command: {exc}")
+
+    Usage:
+
+        @wrap_command_errors("approve")
+        async def execute(self, context): ...
+
+    ``CommandError`` (and subclasses) propagate untouched so caller-facing
+    messages are preserved; any other exception is rewrapped with the
+    template — defaulting to the existing English message, but accepting
+    a localized one (e.g. ``"Falha ao executar comando {name}: {exc}"``).
+    """
+
+    def decorator(func: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+        @functools.wraps(func)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await func(*args, **kwargs)
+            except CommandError:
+                raise
+            except Exception as exc:
+                raise CommandError(message_template.format(name=name, exc=exc)) from exc
+
+        return wrapper
+
+    return decorator
 
 
 def split_args(context: CommandContext) -> list[str]:
@@ -125,3 +185,150 @@ def split_args(context: CommandContext) -> list[str]:
     raw = getattr(context, "args", "") or ""
     stripped = raw.strip()
     return stripped.split() if stripped else []
+
+
+FILE_ACTION_EMOJI: dict[str, str] = {
+    "modified": "📝",
+    "created": "✨",
+    "deleted": "🗑️",
+}
+"""Emojis canônicos para ações de arquivo — apply/diff/patch commands."""
+
+
+RISK_EMOJI: dict[str, str] = {
+    "low": "🟢",
+    "medium": "🟡",
+    "high": "🔴",
+    "critical": "🚨",
+}
+"""Emojis canônicos por nível de risco — approve/plan/run commands."""
+
+
+PLAN_STATUS_EMOJI: dict[str, str] = {
+    "draft": "📝",
+    "ready": "⚡",
+    "running": "🔄",
+    "paused": "⏸️",
+    "completed": "✅",
+    "failed": "❌",
+    "cancelled": "🚫",
+}
+"""Emojis canônicos para ``PlanStatus`` — plan/run/stop commands."""
+
+
+STEP_STATUS_EMOJI: dict[str, str] = {
+    "pending": "⏳",
+    "running": "🔄",
+    "completed": "✅",
+    "failed": "❌",
+    "skipped": "⏭️",
+    "requires_approval": "⚠️",
+}
+"""Emojis canônicos para ``StepStatus`` — plan_command (steps recentes/atuais)."""
+
+
+def file_action_emoji(action: str) -> str:
+    """Resolve emoji para a ação de arquivo; fallback ``❓`` para desconhecidos."""
+    return FILE_ACTION_EMOJI.get(action, "❓")
+
+
+def risk_emoji(risk_level: str) -> str:
+    """Resolve emoji para o nível de risco; fallback ``❓`` para desconhecidos."""
+    return RISK_EMOJI.get(risk_level, "❓")
+
+
+def plan_status_emoji(status: str) -> str:
+    """Resolve emoji para ``PlanStatus``; fallback ``❓`` para desconhecidos."""
+    return PLAN_STATUS_EMOJI.get(status, "❓")
+
+
+def step_status_emoji(status: str) -> str:
+    """Resolve emoji para ``StepStatus``; fallback ``❓`` para desconhecidos."""
+    return STEP_STATUS_EMOJI.get(status, "❓")
+
+
+def analyze_plan_changes_stub(plan_id: str) -> dict[str, Any]:
+    """STUB — fixed mock describing hypothetical changes from a plan.
+
+    /diff and /patch both shipped private ``_analyze_plan_changes`` mocks
+    with identical hardcoded paths (``src/main.py``,
+    ``config/settings.json``, ``tests/test_main.py``) and artifact
+    references (``ARTIFACTS/session_123/...``). Diverging copies risk
+    silently misreporting different "changes" depending on which
+    command the user invokes.
+
+    Centralizing here keeps the placeholder identical until the real
+    implementation arrives — the real version will scan the plan's
+    persisted artifacts dir and the corresponding ``RUNS/`` log.
+    The return value is a superset of all fields any current caller
+    consumes; callers project the keys they need.
+    """
+    return {
+        "has_changes": True,
+        "plan_id": plan_id,
+        "summary": {
+            "files_modified": 3,
+            "files_created": 1,
+            "files_deleted": 0,
+            "lines_added": 45,
+            "lines_removed": 12,
+        },
+        "files_modified": 3,
+        "files_created": 1,
+        "files_deleted": 0,
+        "files_affected": 4,
+        "lines_added": 45,
+        "lines_removed": 12,
+        "total_changes": 57,
+        "file_changes": [
+            {
+                "path": "src/main.py",
+                "action": "modified",
+                "old_content": 'def main():\n    print("Hello")\n    return 0',
+                "new_content": 'def main():\n    print("Hello World")\n    logging.info("Application started")\n    return 0',
+                "lines_added": 15,
+                "lines_removed": 5,
+                "preview": "Added error handling and logging",
+            },
+            {
+                "path": "config/settings.json",
+                "action": "modified",
+                "old_content": '{"debug": false}',
+                "new_content": '{"debug": false, "log_level": "INFO"}',
+                "lines_added": 3,
+                "lines_removed": 2,
+                "preview": "Updated database configuration",
+            },
+            {
+                "path": "tests/test_main.py",
+                "action": "created",
+                "old_content": "",
+                "new_content": "import unittest\nfrom src.main import main\n\nclass TestMain(unittest.TestCase):\n    def test_main(self):\n        self.assertEqual(main(), 0)",
+                "lines_added": 27,
+                "lines_removed": 0,
+                "preview": "New unit tests for main module",
+            },
+        ],
+        "artifacts": [
+            "ARTIFACTS/session_123/bash_output_001.txt",
+            "ARTIFACTS/session_123/file_list_002.json",
+        ],
+        "artifacts_generated": [
+            "ARTIFACTS/session_123/bash_output_001.txt",
+            "ARTIFACTS/session_123/file_list_002.json",
+        ],
+    }
+
+
+def truncate(text: str | None, max_chars: int, suffix: str = "...") -> str:
+    """Recorta ``text`` para ``max_chars`` caracteres + ``suffix`` quando excede.
+
+    Padrão equivalente a ``text[:max_chars] + suffix if len(text) > max_chars
+    else text`` que estava duplicado em 14+ sites entre logs/approve/diff/
+    permissions/plan/run/stop/tools commands. Output fica em
+    ``max_chars + len(suffix)`` chars quando truncado, ou no comprimento
+    original quando não. ``None`` é tratado como string vazia.
+    """
+    if not text:
+        return ""
+    return text[:max_chars] + suffix if len(text) > max_chars else text

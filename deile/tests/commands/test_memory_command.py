@@ -586,7 +586,7 @@ class TestUsageHighImpact:
         """_show_memory_usage shows plans row when plan_manager has active plans."""
         with patch("deile.orchestration.plan_manager.get_plan_manager") as mock_gpm:
             mock_pm = MagicMock()
-            mock_pm._active_plans = {"p1": MagicMock(), "p2": MagicMock(), "p3": MagicMock()}
+            mock_pm.active_plan_count.return_value = 3
             mock_gpm.return_value = mock_pm
             result = await _cmd().execute(_ctx("usage"))
             assert result.success is True
@@ -605,7 +605,7 @@ class TestUsageHighImpact:
 
         with patch("deile.orchestration.plan_manager.get_plan_manager") as mock_gpm:
             mock_pm = MagicMock()
-            mock_pm._active_plans = {"p1": MagicMock(), "p2": MagicMock(), "p3": MagicMock()}  # active=3 → +3
+            mock_pm.active_plan_count.return_value = 3  # active=3 → +3
             mock_gpm.return_value = mock_pm
             result = await _cmd().execute(ctx)
             assert result.success is True
@@ -616,10 +616,9 @@ class TestUsageHighImpact:
         """Clear plans type with actually active plans removes them."""
         with patch("deile.orchestration.plan_manager.get_plan_manager") as mock_gpm:
             mock_pm = MagicMock()
-            mock_pm._active_plans = {"p1": MagicMock()}
+            mock_pm.active_plan_ids.return_value = ["p1"]
+            mock_pm.clear_active_state.return_value = 1
             mock_pm.stop_plan = AsyncMock()
-            mock_pm._execution_locks = {}
-            mock_pm._stop_flags = {}
             mock_gpm.return_value = mock_pm
             result = await _cmd().execute(_ctx("clear plans"))
             assert result.success is True

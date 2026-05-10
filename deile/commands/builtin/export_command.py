@@ -13,7 +13,7 @@ from deile.__version__ import __version__
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import export_timestamp, split_args
+from ._shared import export_timestamp, get_agent, get_session, split_args
 
 
 class ExportCommand(DirectCommand):
@@ -113,8 +113,8 @@ class ExportCommand(DirectCommand):
         include_plans: bool,
         include_session: bool,
     ) -> Dict[str, Any]:
-        agent = getattr(context, "agent", None) if context else None
-        session = getattr(context, "session", None) if context else None
+        agent = get_agent(context)
+        session = get_session(context)
 
         # --- Sessão e histórico ---
         session_id = getattr(session, "session_id", None) if session else None

@@ -15,7 +15,7 @@ from ...security.permissions import (PermissionLevel, PermissionRule,
                                      ResourceType, get_permission_manager)
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import (emit_audit_event, error_panel, split_args, success_panel,
-                      warning_panel)
+                      truncate, warning_panel)
 
 
 def _persist(pm) -> None:
@@ -164,8 +164,8 @@ class PermissionsCommand(DirectCommand):
 
         for rule in sorted(rules, key=lambda r: r.priority):
             status = "✅ On" if rule.enabled else "❌ Off"
-            rule_id = rule.id[:13] + "…" if len(rule.id) > 13 else rule.id
-            name = rule.name[:18] + "…" if len(rule.name) > 18 else rule.name
+            rule_id = truncate(rule.id, 13, "…")
+            name = truncate(rule.name, 18, "…")
             table.add_row(rule_id, name, rule.resource_type.value, rule.permission_level.value, status, str(rule.priority))
 
         return CommandResult.success_result(table, "rich")

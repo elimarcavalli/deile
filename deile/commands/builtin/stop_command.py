@@ -7,7 +7,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import PlanStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args
+from ._shared import split_args, truncate, wrap_command_errors
 
 
 class StopCommand(DirectCommand):
@@ -22,28 +22,18 @@ class StopCommand(DirectCommand):
         super().__init__(config)
         self.plan_manager = get_plan_manager()
     
+    @wrap_command_errors("stop")
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute stop command"""
-        try:
-            parts = split_args(context)
-            
-            if not parts:
-                # Show running plans that can be stopped
-                return await self._show_stoppable_plans()
-            
-            plan_id = parts[0]
-            
-            # Parse options
-            force = False
-            if len(parts) > 1 and parts[1] == "--force":
-                force = True
-            
-            return await self._stop_plan(plan_id, force)
-            
-        except Exception as e:
-            if isinstance(e, CommandError):
-                raise
-            raise CommandError(f"Failed to execute stop command: {str(e)}")
+        parts = split_args(context)
+
+        if not parts:
+            return await self._show_stoppable_plans()
+
+        plan_id = parts[0]
+        force = len(parts) > 1 and parts[1] == "--force"
+
+        return await self._stop_plan(plan_id, force)
     
     async def _show_stoppable_plans(self) -> CommandResult:
         """Show plans that can be stopped"""
@@ -100,7 +90,7 @@ class StopCommand(DirectCommand):
             
             table.add_row(
                 plan["id"],
-                plan["title"][:30] + ("..." if len(plan["title"]) > 30 else ""),
+                truncate(plan["title"], 30),
                 status_text,
                 progress_text,
                 started_at,

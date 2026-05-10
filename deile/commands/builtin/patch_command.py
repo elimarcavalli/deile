@@ -12,7 +12,8 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import export_timestamp, split_args
+from ._shared import (analyze_plan_changes_stub, export_timestamp,
+                      file_action_emoji, split_args, wrap_command_errors)
 
 
 class PatchCommand(DirectCommand):
@@ -30,45 +31,37 @@ class PatchCommand(DirectCommand):
         self.patches_dir = Path("./PATCHES")
         self.patches_dir.mkdir(exist_ok=True)
     
+    @wrap_command_errors("patch")
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute patch command"""
-        try:
-            parts = split_args(context)
-            
-            if not parts:
-                # List available patches
-                return await self._list_patches()
-            
-            plan_id = parts[0]
-            
-            # Parse options
-            output_format = "unified"  # unified, git, simple
-            output_path = None
-            include_artifacts = False
-            
-            for i, part in enumerate(parts[1:], 1):
-                if part == "--git":
-                    output_format = "git"
-                elif part == "--simple":
-                    output_format = "simple"
-                elif part == "--artifacts":
-                    include_artifacts = True
-                elif part.startswith("--output="):
-                    output_path = part.split("=", 1)[1]
-                elif part == "--output":
-                    if i + 1 < len(parts):
-                        output_path = parts[i + 1]
-                    else:
-                        raise CommandError("--output requires a path")
-                elif part.startswith("--"):
-                    raise CommandError(f"Unknown option: {part}")
-            
-            return await self._generate_patch(plan_id, output_format, output_path, include_artifacts)
-            
-        except Exception as e:
-            if isinstance(e, CommandError):
-                raise
-            raise CommandError(f"Failed to execute patch command: {str(e)}")
+        parts = split_args(context)
+
+        if not parts:
+            return await self._list_patches()
+
+        plan_id = parts[0]
+        output_format = "unified"  # unified, git, simple
+        output_path = None
+        include_artifacts = False
+
+        for i, part in enumerate(parts[1:], 1):
+            if part == "--git":
+                output_format = "git"
+            elif part == "--simple":
+                output_format = "simple"
+            elif part == "--artifacts":
+                include_artifacts = True
+            elif part.startswith("--output="):
+                output_path = part.split("=", 1)[1]
+            elif part == "--output":
+                if i + 1 < len(parts):
+                    output_path = parts[i + 1]
+                else:
+                    raise CommandError("--output requires a path")
+            elif part.startswith("--"):
+                raise CommandError(f"Unknown option: {part}")
+
+        return await self._generate_patch(plan_id, output_format, output_path, include_artifacts)
     
     async def _list_patches(self) -> CommandResult:
         """List available patch files"""
@@ -177,50 +170,8 @@ class PatchCommand(DirectCommand):
             raise CommandError(f"Failed to write patch file: {str(e)}")
     
     async def _analyze_plan_changes(self, plan_id: str) -> Dict[str, Any]:
-        """Analyze changes made by a plan"""
-        
-        # Mock implementation - in real version would analyze artifacts and file changes
-        return {
-            'has_changes': True,
-            'plan_id': plan_id,
-            'summary': {
-                'files_modified': 3,
-                'files_created': 1,
-                'files_deleted': 0,
-                'lines_added': 45,
-                'lines_removed': 12
-            },
-            'file_changes': [
-                {
-                    'path': 'src/main.py',
-                    'action': 'modified',
-                    'old_content': 'def main():\n    print("Hello")\n    return 0',
-                    'new_content': 'def main():\n    print("Hello World")\n    logging.info("Application started")\n    return 0',
-                    'lines_added': 15,
-                    'lines_removed': 5
-                },
-                {
-                    'path': 'config/settings.json',
-                    'action': 'modified',
-                    'old_content': '{"debug": false}',
-                    'new_content': '{"debug": false, "log_level": "INFO"}',
-                    'lines_added': 3,
-                    'lines_removed': 2
-                },
-                {
-                    'path': 'tests/test_main.py',
-                    'action': 'created',
-                    'old_content': '',
-                    'new_content': 'import unittest\nfrom src.main import main\n\nclass TestMain(unittest.TestCase):\n    def test_main(self):\n        self.assertEqual(main(), 0)',
-                    'lines_added': 27,
-                    'lines_removed': 0
-                }
-            ],
-            'artifacts': [
-                'ARTIFACTS/session_123/bash_output_001.txt',
-                'ARTIFACTS/session_123/file_list_002.json'
-            ]
-        }
+        """Stub — see analyze_plan_changes_stub for the canonical placeholder."""
+        return analyze_plan_changes_stub(plan_id)
     
     async def _create_patch_content(self, plan, changes: Dict[str, Any], 
                                   output_format: str, include_artifacts: bool) -> str:
@@ -387,13 +338,7 @@ class PatchCommand(DirectCommand):
         if changes['file_changes']:
             content_lines.append("**Files in Patch:**")
             for file_change in changes['file_changes'][:5]:  # Show first 5
-                action_emoji = {
-                    'modified': '📝',
-                    'created': '✨',
-                    'deleted': '🗑️'
-                }.get(file_change['action'], '❓')
-                
-                content_lines.append(f"  {action_emoji} {file_change['path']}")
+                content_lines.append(f"  {file_action_emoji(file_change['action'])} {file_change['path']}")
             
             if len(changes['file_changes']) > 5:
                 content_lines.append(f"  ... and {len(changes['file_changes']) - 5} more files")

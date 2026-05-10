@@ -12,7 +12,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandResult, DirectCommand
-from ._shared import export_timestamp, split_args
+from ._shared import export_timestamp, get_agent, get_session, split_args
 
 
 def _indisponivel(motivo: str = "") -> Dict[str, Any]:
@@ -96,8 +96,8 @@ class ContextCommand(DirectCommand):
             raise CommandError(f"Falha ao exibir contexto: {exc}") from exc
 
     async def _get_context_data(self, context) -> Dict[str, Any]:
-        agent = getattr(context, "agent", None)
-        session = getattr(context, "session", None)
+        agent = get_agent(context)
+        session = get_session(context)
 
         # Fan out the two independent async subsystems in parallel
         mm = getattr(agent, "memory_manager", None) if agent else None
