@@ -15,7 +15,6 @@ from rich.text import Text
 from deile.__version__ import __version__
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
 from deile.commands.builtin._shared import export_timestamp, success_panel
-from deile.infrastructure.monitoring.cost_tracker import get_cost_tracker
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +72,17 @@ EXEMPLOS:
     /cost export json 90                    # Exporta últimos 90 dias
     /cost estimate gemini pro 5000          # Estima 5000 tokens
 """
-        self.cost_tracker = get_cost_tracker()
+        self._cost_tracker: Any = None
+
+    @property
+    def cost_tracker(self):
+        """Cost tracker resolvido sob demanda — evita import eager de
+        ``deile.infrastructure`` na camada de comandos (Clean Arch §2)."""
+        if self._cost_tracker is None:
+            from deile.infrastructure.monitoring.cost_tracker import \
+                get_cost_tracker
+            self._cost_tracker = get_cost_tracker()
+        return self._cost_tracker
 
     async def execute(self, context: CommandContext) -> CommandResult:
         args_list: List[str] = (context.args or "").split()
