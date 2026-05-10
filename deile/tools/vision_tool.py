@@ -32,7 +32,7 @@ from typing import Any
 
 import httpx
 
-from deile.core.exceptions import PathContainmentError
+from deile.core.exceptions import DEILEError, PathContainmentError
 from deile.tools._hash_utils import sha8 as _sha8
 from deile.tools._pipeline_paths import _assert_safe_root
 
@@ -162,7 +162,12 @@ class VisionDescribeImageTool(Tool):
                         error_code="VISION_BAD_INPUT",
                     )
             elif path:
-                image_bytes, mime = _read_image_from_path(path, mime)
+                # _read_image_from_path uses synchronous open() and a chunked
+                # read loop up to 10 MiB; run it in a worker thread so the
+                # event loop is not blocked (pilar 03 §1).
+                image_bytes, mime = await asyncio.to_thread(
+                    _read_image_from_path, path, mime
+                )
             else:
                 image_bytes, mime = await _download_image(url)
         except VisionToolError as e:
@@ -208,11 +213,16 @@ class VisionDescribeImageTool(Tool):
         )
 
 
-class VisionToolError(Exception):
-    """Typed error so the tool returns a consistent error_code."""
+class VisionToolError(DEILEError):
+    """Typed error so the tool returns a consistent error_code.
+
+    Inherits from DEILEError (pilar 03 §6) so a single ``except DEILEError``
+    handler upstream captures it alongside ``PathContainmentError``,
+    ``ToolError``, ``ValidationError``, and other domain errors.
+    """
 
     def __init__(self, code: str, message: str):
-        super().__init__(message)
+        super().__init__(message, error_code=code)
         self.code = code
 
 
