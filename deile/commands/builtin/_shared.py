@@ -8,7 +8,7 @@ recuperação de subsistemas, mapas PT-BR de descrições).
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from rich.panel import Panel
@@ -24,30 +24,31 @@ logger = logging.getLogger(__name__)
 
 
 def export_timestamp() -> str:
-    """Formato único ``YYYYMMDD_HHMMSS`` para nomes de arquivos exportados —
-    ponto único de mudança caso o projeto adote UTC/TZ-aware no futuro."""
-    return datetime.now().strftime("%Y%m%d_%H%M%S")
+    """Timestamp UTC ``YYYYMMDD_HHMMSS`` para nomes de arquivos exportados.
+
+    UTC garante consistência entre fusos horários, alinhado com export_command.
+    """
+    return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
-def colored_panel(message: str, title: str | None, color: str) -> Panel:
-    """Wrapper para o padrão ``Panel(Text(msg, style=C), title=T,
-    border_style=C)`` — texto e borda compartilham a mesma cor."""
+def _colored_panel(message: str, title: str | None, color: str) -> Panel:
+    """Implementação interna — callers externos usam error/warning/success_panel."""
     return Panel(Text(message, style=color), title=title, border_style=color)
 
 
 def error_panel(message: str, title: str | None = "Erro") -> Panel:
     """Painel vermelho — usado em paths de falha."""
-    return colored_panel(message, title, "red")
+    return _colored_panel(message, title, "red")
 
 
 def warning_panel(message: str, title: str | None = "Aviso") -> Panel:
     """Painel amarelo — usado em paths de aviso/indisponível."""
-    return colored_panel(message, title, "yellow")
+    return _colored_panel(message, title, "yellow")
 
 
 def success_panel(message: str, title: str | None = "Sucesso") -> Panel:
     """Painel verde — usado em paths de sucesso."""
-    return colored_panel(message, title, "green")
+    return _colored_panel(message, title, "green")
 
 
 # Mapa canônico consumido por /version e /welcome — manter em sync

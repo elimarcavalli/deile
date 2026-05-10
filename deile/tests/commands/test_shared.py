@@ -14,7 +14,7 @@ from unittest.mock import patch
 from rich.panel import Panel
 
 from deile.commands.builtin._shared import (FLAG_DESCRICOES_PTBR,
-                                            PROJECT_LINKS, colored_panel,
+                                            PROJECT_LINKS, _colored_panel,
                                             emit_audit_event, error_panel,
                                             export_timestamp,
                                             get_memory_manager, split_args,
@@ -58,7 +58,7 @@ class TestSplitArgs:
 
 class TestPanelHelpers:
     def test_colored_panel_returns_panel(self):
-        panel = colored_panel("hello", "Title", "red")
+        panel = _colored_panel("hello", "Title", "red")
         assert isinstance(panel, Panel)
         assert panel.border_style == "red"
         assert panel.title == "Title"
@@ -83,7 +83,7 @@ class TestPanelHelpers:
         assert panel.title == "Sucesso"
 
     def test_panel_accepts_none_title(self):
-        panel = colored_panel("msg", None, "blue")
+        panel = _colored_panel("msg", None, "blue")
         assert panel.title is None
 
 
