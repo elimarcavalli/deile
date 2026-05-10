@@ -12,7 +12,6 @@ command in the same session sees consistent state.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Optional
 
 from deile.orchestration.pipeline.constants import PIPELINE_DEFAULT_REPO

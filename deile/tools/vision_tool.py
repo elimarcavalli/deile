@@ -32,6 +32,8 @@ from typing import Any
 
 import httpx
 
+from deile.tools._hash_utils import sha8 as _sha8
+
 from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
                    ToolSchema)
 
@@ -46,9 +48,6 @@ _DEFAULT_PROMPT = (
     "Inclua: objetos visíveis, texto legível (transcreva), pessoas (sem identificar), "
     "cores predominantes e contexto geral. Sem floreios."
 )
-
-
-from deile.tools._hash_utils import sha8 as _sha8
 
 
 def _resolve_vision_model() -> str:
