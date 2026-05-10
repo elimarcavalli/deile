@@ -15,28 +15,15 @@ the next monitor tick.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 
 from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.scheduler import (OneshotEntry,
                                                     RecurringEntry,
                                                     ScheduleError,
                                                     ScheduleStore)
+from deile.tools._pipeline_paths import resolve_base_path as _resolve_base_path
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
-
-
-def _resolve_base_path() -> Path:
-    from deile.config.settings import get_settings
-
-    s = get_settings()
-    if s.pipeline_base_path:
-        return s.pipeline_base_path.resolve()
-    cwd = Path.cwd()
-    for ancestor in (cwd, *cwd.parents):
-        if (ancestor / ".git").is_dir() and (ancestor / "deile.py").is_file():
-            return ancestor
-    return cwd
 
 
 class PipelineScheduleTool(Tool):

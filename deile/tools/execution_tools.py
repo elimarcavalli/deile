@@ -361,16 +361,14 @@ class EnhancedExecutionTool(SyncTool):
         input_data = context.parsed_args.get("input", "")
         
         if not command:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message="No command provided",
                 error=ValidationError("command is required")
             )
         
         # Security checks
         if not self._is_command_safe(command):
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=f"Potentially dangerous command blocked: {command}",
                 error=PermissionError("Command blocked by security policy")
             )
@@ -383,8 +381,7 @@ class EnhancedExecutionTool(SyncTool):
                 
         except Exception as e:
             logger.error("Enhanced execution error: %s", e)
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=f"Execution failed: {str(e)}",
                 error=e
             )
@@ -404,8 +401,7 @@ class EnhancedExecutionTool(SyncTool):
             )
             
             if not pty_session.start():
-                return ToolResult(
-                    status=ToolStatus.ERROR,
+                return ToolResult.error_result(
                     message="Failed to start PTY session",
                     error=RuntimeError("PTY initialization failed")
                 )
@@ -484,8 +480,7 @@ class EnhancedExecutionTool(SyncTool):
                 except Exception as exc:
                     logger.warning("Failed to terminate session %s during cleanup: %s", session_id, exc, exc_info=True)
             
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=f"Interactive execution failed: {str(e)}",
                 error=e
             )
@@ -529,8 +524,7 @@ class EnhancedExecutionTool(SyncTool):
             )
             
         except subprocess.TimeoutExpired:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=f"Command timed out after {timeout} seconds",
                 error=TimeoutError(f"Command timeout: {timeout}s")
             )
@@ -662,8 +656,7 @@ class PythonExecutionTool(SyncTool):
         timeout = context.parsed_args.get("timeout", 30)
 
         if not code:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message="No Python code provided",
                 error=ValidationError("code is required"),
             )
@@ -698,8 +691,7 @@ class PythonExecutionTool(SyncTool):
                             "stderr": stderr,
                         },
                     )
-                return ToolResult(
-                    status=ToolStatus.ERROR,
+                return ToolResult.error_result(
                     data=stderr.strip(),
                     message=(
                         f"Python failed with exit code {result.returncode}.\n"
@@ -719,14 +711,12 @@ class PythonExecutionTool(SyncTool):
                     pass
 
         except subprocess.TimeoutExpired:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=f"Python code timed out after {timeout} seconds",
                 error=TimeoutError(f"Execution timeout: {timeout}s"),
             )
         except Exception as e:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=f"Error executing Python code: {str(e)}",
                 error=e,
             )
@@ -820,8 +810,7 @@ class PipInstallTool(SyncTool):
         timeout = context.parsed_args.get("timeout", 120)
 
         if not package:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message="No package provided",
                 error=ValidationError("package is required"),
             )
@@ -829,8 +818,7 @@ class PipInstallTool(SyncTool):
         spec = f"{package}=={version}" if version else package
 
         if not self._SPEC_RE.match(spec):
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=(
                     f"Refused to install: {spec!r} does not match PEP 508 package "
                     "spec format. Allowed: name + optional [extras] + optional "
@@ -853,14 +841,12 @@ class PipInstallTool(SyncTool):
                 cwd=context.working_directory,
             )
         except subprocess.TimeoutExpired:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=f"pip install {spec} timed out after {timeout} seconds",
                 error=TimeoutError(f"pip timeout: {timeout}s"),
             )
         except Exception as e:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=f"Failed to invoke pip: {e}",
                 error=e,
             )
@@ -869,8 +855,7 @@ class PipInstallTool(SyncTool):
         stderr = result.stderr or ""
 
         if result.returncode != 0:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 data=stderr.strip(),
                 message=(
                     f"pip install {spec} failed with exit code {result.returncode}.\n"
@@ -957,8 +942,7 @@ class TestRunnerTool(SyncTool):
         }
         
         if test_type not in test_commands:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=f"Unsupported test type: {test_type}",
                 error=ValidationError(f"test_type must be one of: {list(test_commands.keys())}")
             )
@@ -1011,14 +995,12 @@ class TestRunnerTool(SyncTool):
             )
             
         except subprocess.TimeoutExpired:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message="Tests timed out after 5 minutes",
                 error=TimeoutError("Test execution timeout")
             )
         except Exception as e:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=f"Error running tests: {str(e)}",
                 error=e
             )

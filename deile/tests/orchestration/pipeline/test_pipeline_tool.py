@@ -137,13 +137,10 @@ class TestPipelineToolMonitorReuse:
         # The same instance was reused — no new monitor was attached to the agent.
         assert agent.pipeline_monitor is existing
 
-    async def test_creates_monitor_when_agent_has_none(self, monkeypatch, tmp_path):
+    async def test_creates_monitor_when_agent_has_none(self, repo_git_tmp):
         # The fresh-monitor path goes through WorktreeManager which validates
-        # that base_repo_path is a real git repo. Initialize one.
-        import subprocess
-        subprocess.run(["git", "init", str(tmp_path)], check=True,
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        monkeypatch.setenv("DEILE_PIPELINE_BASE_PATH", str(tmp_path))
+        # that base_repo_path is a real git repo. repo_git_tmp provides one
+        # inside the git repo root (safe root) with DEILE_PIPELINE_BASE_PATH set.
         tool = PipelineTool()
         agent = MagicMock(spec=["pipeline_monitor"])
         agent.pipeline_monitor = None
@@ -153,11 +150,7 @@ class TestPipelineToolMonitorReuse:
         # The tool tried to attach a fresh monitor to the agent.
         assert agent.pipeline_monitor is not None
 
-    async def test_works_without_agent(self, monkeypatch, tmp_path):
-        import subprocess
-        subprocess.run(["git", "init", str(tmp_path)], check=True,
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        monkeypatch.setenv("DEILE_PIPELINE_BASE_PATH", str(tmp_path))
+    async def test_works_without_agent(self, repo_git_tmp):
         tool = PipelineTool()
         ctx = _make_context("status")  # no agent
         result = await tool.execute(ctx)

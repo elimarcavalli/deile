@@ -75,6 +75,7 @@ dependencies = [
 bot = ["deilebot @ git+https://github.com/elimarcavalli/deilebot.git@main"]
 scheduler = ["apscheduler>=3.10"]
 webhook = ["fastapi>=0.100", "uvicorn>=0.23"]
+test = ["aiohttp>=3.9", "pytest>=7", "pytest-asyncio>=0.23", "pytest-cov>=4"]
 
 [project.scripts]
 deile = "deile.cli:main"
