@@ -827,3 +827,46 @@ async def test_ipv4_mapped_link_local_rejected(tool, ctx_factory):
     res = await tool.execute(ctx_factory(image_url="http://[::ffff:169.254.169.254]/"))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+
+
+# ---- file:// audit resource must not contain credentials --------------------
+
+
+async def test_file_uri_remote_authority_audit_resource_sanitised(tool, ctx_factory, monkeypatch):
+    """Credentials in file://user:pass@host/path must NOT appear in the audit resource."""
+    calls = []
+
+    def _fake_audit(resource, action, details, suspicious=False):
+        calls.append({"resource": resource, "suspicious": suspicious})
+
+    monkeypatch.setattr("deile.tools.vision_tool._try_audit_blocked", _fake_audit)
+    res = await tool.execute(ctx_factory(image_path="file://user:secret@remotehost/etc/passwd"))
+    assert res.is_error
+    assert calls, "_try_audit_blocked was not called"
+    assert "secret" not in calls[0]["resource"], "credentials leaked to audit resource"
+
+
+# ---- DNS zone-ID addresses are blocked, not skipped -------------------------
+
+
+async def test_dns_zone_id_address_blocked(monkeypatch):
+    """IPv6 addresses with zone IDs (e.g. fe80::1%eth0) must be blocked, not skipped.
+
+    ipaddress.ip_address() does not accept zone IDs and raises ValueError; the
+    fix strips the zone ID before parsing so link-local addrs are still caught.
+    """
+    import socket as _socket
+    from deile.tools.vision_tool import _check_ssrf, VisionToolError
+
+    async def _fake_getaddrinfo(host, port, family=0, type=0):
+        # Simulate resolver returning an IPv6 link-local with zone ID
+        return [(None, None, None, None, ("fe80::1%eth0", 0, 0, 0))]
+
+    monkeypatch.setattr(
+        "deile.tools.vision_tool.asyncio.to_thread",
+        lambda fn, *args, **kw: _fake_getaddrinfo(*args),
+    )
+
+    with pytest.raises(VisionToolError) as exc_info:
+        await _check_ssrf("http://example.com/img.png")
+    assert exc_info.value.code == "VISION_BAD_INPUT"

@@ -352,7 +352,7 @@ async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes
         _parsed = _urlparse(path)
         if _parsed.netloc and _parsed.netloc.lower() not in ("", "localhost"):
             _try_audit_blocked(
-                resource=path,
+                resource=_sanitise_url_for_audit(path),
                 action="describe",
                 details={"reason": "file_uri_remote_authority", "authority": _parsed.netloc},
                 suspicious=True,
@@ -405,6 +405,8 @@ async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes
                         "VISION_IMAGE_TOO_LARGE",
                         f"image_path exceeds {_MAX_IMAGE_BYTES} bytes",
                     )
+    except VisionToolError:
+        raise
     except OSError as e:
         raise VisionToolError("VISION_READ_FAILED", f"could not read {path!r}: {type(e).__name__}")
     return bytes(buf), mime_hint
@@ -518,20 +520,27 @@ async def _check_ssrf(url: str) -> None:
     except OSError as exc:
         raise VisionToolError("VISION_DOWNLOAD_FAILED", f"DNS resolution failed for {host!r}: {type(exc).__name__}")
     for *_, sockaddr in infos:
+        # Strip IPv6 zone ID (e.g. "fe80::1%eth0") before parsing; ipaddress
+        # does not accept zone IDs and would raise ValueError, silently skipping
+        # what is actually a link-local address.
+        addr_str = sockaddr[0].split("%")[0]
         try:
-            ip = ipaddress.ip_address(sockaddr[0])
-            if _is_ssrf_blocked(ip):
-                _try_audit_blocked(
-                    resource=_audit_url, action="ssrf_check",
-                    details={"reason": "private_ip_resolved", "host": host, "ip": str(ip)},
-                    suspicious=True,
-                )
-                raise VisionToolError(
-                    "VISION_BAD_INPUT",
-                    f"image_url {host!r} resolves to non-public IP {ip}",
-                )
+            ip = ipaddress.ip_address(addr_str)
         except ValueError:
-            continue
+            raise VisionToolError(
+                "VISION_BAD_INPUT",
+                f"DNS resolved unparseable address for {host!r}",
+            )
+        if _is_ssrf_blocked(ip):
+            _try_audit_blocked(
+                resource=_audit_url, action="ssrf_check",
+                details={"reason": "private_ip_resolved", "host": host, "ip": str(ip)},
+                suspicious=True,
+            )
+            raise VisionToolError(
+                "VISION_BAD_INPUT",
+                f"image_url {host!r} resolves to non-public IP {ip}",
+            )
 
 
 def _validate_magic_bytes(image_bytes: bytes, mime: str) -> None:
