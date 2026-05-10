@@ -198,10 +198,7 @@ class ClearCommand(DirectCommand):
         """Step 4: clear active plans/locks/stop-flags from PlanManager singleton."""
         try:
             from ...orchestration.plan_manager import get_plan_manager
-            pm = get_plan_manager()
-            pm._active_plans.clear()
-            pm._execution_locks.clear()
-            pm._stop_flags.clear()
+            get_plan_manager().clear_active_state()
             return ["✅ Active plans cleared"]
         except Exception as exc:
             logger.warning("Could not clear orchestration state: %s", exc)

@@ -457,7 +457,7 @@ class StatusCommand(DirectCommand):
         try:
             from ...orchestration.plan_manager import get_plan_manager
             plan_manager = get_plan_manager()
-            active_plans = list(plan_manager._active_plans.values())
+            active_plans = plan_manager.iter_active_plans()
             all_plans = await plan_manager.list_plans()
 
             table = Table(
