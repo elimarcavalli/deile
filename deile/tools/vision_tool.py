@@ -31,7 +31,7 @@ import logging
 import socket
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse as _urlparse
+from urllib.parse import unquote as _urlunquote, urlparse as _urlparse
 
 import aiofiles
 import httpx
@@ -62,8 +62,8 @@ _ALLOWED_VISION_MODELS: frozenset[str] = frozenset({
 _MAGIC_BYTES: dict[str, bytes] = {
     "image/png": b"\x89PNG",
     "image/jpeg": b"\xff\xd8\xff",
-    "image/gif": b"GIF8",  # truthy sentinel only; _validate_magic_bytes checks full GIF87a|GIF89a
-    "image/webp": b"RIFF",
+    # GIF and WebP have multi-part or variant magic checks handled explicitly in
+    # _validate_magic_bytes; they are not listed here.
 }
 _EXT_TO_MIME = {
     ".png": "image/png",
@@ -254,7 +254,7 @@ class VisionDescribeImageTool(Tool):
         except Exception as e:
             logger.exception("vision image acquisition failed")
             return ToolResult.error_result(
-                f"image download failed: {type(e).__name__}: {e}",
+                f"image download failed: {type(e).__name__}",
                 error_code="VISION_DOWNLOAD_FAILED",
                 error=e,
             )
@@ -287,7 +287,7 @@ class VisionDescribeImageTool(Tool):
         except Exception as e:
             logger.exception("vision LLM call failed")
             return ToolResult.error_result(
-                f"vision LLM call failed: {type(e).__name__}: {e}",
+                f"vision LLM call failed: {type(e).__name__}",
                 error_code="VISION_LLM_FAILED",
                 error=e,
             )
@@ -347,7 +347,7 @@ async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes
                 "VISION_BAD_INPUT",
                 f"file:// URI with non-localhost authority is not supported: {path!r}",
             )
-        path = _parsed.path
+        path = _urlunquote(_parsed.path)
     p = Path(path).resolve()
     await asyncio.to_thread(_assert_safe_root, p)
     if not await asyncio.to_thread(p.is_file):
@@ -490,10 +490,10 @@ async def _check_ssrf(url: str) -> None:
             asyncio.to_thread(socket.getaddrinfo, host, None, 0, socket.SOCK_STREAM),
             timeout=_DNS_TIMEOUT_S,
         )
-    except TimeoutError:
+    except asyncio.TimeoutError:
         raise VisionToolError("VISION_DOWNLOAD_FAILED", f"DNS resolution timed out for {host!r}")
     except OSError as exc:
-        raise VisionToolError("VISION_DOWNLOAD_FAILED", f"DNS resolution failed for {host!r}: {exc}")
+        raise VisionToolError("VISION_DOWNLOAD_FAILED", f"DNS resolution failed for {host!r}: {type(exc).__name__}")
     for *_, sockaddr in infos:
         try:
             ip = ipaddress.ip_address(sockaddr[0])
@@ -515,18 +515,20 @@ def _validate_magic_bytes(image_bytes: bytes, mime: str) -> None:
     """Verify image bytes carry the expected magic signature for the declared MIME.
 
     Detects MIME spoofing: a server (or caller) claiming image/png while
-    returning JavaScript/polyglot bytes. WebP needs two checks:
-    b[0:4]==RIFF and b[8:12]==WEBP. GIF checks the full 6-byte signature
-    (GIF87a or GIF89a) to block GIF8<junk> polyglot files.
+    returning JavaScript/polyglot bytes.
+
+    GIF: checks full 6-byte signature (GIF87a or GIF89a) to block GIF8<junk> polyglots.
+    WebP: checks RIFF at [0:4] and WEBP at [8:12] (two-field format).
+    JPEG/PNG: simple prefix match via _MAGIC_BYTES.
     """
-    magic = _MAGIC_BYTES.get(mime)
-    if not magic:
-        return
-    if mime == "image/webp":
-        ok = image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP"
-    elif mime == "image/gif":
+    if mime == "image/gif":
         ok = image_bytes[:6] in (b"GIF87a", b"GIF89a")
+    elif mime == "image/webp":
+        ok = image_bytes[:4] == b"RIFF" and image_bytes[8:12] == b"WEBP"
     else:
+        magic = _MAGIC_BYTES.get(mime)
+        if not magic:
+            return
         ok = image_bytes[:len(magic)] == magic
     if not ok:
         raise VisionToolError("VISION_BAD_INPUT", f"image bytes do not match declared MIME {mime!r}")
@@ -544,7 +546,12 @@ async def _download_image(url: str) -> tuple[bytes, str]:
     await _check_ssrf(url)
     async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT_S, follow_redirects=False) as client:
         async with client.stream("GET", url) as resp:
-            if resp.status_code >= 300:
+            if 300 <= resp.status_code < 400:
+                raise VisionToolError(
+                    "VISION_DOWNLOAD_FAILED",
+                    f"image_url redirects (status {resp.status_code}; follow_redirects disabled)",
+                )
+            if resp.status_code >= 400:
                 raise VisionToolError(
                     "VISION_DOWNLOAD_FAILED",
                     f"upstream returned {resp.status_code}",
@@ -562,7 +569,7 @@ async def _download_image(url: str) -> tuple[bytes, str]:
                     f"(supported: {sorted(_GEMINI_SUPPORTED_MIMES)})",
                 )
             buf = bytearray()
-            async for chunk in resp.aiter_bytes():
+            async for chunk in resp.aiter_bytes(chunk_size=65536):
                 buf.extend(chunk)
                 if len(buf) > _MAX_IMAGE_BYTES:
                     raise VisionToolError(

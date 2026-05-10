@@ -70,6 +70,11 @@ def _assert_safe_root(path: Path) -> None:
 
 
 def resolve_base_path(override: str | None = None) -> Path:
+    """Resolve the pipeline repository root.
+
+    Synchronous; performs blocking filesystem I/O (stat, exists, resolve).
+    Callers in async contexts must wrap with ``asyncio.to_thread(resolve_base_path, ...)``.
+    """
     if override:
         resolved = Path(override).resolve()
         _assert_safe_root(resolved)
@@ -84,6 +89,6 @@ def resolve_base_path(override: str | None = None) -> Path:
     cwd = Path.cwd()
     for ancestor in (cwd, *cwd.parents):
         if (ancestor / ".git").exists() and (ancestor / "deile.py").is_file():
-            return ancestor
+            return ancestor.resolve()
     # cwd is trusted by definition (operator chose it); no _assert_safe_root needed.
-    return cwd
+    return cwd.resolve()

@@ -681,3 +681,79 @@ async def test_operator_model_env_var_invalid_falls_back_to_default(
     res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/png"))
     assert res.is_success
     assert captured["model"] == vt._DEFAULT_VISION_MODEL
+
+
+# ---- asyncio.TimeoutError on DNS (Python 3.9/3.10 compat) ------------------
+
+
+async def test_dns_asyncio_timeout_returns_download_failed(monkeypatch):
+    """asyncio.TimeoutError from DNS lookup must yield VISION_DOWNLOAD_FAILED.
+
+    On Python 3.9/3.10 asyncio.TimeoutError does NOT inherit from the builtin
+    TimeoutError (that changed in 3.11), so ``except TimeoutError`` silently
+    misses it and the error propagates as an unexpected exception.  This test
+    verifies the handler uses ``except asyncio.TimeoutError``.
+    """
+    import asyncio as _asyncio
+    from deile.tools.vision_tool import _check_ssrf, VisionToolError
+
+    async def _timeout(awaitable, timeout):
+        try:
+            awaitable.close()
+        except AttributeError:
+            pass
+        raise _asyncio.TimeoutError()
+
+    monkeypatch.setattr(_asyncio, "wait_for", _timeout)
+    with pytest.raises(VisionToolError) as exc_info:
+        await _check_ssrf("http://example.com/img.png")
+    assert exc_info.value.code == "VISION_DOWNLOAD_FAILED"
+    assert "timed out" in str(exc_info.value)
+
+
+# ---- file:// percent-encoded path decoding ----------------------------------
+
+
+async def test_file_uri_percent_encoded_path_decoded(
+    tool, ctx_factory, monkeypatch, repo_tmp_path
+):
+    """file:// URIs with percent-encoded spaces (%20) must resolve correctly."""
+    async def fake(image_bytes, mime, prompt, model):
+        return "ok"
+
+    monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
+    img_dir = repo_tmp_path / "my dir"
+    img_dir.mkdir()
+    img_path = img_dir / "test.png"
+    img_path.write_bytes(PNG_1x1_BYTES)
+    uri = "file://" + str(img_path).replace(" ", "%20")
+    res = await tool.execute(ctx_factory(image_path=uri))
+    assert res.is_success
+
+
+# ---- 3xx redirect yields distinct error message -----------------------------
+
+
+async def test_url_redirect_distinct_error_message(tool, ctx_factory, monkeypatch):
+    """A 3xx redirect must return VISION_DOWNLOAD_FAILED with 'redirect' in the message."""
+    monkeypatch.setattr("deile.tools.vision_tool._check_ssrf", _no_ssrf_check)
+    from aiohttp import web
+
+    async def _redirect_handler(req):
+        raise web.HTTPMovedPermanently(location="https://other.example.com/img.png")
+
+    app = web.Application()
+    app.router.add_get("/moved.png", _redirect_handler)
+    runner = web.AppRunner(app, handle_signals=False, access_log=None)
+    await runner.setup()
+    site = web.TCPSite(runner, host="127.0.0.1", port=0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    url = f"http://127.0.0.1:{port}/moved.png"
+    try:
+        res = await tool.execute(ctx_factory(image_url=url))
+    finally:
+        await runner.cleanup()
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_DOWNLOAD_FAILED"
+    assert "redirect" in res.message
