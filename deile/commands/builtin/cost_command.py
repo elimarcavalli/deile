@@ -5,7 +5,7 @@ Comando /cost — rastreamento de custos, orçamentos e análise financeira
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, List, Tuple
 
 from rich.console import Group
 from rich.panel import Panel

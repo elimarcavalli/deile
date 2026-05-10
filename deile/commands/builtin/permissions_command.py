@@ -14,8 +14,8 @@ from ...core.exceptions import CommandError
 from ...security.permissions import (PermissionLevel, PermissionRule,
                                      ResourceType, get_permission_manager)
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import (emit_audit_event, error_panel, split_args,
-                      success_panel, warning_panel)
+from ._shared import (emit_audit_event, error_panel, split_args, success_panel,
+                      warning_panel)
 
 
 def _persist(pm) -> None:
