@@ -14,7 +14,8 @@ from ...core.exceptions import CommandError
 from ...security.permissions import (PermissionLevel, PermissionRule,
                                      ResourceType, get_permission_manager)
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import error_panel, split_args, success_panel, warning_panel
+from ._shared import (emit_audit_event, error_panel, split_args,
+                      success_panel, warning_panel)
 
 
 def _persist(pm) -> None:
@@ -472,21 +473,15 @@ class PermissionsCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     def _emit_audit_event(self, action: str, resource: str, details_msg: str) -> None:
-        try:
-            from ...security.audit_logger import (AuditEventType,
-                                                  SeverityLevel,
-                                                  get_audit_logger)
-            get_audit_logger().log_event(
-                event_type=AuditEventType.SECURITY_POLICY_CHANGED,
-                severity=SeverityLevel.WARNING,
-                actor="user",
-                resource=resource,
-                action=action,
-                result="success",
-                details={"message": details_msg},
-            )
-        except Exception:
-            pass
+        from ...security.audit_logger import AuditEventType, SeverityLevel
+        emit_audit_event(
+            event_type=AuditEventType.SECURITY_POLICY_CHANGED,
+            severity=SeverityLevel.WARNING,
+            resource=resource,
+            action=action,
+            result="success",
+            details={"message": details_msg},
+        )
 
     def get_help(self) -> str:
         return "Gerenciar regras de segurança e permissões para tools e recursos."

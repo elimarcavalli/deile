@@ -21,8 +21,8 @@ from deile.__version__ import __version__
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import (error_panel, get_memory_manager, split_args,
-                      success_panel, warning_panel)
+from ._shared import (emit_audit_event, error_panel, get_memory_manager,
+                      split_args, success_panel, warning_panel)
 
 _PROVIDER_HOSTS: Dict[str, str] = {
     "openai": "api.openai.com",
@@ -98,21 +98,14 @@ class StatusCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     def _emit_audit_event(self, context: CommandContext) -> None:
-        try:
-            from ...security.audit_logger import (AuditEventType,
-                                                  SeverityLevel,
-                                                  get_audit_logger)
-            get_audit_logger().log_event(
-                event_type=AuditEventType.COMMAND_EXECUTED,
-                severity=SeverityLevel.INFO,
-                actor="user",
-                resource="/status",
-                action="execute",
-                result="initiated",
-                details={"args": context.args},
-            )
-        except Exception:
-            pass
+        from ...security.audit_logger import AuditEventType, SeverityLevel
+        emit_audit_event(
+            event_type=AuditEventType.COMMAND_EXECUTED,
+            severity=SeverityLevel.INFO,
+            resource="/status",
+            action="execute",
+            details={"args": context.args},
+        )
 
     # ------------------------------------------------------------------
     # Complete overview

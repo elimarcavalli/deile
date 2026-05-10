@@ -66,6 +66,38 @@ FLAG_DESCRICOES_PTBR: Dict[str, str] = {
 }
 
 
+def emit_audit_event(
+    *,
+    event_type: Any,
+    severity: Any,
+    resource: str,
+    action: str,
+    result: str = "initiated",
+    details: Optional[Dict[str, Any]] = None,
+    actor: str = "user",
+) -> None:
+    """Loga um evento de auditoria, falhando silenciosamente.
+
+    Centraliza o try/except + lazy-import + ``log_event`` que aparecia
+    duplicado em ``permissions_command.py`` e ``status_command.py``.
+    Mantém a semântica fail-silent original (qualquer falha de import
+    ou no logger é engolida).
+    """
+    try:
+        from ...security.audit_logger import get_audit_logger
+        get_audit_logger().log_event(
+            event_type=event_type,
+            severity=severity,
+            actor=actor,
+            resource=resource,
+            action=action,
+            result=result,
+            details=details or {},
+        )
+    except Exception:
+        pass
+
+
 def get_memory_manager(context: CommandContext) -> Optional[Any]:
     """Recupera o `memory_manager` exposto pelo agente do contexto.
 
