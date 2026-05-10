@@ -31,6 +31,7 @@ def _assert_safe_root(path: Path) -> None:
     This enforces Pilar 08: arbitrary caller-supplied paths must be contained
     within a trusted directory before any filesystem access.
     """
+    path = path.resolve()
     safe_roots = [Path.home().resolve()]
     cwd = Path.cwd()
     for ancestor in (cwd, *cwd.parents):
@@ -67,6 +68,7 @@ def resolve_base_path(override: Optional[str] = None) -> Path:
         return resolved
     cwd = Path.cwd()
     for ancestor in (cwd, *cwd.parents):
-        if (ancestor / ".git").is_dir() and (ancestor / "deile.py").is_file():
+        if (ancestor / ".git").exists() and (ancestor / "deile.py").is_file():
             return ancestor
+    # cwd is trusted by definition (operator chose it); no _assert_safe_root needed.
     return cwd

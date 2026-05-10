@@ -22,6 +22,27 @@ from deile.core.exceptions import PathContainmentError
 from deile.tools._pipeline_paths import _assert_safe_root, resolve_base_path
 
 # ---------------------------------------------------------------------------
+# Fixtures for vision_tool adversarial tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _vision_tool():
+    from deile.tools.vision_tool import VisionDescribeImageTool
+
+    return VisionDescribeImageTool()
+
+
+@pytest.fixture
+def _ctx_factory():
+    from deile.tools.base import ToolContext
+
+    def _make(**kwargs):
+        return ToolContext(user_input="", parsed_args=kwargs)
+
+    return _make
+
+# ---------------------------------------------------------------------------
 # adversarial: paths that must be rejected
 # ---------------------------------------------------------------------------
 
@@ -81,3 +102,49 @@ def test_assert_safe_root_distinguishes_prefix_from_containment(repo_tmp_path):
     sub.mkdir(parents=True, exist_ok=True)
     # sub.resolve() == repo_tmp_path / "b" which IS inside the safe root
     _assert_safe_root(sub.resolve())
+
+
+# ---------------------------------------------------------------------------
+# adversarial: vision_tool rejects paths outside safe roots
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.security
+async def test_image_path_outside_safe_roots_returns_bad_input(_vision_tool, _ctx_factory):
+    """vision_tool must return VISION_BAD_INPUT for paths outside safe roots.
+
+    /etc/passwd is outside both Path.home() and the git repo root, so
+    _assert_safe_root raises PathContainmentError which the tool maps to
+    VISION_BAD_INPUT without crashing.
+    """
+    res = await _vision_tool.execute(_ctx_factory(image_path="/etc/passwd"))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+
+
+# ---------------------------------------------------------------------------
+# happy path: _assert_safe_root accepts paths inside a git worktree
+# (where .git is a file, not a directory)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.security
+def test_assert_safe_root_accepts_git_worktree(tmp_path, monkeypatch):
+    """_assert_safe_root must accept a path inside a directory whose ancestor
+    has a .git *file* (git worktree), not just a .git directory.
+
+    We simulate a worktree by creating a .git file in tmp_path and
+    monkeypatching Path.cwd() so the guard's ancestor walk starts there.
+    The target subdir is inside tmp_path, so once .git.exists() is True,
+    it must be accepted.
+    """
+    git_file = tmp_path / ".git"
+    git_file.write_text("gitdir: /path/to/real/repo/.git/worktrees/my-worktree")
+    target = tmp_path / "subdir"
+    target.mkdir()
+
+    # Monkeypatch Path.cwd() so _assert_safe_root walks from tmp_path.
+    monkeypatch.setattr(Path, "cwd", classmethod(lambda cls: tmp_path))
+
+    # Must not raise — tmp_path is now a "safe root" (has .git entry).
+    _assert_safe_root(target.resolve())

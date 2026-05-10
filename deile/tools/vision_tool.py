@@ -9,8 +9,8 @@ Why this lives as a tool (not a provider feature):
   `image/jpeg`, `image/png`, `image/webp`, `image/gif`). When the operator
   sets `DEILE_VISION_MODEL`, that override wins.
 - Accepts EITHER `image_url` (downloaded with httpx) OR `image_base64` +
-  `mime_type`. Discord attachment URLs are public CDN links; no auth
-  needed.
+  `mime_type` (raw bytes already in hand). Discord attachment URLs are public
+  CDN links; no auth needed.
 
 Security & limits:
 - The downloader has a hard 10 MiB cap and a 15 s timeout (Discord's own
@@ -30,6 +30,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import aiofiles
 import httpx
 
 from deile.core.exceptions import DEILEError, PathContainmentError
@@ -104,7 +105,7 @@ class VisionDescribeImageTool(Tool):
                     },
                 },
                 required=[],
-                security_level=SecurityLevel.SAFE,
+                security_level=SecurityLevel.MODERATE,
                 category=ToolCategory.OTHER,
             )
         )
@@ -162,12 +163,7 @@ class VisionDescribeImageTool(Tool):
                         error_code="VISION_BAD_INPUT",
                     )
             elif path:
-                # _read_image_from_path uses synchronous open() and a chunked
-                # read loop up to 10 MiB; run it in a worker thread so the
-                # event loop is not blocked (pilar 03 §1).
-                image_bytes, mime = await asyncio.to_thread(
-                    _read_image_from_path, path, mime
-                )
+                image_bytes, mime = await _read_image_from_path(path, mime)
             else:
                 image_bytes, mime = await _download_image(url)
         except VisionToolError as e:
@@ -214,12 +210,7 @@ class VisionDescribeImageTool(Tool):
 
 
 class VisionToolError(DEILEError):
-    """Typed error so the tool returns a consistent error_code.
-
-    Inherits from DEILEError (pilar 03 §6) so a single ``except DEILEError``
-    handler upstream captures it alongside ``PathContainmentError``,
-    ``ToolError``, ``ValidationError``, and other domain errors.
-    """
+    """Typed error so the tool returns a consistent error_code."""
 
     def __init__(self, code: str, message: str):
         super().__init__(message, error_code=code)
@@ -236,7 +227,7 @@ _EXT_TO_MIME = {
 _GEMINI_SUPPORTED_MIMES = frozenset(_EXT_TO_MIME.values())
 
 
-def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes, str]:
+async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes, str]:
     """Read image bytes from a local path in chunks (≤10 MiB cap).
 
     Chunked read avoids a TOCTOU window between ``os.path.getsize`` and the
@@ -268,11 +259,13 @@ def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes, str]
             f"mime_type {mime_hint!r} not supported by the vision model "
             f"(supported: {sorted(_GEMINI_SUPPORTED_MIMES)})",
         )
+    # TOCTOU race accepted: Python lacks portable O_NOFOLLOW; chunked read
+    # enforces the size cap atomically regardless of any pre-read size check.
     chunk = 64 * 1024
     buf = bytearray()
-    with open(p, "rb") as fh:
+    async with aiofiles.open(p, "rb") as fh:
         while True:
-            blob = fh.read(chunk)
+            blob = await fh.read(chunk)
             if not blob:
                 break
             buf.extend(blob)
