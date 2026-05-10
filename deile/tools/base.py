@@ -274,6 +274,12 @@ class ToolResult:
 
         Aceita tanto ``metadata={'k': v}`` (forma estruturada) como kwargs livres
         (``error_result(msg, exit_code=2)``); ambos coexistem e são fundidos.
+
+        Precedência (do menor para o maior):
+        1. ``metadata={...}`` — forma estruturada.
+        2. ``**extra`` kwargs — sobrescrevem chaves do dict ``metadata``.
+        3. ``error_code`` (parâmetro nomeado) — sobrescreve qualquer valor anterior
+           para a chave ``error_code``.
         """
         merged: Dict[str, Any] = dict(metadata) if metadata else {}
         merged.update(extra)
