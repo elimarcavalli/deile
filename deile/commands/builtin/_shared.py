@@ -7,9 +7,36 @@ que apareciam duplicados em vários `*_command.py`.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
+
+from rich.panel import Panel
+from rich.text import Text
 
 from ..base import CommandContext
+
+
+def colored_panel(message: str, title: Optional[str], color: str) -> Panel:
+    """Cria um Rich Panel onde texto e borda usam a mesma cor.
+
+    Substitui o padrão repetido `Panel(Text(msg, style=COLOR), title=T,
+    border_style=COLOR)` que aparecia em ~26 sítios cross-arquivo.
+    """
+    return Panel(Text(message, style=color), title=title, border_style=color)
+
+
+def error_panel(message: str, title: Optional[str] = "Erro") -> Panel:
+    """Painel de erro (texto + borda vermelhos)."""
+    return colored_panel(message, title, "red")
+
+
+def warning_panel(message: str, title: Optional[str]) -> Panel:
+    """Painel de aviso (texto + borda amarelos)."""
+    return colored_panel(message, title, "yellow")
+
+
+def success_panel(message: str, title: Optional[str]) -> Panel:
+    """Painel de sucesso (texto + borda verdes)."""
+    return colored_panel(message, title, "green")
 
 
 # Descrições PT-BR para cada feature flag declarada em `deile.__version__.FEATURES`.

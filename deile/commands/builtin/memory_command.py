@@ -14,7 +14,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args
+from ._shared import split_args, success_panel
 
 _CHECKPOINT_DIR = Path.home() / ".deile" / "checkpoints"
 _CHECKPOINT_INDEX = _CHECKPOINT_DIR / "index.json"
@@ -389,7 +389,7 @@ class MemoryCommand(DirectCommand):
             lines.append(f"  {k}: {v}")
 
         return CommandResult.success_result(
-            Panel(Text("\n".join(lines), style="green"), title="Compactação de Memória", border_style="green"),
+            success_panel("\n".join(lines), title="Compactação de Memória"),
             "rich",
         )
 

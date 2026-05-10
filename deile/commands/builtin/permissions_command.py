@@ -14,7 +14,7 @@ from ...core.exceptions import CommandError
 from ...security.permissions import (PermissionLevel, PermissionRule,
                                      ResourceType, get_permission_manager)
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args
+from ._shared import error_panel, split_args, success_panel, warning_panel
 
 
 def _persist(pm) -> None:
@@ -383,7 +383,7 @@ class PermissionsCommand(DirectCommand):
             ]
         except Exception as exc:
             return CommandResult.success_result(
-                Panel(Text(f"Erro ao ler log de auditoria: {exc}", style="red"), title="🔍 Auditoria", border_style="red"),
+                error_panel(f"Erro ao ler log de auditoria: {exc}", title="🔍 Auditoria"),
                 "rich",
             )
 
@@ -428,7 +428,7 @@ class PermissionsCommand(DirectCommand):
             _persist(pm)
             self._emit_audit_event("sandbox_on", "sandbox", "Sandbox ativado")
             return CommandResult.success_result(
-                Panel(Text("✅ Sandbox ativado.", style="green"), title="Sandbox", border_style="green"),
+                success_panel("✅ Sandbox ativado.", title="Sandbox"),
                 "rich",
             )
 
@@ -437,7 +437,7 @@ class PermissionsCommand(DirectCommand):
             _persist(pm)
             self._emit_audit_event("sandbox_off", "sandbox", "Sandbox desativado")
             return CommandResult.success_result(
-                Panel(Text("⚠️  Sandbox desativado.", style="yellow"), title="Sandbox", border_style="yellow"),
+                warning_panel("⚠️  Sandbox desativado.", title="Sandbox"),
                 "rich",
             )
 

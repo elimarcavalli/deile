@@ -21,7 +21,7 @@ from deile.__version__ import __version__
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args
+from ._shared import error_panel, split_args, success_panel, warning_panel
 
 _PROVIDER_HOSTS: Dict[str, str] = {
     "openai": "api.openai.com",
@@ -256,7 +256,7 @@ class StatusCommand(DirectCommand):
 
     def _create_system_panel(self, info: Dict[str, Any]) -> Panel:
         if "error" in info:
-            return Panel(Text(f"Erro: {info['error']}", style="red"), title="🖥️ Sistema", border_style="red")
+            return error_panel(f"Erro: {info['error']}", title="🖥️ Sistema")
         content = (
             f"💻 DEILE v{info.get('deile_version', '?')}\n\n"
             f"🐍 Python: {info.get('python_version', '?')}\n"
@@ -268,11 +268,11 @@ class StatusCommand(DirectCommand):
             f"💾 Memória: {info.get('memory_percent', 0):.1f}% usada\n"
             f"💿 Disco: {info.get('disk_usage', 0):.1f}% usado"
         )
-        return Panel(Text(content, style="green"), title="🖥️ Sistema", border_style="green")
+        return success_panel(content, title="🖥️ Sistema")
 
     def _create_models_panel(self, info: Dict[str, Any]) -> Panel:
         if "error" in info:
-            return Panel(Text(f"Erro: {info['error']}", style="red"), title="🤖 Modelos", border_style="red")
+            return error_panel(f"Erro: {info['error']}", title="🤖 Modelos")
         content = (
             f"🟢 Modelo: {info.get('active_model', '?')}\n"
             f"🏢 Provedor: {info.get('active_provider', '?')}\n"
@@ -282,7 +282,7 @@ class StatusCommand(DirectCommand):
 
     def _create_tools_panel(self, info: Dict[str, Any]) -> Panel:
         if "error" in info:
-            return Panel(Text(f"Erro: {info['error']}", style="red"), title="🔧 Tools", border_style="red")
+            return error_panel(f"Erro: {info['error']}", title="🔧 Tools")
         content = (
             f"🔧 Total: {info.get('total_tools', 0)}\n"
             f"✅ Habilitadas: {info.get('enabled_tools', 0)}\n"
@@ -291,7 +291,7 @@ class StatusCommand(DirectCommand):
             f"📋 Schemas: {info.get('tools_with_schemas', 0)}\n"
             f"🔄 Funções: {info.get('function_definitions', 0)}"
         )
-        return Panel(Text(content, style="yellow"), title="🔧 Tools", border_style="yellow")
+        return warning_panel(content, title="🔧 Tools")
 
     def _create_health_panel(self, info: Dict[str, Any]) -> Panel:
         status = info.get("overall_status", "desconhecido")
@@ -367,7 +367,7 @@ class StatusCommand(DirectCommand):
             return CommandResult.success_result(table, "rich")
         except Exception as exc:
             return CommandResult.success_result(
-                Panel(Text(f"Erro ao obter informações de modelos: {exc}", style="red"), title="🤖 Modelos", border_style="red"),
+                error_panel(f"Erro ao obter informações de modelos: {exc}", title="🤖 Modelos"),
                 "rich",
             )
 
@@ -407,7 +407,7 @@ class StatusCommand(DirectCommand):
             return CommandResult.success_result(Group(table, summary), "rich")
         except Exception as exc:
             return CommandResult.success_result(
-                Panel(Text(f"Erro ao obter tools: {exc}", style="red"), title="🔧 Tools", border_style="red"),
+                error_panel(f"Erro ao obter tools: {exc}", title="🔧 Tools"),
                 "rich",
             )
 
@@ -423,7 +423,7 @@ class StatusCommand(DirectCommand):
         if memory_manager is None:
             content = _indisponivel("MemoryManager não acessível neste contexto")
             return CommandResult.success_result(
-                Panel(Text(content, style="yellow"), title="💾 Memória", border_style="yellow"), "rich"
+                warning_panel(content, title="💾 Memória"), "rich"
             )
 
         try:
@@ -433,12 +433,12 @@ class StatusCommand(DirectCommand):
 
         if "error" in usage:
             return CommandResult.success_result(
-                Panel(Text(f"Erro: {usage['error']}", style="red"), title="💾 Memória", border_style="red"), "rich"
+                error_panel(f"Erro: {usage['error']}", title="💾 Memória"), "rich"
             )
 
         if usage.get("status") == "not_initialized":
             return CommandResult.success_result(
-                Panel(Text(_indisponivel("MemoryManager não inicializado"), style="yellow"), title="💾 Memória", border_style="yellow"),
+                warning_panel(_indisponivel("MemoryManager não inicializado"), title="💾 Memória"),
                 "rich",
             )
 
@@ -494,7 +494,7 @@ class StatusCommand(DirectCommand):
             return CommandResult.success_result(table, "rich")
         except Exception as exc:
             return CommandResult.success_result(
-                Panel(Text(f"Erro ao obter planos: {exc}", style="red"), title="📋 Planos", border_style="red"), "rich"
+                error_panel(f"Erro ao obter planos: {exc}", title="📋 Planos"), "rich"
             )
 
     # ------------------------------------------------------------------

@@ -14,6 +14,7 @@ from rich.text import Text
 
 from deile.__version__ import __version__
 from deile.commands.base import CommandResult, DirectCommand
+from deile.commands.builtin._shared import success_panel
 from deile.infrastructure.monitoring.cost_tracker import get_cost_tracker
 
 logger = logging.getLogger(__name__)
@@ -336,7 +337,7 @@ EXEMPLOS:
             if ok:
                 msg = f"✅ Limite definido: {category}/{period} = ${amount:.2f}"
                 return CommandResult.success_result(
-                    Panel(Text(msg, style="green"), title="💾 Orçamento Salvo", border_style="green"),
+                    success_panel(msg, title="💾 Orçamento Salvo"),
                     "rich",
                     category=category,
                     period=period,
@@ -427,7 +428,7 @@ EXEMPLOS:
                 f"Versão DEILE: {__version__}"
             )
             return CommandResult.success_result(
-                Panel(Text(msg, style="green"), title="📤 Export de Custos", border_style="green"),
+                success_panel(msg, title="📤 Export de Custos"),
                 "rich",
                 file=fname,
             )

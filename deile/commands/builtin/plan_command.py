@@ -10,7 +10,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import PlanStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args
+from ._shared import split_args, success_panel, warning_panel
 
 
 class PlanCommand(DirectCommand):
@@ -152,7 +152,7 @@ class PlanCommand(DirectCommand):
                 message += f" with status '{status_filter.value}'"
             
             return CommandResult.success_result(
-                Panel(Text(message, style="yellow"), title="📋 Plans", border_style="yellow"),
+                warning_panel(message, title="📋 Plans"),
                 "rich"
             )
         
@@ -334,7 +334,7 @@ class PlanCommand(DirectCommand):
             success_message = f"✅ Plan '{plan_id}' deleted successfully"
             
             return CommandResult.success_result(
-                Panel(Text(success_message, style="green"), title="🗑️ Plan Deleted", border_style="green"),
+                success_panel(success_message, title="🗑️ Plan Deleted"),
                 "rich"
             )
             

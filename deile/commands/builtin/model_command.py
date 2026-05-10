@@ -15,6 +15,7 @@ from ...core.interfaces.selector import (InteractiveSelector,
 from ...core.models.tier_router import get_tier_router, reset_tier_router
 from ...storage.usage_repository import BudgetGuard, get_usage_repository
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import error_panel
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ EXAMPLES:
             logger.error("ModelCommand error: %s", exc)
             return CommandResult(
                 success=False,
-                content=Panel(Text(str(exc), style="red"), title="Error", border_style="red"),
+                content=error_panel(str(exc), title="Error"),
             )
 
     # ------------------------------------------------------------------
