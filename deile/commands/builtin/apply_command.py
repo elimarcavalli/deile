@@ -14,7 +14,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import ACTION_EMOJI, split_args
+from ._shared import ACTION_EMOJI, PATCHES_DIR, split_args
 
 
 class ApplyCommand(DirectCommand):
@@ -28,7 +28,7 @@ class ApplyCommand(DirectCommand):
             aliases=["patch-apply"],  # alias canônico mantido por retrocompatibilidade
         )
         super().__init__(config)
-        self.patches_dir = Path("./PATCHES")
+        self.patches_dir = PATCHES_DIR
     
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute apply command"""

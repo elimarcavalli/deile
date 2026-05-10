@@ -12,7 +12,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import ACTION_EMOJI, export_timestamp, split_args
+from ._shared import ACTION_EMOJI, PATCHES_DIR, export_timestamp, split_args
 
 
 class PatchCommand(DirectCommand):
@@ -27,8 +27,7 @@ class PatchCommand(DirectCommand):
         )
         super().__init__(config)
         self.plan_manager = get_plan_manager()
-        self.patches_dir = Path("./PATCHES")
-        self.patches_dir.mkdir(exist_ok=True)
+        self.patches_dir = PATCHES_DIR
     
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute patch command"""

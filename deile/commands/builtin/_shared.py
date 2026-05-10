@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rich.panel import Panel
@@ -21,6 +22,13 @@ if TYPE_CHECKING:
     from ...security.audit_logger import AuditEventType, SeverityLevel
 
 logger = logging.getLogger(__name__)
+
+
+# Diretório onde apply_command lê e patch_command grava arquivos .patch.
+# Antes era reinstanciado em cada comando; PatchCommand criava o diretório
+# no __init__, o que é efeito colateral em construtor (anti-padrão DI).
+# A criação agora é lazy — patch_command faz mkdir só quando vai escrever.
+PATCHES_DIR = Path("./PATCHES")
 
 
 def export_timestamp() -> str:
