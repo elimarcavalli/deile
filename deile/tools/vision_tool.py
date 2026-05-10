@@ -61,9 +61,17 @@ _ALLOWED_VISION_MODELS: frozenset[str] = frozenset({
 _MAGIC_BYTES: dict[str, bytes] = {
     "image/png": b"\x89PNG",
     "image/jpeg": b"\xff\xd8\xff",
-    "image/gif": b"GIF8",
+    "image/gif": b"GIF8",  # matches both GIF87a and GIF89a (first 4 bytes identical)
     "image/webp": b"RIFF",
 }
+_EXT_TO_MIME = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+_GEMINI_SUPPORTED_MIMES = frozenset(_EXT_TO_MIME.values())
 
 _DEFAULT_PROMPT = (
     "Descreva exatamente o que está nesta imagem em 2-4 linhas em português. "
@@ -111,7 +119,7 @@ class VisionDescribeImageTool(Tool):
                     "properties": {
                         "image_url": {
                             "type": "string",
-                            "description": "HTTPS URL to fetch the image from (e.g. Discord CDN URL).",
+                            "description": "http(s) URL to fetch the image from (e.g. Discord CDN URL). HTTPS strongly preferred; HTTP accepted for internal/test use.",
                         },
                         "image_path": {
                             "type": "string",
@@ -274,8 +282,8 @@ class VisionDescribeImageTool(Tool):
             },
             message=f"vision_describe_image ok ({model}, {len(image_bytes)} B, sha8={sha8})",
         )
-        # Strip query params before logging (CDN tokens must not reach the audit log)
-        _audit_resource = url.split("?")[0] if url else (path or f"base64:{mime}")
+        # Strip query params and fragment before logging (CDN tokens must not reach the audit log)
+        _audit_resource = url.split("?")[0].split("#")[0] if url else (path or f"base64:{mime}")
         try:
             from deile.security.audit_logger import (AuditEventType,
                                                      SeverityLevel,
@@ -294,16 +302,6 @@ class VisionDescribeImageTool(Tool):
         except Exception:  # audit must never crash the tool
             logger.debug("audit emission failed", exc_info=True)
         return result
-
-
-_EXT_TO_MIME = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".webp": "image/webp",
-    ".gif": "image/gif",
-}
-_GEMINI_SUPPORTED_MIMES = frozenset(_EXT_TO_MIME.values())
 
 
 async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes, str]:
@@ -344,8 +342,12 @@ async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes
             f"mime_type {mime_hint!r} not supported by the vision model "
             f"(supported: {sorted(_GEMINI_SUPPORTED_MIMES)})",
         )
-    # TOCTOU race accepted: Python lacks portable O_NOFOLLOW; chunked read
-    # enforces the size cap atomically regardless of any pre-read size check.
+    # TOCTOU residual risks (both accepted):
+    # 1. Size-swap: aiofiles does not expose O_NOFOLLOW; chunked read enforces
+    #    the size cap atomically so a race cannot smuggle a larger file past it.
+    # 2. Symlink-swap: path.resolve() follows symlinks; a swap between resolve()
+    #    and open() could redirect to a different (but still safe-root-contained)
+    #    path. Cross-safe-root swaps are OS-level and outside Python's control.
     chunk = 64 * 1024
     buf = bytearray()
     try:
@@ -365,13 +367,23 @@ async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes
     return bytes(buf), mime_hint
 
 
-def _try_audit_blocked(resource: str, action: str, details: dict) -> None:
-    """Emit a WARNING audit event for a security-relevant rejection (never raises)."""
+def _try_audit_blocked(
+    resource: str, action: str, details: dict, suspicious: bool = False
+) -> None:
+    """Emit a WARNING audit event for a security-relevant rejection (never raises).
+
+    ``suspicious=True`` uses ``SUSPICIOUS_ACTIVITY`` (SSRF/network attacks);
+    ``suspicious=False`` (default) uses ``PERMISSION_DENIED`` (path containment).
+    """
     try:
         from deile.security.audit_logger import (AuditEventType, SeverityLevel,
                                                  get_audit_logger)
+        event_type = (
+            AuditEventType.SUSPICIOUS_ACTIVITY if suspicious
+            else AuditEventType.PERMISSION_DENIED
+        )
         get_audit_logger().log_event(
-            event_type=AuditEventType.TOOL_EXECUTION,
+            event_type=event_type,
             severity=SeverityLevel.WARNING,
             actor="vision_describe_image",
             resource=resource,
@@ -384,13 +396,43 @@ def _try_audit_blocked(resource: str, action: str, details: dict) -> None:
         logger.debug("blocked-audit emission failed", exc_info=True)
 
 
+def _is_ssrf_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Return True if ``ip`` must be blocked to prevent SSRF.
+
+    Uses explicit attribute checks in addition to ``is_global`` to cover ranges
+    that Python < 3.11 incorrectly classified as global (e.g. CGN 100.64/10,
+    documentation ranges 192.0.2/24, 198.51.100/24, 203.0.113/24).
+    """
+    return (
+        not ip.is_global
+        or ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
+
+
 async def _check_ssrf(url: str) -> None:
     """Reject URLs that target private/loopback/reserved IP space (direct SSRF).
 
-    ``follow_redirects=False`` stops redirect-chain SSRF; this guard stops
-    direct requests to RFC-1918, link-local, and loopback addresses.
+    Precondition: ``url`` must start with ``http://`` or ``https://`` (caller's
+    responsibility — ``_download_image`` enforces this before calling here).
+
+    ``follow_redirects=False`` in ``_download_image`` stops redirect-chain SSRF;
+    this guard stops direct requests to RFC-1918, link-local, and loopback IPs.
     Monkeypatchable so tests that use 127.0.0.1 servers can bypass it.
+
+    **Known limitation — DNS rebinding:** this function resolves the hostname
+    via ``socket.getaddrinfo``, then ``httpx`` performs its own independent DNS
+    lookup when opening the connection. An attacker controlling a domain with
+    TTL=0 can return a public IP for our check and a private IP for httpx's
+    connect, bypassing this guard. Full mitigation requires a custom
+    ``httpx.AsyncHTTPTransport`` that validates the connected socket's peer IP;
+    that is out of scope for this PR. Operators in high-threat environments
+    should run DEILE behind an egress proxy that enforces IP-range policies.
     """
+    _audit_url = url.split("?")[0].split("#")[0]
     parsed = _urlparse(url)
     host = parsed.hostname or ""
     if not host:
@@ -398,7 +440,12 @@ async def _check_ssrf(url: str) -> None:
     # Fast path: bare IP literals can be checked without DNS
     try:
         ip = ipaddress.ip_address(host)
-        if not ip.is_global:
+        if _is_ssrf_blocked(ip):
+            _try_audit_blocked(
+                resource=_audit_url, action="ssrf_check",
+                details={"reason": "private_ip_literal", "ip": str(ip)},
+                suspicious=True,
+            )
             raise VisionToolError("VISION_BAD_INPUT", f"image_url targets non-public IP: {ip}")
         return
     except ValueError:
@@ -411,7 +458,12 @@ async def _check_ssrf(url: str) -> None:
     for *_, sockaddr in infos:
         try:
             ip = ipaddress.ip_address(sockaddr[0])
-            if not ip.is_global:
+            if _is_ssrf_blocked(ip):
+                _try_audit_blocked(
+                    resource=_audit_url, action="ssrf_check",
+                    details={"reason": "private_ip_resolved", "host": host, "ip": str(ip)},
+                    suspicious=True,
+                )
                 raise VisionToolError(
                     "VISION_BAD_INPUT",
                     f"image_url {host!r} resolves to non-public IP {ip}",
@@ -439,7 +491,12 @@ def _validate_magic_bytes(image_bytes: bytes, mime: str) -> None:
 
 
 async def _download_image(url: str) -> tuple[bytes, str]:
-    """Fetch the image, capping size and time. Returns (bytes, mime_type)."""
+    """Fetch the image, capping size and time. Returns (bytes, mime_type).
+
+    Plain HTTP is accepted (not HTTPS-only) to support internal/test servers.
+    In production, Discord CDN URLs are always HTTPS; the SSRF guard in
+    ``_check_ssrf`` provides the primary network-layer protection.
+    """
     if not url.startswith(("http://", "https://")):
         raise VisionToolError("VISION_BAD_INPUT", "image_url must be http(s)")
     await _check_ssrf(url)

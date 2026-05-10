@@ -42,7 +42,7 @@ def _assert_safe_root(path: Path) -> None:
     safe_roots = [home]
     cwd = Path.cwd()
     for ancestor in (cwd, *cwd.parents):
-        if (ancestor / ".git").exists():
+        if (ancestor / ".git").exists():  # also matches worktree .git files
             safe_roots.append(ancestor)
             break
 

@@ -237,10 +237,17 @@ async def test_image_path_with_file_scheme(tool, ctx_factory, monkeypatch, repo_
     assert res.data["mime_type"] == "image/jpeg"
 
 
-async def test_image_path_missing(tool, ctx_factory):
-    # A path outside safe roots is rejected with VISION_BAD_INPUT (path
-    # containment check fires before the filesystem stat).
+async def test_image_path_outside_safe_root_rejected(tool, ctx_factory):
+    # A path outside safe roots is rejected with VISION_BAD_INPUT; the
+    # containment check fires before the filesystem stat.
     res = await tool.execute(ctx_factory(image_path="/no/such/file.png"))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+
+
+async def test_image_path_not_found(tool, ctx_factory, repo_tmp_path):
+    """A path inside safe roots that does not exist returns VISION_BAD_INPUT."""
+    res = await tool.execute(ctx_factory(image_path=str(repo_tmp_path / "nonexistent.png")))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
@@ -468,6 +475,23 @@ async def test_image_path_read_error_returns_vision_read_failed(
     res = await tool.execute(ctx_factory(image_path=str(p)))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_READ_FAILED"
+
+
+# ---- audit blocked on path containment --------------------------------------
+
+
+async def test_path_containment_emits_blocked_audit(tool, ctx_factory, monkeypatch):
+    """_try_audit_blocked must be called when a PathContainmentError is raised."""
+    calls = []
+
+    def _fake_audit(resource, action, details, suspicious=False):
+        calls.append({"resource": resource, "action": action, "details": details})
+
+    monkeypatch.setattr("deile.tools.vision_tool._try_audit_blocked", _fake_audit)
+    res = await tool.execute(ctx_factory(image_path="/etc/passwd"))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+    assert calls, "_try_audit_blocked was not called on path containment violation"
 
 
 # ---- direct private-IP SSRF rejection ---------------------------------------
