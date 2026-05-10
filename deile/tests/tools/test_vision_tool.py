@@ -126,7 +126,7 @@ async def _no_ssrf_check(url: str) -> None:
 
 @pytest.fixture
 async def image_server(monkeypatch):
-    """Self-contained aiohttp server for URL download tests (no extra packages needed).
+    """Self-contained aiohttp server for URL download tests (requires aiohttp test extra).
 
     Monkeypatches _check_ssrf to a no-op because the server binds to 127.0.0.1
     (loopback), which would otherwise be rejected as a non-public IP.
@@ -421,6 +421,20 @@ async def test_file_uri_with_non_localhost_authority_rejected(tool, ctx_factory)
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
 
+async def test_file_uri_remote_authority_emits_suspicious_audit(tool, ctx_factory, monkeypatch):
+    """file://remotehost/... must emit _try_audit_blocked(suspicious=True)."""
+    calls = []
+
+    def _fake_audit(resource, action, details, suspicious=False):
+        calls.append({"suspicious": suspicious, "action": action})
+
+    monkeypatch.setattr("deile.tools.vision_tool._try_audit_blocked", _fake_audit)
+    res = await tool.execute(ctx_factory(image_path="file://remotehost/etc/passwd"))
+    assert res.is_error
+    assert calls, "_try_audit_blocked was not called on file:// remote-authority rejection"
+    assert calls[0]["suspicious"] is True
+
+
 # ---- prompt length cap ------------------------------------------------------
 
 
@@ -526,10 +540,12 @@ async def test_direct_private_ip_rejected(tool, ctx_factory):
 async def test_direct_ipv6_private_rejected(tool, ctx_factory):
     """IPv6 loopback, link-local, multicast, and deprecated site-local must all be blocked."""
     for bad_url in (
-        "http://[::1]/",        # IPv6 loopback
-        "http://[fe80::1]/",    # IPv6 link-local
-        "http://[ff02::1]/",    # IPv6 multicast (is_global=True on Python 3.11)
-        "http://[fec0::1]/",    # IPv6 deprecated site-local RFC 3879 (is_global=True on Python 3.11)
+        "http://[::1]/",              # IPv6 loopback
+        "http://[fe80::1]/",          # IPv6 link-local
+        "http://[ff02::1]/",          # IPv6 multicast (is_global=True on Python 3.11)
+        "http://[fec0::1]/",          # IPv6 deprecated site-local RFC 3879 (is_global=True on Python 3.11)
+        "http://[::ffff:10.0.0.1]/",  # IPv4-mapped private
+        "http://[::ffff:127.0.0.1]/", # IPv4-mapped loopback
     ):
         res = await tool.execute(ctx_factory(image_url=bad_url))
         assert res.is_error, f"expected error for {bad_url}"
@@ -585,6 +601,42 @@ async def test_webp_riff_without_webp_fourcc_rejected(tool, ctx_factory):
     riff_avi = b"RIFF" + b"\x00" * 4 + b"AVI " + b"\x00" * 10
     b64 = base64.b64encode(riff_avi).decode()
     res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/webp"))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+
+
+async def test_gif87a_valid_magic_passes(tool, ctx_factory, monkeypatch):
+    """GIF87a 6-byte magic must pass validation."""
+    async def fake(image_bytes, mime, prompt, model):
+        return "ok"
+
+    monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
+    import base64
+    gif87a_bytes = b"GIF87a" + b"\x00" * 10
+    b64 = base64.b64encode(gif87a_bytes).decode()
+    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/gif"))
+    assert res.is_success
+
+
+async def test_gif89a_valid_magic_passes(tool, ctx_factory, monkeypatch):
+    """GIF89a 6-byte magic must pass validation."""
+    async def fake(image_bytes, mime, prompt, model):
+        return "ok"
+
+    monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
+    import base64
+    gif89a_bytes = b"GIF89a" + b"\x00" * 10
+    b64 = base64.b64encode(gif89a_bytes).decode()
+    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/gif"))
+    assert res.is_success
+
+
+async def test_gif_junk_magic_rejected(tool, ctx_factory):
+    """GIF8<junk> polyglot must be rejected -- only GIF87a and GIF89a are accepted."""
+    import base64
+    gif_junk = b"GIF8" + b"\x00" * 12
+    b64 = base64.b64encode(gif_junk).decode()
+    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/gif"))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 

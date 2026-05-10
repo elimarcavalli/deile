@@ -62,7 +62,7 @@ _ALLOWED_VISION_MODELS: frozenset[str] = frozenset({
 _MAGIC_BYTES: dict[str, bytes] = {
     "image/png": b"\x89PNG",
     "image/jpeg": b"\xff\xd8\xff",
-    "image/gif": b"GIF8",  # first 4 bytes shared; _validate_magic_bytes checks full 6-byte sig
+    "image/gif": b"GIF8",  # truthy sentinel only; _validate_magic_bytes checks full GIF87a|GIF89a
     "image/webp": b"RIFF",
 }
 _EXT_TO_MIME = {
@@ -337,6 +337,12 @@ async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes
     if path.startswith("file://"):
         _parsed = _urlparse(path)
         if _parsed.netloc and _parsed.netloc.lower() not in ("", "localhost"):
+            _try_audit_blocked(
+                resource=path,
+                action="describe",
+                details={"reason": "file_uri_remote_authority", "authority": _parsed.netloc},
+                suspicious=True,
+            )
             raise VisionToolError(
                 "VISION_BAD_INPUT",
                 f"file:// URI with non-localhost authority is not supported: {path!r}",
@@ -381,7 +387,7 @@ async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes
                         f"image_path exceeds {_MAX_IMAGE_BYTES} bytes",
                     )
     except OSError as e:
-        raise VisionToolError("VISION_READ_FAILED", f"could not read {path!r}: {e}")
+        raise VisionToolError("VISION_READ_FAILED", f"could not read {path!r}: {type(e).__name__}")
     return bytes(buf), mime_hint
 
 

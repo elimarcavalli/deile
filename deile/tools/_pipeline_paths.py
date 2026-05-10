@@ -49,7 +49,7 @@ def _assert_safe_root(path: Path) -> None:
                 # Skip world-writable dirs: an attacker could create /tmp/.git to
                 # elevate /tmp into a safe root if the process CWD happens to be /tmp.
                 if not (ancestor.stat().st_mode & 0o002):
-                    safe_roots.append(ancestor)
+                    safe_roots.append(ancestor.resolve())
             except OSError:
                 logger.debug("stat() failed for git root %s; not adding to safe roots", ancestor, exc_info=True)
             break
