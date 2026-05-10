@@ -13,7 +13,7 @@ from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import (analyze_plan_changes_stub, export_timestamp,
-                      file_action_emoji, split_args)
+                      file_action_emoji, split_args, wrap_command_errors)
 
 
 class PatchCommand(DirectCommand):
@@ -31,45 +31,37 @@ class PatchCommand(DirectCommand):
         self.patches_dir = Path("./PATCHES")
         self.patches_dir.mkdir(exist_ok=True)
     
+    @wrap_command_errors("patch")
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute patch command"""
-        try:
-            parts = split_args(context)
-            
-            if not parts:
-                # List available patches
-                return await self._list_patches()
-            
-            plan_id = parts[0]
-            
-            # Parse options
-            output_format = "unified"  # unified, git, simple
-            output_path = None
-            include_artifacts = False
-            
-            for i, part in enumerate(parts[1:], 1):
-                if part == "--git":
-                    output_format = "git"
-                elif part == "--simple":
-                    output_format = "simple"
-                elif part == "--artifacts":
-                    include_artifacts = True
-                elif part.startswith("--output="):
-                    output_path = part.split("=", 1)[1]
-                elif part == "--output":
-                    if i + 1 < len(parts):
-                        output_path = parts[i + 1]
-                    else:
-                        raise CommandError("--output requires a path")
-                elif part.startswith("--"):
-                    raise CommandError(f"Unknown option: {part}")
-            
-            return await self._generate_patch(plan_id, output_format, output_path, include_artifacts)
-            
-        except Exception as e:
-            if isinstance(e, CommandError):
-                raise
-            raise CommandError(f"Failed to execute patch command: {str(e)}")
+        parts = split_args(context)
+
+        if not parts:
+            return await self._list_patches()
+
+        plan_id = parts[0]
+        output_format = "unified"  # unified, git, simple
+        output_path = None
+        include_artifacts = False
+
+        for i, part in enumerate(parts[1:], 1):
+            if part == "--git":
+                output_format = "git"
+            elif part == "--simple":
+                output_format = "simple"
+            elif part == "--artifacts":
+                include_artifacts = True
+            elif part.startswith("--output="):
+                output_path = part.split("=", 1)[1]
+            elif part == "--output":
+                if i + 1 < len(parts):
+                    output_path = parts[i + 1]
+                else:
+                    raise CommandError("--output requires a path")
+            elif part.startswith("--"):
+                raise CommandError(f"Unknown option: {part}")
+
+        return await self._generate_patch(plan_id, output_format, output_path, include_artifacts)
     
     async def _list_patches(self) -> CommandResult:
         """List available patch files"""

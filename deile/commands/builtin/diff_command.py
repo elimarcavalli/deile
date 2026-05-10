@@ -14,7 +14,7 @@ from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import (analyze_plan_changes_stub, file_action_emoji, split_args,
-                      truncate)
+                      truncate, wrap_command_errors)
 
 
 class DiffCommand(DirectCommand):
@@ -29,42 +29,31 @@ class DiffCommand(DirectCommand):
         super().__init__(config)
         self.plan_manager = get_plan_manager()
     
+    @wrap_command_errors("diff")
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute diff command"""
-        try:
-            parts = split_args(context)
-            
-            if not parts:
-                # Show recent changes from all plans
-                return await self._show_recent_changes()
-            
-            target = parts[0]
-            
-            # Parse options
-            format_type = "summary"  # summary, detailed, unified
-            show_content = False
-            
-            for part in parts[1:]:
-                if part == "--detailed":
-                    format_type = "detailed"
-                elif part == "--unified":
-                    format_type = "unified"
-                elif part == "--content":
-                    show_content = True
-                elif part.startswith("--"):
-                    raise CommandError(f"Unknown option: {part}")
-            
-            # Check if target is a plan ID or file path
-            if len(target) == 8 and target.isalnum():  # Looks like plan ID
-                return await self._show_plan_diff(target, format_type, show_content)
-            else:
-                # Treat as file path
-                return await self._show_file_diff(target, format_type, show_content)
-            
-        except Exception as e:
-            if isinstance(e, CommandError):
-                raise
-            raise CommandError(f"Failed to execute diff command: {str(e)}")
+        parts = split_args(context)
+
+        if not parts:
+            return await self._show_recent_changes()
+
+        target = parts[0]
+        format_type = "summary"  # summary, detailed, unified
+        show_content = False
+
+        for part in parts[1:]:
+            if part == "--detailed":
+                format_type = "detailed"
+            elif part == "--unified":
+                format_type = "unified"
+            elif part == "--content":
+                show_content = True
+            elif part.startswith("--"):
+                raise CommandError(f"Unknown option: {part}")
+
+        if len(target) == 8 and target.isalnum():  # Looks like plan ID
+            return await self._show_plan_diff(target, format_type, show_content)
+        return await self._show_file_diff(target, format_type, show_content)
     
     async def _show_recent_changes(self) -> CommandResult:
         """Show recent changes from all completed plans"""

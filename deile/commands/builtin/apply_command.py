@@ -14,7 +14,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import file_action_emoji, split_args
+from ._shared import file_action_emoji, split_args, wrap_command_errors
 
 
 class ApplyCommand(DirectCommand):
@@ -30,46 +30,41 @@ class ApplyCommand(DirectCommand):
         super().__init__(config)
         self.patches_dir = Path("./PATCHES")
     
+    @wrap_command_errors("apply")
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute apply command"""
-        try:
-            parts = split_args(context)
-            
-            if not parts:
-                # Show available patches to apply
-                return await self._show_applicable_patches()
-            
-            patch_file = parts[0]
-            
-            # Parse options
-            dry_run = False
-            force = False
-            backup = True
-            target_dir = "."
-            
-            for i, part in enumerate(parts[1:], 1):
-                if part == "--dry-run":
-                    dry_run = True
-                elif part == "--force":
-                    force = True
-                elif part == "--no-backup":
-                    backup = False
-                elif part.startswith("--target="):
-                    target_dir = part.split("=", 1)[1]
-                elif part == "--target":
-                    if i + 1 < len(parts):
-                        target_dir = parts[i + 1]
-                    else:
-                        raise CommandError("--target requires a directory path")
-                elif part.startswith("--"):
-                    raise CommandError(f"Unknown option: {part}")
-            
-            return await self._apply_patch(patch_file, target_dir, dry_run, force, backup)
-            
-        except Exception as e:
-            if isinstance(e, CommandError):
-                raise
-            raise CommandError(f"Failed to execute apply command: {str(e)}")
+        parts = split_args(context)
+
+        if not parts:
+            # Show available patches to apply
+            return await self._show_applicable_patches()
+
+        patch_file = parts[0]
+
+        # Parse options
+        dry_run = False
+        force = False
+        backup = True
+        target_dir = "."
+
+        for i, part in enumerate(parts[1:], 1):
+            if part == "--dry-run":
+                dry_run = True
+            elif part == "--force":
+                force = True
+            elif part == "--no-backup":
+                backup = False
+            elif part.startswith("--target="):
+                target_dir = part.split("=", 1)[1]
+            elif part == "--target":
+                if i + 1 < len(parts):
+                    target_dir = parts[i + 1]
+                else:
+                    raise CommandError("--target requires a directory path")
+            elif part.startswith("--"):
+                raise CommandError(f"Unknown option: {part}")
+
+        return await self._apply_patch(patch_file, target_dir, dry_run, force, backup)
     
     async def _show_applicable_patches(self) -> CommandResult:
         """Show available patch files that can be applied"""

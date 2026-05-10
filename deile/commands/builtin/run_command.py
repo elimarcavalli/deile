@@ -15,7 +15,7 @@ from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import PlanStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import risk_emoji as _risk_emoji
-from ._shared import split_args, truncate
+from ._shared import split_args, truncate, wrap_command_errors
 
 
 class RunCommand(DirectCommand):
@@ -30,38 +30,29 @@ class RunCommand(DirectCommand):
         super().__init__(config)
         self.plan_manager = get_plan_manager()
     
+    @wrap_command_errors("run")
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute run command"""
-        try:
-            parts = split_args(context)
-            
-            if not parts:
-                # Show running plans
-                return await self._show_running_plans()
-            
-            plan_id = parts[0]
-            
-            # Parse options
-            auto_approve_low_risk = True
-            dry_run = False
-            
-            for part in parts[1:]:
-                if part == "--no-auto-approve":
-                    auto_approve_low_risk = False
-                elif part == "--dry-run":
-                    dry_run = True
-                elif part.startswith("--"):
-                    raise CommandError(f"Unknown option: {part}")
-            
-            if dry_run:
-                return await self._dry_run_plan(plan_id)
-            else:
-                return await self._execute_plan(plan_id, auto_approve_low_risk)
-            
-        except Exception as e:
-            if isinstance(e, CommandError):
-                raise
-            raise CommandError(f"Failed to execute run command: {str(e)}")
+        parts = split_args(context)
+
+        if not parts:
+            return await self._show_running_plans()
+
+        plan_id = parts[0]
+        auto_approve_low_risk = True
+        dry_run = False
+
+        for part in parts[1:]:
+            if part == "--no-auto-approve":
+                auto_approve_low_risk = False
+            elif part == "--dry-run":
+                dry_run = True
+            elif part.startswith("--"):
+                raise CommandError(f"Unknown option: {part}")
+
+        if dry_run:
+            return await self._dry_run_plan(plan_id)
+        return await self._execute_plan(plan_id, auto_approve_low_risk)
     
     async def _show_running_plans(self) -> CommandResult:
         """Show currently running plans"""

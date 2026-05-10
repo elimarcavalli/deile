@@ -7,7 +7,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args
+from ._shared import split_args, wrap_command_errors
 
 logger = logging.getLogger(__name__)
 
@@ -28,34 +28,27 @@ class ClearCommand(DirectCommand):
         )
         super().__init__(config)
     
+    @wrap_command_errors("clear")
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute clear command with enhanced reset functionality"""
-        try:
-            parts = split_args(context)
-            
-            if not parts:
-                # Standard clear - just clear screen and history
-                return await self._clear_standard(context)
-            
-            command = parts[0].lower()
-            
-            if command == "reset":
-                # Complete session reset - SITUAÇÃO 7 SOLUTION
-                force = "--force" in parts or "-f" in parts
-                return await self._clear_reset(context, force)
-            elif command == "history":
-                # Clear only conversation history
-                return await self._clear_history_only(context)
-            elif command == "screen":
-                # Clear only screen display
-                return await self._clear_screen_only(context)
-            else:
-                raise CommandError(f"Unknown clear option: {command}. Use: cls, cls reset, cls history, cls screen")
-                
-        except Exception as e:
-            if isinstance(e, CommandError):
-                raise
-            raise CommandError(f"Failed to execute clear command: {str(e)}")
+        parts = split_args(context)
+
+        if not parts:
+            # Standard clear - just clear screen and history
+            return await self._clear_standard(context)
+
+        command = parts[0].lower()
+
+        if command == "reset":
+            # Complete session reset - SITUAÇÃO 7 SOLUTION
+            force = "--force" in parts or "-f" in parts
+            return await self._clear_reset(context, force)
+        elif command == "history":
+            return await self._clear_history_only(context)
+        elif command == "screen":
+            return await self._clear_screen_only(context)
+        else:
+            raise CommandError(f"Unknown clear option: {command}. Use: cls, cls reset, cls history, cls screen")
     
     async def _clear_standard(self, context: CommandContext) -> CommandResult:
         """Standard clear - conversation history and screen"""

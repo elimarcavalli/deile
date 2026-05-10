@@ -8,7 +8,7 @@ from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import StepStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import risk_emoji as _risk_emoji
-from ._shared import split_args, truncate
+from ._shared import split_args, truncate, wrap_command_errors
 
 
 class ApproveCommand(DirectCommand):
@@ -23,36 +23,31 @@ class ApproveCommand(DirectCommand):
         super().__init__(config)
         self.plan_manager = get_plan_manager()
     
+    @wrap_command_errors("approve")
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute approve command"""
-        try:
-            parts = split_args(context)
-            
-            if not parts:
-                # Show pending approvals
-                return await self._show_pending_approvals()
-            
-            if len(parts) < 2:
-                raise CommandError("approve command requires plan ID and step ID: /approve <plan_id> <step_id> [yes|no]")
-            
-            plan_id = parts[0]
-            step_id = parts[1]
-            
-            # Default to approve, unless explicitly rejected
-            approved = True
-            if len(parts) > 2:
-                approval_response = parts[2].lower()
-                if approval_response in ['no', 'n', 'reject', 'deny', 'false']:
-                    approved = False
-                elif approval_response not in ['yes', 'y', 'approve', 'accept', 'true']:
-                    raise CommandError(f"Invalid approval response: {approval_response}. Use 'yes' or 'no'")
-            
-            return await self._approve_step(plan_id, step_id, approved)
-            
-        except Exception as e:
-            if isinstance(e, CommandError):
-                raise
-            raise CommandError(f"Failed to execute approve command: {str(e)}")
+        parts = split_args(context)
+
+        if not parts:
+            # Show pending approvals
+            return await self._show_pending_approvals()
+
+        if len(parts) < 2:
+            raise CommandError("approve command requires plan ID and step ID: /approve <plan_id> <step_id> [yes|no]")
+
+        plan_id = parts[0]
+        step_id = parts[1]
+
+        # Default to approve, unless explicitly rejected
+        approved = True
+        if len(parts) > 2:
+            approval_response = parts[2].lower()
+            if approval_response in ['no', 'n', 'reject', 'deny', 'false']:
+                approved = False
+            elif approval_response not in ['yes', 'y', 'approve', 'accept', 'true']:
+                raise CommandError(f"Invalid approval response: {approval_response}. Use 'yes' or 'no'")
+
+        return await self._approve_step(plan_id, step_id, approved)
     
     async def _show_pending_approvals(self) -> CommandResult:
         """Show all steps requiring approval across all plans"""

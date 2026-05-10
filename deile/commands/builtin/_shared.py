@@ -7,13 +7,15 @@ recuperação de subsistemas, mapas PT-BR de descrições).
 
 from __future__ import annotations
 
+import functools
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from rich.panel import Panel
 from rich.text import Text
 
+from ...core.exceptions import CommandError
 from ..base import CommandContext
 
 if TYPE_CHECKING:
@@ -129,6 +131,48 @@ def get_memory_manager(context: CommandContext) -> MemoryManager | None:
     padrão antes duplicado em compact, memory e status commands."""
     agent = get_agent(context)
     return getattr(agent, "memory_manager", None) if agent else None
+
+
+def wrap_command_errors(
+    name: str,
+    *,
+    message_template: str = "Failed to execute {name} command: {exc}",
+) -> Callable[[Callable[..., Awaitable[Any]]], Callable[..., Awaitable[Any]]]:
+    """Decorator for ``SlashCommand.execute`` that wraps unexpected exceptions.
+
+    Pattern duplicated 8x in builtin commands:
+
+        try:
+            ... logic ...
+        except Exception as exc:
+            if isinstance(exc, CommandError):
+                raise
+            raise CommandError(f"Failed to execute X command: {exc}")
+
+    Usage:
+
+        @wrap_command_errors("approve")
+        async def execute(self, context): ...
+
+    ``CommandError`` (and subclasses) propagate untouched so caller-facing
+    messages are preserved; any other exception is rewrapped with the
+    template — defaulting to the existing English message, but accepting
+    a localized one (e.g. ``"Falha ao executar comando {name}: {exc}"``).
+    """
+
+    def decorator(func: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+        @functools.wraps(func)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await func(*args, **kwargs)
+            except CommandError:
+                raise
+            except Exception as exc:
+                raise CommandError(message_template.format(name=name, exc=exc)) from exc
+
+        return wrapper
+
+    return decorator
 
 
 def split_args(context: CommandContext) -> list[str]:
