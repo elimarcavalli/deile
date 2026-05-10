@@ -1,5 +1,6 @@
 """Comando /export — exporta histórico de conversa e dados da sessão"""
 
+import asyncio
 import json
 import zipfile
 from datetime import datetime, timezone
@@ -99,10 +100,21 @@ class ExportCommand(DirectCommand):
         export_dir = Path(export_path)
         export_dir.mkdir(parents=True, exist_ok=True)
 
+        # Esses helpers fazem I/O bloqueante (write_text/ZipFile) e são
+        # invocados a partir de uma corrotina — Pilar 03 §1: nunca bloquear
+        # o event loop com I/O síncrono. Despachamos via asyncio.to_thread.
         if format_type == "zip":
-            exported_files = [str(self._create_zip_export(export_data, export_dir))]
+            zip_path = await asyncio.to_thread(
+                self._create_zip_export, export_data, export_dir
+            )
+            exported_files = [str(zip_path)]
         else:
-            exported_files = self._create_individual_exports(export_data, export_dir, format_type)
+            exported_files = await asyncio.to_thread(
+                self._create_individual_exports,
+                export_data,
+                export_dir,
+                format_type,
+            )
 
         return self._create_export_summary(exported_files, export_data, format_type)
 
