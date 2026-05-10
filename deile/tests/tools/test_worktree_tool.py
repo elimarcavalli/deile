@@ -17,8 +17,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from deile.tools._pipeline_paths import resolve_base_path as _resolve_base_path
 from deile.tools.base import ToolContext, ToolStatus
-from deile.tools.worktree_tool import WorktreeTool, _resolve_base_path
+from deile.tools.worktree_tool import WorktreeTool
 
 # ---------------------------------------------------------------------------
 # helpers

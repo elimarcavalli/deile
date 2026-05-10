@@ -110,7 +110,7 @@ class WhatsAppSendTemplateTool(MessagingTool):
         # WhatsApp recipient is a phone number — sensitive PII. Do NOT
         # plaintext it in the audit log; hash via the inherited _sha8.
         # Template name + language are operator config (not PII), keep them.
-        from ._base import _sha8
+        from .._hash_utils import sha8 as _sha8
 
         payload = {"tool": self.tool_name}
         if isinstance(args, dict):

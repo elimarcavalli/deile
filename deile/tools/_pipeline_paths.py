@@ -11,13 +11,49 @@ Resolution order:
 """
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from typing import Optional
 
 
+def _assert_safe_root(path: Path) -> None:
+    """Raise ValueError if *path* is outside all known safe roots.
+
+    Safe roots are:
+    - The current user's home directory (``Path.home()``).
+    - The git repository root found by walking up from ``Path.cwd()``
+      (i.e. the first ancestor directory that contains a ``.git`` entry).
+    - The system temporary directory (``tempfile.gettempdir()``), which is
+      used by pytest fixtures and other trusted runtime scratch space.
+
+    This enforces Pilar 08: arbitrary caller-supplied paths must be contained
+    within a trusted directory before any filesystem access.
+    """
+    safe_roots = [Path.home(), Path(tempfile.gettempdir()).resolve()]
+    cwd = Path.cwd()
+    for ancestor in (cwd, *cwd.parents):
+        if (ancestor / ".git").exists():
+            safe_roots.append(ancestor)
+            break
+
+    for root in safe_roots:
+        try:
+            path.relative_to(root)
+            return  # contained — OK
+        except ValueError:
+            continue
+
+    raise ValueError(
+        f"Path '{path}' is outside all safe roots {[str(r) for r in safe_roots]}. "
+        "Supply a path inside your home directory or the current git repository."
+    )
+
+
 def resolve_base_path(override: Optional[str] = None) -> Path:
     if override:
-        return Path(override).resolve()
+        resolved = Path(override).resolve()
+        _assert_safe_root(resolved)
+        return resolved
     from deile.config.settings import get_settings
 
     s = get_settings()
