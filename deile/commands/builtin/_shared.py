@@ -127,6 +127,33 @@ def split_args(context: CommandContext) -> list[str]:
     return stripped.split() if stripped else []
 
 
+FILE_ACTION_EMOJI: dict[str, str] = {
+    "modified": "📝",
+    "created": "✨",
+    "deleted": "🗑️",
+}
+"""Emojis canônicos para ações de arquivo — apply/diff/patch commands."""
+
+
+RISK_EMOJI: dict[str, str] = {
+    "low": "🟢",
+    "medium": "🟡",
+    "high": "🔴",
+    "critical": "🚨",
+}
+"""Emojis canônicos por nível de risco — approve/plan/run commands."""
+
+
+def file_action_emoji(action: str) -> str:
+    """Resolve emoji para a ação de arquivo; fallback ``❓`` para desconhecidos."""
+    return FILE_ACTION_EMOJI.get(action, "❓")
+
+
+def risk_emoji(risk_level: str) -> str:
+    """Resolve emoji para o nível de risco; fallback ``❓`` para desconhecidos."""
+    return RISK_EMOJI.get(risk_level, "❓")
+
+
 def truncate(text: str | None, max_chars: int, suffix: str = "...") -> str:
     """Recorta ``text`` para ``max_chars`` caracteres + ``suffix`` quando excede.
 

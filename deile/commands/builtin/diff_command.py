@@ -13,7 +13,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args, truncate
+from ._shared import file_action_emoji, split_args, truncate
 
 
 class DiffCommand(DirectCommand):
@@ -290,15 +290,10 @@ class DiffCommand(DirectCommand):
         ]
         
         for file_change in changes['file_changes']:
-            action_emoji = {
-                'modified': '📝',
-                'created': '✨',
-                'deleted': '🗑️'
-            }.get(file_change['action'], '❓')
-            
+            action_emoji = file_action_emoji(file_change['action'])
             added = file_change.get('lines_added', 0)
             removed = file_change.get('lines_removed', 0)
-            
+
             content_lines.append(
                 f"  {action_emoji} **{file_change['path']}** (+{added}/-{removed})"
             )
@@ -344,12 +339,8 @@ class DiffCommand(DirectCommand):
         ]
         
         for i, file_change in enumerate(changes['file_changes'], 1):
-            action_emoji = {
-                'modified': '📝',
-                'created': '✨', 
-                'deleted': '🗑️'
-            }.get(file_change['action'], '❓')
-            
+            action_emoji = file_action_emoji(file_change['action'])
+
             content_lines.extend([
                 f"## {i}. {action_emoji} {file_change['path']}",
                 "",

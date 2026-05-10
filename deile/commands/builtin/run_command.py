@@ -14,6 +14,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import PlanStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import risk_emoji as _risk_emoji
 from ._shared import split_args, truncate
 
 
@@ -148,14 +149,7 @@ class RunCommand(DirectCommand):
             step_queue = step_queue[plan.max_concurrent_steps:]
             
             for step in current_steps:
-                # Risk indicators
-                risk_emoji = {
-                    "low": "🟢",
-                    "medium": "🟡", 
-                    "high": "🔴",
-                    "critical": "🚨"
-                }.get(step.risk_level.value, "❓")
-                
+                risk_emoji = _risk_emoji(step.risk_level.value)
                 approval_text = " ⚠️ (needs approval)" if step.requires_approval else ""
                 deps_text = f" (depends on: {', '.join(step.depends_on)})" if step.depends_on else ""
                 

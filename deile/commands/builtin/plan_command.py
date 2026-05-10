@@ -10,7 +10,8 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import PlanStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args, success_panel, truncate, warning_panel
+from ._shared import (risk_emoji, split_args, success_panel, truncate,
+                      warning_panel)
 
 
 class PlanCommand(DirectCommand):
@@ -121,8 +122,7 @@ class PlanCommand(DirectCommand):
         
         # Add step summary
         for i, step in enumerate(plan.steps[:5], 1):  # Show first 5 steps
-            risk_emoji = {"low": "🟢", "medium": "🟡", "high": "🔴", "critical": "🚨"}
-            emoji = risk_emoji.get(step.risk_level.value, "❓")
+            emoji = risk_emoji(step.risk_level.value)
             approval = " ⚠️" if step.requires_approval else ""
             
             content_lines.append(f"  {i}. {emoji} {step.description}{approval}")
