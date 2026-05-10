@@ -579,13 +579,3 @@ EXAMPLES:
             return context.session.session_id
         except AttributeError:
             return "default"
-
-
-# Register
-try:
-    from deile.commands.registry import StaticCommandRegistry
-    StaticCommandRegistry.register("model", ModelCommand)
-    StaticCommandRegistry.register("models", ModelCommand)
-    StaticCommandRegistry.register("m", ModelCommand)
-except ImportError:
-    pass

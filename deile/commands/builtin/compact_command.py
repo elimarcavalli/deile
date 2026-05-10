@@ -487,8 +487,3 @@ class CompactCommand(DirectCommand):
             setting=key,
             new_value=new_val,
         )
-
-
-from deile.commands.registry import StaticCommandRegistry  # noqa: E402
-
-StaticCommandRegistry.register("compact", CompactCommand)

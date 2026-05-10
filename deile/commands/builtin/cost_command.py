@@ -565,8 +565,3 @@ EXEMPLOS:
         except Exception as exc:
             logger.error("Falha ao calcular estimativa: %s", exc)
             return CommandResult.error_result(f"Falha ao calcular estimativa: {exc}", error=exc)
-
-
-from deile.commands.registry import StaticCommandRegistry  # noqa: E402
-
-StaticCommandRegistry.register("cost", CostCommand)
