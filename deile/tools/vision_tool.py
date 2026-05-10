@@ -28,11 +28,13 @@ import asyncio
 import base64
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from deile.tools._hash_utils import sha8 as _sha8
+from deile.tools._pipeline_paths import _assert_safe_root
 
 from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
                    ToolSchema)
@@ -135,9 +137,6 @@ class VisionDescribeImageTool(Tool):
                 error_code="VISION_BAD_INPUT",
             )
         if len(sources) > 1:
-            # Reject ambiguity instead of picking one silently — the agent
-            # should commit to a single source so we don't waste a vision
-            # call on an image the user didn't actually intend.
             return ToolResult.error_result(
                 "provide exactly ONE of image_url, image_path, image_base64 "
                 "(got multiple)",
@@ -215,10 +214,6 @@ class VisionToolError(Exception):
         self.code = code
 
 
-# Gemini multimodal supports image/jpeg, image/png, image/webp, image/gif.
-# (BMP and other formats raise INVALID_ARGUMENT upstream — keep them out
-# of the auto-detection table so the user sees a clear error instead of
-# a confusing VISION_LLM_FAILED.)
 _EXT_TO_MIME = {
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -244,6 +239,10 @@ def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes, str]
     if path.startswith("file://"):
         path = path[len("file://"):]
     p = os.path.abspath(path)
+    try:
+        _assert_safe_root(Path(p))
+    except ValueError as exc:
+        raise VisionToolError("VISION_BAD_INPUT", str(exc)) from exc
     if not os.path.isfile(p):
         raise VisionToolError("VISION_BAD_INPUT", f"image_path not found: {path!r}")
     if not mime_hint:
@@ -339,9 +338,8 @@ async def _gemini_describe(
     response = await asyncio.to_thread(_call)
     text = getattr(response, "text", None)
     if not text:
-        # Walk the candidates → parts manually if .text isn't populated
         try:
-            candidates = response.candidates  # type: ignore[attr-defined]
+            candidates = response.candidates
             for cand in candidates or []:
                 content = getattr(cand, "content", None)
                 if not content:
