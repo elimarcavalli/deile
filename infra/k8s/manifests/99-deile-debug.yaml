@@ -1,0 +1,72 @@
+# A short-lived debug pod with the same securityContext + secret mount
+# as the deile-oneshot Job, but `sleep`-only — for inspecting that the
+# wrapper-stripped env never appears in /proc/<pid>/environ. Apply once,
+# probe, delete. Never used by the happy path.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: deile-debug
+  namespace: deile
+  labels:
+    app: deile-debug
+    role: deile
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  enableServiceLinks: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: deile
+      image: deile-stack:local
+      imagePullPolicy: Never
+      args:
+        - python3
+        - /app/wrapper.py
+        - deile
+        # An empty prompt — wrapper still does its secret-stripping path
+        # but deile sees no message, so it falls through and exits
+        # cleanly. We only care about the secret-stripping side.
+        - "Sleep without doing anything; this prompt is intentionally a no-op."
+      env:
+        - name: HOME
+          value: /home/deile
+        - name: DEILE_BOT_ENDPOINT
+          value: "http://deilebot.deile.svc.cluster.local:8765"
+        - name: DEILE_BOT_APPROVAL_AUTO
+          value: "1"
+      volumeMounts:
+        - name: deile-secrets
+          mountPath: /run/secrets/deile
+          readOnly: true
+        - name: home
+          mountPath: /home/deile
+        - name: tmp
+          mountPath: /tmp
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        capabilities:
+          drop: ["ALL"]
+        seccompProfile:
+          type: RuntimeDefault
+  volumes:
+    - name: deile-secrets
+      secret:
+        secretName: deile-secrets
+        defaultMode: 288
+    - name: home
+      emptyDir:
+        sizeLimit: "128Mi"
+    - name: tmp
+      emptyDir:
+        medium: Memory
+        sizeLimit: "32Mi"

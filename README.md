@@ -197,6 +197,58 @@ Para isolar o app sem mexer no Python do sistema, use [pipx](https://pipx.pypa.i
 
 ---
 
+### 🐳 Rodar em container (Kubernetes / Rancher Desktop)
+
+Para quem prefere que **o agente não toque o filesystem do host** (ex.:
+o bot Discord que recebe input não-confiável, ou um sandbox descartável
+pra experimentos), há uma stack completa em [`infra/k8s/`](infra/k8s/)
+que sobe DEILE e o daemon deilebot em Pods isolados num k3s local
+(Rancher Desktop).
+
+Caminho feliz, do zero ao primeiro DM em ~10 min:
+
+```bash
+brew install --cask rancher    # 1) instala k3s + containerd local
+open -a "Rancher Desktop"      #    escolha container engine = containerd
+
+# 2) edite .env do repo: pelo menos uma chave LLM + DEILE_BOT_DISCORD_TOKEN
+#    (mesmo .env do modo local — nada novo)
+
+bash infra/k8s/run.sh build    # 3) builda a imagem (~5–10 min na 1ª vez)
+bash infra/k8s/run.sh up       # 4) namespace + NetworkPolicies + Secrets + bot
+bash infra/k8s/run.sh test     # 5) one-shot deile → DM no Discord (prova de E2E)
+```
+
+Três modos de invocar DEILE no container, todos com host inalcançável:
+
+```bash
+# A) One-shot pré-programado (Job; prompt fixo no manifest)
+bash infra/k8s/run.sh test
+
+# B) Sandbox interativo, toolset cheio (bash, file ops, python_execute…)
+kubectl -n deile exec deploy/deile-shell -- python3 /app/wrapper.py deile "explore /home/deile"
+kubectl -n deile exec -it deploy/deile-shell -- python3 /app/wrapper.py deile   # REPL
+
+# C) Host (sem container) — pra mexer em código do SEU projeto
+python3 deile.py "..."
+```
+
+Defesas aplicadas em todos os modos containerizados: `runAsNonRoot uid 10001`,
+`capabilities drop ALL`, `readOnlyRootFilesystem`, `seccompProfile RuntimeDefault`,
+`automountServiceAccountToken: false`, PSS `restricted` no namespace,
+NetworkPolicy `default-deny-all` + `except: 192.168.0.0/16` no egress 443 (Mac
+inalcançável via `host.lima.internal`/`192.168.5.x` — REJECT em 1 ms), secrets
+montados como **arquivos** em `/run/secrets/<role>/` (nunca via `env:`, portanto
+`/proc/<pid>/environ` fica limpo no `execve`), e `bootstrap_providers()`
+monkey-patched para popar API keys de `os.environ` após instanciar providers
+(subprocesses herdam env limpo).
+
+Tutorial passo-a-passo, troubleshooting, modelo de ameaça e operação:
+[`infra/k8s/README.md`](infra/k8s/README.md). Design e decisões:
+[`docs/system_design/14-CONTAINERIZACAO.md`](docs/system_design/14-CONTAINERIZACAO.md).
+
+---
+
 ## ✨ Funcionalidades reais implementadas
 
 

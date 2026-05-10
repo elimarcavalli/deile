@@ -1,0 +1,110 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: deile-oneshot
+  namespace: deile
+  labels:
+    app: deile
+    role: deile
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: deile
+        role: deile
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: deile
+          image: deile-stack:local
+          imagePullPolicy: Never
+          # Same reason as the bot Deployment: deile's SQLiteTaskManager
+          # writes `./deile_tasks.db` relative to cwd; /home/deile is
+          # the writable tmpfs.
+          workingDir: /home/deile
+          # ENTRYPOINT is `tini --` from the image; `args` becomes the
+          # rest of the command line.
+          args:
+            - python3
+            - /app/wrapper.py
+            - deile
+            # IMPORTANT — the prompt is intentionally explicit so the LLM
+            # picks the messaging tool with no ambiguity. The agent must
+            # call exactly one tool then stop.
+            - "Use a tool messaging.discord_send_dm para enviar uma DM ao usuario com user_id=1475913578648436909 com o texto exato: 'DEILE rodando isolado em container Kubernetes (Rancher Desktop / k3s). Esta DM foi enviada via tool messaging.discord_send_dm pelo control-plane do deilebot daemon, tambem isolado em container. Nenhum acesso ao filesystem do host foi necessario. — teste E2E.'. Apos o sucesso da tool, pare imediatamente e responda apenas 'OK' sem chamar mais nenhuma tool. Se a tool falhar com BOT_INTEGRATION_DISABLED, BOT_AUTH_ERROR, BOT_NOT_READY, BOT_TIMEOUT, BOT_RATE_LIMITED, BOT_UNREACHABLE, BOT_UPSTREAM ou PERMISSION_DENIED, reporte literalmente o codigo de erro e pare. Nao tente outros canais e nao tente bash_tool nem nada do filesystem."
+          env:
+            - name: HOME
+              value: /home/deile
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            # Endpoint of the bot's control plane (within the cluster).
+            - name: DEILE_BOT_ENDPOINT
+              value: "http://deilebot.deile.svc.cluster.local:8765"
+            # Bypass the interactive approval gate for messaging.discord_send_dm.
+            # The audit log still records "approval=auto:trusted_operator".
+            - name: DEILE_BOT_APPROVAL_AUTO
+              value: "1"
+            # Persona override so DEILE doesn't pull random behaviour from
+            # the host's settings.json (which we don't ship in the image).
+            - name: DEILE_DEFAULT_PERSONA
+              value: developer
+            # The DM-proof Job deals with a fixed prompt and only needs
+            # messaging.* tools — locking the toolset here prevents
+            # the LLM from wandering into bash/find_in_files when it
+            # has no business doing so. The interactive Deployment uses
+            # `all` instead.
+            - name: DEILE_WRAPPER_TOOL_WHITELIST
+              value: "messaging"
+          volumeMounts:
+            - name: deile-secrets
+              mountPath: /run/secrets/deile
+              readOnly: true
+            - name: home
+              mountPath: /home/deile
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      volumes:
+        - name: deile-secrets
+          secret:
+            secretName: deile-secrets
+            # 0o440 (decimal 288) — owner (root) + group (fsGroup=10001)
+            # may read; world denied. Octal form is unreliable through
+            # Go's YAML→JSON conversion, hence decimal.
+            defaultMode: 288
+        - name: home
+          emptyDir:
+            sizeLimit: "128Mi"
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: "32Mi"
