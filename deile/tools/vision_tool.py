@@ -320,7 +320,9 @@ async def _gemini_describe(
             "google-genai SDK not installed; install with `pip install google-genai`",
         ) from e
 
-    api_key = os.environ.get("GOOGLE_API_KEY")
+    from deile.config.settings import get_settings
+
+    api_key = get_settings().api_keys.get("GOOGLE_API_KEY")
     if not api_key:
         raise VisionToolError(
             "VISION_LLM_FAILED",
