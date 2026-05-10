@@ -509,6 +509,19 @@ async def test_direct_private_ip_rejected(tool, ctx_factory):
         assert res.metadata["error_code"] == "VISION_BAD_INPUT", bad_url
 
 
+async def test_direct_ipv6_private_rejected(tool, ctx_factory):
+    """IPv6 loopback, link-local, multicast, and deprecated site-local must all be blocked."""
+    for bad_url in (
+        "http://[::1]/",        # IPv6 loopback
+        "http://[fe80::1]/",    # IPv6 link-local
+        "http://[ff02::1]/",    # IPv6 multicast (is_global=True on Python 3.11)
+        "http://[fec0::1]/",    # IPv6 deprecated site-local RFC 3879 (is_global=True on Python 3.11)
+    ):
+        res = await tool.execute(ctx_factory(image_url=bad_url))
+        assert res.is_error, f"expected error for {bad_url}"
+        assert res.metadata["error_code"] == "VISION_BAD_INPUT", bad_url
+
+
 # ---- magic-byte validation --------------------------------------------------
 
 
@@ -526,6 +539,24 @@ async def test_magic_byte_mismatch_rejected(tool, ctx_factory, monkeypatch):
     res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/png"))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+
+
+async def test_magic_byte_mismatch_emits_blocked_audit(tool, ctx_factory, monkeypatch):
+    """_try_audit_blocked(suspicious=True) must be called on MIME-spoofing detection."""
+    calls = []
+
+    def _fake_audit(resource, action, details, suspicious=False):
+        calls.append({"resource": resource, "action": action, "details": details, "suspicious": suspicious})
+
+    monkeypatch.setattr("deile.tools.vision_tool._try_audit_blocked", _fake_audit)
+    import base64
+    jpeg_magic = b"\xff\xd8\xff" + b"\x00" * 10
+    b64 = base64.b64encode(jpeg_magic).decode()
+    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/png"))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+    assert calls, "_try_audit_blocked was not called on magic-byte mismatch"
+    assert calls[0]["suspicious"] is True
 
 
 # ---- operator model env-var allowlist enforcement ---------------------------

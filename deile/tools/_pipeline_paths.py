@@ -12,7 +12,6 @@ Resolution order:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 from deile.core.exceptions import PathContainmentError
 
@@ -43,7 +42,13 @@ def _assert_safe_root(path: Path) -> None:
     cwd = Path.cwd()
     for ancestor in (cwd, *cwd.parents):
         if (ancestor / ".git").exists():  # also matches worktree .git files
-            safe_roots.append(ancestor)
+            try:
+                # Skip world-writable dirs: an attacker could create /tmp/.git to
+                # elevate /tmp into a safe root if the process CWD happens to be /tmp.
+                if not (ancestor.stat().st_mode & 0o002):
+                    safe_roots.append(ancestor)
+            except OSError:
+                pass
             break
 
     for root in safe_roots:
@@ -61,7 +66,7 @@ def _assert_safe_root(path: Path) -> None:
     )
 
 
-def resolve_base_path(override: Optional[str] = None) -> Path:
+def resolve_base_path(override: str | None = None) -> Path:
     if override:
         resolved = Path(override).resolve()
         _assert_safe_root(resolved)

@@ -72,6 +72,12 @@ _EXT_TO_MIME = {
     ".gif": "image/gif",
 }
 _GEMINI_SUPPORTED_MIMES = frozenset(_EXT_TO_MIME.values())
+# IPv6 ranges that Python's ipaddress reports as is_global=True but must be blocked for SSRF.
+# fec0::/10 is the deprecated site-local range (RFC 3879); Python ≤3.13 lacks a dedicated
+# is_site_local attribute and does not exclude it from is_global.
+_SSRF_BLOCKED_IPV6_NETS: tuple[ipaddress.IPv6Network, ...] = (
+    ipaddress.IPv6Network("fec0::/10"),
+)
 
 _DEFAULT_PROMPT = (
     "Descreva exatamente o que está nesta imagem em 2-4 linhas em português. "
@@ -254,9 +260,18 @@ class VisionDescribeImageTool(Tool):
                 error_code="VISION_IMAGE_TOO_LARGE",
             )
 
+        # Pre-compute audit resource here so both the magic-byte block and the
+        # success audit path use the same sanitised value.
+        _audit_resource = url.split("?")[0].split("#")[0] if url else (path or f"base64:{mime}")
         try:
             _validate_magic_bytes(image_bytes, mime)
         except VisionToolError as e:
+            _try_audit_blocked(
+                resource=_audit_resource,
+                action="describe",
+                details={"reason": "magic_byte_mismatch", "mime": mime},
+                suspicious=True,
+            )
             return ToolResult.error_result(str(e), error_code=e.code, error=e)
 
         sha8 = _sha8(image_bytes)
@@ -282,8 +297,6 @@ class VisionDescribeImageTool(Tool):
             },
             message=f"vision_describe_image ok ({model}, {len(image_bytes)} B, sha8={sha8})",
         )
-        # Strip query params and fragment before logging (CDN tokens must not reach the audit log)
-        _audit_resource = url.split("?")[0].split("#")[0] if url else (path or f"base64:{mime}")
         try:
             from deile.security.audit_logger import (AuditEventType,
                                                      SeverityLevel,
@@ -326,7 +339,7 @@ async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes
         path = _parsed.path
     p = Path(path).resolve()
     _assert_safe_root(p)
-    if not p.is_file():
+    if not await asyncio.to_thread(p.is_file):
         raise VisionToolError("VISION_BAD_INPUT", f"image_path not found: {path!r}")
     if not mime_hint:
         ext = p.suffix.lower()
@@ -402,15 +415,25 @@ def _is_ssrf_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     Uses explicit attribute checks in addition to ``is_global`` to cover ranges
     that Python < 3.11 incorrectly classified as global (e.g. CGN 100.64/10,
     documentation ranges 192.0.2/24, 198.51.100/24, 203.0.113/24).
+
+    Additional IPv6 checks:
+    - ``is_multicast``: Python 3.11 reports all ff00::/8 multicast as ``is_global=True``.
+    - ``_SSRF_BLOCKED_IPV6_NETS``: covers ``fec0::/10`` deprecated site-local (RFC 3879),
+      which Python ≤3.13 also reports as ``is_global=True``.
     """
-    return (
+    if (
         not ip.is_global
         or ip.is_private
         or ip.is_loopback
         or ip.is_link_local
         or ip.is_reserved
         or ip.is_unspecified
-    )
+        or ip.is_multicast
+    ):
+        return True
+    if isinstance(ip, ipaddress.IPv6Address):
+        return any(ip in net for net in _SSRF_BLOCKED_IPV6_NETS)
+    return False
 
 
 async def _check_ssrf(url: str) -> None:
