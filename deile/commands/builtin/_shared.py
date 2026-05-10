@@ -127,6 +127,23 @@ def split_args(context: CommandContext) -> list[str]:
     return stripped.split() if stripped else []
 
 
+def truncate(text: str, width: int, ellipsis: str = "...") -> str:
+    """Trunca ``text`` a ``width`` caracteres, anexando ``ellipsis`` se cortou.
+
+    Substitui o padrão duplicado em ~16 sites de comandos builtin:
+    ``text[:N] + ("..." if len(text) > N else "")``. Versões legadas
+    sem o ``if len(...)`` (ex. ``actor[:10] + "..."``) são corrigidas
+    como efeito colateral — antes elas anexavam ``...`` mesmo quando o
+    texto cabia inteiro nos N caracteres.
+
+    Output pode exceder ``width`` em ``len(ellipsis)`` chars quando há
+    truncamento, preservando o comportamento visual atual.
+    """
+    if not text or len(text) <= width:
+        return text
+    return text[:width] + ellipsis
+
+
 # ---------------------------------------------------------------------------
 # Mapas de emojis canônicos compartilhados pelos comandos builtin.
 #

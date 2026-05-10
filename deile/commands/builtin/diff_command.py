@@ -13,7 +13,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import ACTION_EMOJI, split_args
+from ._shared import ACTION_EMOJI, split_args, truncate
 
 
 class DiffCommand(DirectCommand):
@@ -116,7 +116,7 @@ class DiffCommand(DirectCommand):
             
             table.add_row(
                 plan['id'],
-                plan['title'][:25] + ("..." if len(plan['title']) > 25 else ""),
+                truncate(plan['title'], 25),
                 status_text,
                 changes_text,
                 str(files_affected),
