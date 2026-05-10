@@ -291,6 +291,13 @@ class VisionDescribeImageTool(Tool):
             description = await _gemini_describe(image_bytes, mime, prompt, model)
         except VisionToolError as e:
             return ToolResult.error_result(str(e), error_code=e.code, error=e)
+        except asyncio.TimeoutError:
+            # Python 3.11+: asyncio.TimeoutError is a CancelledError (BaseException)
+            # so it escapes ``except Exception``; catch it explicitly here.
+            return ToolResult.error_result(
+                "vision LLM call failed: TimeoutError",
+                error_code="VISION_LLM_FAILED",
+            )
         except Exception as e:
             logger.exception("vision LLM call failed")
             return ToolResult.error_result(
@@ -455,6 +462,10 @@ def _is_ssrf_blocked(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     ):
         return True
     if isinstance(ip, ipaddress.IPv6Address):
+        # IPv4-mapped addresses (::ffff:x.x.x.x) carry IPv4 semantics; check the
+        # embedded IPv4 address so ranges like ::ffff:169.254.x.x are not missed.
+        if ip.ipv4_mapped is not None and _is_ssrf_blocked(ip.ipv4_mapped):
+            return True
         return any(ip in net for net in _SSRF_BLOCKED_IPV6_NETS)
     return False
 
@@ -540,6 +551,7 @@ def _validate_magic_bytes(image_bytes: bytes, mime: str) -> None:
     else:
         magic = _MAGIC_BYTES.get(mime)
         if not magic:
+            logger.warning("no magic-byte entry for supported MIME %r; update _MAGIC_BYTES", mime)
             return
         ok = image_bytes[:len(magic)] == magic
     if not ok:
@@ -632,7 +644,10 @@ async def _gemini_describe(
                 ],
             )
 
-    response = await asyncio.wait_for(asyncio.to_thread(_call), timeout=_GEMINI_TIMEOUT_S)
+    try:
+        response = await asyncio.wait_for(asyncio.to_thread(_call), timeout=_GEMINI_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        raise VisionToolError("VISION_LLM_FAILED", "Gemini call timed out")
     text = getattr(response, "text", None)
     if not text:
         try:

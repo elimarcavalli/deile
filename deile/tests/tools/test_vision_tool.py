@@ -790,3 +790,40 @@ async def test_url_redirect_emits_suspicious_audit(tool, ctx_factory, monkeypatc
     assert calls, "_try_audit_blocked was not called on 3xx redirect"
     assert calls[0]["suspicious"] is True
     assert calls[0]["details"]["reason"] == "redirect"
+
+
+# ---- Gemini wait_for timeout must return ToolResult, not raise --------------
+
+
+async def test_gemini_timeout_returns_llm_failed(tool, ctx_factory, monkeypatch):
+    """asyncio.TimeoutError from Gemini must return VISION_LLM_FAILED (not propagate).
+
+    On Python 3.11+ asyncio.TimeoutError is a CancelledError (BaseException), so
+    ``except Exception`` in execute() does NOT catch it. The fix adds an explicit
+    ``except asyncio.TimeoutError`` handler before ``except Exception``.
+    """
+    import asyncio as _asyncio
+    import base64
+
+    async def _raises_timeout(image_bytes, mime, prompt, model):
+        raise _asyncio.TimeoutError()
+
+    monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", _raises_timeout)
+    b64 = base64.b64encode(PNG_1x1_BYTES).decode()
+    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/png"))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_LLM_FAILED"
+
+
+# ---- IPv4-mapped IPv6 link-local must be blocked ----------------------------
+
+
+async def test_ipv4_mapped_link_local_rejected(tool, ctx_factory):
+    """::ffff:169.254.x.x (IPv4-mapped link-local) must be blocked for SSRF.
+
+    Python's IPv6Address.is_link_local only checks fe80::/10, not IPv4-mapped
+    ranges, so the check must use ip.ipv4_mapped and recurse into _is_ssrf_blocked.
+    """
+    res = await tool.execute(ctx_factory(image_url="http://[::ffff:169.254.169.254]/"))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
