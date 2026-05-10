@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import hashlib
 import logging
 import os
 from typing import Any
@@ -49,8 +48,7 @@ _DEFAULT_PROMPT = (
 )
 
 
-def _sha8(payload: bytes) -> str:
-    return hashlib.sha256(payload).hexdigest()[:8]
+from deile.tools._hash_utils import sha8 as _sha8
 
 
 def _resolve_vision_model() -> str:
