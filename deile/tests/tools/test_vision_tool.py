@@ -2,14 +2,14 @@
 
 All tests are hermetic:
 - No real Gemini calls — ``_gemini_describe`` is monkeypatched.
-- URL download uses a real httpx mock server (``image_server`` fixture) so
+- URL download uses a real aiohttp server (``image_server`` fixture) so
   the streaming / size-cap logic runs for real.
 """
 from __future__ import annotations
 
 import pytest
 
-from deile.tools.base import ToolContext, ToolStatus
+from deile.tools.base import ToolContext
 from deile.tools.vision_tool import VisionDescribeImageTool
 
 # ---------------------------------------------------------------------------
@@ -121,22 +121,45 @@ async def test_base64_happy_path(tool, ctx_factory, monkeypatch):
 
 
 @pytest.fixture
-def image_server(httpserver):
-    """Serve a minimal PNG over HTTP for download tests."""
-    httpserver.expect_request("/img.png").respond_with_data(
-        PNG_1x1_BYTES, content_type="image/png"
-    )
-    httpserver.expect_request("/big.png").respond_with_data(
-        b"\x89PNG\r\n\x1a\n" + b"\x00" * (11 * 1024 * 1024),
-        content_type="image/png",
-    )
-    httpserver.expect_request("/notfound.png").respond_with_data(
-        "", status=404
-    )
-    httpserver.expect_request("/text.txt").respond_with_data(
-        "hello", content_type="text/plain"
-    )
-    return httpserver
+async def image_server():
+    """Self-contained aiohttp server for URL download tests (no extra packages needed)."""
+    from aiohttp import web
+
+    big_body = b"\x89PNG\r\n\x1a\n" + b"\x00" * (11 * 1024 * 1024)
+
+    routes = web.RouteTableDef()
+
+    @routes.get("/img.png")
+    async def _img(_):
+        return web.Response(body=PNG_1x1_BYTES, content_type="image/png")
+
+    @routes.get("/big.png")
+    async def _big(_):
+        return web.Response(body=big_body, content_type="image/png")
+
+    @routes.get("/notfound.png")
+    async def _404(_):
+        return web.Response(status=404)
+
+    @routes.get("/text.txt")
+    async def _txt(_):
+        return web.Response(body=b"hello", content_type="text/plain")
+
+    app = web.Application()
+    app.add_routes(routes)
+    runner = web.AppRunner(app, handle_signals=False, access_log=None)
+    await runner.setup()
+    site = web.TCPSite(runner, host="127.0.0.1", port=0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    base = f"http://127.0.0.1:{port}"
+
+    class _Server:
+        def url_for(self, path: str) -> str:
+            return f"{base}{path}"
+
+    yield _Server()
+    await runner.cleanup()
 
 
 async def test_url_download_happy(tool, ctx_factory, monkeypatch, image_server):
