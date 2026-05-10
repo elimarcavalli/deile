@@ -21,6 +21,17 @@ from deile.commands.builtin._shared import (export_timestamp,
 
 logger = logging.getLogger(__name__)
 
+# Defaults for the /compact subcommands. Previously stored on the command
+# instance as ``self.compact_config`` and tweakable via ``/compact config
+# <key> <val>`` — that subcommand was removed because it only mutated the
+# in-memory dict (no persistence to ``config/system_config.yaml``), so its
+# "Configuração atualizada (sessão atual)" message overpromised. If true
+# user-tunable thresholds become necessary, expose them via ``Settings``
+# and read them through ``get_settings()`` (pillar 03 §7).
+_COMPRESS_THRESHOLD_DAYS = 7
+_PURGE_THRESHOLD_DAYS = 30
+_MAX_MEMORY_USAGE_MB = 100
+
 
 async def _get_session_store(context: CommandContext) -> Optional[Any]:
     agent = context.agent
@@ -40,12 +51,6 @@ class CompactCommand(DirectCommand):
     def __init__(self) -> None:
         super().__init__()
         self.config.description = "Gerenciar memória e histórico de sessões"
-        self.compact_config: dict[str, Any] = {
-            "auto_compress": True,
-            "compress_threshold_days": 7,
-            "purge_threshold_days": 30,
-            "max_memory_usage_mb": 100,
-        }
 
     async def execute(self, context: CommandContext) -> CommandResult:
         parts: list[str] = split_args(context)
@@ -55,10 +60,10 @@ class CompactCommand(DirectCommand):
             if action == "summary":
                 return await self._cmd_summary(context)
             elif action == "compress":
-                days = int(parts[1]) if len(parts) > 1 else self.compact_config["compress_threshold_days"]
+                days = int(parts[1]) if len(parts) > 1 else _COMPRESS_THRESHOLD_DAYS
                 return await self._cmd_compress(context, days)
             elif action == "purge":
-                days = int(parts[1]) if len(parts) > 1 else self.compact_config["purge_threshold_days"]
+                days = int(parts[1]) if len(parts) > 1 else _PURGE_THRESHOLD_DAYS
                 confirm = "--confirm" in parts or (
                     len(parts) > 2 and parts[2].lower() in ("s", "sim", "yes", "y")
                 )
@@ -72,10 +77,6 @@ class CompactCommand(DirectCommand):
             elif action == "import":
                 fname = parts[1] if len(parts) > 1 else None
                 return await self._cmd_import(context, fname)
-            elif action == "config":
-                if len(parts) < 3:
-                    return await self._cmd_show_config()
-                return await self._cmd_set_config(parts[1], parts[2])
             else:
                 return CommandResult.error_result(f"Ação desconhecida: {action}")
         except ValueError as exc:
@@ -106,7 +107,7 @@ class CompactCommand(DirectCommand):
                 table.add_row(
                     "Uso de memória",
                     f"{total_mb:.1f} MB",
-                    f"Limite: {self.compact_config['max_memory_usage_mb']} MB",
+                    f"Limite: {_MAX_MEMORY_USAGE_MB} MB",
                 )
                 table.add_row(
                     "Working memory (entradas)",
@@ -437,52 +438,3 @@ class CompactCommand(DirectCommand):
             sessions_imported=imported,
         )
 
-    # ------------------------------------------------------------------
-    # /compact config [key value]
-    # ------------------------------------------------------------------
-
-    async def _cmd_show_config(self) -> CommandResult:
-        table = Table(
-            title="Configuração do Compact (sessão atual)",
-            show_header=True,
-            header_style="bold cyan",
-        )
-        table.add_column("Parâmetro", style="white")
-        table.add_column("Valor", style="green")
-        table.add_column("Descrição", style="dim")
-        descriptions = {
-            "auto_compress": "Compactação automática habilitada",
-            "compress_threshold_days": "Dias antes de compactar entradas",
-            "purge_threshold_days": "Dias antes de expurgar sessões",
-            "max_memory_usage_mb": "Limite de uso de memória (MB)",
-        }
-        for key, val in self.compact_config.items():
-            table.add_row(key, str(val), descriptions.get(key, ""))
-        return CommandResult.success_result(content=table, content_type="rich")
-
-    async def _cmd_set_config(self, key: str, value: str) -> CommandResult:
-        if key not in self.compact_config:
-            return CommandResult.error_result(f"Parâmetro desconhecido: {key}")
-        original = self.compact_config[key]
-        try:
-            if isinstance(original, bool):
-                new_val: Any = value.lower() in ("true", "on", "sim", "yes", "1")
-            elif isinstance(original, int):
-                new_val = int(value)
-            elif isinstance(original, float):
-                new_val = float(value)
-            else:
-                new_val = value
-        except ValueError as exc:
-            return CommandResult.error_result(f"Valor inválido para {key}: {exc}")
-        self.compact_config[key] = new_val
-        text = Text()
-        text.append("Configuração atualizada (sessão atual)\n\n", style="bold green")
-        text.append(f"{key}: {original} → {new_val}")
-        panel = Panel(text, title="Config atualizado", border_style="green")
-        return CommandResult.success_result(
-            content=panel,
-            content_type="rich",
-            setting=key,
-            new_value=new_val,
-        )

@@ -330,32 +330,6 @@ class TestExecuteSignature:
 
 
 # ---------------------------------------------------------------------------
-# /compact config
-# ---------------------------------------------------------------------------
-
-
-class TestCompactConfig:
-    async def test_show_config_returns_success(self):
-        result = await _cmd().execute(_ctx("config"))
-        assert result.success
-        assert result.content_type == "rich"
-
-    async def test_set_config_updates_value(self):
-        cmd = _cmd()
-        result = await cmd.execute(_ctx("config compress_threshold_days 14"))
-        assert result.success
-        assert cmd.compact_config["compress_threshold_days"] == 14
-
-    async def test_set_config_unknown_key_returns_error(self):
-        result = await _cmd().execute(_ctx("config nonexistent_key 42"))
-        assert not result.success
-
-    async def test_set_config_invalid_value_returns_error(self):
-        result = await _cmd().execute(_ctx("config compress_threshold_days notanumber"))
-        assert not result.success
-
-
-# ---------------------------------------------------------------------------
 # /compact export + import (integration with SessionStore)
 # ---------------------------------------------------------------------------
 
