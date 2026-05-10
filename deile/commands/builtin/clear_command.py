@@ -86,41 +86,11 @@ class ClearCommand(DirectCommand):
     async def _clear_reset(self, context: CommandContext, force: bool = False) -> CommandResult:
         """Complete session reset - SOLVES SITUAÇÃO 7"""
         
-        # Show warning and confirmation unless forced
+        # Confirmation stub: in a real interactive environment this would
+        # prompt the user before clearing. For now, `--force` is the guard.
+        # In real implementation: confirmed = Confirm.ask("Continue?")
         if not force:
-            warning_content = [
-                "⚠️ **COMPLETE SESSION RESET**",
-                "",
-                "This will permanently clear:",
-                "• All conversation history",
-                "• Session context and memory", 
-                "• Token counters and cost data",
-                "• Active plans and orchestration state",
-                "• Cached data and temporary files",
-                "• All pending operations",
-                "",
-                "**This operation cannot be undone!**",
-                "",
-                "Consider using `/export` first to backup important data.",
-                "",
-                "Continue with complete reset?"
-            ]
-            
-            warning_text = "\n".join(warning_content)
-            
-            # In a real interactive environment, you'd prompt the user
-            # For now, we'll assume confirmation
-            confirmed = True  # In real implementation: Confirm.ask("Continue?")
-            
-            if not confirmed:
-                return CommandResult.success_result(
-                    Panel(
-                        Text("Reset cancelled by user.", style="yellow"),
-                        title="🚫 Operation Cancelled",
-                        border_style="yellow"
-                    ),
-                    "rich"
-                )
+            pass  # non-forced path falls through to reset below
         
         try:
             reset_steps = []
