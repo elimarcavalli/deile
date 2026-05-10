@@ -1,7 +1,7 @@
 """Unit tests for VisionDescribeImageTool.
 
 All tests are hermetic:
-- No real Gemini calls — ``_gemini_describe`` is monkeypatched.
+- No real Gemini calls -- ``_gemini_describe`` is monkeypatched.
 - URL download uses a real aiohttp server (``image_server`` fixture) so
   the streaming / size-cap logic runs for real.
 """
@@ -13,7 +13,7 @@ from deile.tools.base import ToolContext
 from deile.tools.vision_tool import VisionDescribeImageTool
 
 # ---------------------------------------------------------------------------
-# Minimal valid 1×1 PNG (67 bytes)
+# Minimal valid 1x1 PNG (67 bytes)
 # ---------------------------------------------------------------------------
 PNG_1x1_BYTES = (
     b"\x89PNG\r\n\x1a\n"
@@ -82,7 +82,7 @@ async def test_url_only_accepts_http(tool, ctx_factory):
 
 
 async def test_all_three_sources_returns_error(tool, ctx_factory):
-    """Multiple input sources at once → VISION_BAD_INPUT (no silent pick)."""
+    """Multiple input sources at once -> VISION_BAD_INPUT (no silent pick)."""
     import base64
     b64 = base64.b64encode(PNG_1x1_BYTES).decode()
     res = await tool.execute(ctx_factory(
@@ -300,3 +300,90 @@ def test_registered_by_auto_discover():
     reg.auto_discover()
     tool = reg.get("vision_describe_image")
     assert tool is not None
+
+
+# ---- model allowlist --------------------------------------------------------
+
+
+async def test_unknown_model_returns_bad_input(tool, ctx_factory):
+    """Caller-supplied model not in allowlist must be rejected."""
+    import base64
+    b64 = base64.b64encode(PNG_1x1_BYTES).decode()
+    res = await tool.execute(ctx_factory(
+        image_base64=b64, mime_type="image/png", model="gemini-ultra"
+    ))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+
+
+async def test_allowed_model_passes(tool, ctx_factory, monkeypatch):
+    """A model in the allowlist must not be rejected at the gate."""
+    async def fake(image_bytes, mime, prompt, model):
+        return "ok"
+
+    monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
+    import base64
+    b64 = base64.b64encode(PNG_1x1_BYTES).decode()
+    res = await tool.execute(ctx_factory(
+        image_base64=b64, mime_type="image/png", model="gemini-2.5-flash"
+    ))
+    assert res.is_success
+
+
+# ---- base64 size pre-check --------------------------------------------------
+
+
+async def test_base64_oversized_rejected_before_decode(tool, ctx_factory):
+    """Oversized base64 string must be rejected before b64decode allocation."""
+    from deile.tools.vision_tool import _MAX_IMAGE_BYTES
+    oversized_b64 = "A" * (_MAX_IMAGE_BYTES * 2)
+    res = await tool.execute(ctx_factory(image_base64=oversized_b64, mime_type="image/png"))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_IMAGE_TOO_LARGE"
+
+
+# ---- MIME allowlist consistency (b64 and URL paths) -------------------------
+
+
+async def test_b64_unsupported_mime_rejected(tool, ctx_factory):
+    """image/svg+xml is a valid image/ prefix but not in _GEMINI_SUPPORTED_MIMES."""
+    import base64
+    b64 = base64.b64encode(b"<svg/>").decode()
+    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/svg+xml"))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+
+
+async def test_url_unsupported_mime_rejected(tool, ctx_factory, image_server):
+    """URL returning image/tiff (valid prefix, unsupported by Gemini) must be rejected."""
+    from aiohttp import web
+
+    async def _tiff(req):
+        return web.Response(body=PNG_1x1_BYTES, content_type="image/tiff")
+
+    # Patch the server's routes -- easier to add a second fixture-level server.
+    # Use monkeypatch via a separate aiohttp server on a free port.
+    app = web.Application()
+    app.router.add_get("/tiff.tiff", _tiff)
+    runner = web.AppRunner(app, handle_signals=False, access_log=None)
+    await runner.setup()
+    site = web.TCPSite(runner, host="127.0.0.1", port=0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    url = f"http://127.0.0.1:{port}/tiff.tiff"
+    try:
+        res = await tool.execute(ctx_factory(image_url=url))
+    finally:
+        await runner.cleanup()
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+
+
+# ---- file:// authority rejection --------------------------------------------
+
+
+async def test_file_uri_with_non_localhost_authority_rejected(tool, ctx_factory):
+    """file://hostname/path must be rejected -- non-localhost authority is unsafe."""
+    res = await tool.execute(ctx_factory(image_path="file://remotehost/etc/passwd"))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_BAD_INPUT"

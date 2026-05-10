@@ -18,8 +18,8 @@ Security & limits:
   inflation make this a sensible ceiling for one tool call).
 - The tool routes through `PermissionManager` like any other tool; it
   does not need approval (read-only).
-- Emits `AuditEvent(TOOL_EXECUTION)` with a SHA8 hash of the image body
-  (not the body itself) plus URL/mime/byte-count.
+- Emits `AuditEvent(TOOL_EXECUTION)` on success, logging SHA8 of the image
+  body (not the body itself) plus source type, mime, and byte-count.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ import base64
 import logging
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse as _urlparse
 
 import aiofiles
 import httpx
@@ -46,6 +47,13 @@ _DEFAULT_VISION_MODEL = "gemini-2.5-flash-lite"
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MiB
 _DOWNLOAD_TIMEOUT_S = 15.0
 _ALLOWED_MIME_PREFIXES = ("image/",)
+_ALLOWED_VISION_MODELS: frozenset = frozenset({
+    "gemini-2.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-flash-8b",
+    "gemini-1.5-flash",
+})
 _DEFAULT_PROMPT = (
     "Descreva exatamente o que está nesta imagem em 2-4 linhas em português. "
     "Inclua: objetos visíveis, texto legível (transcreva), pessoas (sem identificar), "
@@ -57,6 +65,14 @@ def _resolve_vision_model() -> str:
     from deile.config.settings import get_settings
 
     return get_settings().vision_model or _DEFAULT_VISION_MODEL
+
+
+class VisionToolError(DEILEError):
+    """Typed error so the tool returns a consistent error_code."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message, error_code=code)
+        self.code = code
 
 
 class VisionDescribeImageTool(Tool):
@@ -129,7 +145,17 @@ class VisionDescribeImageTool(Tool):
         b64 = (args.get("image_base64") or "").strip() or None
         mime = (args.get("mime_type") or "").strip() or None
         prompt = (args.get("prompt") or _DEFAULT_PROMPT).strip()
-        model = (args.get("model") or _resolve_vision_model()).strip()
+        _model_arg = (args.get("model") or "").strip() or None
+        if _model_arg:
+            if _model_arg not in _ALLOWED_VISION_MODELS:
+                return ToolResult.error_result(
+                    f"model {_model_arg!r} not in allowed vision models; "
+                    f"supported: {sorted(_ALLOWED_VISION_MODELS)}",
+                    error_code="VISION_BAD_INPUT",
+                )
+            model = _model_arg
+        else:
+            model = _resolve_vision_model()
 
         sources = [s for s in (url, b64, path) if s]
         if not sources:
@@ -151,6 +177,11 @@ class VisionDescribeImageTool(Tool):
 
         try:
             if b64:
+                if len(b64) > _MAX_IMAGE_BYTES * 4 // 3 + 64:
+                    return ToolResult.error_result(
+                        f"base64 payload too large (exceeds {_MAX_IMAGE_BYTES} byte cap)",
+                        error_code="VISION_IMAGE_TOO_LARGE",
+                    )
                 try:
                     image_bytes = base64.b64decode(b64, validate=True)
                 except Exception as e:
@@ -162,6 +193,12 @@ class VisionDescribeImageTool(Tool):
                         f"mime_type must start with image/, got {mime!r}",
                         error_code="VISION_BAD_INPUT",
                     )
+                if mime not in _GEMINI_SUPPORTED_MIMES:
+                    return ToolResult.error_result(
+                        f"mime_type {mime!r} not supported by the vision model "
+                        f"(supported: {sorted(_GEMINI_SUPPORTED_MIMES)})",
+                        error_code="VISION_BAD_INPUT",
+                    )
             elif path:
                 image_bytes, mime = await _read_image_from_path(path, mime)
             else:
@@ -171,7 +208,7 @@ class VisionDescribeImageTool(Tool):
         except PathContainmentError as e:
             return ToolResult.error_result(str(e), error_code="VISION_BAD_INPUT", error=e)
         except Exception as e:
-            logger.exception("vision download failed")
+            logger.exception("vision image acquisition failed")
             return ToolResult.error_result(
                 f"image download failed: {type(e).__name__}: {e}",
                 error_code="VISION_DOWNLOAD_FAILED",
@@ -197,7 +234,7 @@ class VisionDescribeImageTool(Tool):
                 error=e,
             )
 
-        return ToolResult.success_result(
+        result = ToolResult.success_result(
             data={
                 "description": description,
                 "model": model,
@@ -207,14 +244,24 @@ class VisionDescribeImageTool(Tool):
             },
             message=f"vision_describe_image ok ({model}, {len(image_bytes)} B, sha8={sha8})",
         )
-
-
-class VisionToolError(DEILEError):
-    """Typed error so the tool returns a consistent error_code."""
-
-    def __init__(self, code: str, message: str):
-        super().__init__(message, error_code=code)
-        self.code = code
+        try:
+            from deile.security.audit_logger import (AuditEventType,
+                                                     SeverityLevel,
+                                                     get_audit_logger)
+            _source = "url" if url else ("path" if path else "base64")
+            get_audit_logger().log_event(
+                event_type=AuditEventType.TOOL_EXECUTION,
+                severity=SeverityLevel.INFO,
+                actor="vision_describe_image",
+                resource=url or path or f"base64:{mime}",
+                action="describe",
+                result="success",
+                details={"sha8": sha8, "mime_type": mime, "size_bytes": len(image_bytes), "model": model, "source": _source},
+                tool_name="vision_describe_image",
+            )
+        except Exception:  # audit must never crash the tool
+            logger.debug("audit emission failed", exc_info=True)
+        return result
 
 
 _EXT_TO_MIME = {
@@ -228,10 +275,10 @@ _GEMINI_SUPPORTED_MIMES = frozenset(_EXT_TO_MIME.values())
 
 
 async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes, str]:
-    """Read image bytes from a local path in chunks (≤10 MiB cap).
+    """Read image bytes from a local path in chunks (<=10 MiB cap).
 
     Chunked read avoids a TOCTOU window between ``os.path.getsize`` and the
-    full ``read()`` — a file that just-fits the size check could be swapped
+    full ``read()`` -- a file that just-fits the size check could be swapped
     for a much larger one before the read completes. By streaming and
     counting bytes as they come, the cap is enforced atomically.
 
@@ -240,7 +287,13 @@ async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes
     ``file://`` if present.
     """
     if path.startswith("file://"):
-        path = path[len("file://"):]
+        _parsed = _urlparse(path)
+        if _parsed.netloc and _parsed.netloc not in ("", "localhost"):
+            raise VisionToolError(
+                "VISION_BAD_INPUT",
+                f"file:// URI with non-localhost authority is not supported: {path!r}",
+            )
+        path = _parsed.path
     p = Path(path).resolve()
     _assert_safe_root(p)
     if not p.is_file():
@@ -293,6 +346,12 @@ async def _download_image(url: str) -> tuple[bytes, str]:
                 raise VisionToolError(
                     "VISION_BAD_INPUT",
                     f"upstream mime is not an image: {mime!r}",
+                )
+            if mime not in _GEMINI_SUPPORTED_MIMES:
+                raise VisionToolError(
+                    "VISION_BAD_INPUT",
+                    f"upstream mime {mime!r} not supported by the vision model "
+                    f"(supported: {sorted(_GEMINI_SUPPORTED_MIMES)})",
                 )
             buf = bytearray()
             async for chunk in resp.aiter_bytes():
@@ -351,7 +410,7 @@ async def _gemini_describe(
                     if pt:
                         return pt
         except Exception:
-            pass
+            logger.debug("Gemini candidate text extraction failed", exc_info=True)
         raise VisionToolError(
             "VISION_LLM_FAILED",
             "Gemini returned no text content",
