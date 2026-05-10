@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
@@ -344,7 +345,11 @@ class MemoryCommand(DirectCommand):
         }
 
         try:
-            output_path.write_text(json.dumps(export_data, indent=2, default=str), encoding="utf-8")
+            await asyncio.to_thread(
+                output_path.write_text,
+                json.dumps(export_data, indent=2, default=str),
+                encoding="utf-8",
+            )
         except Exception as exc:
             raise CommandError(f"Falha ao escrever arquivo de export: {exc}") from exc
 
@@ -408,7 +413,11 @@ class MemoryCommand(DirectCommand):
 
         cp_path = _checkpoint_path(name)
         _CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-        cp_path.write_text(json.dumps(checkpoint_data, indent=2, default=str), encoding="utf-8")
+        await asyncio.to_thread(
+            cp_path.write_text,
+            json.dumps(checkpoint_data, indent=2, default=str),
+            encoding="utf-8",
+        )
 
         index = _load_index()
         index[name] = {
