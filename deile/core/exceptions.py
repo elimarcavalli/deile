@@ -150,6 +150,29 @@ class DEILEInstallError(DEILEError):
             self.context["sanitized_path"] = sanitized_path
 
 
+class PathContainmentError(DEILEError):
+    """Raised when a caller-supplied path is outside all trusted safe roots.
+
+    Enforces Pilar 08: arbitrary paths from user or LLM must be contained
+    within a known safe directory before any filesystem access occurs.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        path: Optional[str] = None,
+        safe_roots: Optional[list] = None,
+        **kwargs
+    ):
+        super().__init__(message, error_code="PATH_CONTAINMENT_VIOLATION", **kwargs)
+        self.path = path
+        self.safe_roots = safe_roots or []
+        if path:
+            self.context["path"] = path
+        if safe_roots:
+            self.context["safe_roots"] = [str(r) for r in safe_roots]
+
+
 class PersonaError(DEILEError):
     """Exceção base para erros relacionados ao sistema de personas"""
 

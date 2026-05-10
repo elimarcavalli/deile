@@ -27,12 +27,12 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
 import httpx
 
+from deile.core.exceptions import PathContainmentError
 from deile.tools._hash_utils import sha8 as _sha8
 from deile.tools._pipeline_paths import _assert_safe_root
 
@@ -167,6 +167,8 @@ class VisionDescribeImageTool(Tool):
                 image_bytes, mime = await _download_image(url)
         except VisionToolError as e:
             return ToolResult.error_result(str(e), error_code=e.code, error=e)
+        except PathContainmentError as e:
+            return ToolResult.error_result(str(e), error_code="VISION_BAD_INPUT", error=e)
         except Exception as e:
             logger.exception("vision download failed")
             return ToolResult.error_result(
@@ -238,15 +240,12 @@ def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes, str]
     """
     if path.startswith("file://"):
         path = path[len("file://"):]
-    p = os.path.abspath(path)
-    try:
-        _assert_safe_root(Path(p))
-    except ValueError as exc:
-        raise VisionToolError("VISION_BAD_INPUT", str(exc)) from exc
-    if not os.path.isfile(p):
+    p = Path(path).resolve()
+    _assert_safe_root(p)
+    if not p.is_file():
         raise VisionToolError("VISION_BAD_INPUT", f"image_path not found: {path!r}")
     if not mime_hint:
-        ext = os.path.splitext(p)[1].lower()
+        ext = p.suffix.lower()
         mime_hint = _EXT_TO_MIME.get(ext)
     if not mime_hint or not mime_hint.startswith(_ALLOWED_MIME_PREFIXES):
         raise VisionToolError(

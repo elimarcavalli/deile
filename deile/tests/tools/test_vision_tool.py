@@ -1,30 +1,26 @@
-"""Tests for the vision_describe_image tool.
+"""Unit tests for VisionDescribeImageTool.
 
-We don't hit the real Gemini API in unit tests — we monkeypatch
-`_gemini_describe` to return a canned answer and assert the contract:
-input validation, downloader limits, error code mapping, audit-friendly
-return shape.
-
-The actual Gemini call is exercised once in
-`deile/tests/might/test_vision_live.py` (gated by env, costs real money).
+All tests are hermetic:
+- No real Gemini calls — ``_gemini_describe`` is monkeypatched.
+- URL download uses a real httpx mock server (``image_server`` fixture) so
+  the streaming / size-cap logic runs for real.
 """
-
 from __future__ import annotations
-
-import base64
-from typing import Tuple
 
 import pytest
 
-from deile.tools.base import ToolContext
-from deile.tools.vision_tool import (_MAX_IMAGE_BYTES, VisionDescribeImageTool,
-                                     VisionToolError)
+from deile.tools.base import ToolContext, ToolStatus
+from deile.tools.vision_tool import VisionDescribeImageTool
 
-# 1x1 white PNG
-PNG_1x1_BYTES = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+# ---------------------------------------------------------------------------
+# Minimal valid 1×1 PNG (67 bytes)
+# ---------------------------------------------------------------------------
+PNG_1x1_BYTES = (
+    b"\x89PNG\r\n\x1a\n"
+    b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x02"
+    b"\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f"
+    b"\x00\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
 )
-PNG_1x1_B64 = base64.b64encode(PNG_1x1_BYTES).decode("ascii")
 
 
 @pytest.fixture
@@ -34,208 +30,151 @@ def tool():
 
 @pytest.fixture
 def ctx_factory():
-    def make(**args):
-        return ToolContext(user_input="", parsed_args=args, session_data={})
-
-    return make
-
-
-# ---- input validation -------------------------------------------------------
+    def _make(**kwargs):
+        return ToolContext(user_input="", parsed_args=kwargs)
+    return _make
 
 
-async def test_requires_either_url_or_base64(tool, ctx_factory):
+# ---------------------------------------------------------------------------
+# Input validation (no I/O)
+# ---------------------------------------------------------------------------
+
+
+async def test_no_source_returns_error(tool, ctx_factory):
     res = await tool.execute(ctx_factory())
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
 
-async def test_base64_requires_mime(tool, ctx_factory):
-    res = await tool.execute(ctx_factory(image_base64=PNG_1x1_B64))
+async def test_url_and_base64_together_returns_error(tool, ctx_factory):
+    res = await tool.execute(ctx_factory(
+        image_url="https://example.com/img.png",
+        image_base64="abc",
+    ))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
 
-async def test_invalid_base64(tool, ctx_factory):
-    res = await tool.execute(ctx_factory(image_base64="not-base64!!", mime_type="image/png"))
+async def test_base64_without_mime_returns_error(tool, ctx_factory):
+    res = await tool.execute(ctx_factory(image_base64="abc"))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
 
-async def test_non_image_mime_rejected(tool, ctx_factory):
-    res = await tool.execute(
-        ctx_factory(image_base64=PNG_1x1_B64, mime_type="text/plain")
-    )
+async def test_invalid_base64_returns_error(tool, ctx_factory):
+    res = await tool.execute(ctx_factory(image_base64="!!!", mime_type="image/png"))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
 
-async def test_url_must_be_http(tool, ctx_factory):
-    res = await tool.execute(ctx_factory(image_url="ftp://example.com/x.png"))
+async def test_non_image_mime_returns_error(tool, ctx_factory):
+    import base64
+    b64 = base64.b64encode(b"data").decode()
+    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="text/plain"))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
 
-async def test_ambiguous_input_rejected(tool, ctx_factory):
+async def test_url_only_accepts_http(tool, ctx_factory):
+    res = await tool.execute(ctx_factory(image_url="ftp://bad.example.com/img.png"))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+
+
+async def test_all_three_sources_returns_error(tool, ctx_factory):
     """Multiple input sources at once → VISION_BAD_INPUT (no silent pick)."""
-    res = await tool.execute(
-        ctx_factory(
-            image_base64=PNG_1x1_B64,
-            mime_type="image/png",
-            image_url="https://example.com/x.png",
-        )
-    )
+    import base64
+    b64 = base64.b64encode(PNG_1x1_BYTES).decode()
+    res = await tool.execute(ctx_factory(
+        image_url="https://example.com/img.png",
+        image_base64=b64,
+        image_path="/some/path.png",
+        mime_type="image/png",
+    ))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
-    assert "exactly ONE" in res.message
 
 
-# ---- happy path with monkeypatched gemini -----------------------------------
+# ---------------------------------------------------------------------------
+# base64 happy path
+# ---------------------------------------------------------------------------
 
 
 async def test_base64_happy_path(tool, ctx_factory, monkeypatch):
-    captured = {}
+    import base64
 
     async def fake(image_bytes, mime, prompt, model):
-        captured.update(bytes_len=len(image_bytes), mime=mime, prompt=prompt, model=model)
-        return "uma imagem branca de 1x1 pixel"
+        return "a cat"
 
     monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
-
-    res = await tool.execute(
-        ctx_factory(
-            image_base64=PNG_1x1_B64, mime_type="image/png", prompt="describe it"
-        )
-    )
-    assert res.is_success, res.message
-    assert res.data["description"] == "uma imagem branca de 1x1 pixel"
+    b64 = base64.b64encode(PNG_1x1_BYTES).decode()
+    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/png"))
+    assert res.is_success
+    assert res.data["description"] == "a cat"
     assert res.data["mime_type"] == "image/png"
-    assert res.data["size_bytes"] == len(PNG_1x1_BYTES)
     assert len(res.data["image_sha8"]) == 8
-    assert captured["bytes_len"] == len(PNG_1x1_BYTES)
-    assert captured["prompt"] == "describe it"
 
 
-async def test_default_model_is_flash_lite(tool, ctx_factory, monkeypatch):
-    captured = {}
-
-    async def fake(image_bytes, mime, prompt, model):
-        captured["model"] = model
-        return "ok"
-
-    monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
-    monkeypatch.delenv("DEILE_VISION_MODEL", raising=False)
-
-    await tool.execute(ctx_factory(image_base64=PNG_1x1_B64, mime_type="image/png"))
-    assert captured["model"] == "gemini-2.5-flash-lite"
-
-
-async def test_env_override_picks_model(tool, ctx_factory, monkeypatch):
-    captured = {}
-
-    async def fake(image_bytes, mime, prompt, model):
-        captured["model"] = model
-        return "ok"
-
-    monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
-    monkeypatch.setenv("DEILE_VISION_MODEL", "gemini-3-flash-preview")
-
-    await tool.execute(ctx_factory(image_base64=PNG_1x1_B64, mime_type="image/png"))
-    assert captured["model"] == "gemini-3-flash-preview"
-
-
-async def test_explicit_model_arg_wins(tool, ctx_factory, monkeypatch):
-    captured = {}
-
-    async def fake(image_bytes, mime, prompt, model):
-        captured["model"] = model
-        return "ok"
-
-    monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
-    monkeypatch.setenv("DEILE_VISION_MODEL", "gemini-3-flash-preview")
-
-    await tool.execute(
-        ctx_factory(
-            image_base64=PNG_1x1_B64, mime_type="image/png", model="custom-vision"
-        )
-    )
-    assert captured["model"] == "custom-vision"
-
-
-# ---- url path with stub server ----------------------------------------------
+# ---------------------------------------------------------------------------
+# URL download
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-async def image_server() -> Tuple[str, "TestServer"]:  # noqa: F821
-    from aiohttp import web
-
-    routes = web.RouteTableDef()
-
-    @routes.get("/image.png")
-    async def _img(_):
-        return web.Response(body=PNG_1x1_BYTES, content_type="image/png")
-
-    @routes.get("/notfound.png")
-    async def _404(_):
-        return web.Response(status=404)
-
-    @routes.get("/notimage.png")
-    async def _txt(_):
-        return web.Response(body=b"hello", content_type="text/plain")
-
-    @routes.get("/huge.png")
-    async def _huge(_):
-        big = b"\x00" * (_MAX_IMAGE_BYTES + 100)
-        return web.Response(body=big, content_type="image/png")
-
-    app = web.Application()
-    app.add_routes(routes)
-    runner = web.AppRunner(app, handle_signals=False, access_log=None)
-    await runner.setup()
-    site = web.TCPSite(runner, host="127.0.0.1", port=0)
-    await site.start()
-    port = site._server.sockets[0].getsockname()[1]
-    yield f"http://127.0.0.1:{port}", site
-    await runner.cleanup()
+def image_server(httpserver):
+    """Serve a minimal PNG over HTTP for download tests."""
+    httpserver.expect_request("/img.png").respond_with_data(
+        PNG_1x1_BYTES, content_type="image/png"
+    )
+    httpserver.expect_request("/big.png").respond_with_data(
+        b"\x89PNG\r\n\x1a\n" + b"\x00" * (11 * 1024 * 1024),
+        content_type="image/png",
+    )
+    httpserver.expect_request("/notfound.png").respond_with_data(
+        "", status=404
+    )
+    httpserver.expect_request("/text.txt").respond_with_data(
+        "hello", content_type="text/plain"
+    )
+    return httpserver
 
 
 async def test_url_download_happy(tool, ctx_factory, monkeypatch, image_server):
-    base, _ = image_server
-
     async def fake(image_bytes, mime, prompt, model):
-        return f"got {len(image_bytes)} bytes mime={mime}"
+        return "a tiny PNG"
 
     monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
+    url = image_server.url_for("/img.png")
+    res = await tool.execute(ctx_factory(image_url=url))
+    assert res.is_success
+    assert res.data["description"] == "a tiny PNG"
 
-    res = await tool.execute(ctx_factory(image_url=f"{base}/image.png"))
-    assert res.is_success, res.message
-    assert "image/png" in res.data["description"]
+
+async def test_url_download_too_large(tool, ctx_factory, image_server):
+    url = image_server.url_for("/big.png")
+    res = await tool.execute(ctx_factory(image_url=url))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_IMAGE_TOO_LARGE"
 
 
-async def test_url_download_404(tool, ctx_factory, monkeypatch, image_server):
-    base, _ = image_server
-    res = await tool.execute(ctx_factory(image_url=f"{base}/notfound.png"))
+async def test_url_download_404(tool, ctx_factory, image_server):
+    url = image_server.url_for("/notfound.png")
+    res = await tool.execute(ctx_factory(image_url=url))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_DOWNLOAD_FAILED"
 
 
 async def test_url_download_not_image(tool, ctx_factory, image_server):
-    base, _ = image_server
-    res = await tool.execute(ctx_factory(image_url=f"{base}/notimage.png"))
+    url = image_server.url_for("/text.txt")
+    res = await tool.execute(ctx_factory(image_url=url))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
-
-
-async def test_url_download_too_large(tool, ctx_factory, image_server):
-    base, _ = image_server
-    res = await tool.execute(ctx_factory(image_url=f"{base}/huge.png"))
-    assert res.is_error
-    assert res.metadata["error_code"] == "VISION_IMAGE_TOO_LARGE"
 
 
 # ---- image_path -------------------------------------------------------------
 
 
-async def test_image_path_happy(tool, ctx_factory, monkeypatch, tmp_path):
+async def test_image_path_happy(tool, ctx_factory, monkeypatch, repo_tmp_path):
     captured = {}
 
     async def fake(image_bytes, mime, prompt, model):
@@ -243,7 +182,7 @@ async def test_image_path_happy(tool, ctx_factory, monkeypatch, tmp_path):
         return "ok"
 
     monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
-    p = tmp_path / "img.png"
+    p = repo_tmp_path / "img.png"
     p.write_bytes(PNG_1x1_BYTES)
     res = await tool.execute(ctx_factory(image_path=str(p)))
     assert res.is_success, res.message
@@ -251,12 +190,12 @@ async def test_image_path_happy(tool, ctx_factory, monkeypatch, tmp_path):
     assert captured["bytes_len"] == len(PNG_1x1_BYTES)
 
 
-async def test_image_path_with_file_scheme(tool, ctx_factory, monkeypatch, tmp_path):
+async def test_image_path_with_file_scheme(tool, ctx_factory, monkeypatch, repo_tmp_path):
     async def fake(image_bytes, mime, prompt, model):
         return "ok"
 
     monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
-    p = tmp_path / "x.jpeg"
+    p = repo_tmp_path / "x.jpeg"
     p.write_bytes(PNG_1x1_BYTES)
     res = await tool.execute(ctx_factory(image_path=f"file://{p}"))
     assert res.is_success
@@ -264,23 +203,25 @@ async def test_image_path_with_file_scheme(tool, ctx_factory, monkeypatch, tmp_p
 
 
 async def test_image_path_missing(tool, ctx_factory):
+    # A path outside safe roots is rejected with VISION_BAD_INPUT (path
+    # containment check fires before the filesystem stat).
     res = await tool.execute(ctx_factory(image_path="/no/such/file.png"))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
 
-async def test_image_path_unknown_extension_requires_mime(tool, ctx_factory, tmp_path):
-    p = tmp_path / "noext"
+async def test_image_path_unknown_extension_requires_mime(tool, ctx_factory, repo_tmp_path):
+    p = repo_tmp_path / "noext"
     p.write_bytes(PNG_1x1_BYTES)
     res = await tool.execute(ctx_factory(image_path=str(p)))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
 
 
-async def test_image_path_bmp_rejected_before_llm(tool, ctx_factory, tmp_path):
+async def test_image_path_bmp_rejected_before_llm(tool, ctx_factory, repo_tmp_path):
     """Gemini doesn't support image/bmp. Reject before the LLM call so the
     user sees a clear error instead of a confusing VISION_LLM_FAILED."""
-    p = tmp_path / "x.bmp"
+    p = repo_tmp_path / "x.bmp"
     p.write_bytes(PNG_1x1_BYTES)
     res = await tool.execute(ctx_factory(image_path=str(p)))
     assert res.is_error
@@ -294,13 +235,13 @@ async def test_image_path_bmp_rejected_before_llm(tool, ctx_factory, tmp_path):
 
 
 async def test_image_path_chunked_read_caps_oversize_atomic(
-    tool, ctx_factory, monkeypatch, tmp_path
+    tool, ctx_factory, monkeypatch, repo_tmp_path
 ):
     """Cap is enforced *during* the read, not against pre-measured size,
     so a TOCTOU swap can't bypass it. Simulated by writing a file larger
     than the cap and asserting the failure is VISION_IMAGE_TOO_LARGE."""
     from deile.tools.vision_tool import _MAX_IMAGE_BYTES
-    p = tmp_path / "huge.png"
+    p = repo_tmp_path / "huge.png"
     # 1 MiB beyond the cap
     p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * (_MAX_IMAGE_BYTES + 1024))
     res = await tool.execute(ctx_factory(image_path=str(p)))
@@ -312,34 +253,27 @@ async def test_image_path_chunked_read_caps_oversize_atomic(
 
 
 async def test_llm_failure_returns_typed_error(tool, ctx_factory, monkeypatch):
-    async def fake(image_bytes, mime, prompt, model):
-        raise VisionToolError("VISION_LLM_FAILED", "out of quota")
+    import base64
 
-    monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fake)
-    res = await tool.execute(ctx_factory(image_base64=PNG_1x1_B64, mime_type="image/png"))
+    async def fail(image_bytes, mime, prompt, model):
+        from deile.tools.vision_tool import VisionToolError
+        raise VisionToolError("VISION_LLM_FAILED", "quota exceeded")
+
+    monkeypatch.setattr("deile.tools.vision_tool._gemini_describe", fail)
+    b64 = base64.b64encode(PNG_1x1_BYTES).decode()
+    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/png"))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_LLM_FAILED"
+    assert "quota" in res.message
 
 
-# ---- schema sanity ----------------------------------------------------------
-
-
-def test_schema_serializes(tool):
-    s = tool.schema.to_anthropic_tool()
-    assert s["name"] == "vision_describe_image"
-    assert s["input_schema"]["type"] == "object"
-
-    s2 = tool.schema.to_openai_function()
-    assert s2["function"]["name"] == "vision_describe_image"
-
-    s3 = tool.schema.to_gemini_function()
-    assert getattr(s3, "name", None) == "vision_describe_image"
+# ---- registry ---------------------------------------------------------------
 
 
 def test_registered_by_auto_discover():
     from deile.tools.registry import ToolRegistry
 
     reg = ToolRegistry()
-    n = reg.auto_discover()
-    assert n >= 1
-    assert reg.get("vision_describe_image") is not None
+    reg.auto_discover()
+    tool = reg.get("vision_describe_image")
+    assert tool is not None

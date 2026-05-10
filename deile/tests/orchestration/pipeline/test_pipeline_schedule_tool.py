@@ -2,23 +2,10 @@
 
 from __future__ import annotations
 
-import subprocess
-from pathlib import Path
-
-import pytest
-
 from deile.tools.base import ToolContext, ToolStatus
 from deile.tools.pipeline_schedule_tool import PipelineScheduleTool
 
-
-@pytest.fixture
-def tmp_repo(tmp_path: Path, monkeypatch) -> Path:
-    """Create a minimal git repo + deile.py marker so _resolve_base_path picks it."""
-    subprocess.run(["git", "init", str(tmp_path)], check=True,
-                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    (tmp_path / "deile.py").write_text("# marker\n")
-    monkeypatch.setenv("DEILE_PIPELINE_BASE_PATH", str(tmp_path))
-    return tmp_path
+# repo_git_tmp fixture is provided by conftest.py in this directory.
 
 
 def _ctx(**args) -> ToolContext:
@@ -26,7 +13,7 @@ def _ctx(**args) -> ToolContext:
 
 
 class TestList:
-    async def test_list_empty(self, tmp_repo):
+    async def test_list_empty(self, repo_git_tmp):
         tool = PipelineScheduleTool()
         result = await tool.execute(_ctx(action="list"))
         assert result.status == ToolStatus.SUCCESS
@@ -35,7 +22,7 @@ class TestList:
 
 
 class TestAddRecurring:
-    async def test_add_then_list(self, tmp_repo):
+    async def test_add_then_list(self, repo_git_tmp):
         tool = PipelineScheduleTool()
         r = await tool.execute(_ctx(
             action="add_recurring", trigger_action="review",
@@ -46,13 +33,13 @@ class TestAddRecurring:
         assert len(listing.data["recurring"]) == 1
         assert listing.data["recurring"][0]["cron"] == "*/5 * * * *"
 
-    async def test_missing_args(self, tmp_repo):
+    async def test_missing_args(self, repo_git_tmp):
         tool = PipelineScheduleTool()
         r = await tool.execute(_ctx(action="add_recurring"))
         assert r.status == ToolStatus.ERROR
         assert r.metadata["error_code"] == "MISSING_ARGS"
 
-    async def test_invalid_cron(self, tmp_repo):
+    async def test_invalid_cron(self, repo_git_tmp):
         tool = PipelineScheduleTool()
         r = await tool.execute(_ctx(
             action="add_recurring", trigger_action="review",
@@ -63,7 +50,7 @@ class TestAddRecurring:
 
 
 class TestAddOneshot:
-    async def test_add_oneshot_with_target_issue(self, tmp_repo):
+    async def test_add_oneshot_with_target_issue(self, repo_git_tmp):
         tool = PipelineScheduleTool()
         r = await tool.execute(_ctx(
             action="add_oneshot", trigger_action="implement",
@@ -73,7 +60,7 @@ class TestAddOneshot:
         # auto-generated id
         assert r.data["id"].startswith("oneshot-implement-")
 
-    async def test_invalid_run_at(self, tmp_repo):
+    async def test_invalid_run_at(self, repo_git_tmp):
         tool = PipelineScheduleTool()
         r = await tool.execute(_ctx(
             action="add_oneshot", trigger_action="implement",
@@ -84,7 +71,7 @@ class TestAddOneshot:
 
 
 class TestRemove:
-    async def test_remove_existing(self, tmp_repo):
+    async def test_remove_existing(self, repo_git_tmp):
         tool = PipelineScheduleTool()
         await tool.execute(_ctx(
             action="add_recurring", trigger_action="review",
@@ -93,7 +80,7 @@ class TestRemove:
         r = await tool.execute(_ctx(action="remove", id="r1"))
         assert r.status == ToolStatus.SUCCESS
 
-    async def test_remove_missing(self, tmp_repo):
+    async def test_remove_missing(self, repo_git_tmp):
         tool = PipelineScheduleTool()
         r = await tool.execute(_ctx(action="remove", id="nope"))
         assert r.status == ToolStatus.ERROR
@@ -101,7 +88,7 @@ class TestRemove:
 
 
 class TestEnableDisable:
-    async def test_disable_then_enable(self, tmp_repo):
+    async def test_disable_then_enable(self, repo_git_tmp):
         tool = PipelineScheduleTool()
         await tool.execute(_ctx(
             action="add_recurring", trigger_action="review",
@@ -114,7 +101,7 @@ class TestEnableDisable:
 
 
 class TestPerMonitorIsolation:
-    async def test_two_monitors_use_separate_files(self, tmp_repo):
+    async def test_two_monitors_use_separate_files(self, repo_git_tmp):
         tool = PipelineScheduleTool()
         await tool.execute(_ctx(
             action="add_recurring", trigger_action="review",
@@ -130,12 +117,12 @@ class TestPerMonitorIsolation:
         assert [r["id"] for r in list_alfa.data["recurring"]] == ["alfa-loop"]
         assert [r["id"] for r in list_beta.data["recurring"]] == ["beta-loop"]
         # Files exist separately.
-        assert (tmp_repo / "config" / "pipeline_schedule_m-alfa.yaml").exists()
-        assert (tmp_repo / "config" / "pipeline_schedule_m-beta.yaml").exists()
+        assert (repo_git_tmp / "config" / "pipeline_schedule_m-alfa.yaml").exists()
+        assert (repo_git_tmp / "config" / "pipeline_schedule_m-beta.yaml").exists()
 
 
 class TestInvalidAction:
-    async def test_unknown_action(self, tmp_repo):
+    async def test_unknown_action(self, repo_git_tmp):
         tool = PipelineScheduleTool()
         r = await tool.execute(_ctx(action="nope"))
         assert r.status == ToolStatus.ERROR

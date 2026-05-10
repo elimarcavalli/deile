@@ -11,25 +11,27 @@ Resolution order:
 """
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 from typing import Optional
 
+from deile.core.exceptions import PathContainmentError
+
 
 def _assert_safe_root(path: Path) -> None:
-    """Raise ValueError if *path* is outside all known safe roots.
+    """Raise PathContainmentError if *path* is outside all known safe roots.
 
     Safe roots are:
-    - The current user's home directory (``Path.home()``).
+    - The current user's home directory (``Path.home().resolve()``).
     - The git repository root found by walking up from ``Path.cwd()``
       (i.e. the first ancestor directory that contains a ``.git`` entry).
-    - The system temporary directory (``tempfile.gettempdir()``), which is
-      used by pytest fixtures and other trusted runtime scratch space.
+
+    ``/tmp`` is intentionally excluded: it is world-writable, so any process
+    can create ``/tmp/evil/`` to bypass containment.
 
     This enforces Pilar 08: arbitrary caller-supplied paths must be contained
     within a trusted directory before any filesystem access.
     """
-    safe_roots = [Path.home(), Path(tempfile.gettempdir()).resolve()]
+    safe_roots = [Path.home().resolve()]
     cwd = Path.cwd()
     for ancestor in (cwd, *cwd.parents):
         if (ancestor / ".git").exists():
@@ -43,9 +45,11 @@ def _assert_safe_root(path: Path) -> None:
         except ValueError:
             continue
 
-    raise ValueError(
+    raise PathContainmentError(
         f"Path '{path}' is outside all safe roots {[str(r) for r in safe_roots]}. "
-        "Supply a path inside your home directory or the current git repository."
+        "Supply a path inside your home directory or the current git repository.",
+        path=str(path),
+        safe_roots=safe_roots,
     )
 
 
