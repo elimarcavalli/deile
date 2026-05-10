@@ -16,6 +16,7 @@ from rich.text import Text
 
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import FLAG_DESCRICOES_PTBR as _FLAG_DESCRICOES_PTBR
+from ._shared import PROJECT_LINKS as _LINKS
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +32,6 @@ _QUICK_START_CANDIDATES = [
     {"nome": "cost", "acao": "Ver custos e tokens", "descricao": "Uso e custo estimado"},
     {"nome": "context", "acao": "Ver contexto atual", "descricao": "Contexto da sessão"},
 ]
-
-_LINKS = {
-    "Repositório": "https://github.com/elimarcavalli/deile",
-    "Documentação": "docs/system_design/00-VISAO-GERAL.md",
-    "Licença": "MIT",
-    "Issues": "https://github.com/elimarcavalli/deile/issues",
-}
 
 _WORKFLOWS = [
     ("Análise e refatoração", "/find 'TODO|FIXME' → /plan create → /run"),

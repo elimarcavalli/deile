@@ -15,6 +15,14 @@ from ..base import CommandContext
 # Descrições PT-BR para cada feature flag declarada em `deile.__version__.FEATURES`.
 # Consumido pelos comandos /version e /welcome — mantenha em sincronia com
 # `__version__.FEATURES`.
+PROJECT_LINKS: Dict[str, str] = {
+    "Repositório": "https://github.com/elimarcavalli/deile",
+    "Documentação": "docs/system_design/00-VISAO-GERAL.md",
+    "Licença": "MIT — https://opensource.org/licenses/MIT",
+    "Issues": "https://github.com/elimarcavalli/deile/issues",
+}
+
+
 FLAG_DESCRICOES_PTBR: Dict[str, str] = {
     "orchestration": "Orquestração multi-step e gestão de planos",
     "security": "Permissões, audit log e sandbox",

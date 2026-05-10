@@ -21,16 +21,9 @@ from rich.text import Text
 
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import FLAG_DESCRICOES_PTBR as _FLAG_DESCRICOES
+from ._shared import PROJECT_LINKS as _LINKS
 
 logger = logging.getLogger(__name__)
-
-_LINKS = {
-    "Repositório": "https://github.com/elimarcavalli/deile",
-    "Documentação": "docs/system_design/00-VISAO-GERAL.md",
-    "Licença": "MIT — https://opensource.org/licenses/MIT",
-    "Issues": "https://github.com/elimarcavalli/deile/issues",
-}
-
 
 def _detect_install_info() -> dict[str, str]:
     """Detecta modo de instalação via importlib.metadata (sem subprocess)."""
