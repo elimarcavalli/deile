@@ -46,8 +46,10 @@ logger = logging.getLogger(__name__)
 _DEFAULT_VISION_MODEL = "gemini-2.5-flash-lite"
 _MAX_IMAGE_BYTES = 10 * 1024 * 1024  # 10 MiB
 _DOWNLOAD_TIMEOUT_S = 15.0
+_GEMINI_TIMEOUT_S = 60.0
+_MAX_PROMPT_BYTES = 8192
 _ALLOWED_MIME_PREFIXES = ("image/",)
-_ALLOWED_VISION_MODELS: frozenset = frozenset({
+_ALLOWED_VISION_MODELS: frozenset[str] = frozenset({
     "gemini-2.5-flash-lite",
     "gemini-2.5-flash",
     "gemini-2.0-flash-lite",
@@ -145,6 +147,11 @@ class VisionDescribeImageTool(Tool):
         b64 = (args.get("image_base64") or "").strip() or None
         mime = (args.get("mime_type") or "").strip() or None
         prompt = (args.get("prompt") or _DEFAULT_PROMPT).strip()
+        if len(prompt.encode("utf-8")) > _MAX_PROMPT_BYTES:
+            return ToolResult.error_result(
+                f"prompt too long (max {_MAX_PROMPT_BYTES} bytes)",
+                error_code="VISION_BAD_INPUT",
+            )
         _model_arg = (args.get("model") or "").strip() or None
         if _model_arg:
             if _model_arg not in _ALLOWED_VISION_MODELS:
@@ -316,17 +323,20 @@ async def _read_image_from_path(path: str, mime_hint: str | None) -> tuple[bytes
     # enforces the size cap atomically regardless of any pre-read size check.
     chunk = 64 * 1024
     buf = bytearray()
-    async with aiofiles.open(p, "rb") as fh:
-        while True:
-            blob = await fh.read(chunk)
-            if not blob:
-                break
-            buf.extend(blob)
-            if len(buf) > _MAX_IMAGE_BYTES:
-                raise VisionToolError(
-                    "VISION_IMAGE_TOO_LARGE",
-                    f"image_path exceeds {_MAX_IMAGE_BYTES} bytes",
-                )
+    try:
+        async with aiofiles.open(p, "rb") as fh:
+            while True:
+                blob = await fh.read(chunk)
+                if not blob:
+                    break
+                buf.extend(blob)
+                if len(buf) > _MAX_IMAGE_BYTES:
+                    raise VisionToolError(
+                        "VISION_IMAGE_TOO_LARGE",
+                        f"image_path exceeds {_MAX_IMAGE_BYTES} bytes",
+                    )
+    except OSError as e:
+        raise VisionToolError("VISION_READ_FAILED", f"could not read {path!r}: {e}")
     return bytes(buf), mime_hint
 
 
@@ -334,9 +344,9 @@ async def _download_image(url: str) -> tuple[bytes, str]:
     """Fetch the image, capping size and time. Returns (bytes, mime_type)."""
     if not url.startswith(("http://", "https://")):
         raise VisionToolError("VISION_BAD_INPUT", "image_url must be http(s)")
-    async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT_S, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT_S, follow_redirects=False) as client:
         async with client.stream("GET", url) as resp:
-            if resp.status_code >= 400:
+            if resp.status_code >= 300:
                 raise VisionToolError(
                     "VISION_DOWNLOAD_FAILED",
                     f"upstream returned {resp.status_code}",
@@ -387,16 +397,16 @@ async def _gemini_describe(
         )
 
     def _call() -> Any:
-        client = genai.Client(api_key=api_key)
-        return client.models.generate_content(
-            model=model,
-            contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type=mime),
-                prompt,
-            ],
-        )
+        with genai.Client(api_key=api_key) as client:
+            return client.models.generate_content(
+                model=model,
+                contents=[
+                    types.Part.from_bytes(data=image_bytes, mime_type=mime),
+                    prompt,
+                ],
+            )
 
-    response = await asyncio.to_thread(_call)
+    response = await asyncio.wait_for(asyncio.to_thread(_call), timeout=_GEMINI_TIMEOUT_S)
     text = getattr(response, "text", None)
     if not text:
         try:

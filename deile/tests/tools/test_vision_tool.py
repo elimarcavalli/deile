@@ -387,3 +387,70 @@ async def test_file_uri_with_non_localhost_authority_rejected(tool, ctx_factory)
     res = await tool.execute(ctx_factory(image_path="file://remotehost/etc/passwd"))
     assert res.is_error
     assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+
+
+# ---- prompt length cap ------------------------------------------------------
+
+
+async def test_prompt_too_long_returns_bad_input(tool, ctx_factory):
+    """A prompt longer than _MAX_PROMPT_BYTES must be rejected."""
+    import base64
+
+    from deile.tools.vision_tool import _MAX_PROMPT_BYTES
+    b64 = base64.b64encode(b"x").decode()
+    long_prompt = "a" * (_MAX_PROMPT_BYTES + 1)
+    res = await tool.execute(ctx_factory(image_base64=b64, mime_type="image/png", prompt=long_prompt))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_BAD_INPUT"
+
+
+# ---- SSRF: redirects not followed -------------------------------------------
+
+
+async def test_url_redirect_not_followed(tool, ctx_factory):
+    """HTTP redirects must not be followed (prevents SSRF via redirect chains)."""
+    from aiohttp import web
+
+    async def _redirect(req):
+        raise web.HTTPFound(location="http://169.254.169.254/latest/meta-data/")
+
+    app = web.Application()
+    app.router.add_get("/redirect", _redirect)
+    runner = web.AppRunner(app, handle_signals=False, access_log=None)
+    await runner.setup()
+    site = web.TCPSite(runner, host="127.0.0.1", port=0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]
+    url = f"http://127.0.0.1:{port}/redirect"
+    try:
+        res = await tool.execute(ctx_factory(image_url=url))
+    finally:
+        await runner.cleanup()
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_DOWNLOAD_FAILED"
+
+
+# ---- OSError during file read -----------------------------------------------
+
+
+async def test_image_path_read_error_returns_vision_read_failed(
+    tool, ctx_factory, monkeypatch, repo_tmp_path
+):
+    """A PermissionError / OSError during read must return VISION_READ_FAILED."""
+
+    class _PermErrorCtx:
+        async def __aenter__(self):
+            raise PermissionError("[Errno 13] Permission denied")
+
+        async def __aexit__(self, *args):
+            pass
+
+    def _failing_open(path, mode="r", **kwargs):
+        return _PermErrorCtx()
+
+    monkeypatch.setattr("deile.tools.vision_tool.aiofiles.open", _failing_open)
+    p = repo_tmp_path / "img.png"
+    p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 10)
+    res = await tool.execute(ctx_factory(image_path=str(p)))
+    assert res.is_error
+    assert res.metadata["error_code"] == "VISION_READ_FAILED"
