@@ -35,32 +35,13 @@ from typing import Optional
 
 from deile.orchestration.pipeline.worktree_manager import (WorktreeError,
                                                            WorktreeManager)
+from deile.tools._pipeline_paths import resolve_base_path as _resolve_base_path
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
 
 logger = logging.getLogger(__name__)
 
 _PROTECTED_SUBDIRS = {"main"}  # worktrees that must never be removed
-
-
-def _resolve_base_path(override: Optional[str] = None) -> Path:
-    """Return the base repository path.
-
-    Priority: explicit *override* arg > ``pipeline.base_path`` in settings >
-    auto-detect by walking CWD ancestors looking for ``.git`` + ``deile.py``.
-    """
-    if override:
-        return Path(override).resolve()
-    from deile.config.settings import get_settings
-
-    s = get_settings()
-    if s.pipeline_base_path:
-        return s.pipeline_base_path.resolve()
-    cwd = Path.cwd()
-    for ancestor in (cwd, *cwd.parents):
-        if (ancestor / ".git").is_dir() and (ancestor / "deile.py").is_file():
-            return ancestor
-    return cwd
 
 
 class WorktreeTool(Tool):

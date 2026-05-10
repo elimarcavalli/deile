@@ -18,6 +18,7 @@ from typing import Any, Optional
 from deile.orchestration.pipeline.constants import PIPELINE_DEFAULT_REPO
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
+from deile.tools._pipeline_paths import resolve_base_path as _resolve_base_path
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
 
@@ -26,19 +27,6 @@ def _resolve_repo() -> str:
     from deile.config.settings import get_settings
 
     return get_settings().pipeline_repo or PIPELINE_DEFAULT_REPO
-
-
-def _resolve_base_path() -> Path:
-    from deile.config.settings import get_settings
-
-    s = get_settings()
-    if s.pipeline_base_path:
-        return s.pipeline_base_path.resolve()
-    cwd = Path.cwd()
-    for ancestor in (cwd, *cwd.parents):
-        if (ancestor / ".git").is_dir() and (ancestor / "deile.py").is_file():
-            return ancestor
-    return cwd
 
 
 class PipelineTool(Tool):
