@@ -184,8 +184,7 @@ class HTTPTool(SyncTool):
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Execute HTTP request"""
         if not REQUESTS_AVAILABLE:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 data={"error": "Requests library not available"},
                 message="HTTP tool requires requests package. Install with: pip install requests",
                 display_policy=DisplayPolicy.BOTH
@@ -197,8 +196,7 @@ class HTTPTool(SyncTool):
             # Validate required parameters
             url = args.get("url")
             if not url:
-                return ToolResult(
-                    status=ToolStatus.ERROR,
+                return ToolResult.error_result(
                     data={"error": "URL is required"},
                     message="URL parameter is required for HTTP requests",
                     display_policy=DisplayPolicy.BOTH
@@ -215,8 +213,7 @@ class HTTPTool(SyncTool):
             )
             
         except Exception as e:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 data={"error": str(e)},
                 message=f"HTTP request failed: {str(e)}",
                 display_policy=DisplayPolicy.BOTH

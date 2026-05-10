@@ -114,8 +114,7 @@ class GitTool(SyncTool):
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Execute git operations"""
         if not GIT_AVAILABLE:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 data={"error": "GitPython not available"},
                 message="Git tool requires GitPython package. Install with: pip install GitPython",
                 display_policy=DisplayPolicy.BOTH
@@ -130,8 +129,7 @@ class GitTool(SyncTool):
             # Find git repository
             repo = self._get_repo(working_dir)
             if not repo:
-                return ToolResult(
-                    status=ToolStatus.ERROR,
+                return ToolResult.error_result(
                     data={"error": "Not a git repository"},
                     message=f"No git repository found in {working_dir} or parent directories",
                     display_policy=DisplayPolicy.BOTH
@@ -148,8 +146,7 @@ class GitTool(SyncTool):
             )
             
         except Exception as e:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 data={"error": str(e)},
                 message=f"Git operation failed: {str(e)}",
                 display_policy=DisplayPolicy.BOTH
