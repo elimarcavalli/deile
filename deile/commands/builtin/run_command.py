@@ -14,7 +14,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import PlanStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args
+from ._shared import split_args, truncate
 
 
 class RunCommand(DirectCommand):
@@ -108,7 +108,7 @@ class RunCommand(DirectCommand):
             
             table.add_row(
                 plan["id"],
-                plan["title"][:30] + ("..." if len(plan["title"]) > 30 else ""),
+                truncate(plan["title"], 30),
                 progress_text,
                 current_step,
                 started_at

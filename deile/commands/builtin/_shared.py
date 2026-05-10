@@ -125,3 +125,17 @@ def split_args(context: CommandContext) -> list[str]:
     raw = getattr(context, "args", "") or ""
     stripped = raw.strip()
     return stripped.split() if stripped else []
+
+
+def truncate(text: str | None, max_chars: int, suffix: str = "...") -> str:
+    """Recorta ``text`` para ``max_chars`` caracteres + ``suffix`` quando excede.
+
+    Padrão equivalente a ``text[:max_chars] + suffix if len(text) > max_chars
+    else text`` que estava duplicado em 14+ sites entre logs/approve/diff/
+    permissions/plan/run/stop/tools commands. Output fica em
+    ``max_chars + len(suffix)`` chars quando truncado, ou no comprimento
+    original quando não. ``None`` é tratado como string vazia.
+    """
+    if not text:
+        return ""
+    return text[:max_chars] + suffix if len(text) > max_chars else text

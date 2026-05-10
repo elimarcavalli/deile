@@ -7,7 +7,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import StepStatus, get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args
+from ._shared import split_args, truncate
 
 
 class ApproveCommand(DirectCommand):
@@ -110,15 +110,8 @@ class ApproveCommand(DirectCommand):
                 "critical": "🚨"
             }.get(approval['risk_level'], "❓")
             
-            # Truncate long descriptions
-            description = approval['step_description']
-            if len(description) > 30:
-                description = description[:27] + "..."
-            
-            # Plan title truncation
-            plan_title = approval['plan_title']
-            if len(plan_title) > 12:
-                plan_title = plan_title[:9] + "..."
+            description = truncate(approval['step_description'], 27)
+            plan_title = truncate(approval['plan_title'], 9)
             
             action_text = f"/approve {approval['plan_id']} {approval['step_id']}"
             
@@ -211,10 +204,7 @@ class ApproveCommand(DirectCommand):
                 "**Parameters:**"
             ])
             for key, value in step.params.items():
-                # Truncate long values
-                value_str = str(value)
-                if len(value_str) > 50:
-                    value_str = value_str[:47] + "..."
+                value_str = truncate(str(value), 47)
                 content_lines.append(f"  • {key}: {value_str}")
         
         # Add context about plan status

@@ -12,7 +12,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args
+from ._shared import split_args, truncate
 
 
 class ToolsCommand(DirectCommand):
@@ -266,7 +266,7 @@ class ToolsCommand(DirectCommand):
                 tool_data.get("risk_level", "unknown"),
                 str(stats.get("total_calls", 0)),
                 f"{stats.get('success_rate', 0):.1f}",
-                tool_data.get("description", "No description")[:40] + ("..." if len(tool_data.get("description", "")) > 40 else "")
+                truncate(tool_data.get("description", "No description"), 40),
             )
         
         return table
