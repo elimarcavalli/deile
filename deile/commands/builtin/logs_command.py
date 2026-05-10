@@ -1,7 +1,6 @@
 """Logs Command — Visualização de logs de auditoria de segurança e eventos do sistema."""
 
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List
 
@@ -14,7 +13,7 @@ from ...core.exceptions import CommandError
 from ...security.audit_logger import (AuditEvent, AuditEventType,
                                       SeverityLevel, get_audit_logger)
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args, truncate
+from ._shared import format_relative_time, split_args, truncate
 
 logger = logging.getLogger(__name__)
 
@@ -164,13 +163,7 @@ class LogsCommand(DirectCommand):
             activity_table.add_column("Resultado", style="red", width=10)
 
             for event in recent_events[:10]:
-                time_diff = datetime.now() - event.timestamp
-                if time_diff.total_seconds() < 60:
-                    time_str = f"{int(time_diff.total_seconds())}s"
-                elif time_diff.total_seconds() < 3600:
-                    time_str = f"{int(time_diff.total_seconds() / 60)}m"
-                else:
-                    time_str = event.timestamp.strftime("%H:%M")
+                time_str = format_relative_time(event.timestamp)
 
                 actor = truncate(event.actor, 10)
                 resource = truncate(event.resource, 18)
@@ -336,11 +329,8 @@ class LogsCommand(DirectCommand):
         security_table.add_column("Ação Tomada", style="green", width=15)
 
         for event in all_events[:50]:
-            time_diff = datetime.now() - event.timestamp
-            time_str = (
-                f"{int(time_diff.total_seconds() / 60)}m atrás"
-                if time_diff.total_seconds() < 3600
-                else event.timestamp.strftime("%H:%M")
+            time_str = format_relative_time(
+                event.timestamp, with_seconds=False, suffix=" atrás"
             )
 
             if event.event_type == AuditEventType.PERMISSION_DENIED:

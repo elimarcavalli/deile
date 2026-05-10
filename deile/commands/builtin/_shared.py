@@ -127,6 +127,34 @@ def split_args(context: CommandContext) -> list[str]:
     return stripped.split() if stripped else []
 
 
+def format_relative_time(
+    timestamp: datetime,
+    *,
+    with_seconds: bool = True,
+    suffix: str = "",
+    now: datetime | None = None,
+) -> str:
+    """Formata ``timestamp`` como tempo relativo curto (``"5s"``, ``"30m"``, ``"13:42"``).
+
+    Substitui dois padrões duplicados em ``logs_command``:
+
+    * Visão geral (linhas 167-173) — ``with_seconds=True``, ``suffix=""``
+    * Eventos de segurança (linhas 339-344) — ``with_seconds=False``,
+      ``suffix=" atrás"``
+
+    Para timestamps com mais de 1 hora, retorna ``"%H:%M"`` (formato curto
+    do dia atual). ``now`` opcional facilita testes determinísticos.
+    """
+    current = now if now is not None else datetime.now()
+    delta = current - timestamp
+    secs = delta.total_seconds()
+    if with_seconds and secs < 60:
+        return f"{int(secs)}s"
+    if secs < 3600:
+        return f"{int(secs / 60)}m{suffix}"
+    return timestamp.strftime("%H:%M")
+
+
 def truncate(text: str, width: int, ellipsis: str = "...") -> str:
     """Trunca ``text`` a ``width`` caracteres, anexando ``ellipsis`` se cortou.
 
