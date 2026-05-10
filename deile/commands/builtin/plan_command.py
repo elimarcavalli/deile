@@ -1,6 +1,6 @@
 """Plan Command - Create and manage execution plans"""
 
-from typing import Optional
+from __future__ import annotations
 
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -141,7 +141,7 @@ class PlanCommand(DirectCommand):
         
         return CommandResult.success_result(result_panel, "rich")
     
-    async def _list_plans(self, status_filter: Optional[PlanStatus] = None) -> CommandResult:
+    async def _list_plans(self, status_filter: PlanStatus | None = None) -> CommandResult:
         """List existing plans"""
         
         plans = await self.plan_manager.list_plans(status_filter)

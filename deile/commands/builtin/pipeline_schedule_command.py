@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any
 
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
 from deile.config.manager import CommandConfig
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 _KEY_START_RE = re.compile(r"\s+\w[\w-]*:")
 
 
-def _parse_kv(text: str) -> Dict[str, str]:
+def _parse_kv(text: str) -> dict[str, str]:
     """Parse a ``key:value key2:val2 …`` string into a dict.
 
     Handles multi-word values (e.g. ``cron:*/5 * * * *``) and values with
@@ -52,7 +52,7 @@ def _parse_kv(text: str) -> Dict[str, str]:
     Algorithm: split on boundaries where a space is followed by a ``word:``
     pattern, then parse each segment as ``key:rest-of-line``.
     """
-    result: Dict[str, str] = {}
+    result: dict[str, str] = {}
     # Insert sentinels so the pattern can split cleanly.
     # Replace "  key:" boundaries with a null-byte separator.
     normalised = _KEY_START_RE.sub(lambda m: "\x00" + m.group(0).lstrip(), text.strip())
@@ -93,7 +93,7 @@ class PipelineScheduleCommand(DirectCommand):
         sub = parts[0].lower() if parts else "list"
         rest = parts[1] if len(parts) > 1 else ""
 
-        tool_args: Dict[str, Any] = {}
+        tool_args: dict[str, Any] = {}
 
         if sub == "list":
             tool_args = {"action": "list"}
@@ -180,7 +180,7 @@ class PipelineScheduleCommand(DirectCommand):
 # display helpers
 # ---------------------------------------------------------------------------
 
-def _format_result(sub: str, data: Any, message: Optional[str]) -> str:
+def _format_result(sub: str, data: Any, message: str | None) -> str:
     if sub == "list":
         if not data:
             return message or "no schedule data"
