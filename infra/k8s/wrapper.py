@@ -161,14 +161,15 @@ def _setup_git_credentials() -> None:
         # and the explicit chmod call — no TOCTOU window.
         fd = os.open(str(creds_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                fh.write(f"https://oauth2:{token}@github.com\n")
+            fh = os.fdopen(fd, "w", encoding="utf-8")
         except Exception:
             try:
                 os.close(fd)
             except OSError:
                 pass
             raise
+        with fh:
+            fh.write(f"https://oauth2:{token}@github.com\n")
     except OSError as exc:
         print(f"wrapper: could not write ~/.git-credentials: {exc}", file=sys.stderr)
         os.environ.pop("GITHUB_TOKEN", None)
@@ -277,7 +278,7 @@ while _i < len(args):
 if _subcommand == "clone":
     patterns = _PATTERNS if _PATTERNS else []
     if patterns != ["*"]:
-        urls = [a for a in args[_sub_idx + 1:] if not a.startswith("-")]
+        urls = [a for a in args[_sub_idx + 1:] if "://" in a or a.startswith("git@")]
         if urls:
             url = urls[0].rstrip("/")
             # Use urlparse to extract hostname so userinfo tricks like

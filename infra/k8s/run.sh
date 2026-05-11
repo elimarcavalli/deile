@@ -272,7 +272,7 @@ cmd_clone() {
     sleep 10
   done
   if [ "$token_ready" -eq 0 ]; then
-    fail "GITHUB_TOKEN não sincronizado após 90s. Diagnóstico: kubectl -n $NS describe secret deile-secrets && kubectl -n $NS get events"
+    fail "GITHUB_TOKEN not synced after 90s. Diagnose: kubectl -n $NS describe secret deile-secrets && kubectl -n $NS get events"
   fi
 
   local repo_name="${repo##*/}"
@@ -306,14 +306,15 @@ if token_file.exists():
     creds = home / ".git-credentials"
     fd = os.open(str(creds), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        with os.fdopen(fd, "w") as fh:
-            fh.write("https://oauth2:" + token + "@github.com\n")
+        fh = os.fdopen(fd, "w")
     except Exception:
         try:
             os.close(fd)
         except OSError:
             pass
         raise
+    with fh:
+        fh.write("https://oauth2:" + token + "@github.com\n")
     subprocess.run(
         ["git", "config", "--global", "credential.helper", "store"],
         check=False,
@@ -329,13 +330,13 @@ else:
     # Guard absent — perform URL validation using the config file when present.
     # If both guard and config are absent, open policy applies (any repo allowed),
     # matching the documented wrapper.py behaviour for absent config.
-    try:
-        import yaml
-    except ImportError as exc:
-        print(f"clone: PyYAML not available: {exc} — deny all", file=sys.stderr)
-        sys.exit(1)
     config_path = home / "config" / "deilebot.yaml"
     if config_path.exists():
+        try:
+            import yaml
+        except ImportError as exc:
+            print(f"clone: PyYAML not available: {exc} — deny all", file=sys.stderr)
+            sys.exit(1)
         try:
             data = yaml.safe_load(config_path.read_text()) or {}
             raw = (data.get("git_integration") or {}).get("clonable_repos", [])
