@@ -1,0 +1,77 @@
+# Long-running deile pod for interactive operator sessions:
+#
+#   kubectl -n deile exec -it deploy/deile-shell -- python3 /app/wrapper.py deile "your prompt"
+#   kubectl -n deile exec -it deploy/deile-shell -- python3 /app/wrapper.py deile          # interactive REPL
+#
+# Tool policy = "all" — bash, file_read/write, execute_python, search,
+# git, etc. are all enabled. That is intentional: the prompt comes
+# from the operator (you, via kubectl), not from any external user,
+# so prompt-injection is not a concern. The container's read-only
+# rootfs + dropped capabilities + NetworkPolicy still confine what a
+# wandering tool can do (Mac unreachable, only outbound 443 + bot
+# service allowed).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deile-shell
+  namespace: deile
+  labels:
+    app: deile-shell
+    role: deile
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels:
+      app: deile-shell
+      role: deile
+  template:
+    metadata:
+      labels:
+        app: deile-shell
+        role: deile
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: deile
+          image: deile-stack:local
+          imagePullPolicy: Never
+          workingDir: /home/deile
+          # Sleep forever so kubectl exec always has a target. We
+          # never start deile here automatically — the operator runs
+          # it on demand via exec.
+          command: ["/usr/bin/tini", "--", "sleep", "infinity"]
+          env:
+            - { name: HOME, value: /home/deile }
+            - { name: PYTHONUNBUFFERED, value: "1" }
+            - { name: DEILE_BOT_ENDPOINT, value: "http://deilebot.deile.svc.cluster.local:8765" }
+            - { name: DEILE_BOT_APPROVAL_AUTO, value: "1" }
+            - { name: DEILE_DEFAULT_PERSONA, value: developer }
+            # Full toolset — see header for rationale.
+            - { name: DEILE_WRAPPER_TOOL_WHITELIST, value: "all" }
+          volumeMounts:
+            - { name: deile-secrets, mountPath: /run/secrets/deile, readOnly: true }
+            - { name: home, mountPath: /home/deile }
+            - { name: tmp,  mountPath: /tmp }
+          resources:
+            requests: { cpu: "50m", memory: "256Mi" }
+            limits:   { cpu: "2000m", memory: "2Gi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - { name: deile-secrets, secret: { secretName: deile-secrets, defaultMode: 288 } }
+        - { name: home, emptyDir: { sizeLimit: "256Mi" } }
+        - { name: tmp,  emptyDir: { medium: Memory, sizeLimit: "64Mi" } }

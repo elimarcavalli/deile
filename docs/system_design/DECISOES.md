@@ -54,45 +54,45 @@
 |---|---|
 | Versão | V1 |
 | Pilar dono | 03-Princípios |
-| Decisão | Todo I/O (arquivo, rede, DB) é `async`. Tools síncronas legítimas usam `SyncTool`, que envolve em `asyncio.to_thread`. `pytest.ini` configura `asyncio_mode=auto` |
-| Evidência | `deile/tools/base.py:SyncTool.execute`, `pytest.ini` |
-| Motivação | Manter responsividade da CLI durante operações longas (function calling, leitura de arquivo, integrações) |
+| Decisão | Toda operação de I/O (arquivo, rede, processo, banco de dados) é implementada como `async def`. Sem `requests`, `time.sleep`, `open()` síncrono, nem driver de DB síncrono dentro de `async def`. Concorrência via `asyncio.gather()`. Cleanup via `async with`. Tools síncronas usam `SyncTool` que envolve em `asyncio.to_thread` |
+| Evidência | `deile/tools/base.py:SyncTool`, uso de `aiohttp` e `aiosqlite`, `asyncio.gather` em `deile/orchestration/` |
+| Motivação | Throughput: o agente processa múltiplos tools e LLM calls em paralelo; I/O síncrona bloquearia o loop inteiro |
 
 ---
 
-## Decisão #5 — Arquitetura hexagonal — núcleo livre de SDKs externos
+## Decisão #5 — Arquitetura hexagonal (core ↔ adapters em `infrastructure/`)
 
 | Campo | Valor |
 |---|---|
 | Versão | V1 |
 | Pilar dono | 03-Princípios |
-| Decisão | O núcleo (`deile/core/`, `deile/orchestration/`, `deile/memory/`) não importa SDKs externos diretamente. Adapters vivem em `deile/infrastructure/` e providers concretos em `deile/core/models/`. Dados validados por Pydantic v2 |
-| Evidência | Estrutura de diretórios e ausência de imports de `anthropic`, `openai`, `google.genai` em `deile/core/agent.py`, `deile/orchestration/`, `deile/memory/` |
-| Motivação | Trocar provider/SDK sem reescrever o núcleo |
+| Decisão | `deile/core/`, `deile/orchestration/`, `deile/memory/` não importam SDKs externos diretamente. Adapters externos vivem em `deile/infrastructure/` ou em providers concretos em `deile/core/models/`. Pydantic v2 para contratos |
+| Evidência | `deile/infrastructure/` (providers de modelos), `deile/core/models/` (adaptação de APIs LLM) |
+| Motivação | Trocar provider de LLM (Anthropic → OpenAI) sem tocar no núcleo |
 
 ---
 
-## Decisão #6 — Memória em quatro camadas
+## Decisão #6 — Memória em quatro camadas (working/episodic/semantic/procedural)
 
 | Campo | Valor |
 |---|---|
 | Versão | V1 |
 | Pilar dono | 06-Memória |
-| Decisão | Camadas: Working (TTL, RAM), Episodic (persistente, retenção em dias), Semantic (persistente, embeddings), Procedural (padrões aprendidos). Coordenadas por `MemoryManager` com consolidador em background |
-| Evidência | `deile/memory/memory_manager.py:MemoryConfiguration`, módulos `working_memory.py`, `episodic_memory.py`, `semantic_memory.py`, `procedural_memory.py`, `memory_consolidation.py` |
-| Motivação | Separar contexto efêmero, log de sessão, conhecimento estável e padrões reutilizáveis |
+| Decisão | `MemoryManager` orquestra quatro camadas independentes: Working (TTL transitório), Episodic (eventos da sessão), Semantic (fatos persistentes), Procedural (padrões aprendidos). Cada camada tem módulo dedicado, interface async, e armazenamento separado |
+| Evidência | `deile/memory/` (quatro módulos de camada + `memory_manager.py`) |
+| Motivação | Diferentes TTLs, diferentes backends (in-memory, SQLite), diferentes queries — unificar numa única estrutura criaria acoplamento incorreto |
 
 ---
 
-## Decisão #7 — Multi-provider com router legado e router por tier
+## Decisão #7 — Multi-provider com `ModelRouter` legado e `TierRouter` por tiers
 
 | Campo | Valor |
 |---|---|
 | Versão | V1 |
 | Pilar dono | 07-Integrações LLM |
-| Decisão | Coexistem `ModelRouter` (legado, por priority) e `TierRouter` (cascata por tier com `RoutingPolicy` e `CircuitBreaker`). Bootstrap registra cada handle (`provider:model_id`) em ambos para compatibilidade |
-| Evidência | `deile/core/models/router.py`, `deile/core/models/tier_router.py`, `deile/core/models/bootstrap.py` |
-| Motivação | Permitir migração gradual sem quebrar caminhos legados; `TierRouter` é o caminho moderno |
+| Decisão | `bootstrap_providers()` registra providers conforme chaves disponíveis. `TierRouter` despacha por tier (fast/balanced/powerful) em vez de modelo nominal. `ModelRouter` legado coexiste para compatibilidade. Providers concretos: Anthropic, OpenAI, DeepSeek, Google (legado direto) |
+| Evidência | `deile/core/models/bootstrap.py`, `deile/core/models/tier_router.py`, `deile/core/models/model_router.py` |
+| Motivação | Abstração de tier permite rotear para o melhor modelo disponível sem hardcode de nome |
 
 ---
 
@@ -102,21 +102,21 @@
 |---|---|
 | Versão | V1 |
 | Pilar dono | 07-Integrações LLM |
-| Decisão | Falhas consecutivas abrem o breaker do provider; janela de cooldown e meio-aberto antes de fechar. Budget enforcement em três janelas (sessão, dia por provider, mês por provider). Limites em `model_providers.yaml` |
-| Evidência | `deile/core/models/tier_router.py` (`_ProviderBreaker`, `CircuitBreaker`, `BreakerState`), `deile/storage/usage_repository.py` (`BudgetGuard`, `BudgetExceeded`), `deile/config/model_providers.yaml` (seções `circuit_breaker` e `budget`) |
-| Motivação | Resiliência (não martelar provider em falha) e proteção de custo |
+| Decisão | Cada provider tem um `CircuitBreaker` (estados: closed/open/half-open, threshold de falhas configurável). `BudgetGuard` rastreia custo em três janelas (sessão, diário, mensal) e aborta chamadas que excederiam o limite |
+| Evidência | `deile/core/models/circuit_breaker.py`, `deile/core/models/budget_guard.py`, `UsageRepository` |
+| Motivação | Falha isolada de um provider não derruba o agente; overspend acidental é bloqueado antes da chamada |
 
 ---
 
-## Decisão #9 — Permissões rule-based + audit logging tipado
+## Decisão #9 — Sistema de permissões baseado em regras + audit logging tipado
 
 | Campo | Valor |
 |---|---|
 | Versão | V1 |
 | Pilar dono | 08-Segurança |
-| Decisão | `PermissionManager` baseado em `PermissionRule`/`PermissionLevel`/`ResourceType`. `AuditLogger` recebe `AuditEvent` tipado com `AuditEventType` e `SeverityLevel`. Helpers prontos para os casos mais comuns (`log_permission_check`, `log_secret_detection`, `log_tool_execution`, etc.) |
-| Evidência | `deile/security/permissions.py`, `deile/security/audit_logger.py`, `config/permissions.yaml` |
-| Motivação | Decisões de segurança auditáveis e configuráveis sem mudança de código |
+| Decisão | `PermissionManager` avalia regras em `config/permissions.yaml` (resource, action, level). `AuditLogger` registra `AuditEvent` tipado (nunca formato livre) em arquivo rotacionado. Toda ação privilegiada passa por `check_permission()` antes de executar |
+| Evidência | `deile/security/permissions.py`, `deile/security/audit.py`, `config/permissions.yaml` |
+| Motivação | Auditabilidade de operações sensíveis; revogação de acesso sem mudança de código |
 
 ---
 
@@ -126,96 +126,93 @@
 |---|---|
 | Versão | V1 |
 | Pilar dono | 08-Segurança |
-| Decisão | `ApprovalSystem` em `deile/orchestration/approval_system.py` recebe `ApprovalRequest` com `RiskLevel` e expira após janela. `PlanManager` invoca aprovação antes de steps de risco |
-| Evidência | `deile/orchestration/approval_system.py`, `deile/orchestration/plan_manager.py:_perform_security_checks` |
-| Motivação | Operações de risco precisam de gate explícito |
+| Decisão | `ApprovalSystem` classifica ações por risco (low/medium/high/critical). Ações acima do threshold configurável bloqueiam execução até aprovação explícita do operador. `PlanManager` submete planos ao sistema antes de executar |
+| Evidência | `deile/security/approval.py`, `deile/orchestration/plan_manager.py` |
+| Motivação | Agente autônomo com bash e file tools pode causar danos irreversíveis; aprovação por risco é o único gate antes da execução |
 
 ---
 
-## Decisão #11 — `Settings` como singleton
+## Decisão #11 — `Settings` como singleton via `get_settings()`
 
 | Campo | Valor |
 |---|---|
 | Versão | V1 |
 | Pilar dono | 09-Configuração |
-| Decisão | Acesso a `Settings` exclusivamente via `get_settings()`. Nunca instanciar `Settings()` diretamente. `update_settings(**kwargs)` para mudanças in-place; `reset_settings()` para testes |
-| Evidência | `deile/config/settings.py` |
-| Motivação | Estado de configuração único para evitar divergência entre componentes |
+| Decisão | `deile/config/settings.py` expõe apenas `get_settings()`. O dataclass `Settings` não é instanciado diretamente. `ConfigManager` carrega YAML/JSON e merge com env vars. Leitura de `os.environ` é proibida no código de domínio |
+| Evidência | `deile/config/settings.py:get_settings`, `deile/config/manager.py:ConfigManager` |
+| Motivação | Único ponto de override para testes; consistência entre módulos que leem a mesma chave |
 
 ---
 
-## Decisão #12 — Personas via Markdown + YAML
+## Decisão #12 — Personas instanciadas por instruções em Markdown + YAML de capacidades
 
 | Campo | Valor |
 |---|---|
 | Versão | V1 |
 | Pilar dono | 04-Componentes |
-| Decisão | Instruções da persona ficam em `deile/personas/instructions/<id>.md`; capacidades e preferências em `deile/personas/library/<id>.yaml`; mapeamento e default em `deile/config/persona_config.yaml`. Hot-reload é opcional via `PersonaManager.initialize(enable_hot_reload=True)` |
-| Evidência | `deile/personas/manager.py`, `deile/personas/loader.py`, `deile/config/persona_config.yaml` |
-| Motivação | Mudar comportamento do agente sem mudar Python |
+| Decisão | Cada persona tem um arquivo `.md` em `deile/personas/instructions/` (prosa de instruções) e um `.yaml` em `deile/personas/library/` (capacidades, tools, preferências). `PersonaManager` carrega e compõe ambos. Mudança de comportamento = editar Markdown, sem Python |
+| Evidência | `deile/personas/manager.py`, `deile/personas/instructions/*.md`, `deile/personas/library/*.yaml` |
+| Motivação | Non-engineers podem ajustar personas; persona = dados, não código |
 
 ---
 
-## Decisão #13 — Hot-reload via `watchdog`
+## Decisão #13 — Hot-reload de configuração e plugins via `watchdog`
 
 | Campo | Valor |
 |---|---|
 | Versão | V1 |
 | Pilar dono | 09-Configuração |
-| Decisão | `ConfigManager` e `PluginManager.hot_loader` instalam observers do `watchdog` para detectar mudanças em diretórios de configuração e plugins. Quando `watchdog` não está disponível, hot-reload é silenciosamente desativado (warning no log) |
-| Evidência | `deile/config/manager.py` (lazy import de `watchdog`), `deile/plugins/hot_loader.py` |
-| Motivação | Iteração rápida sem reiniciar a CLI |
+| Decisão | `ConfigManager` usa `watchdog` para observar mudanças em `config/`. Plugins são carregados por `PluginManager` com `hot_loader`. Mudança de arquivo dispara re-load sem restart do processo |
+| Evidência | `deile/config/manager.py` (watcher), `deile/plugins/manager.py`, `deile/plugins/hot_loader.py` |
+| Motivação | Iteração rápida em desenvolvimento; mudança de configuração em produção sem downtime |
 
 ---
 
-## Decisão #14 — Persistência em SQLite
+## Decisão #14 — Persistência (memória episódica/semântica/uso) em SQLite
 
 | Campo | Valor |
 |---|---|
 | Versão | V1 |
-| Pilar dono | 06-Memória + 07-Integrações LLM |
-| Decisão | SQLite usado para: (a) repositório de uso/custo (`deile/storage/usage_repository.py`); (b) gerenciamento de tarefas (`deile/orchestration/sqlite_task_manager.py`); (c) camadas de memória persistentes (episodic/semantic/procedural usam diretórios sob `memory_dir` — combinação de SQLite e arquivos, conforme implementação de cada camada) |
-| Evidência | imports em `deile/storage/usage_repository.py`, `deile/orchestration/sqlite_task_manager.py` |
-| Motivação | Persistência leve, ACID, sem dependência de servidor |
+| Pilar dono | 06-Memória, 07-Integrações LLM |
+| Decisão | Episodic memory, semantic memory e usage tracking persistem em SQLite via `aiosqlite`. Cada módulo gerencia seu próprio schema e migrations. Working memory e procedural memory ficam in-memory (TTL-based) |
+| Evidência | `deile/memory/episodic_memory.py`, `deile/memory/semantic_memory.py`, `deile/storage/usage_repository.py` |
+| Motivação | SQLite: zero infra, ACID, portátil. Async via aiosqlite não bloqueia o loop. Separação de schemas evita lock contention entre módulos |
 
 ---
 
-## Decisão #15 — Streaming-first na CLI interativa
+## Decisão #15 — Streaming-first: `process_input_stream` é o caminho default da CLI
 
 | Campo | Valor |
 |---|---|
 | Versão | V1 |
 | Pilar dono | 05-Fluxo |
-| Decisão | A CLI tenta primeiro `process_input_stream(...)` quando `Settings.streaming_enabled` é True. Caminho legado (`process_input`) continua disponível e é o usado no modo one-shot |
-| Evidência | `deile.py:DeileAgentCLI.run_interactive` (verificação `streaming_enabled = getattr(self.settings, "streaming_enabled", True)`) |
-| Motivação | Resposta progressiva melhora a percepção de latência; tools/eventos podem ser renderizados conforme chegam |
+| Decisão | `DeileAgent.process_input_stream(user_input)` é o método principal, retornando um `AsyncIterator` de tokens/events. `process_input` (não-stream) é wrapper. A CLI consome o stream e imprime progressivamente |
+| Evidência | `deile/core/agent.py:process_input_stream`, `deile/cli.py` (consumo do stream) |
+| Motivação | UX: usuário vê resposta começar a aparecer imediatamente, mesmo para respostas longas ou tool chains |
 
 ---
 
-## Decisão #16 — Feature flag `use_legacy_gemini_only`
+## Decisão #16 — Two-flag flag de fallback `use_legacy_gemini_only` em `model_providers.yaml`
 
 | Campo | Valor |
 |---|---|
 | Versão | V1 |
 | Pilar dono | 07-Integrações LLM |
-| Decisão | Em `model_providers.yaml`, a flag `feature_flags.use_legacy_gemini_only=true` desvia o startup para `_bootstrap_legacy_gemini` em `deile.py`, registrando apenas o `GeminiProvider` no router legado |
-| Evidência | `deile.py:_use_legacy_gemini_only`, `_bootstrap_legacy_gemini`; `deile/config/model_providers.yaml:feature_flags` |
-| Motivação | Caminho de fallback / depuração quando a stack multi-provider precisa ser desabilitada |
+| Decisão | Se `use_legacy_gemini_only: true` em `model_providers.yaml`, `bootstrap_providers()` usa `_bootstrap_legacy_gemini()` em vez do novo `TierRouter`. Isso mantém compatibilidade com deployments que ainda não migraram para o novo router |
+| Evidência | `deile.py:_use_legacy_gemini_only`, `deile/core/models/bootstrap.py:_bootstrap_legacy_gemini` |
+| Motivação | Migração incremental sem romper usuários existentes |
 
 ---
 
-## Decisão #17 — Separação `deile` / `deilebot` e protocolo HTTP local para a flecha reversa
+## Decisão #17 — Separação `deile`/`deilebot` + protocolo HTTP local (Bearer, 127.0.0.1) para a flecha reversa `agente → bot`
 
 | Campo | Valor |
 |---|---|
 | Versão | V1 |
 | Pilar dono | 02-Arquitetura, 04-Componentes, 08-Segurança |
-| Decisão | A árvore `deilebot/` foi extraída para um repositório separado (`elimarcavalli/deilebot`) com `pyproject.toml` próprio. A comunicação `deile → deilebot` (a flecha reversa) usa **HTTP local** (aiohttp.web em `127.0.0.1`, Bearer token), não importação in-process nem outbox SQLite. O cliente publicável `deilebot` (httpx + pydantic) é a única superfície que a CLI da DEILE consome via extra opcional `bot` |
-| Evidência | `deilebot/runtime/control_plane/`, `deilebot/deilebot/`, `deile/integrations/bot/`, `deile/tools/messaging/`, `pyproject.toml` (extra `bot = ["deilebot @ git+https://github.com/elimarcavalli/deilebot.git@main"]`), `deilebot/pyproject.toml` |
-| Motivação | (1) Daemons de chat têm ciclo de vida independente da CLI; in-process forçaria subir o bot toda vez que a CLI abrisse e dificultaria deploy. (2) Outbox SQLite introduziria latência e perderia feedback síncrono (msg_id, falhas Discord). (3) HTTP em loopback dá ack imediato, isola repos, permite versionar contrato via tag, e reaproveita um cliente publicável sem expor a stack do bot. (4) Bearer auth + bind 127.0.0.1 fechá fecha a porta para qualquer processo fora da máquina |
-| Alternativas consideradas | (a) **In-process**: reprovado — junta ciclos de vida e complica testes. (b) **Outbox SQLite**: reprovado — sem feedback síncrono, latência de polling. (c) **gRPC**: reprovado — overhead de proto + nada que justifique a complexidade para 9 endpoints |
-| Trade-offs | Operação local fica dependente de o daemon estar de pé. Mitigado: tools só registram quando o daemon foi configurado; offline → `ToolResult.error_result(code="BOT_UNREACHABLE")` tipado, não stack trace |
-| Impacto breaking | Os extras `discord/telegram/whatsapp/meta/all-bots` e o console-script `deilebot` **saíram** do `pyproject.toml` da DEILE. Quem instalava `pip install deile[discord]` agora deve usar `pip install deilebot[discord]` |
+| Decisão | `deilebot` é repo separado (`elimarcavalli/deilebot`). O agente DEILE chama o bot via HTTP local (`http://127.0.0.1:<port>/v1/...`) com Bearer token. Tools `messaging.*` são registradas apenas quando `import deilebot` bem-sucede e `DEILE_BOT_ENDPOINT` + `DEILE_BOT_AUTH_TOKEN` estão presentes. O bot expõe `/v1/send`, `/v1/react`, `/v1/dm`, `/v1/thread`, `/v1/pin`, `/v1/mention-role`, `/v1/user-profile`, `/v1/health` |
+| Evidência | `deile/integrations/bot/client.py`, `deile/integrations/bot/config.py`, `deile/tools/messaging/` |
+| Motivação | (1) Isolamento de processo: o bot (discord.py, gateway WS) é longa-vida e stateful — runs no mesmo processo que o agente criaria coupling e tornaria testes impossíveis. (2) Segurança: o token Discord fica no processo do bot, nunca no agente. |
 
 ---
 
@@ -225,9 +222,9 @@
 |---|---|
 | Versão | V1 |
 | Pilar dono | 03-Princípios, 02-Arquitetura |
-| Decisão | Cada instância do `PipelineMonitor` tem uma identidade (`MonitorIdentity`) composta por `monitor_id`, `shard_index` e `shard_count`. O método `owns(key)` computa `SHA-256(key) % shard_count == shard_index` para decidir se aquela instância deve processar um dado issue/PR. Dois monitores com `shard_count=2` e `shard_index=0,1` dividem o trabalho de forma determinística e sem comunicação entre si. A identidade padrão (`monitor_id=default`, `shard_count=1`) mantém comportamento backwards-compatible de monitor único |
-| Evidência | `deile/orchestration/pipeline/identity.py:MonitorIdentity.owns`, `monitor.py:_review_one_new_issue` |
-| Motivação | Permitir escalar o pipeline horizontalmente (N máquinas ou N processos) sem um coordenador central, sem banco de dados compartilhado e sem mudança de protocolo com o GitHub. O `~batch:` label garante que dois monitors não processem a mesma issue simultaneamente |
+| Decisão | `MonitorIdentity` carrega `shard_index` e `shard_count`. Cada issue/PR passa por `compute_batch_id_for_number(kind, number)` → SHA-256 → `int(hex, 16) % shard_count`. O monitor processa apenas itens cujo shard bate com seu `shard_index`. Permite N instâncias paralelas sem coordenação explícita |
+| Evidência | `deile/orchestration/pipeline/monitor.py:MonitorIdentity`, `compute_batch_id_for_number` (ver decisão #23) |
+| Motivação | Escalar horizontalmente o pipeline sem shared state; cada shard é idempotente |
 
 ---
 
@@ -237,9 +234,9 @@
 |---|---|
 | Versão | V1 |
 | Pilar dono | 04-Componentes |
-| Decisão | Existem dois mecanismos de agendamento com propósitos distintos: (a) `ScheduleStore` / `Schedule` / `RecurringEntry` / `OneshotEntry` em `orchestration/pipeline/scheduler.py` — YAML por monitor, controla *quando* cada estágio do pipeline dispara (review/implement/pr_review); (b) `CronStore` / `CronEntry` / `CronRunner` em `cron/` — SQLite global, agenda *prompts naturais* do usuário para execução futura em uma turn do agente. Os dois são independentes: o pipeline scheduler determina atividade do monitor; o cron runner dispara texto arbitrário que o usuário queira agendar |
-| Evidência | `deile/orchestration/pipeline/scheduler.py`, `deile/cron/store.py`, `deile/cron/runner.py` |
-| Motivação | Misturar os dois num único mecanismo forçaria o cron a conhecer semântica de pipeline (review/implement/pr_review) e impediria que o cron fosse usado para tarefas não relacionadas ao pipeline. A separação mantém responsabilidades únicas (SRP) |
+| Decisão | `CronStore` (SQLite) + `CronRunner` gerenciam jobs cron genéricos (qualquer callable registrado). `ScheduleStore` (YAML) + lógica em `tick()` gerenciam stages do pipeline DEILE. Os dois sistemas coexistem sem acoplamento — `CronRunner` não sabe nada de issues/PRs |
+| Evidência | `deile/storage/cron_store.py`, `deile/orchestration/cron_runner.py` vs `deile/orchestration/pipeline/schedule_store.py`, `monitor.py:tick()` |
+| Motivação | Cron genérico pode executar qualquer tarefa (backup, cleanup, notificação); acoplar isso ao pipeline criaria dependência circular |
 
 ---
 
@@ -249,13 +246,13 @@
 |---|---|
 | Versão | V1 |
 | Pilar dono | 08-Segurança |
-| Decisão | `ClaudeDispatcher` tem flag `prefer_subscription_auth=True` (default). Quando ativa, o env passado ao subprocess `claude -p <prompt>` tem `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` e `ANTHROPIC_BEARER_TOKEN` removidos. O subprocess `claude` cai então para autenticação por assinatura Claude Pro/Max do operador |
-| Evidência | `deile/orchestration/pipeline/claude_dispatcher.py:ClaudeDispatcher._build_env`, atributo `_STRIP_KEYS` |
-| Motivação | O agente DEILE tipicamente roda com uma `ANTHROPIC_API_KEY` de API (paga por token). O Claude Code usado para implementação no pipeline deve faturar contra a assinatura do operador, não contra a mesma key do DEILE. Sem o strip, os subprocessos consumiriam tokens da key do DEILE, gerando custo inesperado e potencialmente excedendo o budget |
+| Decisão | `ClaudeDispatcher` (em `deile/tools/`) remove `ANTHROPIC_API_KEY` do ambiente antes de invocar `claude` CLI como subprocess (`prefer_subscription_auth=True`). Isso força o Claude Code a usar autenticação por subscription (OAuth) em vez do API key do operador |
+| Evidência | `deile/tools/claude_dispatcher.py:prefer_subscription_auth` |
+| Motivação | Evitar que o subprocess herde e potencialmente vaze a chave do operador; subscription auth não expõe credencial no processo filho |
 
 ---
 
-## Decisão #21 — Pipeline silenciosamente quebrado (#129): schedule incompleto + fallback gaps
+## Decisão #21 — Schedule padrão completo + fallback legacy para stages ausentes
 
 | Campo | Valor |
 |---|---|
@@ -326,6 +323,30 @@
 | Motivação | (1) **Trust-boundary**: um repo de terceiro pode commitar `.deile/settings.json` desligando `file_safety`, ativando `allow_all_file_types`, ou redirecionando `working_directory` — o usuário que clona e roda `python deile.py` perde proteções sem confirmar nada. Igual ao caso de `.deile/skills/` (Pilar 08 §"Skills como fronteira de confiança"), o project layer agora exige opt-in explícito. (2) **Permissão antes da ação** (Pilar 03 §5): mutar `enable_file_safety_checks`, `caching.enabled`, `debug` é mudança de postura de segurança e deve passar pelo gate. (3) **Audit tipado** (Pilar 03 §5): toda escrita em settings é audit-logged via tipo `SECURITY_POLICY_CHANGED` (já existia no enum, ninguém emitia). Valores brutos não vão para o log — só hash + flag de redação para chaves potencialmente sensíveis. (4) **Defesa em profundidade no caminho legado**: `load_from_file` aceitava `cls(**config_dict)` com qualquer chave do dataclass, expondo `working_directory='/etc'` como vetor. A allowlist espelha o `_OVERRIDE_HANDLERS` (canonical-safe set). |
 | Alternativas consideradas | (a) Confirmação interativa via `ApprovalSystem` ao detectar project layer não-confiável: rejeitada por quebrar fluxos automatizados (CI). (b) Usar `_OVERRIDE_HANDLERS` como permissão estática (sem `PermissionManager`): rejeitada por colidir com a regra "Permissão antes da ação" — o gate é runtime-configurável via `config/permissions.yaml`. (c) Migração imediata para `'deny'` por default: rejeitada por quebrar CIs/pipelines em uso hoje sem sinal de transição; o knob `'auto'` dá uma versão de aviso antes do flip. (d) Implementar como `pydantic.BaseSettings`: descartada — fora do escopo desta issue e exigiria migração mecânica de todo o dataclass `Settings` mais a remoção do mapeamento manual `_OVERRIDE_HANDLERS` / `_JSON_FIELD_MAP`; reaproveita zero do código atual e não traz benefício de segurança aqui. |
 | Histórico | **2026-05-08 (patch — review feedback PR #135)**: 1) **Fail-closed por default**: a regra `settings_write_default` em `permissions.py:_load_default_rules` passou de `PermissionLevel.WRITE` (allow) para `PermissionLevel.READ` (deny). Operadores precisam adicionar uma regra `settings_write_interactive` em `config/permissions.yaml` para habilitar escritas — alinhado com Pilar 03 §5 ("Permissão antes da ação"). 2) **`set_preference` agora passa pelo mesmo pipeline** (gate + audit + secret-key check) — antes era um endpoint público sem proteção. 3) **`_set_typed` passou a recusar não-listas em campos de lista** (`_LIST_ATTRS`) — antes, `trust_project_layer_dirs: "/single"` virava string e `_is_project_layer_trusted` iterava por caractere. 4) **`Settings.load_from_file` aplica converters** dos `_OVERRIDE_HANDLERS` (não só filtra nomes), prevenindo `enable_file_safety_checks: "yes-please"` de colar no atributo bool. 5) **`_emit_settings_audit` passou a ser chamado em refusal de chave-segredo** — antes só validation_failed e permission_denied emitiam audit. 6) **Logger de validation_failed não vaza mais o value cru** — usa `_value_fingerprint` e mensagem do conversor é sanitizada. 7) **Comparação de paths case-insensitive** via `os.path.normcase` (HFS+/APFS/NTFS). 8) **Tests root conftest** isola `AuditLogger` por sessão para não poluir `~/.deile/logs/security_audit.log`. 9) **Helpers de segurança extraídos** para `deile/commands/_settings_security_hooks.py`. 10) **`/skills add` e `/skills remove` distinguem denial de no-op** via método `*_detailed` retornando `(success, reason)`. |
+
+---
+
+## Decisão #27 — Stack de containerização em K8s para isolar deile-Job/bot/deile-shell do host
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 |
+| Pilar dono | 14-Containerização, 08-Segurança |
+| Decisão | Todos os workloads de produção rodam em pods K8s (Rancher Desktop / k3s) dentro do namespace `deile`, com isolamento multi-camada: (1) Segredos entregues como arquivos em `/run/secrets/<role>/` montados via volume `secret` (mode 0440) — nunca como variáveis de ambiente no spec do pod; `wrapper.py` lê os arquivos, injeta em `os.environ`, chama `bootstrap_providers()` e depois chama `_pop_sensitive_keys()` para remover as chaves LLM de `os.environ` (DEILE_BOT_DISCORD_TOKEN e DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN são mantidos pelo discord.py em runtime, compensados pela tool whitelist). (2) PSS `restricted` aplicado via labels do namespace (`enforce`/`audit`/`warn`, pinados em `v1.29`). (3) Cada container: `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`, `capabilities.drop: ["ALL"]`, `seccompProfile: RuntimeDefault`, `runAsNonRoot: true`, UID/GID 10001. (4) NetworkPolicy default-deny; egress/ingress abertos apenas para DNS (UDP/TCP 53), LLM HTTPS (443, blocos RFC1918 excluídos), bot control-plane (8765 entre role=deile e app=deilebot). (5) `automountServiceAccountToken: false`, `enableServiceLinks: false`. (6) `imagePullPolicy: Never` com `deile-stack:local` carregado via `nerdctl --namespace k8s.io build`. |
+| Evidência | `infra/k8s/Dockerfile`; `infra/k8s/wrapper.py` (`_SENSITIVE_KEYS`, `_patch_deile_bootstrap`, `_pop_sensitive_keys`); `infra/k8s/manifests/00-namespace.yaml` (PSS labels); `infra/k8s/manifests/20-bot-deployment.yaml`, `infra/k8s/manifests/30-deile-job.yaml`, `infra/k8s/manifests/35-deile-interactive.yaml` (securityContext); `infra/k8s/manifests/40-network-policy.yaml` (5 policies); `infra/k8s/run.sh` (orchestração build/up/test) |
+| Motivação | (1) Segredos como env vars ficam visíveis em `/proc/<pid>/environ` para qualquer processo com permissão de leitura no mesmo host — o modelo file+pop reduz a janela de exposição aos milissegundos antes de `bootstrap_providers()`. (2) PSS restricted bloqueia vetores de escalada de privilégio na camada de admission do cluster sem exigir validação manual em cada spec. (3) NetworkPolicy default-deny reduz blast radius de um container comprometido: ele não pode alcançar a rede interna do cluster nem serviços externos além do necessário. (4) `readOnlyRootFilesystem` impede que malware persista no container filesystem. (5) `automountServiceAccountToken: false` elimina acesso não intencional à API K8s se o token vazar via path traversal. |
+
+---
+
+## Decisão #28 — Tool whitelist no bot embutido e default-`messaging` no deile-oneshot Job
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 |
+| Pilar dono | 14-Containerização, 04-Componentes |
+| Decisão | O `wrapper.py` aplica restrições de toolset diferenciadas por role: (a) **Role `bot`**: `_install_tool_whitelist("bot")` patcha `DeileAgent.__init__` para desabilitar todas as tools que não estejam no whitelist derivado de `deile.tools.messaging` (`_messaging_tool_whitelist()`). O agente embutido do bot processa prompts de usuários Discord arbitrários — o toolset cheio (bash, file, execution) representa risco inaceitável. O whitelist é construído via `auto_discover()` + inspeção de `deile/tools/messaging/` para eliminar dependência de lista hardcoded. (b) **Role `deile`** (one-shot Job): `_install_tool_whitelist("deile")` aplica o mesmo whitelist `messaging`; o prompt do Job vem do campo `args` do Kubernetes Job spec, controlado pelo operador — mas o toolset é restringido para limitar o raio de ação no caso de injeção de prompt pela resposta do bot. (c) **Role `deile-shell`** (interativo): sem whitelist — o operador acessa via `kubectl exec` com autenticação K8s, equivalente ao processo local; o toolset completo é necessário para uso de desenvolvimento. A distinção de roles é determinada em tempo de execução pelo primeiro argumento posicional do `wrapper.py` (`deile` / `bot` / `deile-shell`). |
+| Evidência | `infra/k8s/wrapper.py` (`_messaging_tool_whitelist`, `_install_tool_whitelist`, `_run_deile`, `_run_bot`); `infra/k8s/manifests/30-deile-job.yaml` (args: `wrapper.py deile`); `infra/k8s/manifests/20-bot-deployment.yaml` (args: `wrapper.py bot`); `infra/k8s/manifests/35-deile-interactive.yaml` (args: `wrapper.py deile-shell`) |
+| Motivação | (1) **Untrusted input por design**: o bot recebe mensagens de qualquer usuário Discord na allowlist — injeção de prompt é o vetor de ataque mais provável; limitar o toolset ao conjunto `messaging` torna o agente útil sem expor operações destrutivas. (2) **Prompt fixo vs. toolset livre**: o Job deile-oneshot tem prompt fixo (spec do Job), mas a resposta do bot pode conter instruções secundárias; o whitelist é compensating control para esse caso. (3) **Defense in depth**: a whitelist é adicional ao NetworkPolicy (sem egress exceto LLM/bot) — ambos precisam ser violados para execução arbitrária de código com acesso externo. (4) Evitar lista hardcoded de nomes de tool (seria frágil a renomeações): derivar do módulo `deile.tools.messaging` via `auto_discover()` mantém a whitelist automaticamente sincronizada. |
 
 ---
 

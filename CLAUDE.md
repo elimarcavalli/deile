@@ -44,6 +44,7 @@ Exemptions: typos, whitespace, single-line cosmetic edits, renaming a strictly-l
 | 11 | Development workflow | `docs/system_design/11-WORKFLOW-DESENVOLVIMENTO.md` |
 | 12 | Code patterns | `docs/system_design/12-PADROES-CODIGO.md` |
 | 13 | Documentation template | `docs/system_design/13-PADRAO-DOCUMENTACAO.md` |
+| 14 | Containerization (K8s) | `docs/system_design/14-CONTAINERIZACAO.md` |
 | — | Decision records | `docs/system_design/DECISOES.md` |
 
 ## Operational quick reference

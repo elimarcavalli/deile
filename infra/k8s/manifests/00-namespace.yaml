@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: deile
+  labels:
+    name: deile
+    # Pod Security Standards — restricted profile is enforced for every
+    # pod created in this namespace. Refusal to comply blocks creation
+    # at admission time. See:
+    # https://kubernetes.io/docs/concepts/security/pod-security-standards/
+    pod-security.kubernetes.io/enforce: restricted
+    # Pin to a specific PSS version so cluster upgrades don't silently
+    # tighten the profile and break running pods. Bump deliberately when
+    # you upgrade the cluster minor version and review the new profile.
+    pod-security.kubernetes.io/enforce-version: v1.29
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.29
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.29

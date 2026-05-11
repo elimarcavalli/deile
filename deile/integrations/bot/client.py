@@ -30,12 +30,26 @@ try:  # pragma: no cover - import-time branch
 except ImportError:
     BotControlClient = None  # type: ignore[assignment]
     BotControlSettings = None  # type: ignore[assignment]
-    BotClientError = Exception  # type: ignore[misc]
-    BotClientAuthError = BotClientError  # type: ignore[misc]
-    BotClientNotReady = BotClientError  # type: ignore[misc]
-    BotClientRateLimited = BotClientError  # type: ignore[misc]
-    BotClientTimeoutError = BotClientError  # type: ignore[misc]
-    BotClientUpstreamError = BotClientError  # type: ignore[misc]
+
+    class BotClientError(Exception):  # type: ignore[no-redef]
+        def __init__(self, message: str = "", code: str = "", **kwargs):
+            super().__init__(message)
+            self.code = code
+
+    class BotClientAuthError(BotClientError):  # type: ignore[no-redef]
+        pass
+
+    class BotClientNotReady(BotClientError):  # type: ignore[no-redef]
+        pass
+
+    class BotClientRateLimited(BotClientError):  # type: ignore[no-redef]
+        pass
+
+    class BotClientTimeoutError(BotClientError):  # type: ignore[no-redef]
+        pass
+
+    class BotClientUpstreamError(BotClientError):  # type: ignore[no-redef]
+        pass
 
     BOT_CLIENT_AVAILABLE = False
 

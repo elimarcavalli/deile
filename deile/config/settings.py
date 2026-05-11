@@ -883,7 +883,7 @@ def _is_project_layer_trusted(
     cwd_key = _normalize_path_for_comparison(cwd)
 
     normalized_allowlist: List[str] = []
-    for entry in allowlist or []:
+    for entry in allowlist:
         try:
             normalized_allowlist.append(_normalize_path_for_comparison(Path(entry)))
         except OSError:
@@ -1039,6 +1039,8 @@ def _load_layered_settings() -> "Settings":
     if not global_path.exists() and not project_path.exists():
         legacy = _apply_legacy_fallback(cwd)
         if legacy is not None:
+            # Still apply env overrides on top so DEILE_* vars always win.
+            _apply_env_overrides(legacy)
             return legacy
 
     # Layer 3: env vars as deprecated fallback (win over JSON for backward compat)

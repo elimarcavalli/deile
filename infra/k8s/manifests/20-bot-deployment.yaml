@@ -1,0 +1,155 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deilebot
+  namespace: deile
+  labels:
+    app: deilebot
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: deilebot
+  template:
+    metadata:
+      labels:
+        app: deilebot
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: deilebot
+          image: deile-stack:local
+          imagePullPolicy: Never
+          # Run from /home/deile so deile's SQLiteTaskManager (which
+          # defaults to `./deile_tasks.db`) lands on a writable tmpfs
+          # rather than the read-only image rootfs.
+          workingDir: /home/deile
+          # ENTRYPOINT is `tini --` from the image; `args` becomes the
+          # rest of the command line.
+          args: ["python3", "/app/wrapper.py", "bot", "run", "--provider", "discord"]
+          env:
+            - name: HOME
+              value: /home/deile
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            # Pod's foundation paths — point sqlite + logs at writable
+            # tmpfs volumes; the rest of the FS is read-only.
+            # `FoundationSettings` uses env_prefix=DEILE_BOT_ so the
+            # field name maps to env without the FOUNDATION_ infix.
+            - name: DEILE_BOT_SQLITE_PATH
+              value: /home/deile/data/deilebot.sqlite
+            - name: DEILE_BOT_SESSIONS_SQLITE_PATH
+              value: /home/deile/data/deile_sessions.sqlite
+            - name: DEILE_BOT_LOG_DIR
+              value: /home/deile/logs
+            - name: DEILE_BOT_AUDIT_LOG_TO_FILE
+              value: "true"
+            # Control-plane bind config. Host MUST be 0.0.0.0 inside the
+            # container so the K8s Service can reach it; NetworkPolicy
+            # restricts who can actually connect.
+            - name: DEILE_BOT_CONTROL_PLANE_HOST
+              value: "0.0.0.0"
+            - name: DEILE_BOT_CONTROL_PLANE_PORT
+              value: "8765"
+            - name: DEILE_BOT_CONTROL_PLANE_ENABLED
+              value: "true"
+          ports:
+            - name: control-plane
+              containerPort: 8765
+              protocol: TCP
+          volumeMounts:
+            - name: bot-secrets
+              mountPath: /run/secrets/bot
+              readOnly: true
+            - name: home
+              mountPath: /home/deile
+            - name: tmp
+              mountPath: /tmp
+            # The bot reads ./config/deilebot.yaml relative to cwd
+            # (=/home/deile thanks to workingDir). subPath pins one
+            # file so /home/deile/config can stay otherwise empty.
+            - name: bot-config
+              mountPath: /home/deile/config/deilebot.yaml
+              subPath: deilebot.yaml
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /v1/health
+              port: control-plane
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /v1/health
+              port: control-plane
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "192Mi"
+            limits:
+              cpu: "1000m"
+              memory: "768Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      volumes:
+        - name: bot-secrets
+          secret:
+            secretName: bot-secrets
+            # 0o440 (decimal 288) — owner (root) + group (fsGroup=10001)
+            # may read; world denied. Octal form is unreliable through
+            # Go's YAML→JSON conversion, hence decimal.
+            defaultMode: 288
+        - name: bot-config
+          configMap:
+            name: bot-config
+            defaultMode: 292   # 0o444 — read-only, world readable inside pod
+        # Writable tmpfs for sqlite + logs (no PVC; bot is fine with
+        # ephemeral state for this scenario).
+        - name: home
+          emptyDir:
+            sizeLimit: "128Mi"
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: "32Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: deilebot
+  namespace: deile
+  labels:
+    app: deilebot
+spec:
+  type: ClusterIP
+  selector:
+    app: deilebot
+  ports:
+    - name: control-plane
+      port: 8765
+      targetPort: control-plane
+      protocol: TCP

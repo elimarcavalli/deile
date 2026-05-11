@@ -1,0 +1,137 @@
+# Default-deny everything in the namespace, then add three opt-ins:
+#  (1) DNS lookups (any pod → kube-system on 53)
+#  (2) Bot ingress on the control plane port — only from pods labelled
+#      role=deile within this namespace.
+#  (3) Egress on 443 (Discord HTTPS / LLM HTTPS) — anywhere outside the
+#      cluster. We can't whitelist by hostname without an FQDN-aware CNI;
+#      this is the trade-off acknowledged in the README.
+
+# ---- 0. default deny -------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: deile
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# ---- 1. DNS egress (everyone) ---------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: deile
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# ---- 2. Bot ingress on 8765 from role=deile pods --------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bot-ingress-from-deile
+  namespace: deile
+spec:
+  podSelector:
+    matchLabels:
+      app: deilebot
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              role: deile
+      ports:
+        - protocol: TCP
+          port: 8765
+---
+# ---- 3a. Deile egress to bot service on 8765 ------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deile-egress-to-bot
+  namespace: deile
+spec:
+  podSelector:
+    matchLabels:
+      role: deile
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: deilebot
+      ports:
+        - protocol: TCP
+          port: 8765
+---
+# ---- 3b. Deile egress to LLM provider on 443 ------------------------
+# We can't enumerate Anthropic/OpenAI/etc IP ranges reliably (CDN), so
+# this is "anywhere outside the cluster". `except` blocks the cluster
+# CIDRs to keep ingress paths lean.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deile-egress-https-llm
+  namespace: deile
+spec:
+  podSelector:
+    matchLabels:
+      role: deile
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# ---- 3c. Bot egress to Discord on 443 -------------------------------
+# Port 80 is intentionally absent: Discord's API is HTTPS-only (443).
+# Plain-HTTP egress would broaden the attack surface unnecessarily.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bot-egress-https-discord
+  namespace: deile
+spec:
+  podSelector:
+    matchLabels:
+      app: deilebot
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

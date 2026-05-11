@@ -1,0 +1,77 @@
+# Critical: nothing secret leaves the build context.
+**/.env
+**/.env.*
+!**/.env.example
+**/*.sqlite
+**/*.sqlite3
+**/*.db
+**/*.key
+**/*.pem
+**/*.crt
+**/*.p12
+**/*credentials*
+**/*secret*
+**/*token*
+
+# Local state / caches / IDE
+**/.git
+**/.gitignore
+**/.gitattributes
+**/.venv
+**/.venv_old
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/.coverage
+**/htmlcov
+**/.DS_Store
+**/.vscode
+**/.idea
+**/.openclaude*
+**/.claude
+**/.worktrees
+**/.ignore
+
+# Runtime data + logs that may contain user content
+data/
+logs/
+**/cache/
+deile_tasks.db
+deile.egg-info/
+deilebot.egg-info/
+
+# Test/dev/private artefacts
+test-your-might/
+deile/tests/might/
+PATCHES/
+PLANS/
+RUNS/
+docs/
+
+# Stuff that's already in the deilebot subdir
+deilebot/.git
+deilebot/.venv
+deilebot/__pycache__
+deilebot/data
+deilebot/logs
+deilebot/.openclaude*
+deilebot/.claude
+deilebot/.worktrees
+deilebot/PATCHES
+deilebot/PLANS
+deilebot/RUNS
+deilebot/_testing.py
+deilebot/conftest.py
+
+# IDE / OS metadata
+**/Thumbs.db
+**/desktop.ini
+
+# The infra/ subtree is excluded except for the wrapper entrypoint,
+# which the Dockerfile COPYs explicitly. Excluding all of infra/ would
+# break "COPY infra/k8s/wrapper.py" so we exclude everything except
+# that one file.
+infra/
+!infra/k8s/wrapper.py

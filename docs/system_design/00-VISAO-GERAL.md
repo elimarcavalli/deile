@@ -30,6 +30,7 @@
 | 11 | Workflow de desenvolvimento | [`11-WORKFLOW-DESENVOLVIMENTO.md`](11-WORKFLOW-DESENVOLVIMENTO.md) | Tiers de escopo (Trivial/Small/Medium/Large) e fases |
 | 12 | Padrões de código | [`12-PADROES-CODIGO.md`](12-PADROES-CODIGO.md) | Templates concretos para criar/editar artefatos |
 | 13 | Padrão de documentação | [`13-PADRAO-DOCUMENTACAO.md`](13-PADRAO-DOCUMENTACAO.md) | Template das 14 seções para `docs/<data>_FEATURE.md` |
+| 14 | Containerização (K8s) | [`14-CONTAINERIZACAO.md`](14-CONTAINERIZACAO.md) | Three init modes (Local / Job / deile-shell); isolation model |
 | — | Registro de decisões | [`DECISOES.md`](DECISOES.md) | Decisões arquiteturais com histórico |
 
 ## Fonte única de verdade — onde cada fato vive
@@ -95,6 +96,8 @@
 | 24 | TOCTOU mitigation em `claim_with_batch`: re-fetch após `add_labels` para detectar race condition (gap #11 — issue #132) | V1 patch | Princípios (03), Arquitetura (02) |
 | 25 | Comandos slash declaram CLI flags via metadata (`cli_flag`/`cli_extra_flags`); argparse é gerado pelo registry — issue #126 | V1 | Componentes (04), Arquitetura (02) |
 | 26 | Project layer de `.deile/settings.json` exige opt-in via `trust.project_layer_dirs` + permission/audit em `set_setting` (issue #125) | V1 patch | Segurança (08), Configuração (09) |
+| 27 | Stack de containerização em K8s (Rancher Desktop / k3s) para isolar deile-Job/bot/deile-shell do host — secrets como files (não env), pop após bootstrap, NetworkPolicy default-deny, PSS restricted, drop ALL caps | V1 | Containerização (14), Segurança (08) |
+| 28 | Tool whitelist no agente embutido do bot e default-`messaging` no `deile-oneshot` Job — Discord input é untrusted, prompt do Job é fixo; toolset cheio só no `deile-shell` interativo (prompt vem do operador via kubectl exec) | V1 | Containerização (14), Componentes (04) |
 
 ## Estado dos pilares
 
@@ -113,3 +116,4 @@
 | 11 Workflow | concluido |
 | 12 Padrões de código | concluido |
 | 13 Padrão de documentação | concluido |
+| 14 Containerização | concluido |
