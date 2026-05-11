@@ -883,7 +883,7 @@ def _is_project_layer_trusted(
     cwd_key = _normalize_path_for_comparison(cwd)
 
     normalized_allowlist: List[str] = []
-    for entry in allowlist or []:
+    for entry in allowlist:
         try:
             normalized_allowlist.append(_normalize_path_for_comparison(Path(entry)))
         except OSError:
