@@ -13,6 +13,7 @@ from deile.__version__ import __version__
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import export_timestamp, get_agent, get_session, split_args
 
 
 class ExportCommand(DirectCommand):
@@ -31,11 +32,9 @@ class ExportCommand(DirectCommand):
             description="Exporta histórico de conversa, planos e dados da sessão em vários formatos.",
         ))
 
-    async def execute(self, context: Optional[CommandContext] = None) -> CommandResult:
-        args = (getattr(context, "args", "") or "") if context is not None else ""
-
+    async def execute(self, context: CommandContext) -> CommandResult:
         try:
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
             format_type = "md"
             export_path = None
             include_artifacts = True
@@ -73,8 +72,7 @@ class ExportCommand(DirectCommand):
                 raise CommandError("Formato deve ser um de: txt, md, json, zip")
 
             if not export_path:
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                export_path = f"./EXPORTS/deile_export_{ts}"
+                export_path = f"./EXPORTS/deile_export_{export_timestamp()}"
 
             panel = await self._perform_export(
                 format_type, export_path, include_artifacts, include_plans, include_session, context
@@ -115,8 +113,8 @@ class ExportCommand(DirectCommand):
         include_plans: bool,
         include_session: bool,
     ) -> Dict[str, Any]:
-        agent = getattr(context, "agent", None) if context else None
-        session = getattr(context, "session", None) if context else None
+        agent = get_agent(context)
+        session = get_session(context)
 
         # --- Sessão e histórico ---
         session_id = getattr(session, "session_id", None) if session else None

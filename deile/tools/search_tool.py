@@ -260,8 +260,7 @@ class SearchTool(SyncTool):
             
         except Exception as e:
             logger.error(f"SearchTool error: {e}")
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=f"Search failed: {str(e)}",
                 error=e,
                 display_policy=DisplayPolicy.SYSTEM

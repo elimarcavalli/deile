@@ -1,7 +1,9 @@
 """Diff Command - Show differences and changes from plan execution"""
 
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from rich.panel import Panel
 from rich.syntax import Syntax
@@ -11,6 +13,8 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import (analyze_plan_changes_stub, file_action_emoji, split_args,
+                      truncate, wrap_command_errors)
 
 
 class DiffCommand(DirectCommand):
@@ -25,45 +29,31 @@ class DiffCommand(DirectCommand):
         super().__init__(config)
         self.plan_manager = get_plan_manager()
     
+    @wrap_command_errors("diff")
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute diff command"""
-        args = context.args if hasattr(context, 'args') else ""
-        
-        try:
-            # Parse arguments
-            parts = args.strip().split() if args.strip() else []
-            
-            if not parts:
-                # Show recent changes from all plans
-                return await self._show_recent_changes()
-            
-            target = parts[0]
-            
-            # Parse options
-            format_type = "summary"  # summary, detailed, unified
-            show_content = False
-            
-            for part in parts[1:]:
-                if part == "--detailed":
-                    format_type = "detailed"
-                elif part == "--unified":
-                    format_type = "unified"
-                elif part == "--content":
-                    show_content = True
-                elif part.startswith("--"):
-                    raise CommandError(f"Unknown option: {part}")
-            
-            # Check if target is a plan ID or file path
-            if len(target) == 8 and target.isalnum():  # Looks like plan ID
-                return await self._show_plan_diff(target, format_type, show_content)
-            else:
-                # Treat as file path
-                return await self._show_file_diff(target, format_type, show_content)
-            
-        except Exception as e:
-            if isinstance(e, CommandError):
-                raise
-            raise CommandError(f"Failed to execute diff command: {str(e)}")
+        parts = split_args(context)
+
+        if not parts:
+            return await self._show_recent_changes()
+
+        target = parts[0]
+        format_type = "summary"  # summary, detailed, unified
+        show_content = False
+
+        for part in parts[1:]:
+            if part == "--detailed":
+                format_type = "detailed"
+            elif part == "--unified":
+                format_type = "unified"
+            elif part == "--content":
+                show_content = True
+            elif part.startswith("--"):
+                raise CommandError(f"Unknown option: {part}")
+
+        if len(target) == 8 and target.isalnum():  # Looks like plan ID
+            return await self._show_plan_diff(target, format_type, show_content)
+        return await self._show_file_diff(target, format_type, show_content)
     
     async def _show_recent_changes(self) -> CommandResult:
         """Show recent changes from all completed plans"""
@@ -116,7 +106,7 @@ class DiffCommand(DirectCommand):
             
             table.add_row(
                 plan['id'],
-                plan['title'][:25] + ("..." if len(plan['title']) > 25 else ""),
+                truncate(plan['title'], 25),
                 status_text,
                 changes_text,
                 str(files_affected),
@@ -196,64 +186,15 @@ class DiffCommand(DirectCommand):
         # Show file change history
         return await self._format_file_change_history(file_path, plans_affecting_file, format_type, show_content)
     
-    def _analyze_plan_changes(self, plan_id: str) -> Dict[str, Any]:
-        """Analyze changes made by a plan (simplified version)"""
-        
-        # Mock implementation - in real version would analyze artifacts
-        return {
-            'files_modified': 3,
-            'files_created': 1,
-            'files_deleted': 0,
-            'files_affected': 4,
-            'lines_added': 45,
-            'lines_removed': 12,
-            'total_changes': 57
-        }
+    def _analyze_plan_changes(self, plan_id: str) -> dict[str, Any]:
+        """Summary view of plan changes (stub — see analyze_plan_changes_stub)."""
+        return analyze_plan_changes_stub(plan_id)
+
+    async def _analyze_plan_changes_detailed(self, plan_id: str) -> dict[str, Any]:
+        """Detailed view of plan changes (stub — see analyze_plan_changes_stub)."""
+        return analyze_plan_changes_stub(plan_id)
     
-    async def _analyze_plan_changes_detailed(self, plan_id: str) -> Dict[str, Any]:
-        """Detailed analysis of plan changes"""
-        
-        # Mock detailed changes analysis
-        return {
-            'has_changes': True,
-            'plan_id': plan_id,
-            'summary': {
-                'files_modified': 3,
-                'files_created': 1,
-                'files_deleted': 0,
-                'lines_added': 45,
-                'lines_removed': 12
-            },
-            'file_changes': [
-                {
-                    'path': 'src/main.py',
-                    'action': 'modified',
-                    'lines_added': 15,
-                    'lines_removed': 5,
-                    'preview': 'Added error handling and logging'
-                },
-                {
-                    'path': 'config/settings.json',
-                    'action': 'modified',
-                    'lines_added': 3,
-                    'lines_removed': 2,
-                    'preview': 'Updated database configuration'
-                },
-                {
-                    'path': 'tests/test_main.py',
-                    'action': 'created',
-                    'lines_added': 27,
-                    'lines_removed': 0,
-                    'preview': 'New unit tests for main module'
-                }
-            ],
-            'artifacts_generated': [
-                'ARTIFACTS/session_123/bash_output_001.txt',
-                'ARTIFACTS/session_123/file_list_002.json'
-            ]
-        }
-    
-    async def _find_plans_affecting_file(self, file_path: str) -> List[Dict[str, Any]]:
+    async def _find_plans_affecting_file(self, file_path: str) -> list[dict[str, Any]]:
         """Find plans that affected a specific file"""
         
         # Mock implementation
@@ -267,7 +208,7 @@ class DiffCommand(DirectCommand):
             }
         ]
     
-    async def _format_diff_summary(self, plan, changes: Dict[str, Any]) -> CommandResult:
+    async def _format_diff_summary(self, plan, changes: dict[str, Any]) -> CommandResult:
         """Format diff as summary"""
         
         summary = changes['summary']
@@ -290,15 +231,10 @@ class DiffCommand(DirectCommand):
         ]
         
         for file_change in changes['file_changes']:
-            action_emoji = {
-                'modified': '📝',
-                'created': '✨',
-                'deleted': '🗑️'
-            }.get(file_change['action'], '❓')
-            
+            action_emoji = file_action_emoji(file_change['action'])
             added = file_change.get('lines_added', 0)
             removed = file_change.get('lines_removed', 0)
-            
+
             content_lines.append(
                 f"  {action_emoji} **{file_change['path']}** (+{added}/-{removed})"
             )
@@ -332,7 +268,7 @@ class DiffCommand(DirectCommand):
         
         return CommandResult.success_result(result_panel, "rich")
     
-    async def _format_diff_detailed(self, plan, changes: Dict[str, Any], show_content: bool) -> CommandResult:
+    async def _format_diff_detailed(self, plan, changes: dict[str, Any], show_content: bool) -> CommandResult:
         """Format detailed diff"""
         
         # Create detailed file-by-file breakdown
@@ -344,12 +280,8 @@ class DiffCommand(DirectCommand):
         ]
         
         for i, file_change in enumerate(changes['file_changes'], 1):
-            action_emoji = {
-                'modified': '📝',
-                'created': '✨', 
-                'deleted': '🗑️'
-            }.get(file_change['action'], '❓')
-            
+            action_emoji = file_action_emoji(file_change['action'])
+
             content_lines.extend([
                 f"## {i}. {action_emoji} {file_change['path']}",
                 "",
@@ -383,7 +315,7 @@ class DiffCommand(DirectCommand):
         
         return CommandResult.success_result(result_panel, "rich")
     
-    async def _format_diff_unified(self, plan, changes: Dict[str, Any]) -> CommandResult:
+    async def _format_diff_unified(self, plan, changes: dict[str, Any]) -> CommandResult:
         """Format as unified diff"""
         
         # Mock unified diff output
@@ -409,7 +341,7 @@ Total changes: +{changes['summary']['lines_added']}/-{changes['summary']['lines_
         
         return CommandResult.success_result(diff_syntax, "rich")
     
-    async def _format_file_change_history(self, file_path: str, plans: List[Dict[str, Any]], 
+    async def _format_file_change_history(self, file_path: str, plans: list[dict[str, Any]], 
                                         format_type: str, show_content: bool) -> CommandResult:
         """Format file change history"""
         

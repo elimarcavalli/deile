@@ -17,8 +17,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from deile.core.exceptions import PathContainmentError
+from deile.tools._pipeline_paths import _assert_safe_root
+from deile.tools._pipeline_paths import resolve_base_path as _resolve_base_path
 from deile.tools.base import ToolContext, ToolStatus
-from deile.tools.worktree_tool import WorktreeTool, _resolve_base_path
+from deile.tools.worktree_tool import WorktreeTool
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -95,18 +98,18 @@ async def test_empty_action_returns_error():
 
 
 @pytest.mark.unit
-async def test_ensure_main_happy_path(tmp_path):
-    (tmp_path / ".git").mkdir()
-    (tmp_path / "deile.py").write_text("")
+async def test_ensure_main_happy_path(repo_tmp_path):
+    (repo_tmp_path / ".git").mkdir()
+    (repo_tmp_path / "deile.py").write_text("")
 
     mock_mgr = AsyncMock()
-    mock_mgr.ensure_main = AsyncMock(return_value=tmp_path / ".worktrees" / "main")
+    mock_mgr.ensure_main = AsyncMock(return_value=repo_tmp_path / ".worktrees" / "main")
 
     tool = WorktreeTool()
     with patch(
         "deile.tools.worktree_tool.WorktreeManager", return_value=mock_mgr
     ):
-        result = await tool.execute(_ctx(action="ensure_main", base_path=str(tmp_path)))
+        result = await tool.execute(_ctx(action="ensure_main", base_path=str(repo_tmp_path)))
 
     assert result.status == ToolStatus.SUCCESS
     assert "path" in result.data
@@ -119,11 +122,11 @@ async def test_ensure_main_happy_path(tmp_path):
 
 
 @pytest.mark.unit
-async def test_create_happy_path(tmp_path):
-    (tmp_path / ".git").mkdir()
-    (tmp_path / "deile.py").write_text("")
+async def test_create_happy_path(repo_tmp_path):
+    (repo_tmp_path / ".git").mkdir()
+    (repo_tmp_path / "deile.py").write_text("")
 
-    wt = _fake_worktree(str(tmp_path / ".worktrees" / "feat" / "my-branch"), "my-branch")
+    wt = _fake_worktree(str(repo_tmp_path / ".worktrees" / "feat" / "my-branch"), "my-branch")
     mock_mgr = AsyncMock()
     mock_mgr.create_branch_worktree = AsyncMock(return_value=wt)
 
@@ -132,7 +135,7 @@ async def test_create_happy_path(tmp_path):
         "deile.tools.worktree_tool.WorktreeManager", return_value=mock_mgr
     ):
         result = await tool.execute(
-            _ctx(action="create", branch="my-branch", subdir="feat", base_path=str(tmp_path))
+            _ctx(action="create", branch="my-branch", subdir="feat", base_path=str(repo_tmp_path))
         )
 
     assert result.status == ToolStatus.SUCCESS
@@ -142,12 +145,12 @@ async def test_create_happy_path(tmp_path):
 
 
 @pytest.mark.unit
-async def test_create_missing_branch_returns_error(tmp_path):
-    (tmp_path / ".git").mkdir()
-    (tmp_path / "deile.py").write_text("")
+async def test_create_missing_branch_returns_error(repo_tmp_path):
+    (repo_tmp_path / ".git").mkdir()
+    (repo_tmp_path / "deile.py").write_text("")
 
     tool = WorktreeTool()
-    result = await tool.execute(_ctx(action="create", base_path=str(tmp_path)))
+    result = await tool.execute(_ctx(action="create", base_path=str(repo_tmp_path)))
 
     assert result.status == ToolStatus.ERROR
     assert result.metadata["error_code"] == "MISSING_BRANCH"
@@ -159,16 +162,16 @@ async def test_create_missing_branch_returns_error(tmp_path):
 
 
 @pytest.mark.unit
-async def test_list_returns_worktrees(tmp_path):
-    (tmp_path / ".git").mkdir()
-    (tmp_path / "deile.py").write_text("")
+async def test_list_returns_worktrees(repo_tmp_path):
+    (repo_tmp_path / ".git").mkdir()
+    (repo_tmp_path / "deile.py").write_text("")
     # Create fake worktree directories
-    wt_dir = tmp_path / ".worktrees" / "feat" / "branch-a"
+    wt_dir = repo_tmp_path / ".worktrees" / "feat" / "branch-a"
     wt_dir.mkdir(parents=True)
     (wt_dir / ".git").mkdir()
 
     tool = WorktreeTool()
-    result = await tool.execute(_ctx(action="list", base_path=str(tmp_path)))
+    result = await tool.execute(_ctx(action="list", base_path=str(repo_tmp_path)))
 
     assert result.status == ToolStatus.SUCCESS
     assert isinstance(result.data["worktrees"], list)
@@ -177,12 +180,12 @@ async def test_list_returns_worktrees(tmp_path):
 
 
 @pytest.mark.unit
-async def test_list_no_worktrees_dir(tmp_path):
-    (tmp_path / ".git").mkdir()
-    (tmp_path / "deile.py").write_text("")
+async def test_list_no_worktrees_dir(repo_tmp_path):
+    (repo_tmp_path / ".git").mkdir()
+    (repo_tmp_path / "deile.py").write_text("")
 
     tool = WorktreeTool()
-    result = await tool.execute(_ctx(action="list", base_path=str(tmp_path)))
+    result = await tool.execute(_ctx(action="list", base_path=str(repo_tmp_path)))
 
     assert result.status == ToolStatus.SUCCESS
     assert result.data["worktrees"] == []
@@ -194,15 +197,15 @@ async def test_list_no_worktrees_dir(tmp_path):
 
 
 @pytest.mark.unit
-async def test_remove_happy_path(tmp_path):
-    (tmp_path / ".git").mkdir()
-    (tmp_path / "deile.py").write_text("")
-    branch_dir = tmp_path / ".worktrees" / "my-branch"
+async def test_remove_happy_path(repo_tmp_path):
+    (repo_tmp_path / ".git").mkdir()
+    (repo_tmp_path / "deile.py").write_text("")
+    branch_dir = repo_tmp_path / ".worktrees" / "my-branch"
     branch_dir.mkdir(parents=True)
 
     tool = WorktreeTool()
     result = await tool.execute(
-        _ctx(action="remove", branch="my-branch", base_path=str(tmp_path))
+        _ctx(action="remove", branch="my-branch", base_path=str(repo_tmp_path))
     )
 
     assert result.status == ToolStatus.SUCCESS
@@ -210,12 +213,12 @@ async def test_remove_happy_path(tmp_path):
 
 
 @pytest.mark.unit
-async def test_remove_missing_branch_returns_error(tmp_path):
-    (tmp_path / ".git").mkdir()
-    (tmp_path / "deile.py").write_text("")
+async def test_remove_missing_branch_returns_error(repo_tmp_path):
+    (repo_tmp_path / ".git").mkdir()
+    (repo_tmp_path / "deile.py").write_text("")
 
     tool = WorktreeTool()
-    result = await tool.execute(_ctx(action="remove", base_path=str(tmp_path)))
+    result = await tool.execute(_ctx(action="remove", base_path=str(repo_tmp_path)))
 
     assert result.status == ToolStatus.ERROR
     assert result.metadata["error_code"] == "MISSING_BRANCH"
@@ -227,16 +230,16 @@ async def test_remove_missing_branch_returns_error(tmp_path):
 
 
 @pytest.mark.security
-async def test_remove_refuses_main(tmp_path):
+async def test_remove_refuses_main(repo_tmp_path):
     """The shared clean main clone must never be removed."""
-    (tmp_path / ".git").mkdir()
-    (tmp_path / "deile.py").write_text("")
-    main_dir = tmp_path / ".worktrees" / "main"
+    (repo_tmp_path / ".git").mkdir()
+    (repo_tmp_path / "deile.py").write_text("")
+    main_dir = repo_tmp_path / ".worktrees" / "main"
     main_dir.mkdir(parents=True)
 
     tool = WorktreeTool()
     result = await tool.execute(
-        _ctx(action="remove", branch="main", base_path=str(tmp_path))
+        _ctx(action="remove", branch="main", base_path=str(repo_tmp_path))
     )
 
     assert result.status == ToolStatus.ERROR
@@ -251,13 +254,13 @@ async def test_remove_refuses_main(tmp_path):
 
 
 @pytest.mark.unit
-async def test_remove_nonexistent_returns_not_found(tmp_path):
-    (tmp_path / ".git").mkdir()
-    (tmp_path / "deile.py").write_text("")
+async def test_remove_nonexistent_returns_not_found(repo_tmp_path):
+    (repo_tmp_path / ".git").mkdir()
+    (repo_tmp_path / "deile.py").write_text("")
 
     tool = WorktreeTool()
     result = await tool.execute(
-        _ctx(action="remove", branch="ghost-branch", base_path=str(tmp_path))
+        _ctx(action="remove", branch="ghost-branch", base_path=str(repo_tmp_path))
     )
 
     assert result.status == ToolStatus.ERROR
@@ -282,23 +285,63 @@ def test_registered_by_auto_discover():
 # 10. _resolve_base_path utility
 # ---------------------------------------------------------------------------
 
-
-@pytest.mark.unit
-def test_resolve_base_path_uses_override(tmp_path):
-    result = _resolve_base_path(str(tmp_path))
-    assert result == tmp_path.resolve()
+# Use a path inside the git repo root (safe root) instead of tmp_path so
+# that _assert_safe_root accepts it after /tmp was removed as a safe root.
+_REPO_ROOT = Path(__file__).resolve().parents[3]  # deile/ → repo root
 
 
 @pytest.mark.unit
-def test_resolve_base_path_uses_env_var(tmp_path, monkeypatch):
-    monkeypatch.setenv("DEILE_PIPELINE_BASE_PATH", str(tmp_path))
+def test_resolve_base_path_uses_override():
+    override = str(_REPO_ROOT)
+    result = _resolve_base_path(override)
+    assert result == _REPO_ROOT.resolve()
+
+
+@pytest.mark.unit
+def test_resolve_base_path_uses_env_var(monkeypatch):
+    monkeypatch.setenv("DEILE_PIPELINE_BASE_PATH", str(_REPO_ROOT))
     result = _resolve_base_path()
-    assert result == tmp_path.resolve()
+    assert result == _REPO_ROOT.resolve()
 
 
 @pytest.mark.unit
-def test_resolve_base_path_override_beats_env(tmp_path, monkeypatch, tmp_path_factory):
-    other = tmp_path_factory.mktemp("other")
-    monkeypatch.setenv("DEILE_PIPELINE_BASE_PATH", str(other))
-    result = _resolve_base_path(str(tmp_path))
-    assert result == tmp_path.resolve()
+def test_resolve_base_path_override_beats_env(monkeypatch):
+    other = str(_REPO_ROOT / "deile")
+    monkeypatch.setenv("DEILE_PIPELINE_BASE_PATH", other)
+    result = _resolve_base_path(str(_REPO_ROOT))
+    assert result == _REPO_ROOT.resolve()
+
+
+# ---------------------------------------------------------------------------
+# 11. _assert_safe_root adversarial tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.security
+def test_assert_safe_root_rejects_etc():
+    """/etc must be rejected — it is outside home and git repo."""
+    with pytest.raises(PathContainmentError):
+        _assert_safe_root(Path("/etc"))
+
+
+@pytest.mark.security
+def test_assert_safe_root_rejects_path_traversal():
+    """A path resolved above the home directory must be rejected."""
+    # /proc is outside home and the git repo root
+    with pytest.raises(PathContainmentError):
+        _assert_safe_root(Path("/proc/self"))
+
+
+@pytest.mark.security
+def test_assert_safe_root_accepts_repo_root():
+    """The git repo root itself must be accepted as a safe root."""
+    # Should not raise
+    _assert_safe_root(_REPO_ROOT)
+
+
+@pytest.mark.security
+def test_assert_safe_root_accepts_home_subdir():
+    """A directory inside Path.home() must be accepted."""
+    home_sub = Path.home().resolve() / "deile"
+    # Should not raise (whether or not the directory actually exists)
+    _assert_safe_root(home_sub)

@@ -259,15 +259,40 @@ class ToolResult:
         )
     
     @staticmethod
-    def error_result(message: str, error: Optional[Exception] = None, error_code: str = "", **metadata) -> 'ToolResult':
-        """Cria um resultado de erro"""
+    def error_result(
+        message: str,
+        error: Optional[Exception] = None,
+        error_code: str = "",
+        *,
+        data: Any = None,
+        display_policy: DisplayPolicy = DisplayPolicy.SYSTEM,
+        execution_time: float = 0.0,
+        metadata: Optional[Dict[str, Any]] = None,
+        **extra,
+    ) -> 'ToolResult':
+        """Cria um resultado de erro.
+
+        Aceita tanto ``metadata={'k': v}`` (forma estruturada) como kwargs livres
+        (``error_result(msg, exit_code=2)``); ambos coexistem e são fundidos.
+
+        Precedência (do menor para o maior):
+        1. ``metadata={...}`` — forma estruturada.
+        2. ``**extra`` kwargs — sobrescrevem chaves do dict ``metadata``.
+        3. ``error_code`` (parâmetro nomeado) — sobrescreve qualquer valor anterior
+           para a chave ``error_code``.
+        """
+        merged: Dict[str, Any] = dict(metadata) if metadata else {}
+        merged.update(extra)
         if error_code:
-            metadata['error_code'] = error_code
+            merged['error_code'] = error_code
         return ToolResult(
             status=ToolStatus.ERROR,
+            data=data,
             message=message,
             error=error,
-            metadata=metadata
+            metadata=merged,
+            execution_time=execution_time,
+            display_policy=display_policy,
         )
     
     def __str__(self) -> str:

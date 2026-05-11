@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from typing import Any, List, Optional
 
 from rich.panel import Panel
@@ -15,6 +16,7 @@ from ...core.interfaces.selector import (InteractiveSelector,
 from ...core.models.tier_router import get_tier_router, reset_tier_router
 from ...storage.usage_repository import BudgetGuard, get_usage_repository
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import error_panel, get_agent, split_args
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +88,7 @@ EXAMPLES:
 """
 
     async def execute(self, context: CommandContext) -> CommandResult:
-        args = context.args.strip().split() if context.args.strip() else []
+        args = split_args(context)
         action = args[0].lower() if args else "list"
 
         try:
@@ -118,7 +120,7 @@ EXAMPLES:
             logger.error("ModelCommand error: %s", exc)
             return CommandResult(
                 success=False,
-                content=Panel(Text(str(exc), style="red"), title="Error", border_style="red"),
+                content=error_panel(str(exc), title="Error"),
             )
 
     # ------------------------------------------------------------------
@@ -366,7 +368,7 @@ EXAMPLES:
         # dict; MagicMock-based test contexts skip validation (they don't bootstrap
         # any providers anyway).
         forced_provider_id, forced_model_id = target.split(":", 1)
-        agent_obj = getattr(context, "agent", None)
+        agent_obj = get_agent(context)
         registered: Optional[dict] = None
         if agent_obj is not None and hasattr(agent_obj, "model_router"):
             providers_attr = getattr(agent_obj.model_router, "providers", None)
@@ -454,7 +456,7 @@ EXAMPLES:
         # Sync the legacy ModelRouter.strategy (consulted when tier classification fails)
         try:
             from deile.core.models.router import RoutingStrategy as _RS
-            agent_obj = getattr(context, "agent", None)
+            agent_obj = get_agent(context)
             if agent_obj is None:
                 # Fall back: try common aliases on the context
                 agent_obj = getattr(context, "deile_agent", None)
@@ -488,7 +490,6 @@ EXAMPLES:
         table.add_column("Cost $", justify="right")
 
         # Group by provider+model
-        from collections import defaultdict
         agg: dict = defaultdict(lambda: {"calls": 0, "in": 0, "out": 0, "cost": 0.0})
         for r in records:
             key = (r.provider_id, r.model_id)
@@ -578,13 +579,3 @@ EXAMPLES:
             return context.session.session_id
         except AttributeError:
             return "default"
-
-
-# Register
-try:
-    from deile.commands.registry import StaticCommandRegistry
-    StaticCommandRegistry.register("model", ModelCommand)
-    StaticCommandRegistry.register("models", ModelCommand)
-    StaticCommandRegistry.register("m", ModelCommand)
-except ImportError:
-    pass

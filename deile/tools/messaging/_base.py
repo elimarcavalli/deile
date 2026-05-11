@@ -24,7 +24,6 @@ The base class:
 from __future__ import annotations
 
 import abc
-import hashlib
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -32,14 +31,11 @@ from ...integrations.bot import (BOT_CLIENT_AVAILABLE, BotClientFacade,
                                  get_bot_client)
 from ...security.audit_logger import (AuditEventType, SeverityLevel,
                                       get_audit_logger)
+from .._hash_utils import sha8 as _sha8
 from ..base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
                     ToolSchema)
 
 logger = logging.getLogger(__name__)
-
-
-def _sha8(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:8]
 
 
 def _resolve_facade(context: ToolContext) -> BotClientFacade:

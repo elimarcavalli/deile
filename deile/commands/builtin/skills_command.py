@@ -8,13 +8,13 @@ settings layers managed by SettingsManager.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Tuple
 
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import get_agent, split_args
 
 
 class SkillsCommand(DirectCommand):
@@ -38,7 +38,7 @@ class SkillsCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     async def execute(self, context: CommandContext) -> CommandResult:
-        parts = context.args.strip().split() if context.args and context.args.strip() else []
+        parts = split_args(context)
 
         if not parts:
             return self._show_menu()
@@ -69,14 +69,14 @@ class SkillsCommand(DirectCommand):
         return SettingsManager()
 
     @staticmethod
-    def _parse_scope(args: List[str]) -> Tuple[List[str], str]:
+    def _parse_scope(args: list[str]) -> tuple[list[str], str]:
         """Extract --scope flag from *args*. Returns (remaining_args, scope).
 
         If --scope appears without a following value it is treated as an
         unknown flag and kept in remaining (scope stays 'global').
         """
         scope = "global"
-        remaining: List[str] = []
+        remaining: list[str] = []
         i = 0
         while i < len(args):
             if args[i] == "--scope":
@@ -158,7 +158,7 @@ class SkillsCommand(DirectCommand):
     @staticmethod
     def _hot_reload(context: "CommandContext") -> str:
         """Trigger skills reload on the running agent. Returns a status suffix."""
-        agent = getattr(context, "agent", None)
+        agent = get_agent(context)
         if agent is None:
             return ""
         reload_fn = getattr(agent, "reload_skills", None)
@@ -167,7 +167,7 @@ class SkillsCommand(DirectCommand):
         count = reload_fn()
         return f" {count} skill(s) now active."
 
-    def _add_path(self, args: List[str], context: "CommandContext") -> CommandResult:
+    def _add_path(self, args: list[str], context: "CommandContext") -> CommandResult:
         remaining, scope = self._parse_scope(args)
 
         if not remaining:
@@ -225,7 +225,7 @@ class SkillsCommand(DirectCommand):
             "rich",
         )
 
-    def _remove_path(self, args: List[str], context: "CommandContext") -> CommandResult:
+    def _remove_path(self, args: list[str], context: "CommandContext") -> CommandResult:
         remaining, scope = self._parse_scope(args)
 
         if not remaining:

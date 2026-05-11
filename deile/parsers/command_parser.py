@@ -92,10 +92,7 @@ class CommandParser(RegexParser):
                         raw_text=input_text
                     )
                     commands.append(parsed_command)
-                    
-                    # Adiciona o comando slash como tool request
-                    tool_requests.append("slash_command_executor")
-                    
+
                     break
             
             if not commands:

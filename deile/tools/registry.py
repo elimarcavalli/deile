@@ -281,7 +281,6 @@ class ToolRegistry:
                 'deile.tools.execution_tools',
                 'deile.tools.search_tool',
                 'deile.tools.bash_tool',
-                'deile.tools.slash_command_executor',
                 'deile.tools.vision_tool',
                 'deile.tools.pipeline_tool',
                 'deile.tools.pipeline_schedule_tool',

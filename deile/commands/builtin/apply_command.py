@@ -1,9 +1,12 @@
 """Apply Command - Apply patch files to current directory"""
 
+from __future__ import annotations
+
+import asyncio
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 
 from rich.panel import Panel
 from rich.table import Table
@@ -11,6 +14,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import file_action_emoji, split_args, wrap_command_errors
 
 
 class ApplyCommand(DirectCommand):
@@ -21,54 +25,46 @@ class ApplyCommand(DirectCommand):
         config = CommandConfig(
             name="apply",
             description="Apply patch files to current directory.",
-            aliases=["patch-apply"],
+            aliases=["patch-apply"],  # alias canônico mantido por retrocompatibilidade
         )
         super().__init__(config)
         self.patches_dir = Path("./PATCHES")
     
+    @wrap_command_errors("apply")
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute apply command"""
-        args = context.args if hasattr(context, 'args') else ""
-        
-        try:
-            # Parse arguments
-            parts = args.strip().split() if args.strip() else []
-            
-            if not parts:
-                # Show available patches to apply
-                return await self._show_applicable_patches()
-            
-            patch_file = parts[0]
-            
-            # Parse options
-            dry_run = False
-            force = False
-            backup = True
-            target_dir = "."
-            
-            for i, part in enumerate(parts[1:], 1):
-                if part == "--dry-run":
-                    dry_run = True
-                elif part == "--force":
-                    force = True
-                elif part == "--no-backup":
-                    backup = False
-                elif part.startswith("--target="):
-                    target_dir = part.split("=", 1)[1]
-                elif part == "--target":
-                    if i + 1 < len(parts):
-                        target_dir = parts[i + 1]
-                    else:
-                        raise CommandError("--target requires a directory path")
-                elif part.startswith("--"):
-                    raise CommandError(f"Unknown option: {part}")
-            
-            return await self._apply_patch(patch_file, target_dir, dry_run, force, backup)
-            
-        except Exception as e:
-            if isinstance(e, CommandError):
-                raise
-            raise CommandError(f"Failed to execute apply command: {str(e)}")
+        parts = split_args(context)
+
+        if not parts:
+            # Show available patches to apply
+            return await self._show_applicable_patches()
+
+        patch_file = parts[0]
+
+        # Parse options
+        dry_run = False
+        force = False
+        backup = True
+        target_dir = "."
+
+        for i, part in enumerate(parts[1:], 1):
+            if part == "--dry-run":
+                dry_run = True
+            elif part == "--force":
+                force = True
+            elif part == "--no-backup":
+                backup = False
+            elif part.startswith("--target="):
+                target_dir = part.split("=", 1)[1]
+            elif part == "--target":
+                if i + 1 < len(parts):
+                    target_dir = parts[i + 1]
+                else:
+                    raise CommandError("--target requires a directory path")
+            elif part.startswith("--"):
+                raise CommandError(f"Unknown option: {part}")
+
+        return await self._apply_patch(patch_file, target_dir, dry_run, force, backup)
     
     async def _show_applicable_patches(self) -> CommandResult:
         """Show available patch files that can be applied"""
@@ -180,34 +176,32 @@ class ApplyCommand(DirectCommand):
         validation = await self._validate_patch_application(patch_data, target_path)
         
         if validation['has_conflicts'] and not force:
-            return await self._format_patch_conflicts(validation, patch_file)
-        
+            return self._format_patch_conflicts(validation, patch_file)
+
         # Show preview if dry run
         if dry_run:
-            return await self._format_dry_run_result(patch_data, target_path, validation)
-        
+            return self._format_dry_run_result(patch_data, target_path, validation)
+
         # Ask for confirmation unless force is used
         if not force:
             # In a real implementation, this would use a proper confirmation UI
             # For now, we'll show what would be confirmed
-            preview_result = await self._format_apply_preview(patch_data, target_path, validation)
-            return preview_result
-        
+            return self._format_apply_preview(patch_data, target_path, validation)
+
         # Apply the patch
         try:
             apply_result = await self._perform_patch_application(patch_data, target_path, backup)
-            return await self._format_apply_result(apply_result, patch_file, target_dir)
+            return self._format_apply_result(apply_result, patch_file, target_dir)
         
         except Exception as e:
             raise CommandError(f"Failed to apply patch: {str(e)}")
     
-    async def _analyze_patch_file(self, patch_path: Path) -> Dict[str, Any]:
+    async def _analyze_patch_file(self, patch_path: Path) -> dict[str, Any]:
         """Analyze patch file to extract metadata"""
         
         try:
-            with open(patch_path, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
+            content = await asyncio.to_thread(patch_path.read_text, encoding='utf-8')
+
             # Extract plan ID from header
             plan_id_match = re.search(r'^# Plan ID: (.+)$', content, re.MULTILINE)
             plan_id = plan_id_match.group(1) if plan_id_match else "Unknown"
@@ -234,12 +228,11 @@ class ApplyCommand(DirectCommand):
                 'size': 0
             }
     
-    async def _parse_patch_file(self, patch_path: Path) -> Dict[str, Any]:
+    async def _parse_patch_file(self, patch_path: Path) -> dict[str, Any]:
         """Parse patch file content"""
         
-        with open(patch_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-        
+        content = await asyncio.to_thread(patch_path.read_text, encoding='utf-8')
+
         # Extract metadata from header
         metadata = {}
         plan_id_match = re.search(r'^# Plan ID: (.+)$', content, re.MULTILINE)
@@ -266,7 +259,7 @@ class ApplyCommand(DirectCommand):
             'raw_content': content
         }
     
-    def _parse_unified_format(self, content: str) -> List[Dict[str, Any]]:
+    def _parse_unified_format(self, content: str) -> list[dict[str, Any]]:
         """Parse unified diff format"""
         
         changes = []
@@ -315,7 +308,7 @@ class ApplyCommand(DirectCommand):
         
         return changes
     
-    def _parse_git_format(self, content: str) -> List[Dict[str, Any]]:
+    def _parse_git_format(self, content: str) -> list[dict[str, Any]]:
         """Parse Git format patches"""
         
         changes = []
@@ -363,7 +356,7 @@ class ApplyCommand(DirectCommand):
         
         return changes
     
-    def _parse_simple_format(self, content: str) -> List[Dict[str, Any]]:
+    def _parse_simple_format(self, content: str) -> list[dict[str, Any]]:
         """Parse simple text format"""
         
         changes = []
@@ -398,8 +391,8 @@ class ApplyCommand(DirectCommand):
         
         return changes
     
-    async def _validate_patch_application(self, patch_data: Dict[str, Any], 
-                                        target_path: Path) -> Dict[str, Any]:
+    async def _validate_patch_application(self, patch_data: dict[str, Any], 
+                                        target_path: Path) -> dict[str, Any]:
         """Validate that patch can be applied"""
         
         conflicts = []
@@ -431,8 +424,9 @@ class ApplyCommand(DirectCommand):
             'files_affected': len(patch_data['file_changes'])
         }
     
-    async def _format_patch_conflicts(self, validation: Dict[str, Any], patch_file: str) -> CommandResult:
-        """Format patch conflict information"""
+    @staticmethod
+    def _format_patch_conflicts(validation: dict[str, Any], patch_file: str) -> CommandResult:
+        """Format patch conflict information (pure helper — no I/O, no self)."""
         
         content_lines = [
             "⚠️ **Patch Conflicts Detected**",
@@ -476,9 +470,10 @@ class ApplyCommand(DirectCommand):
         
         return CommandResult.success_result(result_panel, "rich")
     
-    async def _format_dry_run_result(self, patch_data: Dict[str, Any], 
-                                   target_path: Path, validation: Dict[str, Any]) -> CommandResult:
-        """Format dry run preview"""
+    @staticmethod
+    def _format_dry_run_result(patch_data: dict[str, Any],
+                               target_path: Path, validation: dict[str, Any]) -> CommandResult:
+        """Format dry run preview (pure helper — no I/O, no self)."""
         
         metadata = patch_data.get('metadata', {})
         
@@ -496,12 +491,7 @@ class ApplyCommand(DirectCommand):
             content_lines.append("**Changes Preview:**")
             
             for file_change in patch_data['file_changes']:
-                action_emoji = {
-                    'modified': '📝',
-                    'created': '✨',
-                    'deleted': '🗑️'
-                }.get(file_change['action'], '❓')
-                
+                action_emoji = file_action_emoji(file_change['action'])
                 content_lines.append(f"  {action_emoji} {file_change['action'].title()}: {file_change['path']}")
                 
                 # Show content preview for small changes
@@ -549,9 +539,10 @@ class ApplyCommand(DirectCommand):
         
         return CommandResult.success_result(result_panel, "rich")
     
-    async def _format_apply_preview(self, patch_data: Dict[str, Any], 
-                                  target_path: Path, validation: Dict[str, Any]) -> CommandResult:
-        """Format apply confirmation preview"""
+    @staticmethod
+    def _format_apply_preview(patch_data: dict[str, Any],
+                              target_path: Path, validation: dict[str, Any]) -> CommandResult:
+        """Format apply confirmation preview (pure helper — no I/O, no self)."""
         
         content_lines = [
             "📋 **Ready to Apply Patch**",
@@ -569,8 +560,7 @@ class ApplyCommand(DirectCommand):
         
         content_lines.append("**Summary of Changes:**")
         for action, count in actions_count.items():
-            emoji = {'modified': '📝', 'created': '✨', 'deleted': '🗑️'}.get(action, '❓')
-            content_lines.append(f"  {emoji} {action.title()}: {count} files")
+            content_lines.append(f"  {file_action_emoji(action)} {action.title()}: {count} files")
         
         content_lines.extend([
             "",
@@ -593,8 +583,8 @@ class ApplyCommand(DirectCommand):
         
         return CommandResult.success_result(result_panel, "rich")
     
-    async def _perform_patch_application(self, patch_data: Dict[str, Any], 
-                                       target_path: Path, backup: bool) -> Dict[str, Any]:
+    async def _perform_patch_application(self, patch_data: dict[str, Any], 
+                                       target_path: Path, backup: bool) -> dict[str, Any]:
         """Actually apply the patch to files"""
         
         applied_files = []
@@ -602,26 +592,27 @@ class ApplyCommand(DirectCommand):
         errors = []
         
         for file_change in patch_data['file_changes']:
-            file_path = target_path / file_change['path']
-            
+            resolved = (target_path / file_change['path']).resolve()
+            if not resolved.is_relative_to(target_path.resolve()):
+                raise CommandError(f"Unsafe path in patch: {file_change['path']}")
+            file_path = resolved
+
             try:
                 if file_change['action'] == 'created':
                     # Create new file
                     file_path.parent.mkdir(parents=True, exist_ok=True)
-                    with open(file_path, 'w', encoding='utf-8') as f:
-                        f.write(file_change['new_content'])
+                    await asyncio.to_thread(file_path.write_text, file_change['new_content'], 'utf-8')
                     applied_files.append((file_change['path'], 'created'))
-                
+
                 elif file_change['action'] == 'modified':
                     # Create backup if requested
                     if backup and file_path.exists():
                         backup_path = file_path.with_suffix(file_path.suffix + '.orig')
                         shutil.copy2(file_path, backup_path)
                         backed_up_files.append(str(backup_path))
-                    
+
                     # Apply changes (simplified - just replace content)
-                    with open(file_path, 'w', encoding='utf-8') as f:
-                        f.write(file_change['new_content'])
+                    await asyncio.to_thread(file_path.write_text, file_change['new_content'], 'utf-8')
                     applied_files.append((file_change['path'], 'modified'))
                 
                 elif file_change['action'] == 'deleted':
@@ -644,9 +635,10 @@ class ApplyCommand(DirectCommand):
             'success': len(errors) == 0
         }
     
-    async def _format_apply_result(self, result: Dict[str, Any], 
-                                 patch_file: str, target_dir: str) -> CommandResult:
-        """Format the final application result"""
+    @staticmethod
+    def _format_apply_result(result: dict[str, Any],
+                             patch_file: str, target_dir: str) -> CommandResult:
+        """Format the final application result (pure helper — no I/O, no self)."""
         
         success = result['success']
         applied_files = result['applied_files']
@@ -678,12 +670,7 @@ class ApplyCommand(DirectCommand):
         if applied_files:
             content_lines.append("**Changes Applied:**")
             for file_path, action in applied_files:
-                action_emoji = {
-                    'modified': '📝',
-                    'created': '✨',
-                    'deleted': '🗑️'
-                }.get(action, '❓')
-                content_lines.append(f"  {action_emoji} {action.title()}: {file_path}")
+                content_lines.append(f"  {file_action_emoji(action)} {action.title()}: {file_path}")
             content_lines.append("")
         
         # Show backup info

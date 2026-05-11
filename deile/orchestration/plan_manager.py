@@ -482,6 +482,42 @@ class PlanManager:
         await self._save_plan(plan)
         return True
     
+    def active_plan_count(self) -> int:
+        """Number of plans currently held in the in-memory active map.
+
+        Public accessor for ``len(self._active_plans)`` consumed by
+        memory/status commands — those used to reach into the private
+        attribute directly, violating SRP.
+        """
+        return len(self._active_plans)
+
+    def active_plan_ids(self) -> List[str]:
+        """Snapshot list of active plan IDs (safe to iterate while mutating)."""
+        return list(self._active_plans.keys())
+
+    def get_active_plan(self, plan_id: str) -> Optional[ExecutionPlan]:
+        """Active-only lookup; does NOT load from disk. Companion of
+        :meth:`get_plan_status` which also falls back to load_plan."""
+        return self._active_plans.get(plan_id)
+
+    def iter_active_plans(self) -> List[ExecutionPlan]:
+        """Snapshot list of active plan objects."""
+        return list(self._active_plans.values())
+
+    def clear_active_state(self) -> int:
+        """Drop in-memory active plans, locks and stop flags atomically.
+
+        Returns the number of active plans cleared. Used by ``/cls reset``
+        and ``/memory reset``; callers used to mutate the three private
+        attributes directly. Saved plans on disk are preserved (this is
+        an in-memory reset only).
+        """
+        count = len(self._active_plans)
+        self._active_plans.clear()
+        self._execution_locks.clear()
+        self._stop_flags.clear()
+        return count
+
     async def get_plan_status(self, plan_id: str) -> Optional[Dict[str, Any]]:
         """Obtém status detalhado de um plano"""
         

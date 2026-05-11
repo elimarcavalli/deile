@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import platform
 import socket
 import sys
 import time
-from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Tuple
 
 import psutil
 from rich.columns import Columns
@@ -17,10 +15,12 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from deile.__version__ import __version__
-
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import (emit_audit_event, error_panel, get_memory_manager,
+                      split_args, success_panel, warning_panel)
+from ._status_collectors import (collect_health_info, collect_models_info,
+                                 collect_system_info, collect_tools_info)
 
 _PROVIDER_HOSTS: Dict[str, str] = {
     "openai": "api.openai.com",
@@ -68,9 +68,8 @@ class StatusCommand(DirectCommand):
 
     async def execute(self, context: CommandContext) -> CommandResult:
         self._emit_audit_event(context)
-        args = context.args
         try:
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
             if not parts:
                 return await self._show_complete_status(context)
             section = parts[0].lower()
@@ -97,31 +96,24 @@ class StatusCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     def _emit_audit_event(self, context: CommandContext) -> None:
-        try:
-            from ...security.audit_logger import (AuditEventType,
-                                                  SeverityLevel,
-                                                  get_audit_logger)
-            get_audit_logger().log_event(
-                event_type=AuditEventType.COMMAND_EXECUTED,
-                severity=SeverityLevel.INFO,
-                actor="user",
-                resource="/status",
-                action="execute",
-                result="initiated",
-                details={"args": context.args},
-            )
-        except Exception:
-            pass
+        from ...security.audit_logger import AuditEventType, SeverityLevel
+        emit_audit_event(
+            event_type=AuditEventType.COMMAND_EXECUTED,
+            severity=SeverityLevel.INFO,
+            resource="/status",
+            action="execute",
+            details={"args": context.args},
+        )
 
     # ------------------------------------------------------------------
     # Complete overview
     # ------------------------------------------------------------------
 
     async def _show_complete_status(self, context: CommandContext) -> CommandResult:
-        system_info = self._get_system_info()
-        models_info = self._get_models_info()
-        tools_info = self._get_tools_info()
-        health_info = self._get_health_info()
+        system_info = collect_system_info()
+        models_info = collect_models_info()
+        tools_info = collect_tools_info()
+        health_info = collect_health_info()
 
         left_column = Columns([self._create_system_panel(system_info), self._create_tools_panel(tools_info)], equal=True)
         right_column = Columns([self._create_models_panel(models_info), self._create_health_panel(health_info)], equal=True)
@@ -145,118 +137,12 @@ class StatusCommand(DirectCommand):
         return CommandResult.success_result(Group(left_column, right_column, usage_panel), "rich")
 
     # ------------------------------------------------------------------
-    # System info (overview panel)
-    # ------------------------------------------------------------------
-
-    def _get_system_info(self) -> Dict[str, Any]:
-        try:
-            return {
-                "deile_version": __version__,
-                "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
-                "platform": platform.system(),
-                "platform_release": platform.release(),
-                "platform_version": platform.version(),
-                "architecture": platform.machine(),
-                "hostname": platform.node(),
-                "uptime": self._get_system_uptime(),
-                "cpu_count": psutil.cpu_count(),
-                "memory_total": psutil.virtual_memory().total,
-                "memory_used": psutil.virtual_memory().used,
-                "memory_percent": psutil.virtual_memory().percent,
-                "disk_usage": psutil.disk_usage(".").percent,
-            }
-        except Exception as exc:
-            return {"error": str(exc)}
-
-    def _get_system_uptime(self) -> str:
-        try:
-            boot_time = datetime.fromtimestamp(psutil.boot_time())
-            delta = datetime.now() - boot_time
-            h, rem = divmod(delta.seconds, 3600)
-            m, _ = divmod(rem, 60)
-            return f"{delta.days}d {h}h {m}m"
-        except Exception:
-            return "desconhecido"
-
-    # ------------------------------------------------------------------
-    # Models info (overview panel)
-    # ------------------------------------------------------------------
-
-    def _get_models_info(self) -> Dict[str, Any]:
-        try:
-            from ...core.models.router import get_model_router
-            router = get_model_router()
-            providers = list(router.providers.keys())
-            active_key = providers[0] if providers else None
-            active_provider = active_key.split(":", 1)[0] if active_key else _indisponivel("nenhum provedor")
-            active_model = active_key.split(":", 1)[1] if active_key and ":" in active_key else (active_key or _indisponivel("nenhum modelo"))
-            return {
-                "active_model": active_model,
-                "active_provider": active_provider,
-                "total_providers": len(providers),
-                "providers": providers,
-            }
-        except Exception as exc:
-            return {"error": str(exc)}
-
-    # ------------------------------------------------------------------
-    # Tools info (overview panel)
-    # ------------------------------------------------------------------
-
-    def _get_tools_info(self) -> Dict[str, Any]:
-        try:
-            from ...tools.registry import get_tool_registry
-            registry = get_tool_registry()
-            stats = registry.get_stats()
-            return {
-                "total_tools": stats["total_tools"],
-                "enabled_tools": stats["enabled_tools"],
-                "disabled_tools": stats["disabled_tools"],
-                "categories": stats["categories"],
-                "function_definitions": stats["available_functions"],
-                "tools_with_schemas": stats["tools_with_schemas"],
-                "auto_discovery": stats["auto_discovery_enabled"],
-                "tool_names": [t.name for t in registry.list_all()],
-            }
-        except Exception as exc:
-            return {"error": str(exc)}
-
-    # ------------------------------------------------------------------
-    # Health info (overview panel)
-    # ------------------------------------------------------------------
-
-    def _get_health_info(self) -> Dict[str, Any]:
-        try:
-            cpu_percent = psutil.cpu_percent(interval=0)
-            memory = psutil.virtual_memory()
-            health_score = 100
-            warnings: List[str] = []
-            if cpu_percent > 80:
-                health_score -= 20
-                warnings.append("CPU alto")
-            if memory.percent > 85:
-                health_score -= 15
-                warnings.append("Memória alta")
-            status = "saudável" if health_score >= 80 else "atenção" if health_score >= 60 else "crítico"
-            return {
-                "overall_status": status,
-                "health_score": health_score,
-                "cpu_usage": cpu_percent,
-                "memory_usage": memory.percent,
-                "warnings": warnings,
-                "uptime": self._get_system_uptime(),
-                "last_check": datetime.now().isoformat(),
-            }
-        except Exception as exc:
-            return {"error": str(exc), "overall_status": "desconhecido"}
-
-    # ------------------------------------------------------------------
-    # Panel builders (overview)
+    # Panel builders (overview) — collectors live in _status_collectors
     # ------------------------------------------------------------------
 
     def _create_system_panel(self, info: Dict[str, Any]) -> Panel:
         if "error" in info:
-            return Panel(Text(f"Erro: {info['error']}", style="red"), title="🖥️ Sistema", border_style="red")
+            return error_panel(f"Erro: {info['error']}", title="🖥️ Sistema")
         content = (
             f"💻 DEILE v{info.get('deile_version', '?')}\n\n"
             f"🐍 Python: {info.get('python_version', '?')}\n"
@@ -268,11 +154,11 @@ class StatusCommand(DirectCommand):
             f"💾 Memória: {info.get('memory_percent', 0):.1f}% usada\n"
             f"💿 Disco: {info.get('disk_usage', 0):.1f}% usado"
         )
-        return Panel(Text(content, style="green"), title="🖥️ Sistema", border_style="green")
+        return success_panel(content, title="🖥️ Sistema")
 
     def _create_models_panel(self, info: Dict[str, Any]) -> Panel:
         if "error" in info:
-            return Panel(Text(f"Erro: {info['error']}", style="red"), title="🤖 Modelos", border_style="red")
+            return error_panel(f"Erro: {info['error']}", title="🤖 Modelos")
         content = (
             f"🟢 Modelo: {info.get('active_model', '?')}\n"
             f"🏢 Provedor: {info.get('active_provider', '?')}\n"
@@ -282,7 +168,7 @@ class StatusCommand(DirectCommand):
 
     def _create_tools_panel(self, info: Dict[str, Any]) -> Panel:
         if "error" in info:
-            return Panel(Text(f"Erro: {info['error']}", style="red"), title="🔧 Tools", border_style="red")
+            return error_panel(f"Erro: {info['error']}", title="🔧 Tools")
         content = (
             f"🔧 Total: {info.get('total_tools', 0)}\n"
             f"✅ Habilitadas: {info.get('enabled_tools', 0)}\n"
@@ -291,7 +177,7 @@ class StatusCommand(DirectCommand):
             f"📋 Schemas: {info.get('tools_with_schemas', 0)}\n"
             f"🔄 Funções: {info.get('function_definitions', 0)}"
         )
-        return Panel(Text(content, style="yellow"), title="🔧 Tools", border_style="yellow")
+        return warning_panel(content, title="🔧 Tools")
 
     def _create_health_panel(self, info: Dict[str, Any]) -> Panel:
         status = info.get("overall_status", "desconhecido")
@@ -315,7 +201,7 @@ class StatusCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     async def _show_system_status(self, context: CommandContext) -> CommandResult:
-        info = self._get_system_info()
+        info = collect_system_info()
         table = Table(title="💻 Informações Detalhadas do Sistema", show_header=True, header_style="bold green")
         table.add_column("Componente", style="cyan", width=20)
         table.add_column("Valor", style="white", width=30)
@@ -367,7 +253,7 @@ class StatusCommand(DirectCommand):
             return CommandResult.success_result(table, "rich")
         except Exception as exc:
             return CommandResult.success_result(
-                Panel(Text(f"Erro ao obter informações de modelos: {exc}", style="red"), title="🤖 Modelos", border_style="red"),
+                error_panel(f"Erro ao obter informações de modelos: {exc}", title="🤖 Modelos"),
                 "rich",
             )
 
@@ -407,7 +293,7 @@ class StatusCommand(DirectCommand):
             return CommandResult.success_result(Group(table, summary), "rich")
         except Exception as exc:
             return CommandResult.success_result(
-                Panel(Text(f"Erro ao obter tools: {exc}", style="red"), title="🔧 Tools", border_style="red"),
+                error_panel(f"Erro ao obter tools: {exc}", title="🔧 Tools"),
                 "rich",
             )
 
@@ -416,14 +302,12 @@ class StatusCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     async def _show_memory_status(self, context: CommandContext) -> CommandResult:
-        memory_manager = None
-        if context.agent:
-            memory_manager = getattr(context.agent, "memory_manager", None)
+        memory_manager = get_memory_manager(context)
 
         if memory_manager is None:
             content = _indisponivel("MemoryManager não acessível neste contexto")
             return CommandResult.success_result(
-                Panel(Text(content, style="yellow"), title="💾 Memória", border_style="yellow"), "rich"
+                warning_panel(content, title="💾 Memória"), "rich"
             )
 
         try:
@@ -433,12 +317,12 @@ class StatusCommand(DirectCommand):
 
         if "error" in usage:
             return CommandResult.success_result(
-                Panel(Text(f"Erro: {usage['error']}", style="red"), title="💾 Memória", border_style="red"), "rich"
+                error_panel(f"Erro: {usage['error']}", title="💾 Memória"), "rich"
             )
 
         if usage.get("status") == "not_initialized":
             return CommandResult.success_result(
-                Panel(Text(_indisponivel("MemoryManager não inicializado"), style="yellow"), title="💾 Memória", border_style="yellow"),
+                warning_panel(_indisponivel("MemoryManager não inicializado"), title="💾 Memória"),
                 "rich",
             )
 
@@ -465,7 +349,7 @@ class StatusCommand(DirectCommand):
         try:
             from ...orchestration.plan_manager import get_plan_manager
             plan_manager = get_plan_manager()
-            active_plans = list(plan_manager._active_plans.values())
+            active_plans = plan_manager.iter_active_plans()
             all_plans = await plan_manager.list_plans()
 
             table = Table(
@@ -494,7 +378,7 @@ class StatusCommand(DirectCommand):
             return CommandResult.success_result(table, "rich")
         except Exception as exc:
             return CommandResult.success_result(
-                Panel(Text(f"Erro ao obter planos: {exc}", style="red"), title="📋 Planos", border_style="red"), "rich"
+                error_panel(f"Erro ao obter planos: {exc}", title="📋 Planos"), "rich"
             )
 
     # ------------------------------------------------------------------

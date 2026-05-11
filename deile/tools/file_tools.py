@@ -589,16 +589,14 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
                                 f"Arquivo '{potential_query}' não encontrado. Sugestões: {', '.join(suggestion_names)}. "
                                 f"Para usar um destes arquivos, tente: 'leia o arquivo {suggestion_names[0]}'"
                             )
-                            return ToolResult(
-                                status=ToolStatus.ERROR,
+                            return ToolResult.error_result(
                                 message=error_msg,
                                 error=ValidationError("file not found with suggestions")
                             )
                         # No match and no suggestions: still surface a clear
                         # "not found" message rather than the generic
                         # "no file path provided" error below.
-                        return ToolResult(
-                            status=ToolStatus.ERROR,
+                        return ToolResult.error_result(
                             message=f"File '{potential_query}' not found in working directory.",
                             error=FileNotFoundError(f"File '{potential_query}' not found"),
                         )
@@ -613,8 +611,7 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
                 f"Debug info: parsed_args={context.parsed_args}, "
                 f"file_list={context.file_list}, user_input='{context.user_input}'"
             )
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=error_msg,
                 error=ValidationError("file_path is required")
             )
@@ -639,8 +636,7 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
                     if (resolved.note or _looks_like_outside_project(file_path))
                     else ""
                 )
-                return ToolResult(
-                    status=ToolStatus.ERROR,
+                return ToolResult.error_result(
                     message=(
                         f"File not found: {resolved.relative_to_cwd}"
                         f"{norm_hint}. Use list_files to inspect the project tree "
@@ -653,8 +649,7 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
 
             # Verifica se é um arquivo
             if not full_path.is_file():
-                return ToolResult(
-                    status=ToolStatus.ERROR,
+                return ToolResult.error_result(
                     message=f"Path is not a file: {resolved.relative_to_cwd}",
                     error=ValueError(f"'{resolved.relative_to_cwd}' is not a file"),
                 )
@@ -666,8 +661,7 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
             if settings.enable_file_safety_checks and not settings.allow_all_file_types:
                 file_extension = full_path.suffix.lower()
                 if file_extension and file_extension not in settings.allowed_file_extensions:
-                    return ToolResult(
-                        status=ToolStatus.ERROR,
+                    return ToolResult.error_result(
                         message=f"File type not allowed: {file_extension}. Allowed types: {settings.allowed_file_extensions}",
                         error=PermissionError(f"File extension '{file_extension}' not in allowed list")
                     )
@@ -719,20 +713,17 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
             )
             
         except LocalFileAccessViolation as e:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=str(e),
                 error=e
             )
         except UnicodeDecodeError as e:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=f"Error decoding file {file_path}: {str(e)}",
                 error=e
             )
         except Exception as e:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=f"Error reading file {file_path}: {str(e)}",
                 error=e
             )
@@ -834,15 +825,13 @@ class WriteFileTool(SyncTool):
         
         # Valida que content foi fornecido
         if content is None:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message="No content provided",
                 error=ValidationError("content is required")
             )
         
         if not file_path:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message="No file path provided. Please specify a file to write.",
                 error=ValidationError("file_path is required")
             )
@@ -858,8 +847,7 @@ class WriteFileTool(SyncTool):
             # Verifica se arquivo já existe
             existed_before = full_path.exists()
             if existed_before and not overwrite:
-                return ToolResult(
-                    status=ToolStatus.ERROR,
+                return ToolResult.error_result(
                     message=(
                         f"File already exists: {resolved.relative_to_cwd}. "
                         f"Use overwrite=True to replace."
@@ -947,14 +935,12 @@ class WriteFileTool(SyncTool):
             )
 
         except LocalFileAccessViolation as e:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=str(e),
                 error=e
             )
         except Exception as e:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=f"Error writing file {file_path}: {str(e)}",
                 error=e
             )
@@ -1169,8 +1155,7 @@ class ListFilesTool(SyncTool):
             logger.debug(f"ListFilesTool - validation successful: {full_path}")
         except LocalFileAccessViolation as e:
             logger.debug(f"ListFilesTool - sandbox violation for {target_path!r}: {e}")
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=str(e),
                 error=e,
             )
@@ -1203,8 +1188,7 @@ class ListFilesTool(SyncTool):
                         "`cat <abs_path>`) — bash_execute has no "
                         "working-directory sandbox."
                     )
-                return ToolResult(
-                    status=ToolStatus.ERROR,
+                return ToolResult.error_result(
                     message=f"Path not found: {target_path}{hint}",
                     error=FileNotFoundError(f"Path '{target_path}' not found")
                 )
@@ -1319,14 +1303,12 @@ class ListFilesTool(SyncTool):
             )
             
         except LocalFileAccessViolation as e:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=str(e),
                 error=e
             )
         except Exception as e:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=f"Error listing files in {target_path}: {str(e)}",
                 error=e
             )
@@ -1367,8 +1349,7 @@ class DeleteFileTool(SyncTool):
                     break
         
         if not file_path:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message="No file path provided. Please specify a file to delete.",
                 error=ValidationError("file_path is required")
             )
@@ -1378,8 +1359,7 @@ class DeleteFileTool(SyncTool):
             # Verifica se não é um arquivo crítico
             dangerous_patterns = ['.env', 'config', '.git', '__pycache__']
             if any(pattern in file_path.lower() for pattern in dangerous_patterns):
-                return ToolResult(
-                    status=ToolStatus.ERROR,
+                return ToolResult.error_result(
                     message=f"Refusing to delete potentially important file: {file_path}. Use force=True if needed.",
                     error=PermissionError("Safety check failed")
                 )
@@ -1401,8 +1381,7 @@ class DeleteFileTool(SyncTool):
                     if (resolved.note or _looks_like_outside_project(file_path))
                     else ""
                 )
-                return ToolResult(
-                    status=ToolStatus.ERROR,
+                return ToolResult.error_result(
                     message=(
                         f"File not found: {resolved.relative_to_cwd}"
                         f"{norm_hint}.{bash_hint}"
@@ -1439,14 +1418,12 @@ class DeleteFileTool(SyncTool):
             )
             
         except LocalFileAccessViolation as e:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=str(e),
                 error=e
             )
         except Exception as e:
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=f"Error deleting {file_path}: {str(e)}",
                 error=e
             )

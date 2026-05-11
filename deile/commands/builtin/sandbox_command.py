@@ -7,8 +7,9 @@ execution tool. See also issues #54 (PluginSandbox skeleton) and #57 (the
 bash_execute `sandbox=True` flag controls PTY only).
 """
 
+from __future__ import annotations
+
 import logging
-from typing import List
 
 from rich.console import Group
 from rich.panel import Panel
@@ -18,6 +19,7 @@ from rich.text import Text
 from ...config.manager import CommandConfig
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import split_args
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +35,7 @@ class SandboxCommand(DirectCommand):
         self.sandbox_enabled = False
 
     async def execute(self, context: CommandContext) -> CommandResult:
-        args = context.args if hasattr(context, "args") else ""
-        parts: List[str] = args.strip().split() if args.strip() else []
+        parts: list[str] = split_args(context)
 
         if not parts:
             return await self._show_sandbox_status()

@@ -14,6 +14,7 @@ from ...core.exceptions import CommandError
 from ...security.audit_logger import (AuditEvent, AuditEventType,
                                       SeverityLevel, get_audit_logger)
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._shared import split_args, truncate
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +78,8 @@ class LogsCommand(DirectCommand):
         self.audit_logger = get_audit_logger()
 
     async def execute(self, context: CommandContext) -> CommandResult:
-        args = context.args if hasattr(context, "args") else ""
-
         try:
-            parts = args.strip().split() if args.strip() else []
+            parts = split_args(context)
 
             if not parts:
                 return await self._show_logs_overview()
@@ -173,8 +172,8 @@ class LogsCommand(DirectCommand):
                 else:
                     time_str = event.timestamp.strftime("%H:%M")
 
-                actor = event.actor[:10] + "..." if len(event.actor) > 10 else event.actor
-                resource = event.resource[:18] + "..." if len(event.resource) > 18 else event.resource
+                actor = truncate(event.actor, 10)
+                resource = truncate(event.resource, 18)
                 result_color = (
                     "green" if event.result in ("success", "allowed", "completed")
                     else "red" if event.result in ("denied", "failed", "error")
@@ -285,8 +284,8 @@ class LogsCommand(DirectCommand):
         for event in events:
             emoji = _SEVERITY_EMOJI.get(event.severity, "📝")
             label = _SEVERITY_LABEL.get(event.severity, event.severity.value.upper())
-            actor = event.actor[:10] + "..." if len(event.actor) > 10 else event.actor
-            resource = event.resource[:23] + "..." if len(event.resource) > 23 else event.resource
+            actor = truncate(event.actor, 10)
+            resource = truncate(event.resource, 23)
             event_type = event.event_type.value.replace("_", " ")[:13]
 
             log_table.add_row(
@@ -360,7 +359,7 @@ class LogsCommand(DirectCommand):
                 time_str,
                 event.event_type.value.replace("_", " ").title(),
                 event.severity.value.upper(),
-                details[:38] + "..." if len(details) > 38 else details,
+                truncate(details, 38),
                 action,
             )
 
@@ -419,7 +418,7 @@ class LogsCommand(DirectCommand):
             perm_table.add_row(
                 time_str,
                 event.actor[:13],
-                event.resource[:23] + "..." if len(event.resource) > 23 else event.resource,
+                truncate(event.resource, 23),
                 event.action,
                 result_display,
                 rule_id,
@@ -466,7 +465,7 @@ class LogsCommand(DirectCommand):
 
             secrets_table.add_row(
                 event.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
-                file_path[:23] + "..." if len(file_path) > 23 else file_path,
+                truncate(file_path, 23),
                 secret_type.title(),
                 str(line_number),
                 f"{confidence:.2f}",
@@ -514,7 +513,7 @@ class LogsCommand(DirectCommand):
             tools_table.add_row(
                 time_str,
                 event.tool_name or event.actor,
-                event.resource[:23] + "..." if len(event.resource) > 23 else event.resource,
+                truncate(event.resource, 23),
                 duration_str,
                 str(exit_code),
                 result_display,
@@ -557,9 +556,7 @@ class LogsCommand(DirectCommand):
 
         for event in all_events[:30]:
             time_str = event.timestamp.strftime("%H:%M:%S")
-            plan_id = event.plan_id or "N/D"
-            if len(plan_id) > 12:
-                plan_id = plan_id[:9] + "..."
+            plan_id = truncate(event.plan_id or "N/D", 9)
 
             event_type_label = event.event_type.value.replace("_", " ").title()
 
@@ -578,7 +575,7 @@ class LogsCommand(DirectCommand):
                 event_type_label[:15],
                 event.action.title(),
                 event.result.title(),
-                details[:23] + "..." if len(details) > 23 else details,
+                truncate(details, 23),
             )
 
         return CommandResult.success_result(plans_table, "rich")
@@ -633,7 +630,7 @@ class LogsCommand(DirectCommand):
                 f"{emoji} {label[:4]}",
                 event.event_type.value.replace("_", " ").title()[:15],
                 event.actor[:12],
-                details[:28] + "..." if len(details) > 28 else details,
+                truncate(details, 28),
             )
 
         return CommandResult.success_result(errors_table, "rich")

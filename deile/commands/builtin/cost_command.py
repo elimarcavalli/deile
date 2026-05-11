@@ -2,10 +2,11 @@
 Comando /cost — rastreamento de custos, orçamentos e análise financeira
 """
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Tuple
+from typing import Any, List, Tuple
 
 from rich.console import Group
 from rich.panel import Panel
@@ -13,8 +14,9 @@ from rich.table import Table
 from rich.text import Text
 
 from deile.__version__ import __version__
-from deile.commands.base import CommandResult, DirectCommand
-from deile.infrastructure.monitoring.cost_tracker import get_cost_tracker
+from deile.commands.base import CommandContext, CommandResult, DirectCommand
+from deile.commands.builtin._shared import (export_timestamp, get_session,
+                                            split_args, success_panel)
 
 logger = logging.getLogger(__name__)
 
@@ -72,13 +74,22 @@ EXEMPLOS:
     /cost export json 90                    # Exporta últimos 90 dias
     /cost estimate gemini pro 5000          # Estima 5000 tokens
 """
-        self.cost_tracker = get_cost_tracker()
+        self._cost_tracker: Any = None
 
-    async def execute(self, context=None) -> "CommandResult":
-        args_str = getattr(context, "args", "") or "" if context is not None else ""
-        args_list: List[str] = args_str.split() if args_str else []
+    @property
+    def cost_tracker(self):
+        """Cost tracker resolvido sob demanda — evita import eager de
+        ``deile.infrastructure`` na camada de comandos (Clean Arch §2)."""
+        if self._cost_tracker is None:
+            from deile.infrastructure.monitoring.cost_tracker import \
+                get_cost_tracker
+            self._cost_tracker = get_cost_tracker()
+        return self._cost_tracker
 
-        session = getattr(context, "session", None) if context else None
+    async def execute(self, context: CommandContext) -> CommandResult:
+        args_list: List[str] = split_args(context)
+
+        session = get_session(context)
         session_id = getattr(session, "session_id", None) if session else None
 
         try:
@@ -111,7 +122,7 @@ EXEMPLOS:
             if action == "export":
                 fmt = args_list[1] if len(args_list) > 1 else "json"
                 days = int(args_list[2]) if len(args_list) > 2 else 30
-                return self._export_costs(fmt, days)
+                return await self._export_costs(fmt, days)
             if action == "estimate":
                 if len(args_list) < 4:
                     return CommandResult.error_result(
@@ -336,7 +347,7 @@ EXEMPLOS:
             if ok:
                 msg = f"✅ Limite definido: {category}/{period} = ${amount:.2f}"
                 return CommandResult.success_result(
-                    Panel(Text(msg, style="green"), title="💾 Orçamento Salvo", border_style="green"),
+                    success_panel(msg, title="💾 Orçamento Salvo"),
                     "rich",
                     category=category,
                     period=period,
@@ -400,7 +411,7 @@ EXEMPLOS:
             logger.error("Falha ao calcular previsão: %s", exc)
             return CommandResult.error_result(f"Falha ao calcular previsão: {exc}", error=exc)
 
-    def _export_costs(self, fmt: str = "json", days: int = 30) -> "CommandResult":
+    async def _export_costs(self, fmt: str = "json", days: int = 30) -> "CommandResult":
         try:
             end_time = datetime.now()
             start_time = end_time - timedelta(days=days)
@@ -416,10 +427,9 @@ EXEMPLOS:
                     "rich",
                 )
 
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             ext = "csv" if fmt == "csv" else "json"
-            fname = f"costs_export_{ts}.{ext}"
-            Path(fname).write_text(data, encoding="utf-8")
+            fname = f"costs_export_{export_timestamp()}.{ext}"
+            await asyncio.to_thread(Path(fname).write_text, data, encoding="utf-8")
 
             msg = (
                 f"✅ Exportado: {fname}\n"
@@ -427,7 +437,7 @@ EXEMPLOS:
                 f"Versão DEILE: {__version__}"
             )
             return CommandResult.success_result(
-                Panel(Text(msg, style="green"), title="📤 Export de Custos", border_style="green"),
+                success_panel(msg, title="📤 Export de Custos"),
                 "rich",
                 file=fname,
             )
@@ -564,8 +574,3 @@ EXEMPLOS:
         except Exception as exc:
             logger.error("Falha ao calcular estimativa: %s", exc)
             return CommandResult.error_result(f"Falha ao calcular estimativa: {exc}", error=exc)
-
-
-from deile.commands.registry import StaticCommandRegistry  # noqa: E402
-
-StaticCommandRegistry.register("cost", CostCommand)

@@ -537,8 +537,7 @@ class BashExecuteTool(SyncTool):
             
             execution_time = time.time() - start_time
             
-            return ToolResult(
-                status=ToolStatus.ERROR,
+            return ToolResult.error_result(
                 message=f"Bash execution failed: {str(e)}",
                 error=e,
                 display_policy=DisplayPolicy.SYSTEM,
