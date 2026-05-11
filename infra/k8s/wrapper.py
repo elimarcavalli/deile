@@ -52,6 +52,7 @@ _SENSITIVE_KEYS = (
     "OPENAI_API_KEY",
     "DEEPSEEK_API_KEY",
     "GOOGLE_API_KEY",
+    "GITHUB_TOKEN",
     "DEILE_BOT_AUTH_TOKEN",
     "DEILE_BOT_DISCORD_TOKEN",
     "DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN",
@@ -137,12 +138,17 @@ def _setup_git_credentials() -> None:
     """Wire GITHUB_TOKEN (if loaded) into ~/.git-credentials.
 
     Reads the token from os.environ (already injected by _load_secret_files),
-    writes the credential store file, and configures git's credential helper
+    writes the credential store file atomically (O_WRONLY|O_CREAT|O_TRUNC at
+    mode 0o600 — no TOCTOU window), and configures git's credential helper
     so every subsequent ``git clone/fetch/push`` finds it automatically.
 
     Security: the file is created 0o600 (owner-read only). The token never
     appears in argv or /proc/<pid>/environ — it stays in the file only.
+    After writing, GITHUB_TOKEN is removed from os.environ so subprocesses
+    (bash_tool, python_execute) inherit a clean environment.
     """
+    import subprocess as _subprocess
+
     token = os.environ.get("GITHUB_TOKEN", "").strip()
     if not token:
         return
@@ -150,42 +156,73 @@ def _setup_git_credentials() -> None:
     home = Path(os.environ.get("HOME", "/home/deile"))
     creds_file = home / ".git-credentials"
     try:
-        creds_file.write_text(f"https://oauth2:{token}@github.com\n", encoding="utf-8")
-        creds_file.chmod(0o600)
+        # Atomic create-and-write: O_CREAT|O_WRONLY|O_TRUNC with mode 0o600
+        # means the file is never readable by others even between creation
+        # and the explicit chmod call — no TOCTOU window.
+        fd = os.open(str(creds_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(f"https://oauth2:{token}@github.com\n")
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
     except OSError as exc:
         print(f"wrapper: could not write ~/.git-credentials: {exc}", file=sys.stderr)
+        os.environ.pop("GITHUB_TOKEN", None)
         return
 
-    gitconfig = home / ".gitconfig"
+    # Use git config so the update is atomic and idempotent.
     try:
-        existing = gitconfig.read_text(encoding="utf-8") if gitconfig.exists() else ""
-        if "credential.helper" not in existing:
-            with gitconfig.open("a", encoding="utf-8") as fh:
-                fh.write("\n[credential]\n\thelper = store\n")
+        _subprocess.run(
+            ["git", "config", "--global", "credential.helper", "store"],
+            check=False,
+        )
     except OSError as exc:
         print(f"wrapper: could not update ~/.gitconfig: {exc}", file=sys.stderr)
+
+    # Remove GITHUB_TOKEN from the environment so subprocesses (bash_tool,
+    # python_execute) cannot read it via /proc/self/environ or printenv.
+    os.environ.pop("GITHUB_TOKEN", None)
 
     print("wrapper(deile): GITHUB_TOKEN wired into ~/.git-credentials", file=sys.stderr)
 
 
-def _setup_git_clone_guard(config_path: str = "/home/deile/config/deilebot.yaml") -> None:
+def _setup_git_clone_guard(config_path: str = "") -> None:
     """Install ~/bin/git, a guard that enforces the clonable_repos allowlist.
 
     Reads ``git_integration.clonable_repos`` from the mounted deilebot.yaml
-    config. If the list is absent or empty the guard allows all repos (open
-    policy). Prepends ~/bin to PATH so the guard shadows /usr/bin/git.
+    config. If the config file is absent the guard allows all repos (open
+    policy). If the file exists but fails to parse, the guard uses a
+    fail-closed empty allowlist (deny all). Prepends ~/bin to PATH so the
+    guard shadows /usr/bin/git.
 
     The guard is a small Python script so it runs without a shell, avoiding
     quoting / injection issues. It delegates every non-clone sub-command
     directly to /usr/bin/git unchanged.
+
+    The allowlist patterns are baked directly into the guard script as a
+    Python literal — no environment variable is used at runtime, so the
+    list cannot be overwritten by subprocesses or the agent.
     """
+    if not config_path:
+        config_path = str(
+            Path(os.environ.get("HOME", "/home/deile")) / "config/deilebot.yaml"
+        )
+
     home = Path(os.environ.get("HOME", "/home/deile"))
     bin_dir = home / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
-    allowlist: List[str] = ["*"]
     cfg = Path(config_path)
-    if cfg.exists():
+    if not cfg.exists():
+        # Config absent → open policy (allow all)
+        allowlist: List[str] = ["*"]
+    else:
+        # Config present — parse it; any parse error → fail-closed (deny all)
+        allowlist = []
         try:
             import yaml  # PyYAML is a deile dep — always available in the image
 
@@ -193,45 +230,59 @@ def _setup_git_clone_guard(config_path: str = "/home/deile/config/deilebot.yaml"
             raw = (data.get("git_integration") or {}).get("clonable_repos", [])
             if isinstance(raw, list) and raw:
                 allowlist = [str(p).strip() for p in raw if str(p).strip()]
-        except Exception as exc:  # noqa: BLE001 — best-effort
+            else:
+                # Key absent or empty list in a present config → open policy
+                allowlist = ["*"]
+        except Exception as exc:  # noqa: BLE001
             print(
-                f"wrapper: could not parse clonable_repos from {config_path}: {exc}",
+                f"wrapper: could not parse clonable_repos from {config_path}: {exc} "
+                "— fail-closed: no repos allowed",
                 file=sys.stderr,
             )
+            # allowlist stays [] — deny all
 
-    # Encode the allowlist as a pipe-separated string in the env so the guard
-    # script reads it at runtime (no import of yaml inside the guard).
-    os.environ["DEILE_GIT_CLONE_ALLOWLIST"] = "|".join(allowlist)
+    # Bake the allowlist as a Python literal inside the guard script so it
+    # cannot be overwritten via os.environ by subprocesses or the agent.
+    # repr() of a list of strings produces a safe Python literal.
+    allowlist_literal = repr(allowlist)
 
     guard_script = bin_dir / "git"
     guard_script.write_text(
-        """\
+        f"""\
 #!/usr/bin/env python3
 \"\"\"git clone allowlist guard — installed by wrapper.py.\"\"\"
-import fnmatch, os, subprocess, sys
+import fnmatch, subprocess, sys, urllib.parse
+
+# Allowlist baked in at wrapper startup — not read from env at runtime.
+_PATTERNS = {allowlist_literal}
 
 args = sys.argv[1:]
 if args and args[0] == "clone":
-    raw = os.environ.get("DEILE_GIT_CLONE_ALLOWLIST", "*")
-    patterns = [p.strip() for p in raw.split("|") if p.strip()] or ["*"]
+    patterns = _PATTERNS if _PATTERNS else []
     if patterns != ["*"]:
         urls = [a for a in args[1:] if not a.startswith("-")]
         if urls:
             url = urls[0].rstrip("/")
-            # Accept both https://github.com/owner/repo[.git] and owner/repo forms.
-            if "github.com/" in url:
-                repo_path = url.split("github.com/", 1)[-1].removesuffix(".git")
+            # Use urlparse to extract hostname so userinfo tricks like
+            # 'https://evil.com@github.com/...' are rejected correctly.
+            parsed = urllib.parse.urlparse(url)
+            if parsed.hostname == "github.com":
+                repo_path = parsed.path.lstrip("/").removesuffix(".git")
             else:
                 repo_path = url.removesuffix(".git")
             if not any(fnmatch.fnmatch(repo_path, p) for p in patterns):
                 print(
-                    f"git-clone-guard: {url!r} is not in clonable_repos allowlist. "
-                    f"Allowed patterns: {patterns}",
+                    f"git-clone-guard: {{url!r}} is not in clonable_repos allowlist. "
+                    f"Allowed patterns: {{patterns}}",
                     file=sys.stderr,
                 )
                 sys.exit(1)
 
-sys.exit(subprocess.run(["/usr/bin/git", *args]).returncode)
+try:
+    sys.exit(subprocess.run(["/usr/bin/git", *args]).returncode)
+except FileNotFoundError:
+    print("git-clone-guard: /usr/bin/git not found", file=sys.stderr)
+    sys.exit(127)
 """,
         encoding="utf-8",
     )

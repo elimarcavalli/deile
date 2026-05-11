@@ -56,4 +56,7 @@ data:
     # list empty) to allow cloning from any repo (open policy — use with care).
     git_integration:
       clonable_repos:
+        # NOTE: this glob is org-wide and includes private repositories under
+        # the elimarcavalli org. Narrow to specific repos (e.g.
+        # "elimarcavalli/deile") if broader access is undesired.
         - "elimarcavalli/*"

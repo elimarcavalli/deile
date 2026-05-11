@@ -256,21 +256,23 @@ cmd_clone() {
     --dry-run=client -o yaml | "$KUBECTL" apply -f - >/dev/null
 
   # kubelet syncs projected secret volumes asynchronously (~30-60 s by default).
-  # Poll up to 90 s so the GITHUB_TOKEN file appears under /run/secrets/deile/
-  # before we attempt the clone.
+  # Poll up to 90 s using wall-clock time so kubectl exec latency doesn't
+  # cause early exit.
   log "waiting for kubelet to sync GITHUB_TOKEN into the pod (max 90s)"
-  local elapsed=0
-  while [ "$elapsed" -lt 90 ]; do
+  local START_TS
+  START_TS=$(date +%s)
+  local token_ready=0
+  while [ $(( $(date +%s) - START_TS )) -lt 90 ]; do
     if "$KUBECTL" -n "$NS" exec deploy/deile-shell -- \
         test -f /run/secrets/deile/GITHUB_TOKEN 2>/dev/null; then
       log "GITHUB_TOKEN secret file confirmed in pod"
+      token_ready=1
       break
     fi
     sleep 10
-    elapsed=$((elapsed + 10))
   done
-  if [ "$elapsed" -ge 90 ]; then
-    log "WARNING: GITHUB_TOKEN not yet visible inside pod after 90s — proceeding anyway"
+  if [ "$token_ready" -eq 0 ]; then
+    fail "GITHUB_TOKEN não sincronizado após 90s. Diagnóstico: kubectl -n $NS describe secret deile-secrets && kubectl -n $NS get events"
   fi
 
   local repo_name="${repo##*/}"
@@ -280,38 +282,93 @@ cmd_clone() {
   log "cloning ${clone_url} → ${work_dir} (inside deile-shell)"
   # Run a self-contained Python snippet inside the pod that:
   #   1. Sets up git credentials from the mounted secret file.
-  #   2. Invokes git clone via the ~/bin/git guard (enforces allowlist).
+  #   2. Invokes git clone via the ~/bin/git guard (enforces allowlist), or
+  #      performs its own URL validation if the guard is absent.
   # The token never appears in argv; it is read from the Secret-mounted
   # file and written to ~/.git-credentials inside the pod in-process.
-  "$KUBECTL" -n "$NS" exec deploy/deile-shell -- \
-    python3 -c "
-import os, subprocess, sys
+  # CLONE_URL and WORK_DIR are passed via --env so they are never
+  # interpolated into the Python source (no shell-injection risk).
+  "$KUBECTL" -n "$NS" exec \
+    --env CLONE_URL="${clone_url}" \
+    --env WORK_DIR="${work_dir}" \
+    deploy/deile-shell -- \
+    python3 -c '
+import fnmatch, os, subprocess, sys, urllib.parse
 from pathlib import Path
 
-home = Path(os.environ.get('HOME', '/home/deile'))
-token_file = Path('/run/secrets/deile/GITHUB_TOKEN')
-if token_file.exists():
-    token = token_file.read_text().strip()
-    creds = home / '.git-credentials'
-    creds.write_text('https://oauth2:' + token + '@github.com\n')
-    creds.chmod(0o600)
-    gitconfig = home / '.gitconfig'
-    existing = gitconfig.read_text() if gitconfig.exists() else ''
-    if 'credential.helper' not in existing:
-        with gitconfig.open('a') as fh:
-            fh.write('\n[credential]\n\thelper = store\n')
+clone_url = os.environ["CLONE_URL"]
+work_dir  = os.environ["WORK_DIR"]
 
-(home / 'work').mkdir(parents=True, exist_ok=True)
-git_bin = home / 'bin' / 'git'
-git_cmd = str(git_bin) if git_bin.exists() else '/usr/bin/git'
+home = Path(os.environ.get("HOME", "/home/deile"))
+token_file = Path("/run/secrets/deile/GITHUB_TOKEN")
+if token_file.exists():
+    import os as _os
+    token = token_file.read_text().strip()
+    creds = home / ".git-credentials"
+    fd = _os.open(str(creds), _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, 0o600)
+    try:
+        with _os.fdopen(fd, "w") as fh:
+            fh.write("https://oauth2:" + token + "@github.com\n")
+    except Exception:
+        try:
+            _os.close(fd)
+        except OSError:
+            pass
+        raise
+    subprocess.run(
+        ["git", "config", "--global", "credential.helper", "store"],
+        check=False,
+    )
+
+(home / "work").mkdir(parents=True, exist_ok=True)
+git_bin = home / "bin" / "git"
+
+if git_bin.exists():
+    # Guard present — it enforces the allowlist itself.
+    git_cmd = str(git_bin)
+else:
+    # Guard absent — perform URL validation here before falling back to
+    # /usr/bin/git, so the allowlist is always enforced.
+    import yaml
+    config_path = home / "config" / "deilebot.yaml"
+    if config_path.exists():
+        try:
+            data = yaml.safe_load(config_path.read_text()) or {}
+            raw = (data.get("git_integration") or {}).get("clonable_repos", [])
+            if isinstance(raw, list) and raw:
+                patterns = [str(p).strip() for p in raw if str(p).strip()]
+            else:
+                patterns = ["*"]
+        except Exception as exc:
+            print(f"clone: could not parse clonable_repos: {exc} — deny all", file=sys.stderr)
+            sys.exit(1)
+    else:
+        patterns = ["*"]
+
+    if patterns != ["*"]:
+        parsed = urllib.parse.urlparse(clone_url)
+        if parsed.hostname == "github.com":
+            repo_path = parsed.path.lstrip("/").removesuffix(".git")
+        else:
+            repo_path = clone_url.removesuffix(".git")
+        if not any(fnmatch.fnmatch(repo_path, p) for p in patterns):
+            print(
+                f"clone: {clone_url!r} is not in clonable_repos allowlist. "
+                f"Allowed patterns: {patterns}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    git_cmd = "/usr/bin/git"
+
 result = subprocess.run(
-    [git_cmd, 'clone', '--depth', '1', '${clone_url}', '${work_dir}'],
-    env={**os.environ, 'GIT_TERMINAL_PROMPT': '0'},
+    [git_cmd, "clone", "--depth", "1", clone_url, work_dir],
+    env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
 )
 if result.returncode != 0:
     sys.exit(result.returncode)
-print('clone complete: ${work_dir}')
-"
+print("clone complete: " + work_dir)
+'
   log "done — repo available at ${work_dir} inside deile-shell"
   log "to work: kubectl -n ${NS} exec -it deploy/deile-shell -- python3 /app/wrapper.py deile"
 }

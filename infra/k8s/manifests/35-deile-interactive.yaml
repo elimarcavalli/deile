@@ -90,7 +90,10 @@ spec:
         #   2. Comment out the emptyDir entry below.
         #   3. Uncomment the persistentVolumeClaim entry.
         #   4. kubectl rollout restart deployment/deile-shell
-        - { name: home, emptyDir: { sizeLimit: "256Mi" } }
+        # WARNING: emptyDir sizeLimit is a soft quota enforced by kubelet eviction.
+        # Exceeding the limit causes silent pod eviction. 1Gi accommodates
+        # typical shallow-cloned repos; use a PVC for larger workloads.
+        - { name: home, emptyDir: { sizeLimit: "1Gi" } }
         # - name: home
         #   persistentVolumeClaim:
         #     claimName: deile-shell-home
