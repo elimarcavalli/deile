@@ -60,6 +60,12 @@ spec:
             - { name: deile-secrets, mountPath: /run/secrets/deile, readOnly: true }
             - { name: home, mountPath: /home/deile }
             - { name: tmp,  mountPath: /tmp }
+            # bot-config provides the clonable_repos allowlist to the wrapper.
+            # subPath pins one file so /home/deile/config stays otherwise empty.
+            - name: bot-config
+              mountPath: /home/deile/config/deilebot.yaml
+              subPath: deilebot.yaml
+              readOnly: true
           resources:
             requests: { cpu: "50m", memory: "256Mi" }
             limits:   { cpu: "2000m", memory: "2Gi" }
@@ -73,5 +79,22 @@ spec:
             seccompProfile: { type: RuntimeDefault }
       volumes:
         - { name: deile-secrets, secret: { secretName: deile-secrets, defaultMode: 288 } }
-        - { name: home, emptyDir: { sizeLimit: "256Mi" } }
+        - name: bot-config
+          configMap:
+            name: bot-config
+            defaultMode: 292  # 0o444 — read-only inside pod
+        # ── Persistent home (optional) ───────────────────────────────────────
+        # By default /home/deile is an ephemeral emptyDir. To persist cloned
+        # repos and the working directory across pod restarts:
+        #   1. Apply 36-deile-shell-pvc.yaml to create the PVC.
+        #   2. Comment out the emptyDir entry below.
+        #   3. Uncomment the persistentVolumeClaim entry.
+        #   4. kubectl rollout restart deployment/deile-shell
+        # WARNING: emptyDir sizeLimit is a soft quota enforced by kubelet eviction.
+        # Exceeding the limit causes silent pod eviction. 1Gi accommodates
+        # typical shallow-cloned repos; use a PVC for larger workloads.
+        - { name: home, emptyDir: { sizeLimit: "1Gi" } }
+        # - name: home
+        #   persistentVolumeClaim:
+        #     claimName: deile-shell-home
         - { name: tmp,  emptyDir: { medium: Memory, sizeLimit: "64Mi" } }

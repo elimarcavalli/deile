@@ -89,9 +89,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     LC_ALL=C.UTF-8 \
     HOME=/home/deile
 
-# Drop apt caches; we install nothing in the final stage.
+# Install tini (zombie reaper) and git (needed for repo cloning in deile-shell).
+# gh CLI is intentionally absent to keep the image lean — use git directly.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tini \
+    && apt-get install -y --no-install-recommends tini git \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user. UID 10001 is well above the system uid range

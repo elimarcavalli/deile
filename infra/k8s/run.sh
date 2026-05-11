@@ -113,15 +113,17 @@ cmd_up() {
   # Collect LLM keys that exist in .env. The bot needs at least one
   # for its embedded agent to reply to Discord; deile needs at least
   # one for its own outbound flow.
-  local api_key_args=()
+  local api_key_pairs=""
+  local _api_key_count=0
   for key in ANTHROPIC_API_KEY OPENAI_API_KEY DEEPSEEK_API_KEY GOOGLE_API_KEY; do
     local v
     v="$(read_env_var "$key" "$ENV_FILE" || true)"
     if [ -n "$v" ]; then
-      api_key_args+=( "--from-literal=${key}=${v}" )
+      api_key_pairs+="${key}=${v}"$'\n'
+      _api_key_count=$(( _api_key_count + 1 ))
     fi
   done
-  [ "${#api_key_args[@]}" -gt 0 ] || fail "no LLM API key in $ENV_FILE"
+  [ "$_api_key_count" -gt 0 ] || fail "no LLM API key in $ENV_FILE"
 
   log "wiring Secrets (atomic apply; nothing echoed)"
   # `create … --dry-run=client -o yaml | apply` avoids the delete+create
@@ -131,17 +133,17 @@ cmd_up() {
   # Bot side: Discord token + control-plane Bearer + LLM key (the
   # embedded agent needs a key to reply). The tool whitelist in
   # wrapper.py blocks bash/file/exec from any Discord-driven prompt.
-  "$KUBECTL" -n "$NS" create secret generic bot-secrets \
-    --from-literal=DEILE_BOT_DISCORD_TOKEN="$discord_token" \
-    --from-literal=DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN="$bearer_token" \
-    "${api_key_args[@]}" \
-    --dry-run=client -o yaml | "$KUBECTL" apply -f - >/dev/null
+  printf "DEILE_BOT_DISCORD_TOKEN=%s\nDEILE_BOT_CONTROL_PLANE_AUTH_TOKEN=%s\n%s" \
+      "$discord_token" "$bearer_token" "$api_key_pairs" | \
+      "$KUBECTL" -n "$NS" create secret generic bot-secrets \
+        --from-env-file=- \
+        --dry-run=client -o yaml | "$KUBECTL" apply -f - >/dev/null
 
   # Deile side: same LLM key + Bearer to talk to bot.
-  "$KUBECTL" -n "$NS" create secret generic deile-secrets \
-    "${api_key_args[@]}" \
-    --from-literal=DEILE_BOT_AUTH_TOKEN="$bearer_token" \
-    --dry-run=client -o yaml | "$KUBECTL" apply -f - >/dev/null
+  printf "DEILE_BOT_AUTH_TOKEN=%s\n%s" "$bearer_token" "$api_key_pairs" | \
+      "$KUBECTL" -n "$NS" create secret generic deile-secrets \
+        --from-env-file=- \
+        --dry-run=client -o yaml | "$KUBECTL" apply -f - >/dev/null
 
   log "applying bot ConfigMap + Deployment + Service + interactive shell"
   "$KUBECTL" apply -f "$HERE/manifests/15-bot-config.yaml"
@@ -205,6 +207,181 @@ cmd_logs() {
   fi
 }
 
+cmd_clone() {
+  # Clone a GitHub repo into /home/deile/work/<name> inside deile-shell.
+  #
+  # Requires:
+  #   - GITHUB_TOKEN in .env (fine-scoped read / clone token — no write needed)
+  #   - Namespace and deile-shell deployment already running (run `up` first)
+  #
+  # The token is wired into the deile-secrets Secret, propagated to the pod
+  # by the kubelet volume sync, and picked up by wrapper.py's credential
+  # helper. The ~/bin/git guard then enforces the clonable_repos allowlist
+  # from bot-config before any clone proceeds.
+  local repo="${1:-}"
+  [ -n "$repo" ] || fail "usage: $0 clone <owner/repo>"
+
+  require_file "$ENV_FILE"
+
+  # Verify the namespace is up.
+  "$KUBECTL" get namespace "$NS" >/dev/null 2>&1 \
+    || fail "Namespace $NS not found. Run: $0 up"
+
+  # Verify deile-shell deployment exists.
+  "$KUBECTL" -n "$NS" get deployment deile-shell >/dev/null 2>&1 \
+    || fail "deile-shell not running. Run: $0 up"
+
+  local github_token
+  github_token="$(read_env_var GITHUB_TOKEN "$ENV_FILE" || true)"
+  [ -n "$github_token" ] || fail "GITHUB_TOKEN missing in $ENV_FILE (add a fine-scoped read/clone token)"
+
+  # Collect LLM keys that exist in .env (needed to not wipe them from the secret).
+  local api_key_pairs=""
+  local _api_key_count=0
+  for key in ANTHROPIC_API_KEY OPENAI_API_KEY DEEPSEEK_API_KEY GOOGLE_API_KEY; do
+    local v
+    v="$(read_env_var "$key" "$ENV_FILE" || true)"
+    [ -n "$v" ] && { api_key_pairs+="${key}=${v}"$'\n'; _api_key_count=$(( _api_key_count + 1 )); }
+  done
+  [ "$_api_key_count" -gt 0 ] || fail "no LLM API key in $ENV_FILE"
+
+  local bearer_token
+  bearer_token="$(read_env_var DEILE_BOT_AUTH_TOKEN "$ENV_FILE" || true)"
+  [ -n "$bearer_token" ] || fail "DEILE_BOT_AUTH_TOKEN missing in $ENV_FILE — run 'up' first to establish a stable token"
+
+  log "wiring GITHUB_TOKEN into deile-secrets (no other secret values echoed)"
+  printf "DEILE_BOT_AUTH_TOKEN=%s\nGITHUB_TOKEN=%s\n%s" \
+      "$bearer_token" "$github_token" "$api_key_pairs" | \
+      "$KUBECTL" -n "$NS" create secret generic deile-secrets \
+        --from-env-file=- \
+        --dry-run=client -o yaml | "$KUBECTL" apply -f - >/dev/null
+
+  # kubelet syncs projected secret volumes asynchronously (~30-60 s by default).
+  # Poll up to 90 s using wall-clock time so kubectl exec latency doesn't
+  # cause early exit.
+  log "waiting for kubelet to sync GITHUB_TOKEN into the pod (max 90s)"
+  local START_TS
+  START_TS=$(date +%s)
+  local token_ready=0
+  while [ $(( $(date +%s) - START_TS )) -lt 90 ]; do
+    if "$KUBECTL" -n "$NS" exec deploy/deile-shell -- \
+        test -f /run/secrets/deile/GITHUB_TOKEN 2>/dev/null; then
+      log "GITHUB_TOKEN secret file confirmed in pod"
+      token_ready=1
+      break
+    fi
+    sleep 10
+  done
+  if [ "$token_ready" -eq 0 ]; then
+    fail "GITHUB_TOKEN not synced after 90s. Diagnose: kubectl -n $NS describe secret deile-secrets && kubectl -n $NS get events"
+  fi
+
+  local repo_name="${repo##*/}"
+  local work_dir="/home/deile/work/${repo_name}"
+  local clone_url="https://github.com/${repo}.git"
+
+  log "cloning ${clone_url} → ${work_dir} (inside deile-shell)"
+  # Run a self-contained Python snippet inside the pod that:
+  #   1. Sets up git credentials from the mounted secret file.
+  #   2. Invokes git clone via the ~/bin/git guard (enforces allowlist), or
+  #      performs its own URL validation if the guard is absent.
+  # The token never appears in argv; it is read from the Secret-mounted
+  # file and written to ~/.git-credentials inside the pod in-process.
+  # CLONE_URL and WORK_DIR are passed via --env so they are never
+  # interpolated into the Python source (no shell-injection risk).
+  "$KUBECTL" -n "$NS" exec \
+    --env CLONE_URL="${clone_url}" \
+    --env WORK_DIR="${work_dir}" \
+    deploy/deile-shell -- \
+    python3 -c '
+import fnmatch, os, posixpath, subprocess, sys, urllib.parse
+from pathlib import Path
+
+clone_url = os.environ["CLONE_URL"]
+work_dir  = os.environ["WORK_DIR"]
+
+home = Path(os.environ.get("HOME", "/home/deile"))
+token_file = Path("/run/secrets/deile/GITHUB_TOKEN")
+if token_file.exists():
+    token = token_file.read_text().strip()
+    creds = home / ".git-credentials"
+    fd = os.open(str(creds), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        fh = os.fdopen(fd, "w", encoding="utf-8")
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    with fh:
+        fh.write("https://oauth2:" + token + "@github.com\n")
+    subprocess.run(
+        ["git", "config", "--global", "credential.helper", "store"],
+        check=False,
+    )
+
+(home / "work").mkdir(parents=True, exist_ok=True)
+git_bin = home / "bin" / "git"
+
+if git_bin.exists():
+    # Guard present — enforces allowlist and re-injects credential.helper itself.
+    git_cmd = str(git_bin)
+    _cred_args = []
+else:
+    # Guard absent — perform URL validation using the config file when present.
+    # If both guard and config are absent, open policy applies (any repo allowed),
+    # matching the documented wrapper.py behaviour for absent config.
+    config_path = home / "config" / "deilebot.yaml"
+    if config_path.exists():
+        try:
+            import yaml
+        except ImportError as exc:
+            print(f"clone: PyYAML not available: {exc} — deny all", file=sys.stderr)
+            sys.exit(1)
+        try:
+            data = yaml.safe_load(config_path.read_text()) or {}
+            raw = (data.get("git_integration") or {}).get("clonable_repos", [])
+            if isinstance(raw, list) and raw:
+                patterns = [str(p).strip() for p in raw if str(p).strip()]
+            else:
+                patterns = ["*"]
+        except Exception as exc:
+            print(f"clone: could not parse clonable_repos: {exc} — deny all", file=sys.stderr)
+            sys.exit(1)
+    else:
+        patterns = ["*"]
+
+    if patterns != ["*"]:
+        parsed = urllib.parse.urlparse(clone_url)
+        if parsed.hostname == "github.com":
+            repo_path = posixpath.normpath(parsed.path.lstrip("/").removesuffix(".git"))
+        else:
+            repo_path = clone_url.removesuffix(".git")
+        if not any(fnmatch.fnmatch(repo_path, p) for p in patterns):
+            print(
+                f"clone: {clone_url!r} is not in clonable_repos allowlist. "
+                f"Allowed patterns: {patterns}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    git_cmd = "/usr/bin/git"
+    _cred_args = ["-c", "credential.helper=store"]
+
+result = subprocess.run(
+    [git_cmd, *_cred_args, "clone", "--depth", "1", clone_url, work_dir],
+    env={**os.environ, "GIT_TERMINAL_PROMPT": "0",
+         "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"},
+)
+if result.returncode != 0:
+    sys.exit(result.returncode)
+print("clone complete: " + work_dir)
+'
+  log "done — repo available at ${work_dir} inside deile-shell"
+  log "to work: kubectl -n ${NS} exec -it deploy/deile-shell -- python3 /app/wrapper.py deile"
+}
+
 cmd_down() {
   log "removing namespace $NS (this deletes everything in it)"
   "$KUBECTL" delete namespace "$NS" --ignore-not-found
@@ -222,19 +399,22 @@ case "${1:-}" in
   up)      cmd_up ;;
   test)    cmd_test ;;
   logs)    cmd_logs ;;
+  clone)   cmd_clone "${2:-}" ;;
   down)    cmd_down ;;
   all)     cmd_all ;;
   *)
     cat >&2 <<EOF
-usage: $0 {build|up|test|logs|down|all}
+usage: $0 {build|up|test|logs|clone|down|all}
 
-  build  — rebuild the deile-stack:local image into containerd's k8s.io ns
-           (auto-rolls existing deployments so they pick up the new image)
-  up     — namespace, network policies, secrets, bot deployment+svc (idempotent)
-  test   — run the one-shot deile Job; streams logs
-  logs   — show recent bot + Job logs
-  down   — delete the deile namespace (full teardown)
-  all    — build, up, test, logs (the happy path)
+  build        — rebuild the deile-stack:local image into containerd's k8s.io ns
+                 (auto-rolls existing deployments so they pick up the new image)
+  up           — namespace, network policies, secrets, bot deployment+svc (idempotent)
+  test         — run the one-shot deile Job; streams logs
+  logs         — show recent bot + Job logs
+  clone <o/r>  — clone github.com/<owner>/<repo> into /home/deile/work/<repo>
+                 inside deile-shell (requires GITHUB_TOKEN in .env and 'up' first)
+  down         — delete the deile namespace (full teardown)
+  all          — build, up, test, logs (the happy path)
 EOF
     exit 64
     ;;
