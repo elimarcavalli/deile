@@ -1039,6 +1039,8 @@ def _load_layered_settings() -> "Settings":
     if not global_path.exists() and not project_path.exists():
         legacy = _apply_legacy_fallback(cwd)
         if legacy is not None:
+            # Still apply env overrides on top so DEILE_* vars always win.
+            _apply_env_overrides(legacy)
             return legacy
 
     # Layer 3: env vars as deprecated fallback (win over JSON for backward compat)

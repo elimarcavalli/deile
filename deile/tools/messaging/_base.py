@@ -314,19 +314,12 @@ class MessagingTool(Tool, abc.ABC):
         return None
 
     def _map_exception(self, exc: Exception) -> ToolResult:
-        from ...integrations.bot.client import (BOT_CLIENT_AVAILABLE,
-                                                BotClientAuthError,
+        from ...integrations.bot.client import (BotClientAuthError,
                                                 BotClientNotReady,
                                                 BotClientRateLimited,
                                                 BotClientTimeoutError,
                                                 BotClientUpstreamError)
 
-        if not BOT_CLIENT_AVAILABLE:
-            return ToolResult.error_result(
-                f"deilebot missing: {exc}",
-                error=exc,
-                error_code="BOT_INTEGRATION_DISABLED",
-            )
         if isinstance(exc, BotClientAuthError):
             return ToolResult.error_result(
                 "control-plane rejected the auth token",
