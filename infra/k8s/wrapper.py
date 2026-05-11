@@ -252,7 +252,7 @@ def _setup_git_clone_guard(config_path: str = "") -> None:
         f"""\
 #!/usr/bin/env python3
 \"\"\"git clone allowlist guard — installed by wrapper.py.\"\"\"
-import fnmatch, subprocess, sys, urllib.parse
+import fnmatch, os, posixpath, re as _re, subprocess, sys, urllib.parse
 
 # Allowlist baked in at wrapper startup — not read from env at runtime.
 _PATTERNS = {allowlist_literal}
@@ -275,6 +275,9 @@ while _i < len(args):
         _subcommand = _a
         _sub_idx = _i
         break
+
+_git_env = None  # overridden for clone to neutralize insteadOf entries
+
 if _subcommand == "clone":
     patterns = _PATTERNS if _PATTERNS else []
     if patterns != ["*"]:
@@ -289,8 +292,8 @@ if _subcommand == "clone":
             # SCP-style: git@host:owner/repo.git — urlparse returns hostname=None.
             _host_path = url[len("git@"):]
             _host, _, _path = _host_path.partition(":")
-            if _host == "github.com":
-                repo_path = _path.removesuffix(".git")
+            if _host.lower() == "github.com":
+                repo_path = posixpath.normpath(_path.removesuffix(".git"))
             else:
                 repo_path = url.removesuffix(".git")
         else:
@@ -298,7 +301,9 @@ if _subcommand == "clone":
             # are rejected correctly.
             parsed = urllib.parse.urlparse(url)
             if parsed.hostname == "github.com":
-                repo_path = parsed.path.lstrip("/").removesuffix(".git")
+                repo_path = posixpath.normpath(
+                    parsed.path.lstrip("/").removesuffix(".git")
+                )
             else:
                 repo_path = url.removesuffix(".git")
         if not any(fnmatch.fnmatch(repo_path, p) for p in patterns):
@@ -309,8 +314,25 @@ if _subcommand == "clone":
             )
             sys.exit(1)
 
+    # Strip any -c url.*.insteadOf* options from forwarded args — prevents
+    # an agent from redirecting an allowlisted clone URL to another server.
+    _INSTOF_RE = _re.compile(r'url\..+\.insteadof\s*=', _re.IGNORECASE)
+    _clean = []
+    _ci = 0
+    while _ci < len(args):
+        if args[_ci] == "-c" and _ci + 1 < len(args) and _INSTOF_RE.match(args[_ci + 1]):
+            _ci += 2
+        else:
+            _clean.append(args[_ci])
+            _ci += 1
+    # Run clone in a sanitised config environment; re-inject credential.helper
+    # so ~/.git-credentials written by wrapper.py is still honoured.
+    _git_env = {{**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null",
+                "GIT_CONFIG_NOSYSTEM": "1"}}
+    args = ["-c", "credential.helper=store"] + _clean
+
 try:
-    sys.exit(subprocess.run(["/usr/bin/git", *args]).returncode)
+    sys.exit(subprocess.run(["/usr/bin/git", *args], env=_git_env).returncode)
 except FileNotFoundError:
     print("git-clone-guard: /usr/bin/git not found", file=sys.stderr)
     sys.exit(127)

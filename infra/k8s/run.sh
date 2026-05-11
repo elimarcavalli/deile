@@ -113,15 +113,17 @@ cmd_up() {
   # Collect LLM keys that exist in .env. The bot needs at least one
   # for its embedded agent to reply to Discord; deile needs at least
   # one for its own outbound flow.
-  local api_key_args=()
+  local api_key_pairs=""
+  local _api_key_count=0
   for key in ANTHROPIC_API_KEY OPENAI_API_KEY DEEPSEEK_API_KEY GOOGLE_API_KEY; do
     local v
     v="$(read_env_var "$key" "$ENV_FILE" || true)"
     if [ -n "$v" ]; then
-      api_key_args+=( "--from-literal=${key}=${v}" )
+      api_key_pairs+="${key}=${v}"$'\n'
+      _api_key_count=$(( _api_key_count + 1 ))
     fi
   done
-  [ "${#api_key_args[@]}" -gt 0 ] || fail "no LLM API key in $ENV_FILE"
+  [ "$_api_key_count" -gt 0 ] || fail "no LLM API key in $ENV_FILE"
 
   log "wiring Secrets (atomic apply; nothing echoed)"
   # `create … --dry-run=client -o yaml | apply` avoids the delete+create
@@ -131,17 +133,17 @@ cmd_up() {
   # Bot side: Discord token + control-plane Bearer + LLM key (the
   # embedded agent needs a key to reply). The tool whitelist in
   # wrapper.py blocks bash/file/exec from any Discord-driven prompt.
-  "$KUBECTL" -n "$NS" create secret generic bot-secrets \
-    --from-literal=DEILE_BOT_DISCORD_TOKEN="$discord_token" \
-    --from-literal=DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN="$bearer_token" \
-    "${api_key_args[@]}" \
-    --dry-run=client -o yaml | "$KUBECTL" apply -f - >/dev/null
+  printf "DEILE_BOT_DISCORD_TOKEN=%s\nDEILE_BOT_CONTROL_PLANE_AUTH_TOKEN=%s\n%s" \
+      "$discord_token" "$bearer_token" "$api_key_pairs" | \
+      "$KUBECTL" -n "$NS" create secret generic bot-secrets \
+        --from-env-file=- \
+        --dry-run=client -o yaml | "$KUBECTL" apply -f - >/dev/null
 
   # Deile side: same LLM key + Bearer to talk to bot.
-  "$KUBECTL" -n "$NS" create secret generic deile-secrets \
-    "${api_key_args[@]}" \
-    --from-literal=DEILE_BOT_AUTH_TOKEN="$bearer_token" \
-    --dry-run=client -o yaml | "$KUBECTL" apply -f - >/dev/null
+  printf "DEILE_BOT_AUTH_TOKEN=%s\n%s" "$bearer_token" "$api_key_pairs" | \
+      "$KUBECTL" -n "$NS" create secret generic deile-secrets \
+        --from-env-file=- \
+        --dry-run=client -o yaml | "$KUBECTL" apply -f - >/dev/null
 
   log "applying bot ConfigMap + Deployment + Service + interactive shell"
   "$KUBECTL" apply -f "$HERE/manifests/15-bot-config.yaml"
@@ -234,26 +236,28 @@ cmd_clone() {
   [ -n "$github_token" ] || fail "GITHUB_TOKEN missing in $ENV_FILE (add a fine-scoped read/clone token)"
 
   # Collect LLM keys that exist in .env (needed to not wipe them from the secret).
-  local api_key_args=()
+  local api_key_pairs=""
+  local _api_key_count=0
   for key in ANTHROPIC_API_KEY OPENAI_API_KEY DEEPSEEK_API_KEY GOOGLE_API_KEY; do
     local v
     v="$(read_env_var "$key" "$ENV_FILE" || true)"
-    [ -n "$v" ] && api_key_args+=("--from-literal=${key}=${v}")
+    [ -n "$v" ] && { api_key_pairs+="${key}=${v}"$'\n'; _api_key_count=$(( _api_key_count + 1 )); }
   done
-  [ "${#api_key_args[@]}" -gt 0 ] || fail "no LLM API key in $ENV_FILE"
+  [ "$_api_key_count" -gt 0 ] || fail "no LLM API key in $ENV_FILE"
 
   local bearer_token
   bearer_token="$(read_env_var DEILE_BOT_AUTH_TOKEN "$ENV_FILE" || true)"
   if [ -z "$bearer_token" ]; then
     bearer_token="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+    log "WARNING: DEILE_BOT_AUTH_TOKEN absent — minted a fresh token; if the bot is running its auth token will mismatch. Re-run 'up' or add the token to .env."
   fi
 
   log "wiring GITHUB_TOKEN into deile-secrets (no other secret values echoed)"
-  "$KUBECTL" -n "$NS" create secret generic deile-secrets \
-    "${api_key_args[@]}" \
-    --from-literal=DEILE_BOT_AUTH_TOKEN="$bearer_token" \
-    --from-literal=GITHUB_TOKEN="$github_token" \
-    --dry-run=client -o yaml | "$KUBECTL" apply -f - >/dev/null
+  printf "DEILE_BOT_AUTH_TOKEN=%s\nGITHUB_TOKEN=%s\n%s" \
+      "$bearer_token" "$github_token" "$api_key_pairs" | \
+      "$KUBECTL" -n "$NS" create secret generic deile-secrets \
+        --from-env-file=- \
+        --dry-run=client -o yaml | "$KUBECTL" apply -f - >/dev/null
 
   # kubelet syncs projected secret volumes asynchronously (~30-60 s by default).
   # Poll up to 90 s using wall-clock time so kubectl exec latency doesn't
@@ -293,7 +297,7 @@ cmd_clone() {
     --env WORK_DIR="${work_dir}" \
     deploy/deile-shell -- \
     python3 -c '
-import fnmatch, os, subprocess, sys, urllib.parse
+import fnmatch, os, posixpath, subprocess, sys, urllib.parse
 from pathlib import Path
 
 clone_url = os.environ["CLONE_URL"]
@@ -306,7 +310,7 @@ if token_file.exists():
     creds = home / ".git-credentials"
     fd = os.open(str(creds), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        fh = os.fdopen(fd, "w")
+        fh = os.fdopen(fd, "w", encoding="utf-8")
     except Exception:
         try:
             os.close(fd)
@@ -353,7 +357,7 @@ else:
     if patterns != ["*"]:
         parsed = urllib.parse.urlparse(clone_url)
         if parsed.hostname == "github.com":
-            repo_path = parsed.path.lstrip("/").removesuffix(".git")
+            repo_path = posixpath.normpath(parsed.path.lstrip("/").removesuffix(".git"))
         else:
             repo_path = clone_url.removesuffix(".git")
         if not any(fnmatch.fnmatch(repo_path, p) for p in patterns):
@@ -367,8 +371,9 @@ else:
     git_cmd = "/usr/bin/git"
 
 result = subprocess.run(
-    [git_cmd, "clone", "--depth", "1", clone_url, work_dir],
-    env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+    [git_cmd, "-c", "credential.helper=store", "clone", "--depth", "1", clone_url, work_dir],
+    env={**os.environ, "GIT_TERMINAL_PROMPT": "0",
+         "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"},
 )
 if result.returncode != 0:
     sys.exit(result.returncode)
