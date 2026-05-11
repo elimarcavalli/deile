@@ -205,6 +205,117 @@ cmd_logs() {
   fi
 }
 
+cmd_clone() {
+  # Clone a GitHub repo into /home/deile/work/<name> inside deile-shell.
+  #
+  # Requires:
+  #   - GITHUB_TOKEN in .env (fine-scoped read / clone token — no write needed)
+  #   - Namespace and deile-shell deployment already running (run `up` first)
+  #
+  # The token is wired into the deile-secrets Secret, propagated to the pod
+  # by the kubelet volume sync, and picked up by wrapper.py's credential
+  # helper. The ~/bin/git guard then enforces the clonable_repos allowlist
+  # from bot-config before any clone proceeds.
+  local repo="${1:-}"
+  [ -n "$repo" ] || fail "usage: $0 clone <owner/repo>"
+
+  require_file "$ENV_FILE"
+
+  # Verify the namespace is up.
+  "$KUBECTL" get namespace "$NS" >/dev/null 2>&1 \
+    || fail "Namespace $NS not found. Run: $0 up"
+
+  # Verify deile-shell deployment exists.
+  "$KUBECTL" -n "$NS" get deployment deile-shell >/dev/null 2>&1 \
+    || fail "deile-shell not running. Run: $0 up"
+
+  local github_token
+  github_token="$(read_env_var GITHUB_TOKEN "$ENV_FILE" || true)"
+  [ -n "$github_token" ] || fail "GITHUB_TOKEN missing in $ENV_FILE (add a fine-scoped read/clone token)"
+
+  # Collect LLM keys that exist in .env (needed to not wipe them from the secret).
+  local api_key_args=()
+  for key in ANTHROPIC_API_KEY OPENAI_API_KEY DEEPSEEK_API_KEY GOOGLE_API_KEY; do
+    local v
+    v="$(read_env_var "$key" "$ENV_FILE" || true)"
+    [ -n "$v" ] && api_key_args+=("--from-literal=${key}=${v}")
+  done
+  [ "${#api_key_args[@]}" -gt 0 ] || fail "no LLM API key in $ENV_FILE"
+
+  local bearer_token
+  bearer_token="$(read_env_var DEILE_BOT_AUTH_TOKEN "$ENV_FILE" || true)"
+  if [ -z "$bearer_token" ]; then
+    bearer_token="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+  fi
+
+  log "wiring GITHUB_TOKEN into deile-secrets (no other secret values echoed)"
+  "$KUBECTL" -n "$NS" create secret generic deile-secrets \
+    "${api_key_args[@]}" \
+    --from-literal=DEILE_BOT_AUTH_TOKEN="$bearer_token" \
+    --from-literal=GITHUB_TOKEN="$github_token" \
+    --dry-run=client -o yaml | "$KUBECTL" apply -f - >/dev/null
+
+  # kubelet syncs projected secret volumes asynchronously (~30-60 s by default).
+  # Poll up to 90 s so the GITHUB_TOKEN file appears under /run/secrets/deile/
+  # before we attempt the clone.
+  log "waiting for kubelet to sync GITHUB_TOKEN into the pod (max 90s)"
+  local elapsed=0
+  while [ "$elapsed" -lt 90 ]; do
+    if "$KUBECTL" -n "$NS" exec deploy/deile-shell -- \
+        test -f /run/secrets/deile/GITHUB_TOKEN 2>/dev/null; then
+      log "GITHUB_TOKEN secret file confirmed in pod"
+      break
+    fi
+    sleep 10
+    elapsed=$((elapsed + 10))
+  done
+  if [ "$elapsed" -ge 90 ]; then
+    log "WARNING: GITHUB_TOKEN not yet visible inside pod after 90s — proceeding anyway"
+  fi
+
+  local repo_name="${repo##*/}"
+  local work_dir="/home/deile/work/${repo_name}"
+  local clone_url="https://github.com/${repo}.git"
+
+  log "cloning ${clone_url} → ${work_dir} (inside deile-shell)"
+  # Run a self-contained Python snippet inside the pod that:
+  #   1. Sets up git credentials from the mounted secret file.
+  #   2. Invokes git clone via the ~/bin/git guard (enforces allowlist).
+  # The token never appears in argv; it is read from the Secret-mounted
+  # file and written to ~/.git-credentials inside the pod in-process.
+  "$KUBECTL" -n "$NS" exec deploy/deile-shell -- \
+    python3 -c "
+import os, subprocess, sys
+from pathlib import Path
+
+home = Path(os.environ.get('HOME', '/home/deile'))
+token_file = Path('/run/secrets/deile/GITHUB_TOKEN')
+if token_file.exists():
+    token = token_file.read_text().strip()
+    creds = home / '.git-credentials'
+    creds.write_text('https://oauth2:' + token + '@github.com\n')
+    creds.chmod(0o600)
+    gitconfig = home / '.gitconfig'
+    existing = gitconfig.read_text() if gitconfig.exists() else ''
+    if 'credential.helper' not in existing:
+        with gitconfig.open('a') as fh:
+            fh.write('\n[credential]\n\thelper = store\n')
+
+(home / 'work').mkdir(parents=True, exist_ok=True)
+git_bin = home / 'bin' / 'git'
+git_cmd = str(git_bin) if git_bin.exists() else '/usr/bin/git'
+result = subprocess.run(
+    [git_cmd, 'clone', '--depth', '1', '${clone_url}', '${work_dir}'],
+    env={**os.environ, 'GIT_TERMINAL_PROMPT': '0'},
+)
+if result.returncode != 0:
+    sys.exit(result.returncode)
+print('clone complete: ${work_dir}')
+"
+  log "done — repo available at ${work_dir} inside deile-shell"
+  log "to work: kubectl -n ${NS} exec -it deploy/deile-shell -- python3 /app/wrapper.py deile"
+}
+
 cmd_down() {
   log "removing namespace $NS (this deletes everything in it)"
   "$KUBECTL" delete namespace "$NS" --ignore-not-found
@@ -222,19 +333,22 @@ case "${1:-}" in
   up)      cmd_up ;;
   test)    cmd_test ;;
   logs)    cmd_logs ;;
+  clone)   cmd_clone "${2:-}" ;;
   down)    cmd_down ;;
   all)     cmd_all ;;
   *)
     cat >&2 <<EOF
-usage: $0 {build|up|test|logs|down|all}
+usage: $0 {build|up|test|logs|clone|down|all}
 
-  build  — rebuild the deile-stack:local image into containerd's k8s.io ns
-           (auto-rolls existing deployments so they pick up the new image)
-  up     — namespace, network policies, secrets, bot deployment+svc (idempotent)
-  test   — run the one-shot deile Job; streams logs
-  logs   — show recent bot + Job logs
-  down   — delete the deile namespace (full teardown)
-  all    — build, up, test, logs (the happy path)
+  build        — rebuild the deile-stack:local image into containerd's k8s.io ns
+                 (auto-rolls existing deployments so they pick up the new image)
+  up           — namespace, network policies, secrets, bot deployment+svc (idempotent)
+  test         — run the one-shot deile Job; streams logs
+  logs         — show recent bot + Job logs
+  clone <o/r>  — clone github.com/<owner>/<repo> into /home/deile/work/<repo>
+                 inside deile-shell (requires GITHUB_TOKEN in .env and 'up' first)
+  down         — delete the deile namespace (full teardown)
+  all          — build, up, test, logs (the happy path)
 EOF
     exit 64
     ;;

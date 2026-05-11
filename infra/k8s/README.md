@@ -104,16 +104,18 @@ bash infra/k8s/run.sh down    # kubectl delete ns deile
 ```
 infra/k8s/
 ├── .dockerignore                 ← nada secreto, nada grande entra na imagem
-├── Dockerfile                    ← multi-stage; non-root; tini; readonly-friendly
-├── wrapper.py                    ← entry-point que lê /run/secrets/<role>/, popa env
-├── run.sh                        ← orquestrador build/up/test/logs/down
+├── Dockerfile                    ← multi-stage; non-root; tini + git; readonly-friendly
+├── wrapper.py                    ← entry-point que lê /run/secrets/<role>/, popa env,
+│                                    configura git credentials + clone guard
+├── run.sh                        ← orquestrador build/up/test/logs/clone/down
 ├── README.md                     ← este arquivo
 └── manifests/
     ├── 00-namespace.yaml         namespace `deile` w/ PSS:restricted
-    ├── 15-bot-config.yaml        ConfigMap: deilebot.yaml com owners
+    ├── 15-bot-config.yaml        ConfigMap: deilebot.yaml com owners + clonable_repos
     ├── 20-bot-deployment.yaml    bot Deployment + Service (ClusterIP :8765)
     ├── 30-deile-job.yaml         one-shot deile Job (proof-of-DM)
     ├── 35-deile-interactive.yaml long-running deile-shell (`kubectl exec`)
+    ├── 36-deile-shell-pvc.yaml   PVC opcional para /home/deile persistente
     ├── 40-network-policy.yaml    default-deny + selective allow
     └── 99-deile-debug.yaml       probe Pod (manual; off-path)
 ```
@@ -192,7 +194,72 @@ kubectl -n deile exec -it deploy/deile-shell -- python3 /app/wrapper.py deile   
 python3 deile.py "seu prompt"
 ```
 
-### 4.2 Diagnóstico rápido
+### 4.2 Clonar repositórios dentro do deile-shell
+
+`deile-shell` inclui `git` no container e suporta clonar repos do GitHub de
+forma segura — as credenciais ficam num K8s Secret, nunca em variáveis de
+ambiente visíveis no `/proc/<pid>/environ`.
+
+#### Pré-requisito: adicionar `GITHUB_TOKEN` ao `.env`
+
+```ini
+# Crie um fine-scoped token no GitHub (Settings → Developer settings →
+# Personal access tokens → Fine-grained). Scopes mínimos: Contents: Read.
+GITHUB_TOKEN=github_pat_...
+```
+
+#### Clonar com um comando
+
+```bash
+bash infra/k8s/run.sh clone elimarcavalli/deile
+```
+
+O que acontece internamente:
+1. `GITHUB_TOKEN` é injetado em `deile-secrets` via `kubectl apply --dry-run`.
+2. O script aguarda o kubelet sincronizar o arquivo do Secret no pod (até 90 s).
+3. Um snippet Python roda dentro do pod: lê o token do arquivo Secret-montado,
+   escreve `~/.git-credentials`, configura `credential.helper store`.
+4. `~/bin/git` (o clone guard instalado pelo `wrapper.py`) verifica o URL contra
+   a allowlist `clonable_repos` de `15-bot-config.yaml` antes de chamar `/usr/bin/git`.
+5. O repo aparece em `/home/deile/work/<nome>` dentro do pod.
+
+#### Allowlist de repos
+
+Edite `infra/k8s/manifests/15-bot-config.yaml`, seção `git_integration`:
+
+```yaml
+git_integration:
+  clonable_repos:
+    - "elimarcavalli/*"     # qualquer repo do org
+    - "minha-org/repo-x"   # repo específico
+```
+
+Após editar: `kubectl apply -f infra/k8s/manifests/15-bot-config.yaml`.
+A allowlist é lida pelo `wrapper.py` no próximo `python3 /app/wrapper.py deile`.
+
+#### Home persistente (opcional)
+
+Por padrão `/home/deile` usa `emptyDir` — os repos clonados somem quando o
+pod reinicia. Para persistir:
+
+```bash
+# 1. Criar o PVC
+kubectl apply -f infra/k8s/manifests/36-deile-shell-pvc.yaml
+
+# 2. Editar 35-deile-interactive.yaml:
+#    - comentar a linha emptyDir do volume 'home'
+#    - descomentar o bloco persistentVolumeClaim
+kubectl apply -f infra/k8s/manifests/35-deile-interactive.yaml
+kubectl rollout restart deployment/deile-shell -n deile
+
+# Para remover o disco persistente:
+kubectl delete pvc deile-shell-home -n deile
+```
+
+> **Nota:** O PVC sobrevive a `kubectl rollout restart` mas NÃO a
+> `bash infra/k8s/run.sh down` (que deleta o namespace inteiro).
+
+### 4.3 Diagnóstico rápido
 
 ```bash
 # tudo no namespace
@@ -210,7 +277,7 @@ kubectl -n deile exec deploy/deilebot -- \
   python3 -c "import sqlite3; print(sorted(r[0] for r in sqlite3.connect('/home/deile/data/deilebot.sqlite').execute('SELECT name FROM sqlite_master WHERE type=\"table\"')))"
 ```
 
-### 4.3 Health checks de isolamento
+### 4.4 Health checks de isolamento
 
 São esses os experimentos que provam que o container está fechado.
 Reaproveite a qualquer hora:

@@ -48,3 +48,12 @@ data:
 
     providers:
       enabled_providers: ["discord"]
+
+    # Allowlist of repos that deile-shell is permitted to clone via git.
+    # Globs follow Python fnmatch rules (e.g. "elimarcavalli/*" matches any
+    # repo under that org). The list is enforced by the ~/bin/git guard
+    # installed by wrapper.py at startup. Omit the section (or leave the
+    # list empty) to allow cloning from any repo (open policy — use with care).
+    git_integration:
+      clonable_repos:
+        - "elimarcavalli/*"

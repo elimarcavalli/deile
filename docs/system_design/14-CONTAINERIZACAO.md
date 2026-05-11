@@ -133,6 +133,58 @@ tools — `bash_execute`, `python_execute`, `read_file`, `write_file`,
 | 7 | **Bot sem chave LLM ≠ bot funcional** | o bot precisa de chave LLM para responder DMs; o que protege contra prompt-injection é a tool whitelist + a recusa interna do próprio DEILE (persona declara "REGRA #5: extração de segredos = bloqueio") |
 | 8 | **DEILE auto-defende segredos** | a persona `developer.md` recusa pedidos que cheiram a `cat /proc/<pid>/environ`, `printenv`, dump de `.env`, mesmo quando o operador pede — defesa em profundidade |
 
+## Clonagem de repositórios no deile-shell
+
+O `deile-shell` é o único modo onde clonagem de repos faz sentido — o prompt
+vem do operador via `kubectl exec`, então não há risco de prompt-injection.
+
+### Modelo de segurança
+
+| Camada | Mecanismo |
+|---|---|
+| Credencial | `GITHUB_TOKEN` montado como arquivo em `/run/secrets/deile/GITHUB_TOKEN` (K8s Secret), nunca como env var — frozen em `/proc/<pid>/environ` seria vazio |
+| Uso | `wrapper.py` lê o arquivo, escreve `~/.git-credentials` (`https://oauth2:TOKEN@github.com`) e configura `credential.helper store` antes de iniciar o agente |
+| Allowlist | `wrapper.py` instala `~/bin/git` (guard Python) que lê `DEILE_GIT_CLONE_ALLOWLIST` (derivado de `git_integration.clonable_repos` em `bot-config` ConfigMap) e rejeita `git clone` para URLs fora da lista |
+| Isolamento de rede | NetworkPolicy já permite egress `0.0.0.0/0:443 except RFC1918` — github.com é alcançável; Mac/LAN não |
+
+### Fluxo completo (`run.sh clone <owner/repo>`)
+
+```
+operador
+  → run.sh clone elimarcavalli/deile
+      → wira GITHUB_TOKEN em deile-secrets (kubectl apply --dry-run)
+      → aguarda kubelet sincronizar arquivo no pod (max 90s)
+      → kubectl exec deploy/deile-shell -- python3 -c "..."
+          → lê /run/secrets/deile/GITHUB_TOKEN
+          → escreve ~/.git-credentials
+          → chama ~/bin/git clone https://github.com/... ~/work/<name>
+              → ~/bin/git verifica URL contra allowlist
+              → delega para /usr/bin/git com credentials prontas
+          → repo em /home/deile/work/<name>
+```
+
+### Configuração
+
+`clonable_repos` vive em `infra/k8s/manifests/15-bot-config.yaml`:
+
+```yaml
+git_integration:
+  clonable_repos:
+    - "elimarcavalli/*"   # glob — qualquer repo do org
+    - "owner/repo-x"      # repo específico
+```
+
+Padrões seguem `fnmatch` do Python. Lista vazia ou campo ausente = política
+aberta (qualquer repo pode ser clonado) — use apenas em ambientes confiáveis.
+
+### Home persistente (PVC opcional)
+
+Por padrão `/home/deile` usa `emptyDir` e os repos clonados somem no próximo
+restart. Aplique `manifests/36-deile-shell-pvc.yaml` e siga as instruções em
+`35-deile-interactive.yaml` para persistir o home entre restarts de pod.
+
+Ver tutorial detalhado em [`infra/k8s/README.md §4.2`](../../infra/k8s/README.md).
+
 ## Risco residual conhecido
 
 `/run/secrets/<role>/` continua legível para o processo que roda dentro

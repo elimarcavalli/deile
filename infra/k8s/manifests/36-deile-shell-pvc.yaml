@@ -1,0 +1,33 @@
+# Optional PersistentVolumeClaim for deile-shell's home directory.
+#
+# By default 35-deile-interactive.yaml uses an emptyDir for /home/deile,
+# which means cloned repos and the working directory are lost when the pod
+# restarts. Apply this manifest and follow the instructions in
+# 35-deile-interactive.yaml to switch to persistent storage.
+#
+# Usage:
+#   kubectl apply -f infra/k8s/manifests/36-deile-shell-pvc.yaml
+#   # Then edit 35-deile-interactive.yaml: swap emptyDir for PVC (see comments there).
+#   kubectl rollout restart deployment/deile-shell -n deile
+#
+# To reclaim the disk:
+#   kubectl delete pvc deile-shell-home -n deile
+#
+# Note: Rancher Desktop / k3s uses a local-path provisioner that creates the
+# volume under the node's /var/lib/rancher/k3s/storage/. The data survives
+# pod restarts but NOT cluster wipes (run.sh down; run.sh up).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: deile-shell-home
+  namespace: deile
+  labels:
+    app: deile-shell
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  # storageClassName is omitted to use the cluster default (local-path on k3s).
+  # Override explicitly if your cluster has multiple storage classes.

@@ -115,18 +115,137 @@ def _load_secret_files(role_dir: Path) -> List[str]:
 def _harden_runtime_dirs() -> None:
     """Make sure HOME exists and its standard subdirs are writeable.
 
-    Pre-creates ``data/`` and ``logs/`` because the bot's foundation
-    expects them to exist before it opens its sqlite/log files.
+    Pre-creates ``data/``, ``logs/``, ``bin/``, and ``work/`` because
+    the bot's foundation expects them to exist before it opens its
+    sqlite/log files, and the git credential + clone guard helpers
+    need ``bin/`` and ``work/`` to be present.
     """
     home = Path(os.environ.get("HOME", "/home/deile"))
     home.mkdir(parents=True, exist_ok=True)
     (home / ".deile").mkdir(parents=True, exist_ok=True, mode=0o700)
     (home / "data").mkdir(parents=True, exist_ok=True, mode=0o700)
     (home / "logs").mkdir(parents=True, exist_ok=True, mode=0o700)
+    (home / "bin").mkdir(parents=True, exist_ok=True, mode=0o700)
+    (home / "work").mkdir(parents=True, exist_ok=True, mode=0o755)
 
 
 def _has_llm_key(loaded: List[str]) -> bool:
     return any(k.endswith("_API_KEY") for k in loaded)
+
+
+def _setup_git_credentials() -> None:
+    """Wire GITHUB_TOKEN (if loaded) into ~/.git-credentials.
+
+    Reads the token from os.environ (already injected by _load_secret_files),
+    writes the credential store file, and configures git's credential helper
+    so every subsequent ``git clone/fetch/push`` finds it automatically.
+
+    Security: the file is created 0o600 (owner-read only). The token never
+    appears in argv or /proc/<pid>/environ — it stays in the file only.
+    """
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if not token:
+        return
+
+    home = Path(os.environ.get("HOME", "/home/deile"))
+    creds_file = home / ".git-credentials"
+    try:
+        creds_file.write_text(f"https://oauth2:{token}@github.com\n", encoding="utf-8")
+        creds_file.chmod(0o600)
+    except OSError as exc:
+        print(f"wrapper: could not write ~/.git-credentials: {exc}", file=sys.stderr)
+        return
+
+    gitconfig = home / ".gitconfig"
+    try:
+        existing = gitconfig.read_text(encoding="utf-8") if gitconfig.exists() else ""
+        if "credential.helper" not in existing:
+            with gitconfig.open("a", encoding="utf-8") as fh:
+                fh.write("\n[credential]\n\thelper = store\n")
+    except OSError as exc:
+        print(f"wrapper: could not update ~/.gitconfig: {exc}", file=sys.stderr)
+
+    print("wrapper(deile): GITHUB_TOKEN wired into ~/.git-credentials", file=sys.stderr)
+
+
+def _setup_git_clone_guard(config_path: str = "/home/deile/config/deilebot.yaml") -> None:
+    """Install ~/bin/git, a guard that enforces the clonable_repos allowlist.
+
+    Reads ``git_integration.clonable_repos`` from the mounted deilebot.yaml
+    config. If the list is absent or empty the guard allows all repos (open
+    policy). Prepends ~/bin to PATH so the guard shadows /usr/bin/git.
+
+    The guard is a small Python script so it runs without a shell, avoiding
+    quoting / injection issues. It delegates every non-clone sub-command
+    directly to /usr/bin/git unchanged.
+    """
+    home = Path(os.environ.get("HOME", "/home/deile"))
+    bin_dir = home / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+
+    allowlist: List[str] = ["*"]
+    cfg = Path(config_path)
+    if cfg.exists():
+        try:
+            import yaml  # PyYAML is a deile dep — always available in the image
+
+            data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+            raw = (data.get("git_integration") or {}).get("clonable_repos", [])
+            if isinstance(raw, list) and raw:
+                allowlist = [str(p).strip() for p in raw if str(p).strip()]
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            print(
+                f"wrapper: could not parse clonable_repos from {config_path}: {exc}",
+                file=sys.stderr,
+            )
+
+    # Encode the allowlist as a pipe-separated string in the env so the guard
+    # script reads it at runtime (no import of yaml inside the guard).
+    os.environ["DEILE_GIT_CLONE_ALLOWLIST"] = "|".join(allowlist)
+
+    guard_script = bin_dir / "git"
+    guard_script.write_text(
+        """\
+#!/usr/bin/env python3
+\"\"\"git clone allowlist guard — installed by wrapper.py.\"\"\"
+import fnmatch, os, subprocess, sys
+
+args = sys.argv[1:]
+if args and args[0] == "clone":
+    raw = os.environ.get("DEILE_GIT_CLONE_ALLOWLIST", "*")
+    patterns = [p.strip() for p in raw.split("|") if p.strip()] or ["*"]
+    if patterns != ["*"]:
+        urls = [a for a in args[1:] if not a.startswith("-")]
+        if urls:
+            url = urls[0].rstrip("/")
+            # Accept both https://github.com/owner/repo[.git] and owner/repo forms.
+            if "github.com/" in url:
+                repo_path = url.split("github.com/", 1)[-1].removesuffix(".git")
+            else:
+                repo_path = url.removesuffix(".git")
+            if not any(fnmatch.fnmatch(repo_path, p) for p in patterns):
+                print(
+                    f"git-clone-guard: {url!r} is not in clonable_repos allowlist. "
+                    f"Allowed patterns: {patterns}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+
+sys.exit(subprocess.run(["/usr/bin/git", *args]).returncode)
+""",
+        encoding="utf-8",
+    )
+    guard_script.chmod(0o700)
+
+    # Prepend ~/bin so the guard is found before /usr/bin/git.
+    current_path = os.environ.get("PATH", "/usr/bin:/bin")
+    if str(bin_dir) not in current_path.split(":"):
+        os.environ["PATH"] = f"{bin_dir}:{current_path}"
+
+    print(
+        f"wrapper(deile): git clone guard active — allowlist={allowlist}",
+        file=sys.stderr,
+    )
 
 
 def _install_tool_whitelist(role: str) -> None:
@@ -216,6 +335,8 @@ def _run_deile(passthrough: List[str]) -> int:
         )
         return 78  # EX_CONFIG
 
+    _setup_git_credentials()
+    _setup_git_clone_guard()
     _patch_deile_bootstrap()
 
     # Tool policy is operator-chosen because the deile prompt comes
