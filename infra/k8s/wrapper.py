@@ -257,10 +257,27 @@ import fnmatch, subprocess, sys, urllib.parse
 _PATTERNS = {allowlist_literal}
 
 args = sys.argv[1:]
-if args and args[0] == "clone":
+# Locate the git subcommand: skip global options, handling two-token forms
+# like -c KEY=VAL and -C /dir so `git -C /dir clone <url>` is not bypassed.
+_OPTS_TAKES_ARG = frozenset(["-c", "-C", "--git-dir", "--work-tree",
+                              "--namespace", "--super-prefix", "--exec-path"])
+_subcommand = None
+_sub_idx = 0
+_i = 0
+while _i < len(args):
+    _a = args[_i]
+    if _a in _OPTS_TAKES_ARG:
+        _i += 2
+    elif _a.startswith("-"):
+        _i += 1
+    else:
+        _subcommand = _a
+        _sub_idx = _i
+        break
+if _subcommand == "clone":
     patterns = _PATTERNS if _PATTERNS else []
     if patterns != ["*"]:
-        urls = [a for a in args[1:] if not a.startswith("-")]
+        urls = [a for a in args[_sub_idx + 1:] if not a.startswith("-")]
         if urls:
             url = urls[0].rstrip("/")
             # Use urlparse to extract hostname so userinfo tricks like

@@ -302,16 +302,15 @@ work_dir  = os.environ["WORK_DIR"]
 home = Path(os.environ.get("HOME", "/home/deile"))
 token_file = Path("/run/secrets/deile/GITHUB_TOKEN")
 if token_file.exists():
-    import os as _os
     token = token_file.read_text().strip()
     creds = home / ".git-credentials"
-    fd = _os.open(str(creds), _os.O_WRONLY | _os.O_CREAT | _os.O_TRUNC, 0o600)
+    fd = os.open(str(creds), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        with _os.fdopen(fd, "w") as fh:
+        with os.fdopen(fd, "w") as fh:
             fh.write("https://oauth2:" + token + "@github.com\n")
     except Exception:
         try:
-            _os.close(fd)
+            os.close(fd)
         except OSError:
             pass
         raise
@@ -327,9 +326,14 @@ if git_bin.exists():
     # Guard present — it enforces the allowlist itself.
     git_cmd = str(git_bin)
 else:
-    # Guard absent — perform URL validation here before falling back to
-    # /usr/bin/git, so the allowlist is always enforced.
-    import yaml
+    # Guard absent — perform URL validation using the config file when present.
+    # If both guard and config are absent, open policy applies (any repo allowed),
+    # matching the documented wrapper.py behaviour for absent config.
+    try:
+        import yaml
+    except ImportError as exc:
+        print(f"clone: PyYAML not available: {exc} — deny all", file=sys.stderr)
+        sys.exit(1)
     config_path = home / "config" / "deilebot.yaml"
     if config_path.exists():
         try:
