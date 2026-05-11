@@ -36,6 +36,16 @@ def _classify_openai_error(exc: openai.APIStatusError) -> str:
     if status == 429:
         return "rate_limit"
     if status and 400 <= status < 500:
+        body = getattr(exc, "body", None) or {}
+        err_dict: Dict[str, Any] = body.get("error", {}) if isinstance(body, dict) else {}
+        err_code = str(err_dict.get("code", "") or "").lower()
+        err_msg = str(err_dict.get("message", "") or str(exc)).lower()
+        if (
+            "context_length_exceeded" in err_code
+            or "maximum context length" in err_msg
+            or "context window" in err_msg
+        ):
+            return "context_length_exceeded"
         return "invalid_request"
     if status and status >= 500:
         return "server"

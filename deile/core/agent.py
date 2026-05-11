@@ -100,7 +100,7 @@ def _is_permanent_provider_error(exc: Exception) -> bool:
         ProviderInvocationError  # noqa: PLC0415
     if not isinstance(exc, ProviderInvocationError):
         return False
-    return exc.envelope.error_type in ("auth", "invalid_request")
+    return exc.envelope.error_type in ("auth", "invalid_request", "context_length_exceeded")
 
 
 def _coerce_model_handle(value: Any) -> Optional[str]:
@@ -1981,6 +1981,16 @@ class DeileAgent:
             # FORCED_MODEL_NOT_REGISTERED also propagates so process_input can build a structured response
             if isinstance(e, ModelError) and getattr(e, "error_code", "") == "FORCED_MODEL_NOT_REGISTERED":
                 raise
+            from deile.core.models.errors import ProviderInvocationError
+            if isinstance(e, ProviderInvocationError) and e.envelope.is_context_length_exceeded:
+                self.logger.warning("Context length exceeded for model %s", e.envelope.model_id)
+                return (
+                    f"O histórico desta conversa excedeu o limite de contexto do modelo **{e.envelope.model_id}**.\n\n"
+                    "**Como resolver:**\n"
+                    "• `/clear` — limpa o histórico e inicia uma nova sessão\n"
+                    "• `/model select` — escolha um modelo com janela de contexto maior\n"
+                    "• Divida sua pergunta em partes menores e mais objetivas\n"
+                ), []
             self.logger.error(f"Chat session function calling failed: {e}", exc_info=True)
             return f"I encountered an error during function calling: {str(e)}", []
 

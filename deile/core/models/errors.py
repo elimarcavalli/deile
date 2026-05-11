@@ -13,12 +13,16 @@ class ProviderErrorEnvelope:
 
     provider_id: str
     model_id: str
-    error_type: str          # "auth" | "rate_limit" | "invalid_request" | "server" | "unknown"
+    error_type: str          # "auth" | "rate_limit" | "invalid_request" | "context_length_exceeded" | "server" | "unknown"
     message: str
     http_status: Optional[int] = None
     raw_json: Dict[str, Any] = field(default_factory=dict)
     request_id: Optional[str] = None
     timestamp: float = field(default_factory=time.time)
+
+    @property
+    def is_context_length_exceeded(self) -> bool:
+        return self.error_type == "context_length_exceeded"
 
     def to_display_dict(self) -> Dict[str, Any]:
         return {

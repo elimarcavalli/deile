@@ -36,6 +36,16 @@ def _classify_anthropic_error(exc: anthropic.APIError) -> str:
     if status == 429:
         return "rate_limit"
     if status and 400 <= status < 500:
+        body = getattr(exc, "body", None) or {}
+        err_type = str((body.get("type", "") or "") if isinstance(body, dict) else "").lower()
+        err_msg = str((body.get("message", "") or "") if isinstance(body, dict) else str(exc)).lower()
+        if (
+            "prompt_too_long" in err_type
+            or "prompt is too long" in err_msg
+            or "maximum context length" in err_msg
+            or "context window" in err_msg
+        ):
+            return "context_length_exceeded"
         return "invalid_request"
     if status and status >= 500:
         return "server"

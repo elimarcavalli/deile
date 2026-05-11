@@ -138,6 +138,7 @@ class ToolLoopExecutor:
             pending_tool_calls: List[Tuple[str, str, Dict[str, Any]]] = []
             text_so_far_parts: List[str] = []
             error_seen = False
+            last_error_envelope: Optional[Any] = None
             # Captured from TOOL_USE_END events — providers that use reasoning/thinking
             # mode (e.g. DeepSeek-R1) require this to be echoed verbatim in the next
             # API call's assistant message, otherwise they return HTTP 400.
@@ -178,11 +179,26 @@ class ToolLoopExecutor:
                         last_reasoning_content = event.reasoning_content
                 elif event.type is StreamEventType.ERROR:
                     error_seen = True
+                    last_error_envelope = event.error_envelope
 
             if error_seen:
-                # Provider emitted ERROR — abort the loop and let the consumer
-                # decide how to surface it. Aggregator path will translate to
-                # AgentResponse(status=ERROR).
+                # Provider emitted ERROR — emit a user-friendly message for
+                # context_length_exceeded, then abort the loop.
+                if (
+                    last_error_envelope is not None
+                    and getattr(last_error_envelope, "error_type", None) == "context_length_exceeded"
+                ):
+                    model_id = getattr(last_error_envelope, "model_id", "modelo")
+                    yield UnifiedStreamEvent(
+                        type=StreamEventType.TEXT_DELTA,
+                        text=(
+                            f"O histórico desta conversa excedeu o limite de contexto do modelo **{model_id}**.\n\n"
+                            "**Como resolver:**\n"
+                            "• `/clear` — limpa o histórico e inicia uma nova sessão\n"
+                            "• `/model select` — escolha um modelo com janela de contexto maior\n"
+                            "• Divida sua pergunta em partes menores e mais objetivas\n"
+                        ),
+                    )
                 return
 
             if not pending_tool_calls:
