@@ -279,22 +279,35 @@ if _subcommand == "clone":
     patterns = _PATTERNS if _PATTERNS else []
     if patterns != ["*"]:
         urls = [a for a in args[_sub_idx + 1:] if "://" in a or a.startswith("git@")]
-        if urls:
-            url = urls[0].rstrip("/")
-            # Use urlparse to extract hostname so userinfo tricks like
-            # 'https://evil.com@github.com/...' are rejected correctly.
+        if not urls:
+            # No recognizable URL in clone args — deny when allowlist is active.
+            print("git-clone-guard: no URL recognized in clone arguments — deny all",
+                  file=sys.stderr)
+            sys.exit(1)
+        url = urls[0].rstrip("/")
+        if url.startswith("git@"):
+            # SCP-style: git@host:owner/repo.git — urlparse returns hostname=None.
+            _host_path = url[len("git@"):]
+            _host, _, _path = _host_path.partition(":")
+            if _host == "github.com":
+                repo_path = _path.removesuffix(".git")
+            else:
+                repo_path = url.removesuffix(".git")
+        else:
+            # Use urlparse so userinfo tricks like 'https://evil@github.com/...'
+            # are rejected correctly.
             parsed = urllib.parse.urlparse(url)
             if parsed.hostname == "github.com":
                 repo_path = parsed.path.lstrip("/").removesuffix(".git")
             else:
                 repo_path = url.removesuffix(".git")
-            if not any(fnmatch.fnmatch(repo_path, p) for p in patterns):
-                print(
-                    f"git-clone-guard: {{url!r}} is not in clonable_repos allowlist. "
-                    f"Allowed patterns: {{patterns}}",
-                    file=sys.stderr,
-                )
-                sys.exit(1)
+        if not any(fnmatch.fnmatch(repo_path, p) for p in patterns):
+            print(
+                f"git-clone-guard: {{url!r}} is not in clonable_repos allowlist. "
+                f"Allowed patterns: {{patterns}}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
 try:
     sys.exit(subprocess.run(["/usr/bin/git", *args]).returncode)
