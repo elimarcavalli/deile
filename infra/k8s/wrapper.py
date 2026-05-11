@@ -252,7 +252,7 @@ def _setup_git_clone_guard(config_path: str = "") -> None:
         f"""\
 #!/usr/bin/env python3
 \"\"\"git clone allowlist guard — installed by wrapper.py.\"\"\"
-import fnmatch, os, posixpath, re as _re, subprocess, sys, urllib.parse
+import fnmatch, os, posixpath, subprocess, sys, urllib.parse
 
 # Allowlist baked in at wrapper startup — not read from env at runtime.
 _PATTERNS = {allowlist_literal}
@@ -314,13 +314,13 @@ if _subcommand == "clone":
             )
             sys.exit(1)
 
-    # Strip any -c url.*.insteadOf* options from forwarded args — prevents
-    # an agent from redirecting an allowlisted clone URL to another server.
-    _INSTOF_RE = _re.compile(r'url\..+\.insteadof\s*=', _re.IGNORECASE)
+    # Strip ALL -c KEY=VALUE options for clone (deny-by-default): prevents
+    # credential-helper hijacking, hook injection, proxy redirection, etc.
+    # The guard re-injects only the known-safe credential.helper=store.
     _clean = []
     _ci = 0
     while _ci < len(args):
-        if args[_ci] == "-c" and _ci + 1 < len(args) and _INSTOF_RE.match(args[_ci + 1]):
+        if args[_ci] == "-c" and _ci + 1 < len(args):
             _ci += 2
         else:
             _clean.append(args[_ci])

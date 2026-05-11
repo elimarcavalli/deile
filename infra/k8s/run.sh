@@ -328,8 +328,9 @@ if token_file.exists():
 git_bin = home / "bin" / "git"
 
 if git_bin.exists():
-    # Guard present — it enforces the allowlist itself.
+    # Guard present — enforces allowlist and re-injects credential.helper itself.
     git_cmd = str(git_bin)
+    _cred_args = []
 else:
     # Guard absent — perform URL validation using the config file when present.
     # If both guard and config are absent, open policy applies (any repo allowed),
@@ -369,9 +370,10 @@ else:
             sys.exit(1)
 
     git_cmd = "/usr/bin/git"
+    _cred_args = ["-c", "credential.helper=store"]
 
 result = subprocess.run(
-    [git_cmd, "-c", "credential.helper=store", "clone", "--depth", "1", clone_url, work_dir],
+    [git_cmd, *_cred_args, "clone", "--depth", "1", clone_url, work_dir],
     env={**os.environ, "GIT_TERMINAL_PROMPT": "0",
          "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"},
 )
