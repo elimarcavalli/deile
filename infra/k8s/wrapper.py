@@ -279,8 +279,7 @@ while _i < len(args):
 _git_env = None  # overridden for clone to neutralize insteadOf entries
 
 if _subcommand == "clone":
-    patterns = _PATTERNS if _PATTERNS else []
-    if patterns != ["*"]:
+    if _PATTERNS != ["*"]:
         urls = [a for a in args[_sub_idx + 1:] if "://" in a or a.startswith("git@")]
         if not urls:
             # No recognizable URL in clone args — deny when allowlist is active.
@@ -306,10 +305,10 @@ if _subcommand == "clone":
                 )
             else:
                 repo_path = url.removesuffix(".git")
-        if not any(fnmatch.fnmatch(repo_path, p) for p in patterns):
+        if not any(fnmatch.fnmatch(repo_path, p) for p in _PATTERNS):
             print(
                 f"git-clone-guard: {{url!r}} is not in clonable_repos allowlist. "
-                f"Allowed patterns: {{patterns}}",
+                f"Allowed patterns: {{_PATTERNS}}",
                 file=sys.stderr,
             )
             sys.exit(1)

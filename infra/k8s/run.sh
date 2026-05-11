@@ -247,10 +247,7 @@ cmd_clone() {
 
   local bearer_token
   bearer_token="$(read_env_var DEILE_BOT_AUTH_TOKEN "$ENV_FILE" || true)"
-  if [ -z "$bearer_token" ]; then
-    bearer_token="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
-    log "WARNING: DEILE_BOT_AUTH_TOKEN absent — minted a fresh token; if the bot is running its auth token will mismatch. Re-run 'up' or add the token to .env."
-  fi
+  [ -n "$bearer_token" ] || fail "DEILE_BOT_AUTH_TOKEN missing in $ENV_FILE — run 'up' first to establish a stable token"
 
   log "wiring GITHUB_TOKEN into deile-secrets (no other secret values echoed)"
   printf "DEILE_BOT_AUTH_TOKEN=%s\nGITHUB_TOKEN=%s\n%s" \
