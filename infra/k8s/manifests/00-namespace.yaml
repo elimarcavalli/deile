@@ -9,8 +9,11 @@ metadata:
     # at admission time. See:
     # https://kubernetes.io/docs/concepts/security/pod-security-standards/
     pod-security.kubernetes.io/enforce: restricted
-    pod-security.kubernetes.io/enforce-version: latest
+    # Pin to a specific PSS version so cluster upgrades don't silently
+    # tighten the profile and break running pods. Bump deliberately when
+    # you upgrade the cluster minor version and review the new profile.
+    pod-security.kubernetes.io/enforce-version: v1.29
     pod-security.kubernetes.io/audit: restricted
-    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/audit-version: v1.29
     pod-security.kubernetes.io/warn: restricted
-    pod-security.kubernetes.io/warn-version: latest
+    pod-security.kubernetes.io/warn-version: v1.29

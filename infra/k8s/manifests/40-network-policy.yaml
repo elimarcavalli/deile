@@ -110,6 +110,8 @@ spec:
           port: 443
 ---
 # ---- 3c. Bot egress to Discord on 443 -------------------------------
+# Port 80 is intentionally absent: Discord's API is HTTPS-only (443).
+# Plain-HTTP egress would broaden the attack surface unnecessarily.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -133,5 +135,3 @@ spec:
       ports:
         - protocol: TCP
           port: 443
-        - protocol: TCP
-          port: 80

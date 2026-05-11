@@ -22,8 +22,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 ENV_FILE="$ROOT/.env"
 
-NERDCTL="${NERDCTL:-/Users/elimar.cavalli/.rd/bin/nerdctl}"
-KUBECTL="${KUBECTL:-/Users/elimar.cavalli/.rd/bin/kubectl}"
+# Fall back to PATH lookup; if not found, try the Rancher Desktop location.
+NERDCTL="${NERDCTL:-$(command -v nerdctl 2>/dev/null || echo /Users/elimar.cavalli/.rd/bin/nerdctl)}"
+KUBECTL="${KUBECTL:-$(command -v kubectl 2>/dev/null || echo /Users/elimar.cavalli/.rd/bin/kubectl)}"
 
 log() { printf '\033[1;36m[run.sh]\033[0m %s\n' "$*" >&2; }
 fail() { printf '\033[1;31m[run.sh]\033[0m %s\n' "$*" >&2; exit 1; }
@@ -57,7 +58,7 @@ PY
       /^[[:space:]]*#/ { next }
       $1 == key {
         sub(/^[^=]*=/, "")
-        gsub(/^[ \t"]+|[ \t"]+$/, "")
+        gsub(/^[ \t"'\'']+|[ \t"'\'']+$/, "")
         print
         exit
       }
@@ -142,9 +143,10 @@ cmd_up() {
     --from-literal=DEILE_BOT_AUTH_TOKEN="$bearer_token" \
     --dry-run=client -o yaml | "$KUBECTL" apply -f - >/dev/null
 
-  log "applying bot ConfigMap + Deployment + Service"
+  log "applying bot ConfigMap + Deployment + Service + interactive shell"
   "$KUBECTL" apply -f "$HERE/manifests/15-bot-config.yaml"
   "$KUBECTL" apply -f "$HERE/manifests/20-bot-deployment.yaml"
+  "$KUBECTL" apply -f "$HERE/manifests/35-deile-interactive.yaml"
 
   # Env-var values from Secrets are baked into the pod's env block
   # at container creation; a Secret update alone does NOT restart

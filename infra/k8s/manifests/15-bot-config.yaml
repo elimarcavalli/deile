@@ -26,8 +26,10 @@ data:
       # `<provider>:<provider_user_id>` form — stable across deployments.
       # The patched _is_in() check accepts both this and the random
       # bot_user_id ULID.
+      # Replace REPLACE_ME_DISCORD_USER_ID with your Discord user ID
+      # (right-click your name → Copy User ID, requires Developer Mode).
       owners:
-        - "discord:1475913578648436909"
+        - "discord:REPLACE_ME_DISCORD_USER_ID"
       allowlist_invoke_agent: ["*"]
       blocklist: []
       per_action:

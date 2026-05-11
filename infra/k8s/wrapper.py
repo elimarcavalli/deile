@@ -15,10 +15,22 @@ This wrapper inverts the flow:
   2. Secrets are mounted as files under /run/secrets/<role>/<KEY>.
   3. We read those files, inject the values into in-process os.environ
      so frameworks see them on first read, then patch
-     bootstrap_providers() to pop the keys back out once each provider
-     has captured its copy. After that point any subprocess (bash_tool,
-     printenv) inherits a clean environment, and /proc/<pid>/environ —
-     frozen at exec time — never contained the secrets to begin with.
+     bootstrap_providers() to pop the LLM keys back out once each
+     provider has captured its copy.
+
+Security model per role:
+  deile role: LLM keys + DEILE_BOT_AUTH_TOKEN are popped from os.environ
+    after bootstrap_providers() fires, so any subprocess (bash_tool,
+    printenv) inherits a clean environment. /proc/<pid>/environ — frozen
+    at exec time — never contained the secrets to begin with.
+  bot role: LLM keys are popped via the same bootstrap hook. The Discord
+    token (DEILE_BOT_DISCORD_TOKEN) and control-plane auth token
+    (DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN) cannot be popped because
+    discord.py holds a reference to the token value at runtime and
+    bot.run() blocks for the lifetime of the process. The compensating
+    control is the tool whitelist, which prevents bash_tool,
+    python_execute, and file tools from being reachable from any
+    Discord-driven prompt — no subprocess can be spawned to read env.
 
 Subcommands:
   python wrapper.py deile <args ...>   → loads /run/secrets/deile/* then runs deile.cli
@@ -42,11 +54,12 @@ _SENSITIVE_KEYS = (
     "GOOGLE_API_KEY",
     "DEILE_BOT_AUTH_TOKEN",
     "DEILE_BOT_DISCORD_TOKEN",
+    "DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN",
 )
 
 
-def _bot_tool_whitelist() -> frozenset:
-    """Tool names the bot's embedded agent is permitted to call.
+def _messaging_tool_whitelist() -> frozenset:
+    """Tool names the messaging whitelist permits, regardless of role.
 
     Derived from the messaging package itself (each tool class declares
     a ``tool_name``) so a rename in deile.tools.messaging cannot
@@ -89,7 +102,8 @@ def _load_secret_files(role_dir: Path) -> List[str]:
         if entry.is_dir() or entry.name.startswith("."):
             continue
         try:
-            value = entry.read_text(encoding="utf-8").rstrip("\n")
+            # strip() handles both LF and CRLF (Windows-formatted secret files)
+            value = entry.read_text(encoding="utf-8").strip()
         except OSError as exc:
             print(f"wrapper: cannot read {entry}: {exc}", file=sys.stderr)
             continue
@@ -116,25 +130,27 @@ def _has_llm_key(loaded: List[str]) -> bool:
 
 
 def _install_tool_whitelist(role: str) -> None:
-    """Patch DeileAgent.__init__ to disable every tool outside the whitelist.
+    """Patch DeileAgent.__init__ to disable every tool outside the messaging whitelist.
 
-    Patching the constructor (rather than mutating the registry once)
-    handles persona switches: deile reconstructs the agent and
-    auto_discover re-enables every tool, so the whitelist must re-apply
-    on each construction.
+    The tool registry is a module-level singleton; once disable_tool() is
+    called, tools stay disabled across the process lifetime. We still patch
+    __init__ as defense-in-depth in case the agent is ever reconstructed.
+
+    The patch operates on self.tool_registry (the agent's actual registry,
+    which may be a custom instance in tests) rather than the global singleton,
+    so whitelist enforcement is always tied to the registry the agent uses.
 
     ``role`` only changes the log prefix; the policy is identical for
     bot and deile-Job.
     """
     import deile.core.agent as agent_mod
-    from deile.tools.registry import get_tool_registry
 
-    whitelist = _bot_tool_whitelist()
+    whitelist = _messaging_tool_whitelist()
     original_init: Callable = agent_mod.DeileAgent.__init__
 
     def _harden_after_init(self, *args, **kwargs):
         original_init(self, *args, **kwargs)
-        registry = get_tool_registry()
+        registry = self.tool_registry
         try:
             tools = registry.list_all()
         except Exception:  # noqa: BLE001 — registry is best-effort
@@ -224,7 +240,7 @@ def _run_deile(passthrough: List[str]) -> int:
 
     sys.argv = ["deile", *passthrough]
     from deile.cli import main as deile_main
-    return int(deile_main() or 0)
+    return deile_main() or 0
 
 
 def _run_bot(passthrough: List[str]) -> int:
@@ -240,6 +256,14 @@ def _run_bot(passthrough: List[str]) -> int:
         )
         return 78
 
+    # Pop LLM keys after deile's bootstrap_providers captures them.
+    # DEILE_BOT_DISCORD_TOKEN and DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN cannot
+    # be popped here because discord.py / the control-plane listener need them
+    # for the lifetime of the process. The tool whitelist (applied below) is
+    # the compensating control: without bash_tool/python_execute, no Discord
+    # prompt can spawn a subprocess to read the remaining env vars.
+    _patch_deile_bootstrap()
+
     # Discord input is untrusted — apply the whitelist whenever the
     # bot has an LLM key (i.e. its embedded agent will run prompts).
     if _has_llm_key(loaded):
@@ -248,10 +272,16 @@ def _run_bot(passthrough: List[str]) -> int:
         except Exception as exc:  # noqa: BLE001 — refuse to start unsafe
             print(f"wrapper(bot): could not install tool whitelist: {exc}", file=sys.stderr)
             return 78
+    else:
+        print(
+            "wrapper(bot): no LLM key loaded — embedded agent will not run; "
+            "tool whitelist not installed (no agent to constrain).",
+            file=sys.stderr,
+        )
 
     sys.argv = ["deilebot", *passthrough]
     from deilebot.cli import main as bot_main
-    return int(bot_main() or 0)
+    return bot_main() or 0
 
 
 def main(argv: List[str]) -> int:

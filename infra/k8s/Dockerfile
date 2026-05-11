@@ -60,10 +60,11 @@ RUN python -m venv /venv \
 # Bug: neither pyproject declares `package-data`, so non-Python files
 # (.sql migrations, .md persona prompts, .yaml configs) get dropped on
 # wheel build. Without these the bot cannot init its sqlite schema and
-# deile cannot load any persona. Copy them in by hand. Site-packages
-# path is fixed by the PYTHON_VERSION arg above.
-ENV SITE_PACKAGES=/venv/lib/python3.11/site-packages
+# deile cannot load any persona. Copy them in by hand.
+# SITE_PACKAGES is derived from the venv's own Python so it stays
+# correct when PYTHON_VERSION is overridden at build time.
 RUN set -eux \
+    && SITE_PACKAGES=$(/venv/bin/python -c "import sysconfig; print(sysconfig.get_path('purelib'))") \
     && mkdir -p "${SITE_PACKAGES}/deilebot/foundation/sql" \
     && cp /build/deilebot/deilebot/foundation/sql/*.sql "${SITE_PACKAGES}/deilebot/foundation/sql/" \
     && mkdir -p "${SITE_PACKAGES}/deile/personas/instructions/core" \
@@ -98,8 +99,8 @@ RUN apt-get update \
 RUN groupadd --system --gid 10001 deile \
     && useradd  --system --uid 10001 --gid 10001 \
         --home-dir /home/deile --shell /usr/sbin/nologin deile \
-    && mkdir -p /home/deile /app /run/deile \
-    && chown -R deile:deile /home/deile /app /run/deile
+    && mkdir -p /home/deile /app \
+    && chown -R deile:deile /home/deile /app
 
 # Bring in the venv from the builder.
 COPY --from=builder --chown=deile:deile /venv /venv

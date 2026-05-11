@@ -48,6 +48,13 @@ spec:
           mountPath: /home/deile
         - name: tmp
           mountPath: /tmp
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "256Mi"
+        limits:
+          cpu: "1000m"
+          memory: "1Gi"
       securityContext:
         allowPrivilegeEscalation: false
         readOnlyRootFilesystem: true
