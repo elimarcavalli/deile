@@ -53,7 +53,7 @@ def _mock_agent(memory_manager=None, session_store=None):
     async def fake_get_session_store():
         return session_store
 
-    agent._get_session_store = fake_get_session_store
+    agent.get_session_store = fake_get_session_store
     return agent
 
 

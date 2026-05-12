@@ -1383,7 +1383,7 @@ class DeileAgent:
             return self._sessions[session_id]
         if persisted:
             try:
-                store = await self._get_session_store()
+                store = await self.get_session_store()
                 row = await store.get(session_id)
                 if row is not None:
                     snap = {
@@ -1410,7 +1410,7 @@ class DeileAgent:
         session.persisted = persisted
         if persisted:
             try:
-                store = await self._get_session_store()
+                store = await self.get_session_store()
                 await store.upsert(
                     session_id,
                     str(session.working_directory),
@@ -1420,8 +1420,8 @@ class DeileAgent:
                 logger.warning("SessionStore upsert failed", exc_info=True)
         return session
 
-    async def _get_session_store(self):
-        """Lazy SessionStore singleton."""
+    async def get_session_store(self):
+        """Lazy SessionStore singleton — public accessor."""
         if not hasattr(self, "_session_store") or self._session_store is None:
             try:
                 from deilebot.foundation.settings import get_bot_settings
