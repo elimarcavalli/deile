@@ -321,7 +321,7 @@ class _DeileCLI:
             return await self.ui.display_streaming_turn(event_stream)
 
         esc_event: asyncio.Event = asyncio.Event()
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         try:
             saved = termios.tcgetattr(sys.stdin.fileno())
@@ -369,7 +369,9 @@ class _DeileCLI:
                 t.cancel()
                 try:
                     await t
-                except (asyncio.CancelledError, Exception):
+                except asyncio.CancelledError:
+                    pass  # expected — we requested this cancellation
+                except Exception:
                     pass
 
             if esc_event.is_set() and stream_task not in done:

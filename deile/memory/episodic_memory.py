@@ -145,8 +145,8 @@ class EpisodicMemory:
                 "user_input": row[2],
                 "agent_response": row[3],
                 "timestamp": row[4],
-                "context": json.loads(row[5]),
-                "metadata": json.loads(row[6]),
+                "context": json.loads(row[5]) if row[5] is not None else {},
+                "metadata": json.loads(row[6]) if row[6] is not None else {},
             }
             for row in rows
         ]
@@ -163,8 +163,10 @@ class EpisodicMemory:
                     session_id,
                     COUNT(*) AS episode_count,
                     MAX(timestamp) AS last_activity,
-                    MIN(user_input) AS first_user_input
-                FROM episodes
+                    (SELECT user_input FROM episodes e2
+                     WHERE e2.session_id = e.session_id
+                     ORDER BY e2.timestamp ASC LIMIT 1) AS first_user_input
+                FROM episodes e
                 GROUP BY session_id
                 ORDER BY last_activity DESC
                 LIMIT ?
