@@ -5,7 +5,7 @@ Four invariants pinned by this file:
 1. hashlib.md5() always carries usedforsecurity=False in non-cryptographic
    usages (content-hashing, cache-keying). Prevents misleading SAST reports.
 
-2. os.system() is absent from actions.py and ui/cli.py — replaced by
+2. os.system() is absent from ui/cli.py and emoji_support — replaced by
    subprocess.run with a list argument (no shell spawning).
 
 3. The SQL queries in cost_tracker.py always bind user-controlled values via
@@ -95,7 +95,6 @@ def test_md5_has_usedforsecurity_false(rel_path: str) -> None:
 # ---------------------------------------------------------------------------
 
 OS_SYSTEM_FREE_FILES = [
-    "deile/commands/actions.py",
     "deile/ui/cli.py",
     "deile/ui/emoji_support.py",
 ]
@@ -121,7 +120,7 @@ def _os_system_calls(tree: ast.Module) -> list[ast.Call]:
 @pytest.mark.security
 @pytest.mark.parametrize("rel_path", OS_SYSTEM_FREE_FILES)
 def test_no_os_system(rel_path: str) -> None:
-    """os.system() must not appear in actions.py or ui/cli.py (use subprocess.run)."""
+    """os.system() must not appear in ui/cli.py or emoji_support (use subprocess.run)."""
     tree = _ast(rel_path)
     bad = _os_system_calls(tree)
     lines = [n.lineno for n in bad]

@@ -1,11 +1,10 @@
 """Registry para gerenciamento de comandos slash"""
 
-import asyncio
 import importlib
 import inspect
 import logging
 from collections import defaultdict
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 
 from ..config.manager import CommandConfig
 from .base import CommandContext, CommandResult, SlashCommand
@@ -15,21 +14,18 @@ logger = logging.getLogger(__name__)
 
 class CommandRegistry:
     """Registry central para descoberta e gerenciamento de comandos slash
-    
+
     Implementa o padrão Registry com auto-discovery configurável via YAML.
     """
-    
+
     def __init__(self, config_manager=None):
         self.config_manager = config_manager
-        
+
         # Storage interno
         self._commands: Dict[str, SlashCommand] = {}
         self._aliases: Dict[str, str] = {}  # alias -> command_name
         self._categories: Dict[str, List[SlashCommand]] = defaultdict(list)
-        
-        # Actions (funções que implementam comandos)
-        self._actions: Dict[str, Callable] = {}
-        
+
         # Estatísticas
         self._registration_count = 0
         self._execution_count = 0
@@ -79,11 +75,6 @@ class CommandRegistry:
         logger.debug("Unregistered command: /%s", name)
         return True
 
-    def register_action(self, name: str, action: Callable) -> None:
-        """Registra função de ação"""
-        self._actions[name] = action
-        logger.debug(f"Registered action: {name}")
-    
     def get_command(self, command_name: str) -> Optional[SlashCommand]:
 
         """Obtém comando pelo nome ou alias (case-insensitive)."""
@@ -224,15 +215,14 @@ class CommandRegistry:
             for cmd_name, cmd_config in config.commands.items():
                 if not cmd_config.enabled:
                     continue
-                
-                # Cria comando baseado na configuração
-                if cmd_config.prompt_template:
-                    # Comando LLM
-                    command = self._create_llm_command(cmd_config)
-                else:
-                    # Comando direto
-                    command = self._create_direct_command(cmd_config)
-                
+
+                # Only LLM-template commands are config-driven; direct commands
+                # are implemented as SlashCommand subclasses discovered via
+                # auto_discover_builtin_commands().
+                if not cmd_config.prompt_template:
+                    continue
+
+                command = self._create_llm_command(cmd_config)
                 if command:
                     self.register_command(command)
                     loaded_count += 1
@@ -340,37 +330,7 @@ class CommandRegistry:
                 )
         
         return ConfigLLMCommand(config)
-    
-    def _create_direct_command(self, config: CommandConfig) -> Optional[SlashCommand]:
-        """Cria comando direto baseado na configuração"""
-        from .base import DirectCommand
 
-        # Procura action correspondente
-        action_func = self._actions.get(config.action)
-        if not action_func:
-            logger.warning(f"Action '{config.action}' not found for command '{config.name}'")
-            return None
-        
-        class ConfigDirectCommand(DirectCommand):
-            def __init__(self, cmd_config, action):
-                super().__init__(cmd_config)
-                self.action_func = action
-            
-            async def execute(self, context: CommandContext) -> CommandResult:
-                try:
-                    # Executa action
-                    if asyncio.iscoroutinefunction(self.action_func):
-                        return await self.action_func(context.args, context)
-                    else:
-                        return self.action_func(context.args, context)
-                except Exception as e:
-                    return CommandResult.error_result(
-                        f"Error in action '{config.action}': {str(e)}",
-                        error=e
-                    )
-        
-        return ConfigDirectCommand(config, action_func)
-    
     def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas do registry"""
         return {
@@ -390,7 +350,6 @@ class CommandRegistry:
         self._commands.clear()
         self._aliases.clear()
         self._categories.clear()
-        self._actions.clear()
         logger.info("Cleared all commands from registry")
     
     def __len__(self) -> int:

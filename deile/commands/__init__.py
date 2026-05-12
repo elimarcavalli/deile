@@ -1,17 +1,15 @@
 """Sistema de comandos slash do DEILE"""
 
-from .actions import CommandActions
 from .base import CommandContext, CommandResult, CommandStatus, SlashCommand
 from .registry import (CommandRegistry, StaticCommandRegistry,
                        get_command_registry)
 
 __all__ = [
     "SlashCommand",
-    "CommandResult", 
+    "CommandResult",
     "CommandContext",
     "CommandStatus",
     "CommandRegistry",
     "StaticCommandRegistry",
     "get_command_registry",
-    "CommandActions"
 ]

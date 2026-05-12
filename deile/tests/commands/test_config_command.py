@@ -1,6 +1,6 @@
-"""Tests: /config command — show_config action.
+"""Tests: /config command — ConfigCommand.execute.
 
-Regression guard for the bug where show_config returned a bare list of
+Regression guard for the bug where the config view returned a bare list of
 Rich Table objects instead of a single renderable, causing:
 
     Unable to render [<rich.table.Table …>, …]; A str, Segment or object
@@ -14,8 +14,8 @@ from unittest.mock import MagicMock
 
 from rich.console import Console
 
-from deile.commands.actions import CommandActions
 from deile.commands.base import CommandContext
+from deile.commands.builtin.config_command import ConfigCommand
 from deile.config.manager import (CommandConfig, DeileConfig, GeminiConfig,
                                   SystemConfig)
 
@@ -49,103 +49,94 @@ def _make_config_manager(cfg: DeileConfig | None = None) -> MagicMock:
     return mgr
 
 
-def _ctx() -> CommandContext:
-    return CommandContext(user_input="/config", args="")
+def _ctx(config_manager=None) -> CommandContext:
+    return CommandContext(
+        user_input="/config",
+        args="",
+        config_manager=config_manager,
+    )
 
 
 # ---------------------------------------------------------------------------
-# show_config — basic contract
+# ConfigCommand — basic contract
 # ---------------------------------------------------------------------------
 
 
-class TestShowConfigResult:
+class TestConfigCommandResult:
     async def test_returns_success(self):
-        actions = CommandActions(config_manager=_make_config_manager())
-        result = await actions.show_config("", _ctx())
+        result = await ConfigCommand().execute(_ctx(_make_config_manager()))
         assert result.success is True
 
     async def test_content_type_is_rich(self):
-        actions = CommandActions(config_manager=_make_config_manager())
-        result = await actions.show_config("", _ctx())
+        result = await ConfigCommand().execute(_ctx(_make_config_manager()))
         assert result.content_type == "rich"
 
     async def test_content_is_single_renderable_not_list(self):
         """The fix: content must NOT be a bare list."""
-        actions = CommandActions(config_manager=_make_config_manager())
-        result = await actions.show_config("", _ctx())
+        result = await ConfigCommand().execute(_ctx(_make_config_manager()))
         assert not isinstance(result.content, list), (
             "content must be a single Rich renderable, not a list"
         )
 
     async def test_content_renders_without_error(self):
         """Rich must be able to render the content directly (the original crash scenario)."""
-        actions = CommandActions(config_manager=_make_config_manager())
-        result = await actions.show_config("", _ctx())
+        result = await ConfigCommand().execute(_ctx(_make_config_manager()))
         rendered = _render(result.content)
         assert rendered  # non-empty
 
     async def test_metadata_has_config_sections(self):
-        actions = CommandActions(config_manager=_make_config_manager())
-        result = await actions.show_config("", _ctx())
+        result = await ConfigCommand().execute(_ctx(_make_config_manager()))
         assert result.metadata.get("config_sections") == ["system", "gemini", "commands"]
 
 
 # ---------------------------------------------------------------------------
-# show_config — content coverage
+# ConfigCommand — content coverage
 # ---------------------------------------------------------------------------
 
 
-class TestShowConfigContent:
+class TestConfigCommandContent:
     async def test_rendered_output_mentions_system(self):
-        actions = CommandActions(config_manager=_make_config_manager())
-        result = await actions.show_config("", _ctx())
+        result = await ConfigCommand().execute(_ctx(_make_config_manager()))
         assert "system" in _render(result.content).lower()
 
     async def test_rendered_output_mentions_gemini(self):
-        actions = CommandActions(config_manager=_make_config_manager())
-        result = await actions.show_config("", _ctx())
+        result = await ConfigCommand().execute(_ctx(_make_config_manager()))
         assert "gemini" in _render(result.content).lower()
 
     async def test_rendered_output_mentions_commands(self):
-        actions = CommandActions(config_manager=_make_config_manager())
-        result = await actions.show_config("", _ctx())
+        result = await ConfigCommand().execute(_ctx(_make_config_manager()))
         assert "command" in _render(result.content).lower()
 
     async def test_debug_mode_reflected_in_output(self):
         cfg = _make_config()
         cfg.system.debug_mode = True
-        actions = CommandActions(config_manager=_make_config_manager(cfg))
-        result = await actions.show_config("", _ctx())
+        result = await ConfigCommand().execute(_ctx(_make_config_manager(cfg)))
         assert "enabled" in _render(result.content).lower()
 
     async def test_command_names_appear_in_output(self):
-        actions = CommandActions(config_manager=_make_config_manager())
-        result = await actions.show_config("", _ctx())
+        result = await ConfigCommand().execute(_ctx(_make_config_manager()))
         rendered = _render(result.content)
         assert "/help" in rendered or "help" in rendered
 
     async def test_empty_commands_dict_does_not_crash(self):
         cfg = _make_config(commands={})
-        actions = CommandActions(config_manager=_make_config_manager(cfg))
-        result = await actions.show_config("", _ctx())
+        result = await ConfigCommand().execute(_ctx(_make_config_manager(cfg)))
         assert result.success is True
         _render(result.content)  # must not raise
 
 
 # ---------------------------------------------------------------------------
-# show_config — error path
+# ConfigCommand — error path
 # ---------------------------------------------------------------------------
 
 
-class TestShowConfigErrors:
+class TestConfigCommandErrors:
     async def test_no_config_manager_returns_error(self):
-        actions = CommandActions(config_manager=None)
-        result = await actions.show_config("", _ctx())
+        result = await ConfigCommand().execute(_ctx(None))
         assert result.success is False
 
     async def test_config_manager_raises_returns_error(self):
         mgr = MagicMock()
         mgr.get_config.side_effect = RuntimeError("boom")
-        actions = CommandActions(config_manager=mgr)
-        result = await actions.show_config("", _ctx())
+        result = await ConfigCommand().execute(_ctx(mgr))
         assert result.success is False

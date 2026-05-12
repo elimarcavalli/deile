@@ -1010,7 +1010,7 @@ async def _run_command_flag(
 def _format_help_with_commands(parser: "argparse.ArgumentParser") -> str:
     """Append the slash-command catalog to argparse's stock --help output.
 
-    Uses the same registry source as ``CommandActions.show_help()`` so the
+    Uses the same registry source as ``HelpCommand.execute()`` so the
     list is generated dynamically (no hardcoded count — see issue #126).
     """
     base_help = parser.format_help()
