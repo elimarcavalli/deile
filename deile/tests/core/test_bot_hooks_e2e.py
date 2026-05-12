@@ -27,7 +27,7 @@ class TestE2ED1PersistedSession:
                 await self._session_store.init()
             return self._session_store
 
-        monkeypatch.setattr(DeileAgent, "_get_session_store", fake_get_store)
+        monkeypatch.setattr(DeileAgent, "get_session_store", fake_get_store)
 
         # Process A
         agent_a = DeileAgent()

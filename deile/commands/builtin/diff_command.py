@@ -13,8 +13,9 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import (analyze_plan_changes_stub, file_action_emoji, split_args,
-                      truncate, wrap_command_errors)
+from ._shared import (analyze_plan_changes_stub, file_action_emoji,
+                      format_change_summary_lines, split_args, truncate,
+                      wrap_command_errors)
 
 
 class DiffCommand(DirectCommand):
@@ -220,12 +221,7 @@ class DiffCommand(DirectCommand):
             f"**Status:** {plan.status.value}",
             f"**Total Files:** {len(changes['file_changes'])}",
             "",
-            "**Overall Changes:**",
-            f"  • Files Modified: {summary['files_modified']} 📝",
-            f"  • Files Created: {summary['files_created']} ✨",
-            f"  • Files Deleted: {summary['files_deleted']} 🗑️",
-            f"  • Lines Added: +{summary['lines_added']} 🟢",
-            f"  • Lines Removed: -{summary['lines_removed']} 🔴",
+            *format_change_summary_lines(summary),
             "",
             "**File Changes:**"
         ]

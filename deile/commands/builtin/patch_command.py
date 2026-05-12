@@ -12,13 +12,15 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import (analyze_plan_changes_stub, export_timestamp,
-                      file_action_emoji, split_args, wrap_command_errors)
+from ._shared import (analyze_plan_changes_stub, ensure_patches_dir,
+                      export_timestamp, file_action_emoji,
+                      format_change_summary_lines, list_patch_files,
+                      split_args, wrap_command_errors)
 
 
 class PatchCommand(DirectCommand):
     """Generate patch files from plan execution changes"""
-    
+
     def __init__(self):
         from ...config.manager import CommandConfig
         config = CommandConfig(
@@ -28,8 +30,8 @@ class PatchCommand(DirectCommand):
         )
         super().__init__(config)
         self.plan_manager = get_plan_manager()
-        self.patches_dir = Path("./PATCHES")
-        self.patches_dir.mkdir(exist_ok=True)
+        # ensure_patches_dir() guarantees creation at init time (was: mkdir inline)
+        ensure_patches_dir()
     
     @wrap_command_errors("patch")
     async def execute(self, context: CommandContext) -> CommandResult:
@@ -65,8 +67,8 @@ class PatchCommand(DirectCommand):
     
     async def _list_patches(self) -> CommandResult:
         """List available patch files"""
-        
-        patch_files = list(self.patches_dir.glob("*.patch"))
+
+        patch_files = list_patch_files()
         
         if not patch_files:
             return CommandResult.success_result(
@@ -87,7 +89,7 @@ class PatchCommand(DirectCommand):
         table.add_column("Size", style="blue", width=8)
         table.add_column("Action", style="magenta", width=20)
         
-        for patch_file in sorted(patch_files, key=lambda f: f.stat().st_mtime, reverse=True):
+        for patch_file in patch_files:
             # Extract plan ID from filename
             plan_id = "Unknown"
             if "_" in patch_file.stem:
@@ -157,7 +159,7 @@ class PatchCommand(DirectCommand):
         
         # Determine output path
         if not output_path:
-            output_path = self.patches_dir / f"plan_{plan_id}_{export_timestamp()}.patch"
+            output_path = ensure_patches_dir() / f"plan_{plan_id}_{export_timestamp()}.patch"
         else:
             output_path = Path(output_path)
         
@@ -325,13 +327,8 @@ class PatchCommand(DirectCommand):
             f"**Format:** {output_format}",
             f"**Size:** {file_size:,} bytes",
             "",
-            "**Changes Included:**",
-            f"  • Files Modified: {summary['files_modified']} 📝",
-            f"  • Files Created: {summary['files_created']} ✨",
-            f"  • Files Deleted: {summary['files_deleted']} 🗑️",
-            f"  • Lines Added: +{summary['lines_added']} 🟢",
-            f"  • Lines Removed: -{summary['lines_removed']} 🔴",
-            ""
+            *format_change_summary_lines(summary, header="**Changes Included:**"),
+            "",
         ]
         
         # Show affected files

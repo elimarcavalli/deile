@@ -1,35 +1,35 @@
 """Registry para gerenciamento de comandos slash"""
 
-import asyncio
 import importlib
 import inspect
 import logging
 from collections import defaultdict
-from typing import Any, Callable, Dict, List, Optional, Type
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Type
 
 from ..config.manager import CommandConfig
 from .base import CommandContext, CommandResult, SlashCommand
 
 logger = logging.getLogger(__name__)
 
+_BUILTIN_PKG = "deile.commands.builtin"
+_BUILTIN_DIR = Path(__file__).parent / "builtin"
+
 
 class CommandRegistry:
     """Registry central para descoberta e gerenciamento de comandos slash
-    
+
     Implementa o padrão Registry com auto-discovery configurável via YAML.
     """
-    
+
     def __init__(self, config_manager=None):
         self.config_manager = config_manager
-        
+
         # Storage interno
         self._commands: Dict[str, SlashCommand] = {}
         self._aliases: Dict[str, str] = {}  # alias -> command_name
         self._categories: Dict[str, List[SlashCommand]] = defaultdict(list)
-        
-        # Actions (funções que implementam comandos)
-        self._actions: Dict[str, Callable] = {}
-        
+
         # Estatísticas
         self._registration_count = 0
         self._execution_count = 0
@@ -79,11 +79,6 @@ class CommandRegistry:
         logger.debug("Unregistered command: /%s", name)
         return True
 
-    def register_action(self, name: str, action: Callable) -> None:
-        """Registra função de ação"""
-        self._actions[name] = action
-        logger.debug(f"Registered action: {name}")
-    
     def get_command(self, command_name: str) -> Optional[SlashCommand]:
 
         """Obtém comando pelo nome ou alias (case-insensitive)."""
@@ -224,15 +219,14 @@ class CommandRegistry:
             for cmd_name, cmd_config in config.commands.items():
                 if not cmd_config.enabled:
                     continue
-                
-                # Cria comando baseado na configuração
-                if cmd_config.prompt_template:
-                    # Comando LLM
-                    command = self._create_llm_command(cmd_config)
-                else:
-                    # Comando direto
-                    command = self._create_direct_command(cmd_config)
-                
+
+                # Only LLM-template commands are config-driven; direct commands
+                # are implemented as SlashCommand subclasses discovered via
+                # auto_discover_builtin_commands().
+                if not cmd_config.prompt_template:
+                    continue
+
+                command = self._create_llm_command(cmd_config)
                 if command:
                     self.register_command(command)
                     loaded_count += 1
@@ -245,53 +239,29 @@ class CommandRegistry:
             return 0
     
     def auto_discover_builtin_commands(self) -> int:
-        """Descobre comandos builtin automaticamente"""
+        """Descobre comandos builtin automaticamente pelo filesystem.
+
+        Itera ``deile/commands/builtin/*_command.py``, ignorando arquivos
+        com prefixo ``_`` (helpers como ``_shared.py``, ``_status_collectors.py``).
+        Substitui a lista hardcoded de 27 strings que drift-ava em relação ao
+        filesystem (compact/skills/version/env commands estavam no disco mas
+        não na lista pré-existente em ``builtin/__init__.py``).
+        """
         try:
             discovered = 0
-            
-            # Lista de módulos builtin para descobrir
-            builtin_modules = [
-                'deile.commands.builtin.help_command',
-                'deile.commands.builtin.debug_command',
-                'deile.commands.builtin.clear_command',
-                'deile.commands.builtin.status_command',
-                'deile.commands.builtin.config_command',
-                'deile.commands.builtin.context_command',
-                'deile.commands.builtin.cost_command',
-                'deile.commands.builtin.tools_command',
-                'deile.commands.builtin.model_command',
-                'deile.commands.builtin.export_command',
-                'deile.commands.builtin.stop_command',
-                'deile.commands.builtin.diff_command',
-                'deile.commands.builtin.patch_command',
-                'deile.commands.builtin.apply_command',
-                'deile.commands.builtin.approve_command',
-                'deile.commands.builtin.compact_command',
-                'deile.commands.builtin.memory_command',
-                'deile.commands.builtin.logs_command',
-                'deile.commands.builtin.permissions_command',
-                'deile.commands.builtin.pipeline_command',
-                'deile.commands.builtin.pipeline_schedule_command',
-                'deile.commands.builtin.plan_command',
-                'deile.commands.builtin.run_command',
-                'deile.commands.builtin.sandbox_command',
-                'deile.commands.builtin.skills_command',
-                'deile.commands.builtin.version_command',
-                'deile.commands.builtin.welcome_command',
-            ]
-            
-            for module_name in builtin_modules:
+            for path in sorted(_BUILTIN_DIR.glob("*_command.py")):
+                if path.stem.startswith("_"):
+                    continue
+                module_name = f"{_BUILTIN_PKG}.{path.stem}"
                 try:
                     discovered += self._discover_in_module(module_name)
-                except ImportError:
-                    logger.debug(f"Module {module_name} not found for auto-discovery")
-                except Exception as e:
-                    logger.warning(f"Error discovering in {module_name}: {e}")
-            
+                except ImportError as exc:
+                    logger.debug("Module %s not importable: %s", module_name, exc)
+                except Exception as exc:
+                    logger.warning("Error discovering in %s: %s", module_name, exc)
             return discovered
-            
-        except Exception as e:
-            logger.error(f"Auto-discovery failed: {e}")
+        except Exception as exc:
+            logger.error("Auto-discovery failed: %s", exc)
             return 0
     
     def _discover_in_module(self, module_name: str) -> int:
@@ -340,37 +310,7 @@ class CommandRegistry:
                 )
         
         return ConfigLLMCommand(config)
-    
-    def _create_direct_command(self, config: CommandConfig) -> Optional[SlashCommand]:
-        """Cria comando direto baseado na configuração"""
-        from .base import DirectCommand
 
-        # Procura action correspondente
-        action_func = self._actions.get(config.action)
-        if not action_func:
-            logger.warning(f"Action '{config.action}' not found for command '{config.name}'")
-            return None
-        
-        class ConfigDirectCommand(DirectCommand):
-            def __init__(self, cmd_config, action):
-                super().__init__(cmd_config)
-                self.action_func = action
-            
-            async def execute(self, context: CommandContext) -> CommandResult:
-                try:
-                    # Executa action
-                    if asyncio.iscoroutinefunction(self.action_func):
-                        return await self.action_func(context.args, context)
-                    else:
-                        return self.action_func(context.args, context)
-                except Exception as e:
-                    return CommandResult.error_result(
-                        f"Error in action '{config.action}': {str(e)}",
-                        error=e
-                    )
-        
-        return ConfigDirectCommand(config, action_func)
-    
     def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas do registry"""
         return {
@@ -390,7 +330,6 @@ class CommandRegistry:
         self._commands.clear()
         self._aliases.clear()
         self._categories.clear()
-        self._actions.clear()
         logger.info("Cleared all commands from registry")
     
     def __len__(self) -> int:

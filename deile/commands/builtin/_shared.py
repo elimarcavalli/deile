@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import functools
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Sequence
 
 from rich.panel import Panel
 from rich.text import Text
@@ -178,7 +180,7 @@ def wrap_command_errors(
 def split_args(context: CommandContext) -> list[str]:
     """Tokeniza ``context.args``; trata ``None``/vazio/só-espaços como ``[]``.
 
-    Substitui a duplicação ``args = context.args if hasattr(...) else ""``
+    Substitui a duplicação ``args = context.args if hasattr(...) else ""`
     seguida de ``parts = args.strip().split() if args.strip() else []``
     que aparecia em 16 comandos.
     """
@@ -318,6 +320,144 @@ def analyze_plan_changes_stub(plan_id: str) -> dict[str, Any]:
             "ARTIFACTS/session_123/file_list_002.json",
         ],
     }
+
+
+PATCHES_DIR: Path = Path("./PATCHES")
+"""Diretório canônico de patches gerados/aplicados — antes hardcoded
+em ``apply_command.py`` e ``patch_command.py``. Caminho relativo é intencional:
+os patches vivem na working dir do agente, não no pacote."""
+
+
+def ensure_patches_dir() -> Path:
+    """Garante que ``PATCHES_DIR`` existe e o retorna.
+
+    ``mkdir(exist_ok=True)`` é idempotente. patch_command criava no
+    ``__init__`` e apply_command checava ``.exists()`` antes de cada uso —
+    ambos colapsam para a mesma operação aqui.
+    """
+    PATCHES_DIR.mkdir(exist_ok=True)
+    return PATCHES_DIR
+
+
+def list_patch_files(extra_dirs: Iterable[Path] = ()) -> list[Path]:
+    """Lista ``*.patch`` em ``PATCHES_DIR`` + dirs adicionais, ordenados por mtime desc.
+
+    Substitui o padrão duplicado em apply (`PATCHES/` + cwd) e patch (`PATCHES/`).
+    Não exige que ``PATCHES_DIR`` exista (silenciosamente vazio quando ausente).
+    """
+    files: list[Path] = []
+    if PATCHES_DIR.exists():
+        files.extend(PATCHES_DIR.glob("*.patch"))
+    for extra in extra_dirs:
+        if extra.exists():
+            files.extend(extra.glob("*.patch"))
+    return sorted(set(files), key=lambda f: f.stat().st_mtime, reverse=True)
+
+
+@dataclass(frozen=True)
+class ArgSpec:
+    """Spec for one flag accepted by :func:`parse_flag_args`.
+
+    ``flags`` is the tuple of accepted forms (e.g. ``("--format", "-f")``).
+    ``takes_value`` distinguishes ``--format md`` (True) from ``--debug``
+    (False). ``dest`` is the key written to the result dict; if omitted it
+    derives from the first long flag.
+    """
+    flags: tuple[str, ...]
+    takes_value: bool = False
+    dest: str | None = None
+
+    @property
+    def key(self) -> str:
+        if self.dest:
+            return self.dest
+        long = next((f for f in self.flags if f.startswith("--")), self.flags[0])
+        return long.lstrip("-").replace("-", "_")
+
+
+def parse_flag_args(
+    parts: Sequence[str],
+    specs: Sequence[ArgSpec],
+    *,
+    strict: bool = False,
+) -> tuple[dict[str, Any], list[str]]:
+    """Parse a flat list of CLI-style tokens into a ``(flags, positionals)`` pair.
+
+    Walks ``parts`` left-to-right; flags declared in ``specs`` consume their
+    argument when ``takes_value=True``. Boolean flags map to ``True``. Tokens
+    not matching any flag are appended to the positionals list, preserving order.
+
+    ``strict`` raises :class:`CommandError` for unknown ``--``-prefixed
+    tokens; the lenient default silently drops unknown long options.
+
+    Replaces the ``while i < len(parts)`` if-chain that was duplicated in
+    export_command and tools_command, each with subtly different error messages
+    for the "value missing" case. context_command retains its own loop due to
+    the inline-value ``--export=<val>`` semantic that parse_flag_args does not
+    support.
+    """
+    flag_map: dict[str, ArgSpec] = {f: spec for spec in specs for f in spec.flags}
+    flags: dict[str, Any] = {}
+    positionals: list[str] = []
+    i = 0
+    while i < len(parts):
+        token = parts[i]
+        spec = flag_map.get(token)
+        if spec is not None:
+            if spec.takes_value:
+                if i + 1 >= len(parts):
+                    raise CommandError(f"{token} requires a value")
+                flags[spec.key] = parts[i + 1]
+                i += 2
+            else:
+                flags[spec.key] = True
+                i += 1
+            continue
+        if strict and token.startswith("--"):
+            raise CommandError(f"Unknown option: {token}")
+        positionals.append(token)
+        i += 1
+    return flags, positionals
+
+
+def format_change_summary_lines(
+    summary: dict[str, Any],
+    header: str = "**Overall Changes:**",
+) -> list[str]:
+    """Render the 5-line Markdown change summary (files mod/create/delete +
+    lines add/remove) used by ``diff_command._format_diff_summary`` and
+    ``patch_command._format_patch_result``.
+
+    ``summary`` follows the schema produced by :func:`analyze_plan_changes_stub`
+    (i.e. the ``summary`` sub-dict, not the top-level result).
+
+    Returns a list of strings prefixed with bullets, ready to ``.extend`` an
+    existing ``content_lines`` list. The header is included so callers don't
+    need a separate ``append`` for it.
+    """
+    return [
+        header,
+        f"  • Files Modified: {summary['files_modified']} 📝",
+        f"  • Files Created: {summary['files_created']} ✨",
+        f"  • Files Deleted: {summary['files_deleted']} 🗑️",
+        f"  • Lines Added: +{summary['lines_added']} 🟢",
+        f"  • Lines Removed: -{summary['lines_removed']} 🔴",
+    ]
+
+
+def resolve_patch_path(name: str) -> Path | None:
+    """Resolve nome de patch: cwd-relativo primeiro, depois ``PATCHES_DIR``.
+
+    Retorna ``None`` se nenhuma das duas opções existe — caller decide a mensagem.
+    Antes duplicado em apply_command._apply_patch como if/elif aninhado.
+    """
+    direct = Path(name)
+    if direct.exists():
+        return direct
+    fallback = PATCHES_DIR / name
+    if fallback.exists():
+        return fallback
+    return None
 
 
 def truncate(text: str | None, max_chars: int, suffix: str = "...") -> str:

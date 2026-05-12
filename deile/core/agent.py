@@ -26,7 +26,6 @@ except Exception:  # pragma: no cover — defensive only
     class _BudgetExceeded(Exception):  # type: ignore[no-redef]
         provider_id = None
         limit_type = None
-from ..commands.actions import CommandActions
 from ..commands.registry import get_command_registry
 from ..config.settings import get_settings
 from ..orchestration.workflow_executor import get_workflow_executor
@@ -355,11 +354,7 @@ class DeileAgent:
         
         # Initialize command system
         self.command_registry = get_command_registry(config_manager)
-        self.command_actions = CommandActions(
-            agent=self,
-            config_manager=config_manager
-        )
-        
+
         self.settings = get_settings()
         self.logger = get_logger()
 
@@ -1388,7 +1383,7 @@ class DeileAgent:
             return self._sessions[session_id]
         if persisted:
             try:
-                store = await self._get_session_store()
+                store = await self.get_session_store()
                 row = await store.get(session_id)
                 if row is not None:
                     snap = {
@@ -1415,7 +1410,7 @@ class DeileAgent:
         session.persisted = persisted
         if persisted:
             try:
-                store = await self._get_session_store()
+                store = await self.get_session_store()
                 await store.upsert(
                     session_id,
                     str(session.working_directory),
@@ -1425,8 +1420,8 @@ class DeileAgent:
                 logger.warning("SessionStore upsert failed", exc_info=True)
         return session
 
-    async def _get_session_store(self):
-        """Lazy SessionStore singleton."""
+    async def get_session_store(self):
+        """Lazy SessionStore singleton — public accessor."""
         if not hasattr(self, "_session_store") or self._session_store is None:
             try:
                 from deilebot.foundation.settings import get_bot_settings
@@ -2568,10 +2563,9 @@ class DeileAgent:
             self.tool_registry.auto_discover()
             self.parser_registry.auto_discover()
 
-            # Initialize commands and register actions
+            # Initialize commands
             self.command_registry.auto_discover_builtin_commands()
             self.command_registry.load_commands_from_config()
-            self._register_command_actions()
 
             # Load user/project skills as slash commands
             try:
@@ -2598,20 +2592,6 @@ class DeileAgent:
         except Exception as e:
             self.logger.warning(f"Auto-discovery failed: {e}")
     
-    def _register_command_actions(self) -> None:
-        """Registra todas as actions dos comandos"""
-        try:
-            # Registra actions principais
-            self.command_registry.register_action('show_help', self.command_actions.show_help)
-            self.command_registry.register_action('toggle_debug_mode', self.command_actions.toggle_debug_mode)
-            self.command_registry.register_action('clear_session', self.command_actions.clear_session)
-            self.command_registry.register_action('show_system_status', self.command_actions.show_system_status)
-            self.command_registry.register_action('show_config', self.command_actions.show_config)
-            self.command_registry.register_action('execute_bash', self.command_actions.execute_bash)
-            
-        except Exception as e:
-            self.logger.warning(f"Failed to register command actions: {e}")
-
     def _register_default_providers(self) -> None:
         """Registra model providers padrão se nenhum estiver configurado"""
         try:

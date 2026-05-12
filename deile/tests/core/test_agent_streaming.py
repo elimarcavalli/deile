@@ -75,7 +75,6 @@ def configured_agent(tmp_path: Path):
     agent.model_router.select_provider = AsyncMock()
     agent.display_manager = MagicMock()
     agent.command_registry = MagicMock()
-    agent.command_actions = MagicMock()
 
     from deile.config.settings import get_settings
     agent.settings = get_settings()

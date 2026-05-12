@@ -37,9 +37,9 @@ async def _get_session_store(context: CommandContext) -> Optional[Any]:
     agent = context.agent
     if agent is None:
         return None
-    if hasattr(agent, "_get_session_store"):
+    if hasattr(agent, "get_session_store"):
         try:
-            return await agent._get_session_store()
+            return await agent.get_session_store()
         except Exception as exc:
             logger.warning("Falha ao obter SessionStore do agente: %s", exc)
     return getattr(agent, "_session_store", None)

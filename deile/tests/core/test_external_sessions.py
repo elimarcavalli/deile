@@ -40,7 +40,7 @@ class TestGetOrCreate:
                 self._session_store = store
             return self._session_store
 
-        monkeypatch.setattr(DeileAgent, "_get_session_store", fake_get_store)
+        monkeypatch.setattr(DeileAgent, "get_session_store", fake_get_store)
 
         agent = DeileAgent()
         s1 = await agent.get_or_create_session(

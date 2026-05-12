@@ -14,12 +14,13 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import file_action_emoji, split_args, wrap_command_errors
+from ._shared import (PATCHES_DIR, file_action_emoji, list_patch_files,
+                      resolve_patch_path, split_args, wrap_command_errors)
 
 
 class ApplyCommand(DirectCommand):
     """Apply patch files to current directory"""
-    
+
     def __init__(self):
         from ...config.manager import CommandConfig
         config = CommandConfig(
@@ -28,7 +29,6 @@ class ApplyCommand(DirectCommand):
             aliases=["patch-apply"],  # alias canônico mantido por retrocompatibilidade
         )
         super().__init__(config)
-        self.patches_dir = Path("./PATCHES")
     
     @wrap_command_errors("apply")
     async def execute(self, context: CommandContext) -> CommandResult:
@@ -68,18 +68,8 @@ class ApplyCommand(DirectCommand):
     
     async def _show_applicable_patches(self) -> CommandResult:
         """Show available patch files that can be applied"""
-        
-        patch_files = []
-        
-        # Look in PATCHES directory
-        if self.patches_dir.exists():
-            patch_files.extend(self.patches_dir.glob("*.patch"))
-        
-        # Also look in current directory
-        patch_files.extend(Path(".").glob("*.patch"))
-        
-        # Remove duplicates and sort
-        patch_files = sorted(set(patch_files), key=lambda f: f.stat().st_mtime, reverse=True)
+
+        patch_files = list_patch_files(extra_dirs=[Path(".")])
         
         if not patch_files:
             return CommandResult.success_result(
@@ -105,7 +95,7 @@ class ApplyCommand(DirectCommand):
             patch_info = await self._analyze_patch_file(patch_file)
             
             # Location
-            location = "PATCHES/" if patch_file.parent.name == "PATCHES" else "current"
+            location = "PATCHES/" if patch_file.parent.name == PATCHES_DIR.name else "current"
             
             # File size
             size = f"{patch_file.stat().st_size:,}B"
@@ -143,13 +133,10 @@ class ApplyCommand(DirectCommand):
                           dry_run: bool, force: bool, backup: bool) -> CommandResult:
         """Apply a patch file"""
         
-        # Resolve patch file path
-        patch_path = Path(patch_file)
-        if not patch_path.exists():
-            # Try in PATCHES directory
-            patch_path = self.patches_dir / patch_file
-            if not patch_path.exists():
-                raise CommandError(f"Patch file '{patch_file}' not found")
+        # Resolve patch file path (cwd first, then PATCHES_DIR)
+        patch_path = resolve_patch_path(patch_file)
+        if patch_path is None:
+            raise CommandError(f"Patch file '{patch_file}' not found")
         
         # Validate target directory
         target_path = Path(target_dir)
