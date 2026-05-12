@@ -4,12 +4,16 @@ import importlib
 import inspect
 import logging
 from collections import defaultdict
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 
 from ..config.manager import CommandConfig
 from .base import CommandContext, CommandResult, SlashCommand
 
 logger = logging.getLogger(__name__)
+
+_BUILTIN_PKG = "deile.commands.builtin"
+_BUILTIN_DIR = Path(__file__).parent / "builtin"
 
 
 class CommandRegistry:
@@ -235,53 +239,29 @@ class CommandRegistry:
             return 0
     
     def auto_discover_builtin_commands(self) -> int:
-        """Descobre comandos builtin automaticamente"""
+        """Descobre comandos builtin automaticamente pelo filesystem.
+
+        Itera ``deile/commands/builtin/*_command.py``, ignorando arquivos
+        com prefixo ``_`` (helpers como ``_shared.py``, ``_status_collectors.py``).
+        Substitui a lista hardcoded de 27 strings que drift-ava em relação ao
+        filesystem (compact/skills/version/env commands estavam no disco mas
+        não na lista pré-existente em ``builtin/__init__.py``).
+        """
         try:
             discovered = 0
-            
-            # Lista de módulos builtin para descobrir
-            builtin_modules = [
-                'deile.commands.builtin.help_command',
-                'deile.commands.builtin.debug_command',
-                'deile.commands.builtin.clear_command',
-                'deile.commands.builtin.status_command',
-                'deile.commands.builtin.config_command',
-                'deile.commands.builtin.context_command',
-                'deile.commands.builtin.cost_command',
-                'deile.commands.builtin.tools_command',
-                'deile.commands.builtin.model_command',
-                'deile.commands.builtin.export_command',
-                'deile.commands.builtin.stop_command',
-                'deile.commands.builtin.diff_command',
-                'deile.commands.builtin.patch_command',
-                'deile.commands.builtin.apply_command',
-                'deile.commands.builtin.approve_command',
-                'deile.commands.builtin.compact_command',
-                'deile.commands.builtin.memory_command',
-                'deile.commands.builtin.logs_command',
-                'deile.commands.builtin.permissions_command',
-                'deile.commands.builtin.pipeline_command',
-                'deile.commands.builtin.pipeline_schedule_command',
-                'deile.commands.builtin.plan_command',
-                'deile.commands.builtin.run_command',
-                'deile.commands.builtin.sandbox_command',
-                'deile.commands.builtin.skills_command',
-                'deile.commands.builtin.version_command',
-                'deile.commands.builtin.welcome_command',
-            ]
-            
-            for module_name in builtin_modules:
+            for path in sorted(_BUILTIN_DIR.glob("*_command.py")):
+                if path.stem.startswith("_"):
+                    continue
+                module_name = f"{_BUILTIN_PKG}.{path.stem}"
                 try:
                     discovered += self._discover_in_module(module_name)
-                except ImportError:
-                    logger.debug(f"Module {module_name} not found for auto-discovery")
-                except Exception as e:
-                    logger.warning(f"Error discovering in {module_name}: {e}")
-            
+                except ImportError as exc:
+                    logger.debug("Module %s not importable: %s", module_name, exc)
+                except Exception as exc:
+                    logger.warning("Error discovering in %s: %s", module_name, exc)
             return discovered
-            
-        except Exception as e:
-            logger.error(f"Auto-discovery failed: {e}")
+        except Exception as exc:
+            logger.error("Auto-discovery failed: %s", exc)
             return 0
     
     def _discover_in_module(self, module_name: str) -> int:
