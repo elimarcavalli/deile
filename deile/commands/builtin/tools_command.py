@@ -12,7 +12,7 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args, truncate
+from ._shared import ArgSpec, parse_flag_args, split_args, truncate
 
 
 class ToolsCommand(DirectCommand):
@@ -38,35 +38,27 @@ class ToolsCommand(DirectCommand):
         """
         try:
             parts = split_args(context)
-            format_type = "list"  # default
+            flags, positionals = parse_flag_args(
+                parts,
+                [
+                    ArgSpec(("--format", "-f"), takes_value=True, dest="format"),
+                    ArgSpec(("--schema", "-s"), dest="show_schema"),
+                    ArgSpec(("--examples", "-e"), dest="show_examples"),
+                ],
+                strict=True,
+            )
+            format_type = flags.get("format", "list")
+            show_schema = bool(flags.get("show_schema"))
+            show_examples = bool(flags.get("show_examples"))
             tool_name = None
-            show_schema = False
-            show_examples = False
-            
-            i = 0
-            while i < len(parts):
-                if parts[i] in ["--format", "-f"]:
-                    if i + 1 < len(parts):
-                        format_type = parts[i + 1]
-                        i += 2
-                    else:
-                        raise CommandError("--format requires a value (list, detailed, json)")
-                elif parts[i] in ["--schema", "-s"]:
-                    show_schema = True
-                    i += 1
-                elif parts[i] in ["--examples", "-e"]:
-                    show_examples = True
-                    i += 1
-                elif parts[i].startswith("--"):
-                    raise CommandError(f"Unknown option: {parts[i]}")
+            # Positional: first {list,detailed,json} promotes to format (if still default);
+            # any other positional is treated as tool name (last wins, matching prior behaviour).
+            for token in positionals:
+                if format_type == "list" and token in ("list", "detailed", "json"):
+                    format_type = token
                 else:
-                    # Positional argument - either format or tool name
-                    if format_type == "list" and parts[i] in ["list", "detailed", "json"]:
-                        format_type = parts[i]
-                    else:
-                        tool_name = parts[i]
-                    i += 1
-            
+                    tool_name = token
+
             if format_type not in ["list", "detailed", "json"]:
                 raise CommandError("Format must be one of: list, detailed, json")
 

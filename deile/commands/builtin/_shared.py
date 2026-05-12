@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import functools
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Sequence
 
 from rich.panel import Panel
 from rich.text import Text
@@ -351,6 +352,71 @@ def list_patch_files(extra_dirs: Iterable[Path] = ()) -> list[Path]:
         if extra.exists():
             files.extend(extra.glob("*.patch"))
     return sorted(set(files), key=lambda f: f.stat().st_mtime, reverse=True)
+
+
+@dataclass(frozen=True)
+class ArgSpec:
+    """Spec for one flag accepted by :func:`parse_flag_args`.
+
+    ``flags`` is the tuple of accepted forms (e.g. ``("--format", "-f")``).
+    ``takes_value`` distinguishes ``--format md`` (True) from ``--debug``
+    (False). ``dest`` is the key written to the result dict; if omitted it
+    derives from the first long flag.
+    """
+    flags: tuple[str, ...]
+    takes_value: bool = False
+    dest: str | None = None
+
+    @property
+    def key(self) -> str:
+        if self.dest:
+            return self.dest
+        long = next((f for f in self.flags if f.startswith("--")), self.flags[0])
+        return long.lstrip("-").replace("-", "_")
+
+
+def parse_flag_args(
+    parts: Sequence[str],
+    specs: Sequence[ArgSpec],
+    *,
+    strict: bool = False,
+) -> tuple[dict[str, Any], list[str]]:
+    """Parse a flat list of CLI-style tokens into a ``(flags, positionals)`` pair.
+
+    Walks ``parts`` left-to-right; flags declared in ``specs`` consume their
+    argument when ``takes_value=True``. Boolean flags map to ``True``. Tokens
+    not matching any flag are appended to the positionals list, preserving order.
+
+    ``strict`` raises :class:`CommandError` for unknown ``--``-prefixed
+    tokens; the lenient default mirrors the previous ``context_command``
+    behaviour where unknown long options were silently dropped.
+
+    Replaces the ``while i < len(parts)`` if-chain that was duplicated in
+    context_command, export_command and tools_command, each with subtly
+    different error messages for the "value missing" case.
+    """
+    flag_map: dict[str, ArgSpec] = {f: spec for spec in specs for f in spec.flags}
+    flags: dict[str, Any] = {}
+    positionals: list[str] = []
+    i = 0
+    while i < len(parts):
+        token = parts[i]
+        spec = flag_map.get(token)
+        if spec is not None:
+            if spec.takes_value:
+                if i + 1 >= len(parts):
+                    raise CommandError(f"{token} requires a value")
+                flags[spec.key] = parts[i + 1]
+                i += 2
+            else:
+                flags[spec.key] = True
+                i += 1
+            continue
+        if strict and token.startswith("--"):
+            raise CommandError(f"Unknown option: {token}")
+        positionals.append(token)
+        i += 1
+    return flags, positionals
 
 
 def format_change_summary_lines(

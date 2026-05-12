@@ -13,7 +13,8 @@ from deile.__version__ import __version__
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import export_timestamp, get_agent, get_session, split_args
+from ._shared import (ArgSpec, export_timestamp, get_agent, get_session,
+                      parse_flag_args, split_args)
 
 
 class ExportCommand(DirectCommand):
@@ -35,38 +36,29 @@ class ExportCommand(DirectCommand):
     async def execute(self, context: CommandContext) -> CommandResult:
         try:
             parts = split_args(context)
-            format_type = "md"
-            export_path = None
-            include_artifacts = True
-            include_plans = True
-            include_session = True
-
-            i = 0
-            while i < len(parts):
-                p = parts[i]
-                if p in ("--format", "-f") and i + 1 < len(parts):
-                    format_type = parts[i + 1]
-                    i += 2
-                elif p in ("--path", "-p") and i + 1 < len(parts):
-                    export_path = parts[i + 1]
-                    i += 2
-                elif p == "--no-artifacts":
-                    include_artifacts = False
-                    i += 1
-                elif p == "--no-plans":
-                    include_plans = False
-                    i += 1
-                elif p == "--no-session":
-                    include_session = False
-                    i += 1
-                elif p.startswith("--"):
-                    raise CommandError(f"Opção desconhecida: {p}")
+            flags, positionals = parse_flag_args(
+                parts,
+                [
+                    ArgSpec(("--format", "-f"), takes_value=True, dest="format"),
+                    ArgSpec(("--path", "-p"), takes_value=True, dest="path"),
+                    ArgSpec(("--no-artifacts",), dest="no_artifacts"),
+                    ArgSpec(("--no-plans",), dest="no_plans"),
+                    ArgSpec(("--no-session",), dest="no_session"),
+                ],
+                strict=True,
+            )
+            format_type = flags.get("format", "md")
+            export_path = flags.get("path")
+            include_artifacts = not flags.get("no_artifacts")
+            include_plans = not flags.get("no_plans")
+            include_session = not flags.get("no_session")
+            # Positionals: first known format word promotes to format (only if still
+            # default); otherwise it sets export_path (last wins, matching prior).
+            for token in positionals:
+                if format_type == "md" and token in ("txt", "md", "json", "zip"):
+                    format_type = token
                 else:
-                    if format_type == "md" and p in ("txt", "md", "json", "zip"):
-                        format_type = p
-                    else:
-                        export_path = p
-                    i += 1
+                    export_path = token
 
             if format_type not in ("txt", "md", "json", "zip"):
                 raise CommandError("Formato deve ser um de: txt, md, json, zip")
