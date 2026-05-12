@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from pathlib import Path
 from typing import Any, List, Optional
 
 from rich.panel import Panel
@@ -19,6 +20,10 @@ from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import error_panel, get_agent, split_args
 
 logger = logging.getLogger(__name__)
+
+_MODEL_PROVIDERS_YAML: Path = Path(__file__).parents[2] / "config" / "model_providers.yaml"
+"""Caminho canônico do catalog YAML — antes computado 4x em-método com
+import local de ``Path``, todos resolvendo para o mesmo arquivo."""
 
 
 class ModelCommand(DirectCommand):
@@ -128,12 +133,9 @@ EXAMPLES:
     # ------------------------------------------------------------------
 
     async def _list(self, context: CommandContext) -> CommandResult:
-        from pathlib import Path
-
         from deile.core.models.catalog import ModelCatalog
 
-        yaml_path = Path(__file__).parents[2] / "config" / "model_providers.yaml"
-        catalog = ModelCatalog.from_yaml(yaml_path)
+        catalog = ModelCatalog.from_yaml(_MODEL_PROVIDERS_YAML)
         handles = catalog.list_all()
 
         forced = self._get_forced(context)
@@ -170,8 +172,6 @@ EXAMPLES:
     # ------------------------------------------------------------------
 
     async def _select(self, context: CommandContext) -> CommandResult:
-        from pathlib import Path
-
         from deile.core.models.catalog import ModelCatalog
 
         try:
@@ -196,8 +196,7 @@ EXAMPLES:
 
         selector = self._resolve_selector()
 
-        yaml_path = Path(__file__).parents[2] / "config" / "model_providers.yaml"
-        catalog = ModelCatalog.from_yaml(yaml_path)
+        catalog = ModelCatalog.from_yaml(_MODEL_PROVIDERS_YAML)
         handles = sorted(catalog.list_all(), key=lambda h: (h.tier.value, h.provider_id, h.model_id))
         forced = self._get_forced(context)
 
@@ -431,10 +430,6 @@ EXAMPLES:
                 ),
             )
 
-        from pathlib import Path
-
-        yaml_path = Path(__file__).parents[2] / "config" / "model_providers.yaml"
-
         # Capture providers from the OLD TierRouter so we can re-register on the new one
         old_providers: List[Any] = []
         try:
@@ -444,7 +439,7 @@ EXAMPLES:
             old_providers = []
 
         reset_tier_router()
-        new_router = get_tier_router(yaml_path=yaml_path, policy_name=name)
+        new_router = get_tier_router(yaml_path=_MODEL_PROVIDERS_YAML, policy_name=name)
 
         # Re-register every provider that was on the old router so cascade resolution still works
         for p in old_providers:
@@ -518,12 +513,9 @@ EXAMPLES:
     # ------------------------------------------------------------------
 
     async def _budget(self, context: CommandContext) -> CommandResult:
-        from pathlib import Path
-
         repo = get_usage_repository()
-        yaml_path = Path(__file__).parents[2] / "config" / "model_providers.yaml"
         try:
-            guard = BudgetGuard.from_yaml(yaml_path, repo)
+            guard = BudgetGuard.from_yaml(_MODEL_PROVIDERS_YAML, repo)
         except Exception:
             return CommandResult(
                 success=False,
