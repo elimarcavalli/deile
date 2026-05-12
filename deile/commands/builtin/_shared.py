@@ -10,7 +10,8 @@ from __future__ import annotations
 import functools
 import logging
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable
 
 from rich.panel import Panel
 from rich.text import Text
@@ -318,6 +319,53 @@ def analyze_plan_changes_stub(plan_id: str) -> dict[str, Any]:
             "ARTIFACTS/session_123/file_list_002.json",
         ],
     }
+
+
+PATCHES_DIR: Path = Path("./PATCHES")
+"""Diretório canônico de patches gerados/aplicados — antes hardcoded
+em ``apply_command.py`` e ``patch_command.py``. Caminho relativo é intencional:
+os patches vivem na working dir do agente, não no pacote."""
+
+
+def ensure_patches_dir() -> Path:
+    """Garante que ``PATCHES_DIR`` existe e o retorna.
+
+    ``mkdir(exist_ok=True)`` é idempotente. patch_command criava no
+    ``__init__`` e apply_command checava ``.exists()`` antes de cada uso —
+    ambos colapsam para a mesma operação aqui.
+    """
+    PATCHES_DIR.mkdir(exist_ok=True)
+    return PATCHES_DIR
+
+
+def list_patch_files(extra_dirs: Iterable[Path] = ()) -> list[Path]:
+    """Lista ``*.patch`` em ``PATCHES_DIR`` + dirs adicionais, ordenados por mtime desc.
+
+    Substitui o padrão duplicado em apply (`PATCHES/` + cwd) e patch (`PATCHES/`).
+    Não exige que ``PATCHES_DIR`` exista (silenciosamente vazio quando ausente).
+    """
+    files: list[Path] = []
+    if PATCHES_DIR.exists():
+        files.extend(PATCHES_DIR.glob("*.patch"))
+    for extra in extra_dirs:
+        if extra.exists():
+            files.extend(extra.glob("*.patch"))
+    return sorted(set(files), key=lambda f: f.stat().st_mtime, reverse=True)
+
+
+def resolve_patch_path(name: str) -> Path | None:
+    """Resolve nome de patch: cwd-relativo primeiro, depois ``PATCHES_DIR``.
+
+    Retorna ``None`` se nenhuma das duas opções existe — caller decide a mensagem.
+    Antes duplicado em apply_command._apply_patch como if/elif aninhado.
+    """
+    direct = Path(name)
+    if direct.exists():
+        return direct
+    fallback = PATCHES_DIR / name
+    if fallback.exists():
+        return fallback
+    return None
 
 
 def truncate(text: str | None, max_chars: int, suffix: str = "...") -> str:
