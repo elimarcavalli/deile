@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from collections import defaultdict
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -17,6 +16,8 @@ from ...core.interfaces.selector import (InteractiveSelector,
 from ...core.models.tier_router import get_tier_router, reset_tier_router
 from ...storage.usage_repository import BudgetGuard, get_usage_repository
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._model_views import (build_budget_panel, build_cost_table,
+                           build_current_panel, build_list_table)
 from ._shared import error_panel, get_agent, split_args
 
 logger = logging.getLogger(__name__)
@@ -137,34 +138,8 @@ EXAMPLES:
 
         catalog = ModelCatalog.from_yaml(_MODEL_PROVIDERS_YAML)
         handles = catalog.list_all()
-
         forced = self._get_forced(context)
-
-        table = Table(title="Available Models", show_header=True, header_style="bold cyan")
-        table.add_column("Provider", style="cyan", no_wrap=True)
-        table.add_column("Model ID", no_wrap=True)
-        table.add_column("Tier", justify="center")
-        table.add_column("In $/1M", justify="right")
-        table.add_column("Out $/1M", justify="right")
-        table.add_column("Context", justify="right")
-        table.add_column("Capabilities")
-        table.add_column("Active", justify="center")
-
-        for h in sorted(handles, key=lambda x: (x.tier.value, x.provider_id)):
-            key = f"{h.provider_id}:{h.model_id}"
-            active = "✓" if forced and forced == key else ""
-            caps = ", ".join(sorted(h.capabilities))
-            table.add_row(
-                h.provider_id,
-                h.model_id,
-                h.tier.value,
-                f"${h.pricing.input_per_1m_usd:.2f}",
-                f"${h.pricing.output_per_1m_usd:.2f}",
-                f"{h.context_window // 1000}K",
-                caps,
-                active,
-            )
-
+        table = build_list_table(handles, forced)
         return CommandResult(success=True, content=table, metadata={"count": len(handles)})
 
     # ------------------------------------------------------------------
@@ -294,16 +269,9 @@ EXAMPLES:
         except Exception:
             tier_1_cascade = []
 
-        lines = []
-        if forced:
-            lines.append(f"Forced model : {forced}")
-        else:
-            lines.append("Routing      : automatic (tier-based)")
-        lines.append(f"Tier-1 cascade: {', '.join(tier_1_cascade) or 'not configured'}")
-
         return CommandResult(
             success=True,
-            content=Panel(Text("\n".join(lines)), title="Current Routing", border_style="green"),
+            content=build_current_panel(forced, tier_1_cascade),
             metadata={"forced": forced},
         )
 
@@ -475,37 +443,7 @@ EXAMPLES:
         session_id = self._session_id(context)
         total = repo.cost_for_session(session_id)
         records = repo.records_for_session(session_id)
-
-        table = Table(title=f"Session Cost  (session={session_id})", header_style="bold")
-        table.add_column("Provider")
-        table.add_column("Model")
-        table.add_column("Calls", justify="right")
-        table.add_column("In tokens", justify="right")
-        table.add_column("Out tokens", justify="right")
-        table.add_column("Cost $", justify="right")
-
-        # Group by provider+model
-        agg: dict = defaultdict(lambda: {"calls": 0, "in": 0, "out": 0, "cost": 0.0})
-        for r in records:
-            key = (r.provider_id, r.model_id)
-            agg[key]["calls"] += 1
-            agg[key]["in"] += r.prompt_tokens
-            agg[key]["out"] += r.completion_tokens
-            agg[key]["cost"] += r.cost_usd
-
-        for (provider, model), vals in sorted(agg.items()):
-            table.add_row(
-                provider,
-                model,
-                str(vals["calls"]),
-                str(vals["in"]),
-                str(vals["out"]),
-                f"${vals['cost']:.4f}",
-            )
-
-        table.add_section()
-        table.add_row("TOTAL", "", str(len(records)), "", "", f"${total:.4f}")
-
+        table = build_cost_table(records, total, session_id)
         return CommandResult(success=True, content=table, metadata={"total_cost_usd": total})
 
     # ------------------------------------------------------------------
@@ -524,34 +462,9 @@ EXAMPLES:
 
         session_id = self._session_id(context)
         session_spent = repo.cost_for_session(session_id)
-        snap = guard.snapshot()
-        per_session = snap["per_session_usd"]
-
-        lines = [
-            f"Per-session limit : ${per_session:.2f}",
-            f"Session spent     : ${session_spent:.4f}",
-            f"Remaining         : ${max(0.0, per_session - session_spent):.4f}",
-            "",
-            f"Guard enabled     : {snap['enabled']}",
-        ]
-        if snap["per_provider_daily_usd"]:
-            lines.append("")
-            lines.append("Daily limits:")
-            for pid, limit in snap["per_provider_daily_usd"].items():
-                lines.append(f"  {pid}: ${limit:.2f}")
-
-        if snap["per_provider_monthly_usd"]:
-            lines.append("")
-            lines.append("Monthly limits:")
-            for pid, limit in snap["per_provider_monthly_usd"].items():
-                lines.append(f"  {pid}: ${limit:.2f}")
-
-        lines.append("")
-        lines.append(f"Alert threshold   : {snap['alert_threshold_pct']}%")
-
         return CommandResult(
             success=True,
-            content=Panel(Text("\n".join(lines)), title="Budget", border_style="blue"),
+            content=build_budget_panel(guard.snapshot(), session_spent),
         )
 
     # ------------------------------------------------------------------
