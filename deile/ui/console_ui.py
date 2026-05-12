@@ -102,6 +102,9 @@ class ConsoleUIManager(UIManager):
             from prompt_toolkit.layout.controls import FormattedTextControl
             from prompt_toolkit.output import ColorDepth
 
+            # Sentinel returned to the CLI loop to signal "open /rewind".
+            _REWIND_SENTINEL = "\x00REWIND\x00"
+
             kb = KeyBindings()
             _esc = {'active': False, 'task': None}
 
@@ -123,12 +126,33 @@ class ConsoleUIManager(UIManager):
 
             @kb.add("escape")
             def _on_esc(event):
-                if not event.current_buffer.text:
-                    _hide_esc_hint(event)
+                buf = event.current_buffer
+                if not buf.text:
+                    # ESC on empty buffer: if hint was already active (i.e. this
+                    # is the *second* ESC on an empty prompt), emit the rewind
+                    # sentinel so the CLI loop opens /rewind.
+                    if _esc['active']:
+                        _hide_esc_hint(event)
+                        buf.insert_text(_REWIND_SENTINEL)
+                        event.app.validate_and_handle()
+                        return
+                    # First ESC on empty buffer: show rewind hint.
+                    _esc['active'] = True
+                    event.app.invalidate()
+
+                    async def _auto_hide_empty():
+                        await asyncio.sleep(1.5)
+                        _esc['active'] = False
+                        _esc['task'] = None
+                        event.app.invalidate()
+
+                    if _esc['task']:
+                        _esc['task'].cancel()
+                    _esc['task'] = event.app.create_background_task(_auto_hide_empty())
                     return
 
                 if _esc['active']:
-                    event.current_buffer.reset()
+                    buf.reset()
                     _hide_esc_hint(event)
                     return
 
@@ -191,12 +215,23 @@ class ConsoleUIManager(UIManager):
             # separator would persist in scrollback after submission because
             # prompt_toolkit reserves the row for ConditionalContainer even when the
             # filter collapses to false on is_done.
+            def _esc_hint_text():
+                # Prompt_toolkit captures `session` at closure time, so we
+                # inspect the current buffer through the live app.
+                try:
+                    buf_text = get_app().current_buffer.text
+                except Exception:
+                    buf_text = ""
+                if buf_text:
+                    msg = " Esc novamente para limpar"
+                else:
+                    msg = " Esc novamente para /rewind"
+                return FormattedText([("fg:ansibrightblack", msg)])
+
             hint_win = ConditionalContainer(
                 content=Window(
                     height=1,
-                    content=FormattedTextControl(
-                        lambda: FormattedText([('fg:ansibrightblack', ' Esc novamente para limpar')])
-                    ),
+                    content=FormattedTextControl(_esc_hint_text),
                     dont_extend_height=True,
                 ),
                 filter=Condition(lambda: _esc['active']),
