@@ -180,7 +180,7 @@ def wrap_command_errors(
 def split_args(context: CommandContext) -> list[str]:
     """Tokeniza ``context.args``; trata ``None``/vazio/só-espaços como ``[]``.
 
-    Substitui a duplicação ``args = context.args if hasattr(...) else ""``
+    Substitui a duplicação ``args = context.args if hasattr(...) else ""`
     seguida de ``parts = args.strip().split() if args.strip() else []``
     que aparecia em 16 comandos.
     """
@@ -388,12 +388,13 @@ def parse_flag_args(
     not matching any flag are appended to the positionals list, preserving order.
 
     ``strict`` raises :class:`CommandError` for unknown ``--``-prefixed
-    tokens; the lenient default mirrors the previous ``context_command``
-    behaviour where unknown long options were silently dropped.
+    tokens; the lenient default silently drops unknown long options.
 
     Replaces the ``while i < len(parts)`` if-chain that was duplicated in
-    context_command, export_command and tools_command, each with subtly
-    different error messages for the "value missing" case.
+    export_command and tools_command, each with subtly different error messages
+    for the "value missing" case. context_command retains its own loop due to
+    the inline-value ``--export=<val>`` semantic that parse_flag_args does not
+    support.
     """
     flag_map: dict[str, ArgSpec] = {f: spec for spec in specs for f in spec.flags}
     flags: dict[str, Any] = {}
