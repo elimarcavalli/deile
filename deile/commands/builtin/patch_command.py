@@ -13,7 +13,8 @@ from ...core.exceptions import CommandError
 from ...orchestration.plan_manager import get_plan_manager
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import (analyze_plan_changes_stub, ensure_patches_dir,
-                      export_timestamp, file_action_emoji, list_patch_files,
+                      export_timestamp, file_action_emoji,
+                      format_change_summary_lines, list_patch_files,
                       split_args, wrap_command_errors)
 
 
@@ -326,13 +327,8 @@ class PatchCommand(DirectCommand):
             f"**Format:** {output_format}",
             f"**Size:** {file_size:,} bytes",
             "",
-            "**Changes Included:**",
-            f"  • Files Modified: {summary['files_modified']} 📝",
-            f"  • Files Created: {summary['files_created']} ✨",
-            f"  • Files Deleted: {summary['files_deleted']} 🗑️",
-            f"  • Lines Added: +{summary['lines_added']} 🟢",
-            f"  • Lines Removed: -{summary['lines_removed']} 🔴",
-            ""
+            *format_change_summary_lines(summary, header="**Changes Included:**"),
+            "",
         ]
         
         # Show affected files

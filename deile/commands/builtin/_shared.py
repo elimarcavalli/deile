@@ -353,6 +353,31 @@ def list_patch_files(extra_dirs: Iterable[Path] = ()) -> list[Path]:
     return sorted(set(files), key=lambda f: f.stat().st_mtime, reverse=True)
 
 
+def format_change_summary_lines(
+    summary: dict[str, Any],
+    header: str = "**Overall Changes:**",
+) -> list[str]:
+    """Render the 5-line Markdown change summary (files mod/create/delete +
+    lines add/remove) used by ``diff_command._format_diff_summary`` and
+    ``patch_command._format_patch_result``.
+
+    ``summary`` follows the schema produced by :func:`analyze_plan_changes_stub`
+    (i.e. the ``summary`` sub-dict, not the top-level result).
+
+    Returns a list of strings prefixed with bullets, ready to ``.extend`` an
+    existing ``content_lines`` list. The header is included so callers don't
+    need a separate ``append`` for it.
+    """
+    return [
+        header,
+        f"  • Files Modified: {summary['files_modified']} 📝",
+        f"  • Files Created: {summary['files_created']} ✨",
+        f"  • Files Deleted: {summary['files_deleted']} 🗑️",
+        f"  • Lines Added: +{summary['lines_added']} 🟢",
+        f"  • Lines Removed: -{summary['lines_removed']} 🔴",
+    ]
+
+
 def resolve_patch_path(name: str) -> Path | None:
     """Resolve nome de patch: cwd-relativo primeiro, depois ``PATCHES_DIR``.
 
