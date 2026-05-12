@@ -23,6 +23,9 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import threading
+import time
+import uuid
 import venv as _venv  # noqa: N812 — local alias for testability (patched as deile.cli._venv)
 from pathlib import Path
 from typing import List, Optional
@@ -249,8 +252,9 @@ class _DeileCLI:
                 if self.settings.pipeline_autostart:
                     await _autostart_pipeline(self.agent)
 
+                _cli_session_id = f"cli-{int(time.time())}-{uuid.uuid4().hex[:8]}"
                 self.default_session = self.agent.create_session(
-                    session_id="default_cli_session",
+                    session_id=_cli_session_id,
                     working_directory=self.settings.working_directory,
                 )
 
@@ -277,6 +281,111 @@ class _DeileCLI:
                 files.append(str(rel).replace("\\", "/"))
         return sorted(files)[:500]
 
+    # Sentinel returned by get_user_input() when the user presses ESC ESC on
+    # an empty prompt — signals the main loop to trigger /rewind.
+    _REWIND_SENTINEL = "\x00REWIND\x00"
+    # Context-data key written by /fork, /rewind, /resume to request a session
+    # switch without tight-coupling between the command and the CLI class.
+    _SWITCH_SESSION_KEY = "_switch_session"
+
+    def _check_session_switch(self) -> None:
+        """If a command requested a session switch, apply it."""
+        new_sid = self.default_session.context_data.pop(self._SWITCH_SESSION_KEY, None)
+        if not new_sid:
+            return
+        new_session = self.agent.get_session(new_sid)
+        if new_session is not None:
+            self.default_session = new_session
+            name = new_session.context_data.get("conversation_name", "")
+            label = f'"{name}"' if name else new_sid
+            self.ui.console.print(f"\n[dim cyan]› Sessão alternada para {label}[/dim cyan]")
+        else:
+            self.ui.console.print(f"[yellow]Sessão {new_sid!r} não encontrada — mantendo atual.[/yellow]")
+
+    async def _stream_with_esc_cancel(self, event_stream):
+        """Run display_streaming_turn, cancelling on ESC keypress.
+
+        Uses a daemon thread to watch for a plain ESC byte (0x1b without a
+        following escape-sequence) while stdin is briefly set to cbreak mode.
+        Falls back to the plain streaming call when stdin is not a TTY or when
+        the platform is Windows (no termios).
+        """
+        try:
+            import select as _select
+            import termios
+            import tty
+        except ImportError:
+            return await self.ui.display_streaming_turn(event_stream)
+
+        if not sys.stdin.isatty():
+            return await self.ui.display_streaming_turn(event_stream)
+
+        esc_event: asyncio.Event = asyncio.Event()
+        loop = asyncio.get_event_loop()
+
+        try:
+            saved = termios.tcgetattr(sys.stdin.fileno())
+        except Exception:
+            return await self.ui.display_streaming_turn(event_stream)
+
+        def _watch() -> None:
+            try:
+                tty.setcbreak(sys.stdin.fileno())
+                while not esc_event.is_set():
+                    r, _, _ = _select.select([sys.stdin], [], [], 0.1)
+                    if not r:
+                        continue
+                    ch = sys.stdin.read(1)
+                    if ch != "\x1b":
+                        continue
+                    # Distinguish plain ESC from multi-byte escape sequences
+                    # (arrow keys etc.) by checking for more bytes within 50ms.
+                    r2, _, _ = _select.select([sys.stdin], [], [], 0.05)
+                    if not r2:
+                        loop.call_soon_threadsafe(esc_event.set)
+                        break
+                    # Escape sequence — consume and ignore remaining bytes.
+                    while _select.select([sys.stdin], [], [], 0.01)[0]:
+                        sys.stdin.read(1)
+            except Exception:
+                pass
+            finally:
+                try:
+                    termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, saved)
+                except Exception:
+                    pass
+
+        watcher = threading.Thread(target=_watch, daemon=True)
+        watcher.start()
+
+        stream_task = asyncio.ensure_future(self.ui.display_streaming_turn(event_stream))
+        esc_task = asyncio.ensure_future(esc_event.wait())
+        try:
+            done, pending = await asyncio.wait(
+                [stream_task, esc_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for t in pending:
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+            if esc_event.is_set() and stream_task not in done:
+                self.ui.console.print("\n[yellow](ESC — request cancelada)[/yellow]")
+                return None
+
+            if stream_task in done and not stream_task.cancelled():
+                return stream_task.result()
+        finally:
+            esc_event.set()
+            try:
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, saved)
+            except Exception:
+                pass
+        return None
+
     async def run_interactive(self) -> None:
         from rich.panel import Panel
         from rich.text import Text
@@ -293,7 +402,10 @@ class _DeileCLI:
                 user_input = await asyncio.to_thread(self.ui.get_user_input, "\n > ")
                 user_input = user_input.strip()
 
-                if not user_input:
+                # ESC ESC on empty prompt → trigger /rewind
+                if user_input == self._REWIND_SENTINEL:
+                    user_input = "/rewind"
+                elif not user_input:
                     sys.stdout.write("\033[A\033[2K\r")
                     sys.stdout.flush()
                     continue
@@ -312,9 +424,10 @@ class _DeileCLI:
                         session_id=self.default_session.session_id,
                     )
                     try:
-                        await self.ui.display_streaming_turn(event_stream)
+                        await self._stream_with_esc_cancel(event_stream)
                     except KeyboardInterrupt:
                         self.ui.console.print("\n[yellow](turn interrupted)[/yellow]")
+                    self._check_session_switch()
                     continue
 
                 with self.ui.show_loading("Processando sua solicitação..."):
@@ -322,6 +435,8 @@ class _DeileCLI:
                         user_input=user_input,
                         session_id=self.default_session.session_id,
                     )
+
+                self._check_session_switch()
 
                 meta = response.metadata or {}
                 if meta.get("budget_exceeded"):

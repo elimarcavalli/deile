@@ -51,11 +51,15 @@ class EpisodicMemory:
                     agent_response TEXT,
                     timestamp REAL,
                     context TEXT,
-                    metadata TEXT,
-                    INDEX(session_id),
-                    INDEX(timestamp)
+                    metadata TEXT
                 )
             """)
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_episodes_session_id ON episodes (session_id)"
+            )
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_episodes_timestamp ON episodes (timestamp)"
+            )
             await db.commit()
 
         self._is_initialized = True
@@ -125,6 +129,58 @@ class EpisodicMemory:
                 })
 
         return results
+
+    async def get_episodes_for_session(self, session_id: str) -> List[Dict[str, Any]]:
+        """Return all episodes for a session ordered by timestamp ASC."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT * FROM episodes WHERE session_id = ? ORDER BY timestamp ASC",
+                (session_id,),
+            )
+            rows = await cursor.fetchall()
+        return [
+            {
+                "episode_id": row[0],
+                "session_id": row[1],
+                "user_input": row[2],
+                "agent_response": row[3],
+                "timestamp": row[4],
+                "context": json.loads(row[5]),
+                "metadata": json.loads(row[6]),
+            }
+            for row in rows
+        ]
+
+    async def list_sessions(self, max_sessions: int = 30) -> List[Dict[str, Any]]:
+        """Return recent sessions ordered by last activity DESC.
+
+        Each entry: session_id, episode_count, last_activity, first_user_input.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                """
+                SELECT
+                    session_id,
+                    COUNT(*) AS episode_count,
+                    MAX(timestamp) AS last_activity,
+                    MIN(user_input) AS first_user_input
+                FROM episodes
+                GROUP BY session_id
+                ORDER BY last_activity DESC
+                LIMIT ?
+                """,
+                (max_sessions,),
+            )
+            rows = await cursor.fetchall()
+        return [
+            {
+                "session_id": row[0],
+                "episode_count": row[1],
+                "last_activity": row[2],
+                "first_user_input": row[3],
+            }
+            for row in rows
+        ]
 
     async def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas"""
