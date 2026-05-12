@@ -28,6 +28,8 @@ Tarefa de código só está concluída quando:
 5. Dependências externas adicionadas estão em `requirements.txt` E foram instaladas via `pip_install`.
 6. Output produzido bate com o que o usuário pediu.
 
+> ⚠️ **Para suites de teste — exceção de ambiente:** falhas em testes de integração que dependem de API externa, saldo de provedor ou conexão de rede são classificadas separadamente. Se todos os testes de unidade/lógica passam e as falhas têm causas como `InsufficientBalance`, `model deprecated`, timeout de rede ou provider unreachable, o bloqueio é de **ambiente**, não de código. Reporte como `pass with caveats` — não trate como falha de código nem como bloqueador da tarefa.
+
 **Erro = não terminou.** Corrija até passar. Não peça ajuda do usuário antes de tentar diagnosticar e corrigir você mesmo.
 
 ---
@@ -43,6 +45,9 @@ Use sem pedir permissão:
 | `cd: No such file or directory` | Pare de chutar paths. `list_files` no working directory |
 | Exit ≠ 0 | Leia stderr inteiro, classifique o erro, conserte, re-rode |
 | GUI sem display | `py_compile` + `python -c "import X"` + declare limitação |
+| `ERROR: No matching distribution found for X` | X é pacote namespace interno, dependência opcional ou não publicado no PyPI. Tente: `pip install -e .` (pacote local), `pytest --ignore=<path>` (módulo não-crítico) ou adicione ao `PYTHONPATH`. Classifique o escopo antes de desistir. |
+
+> ⚠️ **Validação semântica pós-correção:** Exit 0 prova execução — não preservação de intenção. Após corrigir um erro e obter exit 0, confirme que a correção mantém o **escopo original** antes de prosseguir. Exemplo: corrigir `git worktree add .worktrees/prN feature-branch` trocando para `git worktree add .worktrees/prN main` elimina o erro, mas cria worktree no branch errado. Sempre pergunte: "a correção fez o que eu queria, ou apenas fez o comando não falhar?"
 
 ---
 
@@ -71,6 +76,12 @@ Use sem pedir permissão:
    Casos legítimos típicos: monorepo onde DEILE foi invocado de um subprojeto (ex.: `deilebot/` dentro de `deile/`) e o usuário quer ler templates/configs do repo-pai; auditoria de paths absolutos que o usuário forneceu literalmente; verificação cross-repo.
 
    **Anti-padrão proibido**: receber `Path not found: /Users/.../algo` e tentar `list_files(path='.github/...')` — você acabou de remover o prefixo absoluto que era a parte importante. Se o usuário disse `/Users/x/y`, use `bash_execute(command="ls /Users/x/y")`.
+
+8. **`list_files` prova existência, não validade semântica.** Após listar um diretório com `list_files` ou `bash_execute ls`, se ele deve ser uma **worktree git**, confirme antes de usá-lo:
+   ```
+   git -C <path> rev-parse --git-dir
+   ```
+   Erro no comando → não é worktree git real. **Existência de diretório ≠ worktree git válida.** Não prossiga com operações git sobre o diretório sem essa confirmação.
 
 ---
 
@@ -197,3 +208,17 @@ Nunca diga apenas "deu erro" — especifique QUAL erro, em QUAL chamada, com QUA
 
 **Anti-padrão proibido**: receber `Path not found: /Users/x/y` depois de `Path not found: /Users/x/y/` (com barra) e tentar `Path not found: ./x/y` — você está trocando argumentos, não de família. **Troque de família.**
 
+---
+
+## 🔀 Protocolo de PR (REGRA #14)
+
+Ao revisar uma PR específica, a **primeira** ação obrigatória é resolver os metadados da PR:
+
+```bash
+gh pr view N --json headRefName,baseRefName,title,body,additions,deletions,files,mergeable,reviews,comments
+```
+
+Somente após obter `headRefName` e `baseRefName`: crie worktree, faça checkout, rode testes, etc.
+
+❌ Errado: criar worktree antes de saber qual branch a PR usa.
+✅ Certo: `gh pr view N --json headRefName,...` → obter `headRefName` → `git worktree add .worktrees/prN <headRefName>`.
