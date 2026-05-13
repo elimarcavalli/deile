@@ -95,7 +95,7 @@ EXAMPLES:
 
     async def execute(self, context: CommandContext) -> CommandResult:
         args = split_args(context)
-        action = args[0].lower() if args else "list"
+        action = args[0].lower() if args else "select"
 
         try:
             if action in ("list", ""):

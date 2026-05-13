@@ -322,7 +322,16 @@ def analyze_plan_changes_stub(plan_id: str) -> dict[str, Any]:
     }
 
 
-PATCHES_DIR: Path = Path("./PATCHES")
+def _resolve_patches_dir() -> Path:
+    cwd = Path.cwd()
+    legacy = cwd / "PATCHES"
+    new = cwd / ".deile" / "patches"
+    if legacy.is_dir() and any(legacy.iterdir()) and not new.exists():
+        return legacy
+    return new
+
+
+PATCHES_DIR: Path = _resolve_patches_dir()
 """Diretório canônico de patches gerados/aplicados — antes hardcoded
 em ``apply_command.py`` e ``patch_command.py``. Caminho relativo é intencional:
 os patches vivem na working dir do agente, não no pacote."""
@@ -335,7 +344,7 @@ def ensure_patches_dir() -> Path:
     ``__init__`` e apply_command checava ``.exists()`` antes de cada uso —
     ambos colapsam para a mesma operação aqui.
     """
-    PATCHES_DIR.mkdir(exist_ok=True)
+    PATCHES_DIR.mkdir(parents=True, exist_ok=True)
     return PATCHES_DIR
 
 

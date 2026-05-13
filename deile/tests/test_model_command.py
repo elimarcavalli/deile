@@ -41,7 +41,9 @@ class TestModelList:
 
     @pytest.mark.asyncio
     async def test_list_no_args_also_succeeds(self):
-        cmd = ModelCommand()
+        """No args now opens the selector; falls back to list when no TTY."""
+        sel = _StubSelector(supported=False, choice=None)
+        cmd = ModelCommand(selector=sel)
         result = await cmd.execute(_make_context(""))
         assert result.success is True
 
@@ -466,6 +468,15 @@ class TestModelSelect:
         ctx.session.context_data = {"forced_model": forced_key}
         await cmd.execute(ctx)
         assert sel.calls[0]["default_index"] == forced_idx
+
+    @pytest.mark.asyncio
+    async def test_no_args_opens_selector(self):
+        """/model without arguments must call _select, not _list."""
+        sel = _StubSelector(supported=True, choice=None)
+        cmd = ModelCommand(selector=sel)
+        result = await cmd.execute(_make_context(""))
+        assert len(sel.calls) == 1
+        assert result.metadata.get("cancelled") is True
 
     @pytest.mark.asyncio
     async def test_select_options_match_catalog_size(self):

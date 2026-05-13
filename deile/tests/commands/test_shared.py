@@ -15,6 +15,7 @@ from rich.panel import Panel
 
 from deile.commands.builtin._shared import (FLAG_DESCRICOES_PTBR,
                                             PROJECT_LINKS, _colored_panel,
+                                            _resolve_patches_dir,
                                             emit_audit_event, error_panel,
                                             export_timestamp,
                                             get_memory_manager, split_args,
@@ -232,3 +233,23 @@ class TestConstants:
         active = [k for k, v in version_mod.FEATURES.items() if v]
         for flag in active:
             assert flag in FLAG_DESCRICOES_PTBR
+
+
+# ---------------------------------------------------------------------------
+# _resolve_patches_dir
+# ---------------------------------------------------------------------------
+
+
+class TestResolvePatchesDir:
+    def test_novo_default_aponta_para_deile(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = _resolve_patches_dir()
+        assert result == tmp_path / ".deile" / "patches"
+
+    def test_legado_preservado_quando_nao_vazio(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        legacy = tmp_path / "PATCHES"
+        legacy.mkdir()
+        (legacy / "fix.patch").touch()
+        result = _resolve_patches_dir()
+        assert result == legacy

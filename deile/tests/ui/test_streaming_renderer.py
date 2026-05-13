@@ -42,6 +42,45 @@ async def test_text_only_stream_aggregates_correctly():
 
 
 @pytest.mark.asyncio
+async def test_usage_footer_includes_model_when_present():
+    console = _capture_console()
+    renderer = StreamingRenderer(console=console, legacy_windows=True, markdown=False)
+    events = [
+        UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="hi"),
+        UnifiedStreamEvent(
+            type=StreamEventType.USAGE_FINAL,
+            usage=ModelUsageSnapshot(
+                input_tokens=10,
+                output_tokens=3,
+                cost_usd=0.0012,
+                model="anthropic:claude-haiku-4-5",
+            ),
+        ),
+    ]
+    await renderer.render(_replay(events))
+    output = console.file.getvalue()
+    assert "anthropic:claude-haiku-4-5" in output
+    assert "$0.0012" in output
+
+
+@pytest.mark.asyncio
+async def test_usage_footer_omits_model_when_absent():
+    console = _capture_console()
+    renderer = StreamingRenderer(console=console, legacy_windows=True, markdown=False)
+    events = [
+        UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="hi"),
+        UnifiedStreamEvent(
+            type=StreamEventType.USAGE_FINAL,
+            usage=ModelUsageSnapshot(input_tokens=10, output_tokens=3),
+        ),
+    ]
+    await renderer.render(_replay(events))
+    output = console.file.getvalue()
+    # No model emitted → no provider:model substring in footer.
+    assert ":" not in output.split("hourglass")[-1].split("\n")[0]
+
+
+@pytest.mark.asyncio
 async def test_tool_use_lifecycle_renders_and_aggregates():
     console = _capture_console()
     renderer = StreamingRenderer(console=console, legacy_windows=True, markdown=False)

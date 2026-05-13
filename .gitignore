@@ -63,7 +63,9 @@ config/search.yaml
 .deile/db/
 .deile/logs/
 .deile/memory/
+.deile/patches/
 .deile/pipeline/
+.deile/plans/
 .deile/plugins/
 .deile/runs/
 .deile/tmp/

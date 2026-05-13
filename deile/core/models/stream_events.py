@@ -28,6 +28,10 @@ class ModelUsageSnapshot:
     output_tokens: int = 0
     cached_tokens: int = 0
     cost_usd: float = 0.0
+    # Identifier of the model that actually generated the response — surfaced
+    # in the streaming footer so the user knows who replied (e.g. when the
+    # tier router falls back across providers).
+    model: str = ""
 
 
 @dataclass

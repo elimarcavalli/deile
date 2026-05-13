@@ -493,6 +493,7 @@ class OpenAIProvider(ModelProvider):
                             cached_tokens=final_cached,
                         )
                     ),
+                    model=f"{self.provider_id}:{self.model_name}",
                 )
                 yield UnifiedStreamEvent(
                     type=StreamEventType.USAGE_FINAL,

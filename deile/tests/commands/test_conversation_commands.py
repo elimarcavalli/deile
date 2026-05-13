@@ -173,6 +173,28 @@ class TestForkCommand:
         assert call_name == "minha feature"
 
     @pytest.mark.unit
+    async def test_fork_refuses_empty_conversation(self):
+        ctx = _make_context("fork", history=[])
+        cmd = ForkCommand()
+        result = await cmd.execute(ctx)
+        assert result.success
+        assert "_switch_session" not in ctx.session.context_data
+        ctx.agent.create_session.assert_not_called()
+
+    @pytest.mark.unit
+    async def test_fork_refuses_history_without_user_messages(self):
+        history = [
+            {"role": "system", "content": "sys prompt", "timestamp": 0.0, "metadata": {}},
+            {"role": "assistant", "content": "olá", "timestamp": 0.1, "metadata": {}},
+        ]
+        ctx = _make_context("fork", history=history)
+        cmd = ForkCommand()
+        result = await cmd.execute(ctx)
+        assert result.success
+        assert "_switch_session" not in ctx.session.context_data
+        ctx.agent.create_session.assert_not_called()
+
+    @pytest.mark.unit
     async def test_fork_no_agent_returns_error(self):
         ctx = _make_context("fork")
         ctx.agent = None

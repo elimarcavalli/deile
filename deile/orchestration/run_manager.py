@@ -113,10 +113,16 @@ class RunManager:
     
     def __init__(self, runs_dir: Path = None, artifacts_dir: Path = None):
         """Initialize run manager"""
-        self.runs_dir = runs_dir or Path("RUNS")
+        if runs_dir is not None:
+            self.runs_dir = runs_dir
+        else:
+            cwd = Path.cwd()
+            legacy = cwd / "RUNS"
+            new = cwd / ".deile" / "runs"
+            self.runs_dir = legacy if (legacy.is_dir() and any(legacy.iterdir()) and not new.exists()) else new
         self.artifacts_dir = artifacts_dir or Path("ARTIFACTS")
-        self.runs_dir.mkdir(exist_ok=True)
-        self.artifacts_dir.mkdir(exist_ok=True)
+        self.runs_dir.mkdir(parents=True, exist_ok=True)
+        self.artifacts_dir.mkdir(parents=True, exist_ok=True)
         
         # Active runs tracking
         self.active_runs: Dict[str, RunManifest] = {}

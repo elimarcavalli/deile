@@ -235,6 +235,7 @@ class ModelProvider(ABC):
                 output_tokens=response.usage.completion_tokens,
                 cached_tokens=response.usage.cached_tokens,
                 cost_usd=response.usage.cost_estimate,
+                model=f"{self.provider_id}:{self.model_name}",
             ),
         )
 

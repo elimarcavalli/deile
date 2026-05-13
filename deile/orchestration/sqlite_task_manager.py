@@ -189,9 +189,15 @@ class TaskList:
 class SQLiteTaskManager:
     """Gerenciador de TODO lists com persistência SQLite robusta"""
 
-    def __init__(self, db_path: str = "./deile_tasks.db"):
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(exist_ok=True)
+    def __init__(self, db_path: str | Path | None = None):
+        if db_path is not None:
+            self.db_path = Path(db_path)
+        else:
+            cwd = Path.cwd()
+            legacy = cwd / "deile_tasks.db"
+            new = cwd / ".deile" / "db" / "tasks.db"
+            self.db_path = legacy if legacy.exists() and not new.exists() else new
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Cache em memória para performance
         self._cache: Dict[str, TaskList] = {}

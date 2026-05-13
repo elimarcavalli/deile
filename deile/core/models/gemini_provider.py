@@ -418,6 +418,7 @@ class GeminiProvider(ModelProvider):
                     output_tokens=getattr(usage_metadata, "candidates_token_count", 0) or 0,
                     cached_tokens=0,
                     cost_usd=0.0,
+                    model=f"{self.provider_id}:{self.model_name}",
                 )
                 yield UnifiedStreamEvent(type=StreamEventType.USAGE_FINAL, usage=snap)
             self._chat_sessions.pop(_session_key, None)
@@ -442,6 +443,7 @@ class GeminiProvider(ModelProvider):
                 output_tokens=response.usage.completion_tokens,
                 cached_tokens=response.usage.cached_tokens,
                 cost_usd=response.usage.cost_estimate,
+                model=f"{self.provider_id}:{self.model_name}",
             ),
         )
 

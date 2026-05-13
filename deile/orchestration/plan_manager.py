@@ -241,11 +241,25 @@ class ExecutionPlan:
 class PlanManager:
     """Gerenciador de planos e execução autônoma"""
     
-    def __init__(self, plans_dir: str = "./PLANS", runs_dir: str = "./RUNS"):
-        self.plans_dir = Path(plans_dir)
-        self.runs_dir = Path(runs_dir)
-        self.plans_dir.mkdir(exist_ok=True)
-        self.runs_dir.mkdir(exist_ok=True)
+    def __init__(self, plans_dir: str | Path | None = None, runs_dir: str | Path | None = None):
+        if plans_dir is not None:
+            self.plans_dir = Path(plans_dir)
+        else:
+            cwd = Path.cwd()
+            legacy = cwd / "PLANS"
+            new = cwd / ".deile" / "plans"
+            self.plans_dir = legacy if (legacy.is_dir() and any(legacy.iterdir()) and not new.exists()) else new
+
+        if runs_dir is not None:
+            self.runs_dir = Path(runs_dir)
+        else:
+            cwd = Path.cwd()
+            legacy = cwd / "RUNS"
+            new = cwd / ".deile" / "runs"
+            self.runs_dir = legacy if (legacy.is_dir() and any(legacy.iterdir()) and not new.exists()) else new
+
+        self.plans_dir.mkdir(parents=True, exist_ok=True)
+        self.runs_dir.mkdir(parents=True, exist_ok=True)
         
         self._active_plans: Dict[str, ExecutionPlan] = {}
         self._execution_locks: Dict[str, asyncio.Lock] = {}

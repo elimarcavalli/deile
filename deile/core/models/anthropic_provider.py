@@ -481,6 +481,7 @@ class AnthropicProvider(ModelProvider):
                                     cached_tokens=cached,
                                 )
                             ),
+                            model=f"{self.provider_id}:{self.model_name}",
                         )
                         yield UnifiedStreamEvent(type=StreamEventType.USAGE_FINAL, usage=snap)
         except anthropic.APIError as exc:

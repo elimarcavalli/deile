@@ -278,6 +278,7 @@ class StreamingRenderer:
                             f"\n[dim]:hourglass: {u.input_tokens} in / "
                             f"{u.output_tokens} out"
                             + (f" • ${u.cost_usd:.4f}" if u.cost_usd else "")
+                            + (f" • {u.model}" if u.model else "")
                             + "[/dim]"
                         )
 
@@ -480,6 +481,7 @@ class StreamingRenderer:
                 self._console.print(
                     f"\n[dim]:hourglass: {u.input_tokens} in / {u.output_tokens} out"
                     + (f" • ${u.cost_usd:.4f}" if u.cost_usd else "")
+                    + (f" • {u.model}" if u.model else "")
                     + "[/dim]"
                 )
 

@@ -44,6 +44,15 @@ class ForkCommand(DirectCommand):
         name: str = " ".join(parts).strip() if parts else ""
 
         history = list(getattr(session, "conversation_history", []))
+        if not any(e.get("role") == "user" for e in history):
+            return CommandResult(
+                success=True,
+                content=Panel(
+                    Text("Nenhuma mensagem para bifurcar.", style="dim"),
+                    title="Fork",
+                    border_style="yellow",
+                ),
+            )
         new_sid = f"fork-{int(time.time())}-{uuid.uuid4().hex[:8]}"
 
         try:
