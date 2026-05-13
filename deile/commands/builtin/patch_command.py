@@ -19,20 +19,44 @@ from ._shared import (analyze_plan_changes_stub, ensure_patches_dir,
 
 
 class PatchCommand(DirectCommand):
-    """Generate patch files from plan execution changes"""
+    """Generate patch files from plan execution changes.
+
+    ⚠️  STATUS: STUB — DO NOT USE WITHOUT --i-know-this-is-broken
+    ==============================================================
+
+    ``_analyze_plan_changes()`` delegates to
+    :func:`analyze_plan_changes_stub`, which returns HARDCODED FAKE plan
+    diffs (``src/main.py``, ``config/settings.json``, ``tests/test_main.py``)
+    regardless of the plan you pass. The generated patch never reflects
+    real plan-execution output, and the per-file diff hunks are not even
+    well-formed (the multi-line content is collapsed into a single ``+`` line,
+    so the result is unparseable by ``git apply``).
+
+    For agent-driven edits, use the ``edit_file`` tool — it builds
+    structured find/replace patches against real file contents.
+
+    This command remains in the registry only for backward compatibility.
+    Invoking it without ``--i-know-this-is-broken`` refuses, so a UI test
+    or curious user does not produce a confidently-named .patch file full
+    of garbage.
+    """
 
     def __init__(self):
         from ...config.manager import CommandConfig
         config = CommandConfig(
             name="patch",
-            description="Generate patch files from plan execution changes.",
+            description=(
+                "[STUB] Generate plan patch files (currently fake). Requires "
+                "--i-know-this-is-broken; otherwise refuses. Prefer the "
+                "edit_file tool for real agent edits."
+            ),
             aliases=["patch-generate"],
         )
         super().__init__(config)
         self.plan_manager = get_plan_manager()
         # ensure_patches_dir() guarantees creation at init time (was: mkdir inline)
         ensure_patches_dir()
-    
+
     @wrap_command_errors("patch")
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute patch command"""
@@ -45,6 +69,7 @@ class PatchCommand(DirectCommand):
         output_format = "unified"  # unified, git, simple
         output_path = None
         include_artifacts = False
+        broken_opt_in = False
 
         for i, part in enumerate(parts[1:], 1):
             if part == "--git":
@@ -53,6 +78,8 @@ class PatchCommand(DirectCommand):
                 output_format = "simple"
             elif part == "--artifacts":
                 include_artifacts = True
+            elif part == "--i-know-this-is-broken":
+                broken_opt_in = True
             elif part.startswith("--output="):
                 output_path = part.split("=", 1)[1]
             elif part == "--output":
@@ -62,6 +89,30 @@ class PatchCommand(DirectCommand):
                     raise CommandError("--output requires a path")
             elif part.startswith("--"):
                 raise CommandError(f"Unknown option: {part}")
+
+        if not broken_opt_in:
+            return CommandResult.success_result(
+                Panel(
+                    Text(
+                        "⚠️  /patch-generate is a STUB and refuses to run.\n\n"
+                        "The internal analyzer returns hardcoded fake plan diffs "
+                        "(src/main.py, config/settings.json, …) regardless of the "
+                        "plan you pass — the output is never grounded in real "
+                        "plan-execution data.\n\n"
+                        "For agent edits use the `edit_file` tool — it builds "
+                        "structured find/replace patches against actual file "
+                        "contents and applies them atomically.\n\n"
+                        "If you understand what you're doing and STILL want to "
+                        "produce a fake-data .patch (e.g. for a regression test), "
+                        "re-invoke with the explicit flag:\n"
+                        f"  /patch-generate {plan_id} --i-know-this-is-broken\n",
+                        style="red",
+                    ),
+                    title="🚫 /patch-generate blocked",
+                    border_style="red",
+                ),
+                "rich",
+            )
 
         return await self._generate_patch(plan_id, output_format, output_path, include_artifacts)
     

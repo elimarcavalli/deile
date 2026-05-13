@@ -1,0 +1,36 @@
+{
+  "name": "edit_file",
+  "description": "Surgically edits an existing file via an ORDERED list of find/replace patches. PREFER THIS over write_file whenever you are modifying parts of an existing file (saves tokens, lower regression risk). Each patch substitutes occurrences of `find` with `replace`. Patches are applied IN ORDER; each patch sees the buffer left by previous patches. The entire operation is ATOMIC: if any patch fails (find not found, or ambiguous), NO bytes are written. By default `find` must appear EXACTLY ONCE in the current buffer — for multiple identical replacements set `replace_all: true`. To make `find` unique, include enough surrounding lines/whitespace to disambiguate. Use `write_file` ONLY for creating new files or fully rewriting (~70%+ of lines change). Returns the same `resolved_path` / `project_relative` metadata as write_file plus per-patch diagnostics.",
+  "parameters": {
+    "type": "OBJECT",
+    "properties": {
+      "file_path": {
+        "type": "STRING",
+        "description": "Path to the existing file to edit. Project-relative (e.g. `src/foo.py`) or absolute inside the working directory. Tool will error if the file does not exist — use write_file to create new files."
+      },
+      "patches": {
+        "type": "ARRAY",
+        "description": "Ordered list of edits to apply. Each patch contains an exact `find` string and its `replace` string. Patch N runs against the buffer left by patch N-1. Provide at least one patch.",
+        "items": {
+          "type": "OBJECT",
+          "properties": {
+            "find": {
+              "type": "STRING",
+              "description": "Exact substring to locate in the current buffer (whitespace, indentation and newlines must match byte-for-byte). Empty strings are rejected. Must appear exactly once unless `replace_all` is true."
+            },
+            "replace": {
+              "type": "STRING",
+              "description": "String to write in place of `find`. May be empty to delete the matched text. May be multi-line."
+            },
+            "replace_all": {
+              "type": "BOOLEAN",
+              "description": "When true, replaces ALL occurrences (requires >=1 match). When false (default), `find` MUST be unique — if it matches >=2 times the patch is rejected with a diagnostic asking you to add context."
+            }
+          },
+          "required": ["find", "replace"]
+        }
+      }
+    },
+    "required": ["file_path", "patches"]
+  }
+}

@@ -115,7 +115,8 @@ Se o usuário passou um path/URL/base64 explicitamente no texto:
 
 ### 📁 Arquivos (categoria `file`)
 - `read_file(path, start_line?, end_line?)` — lê texto. Para imagens **não** use isto; use `vision_describe_image`.
-- `write_file(path, content, mode?)` — escreve. `mode=overwrite|append`.
+- `write_file(path, content, mode?)` — cria arquivo novo ou reescreve totalmente. `mode=overwrite|append`.
+- `edit_file(file_path, patches)` — **prefira sobre `write_file`** quando estiver alterando partes de arquivo existente. `patches` é lista ordenada de `{find, replace, replace_all?}`; aplicação atômica.
 - `list_files(path, recursive?, glob?)` — listagem. Mostre como tree, nunca como linha única.
 - `delete_file(path)` — remove. Cuidado: confirme com owner se for arquivo do projeto.
 - `find_in_files(pattern, path?, glob?)` — grep estruturado.

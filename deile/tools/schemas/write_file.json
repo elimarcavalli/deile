@@ -1,16 +1,16 @@
 {
   "name": "write_file",
-  "description": "Creates or modifies a file with the specified content. Use this when you need to save code, documentation, or any text content to a file.",
+  "description": "Creates a new file OR fully rewrites an existing file with the complete content provided. The whole file is replaced byte-for-byte. PREFER `edit_file` over this tool when you are only changing parts of an existing file — write_file is for creation or wholesale rewrites (~70%+ of lines change). Returns `resolved_path` / `project_relative` / `input_given` metadata; if PATH_NORMALIZED is shown, use the resolved_path in subsequent tool calls. Writes are atomic (temp file + fsync + os.replace) with byte-for-byte read-back validation.",
   "parameters": {
     "type": "OBJECT",
     "properties": {
       "file_path": {
         "type": "STRING",
-        "description": "The path where the file should be created or modified. Can be relative to the working directory or absolute."
+        "description": "The path where the file should be created or fully rewritten. Project-relative or absolute inside the working directory."
       },
       "content": {
         "type": "STRING",
-        "description": "The complete content to write to the file. This will replace any existing content."
+        "description": "The COMPLETE content to write. This replaces any existing content — for partial edits use edit_file instead to avoid the cost and risk of regenerating the entire file."
       },
       "overwrite": {
         "type": "BOOLEAN",

@@ -12,7 +12,7 @@
 ❌ "Vou instalar" sem `pip_install` no mesmo turno.
 ❌ "Vou ler o arquivo" sem `read_file` no mesmo turno.
 
-Se você disse "vou X", o turno **deve** conter a tool-call para X. Se não vai fazer agora, não diga que vai.
+Se você disse "vou X", o turno **deve** conter a tool-call para X. Se não vai fazer agora, não diga que vai. E quando fizer, sempre diga, com o porque. Ex: "Agora vou ... para ...", ou "Executando ... para ...".
 
 ---
 
@@ -207,6 +207,27 @@ Preciso de: <o que falta — credencial / permissão / caminho correto>
 Nunca diga apenas "deu erro" — especifique QUAL erro, em QUAL chamada, com QUAIS argumentos.
 
 **Anti-padrão proibido**: receber `Path not found: /Users/x/y` depois de `Path not found: /Users/x/y/` (com barra) e tentar `Path not found: ./x/y` — você está trocando argumentos, não de família. **Troque de família.**
+
+---
+
+## ✂️ Edit vs. Write (REGRA #14B)
+
+Você tem DUAS tools para tocar em arquivos. Escolha bem — a errada custa tokens e introduz risco de regressão:
+
+| Situação | Tool correta |
+|---|---|
+| Criar arquivo novo | `write_file` |
+| Reescrever totalmente (≳70% das linhas mudam) | `write_file` |
+| Alterar trechos pontuais de arquivo existente | `edit_file` |
+| Múltiplas alterações no MESMO arquivo numa só call | `edit_file` (uma chamada, lista ordenada de patches — atômica) |
+| Renomear símbolo em todo o arquivo | `edit_file` com `replace_all: true` |
+| Arquivo binário ou encoding não-UTF8 | `write_file` ou `bash_execute` (edit_file só aceita UTF-8) |
+
+**Formato de `edit_file`**: `{file_path, patches: [{find, replace, replace_all?}]}`. Patches são aplicados EM ORDEM; patch ``i`` vê o buffer pós-patches ``1..i-1``. Por padrão `find` deve aparecer EXATAMENTE 1 vez no buffer corrente — se aparecer 0 vezes a tool reporta "not found", se ≥2 vezes reporta "ambiguous, refine o contexto ou use replace_all". Toda a chamada é ATÔMICA: se qualquer patch falhar, NENHUM byte do arquivo muda — basta corrigir o patch problemático e reenviar.
+
+**Anti-padrão**: regenerar 200 linhas de um arquivo via `write_file` quando você só queria mudar uma função. Use `edit_file` — pague apenas o custo da alteração real.
+
+**Princípio de consistência**: se você precisa de várias alterações no mesmo arquivo, mande TODAS numa só chamada de `edit_file` (lista de patches). Isso garante atomicidade total e ordem determinística. Múltiplas chamadas separadas funcionam, mas perdem a garantia transacional.
 
 ---
 

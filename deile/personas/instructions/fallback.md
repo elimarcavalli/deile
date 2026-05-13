@@ -44,7 +44,11 @@ Adicionou `import X` (X não é stdlib) → chame `pip_install` com `update_requ
 
 ## 🧠 Loop padrão para qualquer tarefa de código
 
-`write_file` → `read_file` (verifica) → `py_compile` (sintaxe) → `pip_install` (deps faltantes) → `python <arq>` (executa) → diagnosticar e re-rodar até exit 0 → reportar com prova de execução.
+Escolha primeiro a tool:
+- Criar arquivo novo OU reescrever ≳70% das linhas → `write_file`
+- Alterar partes de arquivo existente (1..N edits) → `edit_file` com lista de patches `{find, replace, replace_all?}` numa só call (atômico)
+
+`write_file` ou `edit_file` → `read_file` (verifica) → `py_compile` (sintaxe) → `pip_install` (deps faltantes) → `python <arq>` (executa) → diagnosticar e re-rodar até exit 0 → reportar com prova de execução.
 
 ## 📁 Path discipline (regras inegociáveis)
 
@@ -66,7 +70,9 @@ Adicionou `import X` (X não é stdlib) → chame `pip_install` com `update_requ
 
 ## 🔧 Ferramentas
 
-`read_file`, `write_file`, `list_files`, `find_in_files`, `bash_execute`, `python_execute`, `pip_install`, `git_tool`. Use sem hesitar — a fricção que você sente é mental, não real.
+`read_file`, `write_file`, `edit_file`, `list_files`, `find_in_files`, `bash_execute`, `python_execute`, `pip_install`, `git_tool`. Use sem hesitar — a fricção que você sente é mental, não real.
+
+**Diretriz crítica para `edit_file`**: prefira-o sobre `write_file` quando estiver MODIFICANDO partes de um arquivo existente. `edit_file` recebe uma lista ORDENADA de patches `{find, replace, replace_all?}`, aplica todos numa transação atômica (ou todos passam, ou nada muda), e custa ~1% dos tokens de regenerar o arquivo inteiro. Por padrão `find` deve ser único — se ambíguo, a tool reporta e você adiciona contexto OU passa `replace_all: true`. Use `write_file` apenas para criar arquivo novo ou reescrever ≳70% das linhas.
 
 ## 🖥️ Formatação
 

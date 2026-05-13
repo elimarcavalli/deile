@@ -19,17 +19,51 @@ from ._shared import (PATCHES_DIR, file_action_emoji, list_patch_files,
 
 
 class ApplyCommand(DirectCommand):
-    """Apply patch files to current directory"""
+    """Apply patch files to current directory.
+
+    ⚠️  STATUS: BROKEN — DO NOT USE WITHOUT --i-know-this-is-broken
+    =================================================================
+
+    The internal patch-application machinery (``_parse_unified_format``,
+    ``_parse_git_format``, ``_perform_patch_application``) is fundamentally
+    incorrect: the parsers extract only the ``+`` lines from each hunk and
+    DISCARD the surrounding context, so ``new_content`` ends up containing
+    ONLY the added lines. The applier then does
+    ``file_path.write_text(new_content)`` which OVERWRITES the file with
+    just the added lines — a 5-line patch against a 1000-line file
+    produces a 5-line file. This is data destruction, not patching.
+
+    Why it shipped this way: this command was paired with /patch-generate,
+    which itself uses ``analyze_plan_changes_stub`` (hardcoded fake plan
+    diffs). The whole pipeline was scaffolding for a "plan → patch → apply"
+    workflow that was never wired to real plan execution.
+
+    For agent-driven edits, the correct tool is the ``edit_file`` tool
+    (deile/tools/file_tools.py::EditFileTool), which takes a list of
+    find/replace patches, applies them atomically, and validates each
+    patch against the actual current file contents. Use it instead.
+
+    For operator-driven application of UNIX unified diff files, prefer
+    the system ``patch`` binary directly: ``patch -p1 < my.patch``.
+
+    This command remains in the registry only for backward compatibility.
+    Invoking it requires the explicit opt-in flag ``--i-know-this-is-broken``
+    so that the destructive overwrite cannot happen by accident.
+    """
 
     def __init__(self):
         from ...config.manager import CommandConfig
         config = CommandConfig(
             name="apply",
-            description="Apply patch files to current directory.",
+            description=(
+                "[BROKEN] Apply legacy .patch files. Requires "
+                "--i-know-this-is-broken; otherwise refuses. Prefer the "
+                "edit_file tool (agent) or `patch -p1 < file` (operator)."
+            ),
             aliases=["patch-apply"],  # alias canônico mantido por retrocompatibilidade
         )
         super().__init__(config)
-    
+
     @wrap_command_errors("apply")
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute apply command"""
@@ -46,6 +80,7 @@ class ApplyCommand(DirectCommand):
         force = False
         backup = True
         target_dir = "."
+        broken_opt_in = False
 
         for i, part in enumerate(parts[1:], 1):
             if part == "--dry-run":
@@ -54,6 +89,8 @@ class ApplyCommand(DirectCommand):
                 force = True
             elif part == "--no-backup":
                 backup = False
+            elif part == "--i-know-this-is-broken":
+                broken_opt_in = True
             elif part.startswith("--target="):
                 target_dir = part.split("=", 1)[1]
             elif part == "--target":
@@ -63,6 +100,33 @@ class ApplyCommand(DirectCommand):
                     raise CommandError("--target requires a directory path")
             elif part.startswith("--"):
                 raise CommandError(f"Unknown option: {part}")
+
+        # Refuse destructive runs unless the operator explicitly opts in.
+        # ``--dry-run`` is allowed without the flag (it doesn't touch disk),
+        # so an inspector can still preview what the broken parser sees.
+        if not dry_run and not broken_opt_in:
+            return CommandResult.success_result(
+                Panel(
+                    Text(
+                        "⚠️  /patch-apply is BROKEN and refuses to run.\n\n"
+                        "The internal applier overwrites target files with ONLY the "
+                        "added lines from each hunk (the parser discards context "
+                        "lines). Running it against a real file is data destruction, "
+                        "not a patch application.\n\n"
+                        "Use one of these instead:\n"
+                        "  • Agent edits:   the `edit_file` tool (find/replace patches, atomic)\n"
+                        "  • Operator apply: `patch -p1 < <file>` from the shell\n\n"
+                        "If you understand what you're doing and STILL want to run the "
+                        "legacy applier (e.g. for a regression test, or to confirm the "
+                        "bug yourself), re-invoke with the explicit flag:\n"
+                        f"  /patch-apply {patch_file} --i-know-this-is-broken\n",
+                        style="red",
+                    ),
+                    title="🚫 /patch-apply blocked",
+                    border_style="red",
+                ),
+                "rich",
+            )
 
         return await self._apply_patch(patch_file, target_dir, dry_run, force, backup)
     
@@ -247,7 +311,15 @@ class ApplyCommand(DirectCommand):
         }
     
     def _parse_unified_format(self, content: str) -> list[dict[str, Any]]:
-        """Parse unified diff format"""
+        """Parse unified diff format.
+
+        ⚠️  BROKEN: this parser captures only ``+``-prefixed lines and discards
+        ``-`` and context lines, so ``new_content`` ends up being ONLY the added
+        lines. The caller (:func:`_perform_patch_application`) then writes
+        ``new_content`` over the whole file — destroying everything that wasn't
+        an addition. Do not extend this. The owning command (:class:`ApplyCommand`)
+        is gated behind ``--i-know-this-is-broken`` for that reason.
+        """
         
         changes = []
         lines = content.split('\n')
@@ -296,7 +368,11 @@ class ApplyCommand(DirectCommand):
         return changes
     
     def _parse_git_format(self, content: str) -> list[dict[str, Any]]:
-        """Parse Git format patches"""
+        """Parse Git format patches.
+
+        ⚠️  BROKEN: same defect as :func:`_parse_unified_format` — only ``+`` lines
+        survive, context and ``-`` lines are silently dropped.
+        """
         
         changes = []
         lines = content.split('\n')
@@ -570,9 +646,15 @@ class ApplyCommand(DirectCommand):
         
         return CommandResult.success_result(result_panel, "rich")
     
-    async def _perform_patch_application(self, patch_data: dict[str, Any], 
+    async def _perform_patch_application(self, patch_data: dict[str, Any],
                                        target_path: Path, backup: bool) -> dict[str, Any]:
-        """Actually apply the patch to files"""
+        """Actually apply the patch to files.
+
+        ⚠️  BROKEN: for ``modified`` actions, this writes ``new_content`` (which
+        the broken parsers populate with ONLY added lines) over the whole
+        file. The caller is responsible for refusing to run this path
+        without ``--i-know-this-is-broken``.
+        """
         
         applied_files = []
         backed_up_files = []

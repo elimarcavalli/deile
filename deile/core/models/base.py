@@ -197,7 +197,7 @@ class ModelProvider(ABC):
         runtime_id = f"{self.provider_id}:{self.model_name}"
         runtime_block = (
             "<runtime_identity>\n"
-            "Você é DEILE (Dynamic Enhanced Intelligence Language Engine), o agente. "
+            "Você é DEILE (Development Environment Intelligence & Learning Engine), o agente. "
             f"Neste turno, o modelo subjacente que processa esta requisição é **{runtime_id}**.\n"
             "Quando o usuário perguntar qual modelo/LLM você é, responda HONESTAMENTE: "
             f"\"DEILE rodando via {runtime_id}\". "
