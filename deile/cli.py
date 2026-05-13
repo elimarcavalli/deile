@@ -420,7 +420,7 @@ class _DeileCLI:
 
         try:
             while True:
-                user_input = await asyncio.to_thread(self.ui.get_user_input, "\n > ")
+                user_input = await self.ui.get_user_input("\n > ")
                 user_input = user_input.strip()
 
                 # ESC ESC on empty prompt → trigger /rewind
