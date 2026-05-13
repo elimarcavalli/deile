@@ -1558,7 +1558,7 @@ class DeileAgent:
             })
 
             return response
-            
+
         except Exception as e:
             self.logger.error(f"Error processing slash command: {e}")
             return AgentResponse(
