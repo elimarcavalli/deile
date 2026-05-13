@@ -134,7 +134,7 @@ class ConsoleUIManager(UIManager):
                     if _esc['active']:
                         _hide_esc_hint(event)
                         buf.insert_text(_REWIND_SENTINEL)
-                        event.app.validate_and_handle()
+                        event.current_buffer.validate_and_handle()
                         return
                     # First ESC on empty buffer: show rewind hint.
                     _esc['active'] = True

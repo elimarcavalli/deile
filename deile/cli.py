@@ -288,6 +288,25 @@ class _DeileCLI:
     # switch without tight-coupling between the command and the CLI class.
     _SWITCH_SESSION_KEY = "_switch_session"
 
+    def _persist_session(self, user_input: str) -> None:
+        """Write current session history to disk so /resume can find it.
+
+        Only persists after real LLM turns (not slash commands) to avoid
+        storing noise.  Failures are silently ignored — non-fatal.
+        """
+        if user_input.startswith("/"):
+            return
+        session = self.default_session
+        history = getattr(session, "conversation_history", [])
+        if not history:
+            return
+        try:
+            from .commands.builtin._session_store import SessionHistoryStore
+            name = session.context_data.get("conversation_name", "")
+            SessionHistoryStore().save(session.session_id, list(history), name)
+        except Exception:
+            pass
+
     def _check_session_switch(self) -> None:
         """If a command requested a session switch, apply it."""
         new_sid = self.default_session.context_data.pop(self._SWITCH_SESSION_KEY, None)
@@ -429,6 +448,7 @@ class _DeileCLI:
                         await self._stream_with_esc_cancel(event_stream)
                     except KeyboardInterrupt:
                         self.ui.console.print("\n[yellow](turn interrupted)[/yellow]")
+                    self._persist_session(user_input)
                     self._check_session_switch()
                     continue
 
@@ -438,6 +458,7 @@ class _DeileCLI:
                         session_id=self.default_session.session_id,
                     )
 
+                self._persist_session(user_input)
                 self._check_session_switch()
 
                 meta = response.metadata or {}

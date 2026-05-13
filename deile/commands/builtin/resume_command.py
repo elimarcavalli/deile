@@ -12,6 +12,7 @@ from ...core.interfaces.selector import SelectorNotSupported, SelectorOption
 from ...infrastructure.selectors import get_default_selector
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._conv_store import ConversationNameStore
+from ._session_store import SessionHistoryStore
 from ._shared import wrap_command_errors
 
 _SENTINEL = "_switch_session"
@@ -22,16 +23,18 @@ def _fmt_time(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
-def _truncate(s: str, n: int = _MAX_LABEL) -> str:
-    s = s.replace("\n", " ").strip()
-    return s[:n] + "…" if len(s) > n else s
+def _truncate(s: object, n: int = _MAX_LABEL) -> str:
+    if not s:
+        return ""
+    text = str(s).replace("\n", " ").strip()
+    return text[:n] + "…" if len(text) > n else text
 
 
 class ResumeCommand(DirectCommand):
     """Select a past conversation and continue from where it left off.
 
-    Conversations are loaded from episodic memory (SQLite), so they survive
-    process restarts.  Select with ↑↓ Enter; ESC to cancel.
+    Conversations are loaded from ``~/.deile/sessions/`` (written by the CLI
+    after each LLM turn).  Select with ↑↓ Enter; ESC to cancel.
     """
 
     def __init__(self) -> None:
@@ -40,7 +43,7 @@ class ResumeCommand(DirectCommand):
         super().__init__(
             CommandConfig(
                 name="resume",
-                description="List and reload a past conversation from episodic memory.",
+                description="List and reload a past conversation.",
             )
         )
 
@@ -51,22 +54,17 @@ class ResumeCommand(DirectCommand):
         if agent is None or session is None:
             return CommandResult.error_result("Agent or session not available.")
 
-        memory_manager = getattr(agent, "memory_manager", None)
-        if memory_manager is None:
-            return CommandResult.error_result("MemoryManager não disponível.")
+        name_store = ConversationNameStore()
+        hist_store = SessionHistoryStore()
 
-        episodic = getattr(memory_manager, "episodic_memory", None)
-        if episodic is None:
-            return CommandResult.error_result("EpisodicMemory não disponível.")
-
-        sessions = await episodic.list_sessions(max_sessions=50)
+        sessions = hist_store.list_sessions(max_sessions=50)
         if not sessions:
             return CommandResult(
                 success=True,
                 content=Panel(
                     Text(
-                        "Nenhuma conversa encontrada na memória episódica.\n"
-                        "As conversas ficam disponíveis após a primeira interação.",
+                        "Nenhuma conversa encontrada.\n"
+                        "As conversas ficam disponíveis após a primeira interação com o agente.",
                         style="dim",
                     ),
                     title="Resume",
@@ -74,17 +72,18 @@ class ResumeCommand(DirectCommand):
                 ),
             )
 
-        store = ConversationNameStore()
         selector = get_default_selector()
 
         if not selector.is_supported():
             lines = []
             for row in sessions[:20]:
-                name = store.get(row["session_id"]) or _truncate(
-                    row["first_user_input"], 50
+                name = (
+                    name_store.get(row["session_id"])
+                    or row.get("conversation_name")
+                    or _truncate(row["first_user_input"], 50)
                 )
                 ts = _fmt_time(row["last_activity"])
-                lines.append(f"{ts}  {name}  ({row['episode_count']} msg)")
+                lines.append(f"{ts}  {name}  ({row['message_count']} msg)")
             return CommandResult(
                 success=False,
                 content=Panel(
@@ -101,13 +100,18 @@ class ResumeCommand(DirectCommand):
         options = []
         for row in sessions:
             sid = row["session_id"]
-            name = store.get(sid) or _truncate(row["first_user_input"], 50)
+            name = (
+                name_store.get(sid)
+                or row.get("conversation_name")
+                or _truncate(row["first_user_input"], 50)
+                or sid
+            )
             ts = _fmt_time(row["last_activity"])
             options.append(
                 SelectorOption(
                     label=name,
                     value=sid,
-                    description=f"{ts} · {row['episode_count']} msg · {sid}",
+                    description=f"{ts} · {row['message_count']} msg · {sid}",
                 )
             )
 
@@ -132,15 +136,11 @@ class ResumeCommand(DirectCommand):
             )
 
         target_sid = str(choice.value)
-        episodes = await episodic.get_episodes_for_session(target_sid)
+        stored = hist_store.load(target_sid)
+        if stored is None:
+            return CommandResult.error_result(f"Conversa {target_sid!r} não encontrada em disco.")
 
-        history = []
-        for ep in episodes:
-            if ep["user_input"]:
-                history.append({"role": "user", "content": ep["user_input"], "timestamp": ep["timestamp"], "metadata": {}})
-            if ep["agent_response"]:
-                history.append({"role": "assistant", "content": ep["agent_response"], "timestamp": ep["timestamp"], "metadata": {}})
-
+        history = stored.get("history", [])
         new_sid = f"resume-{int(time.time())}-{target_sid[-8:]}"
         try:
             new_session = agent.create_session(
@@ -150,15 +150,18 @@ class ResumeCommand(DirectCommand):
         except Exception as exc:
             return CommandResult.error_result(f"Não foi possível criar sessão: {exc}")
 
-        new_session.conversation_history = history
+        new_session.conversation_history = [dict(e) for e in history]
 
-        name = store.get(target_sid) or ""
+        name = (
+            name_store.get(target_sid)
+            or stored.get("conversation_name", "")
+        )
         if name:
             new_session.context_data["conversation_name"] = name
 
         session.context_data[_SENTINEL] = new_sid
 
-        label = name or _truncate(episodes[-1]["user_input"]) if episodes else target_sid
+        label = name or _truncate(history[-1].get("content", "")) if history else target_sid
         return CommandResult(
             success=True,
             content=Panel(
