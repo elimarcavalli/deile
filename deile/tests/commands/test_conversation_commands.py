@@ -11,6 +11,7 @@ import pytest
 
 from deile.commands.base import CommandContext
 from deile.commands.builtin._conv_store import ConversationNameStore
+from deile.commands.builtin._session_store import SessionHistoryStore
 from deile.commands.builtin.fork_command import ForkCommand
 from deile.commands.builtin.rename_command import RenameCommand
 from deile.commands.builtin.resume_command import ResumeCommand
@@ -308,47 +309,108 @@ class TestRewindCommand:
 # ---------------------------------------------------------------------------
 
 
+class TestSessionHistoryStore:
+    def test_save_and_list(self, tmp_path):
+        store = SessionHistoryStore(base_dir=tmp_path)
+        history = [
+            {"role": "user", "content": "hello", "timestamp": 1.0, "metadata": {}},
+            {"role": "assistant", "content": "hi!", "timestamp": 1.1, "metadata": {}},
+        ]
+        store.save("s1", history, name="my session")
+        sessions = store.list_sessions()
+        assert len(sessions) == 1
+        assert sessions[0]["session_id"] == "s1"
+        assert sessions[0]["first_user_input"] == "hello"
+        assert sessions[0]["message_count"] == 2
+
+    def test_list_empty(self, tmp_path):
+        store = SessionHistoryStore(base_dir=tmp_path)
+        assert store.list_sessions() == []
+
+    def test_load_returns_none_for_missing(self, tmp_path):
+        store = SessionHistoryStore(base_dir=tmp_path)
+        assert store.load("nonexistent") is None
+
+    def test_load_returns_stored_data(self, tmp_path):
+        store = SessionHistoryStore(base_dir=tmp_path)
+        history = [{"role": "user", "content": "test", "timestamp": 1.0, "metadata": {}}]
+        store.save("s2", history)
+        data = store.load("s2")
+        assert data is not None
+        assert data["session_id"] == "s2"
+        assert len(data["history"]) == 1
+
+    def test_slash_command_messages_excluded_from_first_user_input(self, tmp_path):
+        store = SessionHistoryStore(base_dir=tmp_path)
+        history = [
+            {"role": "user", "content": "/fork", "timestamp": 1.0, "metadata": {}},
+            {"role": "user", "content": "real question", "timestamp": 2.0, "metadata": {}},
+        ]
+        store.save("s3", history)
+        sessions = store.list_sessions()
+        assert sessions[0]["first_user_input"] == "real question"
+
+    def test_corrupted_file_skipped(self, tmp_path):
+        session_dir = tmp_path / "bad-session"
+        session_dir.mkdir()
+        (session_dir / "history.json").write_text("NOT JSON", encoding="utf-8")
+        store = SessionHistoryStore(base_dir=tmp_path)
+        assert store.list_sessions() == []
+
+    def test_sorted_by_last_activity(self, tmp_path):
+        store = SessionHistoryStore(base_dir=tmp_path)
+        store.save("older", [{"role": "user", "content": "x", "timestamp": 1.0, "metadata": {}}])
+        # Overwrite last_activity by re-saving slightly later
+        import time as _time
+        _time.sleep(0.01)
+        store.save("newer", [{"role": "user", "content": "y", "timestamp": 2.0, "metadata": {}}])
+        sessions = store.list_sessions()
+        assert sessions[0]["session_id"] == "newer"
+
+
 class TestResumeCommand:
-    def _make_memory_manager(self, sessions=None, episodes=None):
-        mm = MagicMock()
-        episodic = MagicMock()
-        episodic.list_sessions = AsyncMock(return_value=sessions or [])
-        episodic.get_episodes_for_session = AsyncMock(return_value=episodes or [])
-        mm.episodic_memory = episodic
-        return mm
+    _SESSIONS = [
+        {
+            "session_id": "old-1",
+            "conversation_name": "",
+            "last_activity": 2.0,
+            "first_user_input": "hello",
+            "message_count": 4,
+        }
+    ]
+    _STORED = {
+        "session_id": "old-1",
+        "conversation_name": "",
+        "last_activity": 2.0,
+        "history": [
+            {"role": "user", "content": "hi", "timestamp": 1.0, "metadata": {}},
+            {"role": "assistant", "content": "hello", "timestamp": 1.0, "metadata": {}},
+            {"role": "user", "content": "bye", "timestamp": 2.0, "metadata": {}},
+            {"role": "assistant", "content": "cya", "timestamp": 2.0, "metadata": {}},
+        ],
+    }
 
     @pytest.mark.unit
     async def test_resume_no_sessions(self):
         ctx = _make_context("resume")
-        ctx.agent.memory_manager = self._make_memory_manager(sessions=[])
-        cmd = ResumeCommand()
-        result = await cmd.execute(ctx)
+        with patch.object(SessionHistoryStore, "list_sessions", return_value=[]):
+            cmd = ResumeCommand()
+            result = await cmd.execute(ctx)
         assert result.success
         assert "_switch_session" not in ctx.session.context_data
-
-    @pytest.mark.unit
-    async def test_resume_no_memory_manager(self):
-        ctx = _make_context("resume")
-        ctx.agent.memory_manager = None
-        cmd = ResumeCommand()
-        result = await cmd.execute(ctx)
-        assert not result.success
 
     @pytest.mark.unit
     async def test_resume_cancel(self):
         from deile.commands.builtin import resume_command as res_mod
 
-        sessions = [
-            {"session_id": "old-1", "episode_count": 3, "last_activity": 1.0, "first_user_input": "hello"},
-        ]
         ctx = _make_context("resume")
-        ctx.agent.memory_manager = self._make_memory_manager(sessions=sessions)
 
         mock_selector = MagicMock()
         mock_selector.is_supported.return_value = True
         mock_selector.select = AsyncMock(return_value=None)
 
         with (
+            patch.object(SessionHistoryStore, "list_sessions", return_value=self._SESSIONS),
             patch.object(res_mod, "get_default_selector", return_value=mock_selector),
             patch.object(ConversationNameStore, "get", return_value=None),
         ):
@@ -363,15 +425,7 @@ class TestResumeCommand:
         from deile.commands.builtin import resume_command as res_mod
         from deile.core.interfaces.selector import SelectorOption
 
-        sessions = [
-            {"session_id": "old-1", "episode_count": 2, "last_activity": 2.0, "first_user_input": "hi"},
-        ]
-        episodes = [
-            {"episode_id": "e1", "session_id": "old-1", "user_input": "hi", "agent_response": "hello", "timestamp": 1.0, "context": {}, "metadata": {}},
-            {"episode_id": "e2", "session_id": "old-1", "user_input": "bye", "agent_response": "cya", "timestamp": 2.0, "context": {}, "metadata": {}},
-        ]
         ctx = _make_context("resume")
-        ctx.agent.memory_manager = self._make_memory_manager(sessions=sessions, episodes=episodes)
 
         mock_selector = MagicMock()
         mock_selector.is_supported.return_value = True
@@ -380,6 +434,8 @@ class TestResumeCommand:
         )
 
         with (
+            patch.object(SessionHistoryStore, "list_sessions", return_value=self._SESSIONS),
+            patch.object(SessionHistoryStore, "load", return_value=self._STORED),
             patch.object(res_mod, "get_default_selector", return_value=mock_selector),
             patch.object(ConversationNameStore, "get", return_value=None),
         ):
@@ -392,23 +448,43 @@ class TestResumeCommand:
         assert new_sid.startswith("resume-")
 
         new_sess = ctx.agent.get_session(new_sid)
-        # 2 episodes × 2 messages each = 4 history entries
         assert len(new_sess.conversation_history) == 4
 
     @pytest.mark.unit
     async def test_resume_selector_not_supported(self):
         from deile.commands.builtin import resume_command as res_mod
 
-        sessions = [
-            {"session_id": "old-1", "episode_count": 1, "last_activity": 1.0, "first_user_input": "x"},
-        ]
         ctx = _make_context("resume")
-        ctx.agent.memory_manager = self._make_memory_manager(sessions=sessions)
 
         mock_selector = MagicMock()
         mock_selector.is_supported.return_value = False
 
         with (
+            patch.object(SessionHistoryStore, "list_sessions", return_value=self._SESSIONS),
+            patch.object(res_mod, "get_default_selector", return_value=mock_selector),
+            patch.object(ConversationNameStore, "get", return_value=None),
+        ):
+            cmd = ResumeCommand()
+            result = await cmd.execute(ctx)
+
+        assert not result.success
+
+    @pytest.mark.unit
+    async def test_resume_load_failure(self):
+        from deile.commands.builtin import resume_command as res_mod
+        from deile.core.interfaces.selector import SelectorOption
+
+        ctx = _make_context("resume")
+
+        mock_selector = MagicMock()
+        mock_selector.is_supported.return_value = True
+        mock_selector.select = AsyncMock(
+            return_value=SelectorOption(label="hi", value="old-1")
+        )
+
+        with (
+            patch.object(SessionHistoryStore, "list_sessions", return_value=self._SESSIONS),
+            patch.object(SessionHistoryStore, "load", return_value=None),
             patch.object(res_mod, "get_default_selector", return_value=mock_selector),
             patch.object(ConversationNameStore, "get", return_value=None),
         ):
