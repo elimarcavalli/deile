@@ -728,14 +728,6 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
                 error=e
             )
     
-    async def can_handle(self, user_input: str) -> bool:
-        """Verifica se pode processar a entrada"""
-        input_lower = user_input.lower()
-        return any(keyword in input_lower for keyword in [
-            "read", "show", "display", "view", "content", "file", "@"
-        ])
-
-
 class WriteFileTool(SyncTool):
     """Ferramenta para escrita de arquivos"""
     
@@ -995,14 +987,6 @@ class WriteFileTool(SyncTool):
             except FileNotFoundError:
                 pass
             raise
-
-    async def can_handle(self, user_input: str) -> bool:
-        """Verifica se pode processar a entrada"""
-        input_lower = user_input.lower()
-        return any(keyword in input_lower for keyword in [
-            "write", "create", "save", "generate", "update", "modify"
-        ])
-
 
 class EditFileTool(SyncTool):
     """Edita arquivos existentes via lista ordenada de patches find/replace.
@@ -1374,14 +1358,6 @@ class EditFileTool(SyncTool):
             )
         return ""
 
-    async def can_handle(self, user_input: str) -> bool:
-        """Verifica se pode processar a entrada"""
-        input_lower = user_input.lower()
-        return any(keyword in input_lower for keyword in [
-            "edit", "patch", "replace", "modify", "fix", "alter", "tweak"
-        ])
-
-
 class ListFilesTool(SyncTool):
     """Ferramenta para listar arquivos"""
     
@@ -1691,14 +1667,6 @@ class ListFilesTool(SyncTool):
                 error=e
             )
     
-    async def can_handle(self, user_input: str) -> bool:
-        """Verifica se pode processar a entrada"""
-        input_lower = user_input.lower()
-        return any(keyword in input_lower for keyword in [
-            "list", "show", "files", "directory", "folder", "ls", "dir"
-        ])
-
-
 class DeleteFileTool(SyncTool):
     """Ferramenta para deletar arquivos (com precauções)"""
     
@@ -1806,9 +1774,3 @@ class DeleteFileTool(SyncTool):
                 error=e
             )
     
-    async def can_handle(self, user_input: str) -> bool:
-        """Verifica se pode processar a entrada"""
-        input_lower = user_input.lower()
-        return any(keyword in input_lower for keyword in [
-            "delete", "remove", "rm", "del"
-        ])

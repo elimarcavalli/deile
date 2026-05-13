@@ -622,16 +622,6 @@ class EnhancedExecutionTool(SyncTool):
         
         return True
     
-    async def can_handle(self, user_input: str) -> bool:
-        """Check if this tool can handle the user input"""
-        input_lower = user_input.lower()
-        keywords = [
-            "run", "execute", "command", "shell", "bash", "cmd",
-            "interactive", "pty", "terminal", "process"
-        ]
-        return any(keyword in input_lower for keyword in keywords)
-
-
 class PythonExecutionTool(SyncTool):
     """Run a Python snippet in a subprocess with timeout.
 
@@ -720,14 +710,6 @@ class PythonExecutionTool(SyncTool):
                 message=f"Error executing Python code: {str(e)}",
                 error=e,
             )
-
-    async def can_handle(self, user_input: str) -> bool:
-        """Verifica se pode processar a entrada"""
-        input_lower = user_input.lower()
-        return any(keyword in input_lower for keyword in [
-            "python", "run code", "execute code", "script"
-        ])
-
 
 class PipInstallTool(SyncTool):
     """Install a Python package via pip and (optionally) persist it to requirements.txt.
@@ -906,13 +888,6 @@ class PipInstallTool(SyncTool):
             },
         )
 
-    async def can_handle(self, user_input: str) -> bool:
-        return any(
-            kw in user_input.lower()
-            for kw in ["pip install", "install package", "install dependency", "instalar dependência"]
-        )
-
-
 class TestRunnerTool(SyncTool):
     """Ferramenta para execução de testes (implementação futura)"""
     
@@ -1005,9 +980,3 @@ class TestRunnerTool(SyncTool):
                 error=e
             )
     
-    async def can_handle(self, user_input: str) -> bool:
-        """Verifica se pode processar a entrada"""
-        input_lower = user_input.lower()
-        return any(keyword in input_lower for keyword in [
-            "test", "pytest", "unittest", "run tests"
-        ])

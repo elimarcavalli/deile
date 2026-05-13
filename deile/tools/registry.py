@@ -195,27 +195,6 @@ class ToolRegistry:
         self._enabled_tools.discard(tool.name)  # Usa o nome real, não o alias
         return True
     
-    async def find_suitable_tools(self, user_input: str) -> List[Tool]:
-        """Encontra tools adequadas para processar a entrada do usuário
-        
-        Args:
-            user_input: Entrada do usuário
-            
-        Returns:
-            List[Tool]: Lista de tools ordenadas por adequação
-        """
-        suitable_tools = []
-        
-        for tool in self.list_enabled():
-            try:
-                if await tool.can_handle(user_input):
-                    suitable_tools.append(tool)
-            except Exception as e:
-                logger.warning(f"Error checking if tool {tool.name} can handle input: {e}")
-        
-        # TODO: Implementar ranking por adequação/confiança
-        return suitable_tools
-    
     async def execute_tool(
         self, 
         tool_name: str, 

@@ -405,18 +405,7 @@ class Tool(ABC):
             ValidationError: Se o contexto é inválido
         """
         return True
-    
-    async def can_handle(self, user_input: str) -> bool:
-        """Verifica se esta tool pode processar a entrada do usuário
-        
-        Args:
-            user_input: Entrada do usuário
-            
-        Returns:
-            bool: True se a tool pode processar a entrada
-        """
-        return False
-    
+
     async def get_help(self) -> str:
         """Retorna ajuda sobre como usar a tool"""
         return f"""
