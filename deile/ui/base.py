@@ -144,10 +144,10 @@ class UIManager(ABC):
         pass
     
     @abstractmethod
-    def get_user_input(self, prompt: str = "You > ") -> str:
+    async def get_user_input(self, prompt: str = "You > ") -> str:
         """Get input from user with prompt"""
         pass
-    
+
     @abstractmethod
     def confirm_action(self, message: str, default: bool = False) -> bool:
         """Get confirmation for an action"""

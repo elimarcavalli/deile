@@ -357,21 +357,27 @@ class ConsoleUIManager(UIManager):
             print(f"Provider: {provider_label} | Model: {model_label}")
             print("Pronto — digite /help para começar")
 
-    def get_user_input(self, prompt: str = "\n [bold green]>[/bold] ") -> str:
-        """Obtém a entrada do usuário de forma interativa."""
+    async def get_user_input(self, prompt: str = "\n [bold green]>[/bold] ") -> str:
+        """Obtém a entrada do usuário de forma interativa.
+
+        Async para usar prompt_async() no mesmo event loop do agente — chamar
+        prompt() síncrono via asyncio.to_thread cria um event loop paralelo
+        no PromptSession e corrompe o estado de input do prompt_toolkit,
+        travando seletores (/resume, /rewind) na segunda invocação.
+        """
+        import asyncio
+
         if not self.session:
             clean_prompt = prompt.replace("[bold green]", "").replace("[/bold]", "").replace("[/]", "")
             if not clean_prompt.startswith("\n"):
                 clean_prompt = "\n" + clean_prompt
-            return input(clean_prompt)
+            return await asyncio.to_thread(input, clean_prompt)
 
-        # Static turn separator — rendered once into scrollback per turn so
-        # terminal resize cannot duplicate it (see _prompt_message comment).
         self.console.rule(style="dim")
         try:
-            return self.session.prompt()
+            return await self.session.prompt_async()
         except Exception:
-            return input('> ')
+            return await asyncio.to_thread(input, '> ')
 
     def display_response(self, content, metadata: Optional[Dict] = None):
         """Exibe a resposta do agente com metadados."""
