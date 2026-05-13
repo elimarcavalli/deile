@@ -67,17 +67,6 @@ class PipelineTool(Tool):
             )
         )
 
-    @property
-    def name(self) -> str:
-        return "pipeline"
-
-    @property
-    def description(self) -> str:
-        return self._schema.description if self._schema else ""
-
-    @property
-    def category(self) -> str:
-        return ToolCategory.SYSTEM.value
 
     async def execute(self, context: ToolContext) -> ToolResult:
         action = (context.parsed_args.get("action") or "status").strip().lower()

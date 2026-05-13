@@ -39,17 +39,6 @@ class CronListTool(Tool):
             )
         )
 
-    @property
-    def name(self) -> str:
-        return "cron_list"
-
-    @property
-    def description(self) -> str:
-        return self._schema.description if self._schema else ""
-
-    @property
-    def category(self) -> str:
-        return ToolCategory.SYSTEM.value
 
     async def execute(self, context: ToolContext) -> ToolResult:
         args = context.parsed_args or {}

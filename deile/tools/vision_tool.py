@@ -164,17 +164,6 @@ class VisionDescribeImageTool(Tool):
             )
         )
 
-    @property
-    def name(self) -> str:
-        return "vision_describe_image"
-
-    @property
-    def description(self) -> str:
-        return self._schema.description if self._schema else ""
-
-    @property
-    def category(self) -> str:
-        return ToolCategory.OTHER.value
 
     async def execute(self, context: ToolContext) -> ToolResult:
         args = dict(context.parsed_args or {})
