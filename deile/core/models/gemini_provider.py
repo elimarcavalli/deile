@@ -1048,19 +1048,13 @@ class GeminiProvider(ModelProvider):
                 total_tokens=usage_metadata.total_token_count if usage_metadata else 0
             )
             
-            # Extrai conteúdo da resposta de forma robusta
-            content = ""
-            if hasattr(response, 'text') and response.text:
-                content = response.text
-            elif hasattr(response, 'candidates') and response.candidates and len(response.candidates) > 0:
-                candidate = response.candidates[0]
-                if hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts') and candidate.content.parts:
-                    # Extrai texto das parts
-                    text_parts = []
-                    for part in candidate.content.parts:
-                        if hasattr(part, 'text') and part.text:
-                            text_parts.append(part.text)
-                    content = ''.join(text_parts)
+            # Extrai conteúdo via helper que itera ``candidates[*].content.parts``
+            # e pula parts não-textuais (thought_signature, function_call, etc.).
+            # Acessar ``response.text`` direto em modelos com "thinking" ativo
+            # (gemini-3.x preview, etc.) emite ``Warning: there are non-text parts
+            # in the response: ['thought_signature']`` em cada chamada — usar o
+            # helper evita esse ruído e ainda garante o fallback consistente.
+            content = self._extract_response_text(response)
             
             # Fallback se ainda não temos conteúdo
             if not content:

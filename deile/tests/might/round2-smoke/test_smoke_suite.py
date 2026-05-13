@@ -51,6 +51,25 @@ class TestResult:
     error: Optional[str] = None
 
 
+def _content_to_text(content: Any) -> str:
+    """Render qualquer ``response.content`` (string ou objeto Rich) para texto.
+
+    Slash commands tipo ``/help`` devolvem ``Panel``/``Table``/``Group``;
+    fatiar com ``[:N]`` quebra com ``TypeError`` se não normalizar antes.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if hasattr(content, "__rich__") or hasattr(content, "__rich_console__"):
+        from io import StringIO
+        from rich.console import Console
+        buf = StringIO()
+        Console(file=buf, force_terminal=False, no_color=True, width=160).print(content)
+        return buf.getvalue()
+    return str(content)
+
+
 async def _run_turn(agent: DeileAgent, session_id: str, user_input: str) -> Dict[str, Any]:
     """Run one turn and return response + tool calls used."""
     start = time.time()
@@ -62,7 +81,7 @@ async def _run_turn(agent: DeileAgent, session_id: str, user_input: str) -> Dict
         duration = time.time() - start
         return {
             "status": "ok",
-            "content": response.content,
+            "content": _content_to_text(response.content),
             "tool_calls": [
                 t.tool_name if hasattr(t, "tool_name") else str(t)
                 for t in (response.tool_results or [])
@@ -247,20 +266,32 @@ async def t_f2_history_command(agent: DeileAgent) -> TestResult:
 
 
 async def t_i1_persona_loaded(agent: DeileAgent) -> TestResult:
-    """Persona default carregou .md de instrucoes."""
+    """Persona default carregou pelo agent inicializado."""
     r = TestResult(test_id="I1", name="default persona loaded", status="fail", duration_s=0.0)
     start = time.time()
     try:
-        from deile.personas.persona_manager import PersonaManager
-        pm = PersonaManager()
-        await pm.initialize() if asyncio.iscoroutinefunction(getattr(pm, "initialize", None)) else None
-        active = pm.get_active_persona() if hasattr(pm, "get_active_persona") else None
+        # O agent já foi inicializado pelo runner — a persona ativa
+        # vive no próprio agent, não em um manager autônomo.
+        pm = getattr(agent, "persona_manager", None)
+        active = None
+        if pm is not None:
+            for attr in ("get_active_persona", "active_persona", "current_persona", "get_current"):
+                obj = getattr(pm, attr, None)
+                if callable(obj):
+                    try:
+                        active = obj()
+                    except Exception:
+                        active = None
+                else:
+                    active = obj
+                if active is not None:
+                    break
         r.duration_s = time.time() - start
         if active is not None:
             r.status = "pass"
-            r.response_preview = f"persona: {getattr(active, 'name', '?')}"
+            r.response_preview = f"persona: {getattr(active, 'name', None) or str(active)[:80]}"
         else:
-            r.notes.append("PersonaManager.get_active_persona() retornou None")
+            r.notes.append("agent.persona_manager não expôs persona ativa")
     except Exception as exc:
         r.duration_s = time.time() - start
         r.error = f"{type(exc).__name__}: {str(exc)[:200]}"
