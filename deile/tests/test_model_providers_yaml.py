@@ -32,9 +32,11 @@ def test_four_providers_defined(cfg):
         assert pid in providers, f"Provider '{pid}' missing"
 
 
-def test_thirteen_models_defined(cfg):
+def test_twelve_models_defined(cfg):
+    # gpt-5.3-codex foi removido (era completions-only, não suportado pelo
+    # OpenAI provider em /v1/chat/completions — sempre falhava com 404).
     models = cfg["models"]
-    assert len(models) == 13, f"Expected 13 models, got {len(models)}"
+    assert len(models) == 12, f"Expected 12 models, got {len(models)}"
 
 
 def test_all_four_tiers_present(cfg):

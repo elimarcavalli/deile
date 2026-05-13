@@ -65,14 +65,12 @@ models:
     capabilities: [function_calling, streaming, caching]
 
   # === OPENAI ===
-  - provider_id: openai
-    model_id: gpt-5.3-codex
-    tier: tier_1
-    label: code-specialist
-    display_name: GPT-5.3 Codex
-    pricing: { input_per_1m_usd: 1.75, output_per_1m_usd: 14.00 }
-    context_window: 200000
-    capabilities: [function_calling, streaming, caching]
+  # NOTA: ``gpt-5.3-codex`` está disponível apenas no endpoint
+  # ``/v1/completions`` (legacy completions), não em ``/v1/chat/completions``
+  # — a única superfície que o ``openai_provider`` chama. Mantê-lo aqui
+  # produzia ``404 invalid_request_error`` em qualquer roteamento (probe
+  # de Round 2). Reintroduzir quando o OpenAI Provider suportar a API
+  # de completions, ou quando o modelo migrar para chat completions.
 
   - provider_id: openai
     model_id: gpt-5.4
