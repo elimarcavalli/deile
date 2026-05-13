@@ -114,8 +114,83 @@ async def test_tool_use_lifecycle_renders_and_aggregates():
     assert result.tool_invocations == 1
     assert result.tool_failures == 0
     output = console.file.getvalue()
-    assert "bash_execute" in output
+    # bash_execute aparece como "Bash" (display name amigável)
+    assert "Bash" in output
+    # Comando aparece bare, sem "command='...'" wrapping
+    assert "ls" in output
+    assert "command='ls'" not in output
     assert "2 files" in output
+    # Marker ⎿ usado para a linha de resumo
+    assert "⎿" in output
+
+
+@pytest.mark.asyncio
+async def test_bash_long_command_truncated_in_header():
+    """Comando bash longo é truncado com '…' no cabeçalho."""
+    console = _capture_console()
+    renderer = StreamingRenderer(console=console, legacy_windows=True, markdown=False)
+    long_cmd = "find /Users/elimar.cavalli/dev -type f -not -path '*/node_modules/*' -name '*.py'"
+    events = [
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="t1",
+            tool_name="bash_execute",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="t1",
+            tool_name="bash_execute",
+            arguments={"command": long_cmd, "working_directory": "/tmp"},
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="t1",
+            tool_name="bash_execute",
+            tool_status="success",
+            tool_result_summary="291301 total",
+        ),
+    ]
+    await renderer.render(_replay(events))
+    output = console.file.getvalue()
+    # working_directory NÃO aparece (mostramos só o command primário)
+    assert "working_directory" not in output
+    # Truncamento usa '…' depois de 77 chars do command
+    assert "…" in output
+    # Summary com marker correto
+    assert "291301 total" in output
+
+
+@pytest.mark.asyncio
+async def test_non_bash_tool_keeps_kwarg_format():
+    """Tools sem primary_arg mapeado usam o formato `chave='valor'`."""
+    console = _capture_console()
+    renderer = StreamingRenderer(console=console, legacy_windows=True, markdown=False)
+    events = [
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="t1",
+            tool_name="write_file",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="t1",
+            tool_name="write_file",
+            arguments={"path": "x.txt", "content": "hi"},
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="t1",
+            tool_name="write_file",
+            tool_status="success",
+            tool_result_summary="ok",
+        ),
+    ]
+    await renderer.render(_replay(events))
+    output = console.file.getvalue()
+    # write_file não está em _TOOL_DISPLAY_NAME → mantém nome original
+    assert "write_file" in output
+    # kwarg format preservado para tools genéricas
+    assert "path=" in output
 
 
 @pytest.mark.asyncio

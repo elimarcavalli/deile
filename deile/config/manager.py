@@ -173,7 +173,11 @@ class ConfigManager:
     
     def __init__(self, config_dir: Union[str, Path] = None):
         if config_dir is None:
-            config_dir = Path("deile/config")
+            # Package-relative: yamls bundled with the source tree.
+            # Resolvendo a partir de __file__ evita criar uma pasta
+            # "deile/config" no cwd quando o agente é executado fora
+            # da raiz do repositório.
+            config_dir = Path(__file__).resolve().parent
         self.config_dir = Path(config_dir)
         self.config_dir.mkdir(parents=True, exist_ok=True)
 

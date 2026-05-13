@@ -52,6 +52,22 @@ logger = logging.getLogger(__name__)
 
 _VALIDATION_GATE_TITLE = "[yellow]validation gate — corrected reply[/yellow]"
 
+# Tools que escrevem direto no stdout durante a execução. Para elas,
+# o cabeçalho "● Bash(...)" precisa ir para a scrollback assim que
+# os args chegam, antes da execução, para evitar colisão com a Live region.
+_DIRECT_PRINT_TOOLS: frozenset = frozenset({"bash_execute"})
+
+# Mapeamento opcional de nome interno → nome amigável exibido.
+_TOOL_DISPLAY_NAME: Dict[str, str] = {
+    "bash_execute": "Bash",
+}
+
+# Para tools de comando primário (uma string única dominante), mostramos
+# o valor cru em vez do par "chave='valor'". Mapeia tool → arg principal.
+_TOOL_PRIMARY_ARG: Dict[str, str] = {
+    "bash_execute": "command",
+}
+
 
 @dataclass
 class _ToolBlock:
@@ -61,6 +77,12 @@ class _ToolBlock:
     status: str = "running"  # running | success | error
     summary: Optional[str] = None
     iteration: Optional[int] = None
+    # Para tools que escrevem direto no stdout (ex.: bash_execute),
+    # comprometemos o cabeçalho na scrollback assim que os args chegam,
+    # antes da execução. Sem isso, prints da tool sobrescrevem a Live
+    # region e o usuário pode não ver qual comando rodou.
+    head_committed: bool = False  # cabeçalho já impresso na scrollback
+    summary_committed: bool = False  # linha "⎿ summary" já impressa
 
 
 @dataclass
@@ -272,6 +294,10 @@ class StreamingRenderer:
             try:
                 async for event in event_stream:
                     self._apply_event(event, blocks, result)
+                    # Para tools direct-print (ex.: bash_execute), o cabeçalho
+                    # precisa estar na scrollback ANTES da execução para que
+                    # o stdout da tool apareça abaixo dele, não sobre a Live.
+                    self._commit_direct_print_tools(blocks, live)
                     if event.type is StreamEventType.USAGE_FINAL and event.usage:
                         u = event.usage
                         usage_footer = (
@@ -353,6 +379,10 @@ class StreamingRenderer:
         for i in range(committed_count, len(blocks) - 1):
             block = blocks[i]
             if isinstance(block, _ToolBlock) and block.status == "running":
+                # Tools direct-print imprimem o cabeçalho na scrollback
+                # antes de executar; não devem segurar a Live region.
+                if block.head_committed:
+                    continue
                 return i
             # _StageBlock is always transient — if one ends up not at the
             # tail (shouldn't normally happen), still treat it as active so
@@ -360,6 +390,36 @@ class StreamingRenderer:
             if isinstance(block, _StageBlock):
                 return i
         return len(blocks) - 1
+
+    def _commit_direct_print_tools(self, blocks: List[Any], live: Optional[Live] = None) -> None:
+        """Imprime cabeçalho/summary de tools direct-print direto na scrollback.
+
+        Bash escreve em stdout via ``print()`` durante a execução, o que colide
+        com a Live region. Para garantir que o usuário sempre veja o comando
+        executado (antes do output) e o resumo (após), comprometemos esses
+        elementos via ``console.print`` — o Rich Live lida com prints acima
+        da região automaticamente, preservando a ordem visual.
+        """
+        for b in blocks:
+            if not isinstance(b, _ToolBlock):
+                continue
+            if b.tool_name not in _DIRECT_PRINT_TOOLS:
+                continue
+            # Cabeçalho: imprime assim que os args estão disponíveis (TOOL_USE_END).
+            if not b.head_committed and b.args is not None:
+                self._console.print(Text.from_markup(self._tool_head_markup(b)))
+                b.head_committed = True
+            # Summary: imprime assim que o status sai de "running" (TOOL_RESULT).
+            if b.head_committed and not b.summary_committed and b.status != "running":
+                if b.summary:
+                    self._console.print(Text.from_markup(
+                        self._tool_summary_markup(b).lstrip("\n")
+                    ))
+                b.summary_committed = True
+        # Após imprimir acima da Live region, redesenha sem os blocos já
+        # comprometidos para evitar duplicação no próximo frame.
+        if live is not None:
+            live.update(self._compose(blocks))
 
     def _render_single_block(self, block: Any) -> Optional[Any]:
         """Render a single block as a Rich renderable for static print."""
@@ -453,9 +513,15 @@ class StreamingRenderer:
             elif event.type is StreamEventType.TOOL_USE_END:
                 # Flush any pending text before the tool block prints.
                 self._legacy_flush_text(blocks, rendered_text_len_per_block, final=True)
-                args_preview = self._render_args_inline(event.arguments)
+                display_name = _TOOL_DISPLAY_NAME.get(
+                    event.tool_name or "", event.tool_name or "<tool>"
+                )
+                args_preview = self._render_args_inline(
+                    event.tool_name or "", event.arguments
+                )
                 self._console.print(
-                    f"\n[yellow]●[/yellow] {event.tool_name}({args_preview}) [dim]running…[/dim]"
+                    f"\n[yellow]●[/yellow] [bold]{display_name}[/bold]"
+                    f"({args_preview}) [dim]running…[/dim]"
                 )
                 last_flush = time.monotonic()
                 chars_since_flush = 0
@@ -468,10 +534,10 @@ class StreamingRenderer:
                     self._console.print(event.renderable)
 
             elif event.type is StreamEventType.TOOL_RESULT:
-                icon = "[green]✓[/green]" if event.tool_status == "success" else "[red]✗[/red]"
+                marker_color = "red" if event.tool_status == "error" else "green"
                 summary = self._safe_markup(event.tool_result_summary or "")
                 self._console.print(
-                    f"  {icon} {event.tool_name}: [dim]{summary}[/dim]"
+                    f"  [{marker_color}]⎿[/{marker_color}] [dim]{summary}[/dim]"
                 )
 
             elif event.type is StreamEventType.USAGE_FINAL and event.usage:
@@ -778,27 +844,58 @@ class StreamingRenderer:
                 else:
                     _push(Text.from_markup(f"[dim]{spinner_frame} {label}…[/dim]"))
             elif isinstance(b, _ToolBlock):
+                # Tools direct-print já tiveram cabeçalho/summary impressos
+                # diretamente na scrollback; não rendere-los aqui evita
+                # duplicação visual durante o refresh da Live region.
+                if b.head_committed and b.summary_committed:
+                    continue
                 _push(self._tool_renderable(b))
         if footer:
             _push(Text.from_markup(footer))
         return Group(*rendered) if rendered else Text("")
 
     def _tool_renderable(self, block: _ToolBlock):
-        args_inline = self._render_args_inline(block.args)
+        return Text.from_markup(self._tool_head_markup(block) + self._tool_summary_markup(block))
+
+    def _tool_head_markup(self, block: _ToolBlock) -> str:
+        """Cabeçalho `● Name(args)` com cor conforme status."""
+        display_name = _TOOL_DISPLAY_NAME.get(block.tool_name, block.tool_name)
+        args_inline = self._render_args_inline(block.tool_name, block.args)
         if block.status == "running":
-            head = f"[yellow]●[/yellow] [bold]{block.tool_name}[/bold]({args_inline}) [dim]running…[/dim]"
-        elif block.status == "success":
-            head = f"[green]✓[/green] [bold]{block.tool_name}[/bold]({args_inline})"
-        else:
-            head = f"[red]✗[/red] [bold]{block.tool_name}[/bold]({args_inline})"
-        if block.summary:
-            return Text.from_markup(f"{head}\n  [dim]{self._safe_markup(block.summary)}[/dim]")
-        return Text.from_markup(head)
+            return f"[yellow]●[/yellow] [bold]{display_name}[/bold]({args_inline}) [dim]running…[/dim]"
+        if block.status == "success":
+            return f"[green]●[/green] [bold]{display_name}[/bold]({args_inline})"
+        return f"[red]●[/red] [bold]{display_name}[/bold]({args_inline})"
+
+    def _tool_summary_markup(self, block: _ToolBlock) -> str:
+        """Linha `  ⎿ summary` quando há resumo; vazio caso contrário."""
+        if not block.summary:
+            return ""
+        marker_color = "red" if block.status == "error" else "green"
+        return (
+            f"\n  [{marker_color}]⎿[/{marker_color}] "
+            f"[dim]{self._safe_markup(block.summary)}[/dim]"
+        )
 
     @staticmethod
-    def _render_args_inline(args: Optional[Dict[str, Any]]) -> str:
+    def _render_args_inline(tool_name: str, args: Optional[Dict[str, Any]]) -> str:
+        """Args inline para o cabeçalho.
+
+        Para tools com argumento primário (ex.: bash_execute → "command"),
+        mostramos apenas o valor desse argumento, sem o nome da chave nem
+        aspas — para ler `Bash(find /foo)` em vez de `Bash(command='find /foo')`.
+        Para os demais, formato `chave=valor` com truncamento.
+        """
         if not args:
             return ""
+
+        primary = _TOOL_PRIMARY_ARG.get(tool_name)
+        if primary is not None and primary in args:
+            value = str(args[primary])
+            if len(value) > 80:
+                value = value[:77] + "…"
+            return value
+
         parts = []
         for k, v in list(args.items())[:3]:
             sv = str(v)

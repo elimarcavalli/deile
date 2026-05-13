@@ -18,7 +18,11 @@ class InstructionLoader:
     """
 
     def __init__(self, instructions_dir: Optional[Path] = None):
-        self.instructions_dir = instructions_dir or Path("deile/personas/instructions")
+        # Default resolvido a partir do próprio pacote para não criar
+        # uma pasta "deile/personas/instructions" no cwd ao iniciar.
+        self.instructions_dir = instructions_dir or (
+            Path(__file__).resolve().parent / "instructions"
+        )
         self.instructions_dir.mkdir(parents=True, exist_ok=True)
 
         # Cache de instruções carregadas
