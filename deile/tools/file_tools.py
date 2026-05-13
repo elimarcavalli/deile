@@ -41,6 +41,40 @@ def _post_write_validation_hint(file_path: str) -> Optional[Dict[str, str]]:
     return {"kind": spec["kind"], "command": spec["template"].format(path=file_path)}
 
 
+def _apply_post_write_hint(
+    relative_path: str,
+    metadata: Dict[str, Any],
+    message_parts: List[str],
+) -> None:
+    """Mutate `metadata` and `message_parts` in-place with a post-write hint.
+
+    Shared between Write/Edit tools; the prior duplicated block (~13 lines
+    each) was the same in both call sites.
+    """
+    hint = _post_write_validation_hint(relative_path)
+    if hint is None:
+        return
+    metadata["post_write_validation_required"] = True
+    metadata["post_write_validation_command"] = hint["command"]
+    metadata["post_write_validation_kind"] = hint["kind"]
+    message_parts.append(
+        f"\n⚠️  POST_WRITE_VALIDATION_REQUIRED: per the Definition of Done, "
+        f"your next action MUST validate this file. Suggested command:\n"
+        f"    {hint['command']}\n"
+        f"Do NOT declare the task complete until validation succeeds "
+        f"(exit 0) or you have explicitly diagnosed and reported a "
+        f"failure to the user."
+    )
+
+
+# Filler tokens (articles, pronouns) that may appear between a verb and the
+# file reference, e.g. "read the readme". Used by ReadFileTool path-extraction
+# regexes; shared so the vocabulary stays in one place.
+_PATH_EXTRACTION_FILLERS = (
+    r'(?:(?:the|a|an|me|my|this|that|o|a|os|as|um|uma|este|esta|esse|essa)\s+)*'
+)
+
+
 class LocalFileAccessViolation(ValidationError):
     """Exceção para violações de acesso a arquivos locais"""
     pass
@@ -508,18 +542,13 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
         
         # NOVO: Fallback para user_input se contém referência a arquivo
         if not file_path and context.user_input:
-            # Filler tokens (articles, pronouns) that may appear between a verb
-            # and the actual file reference, e.g. "read the readme",
-            # "show me the README". Skipping them lets the capture group land
-            # on the real file reference.
-            _FILLERS = r'(?:(?:the|a|an|me|my|this|that|o|a|os|as|um|uma|este|esta|esse|essa)\s+)*'
             # Procura por padrões de arquivo no user_input
             file_patterns = [
                 r'(?:file|arquivo)\s+([^\s]+)',
                 r'([^\s]+\.(?:txt|py|md|json|js|html|css|xml|csv|ya?ml|toml|conf|cfg|ini|sh|rst))',
                 r'@([^\s]+)',  # Remove @ e usa só o nome do arquivo
-                rf'(?:ler|read|abrir|open|examine)\s+{_FILLERS}(?:arquivo\s+)?(?:chamado\s+)?(?:@)?([^\s]+)',
-                rf'(?:show|mostrar|exibir)\s+{_FILLERS}(?:arquivo\s+)?(?:@)?([^\s]+)'
+                rf'(?:ler|read|abrir|open|examine)\s+{_PATH_EXTRACTION_FILLERS}(?:arquivo\s+)?(?:chamado\s+)?(?:@)?([^\s]+)',
+                rf'(?:show|mostrar|exibir)\s+{_PATH_EXTRACTION_FILLERS}(?:arquivo\s+)?(?:@)?([^\s]+)'
             ]
             for pattern in file_patterns:
                 match = re.search(pattern, context.user_input, re.IGNORECASE)
@@ -549,11 +578,9 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
             try:
                 from ..core.file_resolver import get_file_resolver
 
-                # Filler tokens to skip between verb and file reference
-                _Q_FILLERS = r'(?:(?:the|a|an|me|my|this|that|o|a|os|as|um|uma|este|esta|esse|essa)\s+)*'
                 # Padrões para extrair referências naturais a arquivos
                 query_patterns = [
-                    rf'(?:leia?|read|examine?|show|mostrar|abrir|open)\s+{_Q_FILLERS}(?:arquivo\s+)?(?:chamado\s+)?(?:@)?([^\s,\.!?]+)',
+                    rf'(?:leia?|read|examine?|show|mostrar|abrir|open)\s+{_PATH_EXTRACTION_FILLERS}(?:arquivo\s+)?(?:chamado\s+)?(?:@)?([^\s,\.!?]+)',
                     r'(?:arquivo|file)\s+([^\s,\.!?]+)',
                     r'([a-zA-Z0-9_\-]+(?:\.[a-zA-Z0-9]+)?)\s*(?:file|arquivo)?',
                     r'@([a-zA-Z0-9_\-\.]+)',  # Referencias com @
@@ -905,19 +932,7 @@ class WriteFileTool(SyncTool):
                 "rich_display": rich_display,
             }
 
-            validation_hint = _post_write_validation_hint(resolved.relative_to_cwd)
-            if validation_hint is not None:
-                metadata["post_write_validation_required"] = True
-                metadata["post_write_validation_command"] = validation_hint["command"]
-                metadata["post_write_validation_kind"] = validation_hint["kind"]
-                message_parts.append(
-                    f"\n⚠️  POST_WRITE_VALIDATION_REQUIRED: per the Definition of Done, "
-                    f"your next action MUST validate this file. Suggested command:\n"
-                    f"    {validation_hint['command']}\n"
-                    f"Do NOT declare the task complete until validation succeeds "
-                    f"(exit 0) or you have explicitly diagnosed and reported a "
-                    f"failure to the user."
-                )
+            _apply_post_write_hint(resolved.relative_to_cwd, metadata, message_parts)
 
             return ToolResult(
                 status=ToolStatus.SUCCESS,
@@ -1312,19 +1327,7 @@ class EditFileTool(SyncTool):
             "rich_display": rich_display,
         }
 
-        validation_hint = _post_write_validation_hint(resolved.relative_to_cwd)
-        if validation_hint is not None:
-            metadata["post_write_validation_required"] = True
-            metadata["post_write_validation_command"] = validation_hint["command"]
-            metadata["post_write_validation_kind"] = validation_hint["kind"]
-            message_parts.append(
-                f"\n⚠️  POST_WRITE_VALIDATION_REQUIRED: per the Definition of Done, "
-                f"your next action MUST validate this file. Suggested command:\n"
-                f"    {validation_hint['command']}\n"
-                f"Do NOT declare the task complete until validation succeeds "
-                f"(exit 0) or you have explicitly diagnosed and reported a "
-                f"failure to the user."
-            )
+        _apply_post_write_hint(resolved.relative_to_cwd, metadata, message_parts)
 
         return ToolResult(
             status=ToolStatus.SUCCESS,
