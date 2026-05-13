@@ -3,6 +3,7 @@
 import json
 import logging
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List
@@ -73,7 +74,9 @@ class EpisodicMemory:
         session_id: str = None
     ) -> str:
         """Armazena um novo episódio"""
-        episode_id = f"ep_{int(time.time() * 1000)}"
+        # uuid4 suffix: timestamp-only ID colide quando duas chamadas caem no
+        # mesmo milissegundo (e.g. testes em sequência rápida).
+        episode_id = f"ep_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
         session_id = session_id or "default"
 
         async with aiosqlite.connect(self.db_path) as db:

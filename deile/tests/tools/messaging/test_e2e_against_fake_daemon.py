@@ -14,15 +14,22 @@ from __future__ import annotations
 from typing import AsyncIterator
 
 import pytest
-from deilebot.foundation.capabilities import ProviderCapabilities
-from deilebot.foundation.envelope import AttachmentKind
-from deilebot.runtime.control_plane import (ControlPlaneServer,
+
+# O pacote deilebot mora em repo separado (elimarcavalli/deilebot). Sem ele
+# instalado, este módulo não pode importar — o importorskip evita que o
+# pytest aborte a collection da suite inteira.
+pytest.importorskip("deilebot.foundation.capabilities")
+pytest.importorskip("deilebot.runtime.control_plane")
+
+from deilebot.foundation.capabilities import ProviderCapabilities  # noqa: E402
+from deilebot.foundation.envelope import AttachmentKind  # noqa: E402
+from deilebot.runtime.control_plane import (ControlPlaneServer,  # noqa: E402
                                             ControlPlaneSettings)
 
-from deile.integrations.bot import get_bot_client, reset_bot_client
-from deile.integrations.bot.config import reset_bot_settings_cache
-from deile.tools.base import ToolContext
-from deile.tools.messaging import DiscordSendMessageTool
+from deile.integrations.bot import get_bot_client, reset_bot_client  # noqa: E402
+from deile.integrations.bot.config import reset_bot_settings_cache  # noqa: E402
+from deile.tools.base import ToolContext  # noqa: E402
+from deile.tools.messaging import DiscordSendMessageTool  # noqa: E402
 
 pytestmark = pytest.mark.integration
 

@@ -12,8 +12,14 @@ import asyncio
 from typing import AsyncIterator, Tuple
 
 import pytest
-from aiohttp import web
-from deilebot_client import (BotClientAuthError, BotClientNotReady,
+
+# deilebot_client é um pacote separado (repo elimarcavalli/deilebot). Quando
+# ele não está instalado no ambiente, este módulo inteiro precisa ser pulado
+# — sem o importorskip, o pytest aborta a collection da suite completa.
+pytest.importorskip("deilebot_client")
+
+from aiohttp import web  # noqa: E402
+from deilebot_client import (BotClientAuthError, BotClientNotReady,  # noqa: E402
                              BotClientRateLimited, BotClientTimeoutError,
                              BotClientUpstreamError, BotControlClient,
                              BotControlSettings)
