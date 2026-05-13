@@ -122,7 +122,11 @@ async def test_generate_system_instruction(provider):
     call_kwargs = mock_create.call_args.kwargs
     assert "system" in call_kwargs
     # system is a list of blocks with cache_control
-    assert call_kwargs["system"][0]["text"] == "You are a test assistant"
+    system_text = call_kwargs["system"][0]["text"]
+    # Persona base preservada como prefixo (necessária para o cache anthropic).
+    assert system_text.startswith("You are a test assistant")
+    # Runtime-identity block apendado ao final para anti-alucinação.
+    assert "<runtime_identity>" in system_text
     assert call_kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
 
 

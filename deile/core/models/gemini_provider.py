@@ -273,7 +273,8 @@ class GeminiProvider(ModelProvider):
     ) -> ModelResponse:
         """Gera resposta usando novo Google GenAI SDK com Function Calling support"""
         start_time = time.time()
-        
+        system_instruction = self._compose_system_instruction(system_instruction)
+
         # Atualiza timestamp da última request
         self._last_request_time = start_time
         
@@ -370,6 +371,8 @@ class GeminiProvider(ModelProvider):
         from deile.core.models.stream_events import (ModelUsageSnapshot,
                                                      StreamEventType,
                                                      UnifiedStreamEvent)
+
+        system_instruction = self._compose_system_instruction(system_instruction)
 
         if tools:
             # Tool-aware path: build a one-shot chat session with the supplied

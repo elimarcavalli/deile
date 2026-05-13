@@ -68,6 +68,33 @@ _TOOL_PRIMARY_ARG: Dict[str, str] = {
     "bash_execute": "command",
 }
 
+# Tools com renderização de args customizada. Quando o nome aparece aqui,
+# ``_render_args_inline`` delega à função associada em vez de usar o
+# formatador genérico ``chave=valor`` — necessário para tools como
+# ``edit_file`` cujo argumento ``patches`` é uma lista de dicts que
+# renderiza horrivelmente via ``str(list)``.
+def _format_edit_file_args(args: Dict[str, Any]) -> str:
+    """``edit_file(file_path, N patches)`` em vez de Python repr da lista."""
+    path = args.get("file_path") or args.get("path") or ""
+    if isinstance(path, str) and len(path) > 60:
+        path = "…" + path[-57:]
+    patches = args.get("patches")
+    if isinstance(patches, list):
+        count = len(patches)
+        suffix = f"{count} patch" if count == 1 else f"{count} patches"
+        if path:
+            return f"{path}, {suffix}"
+        return suffix
+    # Fallback for legacy {old_string, new_string} shape (single patch).
+    if "old_string" in args or "new_string" in args:
+        return f"{path}, 1 patch" if path else "1 patch"
+    return str(path) if path else ""
+
+
+_TOOL_ARG_FORMATTERS: Dict[str, Any] = {
+    "edit_file": _format_edit_file_args,
+}
+
 
 @dataclass
 class _ToolBlock:
@@ -294,10 +321,6 @@ class StreamingRenderer:
             try:
                 async for event in event_stream:
                     self._apply_event(event, blocks, result)
-                    # Para tools direct-print (ex.: bash_execute), o cabeçalho
-                    # precisa estar na scrollback ANTES da execução para que
-                    # o stdout da tool apareça abaixo dele, não sobre a Live.
-                    self._commit_direct_print_tools(blocks, live)
                     if event.type is StreamEventType.USAGE_FINAL and event.usage:
                         u = event.usage
                         usage_footer = (
@@ -327,6 +350,15 @@ class StreamingRenderer:
                                 self._console.print(renderable)
                                 self._console.print()
                         committed_count = active_idx
+
+                    # AGORA (após texto/blocos precedentes irem para scrollback)
+                    # comprometemos cabeçalho/summary de tools direct-print. Isso
+                    # garante a ordem visual correta:
+                    #   <texto modelo> → ● Bash(...) → <stdout da bash> → ⎿ summary
+                    # Sem este reordenamento, o cabeçalho da bash sairia ANTES
+                    # do texto precedente do modelo (todo o texto ficava preso
+                    # na Live region até o final do turno).
+                    self._commit_direct_print_tools(blocks)
 
                     # Refresh on every event. With auto_refresh=False this is
                     # the ONLY way pixels reach the terminal — and there's no
@@ -391,7 +423,7 @@ class StreamingRenderer:
                 return i
         return len(blocks) - 1
 
-    def _commit_direct_print_tools(self, blocks: List[Any], live: Optional[Live] = None) -> None:
+    def _commit_direct_print_tools(self, blocks: List[Any]) -> None:
         """Imprime cabeçalho/summary de tools direct-print direto na scrollback.
 
         Bash escreve em stdout via ``print()`` durante a execução, o que colide
@@ -399,6 +431,11 @@ class StreamingRenderer:
         executado (antes do output) e o resumo (após), comprometemos esses
         elementos via ``console.print`` — o Rich Live lida com prints acima
         da região automaticamente, preservando a ordem visual.
+
+        Chamado DEPOIS do active_idx commit do laço principal, garantindo que
+        qualquer texto/bloco precedente já está na scrollback antes do
+        cabeçalho — sem isso, o `● Bash(...)` imprimia ANTES do texto do
+        modelo que o introduzia.
         """
         for b in blocks:
             if not isinstance(b, _ToolBlock):
@@ -416,10 +453,6 @@ class StreamingRenderer:
                         self._tool_summary_markup(b).lstrip("\n")
                     ))
                 b.summary_committed = True
-        # Após imprimir acima da Live region, redesenha sem os blocos já
-        # comprometidos para evitar duplicação no próximo frame.
-        if live is not None:
-            live.update(self._compose(blocks))
 
     def _render_single_block(self, block: Any) -> Optional[Any]:
         """Render a single block as a Rich renderable for static print."""
@@ -446,6 +479,11 @@ class StreamingRenderer:
                     return Text(block.text)
             return Text(block.text)
         if isinstance(block, _ToolBlock):
+            # Tools direct-print já tiveram cabeçalho impresso eagermente na
+            # scrollback (e o summary será impresso quando o resultado chegar).
+            # Re-renderizar aqui duplicaria o cabeçalho.
+            if block.head_committed:
+                return None
             return self._tool_renderable(block)
         return None
 
@@ -844,10 +882,10 @@ class StreamingRenderer:
                 else:
                     _push(Text.from_markup(f"[dim]{spinner_frame} {label}…[/dim]"))
             elif isinstance(b, _ToolBlock):
-                # Tools direct-print já tiveram cabeçalho/summary impressos
-                # diretamente na scrollback; não rendere-los aqui evita
-                # duplicação visual durante o refresh da Live region.
-                if b.head_committed and b.summary_committed:
+                # Tools direct-print já tiveram cabeçalho impresso eagermente
+                # na scrollback. Mostrá-los na Live region duplicaria visualmente
+                # o cabeçalho durante a execução da bash.
+                if b.head_committed:
                     continue
                 _push(self._tool_renderable(b))
         if footer:
@@ -888,6 +926,13 @@ class StreamingRenderer:
         """
         if not args:
             return ""
+
+        formatter = _TOOL_ARG_FORMATTERS.get(tool_name)
+        if formatter is not None:
+            try:
+                return formatter(args)
+            except Exception:  # never let a custom formatter break rendering
+                pass
 
         primary = _TOOL_PRIMARY_ARG.get(tool_name)
         if primary is not None and primary in args:

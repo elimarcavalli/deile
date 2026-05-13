@@ -191,6 +191,7 @@ class OpenAIProvider(ModelProvider):
         **kwargs: Any,
     ) -> ModelResponse:
         start = time.time()
+        system_instruction = self._compose_system_instruction(system_instruction)
         oai_msgs = self._to_openai_messages(messages, system_instruction)
 
         try:
@@ -237,6 +238,7 @@ class OpenAIProvider(ModelProvider):
         **kwargs: Any,
     ) -> Tuple[str, List[Any], ModelUsage]:
         start = time.time()
+        system_instruction = self._compose_system_instruction(system_instruction)
         oai_msgs: List[Dict[str, Any]] = self._to_openai_messages(messages, system_instruction)
         oai_tools = [t.to_openai_function() for t in tools] if tools else []
 
@@ -393,6 +395,7 @@ class OpenAIProvider(ModelProvider):
         tools: Optional[List[Any]] = None,
         **kwargs: Any,
     ) -> AsyncIterator[UnifiedStreamEvent]:
+        system_instruction = self._compose_system_instruction(system_instruction)
         oai_msgs = self._to_openai_messages(messages, system_instruction)
 
         create_kwargs: Dict[str, Any] = {

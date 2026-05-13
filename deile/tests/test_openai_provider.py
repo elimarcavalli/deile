@@ -127,7 +127,9 @@ async def test_generate_system_instruction(provider):
     call_kwargs = mock_create.call_args.kwargs
     messages = call_kwargs["messages"]
     assert messages[0]["role"] == "system"
-    assert messages[0]["content"] == "You are a test assistant"
+    # Persona base preservada como prefixo; runtime-identity bloco apendado.
+    assert messages[0]["content"].startswith("You are a test assistant")
+    assert "<runtime_identity>" in messages[0]["content"]
 
 
 # ---------------------------------------------------------------------------

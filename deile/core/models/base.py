@@ -183,6 +183,33 @@ class ModelProvider(ABC):
         """
         pass
     
+    def _compose_system_instruction(self, system_instruction: Optional[str]) -> Optional[str]:
+        """Acresce um bloco de identidade runtime ao system instruction.
+
+        Modelos tendem a alucinar identidade — sem prompt explícito, DeepSeek/
+        Gemini/GPT comumente afirmam ser "Claude". Este bloco diz exatamente
+        qual provider/model está rodando neste turno e proíbe a invenção.
+
+        Acrescentamos ao FIM (em vez do início) para preservar o prefixo
+        estável do persona e maximizar cache hits (Anthropic cache trabalha
+        por prefixo; o conteúdo runtime muda mais frequentemente).
+        """
+        runtime_id = f"{self.provider_id}:{self.model_name}"
+        runtime_block = (
+            "<runtime_identity>\n"
+            "Você é DEILE (Dynamic Enhanced Intelligence Language Engine), o agente. "
+            f"Neste turno, o modelo subjacente que processa esta requisição é **{runtime_id}**.\n"
+            "Quando o usuário perguntar qual modelo/LLM você é, responda HONESTAMENTE: "
+            f"\"DEILE rodando via {runtime_id}\". "
+            "NUNCA afirme ser Claude/Anthropic, GPT/OpenAI, Gemini/Google, DeepSeek ou "
+            "qualquer outro modelo a menos que corresponda exatamente ao provider_id acima. "
+            "Não invente identidade — se incerto, replique provider_id:model_name verbatim.\n"
+            "</runtime_identity>"
+        )
+        if system_instruction:
+            return system_instruction.rstrip() + "\n\n" + runtime_block
+        return runtime_block
+
     async def chat_with_tools(
         self,
         messages: List[ModelMessage],

@@ -125,6 +125,70 @@ async def test_tool_use_lifecycle_renders_and_aggregates():
 
 
 @pytest.mark.asyncio
+async def test_interleaved_text_and_bash_preserves_visual_order():
+    """Regressão: texto do modelo entre tools direct-print precisa aparecer
+    NO LUGAR onde foi emitido (entre os tool blocks), não acumulado no fim.
+
+    Antes do fix, ``_commit_direct_print_tools`` rodava ANTES do active_idx
+    commit do laço principal — então o cabeçalho da bash ia para scrollback
+    primeiro, e o texto precedente do modelo ficava preso na Live region
+    até o fim do turno, aparecendo todo junto após as bash outputs.
+    """
+    console = _capture_console()
+    renderer = StreamingRenderer(console=console, legacy_windows=True, markdown=False)
+    events = [
+        UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="Passo 1: criar arquivo."),
+        UnifiedStreamEvent(type=StreamEventType.TOOL_USE_START, tool_call_id="t1", tool_name="bash_execute"),
+        UnifiedStreamEvent(type=StreamEventType.TOOL_USE_END, tool_call_id="t1", tool_name="bash_execute",
+                           arguments={"command": "echo hi"}),
+        UnifiedStreamEvent(type=StreamEventType.TOOL_RESULT, tool_call_id="t1", tool_name="bash_execute",
+                           tool_status="success", tool_result_summary="ok1"),
+        UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="Passo 2: validar."),
+        UnifiedStreamEvent(type=StreamEventType.TOOL_USE_START, tool_call_id="t2", tool_name="bash_execute"),
+        UnifiedStreamEvent(type=StreamEventType.TOOL_USE_END, tool_call_id="t2", tool_name="bash_execute",
+                           arguments={"command": "cat x"}),
+        UnifiedStreamEvent(type=StreamEventType.TOOL_RESULT, tool_call_id="t2", tool_name="bash_execute",
+                           tool_status="success", tool_result_summary="ok2"),
+        UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="Pronto."),
+        UnifiedStreamEvent(type=StreamEventType.USAGE_FINAL,
+                           usage=ModelUsageSnapshot(input_tokens=10, output_tokens=4)),
+    ]
+    await renderer.render(_replay(events))
+    output = console.file.getvalue()
+    # Ordem visual: cada marker tem que aparecer ANTES do próximo, na
+    # mesma ordem que os eventos foram emitidos.
+    markers = ["Passo 1", "echo hi", "ok1", "Passo 2", "cat x", "ok2", "Pronto"]
+    positions = [output.index(m) for m in markers]
+    assert positions == sorted(positions), (
+        f"Ordem incorreta. Markers em ordem de aparecer: {sorted(zip(positions, markers))}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_bash_header_not_duplicated_when_block_commits_later():
+    """Regressão: tool block com head_committed=True não pode ser re-renderizado
+    pelo loop de commit do active_idx — duplicaria o cabeçalho na scrollback.
+    """
+    console = _capture_console()
+    renderer = StreamingRenderer(console=console, legacy_windows=True, markdown=False)
+    events = [
+        UnifiedStreamEvent(type=StreamEventType.TOOL_USE_START, tool_call_id="t1", tool_name="bash_execute"),
+        UnifiedStreamEvent(type=StreamEventType.TOOL_USE_END, tool_call_id="t1", tool_name="bash_execute",
+                           arguments={"command": "echo unique-marker-xyz"}),
+        UnifiedStreamEvent(type=StreamEventType.TOOL_RESULT, tool_call_id="t1", tool_name="bash_execute",
+                           tool_status="success", tool_result_summary="ok"),
+        # Texto subsequente força o tool block para "committed" via active_idx.
+        UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="depois"),
+        UnifiedStreamEvent(type=StreamEventType.USAGE_FINAL,
+                           usage=ModelUsageSnapshot(input_tokens=5, output_tokens=2)),
+    ]
+    await renderer.render(_replay(events))
+    output = console.file.getvalue()
+    # O command único só pode aparecer UMA vez na saída.
+    assert output.count("unique-marker-xyz") == 1
+
+
+@pytest.mark.asyncio
 async def test_bash_long_command_truncated_in_header():
     """Comando bash longo é truncado com '…' no cabeçalho."""
     console = _capture_console()
@@ -191,6 +255,156 @@ async def test_non_bash_tool_keeps_kwarg_format():
     assert "write_file" in output
     # kwarg format preservado para tools genéricas
     assert "path=" in output
+
+
+@pytest.mark.asyncio
+async def test_edit_file_renders_path_and_patch_count():
+    """edit_file mostra `path, N patches` — não o Python repr da lista."""
+    console = _capture_console()
+    renderer = StreamingRenderer(console=console, legacy_windows=True, markdown=False)
+    events = [
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="ef1",
+            tool_name="edit_file",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="ef1",
+            tool_name="edit_file",
+            arguments={
+                "file_path": "deile/foo/bar.py",
+                "patches": [
+                    {"find": "x = 1", "replace": "x = 42"},
+                    {"find": "y = 2", "replace": "y = 99"},
+                    {"find": "z = 3", "replace": "z = 7"},
+                ],
+            },
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="ef1",
+            tool_name="edit_file",
+            tool_status="success",
+            tool_result_summary="3 patches applied",
+        ),
+    ]
+    await renderer.render(_replay(events))
+    output = console.file.getvalue()
+    assert "edit_file" in output
+    assert "deile/foo/bar.py" in output
+    assert "3 patches" in output
+    # The ugly Python repr of the list must NOT leak through.
+    assert "'find':" not in output
+    assert "[{'find" not in output
+
+
+@pytest.mark.asyncio
+async def test_edit_file_single_patch_uses_singular_label():
+    """Plural correto: 1 patch (não 1 patches)."""
+    console = _capture_console()
+    renderer = StreamingRenderer(console=console, legacy_windows=True, markdown=False)
+    events = [
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="ef2",
+            tool_name="edit_file",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="ef2",
+            tool_name="edit_file",
+            arguments={
+                "file_path": "a.py",
+                "patches": [{"find": "x", "replace": "y"}],
+            },
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="ef2",
+            tool_name="edit_file",
+            tool_status="success",
+            tool_result_summary="ok",
+        ),
+    ]
+    await renderer.render(_replay(events))
+    output = console.file.getvalue()
+    assert "1 patch" in output
+    assert "1 patches" not in output
+
+
+@pytest.mark.asyncio
+async def test_edit_file_truncates_long_path():
+    """Paths longos são truncados pela esquerda com elipse — `…/end/of/path.py`."""
+    console = _capture_console()
+    renderer = StreamingRenderer(console=console, legacy_windows=True, markdown=False)
+    long_path = "deile/" + "subdir/" * 12 + "module.py"
+    assert len(long_path) > 60
+    events = [
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="ef3",
+            tool_name="edit_file",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="ef3",
+            tool_name="edit_file",
+            arguments={
+                "file_path": long_path,
+                "patches": [{"find": "x", "replace": "y"}],
+            },
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="ef3",
+            tool_name="edit_file",
+            tool_status="success",
+            tool_result_summary="ok",
+        ),
+    ]
+    await renderer.render(_replay(events))
+    output = console.file.getvalue()
+    assert "module.py" in output  # filename always preserved
+    assert "…" in output           # ellipsis present
+
+
+@pytest.mark.asyncio
+async def test_tool_running_state_is_visible_before_result():
+    """O bloco da tool aparece em estado 'running…' enquanto executa.
+
+    Garante que a tool NÃO executa silenciosa: o usuário vê o nome dela
+    e os args no transcript antes do TOOL_RESULT chegar — ou seja, durante
+    a janela em que a execução está acontecendo.
+    """
+    console = _capture_console()
+    renderer = StreamingRenderer(console=console, legacy_windows=True, markdown=False)
+    # Sem TOOL_RESULT: simula o instante em que a tool ainda está executando.
+    events = [
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="r1",
+            tool_name="edit_file",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="r1",
+            tool_name="edit_file",
+            arguments={
+                "file_path": "live.py",
+                "patches": [{"find": "a", "replace": "b"}],
+            },
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.USAGE_FINAL,
+            usage=ModelUsageSnapshot(input_tokens=1, output_tokens=1),
+        ),
+    ]
+    await renderer.render(_replay(events))
+    output = console.file.getvalue()
+    assert "edit_file" in output
+    assert "live.py" in output
+    assert "running" in output  # status visible while executing
 
 
 @pytest.mark.asyncio

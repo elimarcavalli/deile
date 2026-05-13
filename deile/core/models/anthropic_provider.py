@@ -182,6 +182,7 @@ class AnthropicProvider(ModelProvider):
         **kwargs: Any,
     ) -> ModelResponse:
         start = time.time()
+        system_instruction = self._compose_system_instruction(system_instruction)
         system = self._extract_system(messages, system_instruction)
         anthropic_msgs = self._to_anthropic_messages(messages)
 
@@ -232,6 +233,7 @@ class AnthropicProvider(ModelProvider):
     ) -> Tuple[str, List[Any], ModelUsage]:
 
         start = time.time()
+        system_instruction = self._compose_system_instruction(system_instruction)
         system = self._extract_system(messages, system_instruction)
         anthropic_msgs: List[Dict[str, Any]] = self._to_anthropic_messages(messages)
         anthropic_tools = [t.to_anthropic_tool() for t in tools] if tools else []
@@ -388,6 +390,7 @@ class AnthropicProvider(ModelProvider):
         tools: Optional[List[Any]] = None,
         **kwargs: Any,
     ) -> AsyncIterator[UnifiedStreamEvent]:
+        system_instruction = self._compose_system_instruction(system_instruction)
         system = self._extract_system(messages, system_instruction)
         anthropic_msgs = self._to_anthropic_messages(messages)
 
