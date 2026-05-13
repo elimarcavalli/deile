@@ -24,16 +24,10 @@ from ..config.settings import get_settings
 from ..core.exceptions import ToolError
 from ..orchestration.artifact_manager import ArtifactManager
 from ..security.permissions import PermissionManager
-from .base import DisplayPolicy, SyncTool, ToolContext, ToolResult, ToolStatus
+from .base import (DisplayPolicy, SecurityLevel, SyncTool, ToolContext,
+                   ToolResult, ToolStatus)
 
 logger = logging.getLogger(__name__)
-
-
-class BashSecurityLevel:
-    """Security levels for bash commands"""
-    SAFE = "safe"
-    MODERATE = "moderate"
-    DANGEROUS = "dangerous"
 
 
 class BashExecuteTool(SyncTool):
@@ -144,7 +138,7 @@ class BashExecuteTool(SyncTool):
         # Check against dangerous patterns
         for pattern in self.dangerous_patterns:
             if pattern.search(command):
-                return BashSecurityLevel.DANGEROUS, [f"Matches dangerous pattern: {pattern.pattern}"]
+                return SecurityLevel.DANGEROUS.value, [f"Matches dangerous pattern: {pattern.pattern}"]
         
         # Check for potentially risky patterns
         moderate_risks = [
@@ -172,9 +166,9 @@ class BashExecuteTool(SyncTool):
                 warnings.append(f"Potentially risky: {risk_pattern}")
                 
         if warnings:
-            return BashSecurityLevel.MODERATE, warnings
+            return SecurityLevel.MODERATE.value, warnings
         
-        return BashSecurityLevel.SAFE, []
+        return SecurityLevel.SAFE.value, []
     
     def _should_use_pty(self, command: str, force_pty: Optional[bool] = None) -> bool:
         """Determine if PTY should be used"""

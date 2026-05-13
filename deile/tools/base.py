@@ -424,33 +424,6 @@ Executions: {self.execution_count}
         return f"<Tool: {self.name}>"
 
 
-class AsyncTool(Tool):
-    """Tool base para operações assíncronas"""
-    
-    async def execute_with_timeout(
-        self, 
-        context: ToolContext, 
-        timeout: float = 30.0
-    ) -> ToolResult:
-        """Executa a tool com timeout
-        
-        Args:
-            context: Contexto de execução
-            timeout: Timeout em segundos
-            
-        Returns:
-            ToolResult: Resultado da execução
-        """
-        try:
-            return await asyncio.wait_for(self.execute(context), timeout=timeout)
-        except asyncio.TimeoutError:
-            return ToolResult(
-                status=ToolStatus.ERROR,
-                message=f"Tool {self.name} timeout after {timeout}s",
-                error=asyncio.TimeoutError(f"Timeout after {timeout}s")
-            )
-
-
 class SyncTool(Tool):
     """Tool base para operações síncronas"""
 
