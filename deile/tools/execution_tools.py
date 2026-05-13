@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict
 
 from ..core.exceptions import ValidationError
+from ._shell_security import is_blocked
 from .base import SyncTool, ToolContext, ToolResult, ToolStatus
 
 logger = logging.getLogger(__name__)
@@ -93,23 +94,8 @@ class EnhancedExecutionTool(SyncTool):
             )
 
     def _is_command_safe(self, command: str) -> bool:
-        dangerous_patterns = [
-            r'rm\s+-rf\s+/',
-            r'del\s+/[fqs]\s+c:\\',
-            r'format\s+c:',
-            r'dd\s+if=.*of=/dev/',
-            r':\(\)\{\s*:\s*\|\s*:\s*&\s*\};:',  # Fork bomb pattern
-            r'sudo\s+rm\s+-rf',
-            r'chmod\s+777\s+/',
-            r'>\s*/dev/.*',
-            r'mkfs\.',
-            r'fdisk.*--delete',
-        ]
-        command_lower = command.lower()
-        for pattern in dangerous_patterns:
-            if re.search(pattern, command_lower):
-                return False
-        return True
+        """Reject commands matching any DANGEROUS pattern in `_shell_security`."""
+        return not is_blocked(command)
 
 
 class PythonExecutionTool(SyncTool):
