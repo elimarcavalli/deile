@@ -307,6 +307,26 @@ class _DeileCLI:
         except Exception:
             pass
 
+    def _rollback_history(self, baseline_len: int) -> None:
+        """Truncate the current session's ``conversation_history`` back to
+        ``baseline_len`` entries.
+
+        Called after a turn is cancelled (ESC, Ctrl+C) so any entries that
+        :meth:`DeileAgent.process_input_stream` appended — the user message
+        (added at the very start of the turn) and any partial assistant /
+        tool entries written before the cancellation — disappear.  Without
+        this rollback, the next turn sends two consecutive ``user`` entries
+        to the provider; DeepSeek/OpenAI/etc. then collapse them with ``/``
+        as a separator and the LLM echoes the cancelled message in its
+        reply (issue manifested as ``"o que eu pedi / o que acabei de
+        dizer?"``).
+        """
+        history = getattr(self.default_session, "conversation_history", None)
+        if history is None:
+            return
+        if len(history) > baseline_len:
+            del history[baseline_len:]
+
     def _check_session_switch(self) -> None:
         """If a command requested a session switch, apply it."""
         new_sid = self.default_session.context_data.pop(self._SWITCH_SESSION_KEY, None)
@@ -321,31 +341,49 @@ class _DeileCLI:
         else:
             self.ui.console.print(f"[yellow]Sessão {new_sid!r} não encontrada — mantendo atual.[/yellow]")
 
-    async def _stream_with_esc_cancel(self, event_stream):
+    async def _stream_with_esc_cancel(self, event_stream) -> bool:
         """Run display_streaming_turn, cancelling on ESC keypress.
+
+        Returns ``True`` if the stream was cancelled by ESC, ``False``
+        otherwise (clean completion, no-TTY fallback, or platform without
+        termios).  Callers use the return value to roll back any history
+        entries that ``process_input_stream`` added before the cancellation.
 
         Uses a daemon thread to watch for a plain ESC byte (0x1b without a
         following escape-sequence) while stdin is briefly set to cbreak mode.
         Falls back to the plain streaming call when stdin is not a TTY or when
         the platform is Windows (no termios).
+
+        IMPORTANT: this watcher *consumes bytes* from stdin (cbreak mode +
+        ``sys.stdin.read(1)``) — including arrow keys and ESC inside any
+        sub-prompt that opens during streaming.  Callers must NEVER invoke
+        this for paths that may open an interactive ``prompt_toolkit``
+        sub-prompt (slash commands like ``/rewind``, ``/resume``), or the
+        sub-prompt's input is silently eaten by this thread and the UI
+        appears frozen until Ctrl+C.  Use :meth:`UIManager.display_streaming_turn`
+        directly for those cases.
         """
         try:
             import select as _select
             import termios
             import tty
         except ImportError:
-            return await self.ui.display_streaming_turn(event_stream)
+            await self.ui.display_streaming_turn(event_stream)
+            return False
 
         if not sys.stdin.isatty():
-            return await self.ui.display_streaming_turn(event_stream)
+            await self.ui.display_streaming_turn(event_stream)
+            return False
 
         esc_event: asyncio.Event = asyncio.Event()
+        watcher_done = threading.Event()
         loop = asyncio.get_running_loop()
 
         try:
             saved = termios.tcgetattr(sys.stdin.fileno())
         except Exception:
-            return await self.ui.display_streaming_turn(event_stream)
+            await self.ui.display_streaming_turn(event_stream)
+            return False
 
         def _watch() -> None:
             try:
@@ -373,6 +411,7 @@ class _DeileCLI:
                     termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, saved)
                 except Exception:
                     pass
+                watcher_done.set()
 
         watcher = threading.Thread(target=_watch, daemon=True)
         watcher.start()
@@ -395,17 +434,23 @@ class _DeileCLI:
 
             if esc_event.is_set() and stream_task not in done:
                 self.ui.console.print("\n[yellow](ESC — request cancelada)[/yellow]")
-                return None
+                return True
 
             if stream_task in done and not stream_task.cancelled():
-                return stream_task.result()
+                stream_task.result()  # surface any exception
+                return False
         finally:
+            # Stop the watcher and wait briefly for it to release stdin to
+            # avoid a race where the next ``get_user_input`` runs while
+            # stdin is still in cbreak mode.
             esc_event.set()
+            if not watcher_done.is_set():
+                await asyncio.to_thread(watcher_done.wait, 0.3)
             try:
                 termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, saved)
             except Exception:
                 pass
-        return None
+        return False
 
     async def run_interactive(self) -> None:
         from rich.panel import Panel
@@ -439,24 +484,59 @@ class _DeileCLI:
                     break
 
                 streaming = getattr(self.settings, "streaming_enabled", True)
-                if streaming:
+                is_slash = user_input.startswith("/")
+
+                # Slash commands must NOT run on the streaming path:
+                #   1. The ESC-cancel watcher (cbreak + read(1)) eats escape
+                #      sequences from sub-prompts like /rewind's and /resume's
+                #      selectors, freezing them.
+                #   2. The streaming renderer's Rich ``Live`` region + 100ms
+                #      spinner task fights for cursor position with the
+                #      prompt_toolkit ``Application`` opened by the selector.
+                # Slash commands don't truly stream (the agent emits a single
+                # aggregated event at the end), so the non-streaming path is
+                # both safer and visually equivalent.
+                if streaming and not is_slash:
+                    # Snapshot history length BEFORE the agent appends the
+                    # user message (it does so as the first action of
+                    # ``process_input_stream``). On cancel — ESC or
+                    # KeyboardInterrupt — we truncate back to this length to
+                    # avoid leaving an orphan ``user`` entry that would
+                    # poison the next turn (provider would merge it with
+                    # the new user message, producing the "/" echo bug).
+                    baseline_len = len(self.default_session.conversation_history)
                     event_stream = self.agent.process_input_stream(
                         user_input=user_input,
                         session_id=self.default_session.session_id,
                     )
+                    cancelled = False
                     try:
-                        await self._stream_with_esc_cancel(event_stream)
+                        cancelled = await self._stream_with_esc_cancel(event_stream)
                     except KeyboardInterrupt:
                         self.ui.console.print("\n[yellow](turn interrupted)[/yellow]")
+                        cancelled = True
+                    if cancelled:
+                        self._rollback_history(baseline_len)
                     self._persist_session(user_input)
                     self._check_session_switch()
                     continue
 
-                with self.ui.show_loading("Processando sua solicitação..."):
+                # Slash commands run WITHOUT the loading spinner: Rich's
+                # ``Status`` uses an auto-refreshing ``Live`` thread that
+                # also conflicts with any sub-prompt the command may open
+                # (e.g. /rewind, /resume, /model use selectors). They are
+                # fast or open their own UI, so no spinner is needed.
+                if is_slash:
                     response = await self.agent.process_input(
                         user_input=user_input,
                         session_id=self.default_session.session_id,
                     )
+                else:
+                    with self.ui.show_loading("Processando sua solicitação..."):
+                        response = await self.agent.process_input(
+                            user_input=user_input,
+                            session_id=self.default_session.session_id,
+                        )
 
                 self._persist_session(user_input)
                 self._check_session_switch()
