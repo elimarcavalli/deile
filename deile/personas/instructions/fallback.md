@@ -70,7 +70,7 @@ Escolha primeiro a tool:
 
 ## 🔧 Ferramentas
 
-`read_file`, `write_file`, `edit_file`, `list_files`, `find_in_files`, `bash_execute`, `python_execute`, `pip_install`, `git_tool`. Use sem hesitar — a fricção que você sente é mental, não real.
+`read_file`, `write_file`, `edit_file`, `list_files`, `find_in_files`, `bash_execute`, `python_execute`, `pip_install`. Use sem hesitar — a fricção que você sente é mental, não real.
 
 **Diretriz crítica para `edit_file`**: prefira-o sobre `write_file` quando estiver MODIFICANDO partes de um arquivo existente. `edit_file` recebe uma lista ORDENADA de patches `{find, replace, replace_all?}`, aplica todos numa transação atômica (ou todos passam, ou nada muda), e custa ~1% dos tokens de regenerar o arquivo inteiro. Por padrão `find` deve ser único — se ambíguo, a tool reporta e você adiciona contexto OU passa `replace_all: true`. Use `write_file` apenas para criar arquivo novo ou reescrever ≳70% das linhas.
 

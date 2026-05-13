@@ -1,4 +1,4 @@
-"""Tests for exception logging in git_tool.py and execution_tools.py (issues #110, #114)."""
+"""Tests for exception logging in execution_tools.py (issue #114)."""
 
 from unittest.mock import MagicMock, patch
 
@@ -6,7 +6,6 @@ import pytest
 
 from deile.tools.base import ToolContext
 from deile.tools.execution_tools import EnhancedExecutionTool, PTYSession
-from deile.tools.git_tool import GitTool
 
 
 def _make_context(**kwargs):
@@ -14,79 +13,6 @@ def _make_context(**kwargs):
     ctx.parsed_args = kwargs
     ctx.working_directory = "/tmp"
     return ctx
-
-
-# ---------------------------------------------------------------------------
-# git_tool.py — remote fetch in _git_status
-# ---------------------------------------------------------------------------
-
-@pytest.mark.unit
-def test_git_status_remote_fetch_logs_warning():
-    mock_repo = MagicMock()
-    mock_repo.active_branch.name = "main"
-    mock_repo.head.commit.hexsha = "abcd1234"
-    mock_repo.index.diff.return_value = []
-    mock_repo.untracked_files = []
-    mock_origin = MagicMock()
-    mock_origin.fetch.side_effect = OSError("network unreachable")
-    mock_repo.remote.return_value = mock_origin
-
-    tool = GitTool()
-
-    with patch("deile.tools.git_tool.logger") as mock_logger:
-        result = tool._git_status(mock_repo)
-
-    assert result["success"] is True
-    mock_logger.warning.assert_called_once()
-    assert "network unreachable" in str(mock_logger.warning.call_args)
-    assert mock_logger.warning.call_args[1].get("exc_info") is True
-
-
-# ---------------------------------------------------------------------------
-# git_tool.py — file diff in _git_diff
-# ---------------------------------------------------------------------------
-
-@pytest.mark.unit
-def test_git_diff_file_logs_warning():
-    mock_repo = MagicMock()
-    mock_repo.git.diff.side_effect = OSError("path not found")
-
-    tool = GitTool()
-
-    with patch("deile.tools.git_tool.logger") as mock_logger:
-        result = tool._git_diff(mock_repo, {"files": ["missing_file.py"]})
-
-    assert result["success"] is True
-    assert "File not found or no diff" in result["output"]
-    mock_logger.warning.assert_called_once()
-    assert "path not found" in str(mock_logger.warning.call_args)
-    assert mock_logger.warning.call_args[1].get("exc_info") is True
-
-
-# ---------------------------------------------------------------------------
-# git_tool.py — remote fetch before push in _git_push
-# ---------------------------------------------------------------------------
-
-@pytest.mark.unit
-def test_git_push_precheck_logs_warning():
-    mock_repo = MagicMock()
-    mock_repo.active_branch.name = "feature"
-    mock_remote = MagicMock()
-    mock_remote.fetch.side_effect = OSError("connection refused")
-    push_info = MagicMock()
-    push_info.summary = "pushed ok"
-    mock_remote.push.return_value = [push_info]
-    mock_repo.remote.return_value = mock_remote
-
-    tool = GitTool()
-
-    with patch("deile.tools.git_tool.logger") as mock_logger:
-        result = tool._git_push(mock_repo, {"remote": "origin", "force": False, "dry_run": False})
-
-    assert result["success"] is True
-    mock_logger.warning.assert_called_once()
-    assert "connection refused" in str(mock_logger.warning.call_args)
-    assert mock_logger.warning.call_args[1].get("exc_info") is True
 
 
 # ---------------------------------------------------------------------------
