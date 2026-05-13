@@ -1537,18 +1537,24 @@ class DeileAgent:
                 })
                 return response
 
-            # Converte resultado do comando para AgentResponse
+            # Converte resultado do comando para AgentResponse. O metadata
+            # do CommandResult é mesclado primeiro para que flags como
+            # ``suppress_response_display`` (escritas por /clear, /resume)
+            # cheguem ao loop da CLI; chaves fixas do agente sobrescrevem
+            # caso colidam.
+            merged_meta: Dict[str, Any] = dict(command_result.metadata or {})
+            merged_meta.update({
+                "command_executed": command_name,
+                "command_status": command_result.status.value,
+                "is_slash_command": True,
+            })
             response = AgentResponse(
                 content=command_result.content or f"Command /{command_name} executed",
                 status=AgentStatus.IDLE,
                 tool_results=[],
                 parse_result=None,
                 execution_time=time.time() - start_time,
-                metadata={
-                    "command_executed": command_name,
-                    "command_status": command_result.status.value,
-                    "is_slash_command": True
-                }
+                metadata=merged_meta,
             )
 
             # Adiciona resposta ao histórico

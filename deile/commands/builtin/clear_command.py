@@ -1,41 +1,48 @@
 """Clear Command for DEILE"""
 
 import logging
+import time
+import uuid
 
 from rich.panel import Panel
 from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._session_store import SessionHistoryStore
 from ._shared import split_args, wrap_command_errors
 
 logger = logging.getLogger(__name__)
 
+# Sentinel keys mirrored from ``deile.cli._DeileCLI`` — duplicated here to
+# avoid importing the CLI module from a command. Keep in sync.
+_SWITCH_SESSION_KEY = "_switch_session"
+_POST_SWITCH_ACTION_KEY = "_post_switch_action"
+
 
 class ClearCommand(DirectCommand):
-    """Clear conversation history and optionally reset entire session"""
+    """Start a fresh conversation (and screen) while preserving the prior one."""
 
     cli_flag = "--clear"
-    cli_help = "Clear conversation history and screen state."
+    cli_help = "Start a new conversation, archive the current one, redraw the welcome screen."
     cli_requires_provider = False
 
     def __init__(self):
         from ...config.manager import CommandConfig
         config = CommandConfig(
             name="clear",
-            description="Clear conversation history and screen. Use 'clear reset' for complete session reset.",
+            description="Inicia uma nova conversa, arquivando a atual (para /resume) e redesenhando a tela.",
             aliases=["cls"],
         )
         super().__init__(config)
-    
+
     @wrap_command_errors("clear")
     async def execute(self, context: CommandContext) -> CommandResult:
         """Execute clear command with enhanced reset functionality"""
         parts = split_args(context)
 
         if not parts:
-            # Standard clear - just clear screen and history
-            return await self._clear_standard(context)
+            return await self._start_fresh_conversation(context)
 
         command = parts[0].lower()
 
@@ -49,32 +56,58 @@ class ClearCommand(DirectCommand):
             return await self._clear_screen_only(context)
         else:
             raise CommandError(f"Unknown clear option: {command}. Use: cls, cls reset, cls history, cls screen")
-    
-    async def _clear_standard(self, context: CommandContext) -> CommandResult:
-        """Standard clear - conversation history and screen"""
-        
+
+    async def _start_fresh_conversation(self, context: CommandContext) -> CommandResult:
+        """Archive the current conversation and switch to a brand-new session.
+
+        Mirrors the lifecycle that /fork and /rewind use (write
+        ``_switch_session`` + ``_post_switch_action`` into the current
+        session's ``context_data``), but creates an empty session and asks
+        the CLI to redraw the welcome banner afterwards. Provider/persona/
+        model config is owned by the agent, not the session — so it is
+        preserved automatically.
+
+        One-shot ``deile --clear`` runs without an interactive agent or
+        session; in that path we degrade to the legacy screen-clear so the
+        flag still exits 0.
+        """
+        agent = getattr(context, "agent", None)
+        session = getattr(context, "session", None)
+        if agent is None or session is None:
+            return await self._clear_screen_only(context)
+
+        # 1. Persist the soon-to-be-replaced conversation so /resume can find it.
+        history = list(getattr(session, "conversation_history", []) or [])
+        if history:
+            try:
+                name = session.context_data.get("conversation_name", "")
+                SessionHistoryStore().save(session.session_id, history, name)
+            except Exception as exc:
+                logger.warning("Could not archive session before /clear: %s", exc)
+
+        # 2. Spawn an empty session — agent.create_session normalizes the
+        #    working_directory and registers it in agent._sessions so the
+        #    CLI's get_session() finds it after the switch.
+        new_sid = f"clear-{int(time.time())}-{uuid.uuid4().hex[:8]}"
         try:
-            # Clear screen if UI manager available
-            if hasattr(context, 'ui_manager') and context.ui_manager:
-                context.ui_manager.clear_screen()
-            
-            # Clear conversation history if agent available
-            if hasattr(context, 'agent') and context.agent:
-                context.agent.clear_conversation_history()
-                
-            success_message = "✅ Conversation history and screen cleared.\n\nSession state and memory preserved."
-            
-            return CommandResult.success_result(
-                Panel(
-                    Text(success_message, style="green"),
-                    title="🧹 Screen Cleared",
-                    border_style="green"
-                ),
-                "rich"
+            agent.create_session(
+                session_id=new_sid,
+                working_directory=session.working_directory,
             )
-            
-        except Exception as e:
-            raise CommandError(f"Failed to clear screen and history: {str(e)}")
+        except Exception as exc:
+            raise CommandError(f"Não foi possível criar nova sessão: {exc}")
+
+        # 3. Hand the switch + redraw request to the CLI via the sentinels.
+        session.context_data[_SWITCH_SESSION_KEY] = new_sid
+        session.context_data[_POST_SWITCH_ACTION_KEY] = "welcome"
+
+        return CommandResult.success_result(
+            "",
+            "text",
+            suppress_response_display=True,
+            new_session_id=new_sid,
+            archived_session_id=session.session_id,
+        )
     
     async def _clear_reset(self, context: CommandContext, force: bool = False) -> CommandResult:
         """Complete session reset - SOLVES SITUAÇÃO 7
@@ -278,37 +311,27 @@ class ClearCommand(DirectCommand):
     
     def get_help(self) -> str:
         """Get detailed help for clear command"""
-        return """Clear conversation history and screen
+        return """Inicia uma nova conversa e redesenha a tela inicial.
 
-Usage:
-  /cls                  Clear conversation history and screen  
-  /cls reset            Complete session reset (recommended)
+Uso:
+  /cls                  Arquiva a conversa atual e começa uma nova (default)
+  /cls reset            Reset profundo (state + plans + approvals + temp)
+  /cls history          Apenas limpa o histórico da sessão atual
+  /cls screen           Apenas limpa a tela
 
-Clear Options:
-  • /cls         - Clear conversation history and screen only
-  • /cls reset   - Complete session reset including:
-                   • Conversation history
-                   • Context data and memory
-                   • Token counters and costs
-                   • Active plans and orchestration
-                   • Audit logs buffer
-                   • Screen display
+Default (/cls sem argumentos):
+  1. Salva a conversa atual em ~/.deile/sessions/ (visível em /resume)
+  2. Cria uma sessão nova e vazia, com o mesmo working directory
+  3. Redesenha o banner inicial (mesmo da entrada do DEILE)
+  4. Modelo, persona e configs ficam preservados — eles são do agente,
+     não da sessão
 
-When to Use:
-  • /cls         - Quick cleanup for continuing work
-  • /cls reset   - Fresh start, troubleshooting, or context overflow
+Subcomandos avançados (mantidos por compatibilidade):
+  • /cls reset   - Limpa plans, approvals, temp; usa o session id atual
+  • /cls history - Só limpa conversation_history (sem trocar sessão)
+  • /cls screen  - Só limpa a tela
 
-Examples:
-  /cls                  Quick clear
-  /cls reset            Complete fresh start
-
-Effects:
-  • Clear: Maintains session state, clears history/screen
-  • Reset: Complete fresh session, all data cleared
-
-Related Commands:
-  • /context - View current context before clearing
-  • /export - Backup data before reset
-  • /status - Check session state
-
-Note: Reset operation cannot be undone. Use /export first if you need to preserve any data."""
+Comandos relacionados:
+  • /resume - Recarrega uma conversa arquivada (mantém o id original)
+  • /rewind - Cria um fork a partir de um ponto do histórico
+  • /export - Backup explícito antes de qualquer reset"""

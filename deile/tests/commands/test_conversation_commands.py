@@ -444,8 +444,11 @@ class TestResumeCommand:
 
         assert result.success
         new_sid = ctx.session.context_data.get("_switch_session")
-        assert new_sid is not None
-        assert new_sid.startswith("resume-")
+        # /resume reuses the stored conversation's session_id (not a fork);
+        # value matches what the selector mock returned ("old-1").
+        assert new_sid == "old-1"
+        assert ctx.session.context_data.get("_post_switch_action") == "replay"
+        assert (result.metadata or {}).get("suppress_response_display") is True
 
         new_sess = ctx.agent.get_session(new_sid)
         assert len(new_sess.conversation_history) == 4

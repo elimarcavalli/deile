@@ -287,6 +287,11 @@ class _DeileCLI:
     # Context-data key written by /fork, /rewind, /resume to request a session
     # switch without tight-coupling between the command and the CLI class.
     _SWITCH_SESSION_KEY = "_switch_session"
+    # Context-data key written alongside the switch key to request additional
+    # UI work after the swap. ``"welcome"`` re-renders the entry banner (used
+    # by /clear); ``"replay"`` clears the screen and re-renders every turn of
+    # the loaded conversation (used by /resume).
+    _POST_SWITCH_ACTION_KEY = "_post_switch_action"
 
     def _persist_session(self, user_input: str) -> None:
         """Write current session history to disk so /resume can find it.
@@ -322,17 +327,52 @@ class _DeileCLI:
 
     def _check_session_switch(self) -> None:
         """If a command requested a session switch, apply it."""
-        new_sid = self.default_session.context_data.pop(self._SWITCH_SESSION_KEY, None)
+        ctx = self.default_session.context_data
+        new_sid = ctx.pop(self._SWITCH_SESSION_KEY, None)
+        action = ctx.pop(self._POST_SWITCH_ACTION_KEY, None)
         if not new_sid:
             return
         new_session = self.agent.get_session(new_sid)
-        if new_session is not None:
-            self.default_session = new_session
-            name = new_session.context_data.get("conversation_name", "")
-            label = f'"{name}"' if name else new_sid
-            self.ui.console.print(f"\n[dim cyan]› Sessão alternada para {label}[/dim cyan]")
-        else:
+        if new_session is None:
             self.ui.console.print(f"[yellow]Sessão {new_sid!r} não encontrada — mantendo atual.[/yellow]")
+            return
+        self.default_session = new_session
+
+        if action == "welcome":
+            self.ui.show_welcome()
+            return
+        if action == "replay":
+            self._replay_history(list(new_session.conversation_history or []))
+            return
+
+        name = new_session.context_data.get("conversation_name", "")
+        label = f'"{name}"' if name else new_sid
+        self.ui.console.print(f"\n[dim cyan]› Sessão alternada para {label}[/dim cyan]")
+
+    def _replay_history(self, history: list) -> None:
+        """Re-render a loaded conversation as if it had just happened.
+
+        Re-uses :meth:`UIManager.show_welcome` (which clears the screen) so the
+        replay always starts from a fresh canvas, then iterates the stored
+        ``conversation_history`` rendering each ``user`` entry with the same
+        prompt prefix the live loop uses (``\\n > <text>``) and each
+        ``assistant`` entry through :meth:`display_response` (which prints the
+        ``Deile >`` header). Non-string contents are normalized via
+        ``_normalize_history_content`` to handle any Rich renderable that
+        slipped through.
+        """
+        from .core.agent import _normalize_history_content
+        self.ui.show_welcome()
+        for entry in history:
+            role = entry.get("role")
+            raw = entry.get("content")
+            text = _normalize_history_content(raw)
+            if not text:
+                continue
+            if role == "user":
+                self.ui.console.print(f"\n > {text}")
+            elif role == "assistant":
+                self.ui.display_response(text, metadata=None)
 
     async def _stream_with_esc_cancel(self, event_stream) -> bool:
         """Run display_streaming_turn, cancelling on ESC keypress.
@@ -535,7 +575,12 @@ class _DeileCLI:
                 self._check_session_switch()
 
                 meta = response.metadata or {}
-                if meta.get("budget_exceeded"):
+                if meta.get("suppress_response_display"):
+                    # Commands like /clear and /resume render their own UI via
+                    # the post-switch action and would only flash a redundant
+                    # "Command /xxx executed" below the new welcome/replay.
+                    pass
+                elif meta.get("budget_exceeded"):
                     self.ui.console.print(Panel(
                         Text(f"{response.content}", style="yellow"),
                         title="[bold red]Budget Limit Reached[/bold red]",

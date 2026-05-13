@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from datetime import datetime
 
 from rich.panel import Panel
@@ -16,6 +15,7 @@ from ._session_store import SessionHistoryStore
 from ._shared import wrap_command_errors
 
 _SENTINEL = "_switch_session"
+_POST_SWITCH = "_post_switch_action"
 _MAX_LABEL = 72
 
 
@@ -141,35 +141,39 @@ class ResumeCommand(DirectCommand):
             return CommandResult.error_result(f"Conversa {target_sid!r} não encontrada em disco.")
 
         history = stored.get("history", [])
-        new_sid = f"resume-{int(time.time())}-{target_sid[-8:]}"
-        try:
-            new_session = agent.create_session(
-                session_id=new_sid,
-                working_directory=session.working_directory,
-            )
-        except Exception as exc:
-            return CommandResult.error_result(f"Não foi possível criar sessão: {exc}")
 
-        new_session.conversation_history = [dict(e) for e in history]
+        # /resume retoma a MESMA sessão (mesmo session_id) — diferente de
+        # /rewind, que cria um fork. Se o agent já tem a sessão em memória
+        # (mesmo processo, mesma execução), reutilizamos; caso contrário,
+        # registramos uma nova entrada com o mesmo id em ``agent._sessions``.
+        target_session = agent.get_session(target_sid)
+        if target_session is None:
+            try:
+                target_session = agent.create_session(
+                    session_id=target_sid,
+                    working_directory=session.working_directory,
+                )
+            except Exception as exc:
+                return CommandResult.error_result(
+                    f"Não foi possível registrar a sessão {target_sid!r}: {exc}"
+                )
+
+        target_session.conversation_history = [dict(e) for e in history]
 
         name = (
             name_store.get(target_sid)
             or stored.get("conversation_name", "")
         )
         if name:
-            new_session.context_data["conversation_name"] = name
+            target_session.context_data["conversation_name"] = name
 
-        session.context_data[_SENTINEL] = new_sid
+        session.context_data[_SENTINEL] = target_sid
+        session.context_data[_POST_SWITCH] = "replay"
 
-        label = name or _truncate(history[-1].get("content", "")) if history else target_sid
-        return CommandResult(
-            success=True,
-            content=Panel(
-                Text.from_markup(
-                    f"Conversa [bold cyan]{label}[/bold cyan] carregada.\n"
-                    f"[dim]{len(history)} mensagem(ns) · ID: {new_sid}[/dim]"
-                ),
-                title="[bold green]Resume — conversa carregada[/bold green]",
-                border_style="green",
-            ),
+        return CommandResult.success_result(
+            "",
+            "text",
+            suppress_response_display=True,
+            resumed_session_id=target_sid,
+            message_count=len(history),
         )
