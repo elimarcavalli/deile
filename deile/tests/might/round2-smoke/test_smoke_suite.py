@@ -31,7 +31,7 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(PROJECT_ROOT / ".env")
 
 from deile.config.manager import ConfigManager  # noqa: E402
-from deile.core.agent import DeileAgent  # noqa: E402
+from deile.core.agent import DeileAgent, _normalize_history_content  # noqa: E402
 from deile.core.models.bootstrap import bootstrap_providers  # noqa: E402
 from deile.core.models.router import get_model_router  # noqa: E402
 
@@ -51,25 +51,6 @@ class TestResult:
     error: Optional[str] = None
 
 
-def _content_to_text(content: Any) -> str:
-    """Render qualquer ``response.content`` (string ou objeto Rich) para texto.
-
-    Slash commands tipo ``/help`` devolvem ``Panel``/``Table``/``Group``;
-    fatiar com ``[:N]`` quebra com ``TypeError`` se não normalizar antes.
-    """
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if hasattr(content, "__rich__") or hasattr(content, "__rich_console__"):
-        from io import StringIO
-        from rich.console import Console
-        buf = StringIO()
-        Console(file=buf, force_terminal=False, no_color=True, width=160).print(content)
-        return buf.getvalue()
-    return str(content)
-
-
 async def _run_turn(agent: DeileAgent, session_id: str, user_input: str) -> Dict[str, Any]:
     """Run one turn and return response + tool calls used."""
     start = time.time()
@@ -81,7 +62,7 @@ async def _run_turn(agent: DeileAgent, session_id: str, user_input: str) -> Dict
         duration = time.time() - start
         return {
             "status": "ok",
-            "content": _content_to_text(response.content),
+            "content": _normalize_history_content(response.content),
             "tool_calls": [
                 t.tool_name if hasattr(t, "tool_name") else str(t)
                 for t in (response.tool_results or [])
@@ -166,12 +147,15 @@ async def t_b1_read_file_tool(agent: DeileAgent) -> TestResult:
     r.response_preview = (turn["content"] or "")[:120]
     r.tool_calls = turn.get("tool_calls", [])
     read_called = any("read" in tc.lower() for tc in r.tool_calls)
-    if read_called and any(c.isdigit() for c in (turn["content"] or "")):
+    import re as _re
+    has_version = bool(_re.search(r"\d+\.\d+\.\d+", turn["content"] or ""))
+    if read_called and has_version:
         r.status = "pass"
     else:
         if not read_called:
             r.notes.append("read_file nao foi invocado")
-        r.notes.append("resposta nao contem numero de versao")
+        if not has_version:
+            r.notes.append("resposta nao contem versao X.Y.Z")
     return r
 
 
@@ -191,11 +175,14 @@ async def t_d1_bash_tool(agent: DeileAgent) -> TestResult:
     r.response_preview = (turn["content"] or "")[:120]
     r.tool_calls = turn.get("tool_calls", [])
     bash_called = any("bash" in tc.lower() or "execute" in tc.lower() for tc in r.tool_calls)
-    if bash_called and "deile" in (turn["content"] or "").lower():
+    expected_dir = PROJECT_ROOT.name
+    if bash_called and expected_dir in (turn["content"] or ""):
         r.status = "pass"
     else:
         if not bash_called:
             r.notes.append("bash tool nao foi invocado")
+        if expected_dir not in (turn["content"] or ""):
+            r.notes.append(f"resposta nao contem nome do projeto ({expected_dir!r})")
     return r
 
 

@@ -308,18 +308,11 @@ class _DeileCLI:
             pass
 
     def _rollback_history(self, baseline_len: int) -> None:
-        """Truncate the current session's ``conversation_history`` back to
-        ``baseline_len`` entries.
+        """Trim ``conversation_history`` back to ``baseline_len``.
 
-        Called after a turn is cancelled (ESC, Ctrl+C) so any entries that
-        :meth:`DeileAgent.process_input_stream` appended — the user message
-        (added at the very start of the turn) and any partial assistant /
-        tool entries written before the cancellation — disappear.  Without
-        this rollback, the next turn sends two consecutive ``user`` entries
-        to the provider; DeepSeek/OpenAI/etc. then collapse them with ``/``
-        as a separator and the LLM echoes the cancelled message in its
-        reply (issue manifested as ``"o que eu pedi / o que acabei de
-        dizer?"``).
+        Required after ESC/Ctrl+C: providers (DeepSeek, OpenAI) collapse two
+        consecutive ``user`` turns with ``/`` as a separator, so leaving an
+        orphan user entry poisons the next reply.
         """
         history = getattr(self.default_session, "conversation_history", None)
         if history is None:

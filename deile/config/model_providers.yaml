@@ -65,12 +65,9 @@ models:
     capabilities: [function_calling, streaming, caching]
 
   # === OPENAI ===
-  # NOTA: ``gpt-5.3-codex`` está disponível apenas no endpoint
-  # ``/v1/completions`` (legacy completions), não em ``/v1/chat/completions``
-  # — a única superfície que o ``openai_provider`` chama. Mantê-lo aqui
-  # produzia ``404 invalid_request_error`` em qualquer roteamento (probe
-  # de Round 2). Reintroduzir quando o OpenAI Provider suportar a API
-  # de completions, ou quando o modelo migrar para chat completions.
+  # NOTA: ``gpt-5.3-codex`` é completions-only (``/v1/completions``);
+  # o ``OpenAIModelProvider`` só chama ``/v1/chat/completions``. Reintroduzir
+  # quando o provider suportar completions ou o modelo migrar para chat.
 
   - provider_id: openai
     model_id: gpt-5.4

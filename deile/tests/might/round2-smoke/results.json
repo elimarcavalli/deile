@@ -5,7 +5,7 @@
       "test_id": "A1",
       "name": "simple Q&A",
       "status": "pass",
-      "duration_s": 1.7567040920257568,
+      "duration_s": 1.5565531253814697,
       "response_preview": "ok",
       "tool_calls": [],
       "notes": [],
@@ -15,8 +15,8 @@
       "test_id": "A2",
       "name": "multi-turn context",
       "status": "pass",
-      "duration_s": 4.3938562870025635,
-      "response_preview": "T1: Xandao! \u2705 Prazer em conhec\u00ea-lo. Como posso ajudar? | T2: O nome que voc\u00ea me disse foi **Xandao**. \ud83d\ude04",
+      "duration_s": 5.287179231643677,
+      "response_preview": "T1: Xand\u00e3o! (ou Xandao, sem acento \u2014 como preferir.) Prazer! \ud83d\udd96 | T2: Voc\u00ea disse que seu nome \u00e9 **Xandao** (ou Xand\u00e3o). Foi no seu",
       "tool_calls": [],
       "notes": [],
       "error": null
@@ -25,7 +25,7 @@
       "test_id": "B1",
       "name": "read_file tool",
       "status": "pass",
-      "duration_s": 3.81253981590271,
+      "duration_s": 4.1351706981658936,
       "response_preview": "O valor da vari\u00e1vel `__version__` \u00e9 **`\"5.1.0\"`**.",
       "tool_calls": [
         "[success] Read 3064 characters (112 lines) from:\n  file_path: /Users/elimar.cavalli/dev/github/elimarcavalli/deile/deile/__version__.py\n  project_relative: deile/__version__.py"
@@ -37,8 +37,8 @@
       "test_id": "D1",
       "name": "bash tool (pwd)",
       "status": "pass",
-      "duration_s": 3.6869990825653076,
-      "response_preview": "O path resultante do comando `pwd` \u00e9:\n\n```\n/Users/elimar.cavalli/dev/github/elimarcavalli/deile\n```",
+      "duration_s": 3.7271156311035156,
+      "response_preview": "`/Users/elimar.cavalli/dev/github/elimarcavalli/deile`",
       "tool_calls": [
         "[success] Command executed successfully (exit code: 0)"
       ],
@@ -49,12 +49,10 @@
       "test_id": "E1",
       "name": "grep/search tool",
       "status": "pass",
-      "duration_s": 41.808777809143066,
-      "response_preview": "Hmm, todos os matches foram `DeileAgentMetaProvider`, n\u00e3o `DeileAgent` puro. Vou refinar a busca para uma classe chamada **exatamente** `DeileAgent`:O regex n\u00e3o casou por conta do escaping. Vou buscar",
+      "duration_s": 22.706604957580566,
+      "response_preview": "A busca encontrou **4 ocorr\u00eancias** da string `class DeileAgent`, todas se referindo \u00e0 classe **`DeileAgentMetaProvider`** no mesmo arquivo:\n\n\ud83d\udcc4 **`deilebot/deilebot/foundation/agent_meta.py`** \u2014 linha",
       "tool_calls": [
-        "[success] Search completed: 4 matches in 1000 files",
-        "[success] Search completed: 0 matches in 1000 files",
-        "[success] Command executed successfully (exit code: 0)"
+        "[success] Search completed: 4 matches in 1000 files"
       ],
       "notes": [],
       "error": null
@@ -63,8 +61,8 @@
       "test_id": "F1",
       "name": "/help command",
       "status": "pass",
-      "duration_s": 0.013829946517944336,
-      "response_preview": "\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 DEILE Commands \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502                     \ud83d\udcda DEILE Commands ",
+      "duration_s": 0.012050867080688477,
+      "response_preview": "\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 DEILE Commands \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n\u2502                     \ud83d\udcda DEILE Commands (Main Names Only)                       ",
       "tool_calls": [],
       "notes": [
         "listou 5/5 comandos esperados: ['help', 'history', 'fork', 'rewind', 'model']"
@@ -75,8 +73,8 @@
       "test_id": "F2",
       "name": "/history command",
       "status": "pass",
-      "duration_s": 25.879419088363647,
-      "response_preview": "O comando `/history` **n\u00e3o \u00e9 um comando slash registrado** no DEILE. Os comandos builtin dispon\u00edveis s\u00e3o:\n\n| Comando | Descri\u00e7\u00e3o |\n|---|---|\n| `/help` | Ajuda e lista de comandos |\n| `/clear` | Limpar",
+      "duration_s": 25.77887988090515,
+      "response_preview": "Vou procurar se existe um comando `/history` no DEILE e o que ele faz.Deixe-me verificar se h\u00e1 um comando `/history` registrado no DEILE.N\u00e3o existe um comando `/history` registrado no DEILE. Os comand",
       "tool_calls": [],
       "notes": [],
       "error": null
@@ -85,7 +83,7 @@
       "test_id": "I1",
       "name": "default persona loaded",
       "status": "pass",
-      "duration_s": 2.574920654296875e-05,
+      "duration_s": 6.4849853515625e-05,
       "response_preview": "persona: Developer",
       "tool_calls": [],
       "notes": [],
