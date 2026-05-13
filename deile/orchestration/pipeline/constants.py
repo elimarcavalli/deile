@@ -24,6 +24,18 @@ PIPELINE_STOP_TIMEOUT_SECONDS: int = 5
 #: Default ``owner/name`` when ``pipeline.repo`` is not set.
 PIPELINE_DEFAULT_REPO: str = "elimarcavalli/deile"
 
+
+def resolve_pipeline_repo() -> str:
+    """Return the active ``owner/name`` for the pipeline repository.
+
+    Reads ``pipeline_repo`` from `Settings` (which itself layers
+    ``~/.deile/settings.json`` over project settings); falls back to
+    `PIPELINE_DEFAULT_REPO`. Single source of truth for both the
+    pipeline tool and the slash command — they used to inline the same
+    expression independently.
+    """
+    return get_settings().pipeline_repo or PIPELINE_DEFAULT_REPO
+
 # ── Prompt / message truncation ───────────────────────────────────────────
 #: Max chars of issue body sent to the implement prompt.
 ISSUE_BODY_MAX_CHARS: int = 6000

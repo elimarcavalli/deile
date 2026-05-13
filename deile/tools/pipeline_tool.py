@@ -14,18 +14,12 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from deile.orchestration.pipeline.constants import PIPELINE_DEFAULT_REPO
+from deile.orchestration.pipeline.constants import resolve_pipeline_repo
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
 from deile.tools._pipeline_paths import resolve_base_path as _resolve_base_path
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
-
-
-def _resolve_repo() -> str:
-    from deile.config.settings import get_settings
-
-    return get_settings().pipeline_repo or PIPELINE_DEFAULT_REPO
 
 
 class PipelineTool(Tool):
@@ -147,7 +141,7 @@ class PipelineTool(Tool):
             make_review_callback
 
         cfg = PipelineConfig(
-            repo=_resolve_repo(),
+            repo=resolve_pipeline_repo(),
             base_repo_path=_resolve_base_path(),
             notify_user_id=get_settings().pipeline_notify_user_id,
         )

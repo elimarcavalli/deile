@@ -27,7 +27,7 @@ from typing import Optional
 
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
 from deile.config.manager import CommandConfig
-from deile.orchestration.pipeline.constants import PIPELINE_DEFAULT_REPO
+from deile.orchestration.pipeline.constants import resolve_pipeline_repo
 from deile.orchestration.pipeline.labels import BATCH_LABEL_PREFIX
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
@@ -53,10 +53,6 @@ def _parse_start_flags(raw: str):
     return ns
 
 
-def _resolve_repo() -> str:
-    from deile.config.settings import get_settings
-
-    return get_settings().pipeline_repo or PIPELINE_DEFAULT_REPO
 
 
 class PipelineCommand(DirectCommand):
@@ -114,7 +110,7 @@ class PipelineCommand(DirectCommand):
                 make_review_callback
 
             cfg = PipelineConfig(
-                repo=_resolve_repo(),
+                repo=resolve_pipeline_repo(),
                 base_repo_path=_resolve_base_path(),
                 notify_user_id=get_settings().pipeline_notify_user_id,
             )
@@ -148,7 +144,7 @@ class PipelineCommand(DirectCommand):
                     ScheduleStore
 
                 cfg = PipelineConfig(
-                    repo=_resolve_repo(),
+                    repo=resolve_pipeline_repo(),
                     base_repo_path=_resolve_base_path(),
                     notify_user_id=get_settings().pipeline_notify_user_id,
                     use_pid_lock=not flags.no_pid_lock,

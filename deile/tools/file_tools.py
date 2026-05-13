@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..core.exceptions import ValidationError
+# `LocalFileAccessViolation`, `_post_write_validation_hint`, and
+# `_validate_path_within_working_directory` are re-exported for existing
+# test imports (`from deile.tools.file_tools import ...`); they have no
+# direct caller in this module — see `__all__` below.
 from ._path_resolution import (LocalFileAccessViolation, ResolvedPath,
                                _apply_post_write_hint,
                                _looks_like_outside_project,
@@ -16,6 +20,22 @@ from ._path_resolution import (LocalFileAccessViolation, ResolvedPath,
 from .base import SyncTool, ToolContext, ToolResult, ToolStatus
 
 logger = logging.getLogger(__name__)
+
+__all__ = [
+    # Tool classes.
+    "ReadFileTool",
+    "WriteFileTool",
+    "EditFileTool",
+    "ListFilesTool",
+    "DeleteFileTool",
+    # Re-exports from `_path_resolution` (kept stable for tests/callers).
+    "LocalFileAccessViolation",
+    "ResolvedPath",
+    "_looks_like_outside_project",
+    "_post_write_validation_hint",
+    "_resolve_project_path",
+    "_validate_path_within_working_directory",
+]
 
 
 # Filler tokens (articles, pronouns) that may appear between a verb and the
