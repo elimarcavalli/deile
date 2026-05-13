@@ -277,8 +277,30 @@ class ConsoleUIManager(UIManager):
         "google": "Gemini",
     }
 
-    def _resolve_provider_model(self) -> tuple[str, str]:
-        """Lê provider/modelo correntes a partir do config_manager."""
+    def _resolve_provider_model(self, session: Any = None) -> tuple[str, str]:
+        """Provider/modelo corrente.
+
+        Ordem de precedência:
+          1. ``session.context_data["forced_model"]`` — modelo escolhido
+             explicitamente nesta sessão via ``/model use ...`` ou ``/model select``.
+          2. ``config_manager.get_config().default_model`` — default da config.
+          3. ``Auto / routing (<strategy>)`` — fallback quando não há default.
+        """
+        forced = None
+        if session is not None:
+            try:
+                ctx = getattr(session, "context_data", None) or {}
+                forced = ctx.get("forced_model")
+            except Exception:
+                forced = None
+
+        if forced and ":" in forced:
+            provider_id, model_id = forced.split(":", 1)
+            label = self._PROVIDER_LABELS.get(provider_id.lower(), provider_id)
+            return label, model_id
+        if forced:
+            return "—", forced
+
         try:
             if self.config_manager:
                 cfg = self.config_manager.get_config()
@@ -300,11 +322,16 @@ class ConsoleUIManager(UIManager):
             pass
         return "—", "—"
 
-    def show_welcome(self):
-        """Mostra a tela de boas-vindas formatada."""
+    def show_welcome(self, session: Any = None):
+        """Mostra a tela de boas-vindas formatada.
+
+        ``session`` opcional permite refletir o modelo atualmente selecionado
+        via ``/model use`` (armazenado em ``context_data["forced_model"]``)
+        em vez de sempre exibir o default da config.
+        """
         self.console.clear()
 
-        provider_label, model_label = self._resolve_provider_model()
+        provider_label, model_label = self._resolve_provider_model(session)
         slogan_random = random.choice(self._SLOGAN_POOL)
 
         try:

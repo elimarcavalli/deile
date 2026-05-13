@@ -339,7 +339,7 @@ class _DeileCLI:
         self.default_session = new_session
 
         if action == "welcome":
-            self.ui.show_welcome()
+            self.ui.show_welcome(self.default_session)
             return
         if action == "replay":
             self._replay_history(list(new_session.conversation_history or []))
@@ -362,7 +362,7 @@ class _DeileCLI:
         slipped through.
         """
         from .core.agent import _normalize_history_content
-        self.ui.show_welcome()
+        self.ui.show_welcome(self.default_session)
         for entry in history:
             role = entry.get("role")
             raw = entry.get("content")
@@ -494,7 +494,7 @@ class _DeileCLI:
         if not await self.initialize():
             return
 
-        self.ui.show_welcome()
+        self.ui.show_welcome(self.default_session)
 
         try:
             while True:

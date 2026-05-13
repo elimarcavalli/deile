@@ -123,9 +123,12 @@ class UIManager(ABC):
         """Initialize the UI components"""
         pass
     
-    @abstractmethod 
-    def show_welcome(self) -> None:
-        """Display welcome screen"""
+    @abstractmethod
+    def show_welcome(self, session: Any = None) -> None:
+        """Display welcome screen.
+
+        ``session`` opcional para refletir o modelo corrente da sessão (ex.: definido via /model use).
+        """
         pass
     
     @abstractmethod

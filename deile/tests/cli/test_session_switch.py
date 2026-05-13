@@ -61,7 +61,7 @@ class TestCheckSessionSwitch:
         cli = _make_cli(current, target_session=target)
         cli._check_session_switch()
         assert cli.default_session is target
-        cli.ui.show_welcome.assert_called_once_with()
+        cli.ui.show_welcome.assert_called_once()
 
     def test_replay_action_invokes_replay(self):
         target = _make_session(
@@ -81,7 +81,7 @@ class TestCheckSessionSwitch:
         cli._check_session_switch()
         assert cli.default_session is target
         # Replay redraws via show_welcome + display_response.
-        cli.ui.show_welcome.assert_called_once_with()
+        cli.ui.show_welcome.assert_called_once()
         cli.ui.display_response.assert_called_once()
 
     def test_default_action_prints_dim_swap_line(self):
@@ -126,7 +126,7 @@ class TestReplayHistory:
             {"role": "assistant", "content": "resp 2", "timestamp": 2.1},
         ]
         cli._replay_history(history)
-        cli.ui.show_welcome.assert_called_once_with()
+        cli.ui.show_welcome.assert_called_once()
         # Two assistant entries → two display_response calls.
         assert cli.ui.display_response.call_count == 2
         # Two user entries → two console.print calls with the "> " prefix.
@@ -173,5 +173,5 @@ class TestReplayHistory:
         sess = _make_session()
         cli = _make_cli(sess)
         cli._replay_history([])
-        cli.ui.show_welcome.assert_called_once_with()
+        cli.ui.show_welcome.assert_called_once()
         cli.ui.display_response.assert_not_called()
