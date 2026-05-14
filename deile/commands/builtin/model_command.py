@@ -78,6 +78,7 @@ Model Command — Multi-Provider Management
 USAGE:
     /model [list]                        List all models with pricing
     /model select                        Pick a model interactively (↑↓ Enter, ESC, type to filter)
+    /model select <provider>:<model_id>  Switch model directly (no picker — same effect as `/model use`)
     /model current                       Show active model + tier + cascade
     /model use <provider>:<model_id>     Force a specific model for this session
     /model use auto                      Return to automatic tier routing
@@ -88,6 +89,7 @@ USAGE:
 EXAMPLES:
     /model list
     /model select
+    /model select openai:gpt-5.4-mini
     /model use anthropic:claude-opus-4-7
     /model strategy cost_optimized
     /model cost
@@ -101,6 +103,12 @@ EXAMPLES:
             if action in ("list", ""):
                 return await self._list(context)
             if action in ("select", "pick"):
+                # If a positional argument follows (e.g. ``/model select openai:gpt-5.4-mini``)
+                # delegate to the non-interactive ``use`` path. Scripts, pexpect
+                # drivers, and dotfiles can switch models without a TUI; users
+                # who type ``/model select`` alone still get the picker.
+                if len(args) > 1 and args[1]:
+                    return await self._use(args[1], context)
                 return await self._select(context)
             if action == "current":
                 return await self._current(context)

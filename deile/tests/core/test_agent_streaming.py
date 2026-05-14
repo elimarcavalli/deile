@@ -451,11 +451,12 @@ async def test_streaming_gate_fires_on_unvalidated_write(
     )
     # The delta carries a one-line marker (rendered inside the yellow panel)
     # making it explicit that the corrected reply REPLACES the prior streamed
-    # response, followed by the gate's standalone retry reply.
-    assert gate_deltas[0].text == (
-        "(corrected reply — replaces the response above)\n\n"
-        "validation gate retry reply"
-    )
+    # response, followed by the gate's standalone retry reply. We assert on
+    # the structural shape (marker substring + retry text), not the exact
+    # marker wording — copy is allowed to evolve.
+    assert "SUBSTITUI" in gate_deltas[0].text
+    assert "validação real" in gate_deltas[0].text
+    assert gate_deltas[0].text.endswith("validation gate retry reply")
 
 
 @pytest.mark.asyncio
@@ -482,6 +483,26 @@ async def test_streaming_gate_does_not_see_proactive_results(
         data=None,
         metadata={"function_name": "bash_execute"},
     )
+
+    async def _fake_proactive_stream(_user_input, _session):
+        # Stream-shaped stub: emit synthetic events + final results sentinel.
+        yield UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="pr-test",
+            tool_name="proactive:bash_execute",
+        )
+        yield UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="pr-test",
+            tool_name="proactive:bash_execute",
+            tool_status="success",
+            tool_result_summary="ok",
+            tool_metadata={"function_name": "bash_execute", "proactive_execution": True},
+        )
+        yield ("results", [proactive_tr])
+
+    configured_agent._execute_proactive_tools_stream = _fake_proactive_stream
+    # Keep the non-streaming alias coherent (it's the wrapper around the stream).
     configured_agent._execute_proactive_tools = AsyncMock(return_value=[proactive_tr])
 
     fake = _FakeProvider(
@@ -503,3 +524,111 @@ async def test_streaming_gate_does_not_see_proactive_results(
     assert all(
         tr.metadata.get("function_name") != "bash_execute" for tr in seen
     ), "proactive_results leaked into the streaming validation gate input"
+
+
+@pytest.mark.asyncio
+async def test_proactive_tool_events_are_yielded_to_caller(
+    configured_agent, tmp_path: Path
+):
+    """Proactive tools são visíveis no transcript: o stream yield-a
+    TOOL_USE_START/END/RESULT marcados como ``proactive:<tool>`` antes
+    do primeiro TEXT_DELTA do LLM.
+    """
+    from deile.tools.base import ToolResult, ToolStatus
+
+    async def _fake_proactive_stream(_user_input, _session):
+        yield UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="pr-0",
+            tool_name="proactive:read_file",
+        )
+        yield UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="pr-0",
+            tool_name="proactive:read_file",
+            arguments={"file_path": "foo.py"},
+        )
+        yield UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="pr-0",
+            tool_name="proactive:read_file",
+            tool_status="success",
+            tool_result_summary="ok",
+            tool_metadata={"function_name": "read_file", "proactive_execution": True},
+        )
+        yield ("results", [
+            ToolResult(
+                status=ToolStatus.SUCCESS,
+                message="ok",
+                metadata={"function_name": "read_file", "proactive_execution": True},
+            )
+        ])
+
+    configured_agent._execute_proactive_tools_stream = _fake_proactive_stream
+
+    fake = _FakeProvider(
+        iterations=[
+            [UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="ok")],
+        ]
+    )
+    configured_agent.model_router.select_provider = AsyncMock(return_value=fake)
+
+    session = configured_agent.create_session(
+        "s_proactive_vis", working_directory=str(tmp_path)
+    )
+
+    collected: List[UnifiedStreamEvent] = []
+    async for event in configured_agent.process_input_stream(
+        user_input="hello", session_id=session.session_id
+    ):
+        collected.append(event)
+
+    # Assert the proactive lifecycle events show up in order, BEFORE the LLM's
+    # TEXT_DELTA — i.e. the user actually sees them while they execute.
+    types_and_names = [(e.type, e.tool_name) for e in collected]
+    pr_start_idx = next(
+        i for i, (t, n) in enumerate(types_and_names)
+        if t is StreamEventType.TOOL_USE_START and n == "proactive:read_file"
+    )
+    pr_result_idx = next(
+        i for i, (t, n) in enumerate(types_and_names)
+        if t is StreamEventType.TOOL_RESULT and n == "proactive:read_file"
+    )
+    first_text_idx = next(
+        (i for i, e in enumerate(collected)
+         if e.type is StreamEventType.TEXT_DELTA and e.text == "ok"),
+        None,
+    )
+    assert pr_start_idx < pr_result_idx, "TOOL_RESULT before TOOL_USE_START"
+    assert first_text_idx is None or pr_result_idx < first_text_idx, (
+        "proactive events must surface BEFORE the LLM's first text delta"
+    )
+
+
+@pytest.mark.asyncio
+async def test_real_proactive_stream_imports_resolve_when_invoked(configured_agent):
+    """Smoke: the REAL ``_execute_proactive_tools_stream`` resolves all its
+    inner imports when iterated. Guards against a regression where the
+    function used ``UnifiedStreamEvent`` / ``StreamEventType`` without
+    importing them — ruff/lint catches it, but if a future refactor moves
+    the import out again, this test fails fast.
+
+    Other tests in this file monkey-patch the function with a fake stream,
+    which masks NameErrors in the real body. This test does NOT patch.
+    """
+    # Sanity: fixture sets proactive_analyzer = None, so the body hits the
+    # early-return after the imports. That alone proves the imports resolve.
+    configured_agent.proactive_analyzer = None
+    fake_session = MagicMock()
+    fake_session.working_directory = "."
+    fake_session.context_data = {}
+
+    items = []
+    async for item in configured_agent._execute_proactive_tools_stream(
+        "hello", fake_session
+    ):
+        items.append(item)
+
+    # Generator must yield exactly the results sentinel — empty list because
+    # the analyzer is None.
+    assert items == [("results", [])]

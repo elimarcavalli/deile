@@ -745,7 +745,15 @@ class DeileAgent:
                 type=StreamEventType.STAGE,
                 stage=get_stage_message("proactive_tools", "initial"),
             )
-            proactive_results = await self._execute_proactive_tools(user_input, session)
+            # Stream proactive tool executions so the user sees each one (name +
+            # args + result) instead of just a generic stage spinner. The stream
+            # yields UnifiedStreamEvents AND a final ("results", list) sentinel.
+            proactive_results: List[ToolResult] = []
+            async for _item in self._execute_proactive_tools_stream(user_input, session):
+                if isinstance(_item, tuple) and _item and _item[0] == "results":
+                    proactive_results = _item[1]
+                elif isinstance(_item, UnifiedStreamEvent):
+                    yield _item
 
             yield UnifiedStreamEvent(
                 type=StreamEventType.STAGE,
@@ -871,7 +879,11 @@ class DeileAgent:
                 # Prepend a one-line marker — rendered inside the yellow panel
                 # by the streaming renderer — telling the user this corrected
                 # reply REPLACES the prior streamed response.
-                marker = "(corrected reply — replaces the response above)\n\n"
+                marker = (
+                    "A resposta anterior declarou conclusão sem rodar a validação "
+                    "exigida (sintaxe / execução). Esta versão a SUBSTITUI e mostra "
+                    "a validação real.\n\n"
+                )
                 yield UnifiedStreamEvent(
                     type=StreamEventType.TEXT_DELTA,
                     text=marker + gated_content,
@@ -2622,86 +2634,166 @@ class DeileAgent:
             logger.warning(f"Failed to register default model providers: {e}")
 
     async def _execute_proactive_tools(self, user_input: str, session: AgentSession) -> List[ToolResult]:
-        """Executa ferramentas proativamente baseado na análise da entrada do usuário"""
+        """Wrapper sem streaming — drena o stream e devolve só os ToolResults.
+
+        Usado pelo caminho não-streaming (``process_input``) que não tem para
+        onde emitir UnifiedStreamEvents. A lógica real vive em
+        ``_execute_proactive_tools_stream``; este método consome o gerador,
+        descarta os eventos e retorna a lista final.
+        """
+        results: List[ToolResult] = []
+        async for item in self._execute_proactive_tools_stream(user_input, session):
+            if isinstance(item, tuple) and item and item[0] == "results":
+                results = item[1]
+        return results
+
+    async def _execute_proactive_tools_stream(
+        self,
+        user_input: str,
+        session: AgentSession,
+    ) -> AsyncIterator[Any]:
+        """Versão streaming de ``_execute_proactive_tools``.
+
+        Yields:
+            ``UnifiedStreamEvent`` para cada tool proativa (TOOL_USE_START →
+            TOOL_USE_END → TOOL_RESULT) e, ao final, a tupla sentinela
+            ``("results", List[ToolResult])`` que o caller deve recolher.
+
+        Por que streamar: tools proativas (read_file, list_files,
+        check_file_exists) executam antes do LLM e, sem eventos próprios,
+        rodam silenciosas — o usuário só vê uma STAGE genérica. Emitir
+        eventos sintéticos torna cada chamada visível no transcript com o
+        mesmo formato das tool calls do LLM. Para diferenciar visualmente,
+        o tool_name é prefixado com ``proactive:`` e ``proactive_execution``
+        vai em ``tool_metadata``.
+        """
+        # Local import mirrors ``process_input_stream`` — keeps stream_events
+        # out of the module-level import graph to avoid the circular import we
+        # had before agent → models.stream_events → core.agent.
+        from deile.core.models.stream_events import (StreamEventType,
+                                                     UnifiedStreamEvent)
+
         if not self.proactive_analyzer:
-            return []
+            yield ("results", [])
+            return
 
         try:
-            # Atualiza working directory do analisador proativo
             self.proactive_analyzer.working_directory = session.working_directory
-
-            # Analisa entrada do usuário para detectar intenções proativas
             intents = self.proactive_analyzer.analyze_input(user_input, session.context_data)
 
             if not intents:
-                return []
+                yield ("results", [])
+                return
 
-            proactive_results = []
-            executed_tools = set()  # Para evitar execução duplicada
+            proactive_results: List[ToolResult] = []
+            executed_tools: set = set()
 
-            for intent in intents:
-                # Verifica se deve executar proativamente
+            for idx, intent in enumerate(intents):
                 if not self.proactive_analyzer.should_execute_proactively(intent):
-                    self.logger.debug(f"Skipping proactive intent {intent.action.value} - low confidence ({intent.confidence:.2f})")
+                    self.logger.debug(
+                        f"Skipping proactive intent {intent.action.value} - "
+                        f"low confidence ({intent.confidence:.2f})"
+                    )
                     continue
 
-                # Evita execução duplicada
                 tool_key = (intent.action.value, intent.target)
                 if tool_key in executed_tools:
                     continue
                 executed_tools.add(tool_key)
 
-                # Mapeia ação proativa para nome da ferramenta
                 tool_name = self._map_proactive_action_to_tool(intent.action)
                 if not tool_name:
                     continue
 
-                # Verifica se a ferramenta está disponível
                 if tool_name not in self.tool_registry._tools:
                     self.logger.warning(f"Proactive tool {tool_name} not available")
                     continue
 
+                # Synthetic tool_call_id so the renderer can pair START/END/RESULT.
+                tc_id = f"proactive-{idx}-{tool_name}"
+                display_name = f"proactive:{tool_name}"
+
+                context = self.proactive_analyzer.create_proactive_context(
+                    intent, session.context_data
+                )
+                # parsed_args is the public part of the ToolContext that we want
+                # to surface as the call's "arguments" in the transcript.
+                visible_args: Dict[str, Any] = dict(getattr(context, "parsed_args", {}) or {})
+
+                yield UnifiedStreamEvent(
+                    type=StreamEventType.TOOL_USE_START,
+                    tool_call_id=tc_id,
+                    tool_name=display_name,
+                )
+                yield UnifiedStreamEvent(
+                    type=StreamEventType.TOOL_USE_END,
+                    tool_call_id=tc_id,
+                    tool_name=display_name,
+                    arguments=visible_args,
+                )
+
                 try:
-                    # Cria contexto para execução proativa
-                    context = self.proactive_analyzer.create_proactive_context(intent, session.context_data)
-
-                    # Executa a ferramenta
                     result = await self.tool_registry.execute_tool(tool_name, context)
-
-                    # Adiciona metadados sobre execução proativa
                     result.metadata.update({
                         "proactive_execution": True,
                         "proactive_confidence": intent.confidence,
-                        "proactive_reason": intent.context
+                        "proactive_reason": intent.context,
                     })
-
                     proactive_results.append(result)
-
-                    # Log da execução proativa (só em debug para não ser verboso)
-                    self.logger.debug(f"Proactive execution: {tool_name} with confidence {intent.confidence:.2f}")
-
+                    self.logger.debug(
+                        f"Proactive execution: {tool_name} with confidence "
+                        f"{intent.confidence:.2f}"
+                    )
+                    status = "success" if result.status == ToolStatus.SUCCESS else "error"
+                    summary = (
+                        getattr(result, "message", "") or ""
+                    )[:200] or ("ok" if status == "success" else "error")
+                    yield UnifiedStreamEvent(
+                        type=StreamEventType.TOOL_RESULT,
+                        tool_call_id=tc_id,
+                        tool_name=display_name,
+                        tool_status=status,
+                        tool_result_summary=summary,
+                        tool_result_data=getattr(result, "data", None),
+                        tool_metadata={
+                            "function_name": tool_name,
+                            "tool_call_id": tc_id,
+                            "proactive_execution": True,
+                        },
+                    )
                 except Exception as e:
-                    # Falhas proativas não devem quebrar o fluxo principal
-                    self.logger.warning(f"Proactive tool execution failed: {tool_name} - {e}")
-
-                    # Adiciona resultado de erro se necessário
+                    self.logger.warning(
+                        f"Proactive tool execution failed: {tool_name} - {e}"
+                    )
                     error_result = ToolResult(
                         status=ToolStatus.ERROR,
                         error=e,
                         message=f"Proactive execution failed: {str(e)}",
                         metadata={
                             "proactive_execution": True,
-                            "proactive_failed": True
-                        }
+                            "proactive_failed": True,
+                        },
                     )
                     proactive_results.append(error_result)
+                    yield UnifiedStreamEvent(
+                        type=StreamEventType.TOOL_RESULT,
+                        tool_call_id=tc_id,
+                        tool_name=display_name,
+                        tool_status="error",
+                        tool_result_summary=str(e)[:200],
+                        tool_metadata={
+                            "function_name": tool_name,
+                            "tool_call_id": tc_id,
+                            "proactive_execution": True,
+                            "proactive_failed": True,
+                        },
+                    )
 
-            return proactive_results
+            yield ("results", proactive_results)
 
         except Exception as e:
-            # Falhas no analisador proativo não devem quebrar o sistema
             self.logger.warning(f"Proactive analysis failed: {e}")
-            return []
+            yield ("results", [])
 
     def _map_proactive_action_to_tool(self, action: ProactiveAction) -> Optional[str]:
         """Mapeia ação proativa para nome da ferramenta correspondente"""
