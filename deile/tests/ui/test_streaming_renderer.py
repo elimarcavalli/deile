@@ -370,6 +370,144 @@ async def test_edit_file_truncates_long_path():
 
 
 @pytest.mark.asyncio
+async def test_file_tools_render_primary_path_not_kwarg():
+    """read_file/write_file/list_files/delete_file mostram só o path,
+    sem o ruído ``file_path='...'`` nem o ``content='...'`` no header.
+    """
+    console = _capture_console()
+    renderer = StreamingRenderer(console=console, legacy_windows=True, markdown=False)
+    events = [
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="r1", tool_name="read_file",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="r1", tool_name="read_file",
+            arguments={"file_path": "deile/foo.py"},
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT, tool_call_id="r1", tool_name="read_file",
+            tool_status="success", tool_result_summary="ok",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="w1", tool_name="write_file",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="w1", tool_name="write_file",
+            arguments={"file_path": "deile/bar.py", "content": "print('hi-42')"},
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT, tool_call_id="w1", tool_name="write_file",
+            tool_status="success", tool_result_summary="ok",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="l1", tool_name="list_files",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="l1", tool_name="list_files",
+            arguments={"path": "deile/"},
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT, tool_call_id="l1", tool_name="list_files",
+            tool_status="success", tool_result_summary="ok",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="d1", tool_name="delete_file",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="d1", tool_name="delete_file",
+            arguments={"file_path": "deile/old.py", "force": True},
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT, tool_call_id="d1", tool_name="delete_file",
+            tool_status="success", tool_result_summary="ok",
+        ),
+    ]
+    await renderer.render(_replay(events))
+    output = console.file.getvalue()
+    # All paths present
+    assert "deile/foo.py" in output
+    assert "deile/bar.py" in output
+    assert "deile/old.py" in output
+    # NONE of the keyword-style noise should leak.
+    assert "file_path=" not in output
+    # content='...' is the worst offender — must be gone for write_file.
+    assert "content=" not in output
+    assert "force=" not in output
+
+
+@pytest.mark.asyncio
+async def test_python_execute_collapses_multiline_in_header():
+    """python_execute(code='...') com newlines vira `... ⏎ ...` no header."""
+    console = _capture_console()
+    renderer = StreamingRenderer(console=console, legacy_windows=True, markdown=False)
+    events = [
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="p1", tool_name="python_execute",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="p1", tool_name="python_execute",
+            arguments={"code": "x = 1\ny = 2\nprint(x + y)"},
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT, tool_call_id="p1", tool_name="python_execute",
+            tool_status="success", tool_result_summary="exit 0 • 23ms",
+        ),
+    ]
+    await renderer.render(_replay(events))
+    output = console.file.getvalue()
+    # Friendly display name + collapsed newlines
+    assert "Python" in output
+    assert "⏎" in output
+    # The raw representation must NOT leak.
+    assert "code=" not in output
+
+
+@pytest.mark.asyncio
+async def test_proactive_prefix_renders_visibly():
+    """Tools proativas chegam como ``proactive:<tool>`` e devem ser visíveis
+    no transcript com o mesmo formato `● name(args)`. Garante que o prefixo
+    aparece para o usuário diferenciar do que a IA escolheu.
+    """
+    console = _capture_console()
+    renderer = StreamingRenderer(console=console, legacy_windows=True, markdown=False)
+    events = [
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="pr1",
+            tool_name="proactive:read_file",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="pr1",
+            tool_name="proactive:read_file",
+            arguments={"file_path": "context.py"},
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="pr1",
+            tool_name="proactive:read_file",
+            tool_status="success",
+            tool_result_summary="42 bytes read",
+        ),
+    ]
+    await renderer.render(_replay(events))
+    output = console.file.getvalue()
+    assert "proactive:read_file" in output
+    assert "context.py" in output
+    assert "42 bytes read" in output
+
+
+@pytest.mark.asyncio
 async def test_tool_running_state_is_visible_before_result():
     """O bloco da tool aparece em estado 'running…' enquanto executa.
 

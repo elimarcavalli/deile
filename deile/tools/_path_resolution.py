@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,13 +29,25 @@ from ..core.exceptions import ValidationError
 logger = logging.getLogger(__name__)
 
 
+# Short launcher for the Python that's running DEILE — picked per-platform so
+# the hint actually works on the operator's machine:
+#   - macOS / Linux: ``python3`` (stock macOS has no unversioned ``python``;
+#     modern distros increasingly drop it too).
+#   - Windows: ``python`` (the python.org installer adds ``python.exe`` to
+#     PATH; ``python3`` only exists if you installed via the Windows Store).
+# Avoids the "python: command not found" → retry loop that costs an extra
+# round-trip and a validation-gate panel to recover from a typo we'd have put
+# in the hint ourselves.
+_PYTHON_LAUNCHER = "python" if sys.platform == "win32" else "python3"
+
+
 # Extension → cheap, side-effect-free validator the LLM should run after a write.
 _POST_WRITE_VALIDATORS: Dict[str, Dict[str, str]] = {
-    ".py":  {"kind": "python_syntax",  "template": "python -m py_compile {path}"},
+    ".py":  {"kind": "python_syntax",  "template": f"{_PYTHON_LAUNCHER} -m py_compile {{path}}"},
     ".sh":  {"kind": "bash_syntax",    "template": "bash -n {path}"},
-    ".json": {"kind": "json_parse",    "template": 'python -c "import json; json.load(open({path!r}))"'},
-    ".yaml": {"kind": "yaml_parse",    "template": 'python -c "import yaml; yaml.safe_load(open({path!r}))"'},
-    ".yml":  {"kind": "yaml_parse",    "template": 'python -c "import yaml; yaml.safe_load(open({path!r}))"'},
+    ".json": {"kind": "json_parse",    "template": f'{_PYTHON_LAUNCHER} -c "import json; json.load(open({{path!r}}))"'},
+    ".yaml": {"kind": "yaml_parse",    "template": f'{_PYTHON_LAUNCHER} -c "import yaml; yaml.safe_load(open({{path!r}}))"'},
+    ".yml":  {"kind": "yaml_parse",    "template": f'{_PYTHON_LAUNCHER} -c "import yaml; yaml.safe_load(open({{path!r}}))"'},
     ".js":  {"kind": "node_syntax",    "template": "node --check {path}"},
     ".mjs": {"kind": "node_syntax",    "template": "node --check {path}"},
     ".ts":  {"kind": "typescript_check", "template": "npx --yes tsc --noEmit {path}"},

@@ -350,6 +350,30 @@ class _StubSelector(InteractiveSelector):
 
 class TestModelSelect:
     @pytest.mark.asyncio
+    async def test_select_with_positional_arg_skips_picker_and_forces_model(self):
+        """``/model select <provider>:<model_id>`` must behave like ``/model use`` —
+        no TUI picker, immediate switch. Regression test for the bug where
+        scripts and pexpect drivers got stuck on an interactive picker that
+        ignored the positional argument.
+        """
+        sel = _StubSelector(supported=True, choice=None)
+        cmd = ModelCommand(selector=sel)
+        ctx = _make_context("select anthropic:claude-opus-4-7")
+        result = await cmd.execute(ctx)
+        assert result.success
+        assert ctx.session.context_data.get("forced_model") == "anthropic:claude-opus-4-7"
+        # Picker must NOT have been opened — interactive selector untouched.
+        assert len(sel.calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_select_without_arg_still_opens_picker(self):
+        """Bare ``/model select`` keeps the interactive picker behaviour."""
+        sel = _StubSelector(supported=True, choice=None)
+        cmd = ModelCommand(selector=sel)
+        await cmd.execute(_make_context("select"))
+        assert len(sel.calls) == 1
+
+    @pytest.mark.asyncio
     async def test_select_falls_back_to_list_when_unsupported(self):
         sel = _StubSelector(supported=False, choice=None)
         cmd = ModelCommand(selector=sel)

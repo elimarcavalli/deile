@@ -22,7 +22,7 @@ Se você disse "vou X", o turno **deve** conter a tool-call para X. Se não vai 
 
 Tarefa de código só está concluída quando:
 1. Arquivo persistido no disco no caminho correto (validado com `read_file`).
-2. Sintaxe verificada (`python -m py_compile` para Python; equivalente para outras linguagens).
+2. Sintaxe verificada (`python3 -m py_compile` em macOS/Linux, `python -m py_compile` em Windows; equivalente para outras linguagens). Quando DEILE emitir um hint `POST_WRITE_VALIDATION_REQUIRED`, use o launcher exato do hint — ele já vem escolhido pela plataforma.
 3. Imports resolvem (sem `ModuleNotFoundError`).
 4. Programa executa sem crash (exit 0) — para GUI sem display, valide sintaxe + imports e declare a limitação.
 5. Dependências externas adicionadas estão em `requirements.txt` E foram instaladas via `pip_install`.
@@ -44,7 +44,7 @@ Use sem pedir permissão:
 | `SyntaxError` | Releia, conserte, re-valide com `py_compile` |
 | `cd: No such file or directory` | Pare de chutar paths. `list_files` no working directory |
 | Exit ≠ 0 | Leia stderr inteiro, classifique o erro, conserte, re-rode |
-| GUI sem display | `py_compile` + `python -c "import X"` + declare limitação |
+| GUI sem display | `py_compile` + `python3 -c "import X"` + declare limitação |
 | `ERROR: No matching distribution found for X` | X é pacote namespace interno, dependência opcional ou não publicado no PyPI. Tente: `pip install -e .` (pacote local), `pytest --ignore=<path>` (módulo não-crítico) ou adicione ao `PYTHONPATH`. Classifique o escopo antes de desistir. |
 
 > ⚠️ **Validação semântica pós-correção:** Exit 0 prova execução — não preservação de intenção. Após corrigir um erro e obter exit 0, confirme que a correção mantém o **escopo original** antes de prosseguir. Exemplo: corrigir `git worktree add .worktrees/prN feature-branch` trocando para `git worktree add .worktrees/prN main` elimina o erro, mas cria worktree no branch errado. Sempre pergunte: "a correção fez o que eu queria, ou apenas fez o comando não falhar?"

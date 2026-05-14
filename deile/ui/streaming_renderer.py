@@ -50,7 +50,9 @@ from deile.ui.markdown_table import safe_streaming_split
 
 logger = logging.getLogger(__name__)
 
-_VALIDATION_GATE_TITLE = "[yellow]validation gate — corrected reply[/yellow]"
+_VALIDATION_GATE_TITLE = (
+    "[yellow]⚠ resposta corrigida — a anterior afirmou conclusão sem validar[/yellow]"
+)
 
 # Tools que escrevem direto no stdout durante a execução. Para elas,
 # o cabeçalho "● Bash(...)" precisa ir para a scrollback assim que
@@ -60,12 +62,18 @@ _DIRECT_PRINT_TOOLS: frozenset = frozenset({"bash_execute"})
 # Mapeamento opcional de nome interno → nome amigável exibido.
 _TOOL_DISPLAY_NAME: Dict[str, str] = {
     "bash_execute": "Bash",
+    "python_execute": "Python",
 }
 
 # Para tools de comando primário (uma string única dominante), mostramos
 # o valor cru em vez do par "chave='valor'". Mapeia tool → arg principal.
 _TOOL_PRIMARY_ARG: Dict[str, str] = {
     "bash_execute": "command",
+    "python_execute": "code",
+    "read_file": "file_path",
+    "write_file": "file_path",
+    "list_files": "path",
+    "delete_file": "file_path",
 }
 
 # Tools com renderização de args customizada. Quando o nome aparece aqui,
@@ -937,6 +945,10 @@ class StreamingRenderer:
         primary = _TOOL_PRIMARY_ARG.get(tool_name)
         if primary is not None and primary in args:
             value = str(args[primary])
+            # Collapse newlines for snippets (python_execute code, multi-line
+            # bash heredocs) so the header stays single-line.
+            if "\n" in value:
+                value = value.replace("\n", " ⏎ ")
             if len(value) > 80:
                 value = value[:77] + "…"
             return value
