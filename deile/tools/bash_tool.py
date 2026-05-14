@@ -3,7 +3,6 @@
 import logging
 import os
 import platform
-import re
 import subprocess
 import sys
 import time
@@ -24,16 +23,10 @@ from ..config.settings import get_settings
 from ..core.exceptions import ToolError
 from ..orchestration.artifact_manager import ArtifactManager
 from ..security.permissions import PermissionManager
+from ._shell_security import assess_risk
 from .base import DisplayPolicy, SyncTool, ToolContext, ToolResult, ToolStatus
 
 logger = logging.getLogger(__name__)
-
-
-class BashSecurityLevel:
-    """Security levels for bash commands"""
-    SAFE = "safe"
-    MODERATE = "moderate"
-    DANGEROUS = "dangerous"
 
 
 class BashExecuteTool(SyncTool):
@@ -62,30 +55,7 @@ class BashExecuteTool(SyncTool):
         self.permission_manager = permission_manager
         self.artifact_manager = artifact_manager
         self.platform = platform.system()
-        
-        # Security blacklist - CRITICAL COMMANDS
-        self.dangerous_commands = [
-            r'rm\s+.*-rf\s*/',          # rm -rf /
-            r'mkfs',                    # Format filesystem
-            r'dd\s+.*of=/dev/',         # Write to device
-            r'fdisk',                   # Partition management
-            r'format\s+[c-z]:',        # Windows format
-            r'del\s+.*\*\.\*',         # Delete all files
-            r'shutdown',                # System shutdown
-            r'reboot',                  # System reboot
-            r'poweroff',                # Power off
-            r'halt',                    # Halt system
-            r'init\s+0',               # Init runlevel 0
-            r':(){ :|:& };:',          # Fork bomb
-            r'curl.*\|\s*sh',          # Pipe curl to shell
-            r'wget.*\|\s*sh',          # Pipe wget to shell
-            r'chmod\s+777\s+/',        # Chmod 777 on root
-            r'chown\s+.*\s+/',         # Chown root directory
-        ]
-        
-        # Compile regex patterns
-        self.dangerous_patterns = [re.compile(pattern, re.IGNORECASE) for pattern in self.dangerous_commands]
-        
+
     def get_schema(self) -> Dict[str, Any]:
         """Get tool schema for function calling"""
         return {
@@ -138,43 +108,8 @@ class BashExecuteTool(SyncTool):
         }
     
     def _assess_security_risk(self, command: str) -> Tuple[str, List[str]]:
-        """Assess security risk of command"""
-        warnings = []
-        
-        # Check against dangerous patterns
-        for pattern in self.dangerous_patterns:
-            if pattern.search(command):
-                return BashSecurityLevel.DANGEROUS, [f"Matches dangerous pattern: {pattern.pattern}"]
-        
-        # Check for potentially risky patterns
-        moderate_risks = [
-            r'sudo',
-            r'su\s+',
-            r'rm\s+.*-r',
-            r'chmod\s+.*7',
-            r'chown',
-            r'mount',
-            r'umount',
-            r'systemctl',
-            r'service\s+',
-            r'iptables',
-            r'ufw',
-            r'firewall',
-            r'>.*\.sh',
-            r'curl.*-s',
-            r'wget.*-O',
-            r'pip\s+install.*--user',
-            r'npm\s+install.*-g',
-        ]
-        
-        for risk_pattern in moderate_risks:
-            if re.search(risk_pattern, command, re.IGNORECASE):
-                warnings.append(f"Potentially risky: {risk_pattern}")
-                
-        if warnings:
-            return BashSecurityLevel.MODERATE, warnings
-        
-        return BashSecurityLevel.SAFE, []
+        """Assess security risk of command (delegated to `_shell_security`)."""
+        return assess_risk(command)
     
     def _should_use_pty(self, command: str, force_pty: Optional[bool] = None) -> bool:
         """Determine if PTY should be used"""

@@ -23,7 +23,6 @@ personas:
       tool_preferences:
         preferred_tools:
         - file_tools
-        - git_tool
         - bash_tool
         avoid_tools: []
         tool_timeout: 30

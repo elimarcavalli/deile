@@ -1,635 +1,101 @@
-"""Enhanced Execution Tools for DEILE - Advanced PTY Support"""
+"""Execution tools for DEILE — subprocess-based command, Python, pip, and pytest runners."""
 
 import logging
 import os
-import platform
 import re
-import signal
 import subprocess
 import sys
 import tempfile
-import threading
-import time
 from pathlib import Path
-from typing import Any, Dict, Optional
-
-if platform.system() == "Windows":
-    WINDOWS_PTY_AVAILABLE = False
-else:
-    try:
-        import pty
-        import select
-        UNIX_PTY_AVAILABLE = True
-    except ImportError:
-        UNIX_PTY_AVAILABLE = False
+from typing import Dict
 
 from ..core.exceptions import ValidationError
+from ._shell_security import is_blocked
 from .base import SyncTool, ToolContext, ToolResult, ToolStatus
 
 logger = logging.getLogger(__name__)
 
 
-class PTYSession:
-    """Cross-platform PTY (Pseudo-Terminal) session manager"""
-    
-    def __init__(self, command: str, working_dir: str = None, env: Dict[str, str] = None):
-        self.command = command
-        self.working_dir = working_dir or os.getcwd()
-        self.env = {**os.environ, **(env or {})}
-        self.process = None
-        self.master_fd = None
-        self.slave_fd = None
-        self.thread = None
-        self.output_buffer = []
-        self.error_buffer = []
-        self.is_running = False
-        self.exit_code = None
-        
-        # Windows-specific
-        self.pty_process = None
-        
-    def start(self) -> bool:
-        """Start PTY session"""
-        try:
-            if platform.system() == "Windows":
-                return self._start_windows()
-            else:
-                return self._start_unix()
-        except Exception as e:
-            logger.error("Failed to start PTY session: %s", e)
-            return False
-    
-    def _start_windows(self) -> bool:
-        """Start PTY session on Windows"""
-        # Use standard subprocess for Windows compatibility
-        if WINDOWS_PTY_AVAILABLE:
-            logger.info("Using standard subprocess on Windows")
-        
-        # Fallback to ConPTY or basic subprocess
-        try:
-            # Try using ConPTY if available (Windows 10 1903+)
-            if hasattr(subprocess, 'STARTUPINFO'):
-                startupinfo = subprocess.STARTUPINFO()
-                if hasattr(startupinfo, 'dwFlags'):
-                    startupinfo.dwFlags |= getattr(subprocess, 'STARTF_USESTDHANDLES', 0)
-                    
-            self.process = subprocess.Popen(
-                self.command,
-                shell=True,  # nosec B602 — intentional: EnhancedExecutionTool is a shell-execution primitive; caller validates command before dispatch
-                cwd=self.working_dir,
-                env=self.env,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=0,
-                startupinfo=startupinfo if 'startupinfo' in locals() else None
-            )
-            self.is_running = True
-            self.thread = threading.Thread(target=self._read_output_subprocess)
-            self.thread.daemon = True
-            self.thread.start()
-            return True
-            
-        except Exception as e:
-            logger.error("Failed to start Windows PTY session: %s", e)
-            return False
-    
-    def _start_unix(self) -> bool:
-        """Start PTY session on Unix-like systems"""
-        if not UNIX_PTY_AVAILABLE:
-            logger.warning("Unix PTY not available on this system")
-            return False
-            
-        try:
-            self.master_fd, self.slave_fd = pty.openpty()
-            
-            self.process = subprocess.Popen(
-                self.command,
-                shell=True,  # nosec B602 — intentional: PTY mode; same security boundary as non-PTY path
-                cwd=self.working_dir,
-                env=self.env,
-                stdin=self.slave_fd,
-                stdout=self.slave_fd,
-                stderr=self.slave_fd,
-                preexec_fn=os.setsid
-            )
-            
-            os.close(self.slave_fd)  # Close slave fd in parent process
-            self.is_running = True
-            
-            # Start output reading thread
-            self.thread = threading.Thread(target=self._read_output_unix)
-            self.thread.daemon = True
-            self.thread.start()
-            
-            return True
-            
-        except Exception as e:
-            logger.error("Failed to start Unix PTY session: %s", e)
-            return False
-    
-    def _read_output_windows(self):
-        """Read output from Windows PTY"""
-        try:
-            if self.pty_process:
-                while self.is_running:
-                    try:
-                        output = self.pty_process.read(timeout=100)  # 100ms timeout
-                        if output:
-                            self.output_buffer.append(output)
-                    except (OSError, EOFError) as exc:
-                        if self.is_running:
-                            logger.warning("Error reading PTY output: %s", exc, exc_info=True)
-                        break
-        except Exception as e:
-            logger.error("PTY output thread error: %s", e)
-        finally:
-            self._cleanup_windows()
-    
-    def _read_output_subprocess(self):
-        """Read output from subprocess (Windows fallback)"""
-        try:
-            while self.is_running and self.process and self.process.poll() is None:
-                try:
-                    # Read stdout
-                    if self.process.stdout:
-                        output = self.process.stdout.readline()
-                        if output:
-                            self.output_buffer.append(output)
-                    
-                    # Read stderr
-                    if self.process.stderr:
-                        error = self.process.stderr.readline()
-                        if error:
-                            self.error_buffer.append(error)
-                            
-                except Exception as e:
-                    if self.is_running:
-                        logger.error("Error reading subprocess output: %s", e)
-                    break
-                    
-        except Exception as e:
-            logger.error("Subprocess output thread error: %s", e)
-        finally:
-            if self.process:
-                self.exit_code = self.process.returncode
-    
-    def _read_output_unix(self):
-        """Read output from Unix PTY"""
-        if not UNIX_PTY_AVAILABLE:
-            return
-            
-        try:
-            while self.is_running:
-                try:
-                    ready, _, _ = select.select([self.master_fd], [], [], 0.1)  # 100ms timeout
-                    if ready:
-                        try:
-                            output = os.read(self.master_fd, 1024).decode('utf-8', errors='ignore')
-                            if output:
-                                self.output_buffer.append(output)
-                        except OSError:
-                            break
-                except Exception as e:
-                    if self.is_running:
-                        logger.error("Error in select/read: %s", e)
-                    break
-                    
-        except Exception as e:
-            logger.error("PTY output thread error: %s", e)
-        finally:
-            self._cleanup_unix()
-    
-    def write_input(self, data: str) -> bool:
-        """Write input to PTY"""
-        try:
-            if platform.system() == "Windows":
-                if self.pty_process:
-                    self.pty_process.write(data)
-                    return True
-                elif self.process and self.process.stdin:
-                    self.process.stdin.write(data)
-                    self.process.stdin.flush()
-                    return True
-            else:
-                if self.master_fd:
-                    os.write(self.master_fd, data.encode('utf-8'))
-                    return True
-                    
-        except Exception as e:
-            logger.error("Failed to write input to PTY: %s", e)
-        
-        return False
-    
-    def read_output(self, timeout: float = 0.1) -> str:
-        """Read accumulated output"""
-        time.sleep(timeout)  # Allow time for output to accumulate
-        
-        if self.output_buffer:
-            output = ''.join(self.output_buffer)
-            self.output_buffer.clear()
-            return output
-        
-        return ""
-    
-    def read_errors(self) -> str:
-        """Read accumulated errors"""
-        if self.error_buffer:
-            errors = ''.join(self.error_buffer)
-            self.error_buffer.clear()
-            return errors
-        
-        return ""
-    
-    def send_signal(self, sig: int) -> bool:
-        """Send signal to process"""
-        try:
-            if platform.system() == "Windows":
-                if self.process:
-                    if sig == signal.SIGTERM:
-                        self.process.terminate()
-                    elif sig == signal.SIGKILL:
-                        self.process.kill()
-                    return True
-            else:
-                if self.process:
-                    os.killpg(os.getpgid(self.process.pid), sig)
-                    return True
-                    
-        except Exception as e:
-            logger.error("Failed to send signal %s: %s", sig, e)
-        
-        return False
-    
-    def is_alive(self) -> bool:
-        """Check if process is still running"""
-        if self.process:
-            return self.process.poll() is None
-        return False
-    
-    def get_exit_code(self) -> Optional[int]:
-        """Get process exit code"""
-        if self.process:
-            return self.process.returncode
-        return self.exit_code
-    
-    def terminate(self, timeout: float = 5.0) -> bool:
-        """Terminate PTY session gracefully"""
-        if not self.is_running:
-            return True
-            
-        self.is_running = False
-        
-        try:
-            # Send SIGTERM first
-            if self.send_signal(signal.SIGTERM):
-                # Wait for graceful shutdown
-                start_time = time.time()
-                while self.is_alive() and (time.time() - start_time) < timeout:
-                    time.sleep(0.1)
-                
-                # Force kill if still running
-                if self.is_alive():
-                    self.send_signal(signal.SIGKILL)
-                    time.sleep(0.5)
-            
-            return not self.is_alive()
-            
-        except Exception as e:
-            logger.error("Error terminating PTY session: %s", e)
-            return False
-        finally:
-            self._cleanup()
-    
-    def _cleanup_windows(self):
-        """Cleanup Windows PTY resources"""
-        try:
-            if self.pty_process:
-                self.pty_process.close()
-                self.pty_process = None
-        except Exception as e:
-            logger.error("Error cleaning up Windows PTY: %s", e)
-    
-    def _cleanup_unix(self):
-        """Cleanup Unix PTY resources"""
-        try:
-            if self.master_fd:
-                os.close(self.master_fd)
-                self.master_fd = None
-        except Exception as e:
-            logger.error("Error cleaning up Unix PTY: %s", e)
-    
-    def _cleanup(self):
-        """General cleanup"""
-        if platform.system() == "Windows":
-            self._cleanup_windows()
-        else:
-            self._cleanup_unix()
-            
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=1.0)
-
-
 class EnhancedExecutionTool(SyncTool):
-    """Enhanced execution tool with advanced PTY support and interactive capabilities"""
-    
+    """Subprocess-based shell command execution with timeout and basic safety screen."""
+
     @property
     def name(self) -> str:
         return "execute_command_enhanced"
-    
+
     @property
     def description(self) -> str:
-        return "Enhanced command execution with PTY support, interactive capabilities, and advanced process management"
-    
+        return "Executes a shell command via subprocess with timeout and a basic safety screen"
+
     @property
     def category(self) -> str:
         return "execution"
-    
-    def __init__(self):
-        super().__init__()
-        self.active_sessions = {}  # Track active PTY sessions
-        self.session_counter = 0
-    
+
     def execute_sync(self, context: ToolContext) -> ToolResult:
-        """Execute command with enhanced PTY support"""
         command = context.parsed_args.get("command")
-        interactive = context.parsed_args.get("interactive", False)
-        pty_mode = context.parsed_args.get("pty", False)
         timeout = context.parsed_args.get("timeout", 30)
         env_vars = context.parsed_args.get("env", {})
-        input_data = context.parsed_args.get("input", "")
-        
+
         if not command:
             return ToolResult.error_result(
                 message="No command provided",
-                error=ValidationError("command is required")
+                error=ValidationError("command is required"),
             )
-        
-        # Security checks
+
         if not self._is_command_safe(command):
             return ToolResult.error_result(
                 message=f"Potentially dangerous command blocked: {command}",
-                error=PermissionError("Command blocked by security policy")
+                error=PermissionError("Command blocked by security policy"),
             )
-        
+
         try:
-            if interactive or pty_mode:
-                return self._execute_interactive(command, context, timeout, env_vars, input_data)
-            else:
-                return self._execute_standard(command, context, timeout, env_vars)
-                
+            return self._execute_standard(command, context, timeout, env_vars)
         except Exception as e:
             logger.error("Enhanced execution error: %s", e)
             return ToolResult.error_result(
                 message=f"Execution failed: {str(e)}",
-                error=e
+                error=e,
             )
-    
-    def _execute_interactive(self, command: str, context: ToolContext, 
-                           timeout: int, env_vars: Dict[str, str], input_data: str) -> ToolResult:
-        """Execute command in interactive PTY mode"""
-        session_id = f"session_{self.session_counter}"
-        self.session_counter += 1
-        
+
+    def _execute_standard(self, command: str, context: ToolContext,
+                          timeout: int, env_vars: Dict[str, str]) -> ToolResult:
         try:
-            # Create PTY session
-            pty_session = PTYSession(
-                command=command,
-                working_dir=context.working_directory,
-                env=env_vars
-            )
-            
-            if not pty_session.start():
-                return ToolResult.error_result(
-                    message="Failed to start PTY session",
-                    error=RuntimeError("PTY initialization failed")
-                )
-            
-            self.active_sessions[session_id] = pty_session
-            
-            # Send initial input if provided
-            if input_data:
-                pty_session.write_input(input_data)
-            
-            # Wait for initial output or timeout
-            start_time = time.time()
-            output_parts = []
-            
-            while (time.time() - start_time) < timeout:
-                output = pty_session.read_output(0.1)
-                if output:
-                    output_parts.append(output)
-                
-                if not pty_session.is_alive():
-                    break
-                    
-                time.sleep(0.1)
-            
-            # Get final state
-            final_output = ''.join(output_parts)
-            error_output = pty_session.read_errors()
-            exit_code = pty_session.get_exit_code()
-            is_still_running = pty_session.is_alive()
-            
-            # If process is still running, keep session active
-            if is_still_running:
-                return ToolResult(
-                    status=ToolStatus.SUCCESS,
-                    data=final_output,
-                    message=f"Interactive session started (ID: {session_id}). Process is still running.",
-                    metadata={
-                        "session_id": session_id,
-                        "command": command,
-                        "running": True,
-                        "output": final_output,
-                        "stderr": error_output,
-                        "pty_mode": True,
-                        "platform": platform.system()
-                    }
-                )
-            else:
-                # Process completed, cleanup session
-                pty_session.terminate()
-                self.active_sessions.pop(session_id, None)
-                
-                status = ToolStatus.SUCCESS if (exit_code == 0) else ToolStatus.ERROR
-                return ToolResult(
-                    status=status,
-                    data=final_output,
-                    message=f"Command completed with exit code {exit_code}",
-                    metadata={
-                        "command": command,
-                        "exit_code": exit_code,
-                        "stdout": final_output,
-                        "stderr": error_output,
-                        "pty_mode": True,
-                        "execution_time": time.time() - start_time
-                    }
-                )
-                
-        except Exception as e:
-            logger.error(
-                "Unexpected error in _execute_interactive (session %s): %s",
-                session_id, e, exc_info=True,
-            )
-            if session_id in self.active_sessions:
-                try:
-                    self.active_sessions[session_id].terminate()
-                    del self.active_sessions[session_id]
-                except Exception as exc:
-                    logger.warning("Failed to terminate session %s during cleanup: %s", session_id, exc, exc_info=True)
-            
-            return ToolResult.error_result(
-                message=f"Interactive execution failed: {str(e)}",
-                error=e
-            )
-    
-    def _execute_standard(self, command: str, context: ToolContext, 
-                         timeout: int, env_vars: Dict[str, str]) -> ToolResult:
-        """Execute command in standard subprocess mode"""
-        try:
-            # Prepare environment
             full_env = {**os.environ, **env_vars}
-            
-            # Execute with timeout
             result = subprocess.run(
                 command,
-                shell=True,  # nosec B602 — intentional: execution tool; command validated upstream
+                shell=True,  # nosec B602 — execution tool; command validated upstream
                 cwd=context.working_directory,
                 env=full_env,
                 capture_output=True,
                 text=True,
-                timeout=timeout
+                timeout=timeout,
             )
-            
+
             output = result.stdout.strip() if result.stdout else ""
             error_output = result.stderr.strip() if result.stderr else ""
-            
             status = ToolStatus.SUCCESS if result.returncode == 0 else ToolStatus.ERROR
-            message = f"Command executed with exit code {result.returncode}"
-            
+
             return ToolResult(
                 status=status,
                 data=output,
-                message=message,
+                message=f"Command executed with exit code {result.returncode}",
                 metadata={
                     "command": command,
                     "exit_code": result.returncode,
                     "stdout": output,
                     "stderr": error_output,
-                    "pty_mode": False,
-                    "working_directory": context.working_directory
-                }
+                    "working_directory": context.working_directory,
+                },
             )
-            
         except subprocess.TimeoutExpired:
             return ToolResult.error_result(
                 message=f"Command timed out after {timeout} seconds",
-                error=TimeoutError(f"Command timeout: {timeout}s")
+                error=TimeoutError(f"Command timeout: {timeout}s"),
             )
-    
-    def interact_with_session(self, session_id: str, input_data: str, 
-                            timeout: float = 1.0) -> Dict[str, Any]:
-        """Interact with an active PTY session"""
-        if session_id not in self.active_sessions:
-            return {
-                "success": False,
-                "error": f"Session {session_id} not found"
-            }
-        
-        session = self.active_sessions[session_id]
-        
-        try:
-            # Send input
-            if input_data:
-                session.write_input(input_data)
-            
-            # Read output
-            time.sleep(timeout)
-            output = session.read_output()
-            errors = session.read_errors()
-            
-            return {
-                "success": True,
-                "output": output,
-                "errors": errors,
-                "running": session.is_alive(),
-                "exit_code": session.get_exit_code()
-            }
-            
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e)
-            }
-    
-    def terminate_session(self, session_id: str) -> bool:
-        """Terminate an active PTY session"""
-        if session_id not in self.active_sessions:
-            return False
-        
-        try:
-            session = self.active_sessions[session_id]
-            success = session.terminate()
-            if success:
-                del self.active_sessions[session_id]
-            return success
-            
-        except Exception as e:
-            logger.error("Error terminating session %s: %s", session_id, e)
-            return False
-    
-    def list_active_sessions(self) -> Dict[str, Dict[str, Any]]:
-        """List all active PTY sessions"""
-        sessions = {}
-        
-        for session_id, session in self.active_sessions.items():
-            sessions[session_id] = {
-                "running": session.is_alive(),
-                "command": session.command,
-                "working_dir": session.working_dir,
-                "exit_code": session.get_exit_code()
-            }
-        
-        # Clean up dead sessions
-        dead_sessions = [sid for sid, info in sessions.items() if not info["running"]]
-        for sid in dead_sessions:
-            self.terminate_session(sid)
-        
-        return sessions
-    
+
     def _is_command_safe(self, command: str) -> bool:
-        """Enhanced security check for commands"""
-        dangerous_patterns = [
-            r'rm\s+-rf\s+/',
-            r'del\s+/[fqs]\s+c:\\',
-            r'format\s+c:',
-            r'dd\s+if=.*of=/dev/',
-            r':\(\)\{\s*:\s*\|\s*:\s*&\s*\};:',  # Fork bomb pattern
-            r'sudo\s+rm\s+-rf',
-            r'chmod\s+777\s+/',
-            r'>\s*/dev/.*',
-            r'mkfs\.',
-            r'fdisk.*--delete',
-        ]
-        
-        command_lower = command.lower()
-        
-        for pattern in dangerous_patterns:
-            if re.search(pattern, command_lower):
-                return False
-        
-        return True
-    
-    async def can_handle(self, user_input: str) -> bool:
-        """Check if this tool can handle the user input"""
-        input_lower = user_input.lower()
-        keywords = [
-            "run", "execute", "command", "shell", "bash", "cmd",
-            "interactive", "pty", "terminal", "process"
-        ]
-        return any(keyword in input_lower for keyword in keywords)
+        """Reject commands matching any DANGEROUS pattern in `_shell_security`."""
+        return not is_blocked(command)
 
 
 class PythonExecutionTool(SyncTool):
@@ -721,13 +187,6 @@ class PythonExecutionTool(SyncTool):
                 error=e,
             )
 
-    async def can_handle(self, user_input: str) -> bool:
-        """Verifica se pode processar a entrada"""
-        input_lower = user_input.lower()
-        return any(keyword in input_lower for keyword in [
-            "python", "run code", "execute code", "script"
-        ])
-
 
 class PipInstallTool(SyncTool):
     """Install a Python package via pip and (optionally) persist it to requirements.txt.
@@ -780,7 +239,6 @@ class PipInstallTool(SyncTool):
                 line = raw.strip()
                 if not line or line.startswith("#") or line.startswith("-"):
                     continue
-                # strip inline comments
                 if "#" in line:
                     line = line.split("#", 1)[0].strip()
                 if cls._normalize_pkg_name(line) == target:
@@ -870,7 +328,6 @@ class PipInstallTool(SyncTool):
                 },
             )
 
-        # Success — handle requirements.txt
         requirements_updated = False
         requirements_note = ""
         if update_requirements:
@@ -906,70 +363,60 @@ class PipInstallTool(SyncTool):
             },
         )
 
-    async def can_handle(self, user_input: str) -> bool:
-        return any(
-            kw in user_input.lower()
-            for kw in ["pip install", "install package", "install dependency", "instalar dependência"]
-        )
-
 
 class TestRunnerTool(SyncTool):
     """Ferramenta para execução de testes (implementação futura)"""
-    
+
     @property
     def name(self) -> str:
         return "run_tests"
-    
+
     @property
     def description(self) -> str:
         return "Runs project tests and returns results"
-    
+
     @property
     def category(self) -> str:
         return "testing"
-    
+
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Executa testes do projeto"""
         test_path = context.parsed_args.get("test_path", "tests/")
-        test_type = context.parsed_args.get("test_type", "pytest")  # pytest, unittest, etc.
+        test_type = context.parsed_args.get("test_type", "pytest")
         verbose = context.parsed_args.get("verbose", False)
-        
-        # Comandos de teste baseado no tipo
+
         test_commands = {
             "pytest": ["python3", "-m", "pytest"],
             "unittest": ["python3", "-m", "unittest"],
             "nose": ["nosetests"]
         }
-        
+
         if test_type not in test_commands:
             return ToolResult.error_result(
                 message=f"Unsupported test type: {test_type}",
                 error=ValidationError(f"test_type must be one of: {list(test_commands.keys())}")
             )
-        
+
         try:
-            # Constrói comando
             cmd = test_commands[test_type].copy()
-            
+
             if test_path and test_path != ".":
                 cmd.append(test_path)
-            
+
             if verbose and test_type == "pytest":
                 cmd.append("-v")
-            
-            # Executa testes
+
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=300,  # 5 minutos de timeout para testes
+                timeout=300,
                 cwd=context.working_directory
             )
-            
+
             output = result.stdout.strip() if result.stdout else ""
             error_output = result.stderr.strip() if result.stderr else ""
-            
-            # Analisa resultado básico
+
             if test_type == "pytest":
                 if "failed" in output.lower() or result.returncode != 0:
                     status = ToolStatus.ERROR
@@ -980,7 +427,7 @@ class TestRunnerTool(SyncTool):
             else:
                 status = ToolStatus.SUCCESS if result.returncode == 0 else ToolStatus.ERROR
                 message = "Tests completed" if result.returncode == 0 else "Tests failed"
-            
+
             return ToolResult(
                 status=status,
                 data=output,
@@ -993,7 +440,7 @@ class TestRunnerTool(SyncTool):
                     "stderr": error_output
                 }
             )
-            
+
         except subprocess.TimeoutExpired:
             return ToolResult.error_result(
                 message="Tests timed out after 5 minutes",
@@ -1004,10 +451,3 @@ class TestRunnerTool(SyncTool):
                 message=f"Error running tests: {str(e)}",
                 error=e
             )
-    
-    async def can_handle(self, user_input: str) -> bool:
-        """Verifica se pode processar a entrada"""
-        input_lower = user_input.lower()
-        return any(keyword in input_lower for keyword in [
-            "test", "pytest", "unittest", "run tests"
-        ])

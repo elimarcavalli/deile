@@ -511,7 +511,7 @@ class ConfigManager:
                             'suggest_improvements': True
                         },
                         'tool_preferences': {
-                            'preferred_tools': ['file_tools', 'git_tool', 'bash_tool'],
+                            'preferred_tools': ['file_tools', 'bash_tool'],
                             'avoid_tools': [],
                             'tool_timeout': 30
                         }

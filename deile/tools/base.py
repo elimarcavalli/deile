@@ -318,22 +318,26 @@ class Tool(ABC):
         self._schema = schema
     
     @property
-    @abstractmethod
     def name(self) -> str:
-        """Nome único da tool"""
-        pass
-    
+        """Nome único da tool. Default: schema.name. Subclasses sem schema devem sobrescrever."""
+        if self._schema is None:
+            raise NotImplementedError(
+                f"{type(self).__name__} must either pass `schema=` to super().__init__ "
+                "or override the `name` property"
+            )
+        return self._schema.name
+
     @property
-    @abstractmethod
     def description(self) -> str:
-        """Descrição da funcionalidade da tool"""
-        pass
-    
+        """Descrição da funcionalidade da tool. Default: schema.description."""
+        return self._schema.description if self._schema else ""
+
     @property
-    @abstractmethod
     def category(self) -> str:
-        """Categoria da tool (ex: 'file', 'execution', 'search')"""
-        pass
+        """Categoria da tool (string). Default: schema.category.value."""
+        if self._schema is None:
+            return ToolCategory.OTHER.value
+        return self._schema.category.value
     
     @property
     def version(self) -> str:
@@ -405,18 +409,7 @@ class Tool(ABC):
             ValidationError: Se o contexto é inválido
         """
         return True
-    
-    async def can_handle(self, user_input: str) -> bool:
-        """Verifica se esta tool pode processar a entrada do usuário
-        
-        Args:
-            user_input: Entrada do usuário
-            
-        Returns:
-            bool: True se a tool pode processar a entrada
-        """
-        return False
-    
+
     async def get_help(self) -> str:
         """Retorna ajuda sobre como usar a tool"""
         return f"""
@@ -433,33 +426,6 @@ Executions: {self.execution_count}
     
     def __repr__(self) -> str:
         return f"<Tool: {self.name}>"
-
-
-class AsyncTool(Tool):
-    """Tool base para operações assíncronas"""
-    
-    async def execute_with_timeout(
-        self, 
-        context: ToolContext, 
-        timeout: float = 30.0
-    ) -> ToolResult:
-        """Executa a tool com timeout
-        
-        Args:
-            context: Contexto de execução
-            timeout: Timeout em segundos
-            
-        Returns:
-            ToolResult: Resultado da execução
-        """
-        try:
-            return await asyncio.wait_for(self.execute(context), timeout=timeout)
-        except asyncio.TimeoutError:
-            return ToolResult(
-                status=ToolStatus.ERROR,
-                message=f"Tool {self.name} timeout after {timeout}s",
-                error=asyncio.TimeoutError(f"Timeout after {timeout}s")
-            )
 
 
 class SyncTool(Tool):
