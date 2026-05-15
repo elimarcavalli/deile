@@ -1,0 +1,135 @@
+# deile-worker — long-running pod that executes coding tasks dispatched
+# by the deilebot (Discord). Toolset is FULL inside the pod (bash, file
+# I/O, python, git, pip), but the pod itself is the jail:
+#
+#   - readOnlyRootFilesystem; only /home/deile (PVC) and /tmp (mem) writable
+#   - drop ALL caps; uid 10001; runAsNonRoot; PSS restricted
+#   - NetworkPolicy: ingress only from deilebot pod; egress 443 + bot:8765
+#   - secrets mounted as files; LLM keys popped from env after bootstrap
+#   - prompt envelope locks the agent CWD to /home/deile/work/<task_id>/
+#
+# The Mac filesystem is unreachable. Even total LLM compromise can only
+# touch the mounted PVC subdirectory.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deile-worker
+  namespace: deile
+  labels:
+    app: deile-worker
+    role: deile        # so existing NetworkPolicies (deile-egress-to-bot,
+                       # deile-egress-https-llm) cover this pod too
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels:
+      app: deile-worker
+      role: deile
+  template:
+    metadata:
+      labels:
+        app: deile-worker
+        role: deile
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: deile-stack:local
+          imagePullPolicy: Never
+          workingDir: /home/deile
+          # ENTRYPOINT is `tini --` from the image; args become the rest
+          # of the command. Wrapper installs git credentials + clone
+          # guard + bootstrap monkeypatch, then handoff to worker_server.
+          args: ["python3", "/app/wrapper.py", "worker"]
+          env:
+            - { name: HOME,                         value: /home/deile }
+            - { name: PYTHONUNBUFFERED,             value: "1" }
+            - { name: PYTHONDONTWRITEBYTECODE,      value: "1" }
+            # The worker calls back into the bot's control-plane to
+            # post/edit Discord status messages and react.
+            - { name: DEILE_BOT_ENDPOINT,           value: "http://deilebot.deile.svc.cluster.local:8765" }
+            # We allow messaging tools (incl. send_dm) without prompting
+            # the operator; the worker's prompt is sanitised by envelope.
+            - { name: DEILE_BOT_APPROVAL_AUTO,      value: "1" }
+            - { name: DEILE_DEFAULT_PERSONA,        value: developer }
+            # Worker's own listener.
+            - { name: DEILE_WORKER_HOST,            value: "0.0.0.0" }
+            - { name: DEILE_WORKER_PORT,            value: "8766" }
+            - { name: DEILE_WORKER_ROOT,            value: "/home/deile/work" }
+            - { name: DEILE_WORKER_TASK_TIMEOUT_S,  value: "600" }
+            - { name: DEILE_WORKER_LOG_LEVEL,       value: "INFO" }
+            # IMPORTANT: do NOT install the messaging-only whitelist
+            # here. The wrapper's worker mode keeps the full toolset.
+          ports:
+            - { name: worker-api, containerPort: 8766, protocol: TCP }
+          volumeMounts:
+            # LLM keys + DEILE_BOT_AUTH_TOKEN — same Secret as deile-job/shell.
+            - { name: deile-secrets,  mountPath: /run/secrets/deile,  readOnly: true }
+            # Worker's own bearer token — distinct Secret (bot+worker mirror).
+            - { name: worker-bearer,  mountPath: /run/secrets/worker, readOnly: true }
+            # PVC for the workspace — survives pod restart.
+            - { name: work,           mountPath: /home/deile/work }
+            # /home/deile itself stays writable as emptyDir for caches/etc;
+            # the PVC is mounted only on /home/deile/work.
+            - { name: home,           mountPath: /home/deile,   subPath: "" }
+            - { name: tmp,            mountPath: /tmp }
+            # bot-config provides the clonable_repos allowlist for the
+            # git clone guard installed by the wrapper.
+            - name: bot-config
+              mountPath: /home/deile/config/deilebot.yaml
+              subPath: deilebot.yaml
+              readOnly: true
+          readinessProbe:
+            httpGet: { path: /v1/health, port: worker-api }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet: { path: /v1/health, port: worker-api }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests: { cpu: "100m", memory: "384Mi" }
+            limits:   { cpu: "2000m", memory: "2Gi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - { name: deile-secrets, secret: { secretName: deile-secrets,  defaultMode: 288 } }
+        - { name: worker-bearer, secret: { secretName: worker-bearer,  defaultMode: 288 } }
+        - { name: work,          persistentVolumeClaim: { claimName: deile-worker-work } }
+        - { name: home,          emptyDir: { sizeLimit: "256Mi" } }
+        - { name: tmp,           emptyDir: { medium: Memory, sizeLimit: "64Mi" } }
+        - name: bot-config
+          configMap:
+            name: bot-config
+            defaultMode: 292   # 0o444
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: deile-worker
+  namespace: deile
+  labels:
+    app: deile-worker
+spec:
+  type: ClusterIP
+  selector:
+    app: deile-worker
+  ports:
+    - { name: worker-api, port: 8766, targetPort: worker-api, protocol: TCP }
