@@ -74,10 +74,12 @@ def test_full_setup_registers_all_eight(monkeypatch):
     reset_bot_settings_cache()
     registry = ToolRegistry()
     n = register_messaging_tools(registry)
-    assert n == 8
+    # 9 = 8 originais + discord_edit_message (issue #revival, fix bot pin/edit DM).
+    assert n == 9
     expected = {
         "discord_send_message",
         "discord_send_dm",
+        "discord_edit_message",
         "discord_react",
         "discord_start_thread",
         "discord_pin_message",
@@ -99,6 +101,6 @@ def test_idempotent(monkeypatch):
     registry = ToolRegistry()
     n1 = register_messaging_tools(registry)
     n2 = register_messaging_tools(registry)
-    assert n1 == 8
+    assert n1 == 9
     assert n2 == 0
-    assert len(registry) == 8
+    assert len(registry) == 9

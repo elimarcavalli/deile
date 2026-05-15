@@ -1,9 +1,16 @@
 """CronCreateTool — schedule a natural-language prompt for future execution.
 
-Implements the create half of intent #86. Pass either ``cron`` (recurring)
-or ``run_at`` (one-shot UTC datetime). The prompt is whatever the user
-asked DEILE to do — it gets fed back into a fresh agent turn when the
-schedule fires.
+Implements the create half of intent #86. Caller may provide:
+    - ``when`` (recommended): natural string parsed by
+      :func:`deile.cron.parsing.parse_natural_schedule` — accepts BR humano,
+      ISO ±TZ, "amanhã 9h", "hoje 23:00", or 5-field cron in UTC. Naive ISO
+      and BR formats are interpreted as BRT (UTC-3).
+    - ``cron`` (legacy): explicit 5-field cron in UTC.
+    - ``run_at`` (legacy): explicit ISO datetime (naive treated as UTC).
+
+When the schedule fires the prompt is fed back into a fresh DEILE turn.
+``notify_user_id`` causes the runner to DM the result via the bot
+control-plane (when wired).
 """
 
 from __future__ import annotations
@@ -11,6 +18,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
+from deile.cron.parsing import ScheduleParseError, parse_natural_schedule
 from deile.cron.store import (CronEntry, CronStore, CronStoreError, make_id,
                               resolve_db_path)
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
@@ -30,12 +38,14 @@ class CronCreateTool(Tool):
                 name="cron_create",
                 description=(
                     "Schedule a natural-language prompt to be executed by DEILE "
-                    "at a future time. Provide EITHER `cron` (5-field expression "
-                    "for recurring tasks, e.g. '0 9 * * 1' = Mondays at 09:00 UTC) "
-                    "OR `run_at` (ISO-8601 UTC datetime for one-shot, e.g. "
-                    "'2026-05-06T18:00:00Z'). When the schedule fires, the prompt "
-                    "is fed back into a fresh DEILE turn. Set `notify_user_id` to "
-                    "DM the result to a Discord user."
+                    "at a future time. Pass `when` with a natural-language string "
+                    "and the tool figures out cron-vs-oneshot for you. Examples: "
+                    "`when='amanhã 9h'`, `when='hoje 23:00'`, "
+                    "`when='15/05/2026 09:30'` (BRT), `when='2026-05-15T12:30Z'` "
+                    "(UTC), `when='*/5 * * * *'` (cron in UTC). When the schedule "
+                    "fires the prompt is fed back into a fresh DEILE turn — write "
+                    "it self-contained. Set `notify_user_id` to DM the result to "
+                    "the requesting Discord user."
                 ),
                 parameters={
                     "type": "object",
@@ -48,18 +58,31 @@ class CronCreateTool(Tool):
                                 "self-contained (no missing context)."
                             ),
                         },
+                        "when": {
+                            "type": "string",
+                            "description": (
+                                "Natural-language schedule. Accepts: '15/05/2026 "
+                                "09:30' (BRT), '15/05 09:30' (BRT, ano atual), "
+                                "'amanhã 14h', 'hoje 23:00', '2026-05-15T09:30' "
+                                "(ISO sem TZ — assume BRT), '2026-05-15T12:30:00Z' "
+                                "(ISO em UTC), or '*/5 * * * *' (cron 5 campos "
+                                "UTC). PREFERRED over cron/run_at."
+                            ),
+                        },
                         "cron": {
                             "type": "string",
                             "description": (
-                                "5-field cron expression in UTC. Use for "
-                                "recurring tasks. Mutually exclusive with run_at."
+                                "Legacy: 5-field cron expression in UTC. Use "
+                                "`when` instead unless caller already has a cron "
+                                "string. Mutually exclusive with run_at and when."
                             ),
                         },
                         "run_at": {
                             "type": "string",
                             "description": (
-                                "ISO-8601 UTC datetime. Use for one-shot. "
-                                "Mutually exclusive with cron."
+                                "Legacy: ISO-8601 datetime (naive = UTC). Use "
+                                "`when` instead. Mutually exclusive with cron "
+                                "and when."
                             ),
                         },
                         "id": {
@@ -78,7 +101,7 @@ class CronCreateTool(Tool):
                             "description": (
                                 "Identifier of the user who scheduled this "
                                 "(e.g. 'discord:1234'). Optional but useful "
-                                "for audit."
+                                "for audit and ownership filtering."
                             ),
                         },
                     },
@@ -94,27 +117,41 @@ class CronCreateTool(Tool):
     async def execute(self, context: ToolContext) -> ToolResult:
         args = context.parsed_args or {}
         prompt = (args.get("prompt") or "").strip()
-        cron = args.get("cron")
-        run_at_str = args.get("run_at")
+        when_str = (args.get("when") or "").strip() or None
+        cron = args.get("cron") or None
+        run_at_str = args.get("run_at") or None
 
         if not prompt:
             return ToolResult.error_result(
                 message="prompt is required and must be non-empty",
                 error_code="MISSING_PROMPT",
             )
-        if not cron and not run_at_str:
+
+        provided = sum(1 for v in (when_str, cron, run_at_str) if v)
+        if provided == 0:
             return ToolResult.error_result(
-                message="provide either cron (recurring) or run_at (one-shot)",
+                message=(
+                    "provide `when` (preferred — natural language) OR `cron` "
+                    "(5-field UTC) OR `run_at` (ISO datetime)"
+                ),
                 error_code="MISSING_SCHEDULE",
             )
-        if cron and run_at_str:
+        if provided > 1:
             return ToolResult.error_result(
-                message="cron and run_at are mutually exclusive; provide only one",
+                message="when, cron, and run_at are mutually exclusive; pick one",
                 error_code="AMBIGUOUS_SCHEDULE",
             )
 
         run_at: Optional[datetime] = None
-        if run_at_str:
+
+        if when_str:
+            try:
+                cron, run_at = parse_natural_schedule(when_str)
+            except ScheduleParseError as exc:
+                return ToolResult.error_result(
+                    message=str(exc), error=exc, error_code="INVALID_WHEN",
+                )
+        elif run_at_str:
             try:
                 run_at = datetime.fromisoformat(str(run_at_str).rstrip("Z"))
             except ValueError as exc:
@@ -151,6 +188,8 @@ class CronCreateTool(Tool):
                 "id": entry.id,
                 "next_fire_at": entry.next_fire_at.isoformat() if entry.next_fire_at else None,
                 "is_oneshot": entry.is_oneshot,
+                "cron": entry.cron,
+                "run_at": entry.run_at.isoformat() if entry.run_at else None,
             },
             message=(
                 f"agendado {entry.id!r} — próxima execução em "

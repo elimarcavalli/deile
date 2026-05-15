@@ -174,7 +174,12 @@ async def test_short_response_not_truncated():
 
 @pytest.mark.unit
 async def test_prompt_forwarded_to_process_input():
-    """entry.prompt is forwarded verbatim as the first positional arg."""
+    """entry.prompt is forwarded inside a [CRON FIRE] envelope.
+
+    The runner wraps the prompt before sending it to the agent so the LLM
+    knows it's a scheduled fire (not a fresh user turn) and doesn't ask
+    for clarification. Verify the original prompt is included verbatim.
+    """
     prompt = "summarize yesterday's commits"
     entry = _make_entry(prompt=prompt)
     agent = AsyncMock()
@@ -187,4 +192,7 @@ async def test_prompt_forwarded_to_process_input():
     await cb(entry)
 
     call_args = agent.process_input.call_args
-    assert call_args.args[0] == prompt
+    forwarded = call_args.args[0]
+    assert "[CRON FIRE]" in forwarded
+    assert prompt in forwarded
+    assert entry.id in forwarded

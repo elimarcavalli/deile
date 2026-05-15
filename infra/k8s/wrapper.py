@@ -113,10 +113,15 @@ def _messaging_tool_whitelist() -> frozenset:
                 names.add(cls.tool_name)
     except Exception:  # noqa: BLE001 — best-effort
         pass
-    # Always include — they're the bot's only path to real work.
+    # Always include — bot's only path to real work + cron tools so it
+    # can schedule from natural-language DM ("me lembre amanhã 9h de X").
     names.add("dispatch_deile_task")
     names.add("vision_describe_image")
-    if names - {"dispatch_deile_task", "vision_describe_image"}:
+    names.add("cron_create")
+    names.add("cron_list")
+    names.add("cron_delete")
+    if names - {"dispatch_deile_task", "vision_describe_image",
+                "cron_create", "cron_list", "cron_delete"}:
         return frozenset(names)
     # Fallback when messaging package failed to import.
     return frozenset({
@@ -124,6 +129,7 @@ def _messaging_tool_whitelist() -> frozenset:
         "discord_react", "discord_start_thread", "discord_pin_message",
         "discord_mention_role", "discord_get_user_profile",
         "dispatch_deile_task", "vision_describe_image",
+        "cron_create", "cron_list", "cron_delete",
     })
 
 
