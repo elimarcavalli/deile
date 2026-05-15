@@ -15,6 +15,7 @@ Auto-discovery:
 
 from ._base import MessagingTool
 from .auto_discover import register_messaging_tools
+from .discord_edit_message import DiscordEditMessageTool
 from .discord_get_user_profile import DiscordGetUserProfileTool
 from .discord_mention_role import DiscordMentionRoleTool
 from .discord_pin_message import DiscordPinMessageTool
@@ -28,6 +29,7 @@ __all__ = [
     "MessagingTool",
     "DiscordSendMessageTool",
     "DiscordSendDMTool",
+    "DiscordEditMessageTool",
     "DiscordReactTool",
     "DiscordStartThreadTool",
     "DiscordPinMessageTool",
