@@ -14,6 +14,17 @@ The tool POSTs to the deile-worker control plane, which:
 
 The bot's LLM only receives a tiny summary back so it doesn't have to
 re-narrate everything — the user already sees the rich status message.
+
+Anti-loop guard
+---------------
+The LLM sometimes retries `dispatch_deile_task` 2-3x when the first
+result looks "empty" or "wrong" (e.g. worker missing `ping`), causing
+duplicate workers to spawn for the same user message. This module
+maintains a class-level cache keyed by ``channel_id`` with a 30s
+cooldown: any 2nd attempt within that window returns an idempotency
+error to the LLM with a clear message. The LLM then reports the error
+to the user instead of looping. Cooldown is short enough that genuinely
+new requests on the same channel resume normally.
 """
 
 from __future__ import annotations
@@ -21,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, Optional
 
 from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
@@ -69,6 +81,13 @@ def _worker_token() -> str:
 
 class DispatchDeileTaskTool(Tool):
     """Delegate a code task to a deile-worker Pod and stream UX to Discord."""
+
+    # Class-level cooldown registry — keyed by channel_id, value is the
+    # monotonic timestamp of the LAST dispatch. Used to block the LLM
+    # from rajaring the worker when the first attempt comes back vazio
+    # or with an error it's tempted to "retry".
+    _LAST_DISPATCH: Dict[str, float] = {}
+    _DISPATCH_COOLDOWN_S = 30.0
 
     @property
     def name(self) -> str:
@@ -180,6 +199,24 @@ class DispatchDeileTaskTool(Tool):
                         "channel_id is required (and not in bot_context)",
                         error_code="BAD_REQUEST",
                     )
+
+            # Anti-loop guard: refuse a 2nd dispatch within COOLDOWN_S on
+            # the same channel. Worker spawning is expensive AND the user
+            # sees duplicate status messages — both bad UX.
+            now = time.monotonic()
+            last = self._LAST_DISPATCH.get(channel_id)
+            if last is not None and (now - last) < self._DISPATCH_COOLDOWN_S:
+                remaining = self._DISPATCH_COOLDOWN_S - (now - last)
+                return ToolResult.error_result(
+                    f"dispatch já feito há {now - last:.0f}s nesse canal; "
+                    f"aguarde {remaining:.0f}s e relate ao usuário em vez de retentar. "
+                    f"Se a 1ª chamada falhou (ex: 'ping' não existe no worker), "
+                    f"explique isso ao usuário — NÃO chame dispatch_deile_task de novo "
+                    f"esperando resultado diferente.",
+                    error_code="DISPATCH_COOLDOWN",
+                )
+            # Record BEFORE the HTTP call so concurrent retries also block.
+            self._LAST_DISPATCH[channel_id] = now
 
             endpoint = _worker_endpoint().rstrip("/") + _DISPATCH_PATH
             token = _worker_token()
