@@ -75,6 +75,12 @@ spec:
             # Worker control-plane (where dispatch_deile_task posts).
             - name: DEILE_WORKER_ENDPOINT
               value: "http://deile-worker.deile.svc.cluster.local:8766"
+            # Auto-start CronRunner on bot boot. Without this, /agendar
+            # creates entries no DB mas nunca dispara — runner fica off.
+            - name: DEILE_CRON_AUTOSTART
+              value: "1"
+            - name: DEILE_CRON_DB_PATH
+              value: "/home/deile/data/cron.db"
           ports:
             - name: control-plane
               containerPort: 8765
