@@ -77,7 +77,6 @@ class CommandRegistry:
         return True
 
     def get_command(self, command_name: str) -> Optional[SlashCommand]:
-
         """Obtém comando pelo nome ou alias (case-insensitive)."""
         # Nome exato
         if command_name in self._commands:
@@ -164,45 +163,37 @@ class CommandRegistry:
             )
         
         try:
-            # Valida contexto
             if not await command.can_execute(context):
                 return CommandResult.error_result(
                     f"Command '/{command_name}' cannot execute in current context"
                 )
-            
-            # Valida argumentos
+
             validation_errors = await command.validate_args(context.args)
             if validation_errors:
                 return CommandResult.error_result(
                     f"Invalid arguments: {', '.join(validation_errors)}"
                 )
-            
-            # Executa comando
+
             import time
             start_time = time.time()
-            
             result = await command.execute(context)
-            
             execution_time = time.time() - start_time
+
             command._record_execution(execution_time)
             self._execution_count += 1
-            
-            # Adiciona metadados
+
             if result.execution_time is None:
                 result.execution_time = execution_time
             result.metadata.update({
                 "command_name": command_name,
-                "execution_count": command.execution_count
+                "execution_count": command.execution_count,
             })
-            
+
             return result
-            
+
         except Exception as e:
-            logger.error(f"Error executing command /{command_name}: {e}")
-            return CommandResult.error_result(
-                f"Error executing command: {str(e)}",
-                error=e
-            )
+            logger.error("Error executing command /%s: %s", command_name, e)
+            return CommandResult.error_result(f"Error executing command: {e}", error=e)
     
     def load_commands_from_config(self) -> int:
         """Carrega comandos da configuração YAML"""
@@ -228,11 +219,11 @@ class CommandRegistry:
                     self.register_command(command)
                     loaded_count += 1
             
-            logger.info(f"Loaded {loaded_count} commands from configuration")
+            logger.info("Loaded %d commands from configuration", loaded_count)
             return loaded_count
-            
+
         except Exception as e:
-            logger.error(f"Error loading commands from config: {e}")
+            logger.error("Error loading commands from config: %s", e)
             return 0
     
     def auto_discover_builtin_commands(self) -> int:
@@ -285,7 +276,7 @@ class CommandRegistry:
                         self.register_command(command_instance)
                         discovered += 1
                 except Exception as e:
-                    logger.warning(f"Failed to instantiate command {name}: {e}")
+                    logger.warning("Failed to instantiate command %s: %s", name, e)
         
         return discovered
     

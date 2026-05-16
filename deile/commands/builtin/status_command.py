@@ -34,7 +34,7 @@ _PROVIDER_HOSTS: Dict[str, str] = {
 async def _probe_host(host: str, port: int = 443, timeout: float = 5.0) -> Tuple[bool, float]:
     start = time.monotonic()
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         conn = await asyncio.wait_for(
             loop.run_in_executor(
                 None, lambda: socket.create_connection((host, port), timeout=timeout)
@@ -62,6 +62,16 @@ class StatusCommand(DirectCommand):
         )
         super().__init__(config)
 
+    _DISPATCH = {
+        "system": "_show_system_status",
+        "models": "_show_models_status",
+        "tools": "_show_tools_status",
+        "memory": "_show_memory_status",
+        "plans": "_show_plans_status",
+        "connectivity": "_show_connectivity_status",
+        "performance": "_show_performance_status",
+    }
+
     async def execute(self, context: CommandContext) -> CommandResult:
         self._emit_audit_event(context)
         try:
@@ -69,22 +79,13 @@ class StatusCommand(DirectCommand):
             if not parts:
                 return await self._show_complete_status(context)
             section = parts[0].lower()
-            dispatch = {
-                "system": self._show_system_status,
-                "models": self._show_models_status,
-                "tools": self._show_tools_status,
-                "memory": self._show_memory_status,
-                "plans": self._show_plans_status,
-                "connectivity": self._show_connectivity_status,
-                "performance": self._show_performance_status,
-            }
-            handler = dispatch.get(section)
-            if not handler:
+            method_name = self._DISPATCH.get(section)
+            if not method_name:
                 raise CommandError(f"Seção desconhecida: {section}")
-            return await handler(context)
+            return await getattr(self, method_name)(context)
+        except CommandError:
+            raise
         except Exception as exc:
-            if isinstance(exc, CommandError):
-                raise
             raise CommandError(f"Falha ao executar /status: {exc}") from exc
 
     # ------------------------------------------------------------------
@@ -232,16 +233,13 @@ class StatusCommand(DirectCommand):
 
             providers = router.providers
             if not providers:
-                providers_by_id = getattr(tier_router, "_providers_by_id", {})
-                for pid, prov in providers_by_id.items():
+                for pid, prov in getattr(tier_router, "_providers_by_id", {}).items():
                     model = getattr(prov, "model_name", "?")
                     table.add_row(f"{pid}:{model}", pid, str(model))
             else:
-                for key, prov in providers.items():
+                for key in providers:
                     parts = key.split(":", 1)
-                    provider_id = parts[0]
-                    model_id = parts[1] if len(parts) > 1 else "?"
-                    table.add_row(key, provider_id, model_id)
+                    table.add_row(key, parts[0], parts[1] if len(parts) > 1 else "?")
 
             if table.row_count == 0:
                 table.add_row(indisponivel("nenhum provedor registrado"), "—", "—")
@@ -401,14 +399,14 @@ class StatusCommand(DirectCommand):
         if not hosts_to_probe:
             hosts_to_probe = dict(_PROVIDER_HOSTS)
 
-        probe_tasks = {pid: _probe_host(host) for pid, host in hosts_to_probe.items()}
-        results = await asyncio.gather(*probe_tasks.values(), return_exceptions=True)
-        probe_results: Dict[str, Tuple[bool, float]] = {}
-        for pid, result in zip(probe_tasks.keys(), results):
-            if isinstance(result, Exception):
-                probe_results[pid] = (False, 0.0)
-            else:
-                probe_results[pid] = result
+        pids = list(hosts_to_probe.keys())
+        raw = await asyncio.gather(
+            *(_probe_host(hosts_to_probe[p]) for p in pids), return_exceptions=True
+        )
+        probe_results: Dict[str, Tuple[bool, float]] = {
+            pid: (False, 0.0) if isinstance(r, Exception) else r
+            for pid, r in zip(pids, raw)
+        }
 
         table = Table(title="🌐 Conectividade com Provedores", show_header=True, header_style="bold cyan")
         table.add_column("Provedor", style="cyan", width=20)
