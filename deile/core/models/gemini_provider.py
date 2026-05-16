@@ -408,17 +408,16 @@ class GeminiProvider(ModelProvider):
             self._chat_sessions.pop(_session_key, None)
             return
 
-        # No tools — preserve the legacy simulated word-chunking stream so the
-        # UI still sees progressive output for plain replies.
+        # No tools — Gemini's generate() is a single awaitable with no native
+        # chunking, so emit the completed text as one TEXT_DELTA. The streaming
+        # renderer accumulates deltas, so a single delta renders correctly; the
+        # old word-by-word slicing only added artificial latency (no real I/O).
         response = await self.generate(messages, system_instruction, **kwargs)
 
-        words = response.content.split()
-        for i in range(0, len(words), 5):
-            chunk = " ".join(words[i:i + 5])
-            if i + 5 < len(words):
-                chunk += " "
-            yield UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text=chunk)
-            await asyncio.sleep(0.05)
+        if response.content:
+            yield UnifiedStreamEvent(
+                type=StreamEventType.TEXT_DELTA, text=response.content
+            )
 
         yield UnifiedStreamEvent(
             type=StreamEventType.USAGE_FINAL,
