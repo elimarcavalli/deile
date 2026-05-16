@@ -13,6 +13,7 @@ from rich.text import Text
 from ...config.manager import CommandConfig
 from ...core.interfaces.selector import (InteractiveSelector,
                                          SelectorNotSupported, SelectorOption)
+from ...core.models.tier import ModelTier
 from ...core.models.tier_router import get_tier_router, reset_tier_router
 from ...storage.usage_repository import BudgetGuard, get_usage_repository
 from ..base import CommandContext, CommandResult, DirectCommand
@@ -265,15 +266,11 @@ EXAMPLES:
     # ------------------------------------------------------------------
 
     async def _current(self, context: CommandContext) -> CommandResult:
-        from deile.core.models.tier_router import get_tier_router
-
         forced = self._get_forced(context)
         try:
             router = get_tier_router()
             policy = router.policy()
-            tier_1_cascade = policy.cascade_for_tier(__import__(
-                "deile.core.models.tier", fromlist=["ModelTier"]
-            ).ModelTier.TIER_1)
+            tier_1_cascade = policy.cascade_for_tier(ModelTier.TIER_1)
         except Exception:
             tier_1_cascade = []
 

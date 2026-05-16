@@ -11,6 +11,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 import anthropic
 
 from deile.core.loop_guard import (format_loop_break_message, make_guard,
+                                   make_loop_break_result,
                                    tool_result_made_progress)
 from deile.core.models.base import (ModelMessage, ModelProvider, ModelResponse,
                                     ModelSize, ModelType, ModelUsage)
@@ -267,20 +268,7 @@ class AnthropicProvider(ModelProvider):
                 # break out of the entire iteration loop.
                 abort = guard.check(block.name, dict(block.input or {}))
                 if abort is not None:
-                    abort_msg = abort.user_message()
-                    payload = {"status": "error", "error": abort_msg}
-                    from deile.tools.base import ToolResult as _TR
-                    from deile.tools.base import ToolStatus as _TS
-
-                    tr = _TR(
-                        status=_TS.ERROR,
-                        message=abort_msg,
-                        metadata={
-                            "loop_break": True,
-                            "loop_break_kind": abort.kind.value,
-                            "loop_break_args_hash": abort.args_hash,
-                        },
-                    )
+                    tr, payload = make_loop_break_result(abort)
                     tool_results.append(tr)
                     tool_result_content.append(
                         {
