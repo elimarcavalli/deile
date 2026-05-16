@@ -16,6 +16,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from deile.cli import _DeileCLI
+from deile.commands.builtin._shared import (POST_SWITCH_ACTION_KEY,
+                                            SWITCH_SESSION_KEY)
 
 
 def _make_session(
@@ -54,8 +56,8 @@ class TestCheckSessionSwitch:
         target = _make_session(sid="new-sid")
         current = _make_session(
             context_data={
-                "_switch_session": "new-sid",
-                "_post_switch_action": "welcome",
+                SWITCH_SESSION_KEY: "new-sid",
+                POST_SWITCH_ACTION_KEY: "welcome",
             },
         )
         cli = _make_cli(current, target_session=target)
@@ -73,8 +75,8 @@ class TestCheckSessionSwitch:
         )
         current = _make_session(
             context_data={
-                "_switch_session": "resumed-sid",
-                "_post_switch_action": "replay",
+                SWITCH_SESSION_KEY: "resumed-sid",
+                POST_SWITCH_ACTION_KEY: "replay",
             },
         )
         cli = _make_cli(current, target_session=target)
@@ -87,7 +89,7 @@ class TestCheckSessionSwitch:
     def test_default_action_prints_dim_swap_line(self):
         target = _make_session(sid="new-sid")
         current = _make_session(
-            context_data={"_switch_session": "new-sid"},
+            context_data={SWITCH_SESSION_KEY: "new-sid"},
         )
         cli = _make_cli(current, target_session=target)
         cli._check_session_switch()
@@ -98,7 +100,7 @@ class TestCheckSessionSwitch:
         assert "Sessão alternada" in text
 
     def test_unknown_target_keeps_current_session(self):
-        sess = _make_session(context_data={"_switch_session": "missing-sid"})
+        sess = _make_session(context_data={SWITCH_SESSION_KEY: "missing-sid"})
         cli = _make_cli(sess, target_session=None)
         cli._check_session_switch()
         assert cli.default_session is sess
@@ -106,13 +108,13 @@ class TestCheckSessionSwitch:
 
     def test_sentinels_are_consumed_even_when_target_missing(self):
         sess = _make_session(context_data={
-            "_switch_session": "missing-sid",
-            "_post_switch_action": "welcome",
+            SWITCH_SESSION_KEY: "missing-sid",
+            POST_SWITCH_ACTION_KEY: "welcome",
         })
         cli = _make_cli(sess, target_session=None)
         cli._check_session_switch()
-        assert "_switch_session" not in sess.context_data
-        assert "_post_switch_action" not in sess.context_data
+        assert SWITCH_SESSION_KEY not in sess.context_data
+        assert POST_SWITCH_ACTION_KEY not in sess.context_data
 
 
 class TestReplayHistory:

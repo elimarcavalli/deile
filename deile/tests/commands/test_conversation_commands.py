@@ -12,6 +12,8 @@ import pytest
 from deile.commands.base import CommandContext
 from deile.commands.builtin._conv_store import ConversationNameStore
 from deile.commands.builtin._session_store import SessionHistoryStore
+from deile.commands.builtin._shared import (POST_SWITCH_ACTION_KEY,
+                                            SWITCH_SESSION_KEY)
 from deile.commands.builtin.fork_command import ForkCommand
 from deile.commands.builtin.rename_command import RenameCommand
 from deile.commands.builtin.resume_command import ResumeCommand
@@ -145,7 +147,7 @@ class TestForkCommand:
 
         assert result.success
         ctx.agent.create_session.assert_called_once()
-        new_sid = ctx.session.context_data.get("_switch_session")
+        new_sid = ctx.session.context_data.get(SWITCH_SESSION_KEY)
         assert new_sid is not None
         assert new_sid.startswith("fork-")
 
@@ -156,7 +158,7 @@ class TestForkCommand:
             cmd = ForkCommand()
             await cmd.execute(ctx)
 
-        new_sid = ctx.session.context_data["_switch_session"]
+        new_sid = ctx.session.context_data[SWITCH_SESSION_KEY]
         new_sess = ctx.agent.get_session(new_sid)
         assert len(new_sess.conversation_history) == len(_HISTORY)
 
@@ -178,7 +180,7 @@ class TestForkCommand:
         cmd = ForkCommand()
         result = await cmd.execute(ctx)
         assert result.success
-        assert "_switch_session" not in ctx.session.context_data
+        assert SWITCH_SESSION_KEY not in ctx.session.context_data
         ctx.agent.create_session.assert_not_called()
 
     @pytest.mark.unit
@@ -191,7 +193,7 @@ class TestForkCommand:
         cmd = ForkCommand()
         result = await cmd.execute(ctx)
         assert result.success
-        assert "_switch_session" not in ctx.session.context_data
+        assert SWITCH_SESSION_KEY not in ctx.session.context_data
         ctx.agent.create_session.assert_not_called()
 
     @pytest.mark.unit
@@ -265,7 +267,7 @@ class TestRewindCommand:
         result = await cmd.execute(ctx)
         assert result.success
         # No session switch when history is empty
-        assert "_switch_session" not in ctx.session.context_data
+        assert SWITCH_SESSION_KEY not in ctx.session.context_data
 
     @pytest.mark.unit
     async def test_rewind_selector_not_supported(self):
@@ -296,7 +298,7 @@ class TestRewindCommand:
 
         assert result.success
         assert result.metadata.get("cancelled")
-        assert "_switch_session" not in ctx.session.context_data
+        assert SWITCH_SESSION_KEY not in ctx.session.context_data
 
     @pytest.mark.unit
     async def test_rewind_choice_creates_fork(self):
@@ -316,7 +318,7 @@ class TestRewindCommand:
             result = await cmd.execute(ctx)
 
         assert result.success
-        new_sid = ctx.session.context_data.get("_switch_session")
+        new_sid = ctx.session.context_data.get(SWITCH_SESSION_KEY)
         assert new_sid is not None
         assert new_sid.startswith("rewind-")
 
@@ -419,7 +421,7 @@ class TestResumeCommand:
             cmd = ResumeCommand()
             result = await cmd.execute(ctx)
         assert result.success
-        assert "_switch_session" not in ctx.session.context_data
+        assert SWITCH_SESSION_KEY not in ctx.session.context_data
 
     @pytest.mark.unit
     async def test_resume_cancel(self):
@@ -465,11 +467,11 @@ class TestResumeCommand:
             result = await cmd.execute(ctx)
 
         assert result.success
-        new_sid = ctx.session.context_data.get("_switch_session")
+        new_sid = ctx.session.context_data.get(SWITCH_SESSION_KEY)
         # /resume reuses the stored conversation's session_id (not a fork);
         # value matches what the selector mock returned ("old-1").
         assert new_sid == "old-1"
-        assert ctx.session.context_data.get("_post_switch_action") == "replay"
+        assert ctx.session.context_data.get(POST_SWITCH_ACTION_KEY) == "replay"
         assert (result.metadata or {}).get("suppress_response_display") is True
 
         new_sess = ctx.agent.get_session(new_sid)
