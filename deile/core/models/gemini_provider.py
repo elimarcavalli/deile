@@ -19,8 +19,61 @@ from ..loop_guard import (format_loop_break_message, make_guard,
                           tool_result_made_progress)
 from .base import (ModelMessage, ModelProvider, ModelResponse, ModelSize,
                    ModelType, ModelUsage)
+from .error_mapping import classify_http_error
+from .errors import ProviderErrorEnvelope, ProviderInvocationError
+from .tool_execution import (OUTCOME_EXCEPTION, OUTCOME_NOT_FOUND,
+                             resolve_and_execute_tool)
 
 logger = logging.getLogger(__name__)
+
+
+def _classify_gemini_error(exc: Exception) -> str:
+    """Classify a Google GenAI SDK exception into a provider-agnostic
+    ``error_type`` string.
+
+    The new ``google-genai`` SDK surfaces API failures as
+    :class:`google.genai.errors.APIError` (and its ``ClientError`` /
+    ``ServerError`` subclasses). Unlike Anthropic/OpenAI, those exceptions
+    expose the HTTP status as ``code`` (int), a coarse string under ``status``
+    (e.g. ``RESOURCE_EXHAUSTED``) and the human message under ``message``.
+    This classifier extracts those fields and delegates the status/sniff logic
+    to the shared :func:`classify_http_error`, so Gemini lands on the same
+    ``error_type`` vocabulary as the other providers.
+    """
+    status = getattr(exc, "code", None)
+    if not isinstance(status, int):
+        status = None
+    err_code = str(getattr(exc, "status", "") or "").lower()
+    err_msg = str(getattr(exc, "message", "") or str(exc) or "").lower()
+    return classify_http_error(status, err_code, err_msg)
+
+
+def _make_envelope(
+    exc: Exception,
+    provider_id: str,
+    model_id: str,
+) -> ProviderErrorEnvelope:
+    """Build a typed :class:`ProviderErrorEnvelope` from a GenAI SDK exception.
+
+    Built directly (not via the shared ``build_error_envelope`` helper) because
+    GenAI exceptions store their HTTP status under ``code`` and the response
+    body under ``details`` — a different layout from the Anthropic/OpenAI SDKs
+    that helper targets.
+    """
+    status = getattr(exc, "code", None)
+    if not isinstance(status, int):
+        status = None
+    details = getattr(exc, "details", None)
+    raw: Dict[str, Any] = details if isinstance(details, dict) else {}
+    message = str(getattr(exc, "message", "") or "") or str(exc)
+    return ProviderErrorEnvelope(
+        provider_id=provider_id,
+        model_id=model_id,
+        error_type=_classify_gemini_error(exc),
+        message=message,
+        http_status=status,
+        raw_json=raw,
+    )
 
 
 def _stringify_for_model(value: Any) -> Any:
@@ -209,27 +262,6 @@ class GeminiProvider(ModelProvider):
             logger.error(f"Failed to load tools for Function Calling: {e}")
             return None
     
-    def reload_config_from_manager(self) -> None:
-        """Recarrega configuração do ConfigManager (hot-reload)"""
-        try:
-            from ...config.manager import get_config_manager
-            config_manager = get_config_manager()
-            config_manager.reload_config()
-
-            # Atualiza configuração local
-            self.gemini_config = config_manager.get_config().gemini
-            self.generation_config = self.gemini_config.generation_config.copy()
-
-            # Reinicializa ferramentas disponíveis com nova configuração
-            self._available_tools = self._get_available_tools()
-
-            import logging
-            logging.info("GeminiProvider configuration reloaded successfully")
-
-        except Exception as e:
-            import logging
-            logging.error(f"Failed to reload GeminiProvider configuration: {e}")
-    
     @property
     def provider_name(self) -> str:
         return "gemini"
@@ -317,40 +349,45 @@ class GeminiProvider(ModelProvider):
             
             return response
             
-        except genai_errors.ClientError as e:
+        except genai_errors.APIError as e:
+            # Model-invocation failure: emit the same typed contract as the
+            # Anthropic/OpenAI providers so ToolLoopExecutor and the agent loop
+            # can read ``envelope.error_type`` (e.g. context_length_exceeded).
             execution_time = time.time() - start_time
-            error = ModelError(
-                "Gemini API rate limit exceeded",
-                model_name=self.model_name,
-                error_code="RATE_LIMIT_EXCEEDED"
-            )
-            
+            envelope = _make_envelope(e, self.provider_id, self.model_name)
+
             if is_debug_enabled():
                 await self.debug_logger.log_error(e, {
                     "provider": "gemini",
                     "execution_time": execution_time,
-                    "error_type": "rate_limit"
+                    "error_type": envelope.error_type,
                 })
-            
-            raise error from e
-            
+
+            raise ProviderInvocationError(envelope) from e
+
+        except ProviderInvocationError:
+            # Already typed (e.g. re-raised by ``_generate_with_new_sdk``) —
+            # propagate without re-wrapping.
+            raise
+
         except Exception as e:
+            # Non-API failure (serialization, processing). Still surface a typed
+            # envelope so the contract is uniform; classifies as ``unknown``,
+            # which the agent's provider cascade treats as transient/retryable —
+            # the same effect the pre-refactor ``ModelError`` had here, since
+            # neither is flagged permanent by ``_is_permanent_provider_error``.
             execution_time = time.time() - start_time
-            error = ModelError(
-                f"Gemini API error: {str(e)}",
-                model_name=self.model_name,
-                error_code="API_ERROR"
-            )
-            
+            envelope = _make_envelope(e, self.provider_id, self.model_name)
+
             if is_debug_enabled():
                 await self.debug_logger.log_error(e, {
-                    "provider": "gemini", 
+                    "provider": "gemini",
                     "execution_time": execution_time,
-                    "error_type": "api_error",
-                    "original_error": str(e)
+                    "error_type": envelope.error_type,
+                    "original_error": str(e),
                 })
-            
-            raise error from e
+
+            raise ProviderInvocationError(envelope) from e
     
     async def generate_stream(
         self,
@@ -388,9 +425,15 @@ class GeminiProvider(ModelProvider):
             try:
                 response = await asyncio.to_thread(chat.send_message, user_msg)
             except Exception as exc:  # pylint: disable=broad-except
+                # Emit the typed ProviderErrorEnvelope contract — identical to
+                # the Anthropic/OpenAI stream error path — so ToolLoopExecutor
+                # can read ``error_envelope.error_type`` (context_length_exceeded
+                # in particular) instead of an ad-hoc dict with no attributes.
                 yield UnifiedStreamEvent(
                     type=StreamEventType.ERROR,
-                    error_envelope={"provider_id": self.provider_id, "message": str(exc)},
+                    error_envelope=_make_envelope(
+                        exc, self.provider_id, self.model_name
+                    ),
                 )
                 self._chat_sessions.pop(_session_key, None)
                 return
@@ -427,17 +470,16 @@ class GeminiProvider(ModelProvider):
             self._chat_sessions.pop(_session_key, None)
             return
 
-        # No tools — preserve the legacy simulated word-chunking stream so the
-        # UI still sees progressive output for plain replies.
+        # No tools — Gemini's generate() is a single awaitable with no native
+        # chunking, so emit the completed text as one TEXT_DELTA. The streaming
+        # renderer accumulates deltas, so a single delta renders correctly; the
+        # old word-by-word slicing only added artificial latency (no real I/O).
         response = await self.generate(messages, system_instruction, **kwargs)
 
-        words = response.content.split()
-        for i in range(0, len(words), 5):
-            chunk = " ".join(words[i:i + 5])
-            if i + 5 < len(words):
-                chunk += " "
-            yield UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text=chunk)
-            await asyncio.sleep(0.05)
+        if response.content:
+            yield UnifiedStreamEvent(
+                type=StreamEventType.TEXT_DELTA, text=response.content
+            )
 
         yield UnifiedStreamEvent(
             type=StreamEventType.USAGE_FINAL,
@@ -611,90 +653,66 @@ class GeminiProvider(ModelProvider):
     ) -> tuple[Any, Dict[str, Any]]:
         """Executa uma function call resolvida via ToolRegistry.
 
+        A etapa comum (resolução via ToolRegistry, tool-inexistente,
+        execução e wrap de exceção) é compartilhada com os demais providers
+        via :func:`resolve_and_execute_tool`; este método é um wrapper fino
+        que só monta o ``function_response`` payload específico do Gemini.
+
         Returns:
             Tupla ``(tool_result, function_response_payload)`` onde:
-            - ``tool_result`` é um :class:`ToolResult` (ou ``None`` se a tool
-              não foi encontrada / execução falhou na borda) — usado pelo
+            - ``tool_result`` é um :class:`ToolResult` — usado pelo
               orquestrador para display/auditoria.
             - ``function_response_payload`` é um dict serializável JSON pronto
               para ser embrulhado em ``types.Part.from_function_response``.
               Sempre presente; em caso de erro, contém ``{"error": "..."}``
               numa forma que o modelo consegue ler e se recuperar.
         """
-        from ...tools.base import ToolContext, ToolResult, ToolStatus
-        from ...tools.registry import get_tool_registry
+        from ...tools.base import ToolContext
 
-        registry = get_tool_registry()
-        tool = registry.get(function_name) if hasattr(registry, "get") else None
+        tool_result, outcome = await resolve_and_execute_tool(
+            name=function_name,
+            args=arguments,
+            not_found_message_fn=lambda n, avail: (
+                f"Function '{n}' is not registered in this agent. "
+                f"Available tools: {', '.join(avail) if avail else '(none)'}."
+            ),
+            context_factory=lambda n, a, tool: ToolContext(
+                user_input="",
+                parsed_args=dict(a or {}),
+                session_data=dict(session_data or {}),
+                working_directory=working_directory or ".",
+                file_list=[],
+                metadata={
+                    "execution_method": "function_call",
+                    "function_name": n,
+                    "tool_name": tool.name,
+                },
+            ),
+            not_found_metadata={
+                "function_name": function_name,
+                "arguments": arguments,
+                "error_code": "FUNCTION_NOT_FOUND",
+            },
+            exception_message_fn=lambda n, exc: f"Unhandled exception in {n}: {exc}",
+            exception_metadata={"function_name": function_name},
+            log_calls=True,
+        )
 
         # Tool inexistente (ex.: nome alucinado pelo modelo). Devolvemos um
         # erro estruturado em vez de levantar — o modelo aprende e tenta de
         # novo com nome correto na próxima iteração.
-        if tool is None:
-            available = sorted(registry._tools.keys()) if hasattr(registry, "_tools") else []
-            logger.warning(
-                "Function call '%s' not found in registry. Available tools: %s",
-                function_name,
-                available,
-            )
-            error_payload = {
-                "error": (
-                    f"Function '{function_name}' is not registered in this agent. "
-                    f"Available tools: {', '.join(available) if available else '(none)'}."
-                ),
+        if outcome == OUTCOME_NOT_FOUND:
+            return tool_result, {
+                "error": tool_result.message,
                 "status": "error",
                 "error_code": "FUNCTION_NOT_FOUND",
             }
-            tool_result = ToolResult(
-                status=ToolStatus.ERROR,
-                message=error_payload["error"],
-                metadata={
-                    "function_name": function_name,
-                    "arguments": arguments,
-                    "error_code": "FUNCTION_NOT_FOUND",
-                },
-            )
-            return tool_result, error_payload
 
-        context = ToolContext(
-            user_input="",
-            parsed_args=dict(arguments or {}),
-            session_data=dict(session_data or {}),
-            working_directory=working_directory or ".",
-            file_list=[],
-            metadata={
-                "execution_method": "function_call",
-                "function_name": function_name,
-                "tool_name": tool.name,
-            },
-        )
-
-        logger.info(
-            "Executing function call '%s' with args=%s (cwd=%s)",
-            function_name,
-            list(context.parsed_args.keys()),
-            context.working_directory,
-        )
-
-        try:
-            tool_result = await tool.execute(context)
-        except Exception as exc:  # pylint: disable=broad-except
-            # Falha não-tratada na tool: capturamos para que o modelo veja o
-            # erro como function_response em vez de quebrar o turno inteiro.
-            logger.error(
-                "Tool '%s' raised an unhandled exception: %s",
-                function_name,
-                exc,
-                exc_info=True,
-            )
-            tool_result = ToolResult(
-                status=ToolStatus.ERROR,
-                message=f"Unhandled exception in {function_name}: {exc}",
-                error=exc,
-                metadata={"function_name": function_name},
-            )
+        # Falha não-tratada na tool: capturamos para que o modelo veja o
+        # erro como function_response em vez de quebrar o turno inteiro.
+        if outcome == OUTCOME_EXCEPTION:
             return tool_result, {
-                "error": str(exc),
+                "error": str(tool_result.error),
                 "status": "error",
                 "error_code": "EXECUTION_EXCEPTION",
             }
@@ -776,13 +794,6 @@ class GeminiProvider(ModelProvider):
             request_time=_time.time() - start,
         )
         return text, tool_results, usage
-
-    @staticmethod
-    def _extract_system(
-        messages: List[ModelMessage], system_instruction: Optional[str]
-    ) -> Optional[str]:
-        sys_from_msgs = next((m.content for m in messages if m.role == "system"), None)
-        return system_instruction or sys_from_msgs
 
     def _messages_to_gemini_user_input(self, messages: List[ModelMessage]) -> str:
         """Flatten the last user message to a plain string for Gemini chat."""
@@ -957,38 +968,6 @@ class GeminiProvider(ModelProvider):
         
         return input_cost + output_cost
     
-    def reload_config_from_gemini(self, gemini_config=None) -> None:
-        """Recarrega configurações do provider a partir de um gemini_config"""
-        if gemini_config is None:
-            try:
-                from ...config import get_config_manager
-                gemini_config = get_config_manager().get_config().gemini
-            except ImportError:
-                return
-        
-        self.gemini_config = gemini_config
-        self.model_name = gemini_config.model_name
-        self._initialize_model()
-        
-        if is_debug_enabled():
-            asyncio.create_task(self.debug_logger.log_debug_info(
-                category="config_reload",
-                data={
-                    "provider": "gemini",
-                    "new_model": gemini_config.model_name,
-                    "generation_config": gemini_config.generation_config
-                }
-            ))
-    
-    def get_current_config(self) -> Dict[str, Any]:
-        """Retorna configuração atual"""
-        return {
-            "model_name": self.gemini_config.model_name,
-            "generation_config": self.gemini_config.generation_config,
-            "tool_config": self.gemini_config.tool_config,
-            "safety_settings": self.gemini_config.safety_settings
-        }
-    
     # Métodos auxiliares privados para novo Google GenAI SDK
     
     async def _generate_with_new_sdk(
@@ -1083,6 +1062,10 @@ class GeminiProvider(ModelProvider):
             
             return model_response
             
+        except genai_errors.APIError:
+            # API-level failure: let it propagate untouched so ``generate``
+            # classifies it into a typed ProviderErrorEnvelope.
+            raise
         except Exception as e:
             logger.error(f"Error in new SDK generation: {e}")
             raise ModelError(

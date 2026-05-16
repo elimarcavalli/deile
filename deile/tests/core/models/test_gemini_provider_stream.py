@@ -106,10 +106,10 @@ async def test_streaming_with_tools_emits_tool_use_events(gemini_provider):
 
 
 @pytest.mark.asyncio
-async def test_streaming_without_tools_keeps_legacy_word_chunking(gemini_provider):
-    """When ``tools=None``, the provider falls back to the simulated word
-    chunker — we only assert that text events are produced and a USAGE_FINAL
-    closes the stream."""
+async def test_streaming_without_tools_emits_single_text_delta(gemini_provider):
+    """When ``tools=None``, the provider emits the completed text as a single
+    TEXT_DELTA (no artificial word-chunking) — we assert that text events are
+    produced and a USAGE_FINAL closes the stream."""
     from deile.core.models.base import ModelMessage
     from deile.core.models.stream_events import StreamEventType
 

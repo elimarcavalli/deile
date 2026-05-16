@@ -15,6 +15,8 @@ from deile.core.loop_guard import (format_loop_break_message, make_guard,
 from deile.core.models.base import (ModelMessage, ModelProvider, ModelResponse,
                                     ModelSize, ModelType, ModelUsage)
 from deile.core.models.catalog import ModelHandle, ModelPricing
+from deile.core.models.error_mapping import (build_error_envelope,
+                                             classify_provider_error)
 from deile.core.models.errors import (ProviderErrorEnvelope,
                                       ProviderInvocationError)
 from deile.core.models.provider_config import ProviderConfig
@@ -22,6 +24,9 @@ from deile.core.models.stream_events import (ModelUsageSnapshot,
                                              StreamEventType,
                                              UnifiedStreamEvent)
 from deile.core.models.tier import ModelTier
+from deile.core.models.tool_execution import (OUTCOME_EXCEPTION,
+                                              OUTCOME_NOT_FOUND,
+                                              resolve_and_execute_tool)
 
 logger = logging.getLogger(__name__)
 
@@ -29,27 +34,27 @@ _MAX_TOOL_ITERATIONS = 25
 _DEFAULT_MAX_TOKENS = 16384
 
 
-def _classify_openai_error(exc: openai.APIStatusError) -> str:
-    status = getattr(exc, "status_code", None)
-    if status == 401:
-        return "auth"
-    if status == 429:
-        return "rate_limit"
-    if status and 400 <= status < 500:
-        body = getattr(exc, "body", None) or {}
-        err_dict: Dict[str, Any] = body.get("error", {}) if isinstance(body, dict) else {}
-        err_code = str(err_dict.get("code", "") or "").lower()
-        err_msg = str(err_dict.get("message", "") or str(exc)).lower()
-        if (
-            "context_length_exceeded" in err_code
-            or "maximum context length" in err_msg
-            or "context window" in err_msg
-        ):
-            return "context_length_exceeded"
-        return "invalid_request"
-    if status and status >= 500:
-        return "server"
-    return "unknown"
+def _openai_body_fields(body: Dict[str, Any], exc: Exception) -> Tuple[str, str]:
+    """Extract ``(err_code, err_msg)`` from an OpenAI error body.
+
+    OpenAI nests the error under an ``error`` object carrying ``code`` and
+    ``message``. A missing message falls back to ``str(exc)`` (matching the
+    previous OpenAI-specific behavior).
+    """
+    err_dict: Any = body.get("error", {}) or {}
+    if not isinstance(err_dict, dict):
+        err_dict = {}
+    return (
+        str(err_dict.get("code", "") or ""),
+        str(err_dict.get("message", "") or str(exc)),
+    )
+
+
+def _classify_openai_exc(exc: Exception) -> str:
+    """Classify an OpenAI SDK exception via the shared
+    :func:`classify_provider_error`, supplying only the OpenAI-specific body
+    field layout. Exceptions without an HTTP body classify as ``unknown``."""
+    return classify_provider_error(exc, _openai_body_fields)
 
 
 def _make_envelope(
@@ -57,26 +62,9 @@ def _make_envelope(
     provider_id: str,
     model_id: str,
 ) -> ProviderErrorEnvelope:
-    status = getattr(exc, "status_code", None)
-    raw: Dict[str, Any] = {}
-    body = getattr(exc, "body", None)
-    if isinstance(body, dict):
-        raw = body
-    elif isinstance(body, (str, bytes)):
-        try:
-            raw = json.loads(body)
-        except Exception:
-            raw = {"raw_body": str(body)}
-    request_id = getattr(exc, "request_id", None)
-    return ProviderErrorEnvelope(
-        provider_id=provider_id,
-        model_id=model_id,
-        error_type=_classify_openai_error(exc) if isinstance(exc, openai.APIStatusError) else "unknown",
-        message=str(exc),
-        http_status=status,
-        raw_json=raw,
-        request_id=str(request_id) if request_id else None,
-        timestamp=time.time(),
+    """Thin wrapper over :func:`build_error_envelope` with the OpenAI classifier."""
+    return build_error_envelope(
+        exc, provider_id, model_id, _classify_openai_exc
     )
 
 
@@ -583,27 +571,28 @@ class OpenAIProvider(ModelProvider):
     async def _execute_tool(
         self, name: str, args: Dict[str, Any]
     ) -> Tuple[Any, Dict[str, Any]]:
-        from deile.tools.base import ToolContext, ToolResult, ToolStatus
-        from deile.tools.registry import get_tool_registry
+        """Run one tool via ToolRegistry; return (ToolResult, json-serialisable payload).
 
-        registry = get_tool_registry()
-        tool = registry.get(name)
-        if tool is None:
-            available = sorted(registry._tools.keys())
-            payload = {
-                "error": f"Tool '{name}' not found. Available: {', '.join(available)}",
-                "status": "error",
-            }
-            return ToolResult(status=ToolStatus.ERROR, message=payload["error"]), payload
+        The resolve/not-found/execute/exception-wrap step is shared with the
+        other providers via :func:`resolve_and_execute_tool`; only the OpenAI
+        payload shape (a ``role=tool`` message body) is built here.
+        """
+        from deile.tools.base import ToolContext
 
-        ctx = ToolContext(user_input="", parsed_args=dict(args or {}))
-        try:
-            result = await tool.execute(ctx)
-        except Exception as exc:
-            payload = {"error": str(exc), "status": "error"}
-            err = ToolResult(status=ToolStatus.ERROR, message=str(exc), error=exc)
-            err.metadata.setdefault("function_name", name)
-            return err, payload
+        result, outcome = await resolve_and_execute_tool(
+            name=name,
+            args=args,
+            not_found_message_fn=lambda n, avail: (
+                f"Tool '{n}' not found. Available: {', '.join(avail)}"
+            ),
+            context_factory=lambda _n, a, _t: ToolContext(
+                user_input="", parsed_args=dict(a or {})
+            ),
+            exception_metadata={"function_name": name},
+        )
+
+        if outcome in (OUTCOME_NOT_FOUND, OUTCOME_EXCEPTION):
+            return result, {"error": result.message, "status": "error"}
 
         # Stamp tool name on metadata (Gemini's path does the same).
         if result.metadata is None:

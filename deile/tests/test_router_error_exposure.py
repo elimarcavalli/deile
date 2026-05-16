@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import time
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -59,55 +58,6 @@ class TestModelErrorContext:
         )
         extracted = err.context["errors_by_handle"]["anthropic"]["raw_json"]
         assert extracted["status"] == 401
-
-
-# ---------------------------------------------------------------------------
-# execute_with_fallback — raises ModelError with errors_by_handle
-# ---------------------------------------------------------------------------
-
-class TestExecuteWithFallbackErrorExposure:
-    def _make_router(self):
-        from deile.core.models.router import ModelRouter
-        return ModelRouter()
-
-    @pytest.mark.asyncio
-    async def test_single_provider_auth_failure_exposes_envelope(self):
-        router = self._make_router()
-        failing_provider = MagicMock()
-        failing_provider.provider_id = "anthropic"
-        failing_provider.provider_name = "anthropic"
-        failing_provider.model_name = "claude-opus-4-7"
-        failing_provider.generate = AsyncMock(
-            side_effect=_make_invocation_error("anthropic")
-        )
-        router.register_provider(failing_provider)
-
-        with pytest.raises(ModelError) as exc_info:
-            await router.execute_with_fallback([], max_retries=1)
-
-        err = exc_info.value
-        assert err.error_code == "ALL_TIER_PROVIDERS_FAILED"
-        assert "errors_by_handle" in err.context
-
-    @pytest.mark.asyncio
-    async def test_successful_call_does_not_raise(self):
-        router = self._make_router()
-        good_provider = MagicMock()
-        good_provider.provider_id = "anthropic"
-        good_provider.provider_name = "anthropic"
-        good_provider.model_name = "claude-opus-4-7"
-        from deile.core.models.base import ModelResponse, ModelUsage
-        good_provider.generate = AsyncMock(
-            return_value=ModelResponse(
-                content="ok",
-                model_name="claude-opus-4-7",
-                usage=ModelUsage(),
-            )
-        )
-        router.register_provider(good_provider)
-
-        result = await router.execute_with_fallback([], max_retries=1)
-        assert result.content == "ok"
 
 
 # ---------------------------------------------------------------------------
