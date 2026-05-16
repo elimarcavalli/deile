@@ -947,17 +947,6 @@ class GeminiProvider(ModelProvider):
                     chunks.append(txt)
         return "".join(chunks)
 
-    def estimate_cost(self, usage: ModelUsage) -> float:
-        """Estima custo baseado no uso (valores aproximados)"""
-        # Custos aproximados por 1K tokens (podem variar)
-        cost_per_1k_input = 0.00125  # $0.00125 por 1K input tokens
-        cost_per_1k_output = 0.00375  # $0.00375 por 1K output tokens
-        
-        input_cost = (usage.prompt_tokens / 1000) * cost_per_1k_input
-        output_cost = (usage.completion_tokens / 1000) * cost_per_1k_output
-        
-        return input_cost + output_cost
-    
     # Métodos auxiliares privados para novo Google GenAI SDK
     
     async def _generate_with_new_sdk(
