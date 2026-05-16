@@ -15,7 +15,8 @@ from deile.core.loop_guard import (format_loop_break_message, make_guard,
 from deile.core.models.base import (ModelMessage, ModelProvider, ModelResponse,
                                     ModelSize, ModelType, ModelUsage)
 from deile.core.models.catalog import ModelHandle, ModelPricing
-from deile.core.models.error_mapping import build_error_envelope
+from deile.core.models.error_mapping import (build_error_envelope,
+                                             classify_provider_error)
 from deile.core.models.errors import (ProviderErrorEnvelope,
                                       ProviderInvocationError)
 from deile.core.models.provider_config import ProviderConfig
@@ -33,27 +34,24 @@ _MAX_TOOL_ITERATIONS = 25
 _DEFAULT_MAX_TOKENS = 16384
 
 
+def _anthropic_body_fields(body: Dict[str, Any], exc: Exception) -> Tuple[str, str]:
+    """Extract ``(err_code, err_msg)`` from an Anthropic error body.
+
+    Anthropic nests the error code under ``type`` and the message under
+    ``message`` at the top level of the body. A missing message stays empty
+    (matching the previous Anthropic-specific behavior).
+    """
+    del exc  # Anthropic does not fall back to str(exc) for a dict body.
+    return str(body.get("type", "") or ""), str(body.get("message", "") or "")
+
+
 def _classify_anthropic_error(exc: anthropic.APIError) -> str:
-    status = getattr(exc, "status_code", None)
-    if status == 401:
-        return "auth"
-    if status == 429:
-        return "rate_limit"
-    if status and 400 <= status < 500:
-        body = getattr(exc, "body", None) or {}
-        err_type = str((body.get("type", "") or "") if isinstance(body, dict) else "").lower()
-        err_msg = str((body.get("message", "") or "") if isinstance(body, dict) else str(exc)).lower()
-        if (
-            "prompt_too_long" in err_type
-            or "prompt is too long" in err_msg
-            or "maximum context length" in err_msg
-            or "context window" in err_msg
-        ):
-            return "context_length_exceeded"
-        return "invalid_request"
-    if status and status >= 500:
-        return "server"
-    return "unknown"
+    """Classify an Anthropic SDK exception via the shared
+    :func:`classify_provider_error`, supplying only the Anthropic-specific
+    body field layout."""
+    return classify_provider_error(
+        exc, _anthropic_body_fields, extra_msg_markers=("prompt is too long",)
+    )
 
 
 def _make_envelope(

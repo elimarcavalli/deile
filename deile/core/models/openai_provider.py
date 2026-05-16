@@ -15,7 +15,8 @@ from deile.core.loop_guard import (format_loop_break_message, make_guard,
 from deile.core.models.base import (ModelMessage, ModelProvider, ModelResponse,
                                     ModelSize, ModelType, ModelUsage)
 from deile.core.models.catalog import ModelHandle, ModelPricing
-from deile.core.models.error_mapping import build_error_envelope
+from deile.core.models.error_mapping import (build_error_envelope,
+                                             classify_provider_error)
 from deile.core.models.errors import (ProviderErrorEnvelope,
                                       ProviderInvocationError)
 from deile.core.models.provider_config import ProviderConfig
@@ -33,35 +34,27 @@ _MAX_TOOL_ITERATIONS = 25
 _DEFAULT_MAX_TOKENS = 16384
 
 
-def _classify_openai_error(exc: openai.APIStatusError) -> str:
-    status = getattr(exc, "status_code", None)
-    if status == 401:
-        return "auth"
-    if status == 429:
-        return "rate_limit"
-    if status and 400 <= status < 500:
-        body = getattr(exc, "body", None) or {}
-        err_dict: Dict[str, Any] = body.get("error", {}) if isinstance(body, dict) else {}
-        err_code = str(err_dict.get("code", "") or "").lower()
-        err_msg = str(err_dict.get("message", "") or str(exc)).lower()
-        if (
-            "context_length_exceeded" in err_code
-            or "maximum context length" in err_msg
-            or "context window" in err_msg
-        ):
-            return "context_length_exceeded"
-        return "invalid_request"
-    if status and status >= 500:
-        return "server"
-    return "unknown"
+def _openai_body_fields(body: Dict[str, Any], exc: Exception) -> Tuple[str, str]:
+    """Extract ``(err_code, err_msg)`` from an OpenAI error body.
+
+    OpenAI nests the error under an ``error`` object carrying ``code`` and
+    ``message``. A missing message falls back to ``str(exc)`` (matching the
+    previous OpenAI-specific behavior).
+    """
+    err_dict: Any = body.get("error", {}) or {}
+    if not isinstance(err_dict, dict):
+        err_dict = {}
+    return (
+        str(err_dict.get("code", "") or ""),
+        str(err_dict.get("message", "") or str(exc)),
+    )
 
 
 def _classify_openai_exc(exc: Exception) -> str:
-    """Classify an OpenAI SDK exception, defaulting to ``unknown`` when the
-    exception is not an :class:`openai.APIStatusError` (no HTTP body to inspect)."""
-    if isinstance(exc, openai.APIStatusError):
-        return _classify_openai_error(exc)
-    return "unknown"
+    """Classify an OpenAI SDK exception via the shared
+    :func:`classify_provider_error`, supplying only the OpenAI-specific body
+    field layout. Exceptions without an HTTP body classify as ``unknown``."""
+    return classify_provider_error(exc, _openai_body_fields)
 
 
 def _make_envelope(

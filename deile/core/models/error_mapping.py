@@ -9,9 +9,98 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Iterable, Tuple
 
 from deile.core.models.errors import ProviderErrorEnvelope
+
+# Substrings that, when found in an HTTP error message, indicate the request
+# exceeded the model's context window. Shared by every provider classifier.
+_CONTEXT_LENGTH_MSG_MARKERS = ("maximum context length", "context window")
+
+
+def classify_http_error(
+    status: int | None,
+    err_code: str,
+    err_msg: str,
+    extra_msg_markers: Iterable[str] = (),
+) -> str:
+    """Classify an HTTP error into a provider-agnostic ``error_type`` string.
+
+    This is the single shared classifier for every concrete provider. Callers
+    are responsible for extracting ``status``, ``err_code`` and ``err_msg``
+    from their own SDK exception/body structure (Anthropic and OpenAI nest
+    these differently) and then delegate the status/sniff logic here.
+
+    Args:
+        status: HTTP status code, or ``None`` when unavailable.
+        err_code: Provider-specific error code/type, already lower-cased.
+        err_msg: Error message, already lower-cased.
+        extra_msg_markers: Optional provider-specific message substrings that
+            also indicate a context-length overflow (e.g. Anthropic's
+            ``"prompt is too long"``).
+
+    Returns:
+        One of ``auth``, ``rate_limit``, ``context_length_exceeded``,
+        ``invalid_request``, ``server`` or ``unknown``.
+    """
+    if status == 401:
+        return "auth"
+    if status == 429:
+        return "rate_limit"
+    if status and 400 <= status < 500:
+        markers = (*_CONTEXT_LENGTH_MSG_MARKERS, *extra_msg_markers)
+        if (
+            "context_length_exceeded" in err_code
+            or "prompt_too_long" in err_code
+            or any(marker in err_msg for marker in markers)
+        ):
+            return "context_length_exceeded"
+        return "invalid_request"
+    if status and status >= 500:
+        return "server"
+    return "unknown"
+
+
+def classify_provider_error(
+    exc: Exception,
+    body_extractor: Callable[[Dict[str, Any], Exception], Tuple[str, str]],
+    extra_msg_markers: Iterable[str] = (),
+) -> str:
+    """Classify any provider SDK exception into an ``error_type`` string.
+
+    This owns the boilerplate every concrete provider classifier used to
+    repeat: reading ``status_code``/``body`` off the exception, lower-casing
+    the extracted code/message and delegating the status/sniff logic to
+    :func:`classify_http_error`. The only provider-specific knowledge — *where*
+    the error code and message live inside the body — is supplied by
+    ``body_extractor``.
+
+    Args:
+        exc: The provider SDK exception.
+        body_extractor: Callable receiving the ``body`` dict and the original
+            exception, returning a ``(err_code, err_msg)`` tuple. It is only
+            invoked when ``body`` is a ``dict``; otherwise the code is empty
+            and the message defaults to ``str(exc)``. Receiving ``exc`` lets a
+            provider fall back to ``str(exc)`` when its body carries no message.
+        extra_msg_markers: Provider-specific context-length message markers
+            forwarded to :func:`classify_http_error`.
+
+    Returns:
+        The ``error_type`` string. Exceptions without an HTTP status (i.e.
+        not ``APIStatusError``/``APIError``) naturally classify as ``unknown``.
+    """
+    status = getattr(exc, "status_code", None)
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err_code, err_msg = body_extractor(body, exc)
+    else:
+        err_code, err_msg = "", str(exc)
+    return classify_http_error(
+        status,
+        str(err_code or "").lower(),
+        str(err_msg or "").lower(),
+        extra_msg_markers=extra_msg_markers,
+    )
 
 
 def build_error_envelope(
