@@ -13,6 +13,7 @@ exercises a distinct flow:
     5. /deile safety BLOCK — "hackear minha senha do gmail"  (regex deny)
     6. Anti-loop guard — 2 dispatches em ~1s                 (DISPATCH_COOLDOWN)
     7. /historico aparece após /deile                         (FK persistence)
+    8. /forget_me apaga transcript + sessão                   (privacy wipe)
 
 Why it spends real LLM tokens
 -----------------------------
@@ -349,6 +350,64 @@ def run_all(token: str) -> List[TestResult]:
         return True, "inbound persistido com FK OK"
     results.append(_test("historico_fk_persist", t7))
 
+    # 8. /forget_me — apaga transcript + sessão do agente, idempotente.
+    #    Usa user+canal sintéticos únicos para nunca colidir com o
+    #    histórico real do operador. Um DM semeia memória; dois forgets
+    #    provam que o wipe acontece E que é idempotente.
+    #
+    #    Nota sobre o canal sintético: o canal `88887…` não existe no
+    #    Discord, então a resposta do bot falha no envio (graciosamente)
+    #    e NÃO gera linha outbound — só o inbound persiste. Por isso o
+    #    seed gera exatamente 1 mensagem + 1 sessão. O wipe dos DOIS
+    #    sentidos num DM real é coberto pelo teste unitário
+    #    `test_dm_wipes_both_directions`; aqui validamos a ponta-a-ponta:
+    #    /v1/test/simulate → forget_user → ConversationStore + sessão.
+    def t8():
+        fuser = f"88888{int(time.time()) % 1000000:06d}"
+        fchan = f"88887{int(time.time()) % 1000000:06d}"
+        # Semeia: um DM cria 1 inbound no conversation_store + a
+        # AgentSession (viva em RAM e persistida em disco).
+        seed = simulate(token, prompt="lembre: meu animal favorito é capivara",
+                        source="dm", user_id=fuser, channel_id=fchan)
+        if not seed.ok:
+            return False, f"seed dm falhou: {seed.error}"
+        # 1º forget — deve apagar o transcript E a sessão do agente
+        # (RAM + persistida). A sessão é o que o bug original NUNCA
+        # limpava — esta é a checagem de regressão central.
+        f1 = simulate(token, prompt="-", source="forget", user_id=fuser,
+                      channel_id=fchan)
+        if not f1.ok:
+            return False, f"forget#1 erro: {f1.error}"
+        md = f1.raw.get("messages_deleted", 0)
+        pc = f1.raw.get("private_channels", 0)
+        sram = f1.raw.get("session_in_memory_evicted")
+        sdb = f1.raw.get("session_persisted_deleted")
+        if md < 1:
+            return False, f"forget#1 não apagou mensagem nenhuma (md={md})"
+        if pc != 1:
+            return False, f"forget#1 private_channels={pc} (esperado 1 — DM privada)"
+        if sram is not True:
+            return False, f"forget#1 NÃO evictou a sessão em RAM (sram={sram!r})"
+        if sdb is not True:
+            return False, f"forget#1 NÃO apagou a sessão persistida (sdb={sdb!r})"
+        # 2º forget — idempotente: nada deve sobrar.
+        f2 = simulate(token, prompt="-", source="forget", user_id=fuser,
+                      channel_id=fchan)
+        if not f2.ok:
+            return False, f"forget#2 erro: {f2.error}"
+        if f2.raw.get("messages_deleted", -1) != 0:
+            return False, (
+                f"forget#2 não-idempotente: apagou "
+                f"{f2.raw.get('messages_deleted')} msg(s)"
+            )
+        if f2.raw.get("session_persisted_deleted") is not False:
+            return False, "forget#2 ainda viu sessão persistida (deveria estar vazia)"
+        return True, (
+            f"wipe ok: {md} msg + sessão (RAM+disco) apagadas; "
+            f"2º forget idempotente"
+        )
+    results.append(_test("forget_memory", t8))
+
     return results
 
 
@@ -370,6 +429,7 @@ def main() -> int:
         print("slash_safety_hack")
         print("anti_loop_guard")
         print("historico_fk_persist")
+        print("forget_memory")
         return 0
 
     print("=" * 70)
