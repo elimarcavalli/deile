@@ -266,8 +266,6 @@ EXAMPLES:
     # ------------------------------------------------------------------
 
     async def _current(self, context: CommandContext) -> CommandResult:
-        from deile.core.models.tier_router import get_tier_router
-
         forced = self._get_forced(context)
         try:
             router = get_tier_router()
