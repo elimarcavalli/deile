@@ -6,8 +6,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
-from deile.storage.usage_repository import BudgetGuard
-
 from ..exceptions import ModelError
 from .base import ModelProvider, ModelSize, ModelType
 from .tier import ModelTier
@@ -102,14 +100,10 @@ class ModelRouter:
     def __init__(
         self,
         default_strategy: RoutingStrategy = RoutingStrategy.TASK_OPTIMIZED,
-        budget_guard: Optional[BudgetGuard] = None,
     ):
         self.providers: Dict[str, ModelProvider] = {}
         self.metrics: Dict[str, ModelMetrics] = {}
         self.strategy = default_strategy
-
-        # BudgetGuard — lazy-initialised from YAML on first use if not injected
-        self._budget_guard: Optional[BudgetGuard] = budget_guard
 
         # Configurações
         self.fallback_enabled = True
