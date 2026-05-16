@@ -9,11 +9,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
+                                       SWITCH_SESSION_KEY)
 from deile.commands.base import CommandContext
 from deile.commands.builtin._conv_store import ConversationNameStore
 from deile.commands.builtin._session_store import SessionHistoryStore
-from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
-                                       SWITCH_SESSION_KEY)
 from deile.commands.builtin.fork_command import ForkCommand
 from deile.commands.builtin.rename_command import RenameCommand
 from deile.commands.builtin.resume_command import ResumeCommand
