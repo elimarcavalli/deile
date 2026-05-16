@@ -116,7 +116,7 @@ class TestClearDefaultBehavior:
         ctx.session = None
         result = await ClearCommand().execute(ctx)
         assert result.success
-        assert SWITCH_SESSION_KEY not in (getattr(ctx, "session", {}) or {})
+        assert ctx.session is None  # command must not create a session on ctx
 
     @pytest.mark.unit
     async def test_default_preserves_conversation_name_in_archive(self):

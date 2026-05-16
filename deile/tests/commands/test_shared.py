@@ -302,6 +302,9 @@ class TestTruncateOneline:
     def test_max_chars_zero_truncates_everything(self):
         assert truncate_oneline("anything", 0) == "…"
 
+    def test_whitespace_only_string_returns_empty(self):
+        assert truncate_oneline("   ", 50) == ""
+
 
 # ---------------------------------------------------------------------------
 # indisponivel
