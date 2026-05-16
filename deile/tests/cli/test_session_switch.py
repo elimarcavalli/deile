@@ -10,7 +10,7 @@ every entry of the loaded conversation; absence falls back to the dim
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from unittest.mock import MagicMock
 
 import pytest
@@ -22,8 +22,8 @@ from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
 
 def _make_session(
     sid: str = "sid",
-    history: Optional[List[Dict[str, Any]]] = None,
-    context_data: Optional[Dict[str, Any]] = None,
+    history: Optional[list] = None,
+    context_data: Optional[dict] = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         session_id=sid,

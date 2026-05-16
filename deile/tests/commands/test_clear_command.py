@@ -10,7 +10,7 @@ the welcome banner. Advanced subcommands (``reset``, ``history``,
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -38,7 +38,7 @@ def _make_session(session_id: str = "current-sid") -> MagicMock:
 
 def _make_agent() -> MagicMock:
     agent = MagicMock()
-    _sessions: Dict[str, Any] = {}
+    _sessions: dict[str, Any] = {}
 
     def _create_session(session_id: str, **kwargs: Any) -> MagicMock:
         sess = MagicMock()
@@ -49,11 +49,8 @@ def _make_agent() -> MagicMock:
         _sessions[session_id] = sess
         return sess
 
-    def _get_session(session_id: str) -> Optional[MagicMock]:
-        return _sessions.get(session_id)
-
     agent.create_session.side_effect = _create_session
-    agent.get_session.side_effect = _get_session
+    agent.get_session.side_effect = lambda sid: _sessions.get(sid)
     return agent
 
 

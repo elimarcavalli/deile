@@ -110,79 +110,55 @@ class TestExportTimestamp:
 # ---------------------------------------------------------------------------
 
 
+_AUDIT_PATCH = "deile.security.audit_logger.get_audit_logger"
+_AUDIT_KWARGS = {"event_type": "EVT", "severity": "INFO", "resource": "/x", "action": "run"}
+
+
+def _capturing_logger() -> tuple[dict, object]:
+    """Return (captured dict, logger-instance) that records log_event kwargs."""
+    captured: dict = {}
+
+    class _Recorder:
+        def log_event(self, **kw):
+            captured.update(kw)
+
+    return captured, _Recorder()
+
+
 class TestEmitAuditEvent:
     def test_happy_path_calls_log_event(self):
-        called = {}
+        captured, logger = _capturing_logger()
+        with patch(_AUDIT_PATCH, return_value=logger):
+            emit_audit_event(**_AUDIT_KWARGS, details={"a": 1})
 
-        class _FakeLogger:
-            def log_event(self, **kw):
-                called.update(kw)
-
-        with patch(
-            "deile.security.audit_logger.get_audit_logger", return_value=_FakeLogger()
-        ):
-            emit_audit_event(
-                event_type="EVT",
-                severity="INFO",
-                resource="/x",
-                action="run",
-                details={"a": 1},
-            )
-
-        assert called["event_type"] == "EVT"
-        assert called["severity"] == "INFO"
-        assert called["resource"] == "/x"
-        assert called["action"] == "run"
-        assert called["actor"] == "user"
-        assert called["result"] == "initiated"
-        assert called["details"] == {"a": 1}
+        assert captured["event_type"] == "EVT"
+        assert captured["severity"] == "INFO"
+        assert captured["resource"] == "/x"
+        assert captured["action"] == "run"
+        assert captured["actor"] == "user"
+        assert captured["result"] == "initiated"
+        assert captured["details"] == {"a": 1}
 
     def test_swallows_logger_exception_silently(self, caplog):
         class _BoomLogger:
             def log_event(self, **kw):
                 raise RuntimeError("boom")
 
-        with patch(
-            "deile.security.audit_logger.get_audit_logger", return_value=_BoomLogger()
-        ):
+        with patch(_AUDIT_PATCH, return_value=_BoomLogger()):
             with caplog.at_level("DEBUG"):
-                # Must NOT raise
-                emit_audit_event(
-                    event_type="EVT",
-                    severity="INFO",
-                    resource="/x",
-                    action="run",
-                )
-        # Failure was logged at DEBUG (per pillar 03 §6 fix)
+                emit_audit_event(**_AUDIT_KWARGS)  # must NOT raise
         assert any("emit_audit_event falhou" in rec.message for rec in caplog.records)
 
     def test_swallows_import_error_silently(self, caplog):
-        with patch(
-            "deile.security.audit_logger.get_audit_logger",
-            side_effect=ImportError("module gone"),
-        ):
+        with patch(_AUDIT_PATCH, side_effect=ImportError("module gone")):
             with caplog.at_level("DEBUG"):
-                emit_audit_event(
-                    event_type="EVT",
-                    severity="INFO",
-                    resource="/x",
-                    action="run",
-                )
+                emit_audit_event(**_AUDIT_KWARGS)
         assert any("emit_audit_event falhou" in rec.message for rec in caplog.records)
 
     def test_default_details_is_empty_dict(self):
-        captured = {}
-
-        class _Recorder:
-            def log_event(self, **kw):
-                captured.update(kw)
-
-        with patch(
-            "deile.security.audit_logger.get_audit_logger", return_value=_Recorder()
-        ):
-            emit_audit_event(
-                event_type="EVT", severity="INFO", resource="/x", action="run"
-            )
+        captured, logger = _capturing_logger()
+        with patch(_AUDIT_PATCH, return_value=logger):
+            emit_audit_event(**_AUDIT_KWARGS)
         assert captured["details"] == {}
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from io import StringIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -34,7 +34,7 @@ _HISTORY = [
 
 def _make_session(
     session_id: str = "test-sid",
-    history: Optional[List[Dict[str, Any]]] = None,
+    history: Optional[list] = None,
 ) -> MagicMock:
     s = MagicMock()
     s.session_id = session_id
@@ -44,9 +44,9 @@ def _make_session(
     return s
 
 
-def _make_agent(existing_sessions: Optional[Dict] = None) -> MagicMock:
+def _make_agent(existing_sessions: Optional[dict] = None) -> MagicMock:
     agent = MagicMock()
-    _sessions: Dict[str, Any] = dict(existing_sessions or {})
+    _sessions: dict[str, Any] = dict(existing_sessions or {})
 
     def _create_session(session_id, **kwargs):
         sess = MagicMock()
@@ -57,11 +57,8 @@ def _make_agent(existing_sessions: Optional[Dict] = None) -> MagicMock:
         _sessions[session_id] = sess
         return sess
 
-    def _get_session(session_id):
-        return _sessions.get(session_id)
-
     agent.create_session.side_effect = _create_session
-    agent.get_session.side_effect = _get_session
+    agent.get_session.side_effect = lambda sid: _sessions.get(sid)
     return agent
 
 
@@ -69,15 +66,13 @@ def _make_context(
     command: str,
     args: str = "",
     session_id: str = "test-sid",
-    history: Optional[List] = None,
+    history: Optional[list] = None,
     agent: Optional[Any] = None,
     session: Optional[Any] = None,
 ) -> CommandContext:
-    sess = session or _make_session(session_id=session_id, history=history)
-    ag = agent or _make_agent()
     ctx = CommandContext(user_input=f"/{command} {args}".strip(), args=args)
-    ctx.agent = ag
-    ctx.session = sess
+    ctx.agent = agent or _make_agent()
+    ctx.session = session or _make_session(session_id=session_id, history=history)
     return ctx
 
 
