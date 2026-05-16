@@ -9,6 +9,8 @@ cannot be reverted silently.
 
 from __future__ import annotations
 
+import pytest
+
 import deile.commands.registry as _registry_mod
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
 from deile.commands.builtin.help_command import HelpCommand
@@ -58,6 +60,7 @@ class TestHelpForCommand:
     def teardown_method(self) -> None:
         _purge_registry_singleton()
 
+    @pytest.mark.unit
     async def test_help_for_command_with_sync_get_help(self):
         """A synchronous get_help override must not raise — its str is used directly."""
         ctx = CommandContext(user_input="/help fakesync", args="fakesync")
@@ -65,6 +68,7 @@ class TestHelpForCommand:
         assert result.success is True
         assert "SYNC-HELP-MARKER" in _renderable_text(result)
 
+    @pytest.mark.unit
     async def test_help_for_command_with_async_get_help(self):
         """A coroutine get_help (base class) must be awaited and resolved to str."""
         ctx = CommandContext(user_input="/help fakeasync", args="fakeasync")
@@ -72,6 +76,7 @@ class TestHelpForCommand:
         assert result.success is True
         assert "fakeasync" in _renderable_text(result)
 
+    @pytest.mark.unit
     async def test_help_for_unknown_command_returns_error(self):
         ctx = CommandContext(user_input="/help nope", args="nope")
         result = await HelpCommand().execute(ctx)

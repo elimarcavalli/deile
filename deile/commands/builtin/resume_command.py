@@ -15,10 +15,8 @@ from ._conv_store import ConversationNameStore
 from ._session_store import SessionHistoryStore
 from ._shared import truncate_oneline, wrap_command_errors
 
-# Max label width for one-line conversation summaries in the selector.
+# Max chars for one-line conversation labels in the selector.
 _MAX_LABEL = 50
-
-_MAX_LABEL = 50  # max chars for conversation labels in the selector
 
 
 def _fmt_time(ts: float) -> str:

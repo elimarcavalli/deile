@@ -45,6 +45,7 @@ def _make_cli(current_session, target_session=None) -> _DeileCLI:
 
 
 class TestCheckSessionSwitch:
+    @pytest.mark.unit
     def test_no_switch_when_sentinel_absent(self):
         sess = _make_session()
         cli = _make_cli(sess)
@@ -52,6 +53,7 @@ class TestCheckSessionSwitch:
         assert cli.default_session is sess
         cli.ui.show_welcome.assert_not_called()
 
+    @pytest.mark.unit
     def test_welcome_action_redraws_banner(self):
         target = _make_session(sid="new-sid")
         current = _make_session(
@@ -65,6 +67,7 @@ class TestCheckSessionSwitch:
         assert cli.default_session is target
         cli.ui.show_welcome.assert_called_once()
 
+    @pytest.mark.unit
     def test_replay_action_invokes_replay(self):
         target = _make_session(
             sid="resumed-sid",
@@ -86,6 +89,7 @@ class TestCheckSessionSwitch:
         cli.ui.show_welcome.assert_called_once()
         cli.ui.display_response.assert_called_once()
 
+    @pytest.mark.unit
     def test_default_action_prints_dim_swap_line(self):
         target = _make_session(sid="new-sid")
         current = _make_session(
@@ -99,6 +103,7 @@ class TestCheckSessionSwitch:
         text = cli.ui.console.print.call_args.args[0]
         assert "Sessão alternada" in text
 
+    @pytest.mark.unit
     def test_unknown_target_keeps_current_session(self):
         sess = _make_session(context_data={SWITCH_SESSION_KEY: "missing-sid"})
         cli = _make_cli(sess, target_session=None)
@@ -106,6 +111,7 @@ class TestCheckSessionSwitch:
         assert cli.default_session is sess
         cli.ui.console.print.assert_called_once()
 
+    @pytest.mark.unit
     def test_sentinels_are_consumed_even_when_target_missing(self):
         sess = _make_session(context_data={
             SWITCH_SESSION_KEY: "missing-sid",
@@ -118,6 +124,7 @@ class TestCheckSessionSwitch:
 
 
 class TestReplayHistory:
+    @pytest.mark.unit
     def test_replay_renders_user_and_assistant_entries_in_order(self):
         sess = _make_session()
         cli = _make_cli(sess)
@@ -140,6 +147,7 @@ class TestReplayHistory:
         assert "primeiro" in user_prints[0].args[0]
         assert "segundo" in user_prints[1].args[0]
 
+    @pytest.mark.unit
     def test_replay_skips_empty_entries(self):
         sess = _make_session()
         cli = _make_cli(sess)
@@ -157,6 +165,7 @@ class TestReplayHistory:
         assert len(user_prints) == 1
         cli.ui.display_response.assert_not_called()
 
+    @pytest.mark.unit
     def test_replay_normalizes_non_string_content(self):
         """Non-string content (Rich renderable) must be coerced to text."""
         sess = _make_session()
@@ -171,6 +180,7 @@ class TestReplayHistory:
         assert isinstance(rendered, str)
         assert "rendered" in rendered
 
+    @pytest.mark.unit
     def test_replay_with_empty_history_only_shows_welcome(self):
         sess = _make_session()
         cli = _make_cli(sess)

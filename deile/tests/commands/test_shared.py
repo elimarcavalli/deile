@@ -289,6 +289,10 @@ class TestTruncateOneline:
     def test_surrounding_whitespace_stripped(self):
         assert truncate_oneline("  spaced  ", 50) == "spaced"
 
+    def test_whitespace_only_returns_empty(self):
+        # Truthy (skips the `if not text` guard) but collapses to "" via strip().
+        assert truncate_oneline("   ", 10) == ""
+
     def test_non_string_coerced_via_str(self):
         assert truncate_oneline(12345, 50) == "12345"
 
