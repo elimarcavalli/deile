@@ -10,8 +10,8 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import openai
 
-from deile.core.loop_guard import (format_loop_break_message,
-                                   make_loop_break_result, make_guard,
+from deile.core.loop_guard import (format_loop_break_message, make_guard,
+                                   make_loop_break_result,
                                    tool_result_made_progress)
 from deile.core.models.base import (ModelMessage, ModelProvider, ModelResponse,
                                     ModelSize, ModelType, ModelUsage)

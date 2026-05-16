@@ -15,8 +15,8 @@ from google.genai.types import (AutomaticFunctionCallingConfig,
 
 from ...storage.debug_logger import get_debug_logger, is_debug_enabled
 from ..exceptions import ConfigurationError, ModelError
-from ..loop_guard import (format_loop_break_message, make_loop_break_result,
-                          make_guard, tool_result_made_progress)
+from ..loop_guard import (format_loop_break_message, make_guard,
+                          make_loop_break_result, tool_result_made_progress)
 from .base import (ModelMessage, ModelProvider, ModelResponse, ModelSize,
                    ModelType, ModelUsage)
 from .error_mapping import classify_http_error
