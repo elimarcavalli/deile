@@ -28,7 +28,7 @@ import time
 import uuid
 import venv as _venv  # noqa: N812 — local alias for testability (patched as deile.cli._venv)
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
 
 from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
                                        SWITCH_SESSION_KEY)
@@ -87,7 +87,6 @@ def _silence_genai_shutdown_noise() -> None:
     _gc.Client.__del__ = _safe_del
 
 
-
 def _load_exported_env_vars() -> None:
     """Load env vars from ~/.deile/settings.json env.exports into os.environ.
 
@@ -140,10 +139,8 @@ def _run_env_recovery() -> bool:
     try:
         for raw in env_path.read_text(encoding="utf-8").splitlines():
             stripped = raw.strip()
-            if "=" in stripped and not stripped.startswith("#"):
-                k = stripped.split("=", 1)[0].strip()
-                if k in _ENV_KEY_NAMES:
-                    continue
+            if "=" in stripped and not stripped.startswith("#") and stripped.split("=", 1)[0].strip() in _ENV_KEY_NAMES:
+                continue
             kept_lines.append(raw)
     except FileNotFoundError:
         pass
@@ -163,8 +160,7 @@ def _run_env_recovery() -> bool:
             if v:
                 os.environ[k] = v
 
-    count = sum(1 for v in new_keys.values() if v)
-    print(f"\n  {_GREEN}✓{_RESET}  {count} chave(s) salva(s) em {env_path}\n")
+    print(f"\n  {_GREEN}✓{_RESET}  {sum(1 for v in new_keys.values() if v)} chave(s) salva(s) em {env_path}\n")
     return True
 
 
@@ -274,14 +270,15 @@ class _DeileCLI:
             )
             return False
 
-    def _get_project_files(self) -> List[str]:
-        files: List[str] = []
+    _IGNORE_DIRS = frozenset({"__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build", ".deile"})
+
+    def _get_project_files(self) -> list[str]:
         wd = Path(self.settings.working_directory)
-        ignore = {"__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build", ".deile"}
-        for path in wd.rglob("*"):
-            if path.is_file() and not any(d in path.parts for d in ignore):
-                rel = path.relative_to(wd)
-                files.append(str(rel).replace("\\", "/"))
+        files = [
+            str(path.relative_to(wd)).replace("\\", "/")
+            for path in wd.rglob("*")
+            if path.is_file() and not any(d in path.parts for d in self._IGNORE_DIRS)
+        ]
         return sorted(files)[:500]
 
     # Sentinel returned by get_user_input() when the user presses ESC ESC on
@@ -580,10 +577,7 @@ class _DeileCLI:
 
                 meta = response.metadata or {}
                 if meta.get("suppress_response_display"):
-                    # Commands like /clear and /resume render their own UI via
-                    # the post-switch action and would only flash a redundant
-                    # "Command /xxx executed" below the new welcome/replay.
-                    pass
+                    pass  # command renders its own UI via post-switch action
                 elif meta.get("budget_exceeded"):
                     self.ui.console.print(Panel(
                         Text(f"{response.content}", style="yellow"),
@@ -678,11 +672,9 @@ def _print_oneshot_content(content) -> None:
     # Rich renderable (Table, Panel, Text, Group, etc.) or list thereof.
     from rich.console import Console
     console = Console()
-    if isinstance(content, list):
-        for item in content:
-            console.print(item)
-    else:
-        console.print(content)
+    items = content if isinstance(content, list) else [content]
+    for item in items:
+        console.print(item)
 
 
 async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
@@ -902,14 +894,7 @@ def _link_global_command(target_dir: Path, source_script: Path, *, force: bool =
     target = target_dir / ("deile.cmd" if os.name == "nt" else "deile")
 
     if target.exists() or target.is_symlink():
-        if target.is_symlink():
-            try:
-                existing = "symlink"
-                # Don't leak the real path in user-facing messages
-            except OSError:
-                existing = "symlink (unreadable)"
-        else:
-            existing = "regular file"
+        existing = "symlink" if target.is_symlink() else "regular file"
         if not force:
             try:
                 ans = input(f"  {target.name} already exists ({existing}). Replace? [Y/n]: ").strip().lower()
@@ -1141,13 +1126,11 @@ async def _run_self_install_async(mode: Optional[str] = None) -> int:
         )
         if which.returncode == 0:
             found_path = Path(which.stdout.strip())
-            # Resolve symlink to confirm it points to the venv we just installed
             try:
                 on_path_now = found_path.resolve() == wrapper.resolve()
             except OSError:
                 on_path_now = False
             if not on_path_now and found_path.exists():
-                # A stale or different `deile` binary is on PATH — warn the user.
                 print(
                     f"Note: `which deile` returned {found_path.name!r} which does not "
                     "point to the newly installed wrapper. You may have a stale binary."
@@ -1155,7 +1138,7 @@ async def _run_self_install_async(mode: Optional[str] = None) -> int:
         else:
             on_path_now = False
     else:
-        on_path_now = False  # PowerShell `where.exe` lookup not implemented here
+        on_path_now = False
 
     if on_path_now:
         print()
@@ -1290,26 +1273,23 @@ def _format_help_with_commands(parser: "argparse.ArgumentParser") -> str:
         return base_help
 
     name_w = max(len(c.name) for c in commands) + 1
+    cmd_lines = [
+        f"  /{c.name:<{name_w}}  [{'LLM' if c.has_prompt_template else 'Direct':<6}]  {c.description}"
+        for c in commands
+    ]
     lines = [
         "",
         "interactive slash commands (also usable inside the REPL):",
+        *cmd_lines,
+        "",
+        "Tip: most slash commands also have a CLI flag (run `deile --help` to see the full flag list above).",
     ]
-    for cmd in commands:
-        cmd_type = "LLM" if cmd.has_prompt_template else "Direct"
-        lines.append(
-            f"  /{cmd.name:<{name_w}}  [{cmd_type:<6}]  {cmd.description}"
-        )
-    lines.append("")
-    lines.append(
-        "Tip: most slash commands also have a CLI flag (run `deile --help` to see "
-        "the full flag list above)."
-    )
     return base_help + "\n".join(lines) + "\n"
 
 
 # ── main entry point ─────────────────────────────────────────────────────────
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     """`deile` console_script entry point.
 
     Returns exit code (0 = success, 1 = error).
@@ -1431,16 +1411,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not msg and not sys.stdin.isatty():
         msg = sys.stdin.read().strip()
     if not msg:
-        # --debug (and possibly --model) without a message → fall through
-        # to interactive mode. Any flag setup already happened above (e.g.
-        # debug toggle), so the REPL inherits it.
-        debug_only = getattr(args, "debug", False) or args.model
-        if debug_only:
+        # --debug or --model without a message → fall through to interactive mode.
+        if getattr(args, "debug", False) or args.model:
             import logging
             logging.disable()
             asyncio.run(_DeileCLI().run_interactive())
             return 0
-        # No message AND no flag — the user got the invocation wrong.
         parser.error("no message provided (pass as positional arg, via stdin, or use a --flag)")
 
     import logging
