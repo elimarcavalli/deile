@@ -38,27 +38,24 @@ class CommandRegistry:
         """Registra comando no registry"""
         if not isinstance(command, SlashCommand):
             raise TypeError(f"Expected SlashCommand, got {type(command)}")
-        
+
         command_name = command.name
-        
+
         if command_name in self._commands:
-            logger.warning(f"Command '{command_name}' already registered, replacing")
-        
-        # Registra comando
+            logger.warning("Command '%s' already registered, replacing", command_name)
+
         self._commands[command_name] = command
-        
-        # Registra aliases
+
         for alias in command.aliases:
             if alias in self._aliases:
-                logger.warning(f"Alias '{alias}' already exists, overwriting")
+                logger.warning("Alias '%s' already exists, overwriting", alias)
             self._aliases[alias] = command_name
-        
-        # Categorização automática
-        category = getattr(command, 'category', 'general')
+
+        category = getattr(command, "category", "general")
         self._categories[category].append(command)
-        
+
         self._registration_count += 1
-        logger.debug(f"Registered command: /{command_name}")
+        logger.debug("Registered command: /%s", command_name)
     
     def unregister_command(self, name: str) -> bool:
         """Remove a command and its aliases from the registry. Returns True if removed."""
