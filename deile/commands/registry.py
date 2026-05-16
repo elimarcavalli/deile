@@ -5,7 +5,7 @@ import inspect
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional
 
 from ..config.manager import CommandConfig
 from .base import CommandContext, CommandResult, SlashCommand
@@ -352,30 +352,3 @@ def get_command_registry(config_manager=None) -> CommandRegistry:
     if _command_registry is None:
         _command_registry = CommandRegistry(config_manager)
     return _command_registry
-
-
-class StaticCommandRegistry:
-    """Simple static command registry for backward compatibility with builtin commands"""
-    
-    _commands: Dict[str, Any] = {}
-    
-    @classmethod
-    def register(cls, name: str, command_class: Type) -> None:
-        """Register a command class with a name"""
-        cls._commands[name] = command_class
-        logger.debug(f"Registered command class: {name}")
-    
-    @classmethod
-    def get_command_class(cls, name: str) -> Optional[Type]:
-        """Get a command class by name"""
-        return cls._commands.get(name)
-    
-    @classmethod
-    def get_all_command_names(cls) -> List[str]:
-        """Get all registered command names"""
-        return list(cls._commands.keys())
-    
-    @classmethod
-    def clear(cls) -> None:
-        """Clear all registered commands"""
-        cls._commands.clear()
