@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import functools
 import logging
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import Awaitable, Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from rich.panel import Panel

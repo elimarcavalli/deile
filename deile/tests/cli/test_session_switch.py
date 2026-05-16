@@ -10,7 +10,7 @@ every entry of the loaded conversation; absence falls back to the dim
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Optional
 from unittest.mock import MagicMock
 
 import pytest
