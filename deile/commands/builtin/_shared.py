@@ -488,3 +488,16 @@ def truncate(text: str | None, max_chars: int, suffix: str = "...") -> str:
     if not text:
         return ""
     return text[:max_chars] + suffix if len(text) > max_chars else text
+
+
+def truncate_oneline(text: object, max_chars: int) -> str:
+    """Achata whitespace (newline→espaço, ``strip``) e recorta com sufixo ``…``.
+
+    Para rótulos de seletor de uma linha em resume/rewind, onde o texto-fonte
+    pode conter quebras de linha. ``None``/falsy vira string vazia; entradas
+    não-string são coagidas via ``str()``.
+    """
+    if not text:
+        return ""
+    flat = str(text).replace("\n", " ").strip()
+    return flat[:max_chars] + "…" if len(flat) > max_chars else flat

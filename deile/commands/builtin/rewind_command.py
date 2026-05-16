@@ -11,14 +11,10 @@ from rich.text import Text
 from ...core.interfaces.selector import SelectorNotSupported, SelectorOption
 from ...infrastructure.selectors import get_default_selector
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import SWITCH_SESSION_KEY, wrap_command_errors
+from ._shared import (SWITCH_SESSION_KEY, truncate_oneline,
+                      wrap_command_errors)
 
 _MAX_LABEL = 80
-
-
-def _truncate(s: str, n: int = _MAX_LABEL) -> str:
-    s = s.replace("\n", " ").strip()
-    return s[:n] + "…" if len(s) > n else s
 
 
 class RewindCommand(DirectCommand):
@@ -67,7 +63,7 @@ class RewindCommand(DirectCommand):
         selector = get_default_selector()
         if not selector.is_supported():
             lines = "\n".join(
-                f"{idx + 1}. {_truncate(e['content'])}"
+                f"{idx + 1}. {truncate_oneline(e['content'], _MAX_LABEL)}"
                 for idx, (_, e) in enumerate(user_entries)
             )
             return CommandResult(
@@ -84,7 +80,7 @@ class RewindCommand(DirectCommand):
 
         options = [
             SelectorOption(
-                label=f"#{idx + 1}  {_truncate(e['content'])}",
+                label=f"#{idx + 1}  {truncate_oneline(e['content'], _MAX_LABEL)}",
                 value=hist_idx,
                 description="",
             )
@@ -131,7 +127,7 @@ class RewindCommand(DirectCommand):
 
         session.context_data[SWITCH_SESSION_KEY] = new_sid
 
-        label = _truncate(trimmed[-1]["content"]) if trimmed else "—"
+        label = truncate_oneline(trimmed[-1]["content"], _MAX_LABEL) if trimmed else "—"
         return CommandResult(
             success=True,
             content=Panel(

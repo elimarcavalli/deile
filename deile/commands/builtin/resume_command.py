@@ -13,20 +13,11 @@ from ..base import CommandContext, CommandResult, DirectCommand
 from ._conv_store import ConversationNameStore
 from ._session_store import SessionHistoryStore
 from ._shared import (POST_SWITCH_ACTION_KEY, SWITCH_SESSION_KEY,
-                      wrap_command_errors)
-
-_MAX_LABEL = 72
+                      truncate_oneline, wrap_command_errors)
 
 
 def _fmt_time(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
-
-
-def _truncate(s: object, n: int = _MAX_LABEL) -> str:
-    if not s:
-        return ""
-    text = str(s).replace("\n", " ").strip()
-    return text[:n] + "…" if len(text) > n else text
 
 
 class ResumeCommand(DirectCommand):
@@ -79,7 +70,7 @@ class ResumeCommand(DirectCommand):
                 name = (
                     name_store.get(row["session_id"])
                     or row.get("conversation_name")
-                    or _truncate(row["first_user_input"], 50)
+                    or truncate_oneline(row["first_user_input"], 50)
                 )
                 ts = _fmt_time(row["last_activity"])
                 lines.append(f"{ts}  {name}  ({row['message_count']} msg)")
@@ -102,7 +93,7 @@ class ResumeCommand(DirectCommand):
             name = (
                 name_store.get(sid)
                 or row.get("conversation_name")
-                or _truncate(row["first_user_input"], 50)
+                or truncate_oneline(row["first_user_input"], 50)
                 or sid
             )
             ts = _fmt_time(row["last_activity"])
