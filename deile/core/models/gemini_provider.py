@@ -957,9 +957,10 @@ class GeminiProvider(ModelProvider):
     ) -> ModelResponse:
         """Gera conteúdo usando novo Google GenAI SDK"""
         try:
-            # Prepara contents para o novo SDK
-            contents = self._prepare_contents_for_new_sdk(messages)
-            
+            # ``messages`` já vem no formato de contents do SDK
+            # (ver _process_messages_for_gemini).
+            contents = messages
+
             # CORREÇÃO: Cria uma instância do modelo com a system_instruction
             # model = genai.GenerativeModel(
             #     model_name=self.gemini_config.model_name,
@@ -1041,63 +1042,34 @@ class GeminiProvider(ModelProvider):
                 error_code="NEW_SDK_ERROR"
             ) from e
     
-    def _prepare_contents_for_new_sdk(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Prepara contents para o formato do novo Google GenAI SDK"""
-        contents = []
-        
-        for message in messages:
-            # Mapeia roles para novo SDK
-            role = message.get("role", "user")
-            
-            # CORREÇÃO: Remove mensagens system - API Gemini não suporta
-            if role == "system":
-                continue  # Pula mensagens system
-            
-            if role == "model":
-                role = "assistant"
-            
-            parts = message.get("parts", [])
-            if isinstance(parts, str):
-                parts = [{"text": parts}]
-            
-            contents.append({
-                "role": role,
-                "parts": parts
-            })
-        
-        return contents
-    
     def _process_messages_for_gemini(self, messages: List[ModelMessage]) -> List[Dict[str, Any]]:
-        """Processa mensagens com suporte a multi-modal input"""
-        processed_messages = []
-        
+        """Converte ``ModelMessage`` em ``contents`` para o Google GenAI SDK.
+
+        Mapeia roles num único passo (``assistant`` preservado, demais viram
+        ``user``), descarta mensagens ``system`` — tratadas via
+        ``system_instruction`` — e normaliza ``content`` em ``parts``
+        (string/objeto único → lista de parts; lista multi-modal mantida).
+        """
+        contents: List[Dict[str, Any]] = []
+
         for message in messages:
-            # Mapeia roles
-            if message.role == "assistant":
-                role = "model"
-            elif message.role == "system":
-                # System messages são tratadas na system_instruction
+            if message.role == "system":
+                # System messages são tratadas na system_instruction.
                 continue
-            else:
-                role = "user"
-            
+            role = "assistant" if message.role == "assistant" else "user"
+
             # Processa content (pode ser string ou lista de parts)
             if isinstance(message.content, str):
-                # Texto simples
                 parts = [{"text": message.content}]
             elif isinstance(message.content, list):
                 # Lista de parts (text + file_data)
                 parts = message.content
             else:
-                # Fallback para string
                 parts = [{"text": str(message.content)}]
-            
-            processed_messages.append({
-                "role": role,
-                "parts": parts
-            })
-        
-        return processed_messages
+
+            contents.append({"role": role, "parts": parts})
+
+        return contents
     
     # Métodos antigos removidos - usando novo Google GenAI SDK
     # _generate_with_function_calling() substituído por _generate_with_new_sdk()
