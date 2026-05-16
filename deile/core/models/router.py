@@ -6,12 +6,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
-from deile.storage.usage_repository import (BudgetExceeded, BudgetGuard,
-                                            get_usage_repository)
+from deile.storage.usage_repository import BudgetGuard
 
 from ..exceptions import ModelError
-from .base import (ModelMessage, ModelProvider, ModelResponse, ModelSize,
-                   ModelType)
+from .base import ModelProvider, ModelSize, ModelType
 from .tier import ModelTier
 from .tier_router import get_tier_router
 
@@ -256,134 +254,6 @@ class ModelRouter:
         
         logger.debug(f"Selected provider: {provider_key} (strategy: {self.strategy.value})")
         return selected_provider
-    
-    async def execute_with_fallback(
-        self,
-        messages: List[ModelMessage],
-        context: Optional[Dict[str, Any]] = None,
-        max_retries: int = 3,
-        session_id: str = "default",
-        **kwargs
-    ) -> ModelResponse:
-        """Executa requisição com fallback automático
-
-        Args:
-            messages: Mensagens para o modelo
-            context: Contexto da requisição
-            max_retries: Número máximo de tentativas
-            session_id: Session identifier used for per-session budget enforcement
-            **kwargs: Parâmetros adicionais
-
-        Returns:
-            ModelResponse: Resposta do modelo
-        """
-        last_error = None
-        tried_providers = set()
-        budget_guard = self._get_budget_guard()
-
-        for attempt in range(max_retries):
-            try:
-                # Seleciona provedor (exclui os que já falharam)
-                available_providers = await self._get_available_providers()
-                available_providers = [
-                    p for p in available_providers
-                    if f"{p.provider_name}:{p.model_name}" not in tried_providers
-                ]
-
-                if not available_providers:
-                    break
-
-                provider = await self.select_provider(context)
-                provider_key = f"{provider.provider_name}:{provider.model_name}"
-
-                # Budget enforcement — raises BudgetExceeded before hitting the API
-                if budget_guard is not None:
-                    try:
-                        budget_guard.check_all(
-                            session_id=session_id,
-                            provider_id=provider.provider_id,
-                        )
-                    except BudgetExceeded as budget_exc:
-                        logger.warning(
-                            "BudgetGuard blocked %s for session=%s: %s",
-                            provider.provider_id,
-                            session_id,
-                            budget_exc,
-                        )
-                        raise
-
-                # Tenta executar
-                start_time = time.time()
-                response = await provider.generate(messages, **kwargs)
-                execution_time = time.time() - start_time
-
-                # Registra sucesso
-                self.metrics[provider_key].record_completion(True, execution_time)
-
-                logger.debug(f"Request successful with {provider_key} (attempt {attempt + 1})")
-                return response
-
-            except BudgetExceeded:
-                # Do not retry when budget is exhausted; re-raise immediately
-                raise
-            except Exception as e:
-                provider_key = f"{provider.provider_name}:{provider.model_name}" if 'provider' in locals() else "unknown"
-                execution_time = time.time() - start_time if 'start_time' in locals() else 0
-
-                # Registra falha
-                if provider_key in self.metrics:
-                    self.metrics[provider_key].record_completion(False, execution_time)
-
-                tried_providers.add(provider_key)
-                last_error = e
-
-                logger.warning(f"Request failed with {provider_key} (attempt {attempt + 1}): {e}")
-
-                # Atualiza circuit breaker
-                if self.circuit_breaker_enabled and provider_key in self.metrics:
-                    error_rate = self.metrics[provider_key].error_rate
-                    if error_rate >= self.circuit_breaker_threshold:
-                        self._circuit_breaker_status[provider_key] = True
-                        logger.warning(f"Circuit breaker opened for {provider_key} (error rate: {error_rate:.2%})")
-        
-        # Todas as tentativas falharam — raise with structured envelopes
-        from deile.core.models.errors import ProviderInvocationError
-        errors_by_handle: Dict[str, Any] = {}
-        if isinstance(last_error, ProviderInvocationError):
-            env = last_error.envelope
-            errors_by_handle[env.provider_id] = {
-                "error_type": env.error_type,
-                "message": env.message,
-                "http_status": env.http_status,
-                "raw_json": env.raw_json,
-            }
-        raise ModelError(
-            f"All model providers failed after {max_retries} attempts. Last error: {str(last_error)}",
-            error_code="ALL_TIER_PROVIDERS_FAILED",
-            context={"errors_by_handle": errors_by_handle},
-        ) from last_error
-    
-    def _get_budget_guard(self) -> Optional[BudgetGuard]:
-        """Return the BudgetGuard, bootstrapping it lazily from YAML on first call."""
-        if self._budget_guard is not None:
-            return self._budget_guard
-        try:
-            from pathlib import Path as _Path
-            _yaml_path = _Path(__file__).parents[2] / "config" / "model_providers.yaml"
-            repo = get_usage_repository()
-            self._budget_guard = BudgetGuard.from_yaml(_yaml_path, repo)
-        except Exception as exc:
-            logger.warning("BudgetGuard: could not initialise from YAML (%s) — budget checks disabled", exc)
-            self._budget_guard = None
-        return self._budget_guard
-
-    def add_custom_routing_function(self, func: Callable[[RoutingContext, List[ModelProvider]], Optional[ModelProvider]]) -> None:
-        """Adiciona função de roteamento customizada"""
-        self.custom_routing_functions.append(func)
-    
-    def set_task_model_mapping(self, task: str, model_preference: ModelSize) -> None:
-        """Define mapeamento de tarefa para tipo de modelo"""
-        self.task_model_mapping[task] = model_preference
     
     async def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas do router"""
