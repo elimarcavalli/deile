@@ -10,14 +10,10 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._session_store import SessionHistoryStore
-from ._shared import split_args, wrap_command_errors
+from ._shared import (POST_SWITCH_ACTION_KEY, SWITCH_SESSION_KEY, split_args,
+                      wrap_command_errors)
 
 logger = logging.getLogger(__name__)
-
-# Sentinel keys mirrored from ``deile.cli._DeileCLI`` — duplicated here to
-# avoid importing the CLI module from a command. Keep in sync.
-_SWITCH_SESSION_KEY = "_switch_session"
-_POST_SWITCH_ACTION_KEY = "_post_switch_action"
 
 
 class ClearCommand(DirectCommand):
@@ -98,8 +94,8 @@ class ClearCommand(DirectCommand):
             raise CommandError(f"Não foi possível criar nova sessão: {exc}")
 
         # 3. Hand the switch + redraw request to the CLI via the sentinels.
-        session.context_data[_SWITCH_SESSION_KEY] = new_sid
-        session.context_data[_POST_SWITCH_ACTION_KEY] = "welcome"
+        session.context_data[SWITCH_SESSION_KEY] = new_sid
+        session.context_data[POST_SWITCH_ACTION_KEY] = "welcome"
 
         return CommandResult.success_result(
             "",

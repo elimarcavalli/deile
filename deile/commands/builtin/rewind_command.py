@@ -11,9 +11,8 @@ from rich.text import Text
 from ...core.interfaces.selector import SelectorNotSupported, SelectorOption
 from ...infrastructure.selectors import get_default_selector
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import wrap_command_errors
+from ._shared import SWITCH_SESSION_KEY, wrap_command_errors
 
-_SENTINEL = "_switch_session"
 _MAX_LABEL = 80
 
 
@@ -130,7 +129,7 @@ class RewindCommand(DirectCommand):
         if orig_name:
             new_session.context_data["conversation_name"] = f"{orig_name} (rewind)"
 
-        session.context_data[_SENTINEL] = new_sid
+        session.context_data[SWITCH_SESSION_KEY] = new_sid
 
         label = _truncate(trimmed[-1]["content"]) if trimmed else "—"
         return CommandResult(

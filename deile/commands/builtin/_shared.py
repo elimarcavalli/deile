@@ -26,6 +26,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Session-switch sentinels written into ``Session.context_data`` by the
+# clear/fork/rewind/resume commands and consumed by the CLI loop
+# (``deile.cli``). Single source of truth — mirrored intentionally in
+# ``deile/cli.py`` to avoid a command→CLI import.
+SWITCH_SESSION_KEY = "_switch_session"
+POST_SWITCH_ACTION_KEY = "_post_switch_action"
+
 
 def export_timestamp() -> str:
     """Timestamp UTC ``YYYYMMDD_HHMMSS`` para nomes de arquivos exportados.

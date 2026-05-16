@@ -10,9 +10,7 @@ from rich.text import Text
 
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._conv_store import ConversationNameStore
-from ._shared import split_args, wrap_command_errors
-
-_SENTINEL = "_switch_session"
+from ._shared import SWITCH_SESSION_KEY, split_args, wrap_command_errors
 
 
 class ForkCommand(DirectCommand):
@@ -70,7 +68,7 @@ class ForkCommand(DirectCommand):
             store.set(new_sid, name)
             new_session.context_data["conversation_name"] = name
 
-        session.context_data[_SENTINEL] = new_sid
+        session.context_data[SWITCH_SESSION_KEY] = new_sid
 
         label = f'"{name}"' if name else new_sid
         return CommandResult(

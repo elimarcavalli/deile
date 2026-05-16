@@ -12,10 +12,9 @@ from ...infrastructure.selectors import get_default_selector
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._conv_store import ConversationNameStore
 from ._session_store import SessionHistoryStore
-from ._shared import wrap_command_errors
+from ._shared import (POST_SWITCH_ACTION_KEY, SWITCH_SESSION_KEY,
+                      wrap_command_errors)
 
-_SENTINEL = "_switch_session"
-_POST_SWITCH = "_post_switch_action"
 _MAX_LABEL = 72
 
 
@@ -167,8 +166,8 @@ class ResumeCommand(DirectCommand):
         if name:
             target_session.context_data["conversation_name"] = name
 
-        session.context_data[_SENTINEL] = target_sid
-        session.context_data[_POST_SWITCH] = "replay"
+        session.context_data[SWITCH_SESSION_KEY] = target_sid
+        session.context_data[POST_SWITCH_ACTION_KEY] = "replay"
 
         return CommandResult.success_result(
             "",
