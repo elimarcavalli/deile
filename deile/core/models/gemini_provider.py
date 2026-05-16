@@ -19,10 +19,61 @@ from ..loop_guard import (format_loop_break_message, make_guard,
                           tool_result_made_progress)
 from .base import (ModelMessage, ModelProvider, ModelResponse, ModelSize,
                    ModelType, ModelUsage)
+from .error_mapping import classify_http_error
+from .errors import ProviderErrorEnvelope, ProviderInvocationError
 from .tool_execution import (OUTCOME_EXCEPTION, OUTCOME_NOT_FOUND,
                              resolve_and_execute_tool)
 
 logger = logging.getLogger(__name__)
+
+
+def _classify_gemini_error(exc: Exception) -> str:
+    """Classify a Google GenAI SDK exception into a provider-agnostic
+    ``error_type`` string.
+
+    The new ``google-genai`` SDK surfaces API failures as
+    :class:`google.genai.errors.APIError` (and its ``ClientError`` /
+    ``ServerError`` subclasses). Unlike Anthropic/OpenAI, those exceptions
+    expose the HTTP status as ``code`` (int), a coarse string under ``status``
+    (e.g. ``RESOURCE_EXHAUSTED``) and the human message under ``message``.
+    This classifier extracts those fields and delegates the status/sniff logic
+    to the shared :func:`classify_http_error`, so Gemini lands on the same
+    ``error_type`` vocabulary as the other providers.
+    """
+    status = getattr(exc, "code", None)
+    if not isinstance(status, int):
+        status = None
+    err_code = str(getattr(exc, "status", "") or "").lower()
+    err_msg = str(getattr(exc, "message", "") or str(exc) or "").lower()
+    return classify_http_error(status, err_code, err_msg)
+
+
+def _make_envelope(
+    exc: Exception,
+    provider_id: str,
+    model_id: str,
+) -> ProviderErrorEnvelope:
+    """Build a typed :class:`ProviderErrorEnvelope` from a GenAI SDK exception.
+
+    Built directly (not via the shared ``build_error_envelope`` helper) because
+    GenAI exceptions store their HTTP status under ``code`` and the response
+    body under ``details`` — a different layout from the Anthropic/OpenAI SDKs
+    that helper targets.
+    """
+    status = getattr(exc, "code", None)
+    if not isinstance(status, int):
+        status = None
+    details = getattr(exc, "details", None)
+    raw: Dict[str, Any] = details if isinstance(details, dict) else {}
+    message = str(getattr(exc, "message", "") or "") or str(exc)
+    return ProviderErrorEnvelope(
+        provider_id=provider_id,
+        model_id=model_id,
+        error_type=_classify_gemini_error(exc),
+        message=message,
+        http_status=status,
+        raw_json=raw,
+    )
 
 
 def _stringify_for_model(value: Any) -> Any:
@@ -298,40 +349,42 @@ class GeminiProvider(ModelProvider):
             
             return response
             
-        except genai_errors.ClientError as e:
+        except genai_errors.APIError as e:
+            # Model-invocation failure: emit the same typed contract as the
+            # Anthropic/OpenAI providers so ToolLoopExecutor and the agent loop
+            # can read ``envelope.error_type`` (e.g. context_length_exceeded).
             execution_time = time.time() - start_time
-            error = ModelError(
-                "Gemini API rate limit exceeded",
-                model_name=self.model_name,
-                error_code="RATE_LIMIT_EXCEEDED"
-            )
-            
+            envelope = _make_envelope(e, self.provider_id, self.model_name)
+
             if is_debug_enabled():
                 await self.debug_logger.log_error(e, {
                     "provider": "gemini",
                     "execution_time": execution_time,
-                    "error_type": "rate_limit"
+                    "error_type": envelope.error_type,
                 })
-            
-            raise error from e
-            
+
+            raise ProviderInvocationError(envelope) from e
+
+        except ProviderInvocationError:
+            # Already typed (e.g. re-raised by ``_generate_with_new_sdk``) —
+            # propagate without re-wrapping.
+            raise
+
         except Exception as e:
+            # Non-API failure (serialization, processing). Still surface a typed
+            # envelope so the contract is uniform; classifies as ``unknown``.
             execution_time = time.time() - start_time
-            error = ModelError(
-                f"Gemini API error: {str(e)}",
-                model_name=self.model_name,
-                error_code="API_ERROR"
-            )
-            
+            envelope = _make_envelope(e, self.provider_id, self.model_name)
+
             if is_debug_enabled():
                 await self.debug_logger.log_error(e, {
-                    "provider": "gemini", 
+                    "provider": "gemini",
                     "execution_time": execution_time,
-                    "error_type": "api_error",
-                    "original_error": str(e)
+                    "error_type": envelope.error_type,
+                    "original_error": str(e),
                 })
-            
-            raise error from e
+
+            raise ProviderInvocationError(envelope) from e
     
     async def generate_stream(
         self,
@@ -369,9 +422,15 @@ class GeminiProvider(ModelProvider):
             try:
                 response = await asyncio.to_thread(chat.send_message, user_msg)
             except Exception as exc:  # pylint: disable=broad-except
+                # Emit the typed ProviderErrorEnvelope contract — identical to
+                # the Anthropic/OpenAI stream error path — so ToolLoopExecutor
+                # can read ``error_envelope.error_type`` (context_length_exceeded
+                # in particular) instead of an ad-hoc dict with no attributes.
                 yield UnifiedStreamEvent(
                     type=StreamEventType.ERROR,
-                    error_envelope={"provider_id": self.provider_id, "message": str(exc)},
+                    error_envelope=_make_envelope(
+                        exc, self.provider_id, self.model_name
+                    ),
                 )
                 self._chat_sessions.pop(_session_key, None)
                 return
@@ -999,6 +1058,10 @@ class GeminiProvider(ModelProvider):
             
             return model_response
             
+        except genai_errors.APIError:
+            # API-level failure: let it propagate untouched so ``generate``
+            # classifies it into a typed ProviderErrorEnvelope.
+            raise
         except Exception as e:
             logger.error(f"Error in new SDK generation: {e}")
             raise ModelError(
