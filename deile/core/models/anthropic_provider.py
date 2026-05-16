@@ -15,10 +15,8 @@ from deile.core.loop_guard import (format_loop_break_message, make_guard,
 from deile.core.models.base import (ModelMessage, ModelProvider, ModelResponse,
                                     ModelSize, ModelType, ModelUsage)
 from deile.core.models.catalog import ModelHandle, ModelPricing
-from deile.core.models.error_mapping import (build_error_envelope,
-                                             classify_provider_error)
-from deile.core.models.errors import (ProviderErrorEnvelope,
-                                      ProviderInvocationError)
+from deile.core.models.error_mapping import make_envelope_builder
+from deile.core.models.errors import ProviderInvocationError
 from deile.core.models.provider_config import ProviderConfig
 from deile.core.models.stream_events import (ModelUsageSnapshot,
                                              StreamEventType,
@@ -45,24 +43,11 @@ def _anthropic_body_fields(body: Dict[str, Any], exc: Exception) -> Tuple[str, s
     return str(body.get("type", "") or ""), str(body.get("message", "") or "")
 
 
-def _classify_anthropic_error(exc: anthropic.APIError) -> str:
-    """Classify an Anthropic SDK exception via the shared
-    :func:`classify_provider_error`, supplying only the Anthropic-specific
-    body field layout."""
-    return classify_provider_error(
-        exc, _anthropic_body_fields, extra_msg_markers=("prompt is too long",)
-    )
-
-
-def _make_envelope(
-    exc: anthropic.APIError,
-    provider_id: str,
-    model_id: str,
-) -> ProviderErrorEnvelope:
-    """Thin wrapper over :func:`build_error_envelope` with the Anthropic classifier."""
-    return build_error_envelope(
-        exc, provider_id, model_id, _classify_anthropic_error
-    )
+# Anthropic follows the standard HTTP-error shape; the only provider-specific
+# knobs are the body field layout and the "prompt is too long" marker.
+_make_envelope = make_envelope_builder(
+    _anthropic_body_fields, extra_msg_markers=("prompt is too long",)
+)
 
 
 class AnthropicProvider(ModelProvider):

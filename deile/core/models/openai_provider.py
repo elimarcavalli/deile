@@ -15,10 +15,8 @@ from deile.core.loop_guard import (format_loop_break_message, make_guard,
 from deile.core.models.base import (ModelMessage, ModelProvider, ModelResponse,
                                     ModelSize, ModelType, ModelUsage)
 from deile.core.models.catalog import ModelHandle, ModelPricing
-from deile.core.models.error_mapping import (build_error_envelope,
-                                             classify_provider_error)
-from deile.core.models.errors import (ProviderErrorEnvelope,
-                                      ProviderInvocationError)
+from deile.core.models.error_mapping import make_envelope_builder
+from deile.core.models.errors import ProviderInvocationError
 from deile.core.models.provider_config import ProviderConfig
 from deile.core.models.stream_events import (ModelUsageSnapshot,
                                              StreamEventType,
@@ -50,22 +48,10 @@ def _openai_body_fields(body: Dict[str, Any], exc: Exception) -> Tuple[str, str]
     )
 
 
-def _classify_openai_exc(exc: Exception) -> str:
-    """Classify an OpenAI SDK exception via the shared
-    :func:`classify_provider_error`, supplying only the OpenAI-specific body
-    field layout. Exceptions without an HTTP body classify as ``unknown``."""
-    return classify_provider_error(exc, _openai_body_fields)
-
-
-def _make_envelope(
-    exc: openai.APIError,
-    provider_id: str,
-    model_id: str,
-) -> ProviderErrorEnvelope:
-    """Thin wrapper over :func:`build_error_envelope` with the OpenAI classifier."""
-    return build_error_envelope(
-        exc, provider_id, model_id, _classify_openai_exc
-    )
+# OpenAI follows the standard HTTP-error shape; the only provider-specific
+# knob is the body field layout. Exceptions without an HTTP body classify as
+# ``unknown``.
+_make_envelope = make_envelope_builder(_openai_body_fields)
 
 
 class OpenAIProvider(ModelProvider):

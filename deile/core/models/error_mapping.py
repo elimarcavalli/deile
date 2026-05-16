@@ -143,3 +143,31 @@ def build_error_envelope(
         request_id=str(request_id) if request_id else None,
         timestamp=time.time(),
     )
+
+
+def make_envelope_builder(
+    body_extractor: Callable[[Dict[str, Any], Exception], Tuple[str, str]],
+    extra_msg_markers: Iterable[str] = (),
+) -> Callable[[Exception, str, str], ProviderErrorEnvelope]:
+    """Build a provider's ``_make_envelope`` callable from its two knobs.
+
+    Concrete providers that follow the standard HTTP-error shape (Anthropic,
+    OpenAI) differ only in *where* the error code/message live inside the SDK
+    error body and, optionally, an extra context-length message marker. This
+    factory captures those two knobs and returns a ready-to-use
+    ``(exc, provider_id, model_id) -> ProviderErrorEnvelope`` callable,
+    removing the ``_classify_*``/``_make_envelope`` boilerplate each provider
+    used to repeat. Providers with a non-standard body layout (e.g. Gemini)
+    keep their own builder.
+    """
+    def _classify(exc: Exception) -> str:
+        return classify_provider_error(
+            exc, body_extractor, extra_msg_markers=extra_msg_markers
+        )
+
+    def _build(
+        exc: Exception, provider_id: str, model_id: str
+    ) -> ProviderErrorEnvelope:
+        return build_error_envelope(exc, provider_id, model_id, _classify)
+
+    return _build
