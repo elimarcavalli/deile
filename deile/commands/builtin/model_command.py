@@ -426,7 +426,8 @@ EXAMPLES:
 
         # Sync the legacy ModelRouter.strategy (consulted when tier classification fails)
         try:
-            from deile.core.models.router import RoutingStrategy as _RS
+            from deile.core.models.routing_strategies import \
+                RoutingStrategy as _RS
             agent_obj = get_agent(context)
             if agent_obj is None:
                 # Fall back: try common aliases on the context
