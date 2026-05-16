@@ -54,12 +54,10 @@ class HelpCommand(DirectCommand):
                     or getattr(getattr(command, "config", None), "aliases", None)
                     or []
                 )
-                aliases_info = (
-                    "\n\n**Aliases:** " + ", ".join(f"/{a}" for a in aliases)
-                    if aliases else ""
-                )
+                if aliases:
+                    help_content += "\n\n**Aliases:** " + ", ".join(f"/{a}" for a in aliases)
                 panel = Panel(
-                    help_content + aliases_info,
+                    help_content,
                     title=f"[bold cyan]Help: /{command.name}[/bold cyan]",
                     border_style="cyan",
                 )

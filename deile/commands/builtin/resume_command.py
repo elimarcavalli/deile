@@ -153,10 +153,7 @@ class ResumeCommand(DirectCommand):
 
         target_session.conversation_history = [dict(e) for e in history]
 
-        name = (
-            name_store.get(target_sid)
-            or stored.get("conversation_name", "")
-        )
+        name = name_store.get(target_sid) or stored.get("conversation_name", "")
         if name:
             target_session.context_data["conversation_name"] = name
 

@@ -12,7 +12,8 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Sequence
+from typing import TYPE_CHECKING, Any
 
 from rich.panel import Panel
 from rich.text import Text

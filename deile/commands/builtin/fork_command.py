@@ -40,7 +40,7 @@ class ForkCommand(DirectCommand):
             return CommandResult.error_result("Agent or session not available.")
 
         parts = split_args(context)
-        name: str = " ".join(parts).strip() if parts else ""
+        name = " ".join(parts) if parts else ""
 
         history = list(getattr(session, "conversation_history", []))
         if not any(e.get("role") == "user" for e in history):
