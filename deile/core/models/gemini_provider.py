@@ -19,6 +19,8 @@ from ..loop_guard import (format_loop_break_message, make_guard,
                           tool_result_made_progress)
 from .base import (ModelMessage, ModelProvider, ModelResponse, ModelSize,
                    ModelType, ModelUsage)
+from .tool_execution import (OUTCOME_EXCEPTION, OUTCOME_NOT_FOUND,
+                             resolve_and_execute_tool)
 
 logger = logging.getLogger(__name__)
 
@@ -590,90 +592,65 @@ class GeminiProvider(ModelProvider):
     ) -> tuple[Any, Dict[str, Any]]:
         """Executa uma function call resolvida via ToolRegistry.
 
+        A etapa comum (resolução via ToolRegistry, tool-inexistente,
+        execução e wrap de exceção) é compartilhada com os demais providers
+        via :func:`resolve_and_execute_tool`; este método é um wrapper fino
+        que só monta o ``function_response`` payload específico do Gemini.
+
         Returns:
             Tupla ``(tool_result, function_response_payload)`` onde:
-            - ``tool_result`` é um :class:`ToolResult` (ou ``None`` se a tool
-              não foi encontrada / execução falhou na borda) — usado pelo
+            - ``tool_result`` é um :class:`ToolResult` — usado pelo
               orquestrador para display/auditoria.
             - ``function_response_payload`` é um dict serializável JSON pronto
               para ser embrulhado em ``types.Part.from_function_response``.
               Sempre presente; em caso de erro, contém ``{"error": "..."}``
               numa forma que o modelo consegue ler e se recuperar.
         """
-        from ...tools.base import ToolContext, ToolResult, ToolStatus
-        from ...tools.registry import get_tool_registry
+        from ...tools.base import ToolContext
 
-        registry = get_tool_registry()
-        tool = registry.get(function_name) if hasattr(registry, "get") else None
+        tool_result, outcome = await resolve_and_execute_tool(
+            name=function_name,
+            args=arguments,
+            not_found_message_fn=lambda n, avail: (
+                f"Function '{n}' is not registered in this agent. "
+                f"Available tools: {', '.join(avail) if avail else '(none)'}."
+            ),
+            context_factory=lambda n, a: ToolContext(
+                user_input="",
+                parsed_args=dict(a or {}),
+                session_data=dict(session_data or {}),
+                working_directory=working_directory or ".",
+                file_list=[],
+                metadata={
+                    "execution_method": "function_call",
+                    "function_name": n,
+                },
+            ),
+            not_found_metadata={
+                "function_name": function_name,
+                "arguments": arguments,
+                "error_code": "FUNCTION_NOT_FOUND",
+            },
+            exception_message_fn=lambda n, exc: f"Unhandled exception in {n}: {exc}",
+            exception_metadata={"function_name": function_name},
+            log_calls=True,
+        )
 
         # Tool inexistente (ex.: nome alucinado pelo modelo). Devolvemos um
         # erro estruturado em vez de levantar — o modelo aprende e tenta de
         # novo com nome correto na próxima iteração.
-        if tool is None:
-            available = sorted(registry._tools.keys()) if hasattr(registry, "_tools") else []
-            logger.warning(
-                "Function call '%s' not found in registry. Available tools: %s",
-                function_name,
-                available,
-            )
-            error_payload = {
-                "error": (
-                    f"Function '{function_name}' is not registered in this agent. "
-                    f"Available tools: {', '.join(available) if available else '(none)'}."
-                ),
+        if outcome == OUTCOME_NOT_FOUND:
+            return tool_result, {
+                "error": tool_result.message,
                 "status": "error",
                 "error_code": "FUNCTION_NOT_FOUND",
             }
-            tool_result = ToolResult(
-                status=ToolStatus.ERROR,
-                message=error_payload["error"],
-                metadata={
-                    "function_name": function_name,
-                    "arguments": arguments,
-                    "error_code": "FUNCTION_NOT_FOUND",
-                },
-            )
-            return tool_result, error_payload
 
-        context = ToolContext(
-            user_input="",
-            parsed_args=dict(arguments or {}),
-            session_data=dict(session_data or {}),
-            working_directory=working_directory or ".",
-            file_list=[],
-            metadata={
-                "execution_method": "function_call",
-                "function_name": function_name,
-                "tool_name": tool.name,
-            },
-        )
-
-        logger.info(
-            "Executing function call '%s' with args=%s (cwd=%s)",
-            function_name,
-            list(context.parsed_args.keys()),
-            context.working_directory,
-        )
-
-        try:
-            tool_result = await tool.execute(context)
-        except Exception as exc:  # pylint: disable=broad-except
-            # Falha não-tratada na tool: capturamos para que o modelo veja o
-            # erro como function_response em vez de quebrar o turno inteiro.
-            logger.error(
-                "Tool '%s' raised an unhandled exception: %s",
-                function_name,
-                exc,
-                exc_info=True,
-            )
-            tool_result = ToolResult(
-                status=ToolStatus.ERROR,
-                message=f"Unhandled exception in {function_name}: {exc}",
-                error=exc,
-                metadata={"function_name": function_name},
-            )
+        # Falha não-tratada na tool: capturamos para que o modelo veja o
+        # erro como function_response em vez de quebrar o turno inteiro.
+        if outcome == OUTCOME_EXCEPTION:
             return tool_result, {
-                "error": str(exc),
+                "error": str(tool_result.error),
                 "status": "error",
                 "error_code": "EXECUTION_EXCEPTION",
             }

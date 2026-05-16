@@ -23,6 +23,9 @@ from deile.core.models.stream_events import (ModelUsageSnapshot,
                                              StreamEventType,
                                              UnifiedStreamEvent)
 from deile.core.models.tier import ModelTier
+from deile.core.models.tool_execution import (OUTCOME_EXCEPTION,
+                                              OUTCOME_NOT_FOUND,
+                                              resolve_and_execute_tool)
 
 logger = logging.getLogger(__name__)
 
@@ -536,32 +539,34 @@ class AnthropicProvider(ModelProvider):
     async def _execute_tool(
         self, name: str, args: Dict[str, Any]
     ) -> Tuple[Any, Dict[str, Any]]:
-        """Run one tool via ToolRegistry; return (ToolResult, json-serialisable payload)."""
-        from deile.tools.base import ToolContext, ToolResult, ToolStatus
-        from deile.tools.registry import get_tool_registry
+        """Run one tool via ToolRegistry; return (ToolResult, json-serialisable payload).
 
-        registry = get_tool_registry()
-        tool = registry.get(name)
-        if tool is None:
-            available = sorted(registry._tools.keys())
+        The resolve/not-found/execute/exception-wrap step is shared with the
+        other providers via :func:`resolve_and_execute_tool`; only the
+        Anthropic payload shape is built here.
+        """
+        from deile.tools.base import ToolContext
+
+        result, outcome = await resolve_and_execute_tool(
+            name=name,
+            args=args,
+            not_found_message_fn=lambda n, avail: (
+                f"Tool '{n}' not found. Available: {', '.join(avail)}"
+            ),
+            context_factory=lambda _n, a: ToolContext(
+                user_input="", parsed_args=dict(a or {})
+            ),
+        )
+
+        if outcome == OUTCOME_NOT_FOUND:
+            payload = {"error": result.message, "status": "error"}
+        elif outcome == OUTCOME_EXCEPTION:
+            payload = {"error": result.message, "status": "error"}
+        elif result.is_success:
             payload = {
-                "error": f"Tool '{name}' not found. Available: {', '.join(available)}",
-                "status": "error",
+                "status": "success",
+                "result": str(result.data) if result.data is not None else "",
             }
-            return ToolResult(status=ToolStatus.ERROR, message=payload["error"]), payload
-
-        ctx = ToolContext(user_input="", parsed_args=dict(args or {}))
-        try:
-            result = await tool.execute(ctx)
-        except Exception as exc:
-            payload = {"error": str(exc), "status": "error"}
-            return (
-                ToolResult(status=ToolStatus.ERROR, message=str(exc), error=exc),
-                payload,
-            )
-
-        if result.is_success:
-            payload = {"status": "success", "result": str(result.data) if result.data is not None else ""}
         else:
             payload = {"status": "error", "error": result.message or f"{name} failed"}
         return result, payload
