@@ -552,6 +552,33 @@ def format_loop_break_message(reason: AbortReason) -> str:
     )
 
 
+def make_loop_break_result(reason: AbortReason) -> tuple:
+    """Build the synthetic ``(ToolResult, payload)`` pair for a loop-break.
+
+    Every non-streaming ``chat_with_tools`` driver, on a guard abort, must
+    append a typed ERROR :class:`~deile.tools.base.ToolResult` to its
+    ``tool_results`` list and echo a JSON-serializable payload back to the
+    model in place of the refused tool's output. This helper centralizes
+    that construction so the three provider integrations stay in sync.
+
+    Returns ``(tool_result, payload)`` where ``payload`` is
+    ``{"status": "error", "error": <message>}``.
+    """
+    from deile.tools.base import ToolResult, ToolStatus
+
+    abort_msg = reason.user_message()
+    tool_result = ToolResult(
+        status=ToolStatus.ERROR,
+        message=abort_msg,
+        metadata={
+            "loop_break": True,
+            "loop_break_kind": reason.kind.value,
+            "loop_break_args_hash": reason.args_hash,
+        },
+    )
+    return tool_result, {"status": "error", "error": abort_msg}
+
+
 def args_hash_for(tool_name: str, args: Optional[Dict[str, Any]]) -> str:
     """Public alias for the same hashing scheme the guard uses internally —
     useful in tests and observability code that needs to compare hashes

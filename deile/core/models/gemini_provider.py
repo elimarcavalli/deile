@@ -15,8 +15,8 @@ from google.genai.types import (AutomaticFunctionCallingConfig,
 
 from ...storage.debug_logger import get_debug_logger, is_debug_enabled
 from ..exceptions import ConfigurationError, ModelError
-from ..loop_guard import (format_loop_break_message, make_guard,
-                          tool_result_made_progress)
+from ..loop_guard import (format_loop_break_message, make_loop_break_result,
+                          make_guard, tool_result_made_progress)
 from .base import (ModelMessage, ModelProvider, ModelResponse, ModelSize,
                    ModelType, ModelUsage)
 from .error_mapping import classify_http_error
@@ -859,17 +859,7 @@ class GeminiProvider(ModelProvider):
                 # See deile.core.loop_guard for the detection rules.
                 abort = guard.check(call["name"], dict(call.get("args") or {}))
                 if abort is not None:
-                    abort_msg = abort.user_message()
-                    payload = {"status": "error", "error": abort_msg}
-                    tr = ToolResult(
-                        status=ToolStatus.ERROR,
-                        message=abort_msg,
-                        metadata={
-                            "loop_break": True,
-                            "loop_break_kind": abort.kind.value,
-                            "loop_break_args_hash": abort.args_hash,
-                        },
-                    )
+                    tr, payload = make_loop_break_result(abort)
                     tool_results.append(tr)
                     function_response_parts.append(
                         types.Part.from_function_response(
