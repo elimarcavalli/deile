@@ -16,8 +16,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from deile.cli import _DeileCLI
-from deile.commands.builtin._shared import (POST_SWITCH_ACTION_KEY,
-                                            SWITCH_SESSION_KEY)
+from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
+                                       SWITCH_SESSION_KEY)
 
 
 def _make_session(
