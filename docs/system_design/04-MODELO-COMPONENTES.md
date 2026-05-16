@@ -70,7 +70,6 @@ As cinco tools abaixo expõem o pipeline e o agendador para o LLM, permitindo qu
 | Acessor singleton | `get_command_registry(config_manager=None)` |
 | Descoberta | Comandos em `deile/commands/builtin/` |
 | Despacho | Para comandos parseados pelo `CommandParser` |
-| Variante adicional | `StaticCommandRegistry` (registro classe-a-classe) |
 | Configuração estendida | `deile/config/commands.yaml` |
 
 #### Comandos slash do pipeline (intent #87)

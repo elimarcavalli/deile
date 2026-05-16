@@ -10,11 +10,13 @@ the welcome banner. Advanced subcommands (``reset``, ``history``,
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
+                                       SWITCH_SESSION_KEY)
 from deile.commands.base import CommandContext
 from deile.commands.builtin._session_store import SessionHistoryStore
 from deile.commands.builtin.clear_command import ClearCommand
@@ -36,7 +38,7 @@ def _make_session(session_id: str = "current-sid") -> MagicMock:
 
 def _make_agent() -> MagicMock:
     agent = MagicMock()
-    _sessions: Dict[str, Any] = {}
+    _sessions: dict[str, Any] = {}
 
     def _create_session(session_id: str, **kwargs: Any) -> MagicMock:
         sess = MagicMock()
@@ -47,11 +49,8 @@ def _make_agent() -> MagicMock:
         _sessions[session_id] = sess
         return sess
 
-    def _get_session(session_id: str) -> Optional[MagicMock]:
-        return _sessions.get(session_id)
-
     agent.create_session.side_effect = _create_session
-    agent.get_session.side_effect = _get_session
+    agent.get_session.side_effect = lambda sid: _sessions.get(sid)
     return agent
 
 
@@ -81,10 +80,10 @@ class TestClearDefaultBehavior:
         with patch.object(SessionHistoryStore, "save"):
             result = await ClearCommand().execute(ctx)
         assert result.success
-        new_sid = ctx.session.context_data.get("_switch_session")
+        new_sid = ctx.session.context_data.get(SWITCH_SESSION_KEY)
         assert new_sid is not None and new_sid != "current-sid"
         assert new_sid.startswith("clear-")
-        assert ctx.session.context_data.get("_post_switch_action") == "welcome"
+        assert ctx.session.context_data.get(POST_SWITCH_ACTION_KEY) == "welcome"
         assert ctx.agent.get_session(new_sid) is not None
 
     @pytest.mark.unit
@@ -104,7 +103,7 @@ class TestClearDefaultBehavior:
         assert result.success
         save_mock.assert_not_called()
         # new session is still created
-        assert ctx.session.context_data.get("_switch_session") is not None
+        assert ctx.session.context_data.get(SWITCH_SESSION_KEY) is not None
 
     @pytest.mark.unit
     async def test_default_falls_back_when_no_agent(self):
@@ -114,7 +113,7 @@ class TestClearDefaultBehavior:
         ctx.session = None
         result = await ClearCommand().execute(ctx)
         assert result.success
-        assert "_switch_session" not in (getattr(ctx, "session", {}) or {})
+        assert ctx.session is None  # command must not create a session on ctx
 
     @pytest.mark.unit
     async def test_default_preserves_conversation_name_in_archive(self):
@@ -135,7 +134,7 @@ class TestClearSubcommandsBackwardCompat:
         result = await ClearCommand().execute(ctx)
         assert result.success
         # Old behavior: no session switch
-        assert ctx.session.context_data.get("_switch_session") is None
+        assert ctx.session.context_data.get(SWITCH_SESSION_KEY) is None
 
     @pytest.mark.unit
     async def test_screen_subcommand_still_works(self):
@@ -143,4 +142,4 @@ class TestClearSubcommandsBackwardCompat:
         ctx.ui_manager = MagicMock()
         result = await ClearCommand().execute(ctx)
         assert result.success
-        assert ctx.session.context_data.get("_switch_session") is None
+        assert ctx.session.context_data.get(SWITCH_SESSION_KEY) is None

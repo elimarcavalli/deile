@@ -9,25 +9,18 @@ from rich.text import Text
 
 from ...core.interfaces.selector import SelectorNotSupported, SelectorOption
 from ...infrastructure.selectors import get_default_selector
+from .._sentinels import POST_SWITCH_ACTION_KEY, SWITCH_SESSION_KEY
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._conv_store import ConversationNameStore
 from ._session_store import SessionHistoryStore
-from ._shared import wrap_command_errors
+from ._shared import truncate_oneline, wrap_command_errors
 
-_SENTINEL = "_switch_session"
-_POST_SWITCH = "_post_switch_action"
-_MAX_LABEL = 72
+# Max chars for one-line conversation labels in the selector.
+_MAX_LABEL = 50
 
 
 def _fmt_time(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
-
-
-def _truncate(s: object, n: int = _MAX_LABEL) -> str:
-    if not s:
-        return ""
-    text = str(s).replace("\n", " ").strip()
-    return text[:n] + "…" if len(text) > n else text
 
 
 class ResumeCommand(DirectCommand):
@@ -80,7 +73,7 @@ class ResumeCommand(DirectCommand):
                 name = (
                     name_store.get(row["session_id"])
                     or row.get("conversation_name")
-                    or _truncate(row["first_user_input"], 50)
+                    or truncate_oneline(row["first_user_input"], _MAX_LABEL)
                 )
                 ts = _fmt_time(row["last_activity"])
                 lines.append(f"{ts}  {name}  ({row['message_count']} msg)")
@@ -103,7 +96,7 @@ class ResumeCommand(DirectCommand):
             name = (
                 name_store.get(sid)
                 or row.get("conversation_name")
-                or _truncate(row["first_user_input"], 50)
+                or truncate_oneline(row["first_user_input"], _MAX_LABEL)
                 or sid
             )
             ts = _fmt_time(row["last_activity"])
@@ -160,15 +153,12 @@ class ResumeCommand(DirectCommand):
 
         target_session.conversation_history = [dict(e) for e in history]
 
-        name = (
-            name_store.get(target_sid)
-            or stored.get("conversation_name", "")
-        )
+        name = name_store.get(target_sid) or stored.get("conversation_name", "")
         if name:
             target_session.context_data["conversation_name"] = name
 
-        session.context_data[_SENTINEL] = target_sid
-        session.context_data[_POST_SWITCH] = "replay"
+        session.context_data[SWITCH_SESSION_KEY] = target_sid
+        session.context_data[POST_SWITCH_ACTION_KEY] = "replay"
 
         return CommandResult.success_result(
             "",

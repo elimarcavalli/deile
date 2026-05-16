@@ -8,11 +8,10 @@ import uuid
 from rich.panel import Panel
 from rich.text import Text
 
+from .._sentinels import SWITCH_SESSION_KEY
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._conv_store import ConversationNameStore
 from ._shared import split_args, wrap_command_errors
-
-_SENTINEL = "_switch_session"
 
 
 class ForkCommand(DirectCommand):
@@ -41,7 +40,7 @@ class ForkCommand(DirectCommand):
             return CommandResult.error_result("Agent or session not available.")
 
         parts = split_args(context)
-        name: str = " ".join(parts).strip() if parts else ""
+        name = " ".join(parts) if parts else ""
 
         history = list(getattr(session, "conversation_history", []))
         if not any(e.get("role") == "user" for e in history):
@@ -70,7 +69,7 @@ class ForkCommand(DirectCommand):
             store.set(new_sid, name)
             new_session.context_data["conversation_name"] = name
 
-        session.context_data[_SENTINEL] = new_sid
+        session.context_data[SWITCH_SESSION_KEY] = new_sid
 
         label = f'"{name}"' if name else new_sid
         return CommandResult(

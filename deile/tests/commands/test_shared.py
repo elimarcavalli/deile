@@ -13,13 +13,16 @@ from unittest.mock import patch
 
 from rich.panel import Panel
 
+from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
+                                       SWITCH_SESSION_KEY)
 from deile.commands.builtin._shared import (FLAG_DESCRICOES_PTBR,
                                             PROJECT_LINKS, _colored_panel,
                                             _resolve_patches_dir,
                                             emit_audit_event, error_panel,
                                             export_timestamp,
-                                            get_memory_manager, split_args,
-                                            success_panel, warning_panel)
+                                            get_memory_manager, indisponivel,
+                                            split_args, success_panel,
+                                            truncate_oneline, warning_panel)
 
 # ---------------------------------------------------------------------------
 # split_args
@@ -107,79 +110,55 @@ class TestExportTimestamp:
 # ---------------------------------------------------------------------------
 
 
+_AUDIT_PATCH = "deile.security.audit_logger.get_audit_logger"
+_AUDIT_KWARGS = {"event_type": "EVT", "severity": "INFO", "resource": "/x", "action": "run"}
+
+
+def _capturing_logger() -> tuple[dict, object]:
+    """Return (captured dict, logger-instance) that records log_event kwargs."""
+    captured: dict = {}
+
+    class _Recorder:
+        def log_event(self, **kw):
+            captured.update(kw)
+
+    return captured, _Recorder()
+
+
 class TestEmitAuditEvent:
     def test_happy_path_calls_log_event(self):
-        called = {}
+        captured, logger = _capturing_logger()
+        with patch(_AUDIT_PATCH, return_value=logger):
+            emit_audit_event(**_AUDIT_KWARGS, details={"a": 1})
 
-        class _FakeLogger:
-            def log_event(self, **kw):
-                called.update(kw)
-
-        with patch(
-            "deile.security.audit_logger.get_audit_logger", return_value=_FakeLogger()
-        ):
-            emit_audit_event(
-                event_type="EVT",
-                severity="INFO",
-                resource="/x",
-                action="run",
-                details={"a": 1},
-            )
-
-        assert called["event_type"] == "EVT"
-        assert called["severity"] == "INFO"
-        assert called["resource"] == "/x"
-        assert called["action"] == "run"
-        assert called["actor"] == "user"
-        assert called["result"] == "initiated"
-        assert called["details"] == {"a": 1}
+        assert captured["event_type"] == "EVT"
+        assert captured["severity"] == "INFO"
+        assert captured["resource"] == "/x"
+        assert captured["action"] == "run"
+        assert captured["actor"] == "user"
+        assert captured["result"] == "initiated"
+        assert captured["details"] == {"a": 1}
 
     def test_swallows_logger_exception_silently(self, caplog):
         class _BoomLogger:
             def log_event(self, **kw):
                 raise RuntimeError("boom")
 
-        with patch(
-            "deile.security.audit_logger.get_audit_logger", return_value=_BoomLogger()
-        ):
+        with patch(_AUDIT_PATCH, return_value=_BoomLogger()):
             with caplog.at_level("DEBUG"):
-                # Must NOT raise
-                emit_audit_event(
-                    event_type="EVT",
-                    severity="INFO",
-                    resource="/x",
-                    action="run",
-                )
-        # Failure was logged at DEBUG (per pillar 03 §6 fix)
+                emit_audit_event(**_AUDIT_KWARGS)  # must NOT raise
         assert any("emit_audit_event falhou" in rec.message for rec in caplog.records)
 
     def test_swallows_import_error_silently(self, caplog):
-        with patch(
-            "deile.security.audit_logger.get_audit_logger",
-            side_effect=ImportError("module gone"),
-        ):
+        with patch(_AUDIT_PATCH, side_effect=ImportError("module gone")):
             with caplog.at_level("DEBUG"):
-                emit_audit_event(
-                    event_type="EVT",
-                    severity="INFO",
-                    resource="/x",
-                    action="run",
-                )
+                emit_audit_event(**_AUDIT_KWARGS)
         assert any("emit_audit_event falhou" in rec.message for rec in caplog.records)
 
     def test_default_details_is_empty_dict(self):
-        captured = {}
-
-        class _Recorder:
-            def log_event(self, **kw):
-                captured.update(kw)
-
-        with patch(
-            "deile.security.audit_logger.get_audit_logger", return_value=_Recorder()
-        ):
-            emit_audit_event(
-                event_type="EVT", severity="INFO", resource="/x", action="run"
-            )
+        captured, logger = _capturing_logger()
+        with patch(_AUDIT_PATCH, return_value=logger):
+            emit_audit_event(**_AUDIT_KWARGS)
         assert captured["details"] == {}
 
 
@@ -253,3 +232,83 @@ class TestResolvePatchesDir:
         (legacy / "fix.patch").touch()
         result = _resolve_patches_dir()
         assert result == legacy
+
+
+# ---------------------------------------------------------------------------
+# truncate_oneline
+# ---------------------------------------------------------------------------
+
+
+class TestTruncateOneline:
+    def test_none_returns_empty(self):
+        assert truncate_oneline(None, 10) == ""
+
+    def test_falsy_list_returns_empty(self):
+        assert truncate_oneline([], 10) == ""
+
+    def test_empty_string_returns_empty(self):
+        assert truncate_oneline("", 10) == ""
+
+    def test_short_text_unchanged(self):
+        assert truncate_oneline("hello", 10) == "hello"
+
+    def test_exactly_max_chars_not_truncated(self):
+        assert truncate_oneline("abcde", 5) == "abcde"
+
+    def test_one_over_max_chars_truncated_with_ellipsis(self):
+        result = truncate_oneline("abcdef", 5)
+        assert result == "abcde…"
+
+    def test_newlines_flattened_to_spaces(self):
+        assert truncate_oneline("line1\nline2", 50) == "line1 line2"
+
+    def test_surrounding_whitespace_stripped(self):
+        assert truncate_oneline("  spaced  ", 50) == "spaced"
+
+    def test_whitespace_only_returns_empty(self):
+        # Truthy (skips the `if not text` guard) but collapses to "" via strip().
+        assert truncate_oneline("   ", 10) == ""
+
+    def test_non_string_coerced_via_str(self):
+        assert truncate_oneline(12345, 50) == "12345"
+
+    def test_non_string_coerced_then_truncated(self):
+        assert truncate_oneline(123456, 3) == "123…"
+
+    def test_max_chars_zero_truncates_everything(self):
+        assert truncate_oneline("anything", 0) == "…"
+
+    def test_whitespace_only_string_returns_empty(self):
+        assert truncate_oneline("   ", 50) == ""
+
+
+# ---------------------------------------------------------------------------
+# indisponivel
+# ---------------------------------------------------------------------------
+
+
+class TestIndisponivel:
+    def test_wraps_reason_in_marker(self):
+        assert indisponivel("sem dados") == "[INDISPONÍVEL: sem dados]"
+
+    def test_empty_reason(self):
+        assert indisponivel("") == "[INDISPONÍVEL: ]"
+
+
+# ---------------------------------------------------------------------------
+# session-switch sentinels
+# ---------------------------------------------------------------------------
+
+
+class TestSentinels:
+    def test_switch_session_key_literal(self):
+        assert SWITCH_SESSION_KEY == "_switch_session"
+
+    def test_post_switch_action_key_literal(self):
+        assert POST_SWITCH_ACTION_KEY == "_post_switch_action"
+
+    def test_cli_class_attributes_match_sentinels(self):
+        """The CLI must source the sentinels from _sentinels — no drift."""
+        from deile.cli import _DeileCLI
+        assert _DeileCLI._SWITCH_SESSION_KEY == SWITCH_SESSION_KEY
+        assert _DeileCLI._POST_SWITCH_ACTION_KEY == POST_SWITCH_ACTION_KEY

@@ -8,16 +8,12 @@ from rich.panel import Panel
 from rich.text import Text
 
 from ...core.exceptions import CommandError
+from .._sentinels import POST_SWITCH_ACTION_KEY, SWITCH_SESSION_KEY
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._session_store import SessionHistoryStore
 from ._shared import split_args, wrap_command_errors
 
 logger = logging.getLogger(__name__)
-
-# Sentinel keys mirrored from ``deile.cli._DeileCLI`` — duplicated here to
-# avoid importing the CLI module from a command. Keep in sync.
-_SWITCH_SESSION_KEY = "_switch_session"
-_POST_SWITCH_ACTION_KEY = "_post_switch_action"
 
 
 class ClearCommand(DirectCommand):
@@ -45,17 +41,14 @@ class ClearCommand(DirectCommand):
             return await self._start_fresh_conversation(context)
 
         command = parts[0].lower()
-
         if command == "reset":
-            # Complete session reset - SITUAÇÃO 7 SOLUTION
             force = "--force" in parts or "-f" in parts
             return await self._clear_reset(context, force)
-        elif command == "history":
+        if command == "history":
             return await self._clear_history_only(context)
-        elif command == "screen":
+        if command == "screen":
             return await self._clear_screen_only(context)
-        else:
-            raise CommandError(f"Unknown clear option: {command}. Use: cls, cls reset, cls history, cls screen")
+        raise CommandError(f"Unknown clear option: {command}. Use: cls, cls reset, cls history, cls screen")
 
     async def _start_fresh_conversation(self, context: CommandContext) -> CommandResult:
         """Archive the current conversation and switch to a brand-new session.
@@ -98,8 +91,8 @@ class ClearCommand(DirectCommand):
             raise CommandError(f"Não foi possível criar nova sessão: {exc}")
 
         # 3. Hand the switch + redraw request to the CLI via the sentinels.
-        session.context_data[_SWITCH_SESSION_KEY] = new_sid
-        session.context_data[_POST_SWITCH_ACTION_KEY] = "welcome"
+        session.context_data[SWITCH_SESSION_KEY] = new_sid
+        session.context_data[POST_SWITCH_ACTION_KEY] = "welcome"
 
         return CommandResult.success_result(
             "",
@@ -110,16 +103,15 @@ class ClearCommand(DirectCommand):
         )
     
     async def _clear_reset(self, context: CommandContext, force: bool = False) -> CommandResult:
-        """Complete session reset - SOLVES SITUAÇÃO 7
+        """Complete session reset.
 
-        ``force`` is currently a no-op placeholder for a future interactive
-        confirmation prompt; the parameter is kept to preserve the public
-        ``/cls reset --force`` CLI surface.
+        ``force`` is a no-op placeholder for a future interactive confirmation
+        prompt; kept to preserve the public ``/cls reset --force`` CLI surface.
         """
-        del force  # interactive-confirm prompt not yet implemented (issue tracked separately)
+        del force  # not yet implemented
 
+        reset_steps: list[str] = []
         try:
-            reset_steps: list[str] = []
             reset_steps.extend(self._reset_agent(context))
             reset_steps.extend(self._reset_plans())
             reset_steps.extend(self._reset_approvals())
@@ -130,69 +122,35 @@ class ClearCommand(DirectCommand):
 
             reset_steps.extend(self._reset_temp_files())
             reset_steps.extend(self._reset_session_id(context))
-            
-            # Create success report
-            success_content = [
-                "🎉 **SESSION RESET COMPLETE**",
-                "",
-                "**Operations Completed:**"
-            ]
-            
-            for step in reset_steps:
-                success_content.append(f"  {step}")
-            
-            success_content.extend([
-                "",
-                "**Session State:**",
-                "• Fresh conversation context",
-                "• Reset token counters", 
-                "• Clear orchestration state",
-                "• New session ID",
-                "",
+
+            steps_text = "\n".join(f"  {s}" for s in reset_steps)
+            content = (
+                "🎉 **SESSION RESET COMPLETE**\n\n"
+                f"**Operations Completed:**\n{steps_text}\n\n"
+                "**Session State:**\n"
+                "• Fresh conversation context\n"
+                "• Reset token counters\n"
+                "• Clear orchestration state\n"
+                "• New session ID\n\n"
                 "🚀 **Ready for fresh start!**"
-            ])
-            
-            success_text = "\n".join(success_content)
-            
-            return CommandResult.success_result(
-                Panel(
-                    Text(success_text, style="green"),
-                    title="🔄 Session Reset Complete", 
-                    border_style="green",
-                    padding=(1, 2)
-                ),
-                "rich"
             )
-            
-        except Exception as e:
-            # Even if some steps failed, report what was accomplished
-            error_content = [
-                "⚠️ **PARTIAL RESET COMPLETED**",
-                "",
-                f"**Error:** {str(e)}",
-                "",
-                "**Completed Steps:**"
-            ]
-            
-            for step in reset_steps:
-                error_content.append(f"  {step}")
-            
-            error_content.extend([
-                "",
-                "Some components may still retain state.",
-                "Try restarting the application for complete reset."
-            ])
-            
-            error_text = "\n".join(error_content)
-            
             return CommandResult.success_result(
-                Panel(
-                    Text(error_text, style="yellow"),
-                    title="⚠️ Partial Reset",
-                    border_style="yellow",
-                    padding=(1, 2)
-                ),
-                "rich"
+                Panel(Text(content, style="green"), title="🔄 Session Reset Complete", border_style="green", padding=(1, 2)),
+                "rich",
+            )
+
+        except Exception as e:
+            steps_text = "\n".join(f"  {s}" for s in reset_steps)
+            content = (
+                f"⚠️ **PARTIAL RESET COMPLETED**\n\n"
+                f"**Error:** {e}\n\n"
+                f"**Completed Steps:**\n{steps_text}\n\n"
+                "Some components may still retain state.\n"
+                "Try restarting the application for complete reset."
+            )
+            return CommandResult.success_result(
+                Panel(Text(content, style="yellow"), title="⚠️ Partial Reset", border_style="yellow", padding=(1, 2)),
+                "rich",
             )
     
     @staticmethod
@@ -270,44 +228,36 @@ class ClearCommand(DirectCommand):
         return ["✅ Session ID regenerated"]
 
     async def _clear_history_only(self, context: CommandContext) -> CommandResult:
-        """Clear only conversation history"""
-        
+        """Clear only conversation history."""
         try:
-            if hasattr(context, 'agent') and context.agent:
+            if getattr(context, 'agent', None):
                 context.agent.clear_conversation_history()
-                
             return CommandResult.success_result(
                 Panel(
-                    Text("✅ Conversation history cleared.\n\nContext, memory, and session state preserved.", 
-                         style="green"),
+                    Text("✅ Conversation history cleared.\n\nContext, memory, and session state preserved.", style="green"),
                     title="📝 History Cleared",
-                    border_style="green"
+                    border_style="green",
                 ),
-                "rich"
+                "rich",
             )
-            
         except Exception as e:
-            raise CommandError(f"Failed to clear history: {str(e)}")
-    
+            raise CommandError(f"Failed to clear history: {e}")
+
     async def _clear_screen_only(self, context: CommandContext) -> CommandResult:
-        """Clear only screen display"""
-        
+        """Clear only screen display."""
         try:
-            if hasattr(context, 'ui_manager') and context.ui_manager:
+            if getattr(context, 'ui_manager', None):
                 context.ui_manager.clear_screen()
-                
             return CommandResult.success_result(
                 Panel(
-                    Text("✅ Screen display cleared.\n\nHistory and session state preserved.", 
-                         style="green"),
+                    Text("✅ Screen display cleared.\n\nHistory and session state preserved.", style="green"),
                     title="🖥️ Screen Cleared",
-                    border_style="green"
+                    border_style="green",
                 ),
-                "rich"
+                "rich",
             )
-            
         except Exception as e:
-            raise CommandError(f"Failed to clear screen: {str(e)}")
+            raise CommandError(f"Failed to clear screen: {e}")
     
     def get_help(self) -> str:
         """Get detailed help for clear command"""

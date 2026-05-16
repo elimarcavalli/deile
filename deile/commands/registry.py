@@ -5,7 +5,7 @@ import inspect
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional
 
 from ..config.manager import CommandConfig
 from .base import CommandContext, CommandResult, SlashCommand
@@ -38,27 +38,24 @@ class CommandRegistry:
         """Registra comando no registry"""
         if not isinstance(command, SlashCommand):
             raise TypeError(f"Expected SlashCommand, got {type(command)}")
-        
+
         command_name = command.name
-        
+
         if command_name in self._commands:
-            logger.warning(f"Command '{command_name}' already registered, replacing")
-        
-        # Registra comando
+            logger.warning("Command '%s' already registered, replacing", command_name)
+
         self._commands[command_name] = command
-        
-        # Registra aliases
+
         for alias in command.aliases:
             if alias in self._aliases:
-                logger.warning(f"Alias '{alias}' already exists, overwriting")
+                logger.warning("Alias '%s' already exists, overwriting", alias)
             self._aliases[alias] = command_name
-        
-        # Categorização automática
-        category = getattr(command, 'category', 'general')
+
+        category = getattr(command, "category", "general")
         self._categories[category].append(command)
-        
+
         self._registration_count += 1
-        logger.debug(f"Registered command: /{command_name}")
+        logger.debug("Registered command: /%s", command_name)
     
     def unregister_command(self, name: str) -> bool:
         """Remove a command and its aliases from the registry. Returns True if removed."""
@@ -80,7 +77,6 @@ class CommandRegistry:
         return True
 
     def get_command(self, command_name: str) -> Optional[SlashCommand]:
-
         """Obtém comando pelo nome ou alias (case-insensitive)."""
         # Nome exato
         if command_name in self._commands:
@@ -167,45 +163,37 @@ class CommandRegistry:
             )
         
         try:
-            # Valida contexto
             if not await command.can_execute(context):
                 return CommandResult.error_result(
                     f"Command '/{command_name}' cannot execute in current context"
                 )
-            
-            # Valida argumentos
+
             validation_errors = await command.validate_args(context.args)
             if validation_errors:
                 return CommandResult.error_result(
                     f"Invalid arguments: {', '.join(validation_errors)}"
                 )
-            
-            # Executa comando
+
             import time
             start_time = time.time()
-            
             result = await command.execute(context)
-            
             execution_time = time.time() - start_time
+
             command._record_execution(execution_time)
             self._execution_count += 1
-            
-            # Adiciona metadados
+
             if result.execution_time is None:
                 result.execution_time = execution_time
             result.metadata.update({
                 "command_name": command_name,
-                "execution_count": command.execution_count
+                "execution_count": command.execution_count,
             })
-            
+
             return result
-            
+
         except Exception as e:
-            logger.error(f"Error executing command /{command_name}: {e}")
-            return CommandResult.error_result(
-                f"Error executing command: {str(e)}",
-                error=e
-            )
+            logger.error("Error executing command /%s: %s", command_name, e)
+            return CommandResult.error_result(f"Error executing command: {e}", error=e)
     
     def load_commands_from_config(self) -> int:
         """Carrega comandos da configuração YAML"""
@@ -231,11 +219,11 @@ class CommandRegistry:
                     self.register_command(command)
                     loaded_count += 1
             
-            logger.info(f"Loaded {loaded_count} commands from configuration")
+            logger.info("Loaded %d commands from configuration", loaded_count)
             return loaded_count
-            
+
         except Exception as e:
-            logger.error(f"Error loading commands from config: {e}")
+            logger.error("Error loading commands from config: %s", e)
             return 0
     
     def auto_discover_builtin_commands(self) -> int:
@@ -288,7 +276,7 @@ class CommandRegistry:
                         self.register_command(command_instance)
                         discovered += 1
                 except Exception as e:
-                    logger.warning(f"Failed to instantiate command {name}: {e}")
+                    logger.warning("Failed to instantiate command %s: %s", name, e)
         
         return discovered
     
@@ -352,30 +340,3 @@ def get_command_registry(config_manager=None) -> CommandRegistry:
     if _command_registry is None:
         _command_registry = CommandRegistry(config_manager)
     return _command_registry
-
-
-class StaticCommandRegistry:
-    """Simple static command registry for backward compatibility with builtin commands"""
-    
-    _commands: Dict[str, Any] = {}
-    
-    @classmethod
-    def register(cls, name: str, command_class: Type) -> None:
-        """Register a command class with a name"""
-        cls._commands[name] = command_class
-        logger.debug(f"Registered command class: {name}")
-    
-    @classmethod
-    def get_command_class(cls, name: str) -> Optional[Type]:
-        """Get a command class by name"""
-        return cls._commands.get(name)
-    
-    @classmethod
-    def get_all_command_names(cls) -> List[str]:
-        """Get all registered command names"""
-        return list(cls._commands.keys())
-    
-    @classmethod
-    def clear(cls) -> None:
-        """Clear all registered commands"""
-        cls._commands.clear()

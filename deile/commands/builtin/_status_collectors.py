@@ -22,9 +22,7 @@ import psutil
 
 from deile.__version__ import __version__
 
-
-def _indisponivel(reason: str) -> str:
-    return f"[INDISPONÍVEL: {reason}]"
+from ._shared import indisponivel
 
 
 def get_system_uptime() -> str:
@@ -68,14 +66,13 @@ def collect_models_info() -> Dict[str, Any]:
         router = get_model_router()
         providers = list(router.providers.keys())
         active_key = providers[0] if providers else None
-        active_provider = (
-            active_key.split(":", 1)[0] if active_key
-            else _indisponivel("nenhum provedor")
-        )
-        active_model = (
-            active_key.split(":", 1)[1] if active_key and ":" in active_key
-            else (active_key or _indisponivel("nenhum modelo"))
-        )
+        if active_key:
+            split = active_key.split(":", 1)
+            active_provider = split[0]
+            active_model = split[1] if len(split) > 1 else active_key
+        else:
+            active_provider = indisponivel("nenhum provedor")
+            active_model = indisponivel("nenhum modelo")
         return {
             "active_model": active_model,
             "active_provider": active_provider,

@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import functools
 import logging
+from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Iterable, Sequence
+from typing import TYPE_CHECKING, Any
 
 from rich.panel import Panel
 from rich.text import Text
@@ -481,3 +482,29 @@ def truncate(text: str | None, max_chars: int, suffix: str = "...") -> str:
     if not text:
         return ""
     return text[:max_chars] + suffix if len(text) > max_chars else text
+
+
+def truncate_oneline(text: object, max_chars: int) -> str:
+    """Achata whitespace (newline→espaço, ``strip``) e recorta com sufixo ``…``.
+
+    Para rótulos de seletor de uma linha em resume/rewind, onde o texto-fonte
+    pode conter quebras de linha. ``None``/falsy vira string vazia; entradas
+    não-string são coagidas via ``str()``.
+    """
+    if not text:
+        return ""
+    # Cap raw conversion before flattening to avoid materialising huge strings
+    # for objects whose __str__ is expensive (e.g. large lists).
+    raw = str(text)[: max_chars + 500]
+    flat = raw.replace("\n", " ").strip()
+    return flat[:max_chars] + "…" if len(flat) > max_chars else flat
+
+
+def indisponivel(reason: str) -> str:
+    """Marcador PT-BR ``[INDISPONÍVEL: <motivo>]`` para campos sem dado.
+
+    Usado por status_command e _status_collectors quando um subsistema não
+    está acessível — mantém a apresentação consistente entre coletores e
+    painéis.
+    """
+    return f"[INDISPONÍVEL: {reason}]"
