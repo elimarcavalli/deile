@@ -333,7 +333,7 @@ class GeminiProvider(ModelProvider):
             
             # Gera conteúdo usando novo SDK
             response = await self._generate_with_new_sdk(
-                processed_messages, system_instruction, config, execution_context
+                processed_messages, system_instruction, config
             )
             
             # Calcula tempo de execução
@@ -975,7 +975,6 @@ class GeminiProvider(ModelProvider):
         messages: List[Dict[str, Any]],
         system_instruction: Optional[str],
         config: GenerateContentConfig,
-        execution_context: Optional[Dict[str, Any]] = None
     ) -> ModelResponse:
         """Gera conteúdo usando novo Google GenAI SDK"""
         try:
@@ -1012,17 +1011,6 @@ class GeminiProvider(ModelProvider):
                     contents=contents,
                     config=config  # types.GenerateContentConfig(...) ou dict compatível
                 )
-            
-            # Processa Function Calls se presentes
-            if hasattr(response, 'candidates') and response.candidates and len(response.candidates) > 0:
-                candidate = response.candidates[0]
-                if hasattr(candidate, 'content') and candidate.content and hasattr(candidate.content, 'parts') and candidate.content.parts:
-                    for part in candidate.content.parts:
-                        if hasattr(part, 'function_call'):
-                            # Execute function call
-                            await self._execute_function_call_new_sdk(
-                                part.function_call, execution_context
-                            )
             
             # Extrai informações de uso
             usage_metadata = getattr(response, 'usage_metadata', None)
@@ -1099,44 +1087,6 @@ class GeminiProvider(ModelProvider):
             })
         
         return contents
-    
-    async def _execute_function_call_new_sdk(
-        self,
-        function_call,
-        execution_context: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """Executa function call usando ToolRegistry - Novo SDK"""
-        try:
-            from ...tools.registry import get_tool_registry
-            
-            tool_registry = get_tool_registry()
-            
-            # Extrai nome e argumentos da function call
-            function_name = getattr(function_call, 'name', '')
-            arguments = dict(getattr(function_call, 'args', {}))
-            
-            # Executa function call
-            result = tool_registry.execute_function_call(
-                function_name=function_name,
-                arguments=arguments,
-                execution_context=execution_context
-            )
-            
-            return {
-                "name": function_name,
-                "content": result.data if result.is_success else f"Error: {result.message}",
-                "success": result.is_success,
-                "error": result.message if not result.is_success else None
-            }
-            
-        except Exception as e:
-            logger.error(f"Error executing function call '{function_call}': {e}")
-            return {
-                "name": getattr(function_call, 'name', 'unknown'),
-                "content": f"Execution error: {str(e)}",
-                "success": False,
-                "error": str(e)
-            }
     
     def _process_messages_for_gemini(self, messages: List[ModelMessage]) -> List[Dict[str, Any]]:
         """Processa mensagens com suporte a multi-modal input"""
