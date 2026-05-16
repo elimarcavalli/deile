@@ -18,10 +18,9 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import (emit_audit_event, error_panel, get_memory_manager,
-                      split_args, success_panel, warning_panel)
-from ._status_collectors import (_indisponivel, collect_health_info,
-                                 collect_models_info, collect_system_info,
-                                 collect_tools_info)
+                      indisponivel, split_args, success_panel, warning_panel)
+from ._status_collectors import (collect_health_info, collect_models_info,
+                                 collect_system_info, collect_tools_info)
 
 _PROVIDER_HOSTS: Dict[str, str] = {
     "openai": "api.openai.com",
@@ -245,7 +244,7 @@ class StatusCommand(DirectCommand):
                     table.add_row(key, provider_id, model_id)
 
             if table.row_count == 0:
-                table.add_row(_indisponivel("nenhum provedor registrado"), "—", "—")
+                table.add_row(indisponivel("nenhum provedor registrado"), "—", "—")
 
             return CommandResult.success_result(table, "rich")
         except Exception as exc:
@@ -302,7 +301,7 @@ class StatusCommand(DirectCommand):
         memory_manager = get_memory_manager(context)
 
         if memory_manager is None:
-            content = _indisponivel("MemoryManager não acessível neste contexto")
+            content = indisponivel("MemoryManager não acessível neste contexto")
             return CommandResult.success_result(
                 warning_panel(content, title="💾 Memória"), "rich"
             )
@@ -319,7 +318,7 @@ class StatusCommand(DirectCommand):
 
         if usage.get("status") == "not_initialized":
             return CommandResult.success_result(
-                warning_panel(_indisponivel("MemoryManager não inicializado"), title="💾 Memória"),
+                warning_panel(indisponivel("MemoryManager não inicializado"), title="💾 Memória"),
                 "rich",
             )
 

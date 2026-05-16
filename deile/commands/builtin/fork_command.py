@@ -8,9 +8,10 @@ import uuid
 from rich.panel import Panel
 from rich.text import Text
 
+from .._sentinels import SWITCH_SESSION_KEY
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._conv_store import ConversationNameStore
-from ._shared import SWITCH_SESSION_KEY, split_args, wrap_command_errors
+from ._shared import split_args, wrap_command_errors
 
 
 class ForkCommand(DirectCommand):

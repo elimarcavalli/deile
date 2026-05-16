@@ -8,10 +8,10 @@ from rich.panel import Panel
 from rich.text import Text
 
 from ...core.exceptions import CommandError
+from .._sentinels import POST_SWITCH_ACTION_KEY, SWITCH_SESSION_KEY
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._session_store import SessionHistoryStore
-from ._shared import (POST_SWITCH_ACTION_KEY, SWITCH_SESSION_KEY, split_args,
-                      wrap_command_errors)
+from ._shared import split_args, wrap_command_errors
 
 logger = logging.getLogger(__name__)
 

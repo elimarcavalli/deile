@@ -9,11 +9,14 @@ from rich.text import Text
 
 from ...core.interfaces.selector import SelectorNotSupported, SelectorOption
 from ...infrastructure.selectors import get_default_selector
+from .._sentinels import POST_SWITCH_ACTION_KEY, SWITCH_SESSION_KEY
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._conv_store import ConversationNameStore
 from ._session_store import SessionHistoryStore
-from ._shared import (POST_SWITCH_ACTION_KEY, SWITCH_SESSION_KEY,
-                      truncate_oneline, wrap_command_errors)
+from ._shared import truncate_oneline, wrap_command_errors
+
+# Max label width for one-line conversation summaries in the selector.
+_MAX_LABEL = 50
 
 
 def _fmt_time(ts: float) -> str:
@@ -70,7 +73,7 @@ class ResumeCommand(DirectCommand):
                 name = (
                     name_store.get(row["session_id"])
                     or row.get("conversation_name")
-                    or truncate_oneline(row["first_user_input"], 50)
+                    or truncate_oneline(row["first_user_input"], _MAX_LABEL)
                 )
                 ts = _fmt_time(row["last_activity"])
                 lines.append(f"{ts}  {name}  ({row['message_count']} msg)")
@@ -93,7 +96,7 @@ class ResumeCommand(DirectCommand):
             name = (
                 name_store.get(sid)
                 or row.get("conversation_name")
-                or truncate_oneline(row["first_user_input"], 50)
+                or truncate_oneline(row["first_user_input"], _MAX_LABEL)
                 or sid
             )
             ts = _fmt_time(row["last_activity"])

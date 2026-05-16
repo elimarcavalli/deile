@@ -26,13 +26,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Session-switch sentinels written into ``Session.context_data`` by the
-# clear/fork/rewind/resume commands and consumed by the CLI loop
-# (``deile.cli``). Single source of truth — mirrored intentionally in
-# ``deile/cli.py`` to avoid a command→CLI import.
-SWITCH_SESSION_KEY = "_switch_session"
-POST_SWITCH_ACTION_KEY = "_post_switch_action"
-
 
 def export_timestamp() -> str:
     """Timestamp UTC ``YYYYMMDD_HHMMSS`` para nomes de arquivos exportados.
@@ -501,3 +494,13 @@ def truncate_oneline(text: object, max_chars: int) -> str:
         return ""
     flat = str(text).replace("\n", " ").strip()
     return flat[:max_chars] + "…" if len(flat) > max_chars else flat
+
+
+def indisponivel(reason: str) -> str:
+    """Marcador PT-BR ``[INDISPONÍVEL: <motivo>]`` para campos sem dado.
+
+    Usado por status_command e _status_collectors quando um subsistema não
+    está acessível — mantém a apresentação consistente entre coletores e
+    painéis.
+    """
+    return f"[INDISPONÍVEL: {reason}]"

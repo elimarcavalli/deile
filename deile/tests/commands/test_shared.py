@@ -13,13 +13,16 @@ from unittest.mock import patch
 
 from rich.panel import Panel
 
+from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
+                                       SWITCH_SESSION_KEY)
 from deile.commands.builtin._shared import (FLAG_DESCRICOES_PTBR,
                                             PROJECT_LINKS, _colored_panel,
                                             _resolve_patches_dir,
                                             emit_audit_event, error_panel,
                                             export_timestamp,
-                                            get_memory_manager, split_args,
-                                            success_panel, warning_panel)
+                                            get_memory_manager, indisponivel,
+                                            split_args, success_panel,
+                                            truncate_oneline, warning_panel)
 
 # ---------------------------------------------------------------------------
 # split_args
@@ -253,3 +256,76 @@ class TestResolvePatchesDir:
         (legacy / "fix.patch").touch()
         result = _resolve_patches_dir()
         assert result == legacy
+
+
+# ---------------------------------------------------------------------------
+# truncate_oneline
+# ---------------------------------------------------------------------------
+
+
+class TestTruncateOneline:
+    def test_none_returns_empty(self):
+        assert truncate_oneline(None, 10) == ""
+
+    def test_falsy_list_returns_empty(self):
+        assert truncate_oneline([], 10) == ""
+
+    def test_empty_string_returns_empty(self):
+        assert truncate_oneline("", 10) == ""
+
+    def test_short_text_unchanged(self):
+        assert truncate_oneline("hello", 10) == "hello"
+
+    def test_exactly_max_chars_not_truncated(self):
+        assert truncate_oneline("abcde", 5) == "abcde"
+
+    def test_one_over_max_chars_truncated_with_ellipsis(self):
+        result = truncate_oneline("abcdef", 5)
+        assert result == "abcde…"
+
+    def test_newlines_flattened_to_spaces(self):
+        assert truncate_oneline("line1\nline2", 50) == "line1 line2"
+
+    def test_surrounding_whitespace_stripped(self):
+        assert truncate_oneline("  spaced  ", 50) == "spaced"
+
+    def test_non_string_coerced_via_str(self):
+        assert truncate_oneline(12345, 50) == "12345"
+
+    def test_non_string_coerced_then_truncated(self):
+        assert truncate_oneline(123456, 3) == "123…"
+
+    def test_max_chars_zero_truncates_everything(self):
+        assert truncate_oneline("anything", 0) == "…"
+
+
+# ---------------------------------------------------------------------------
+# indisponivel
+# ---------------------------------------------------------------------------
+
+
+class TestIndisponivel:
+    def test_wraps_reason_in_marker(self):
+        assert indisponivel("sem dados") == "[INDISPONÍVEL: sem dados]"
+
+    def test_empty_reason(self):
+        assert indisponivel("") == "[INDISPONÍVEL: ]"
+
+
+# ---------------------------------------------------------------------------
+# session-switch sentinels
+# ---------------------------------------------------------------------------
+
+
+class TestSentinels:
+    def test_switch_session_key_literal(self):
+        assert SWITCH_SESSION_KEY == "_switch_session"
+
+    def test_post_switch_action_key_literal(self):
+        assert POST_SWITCH_ACTION_KEY == "_post_switch_action"
+
+    def test_cli_class_attributes_match_sentinels(self):
+        """The CLI must source the sentinels from _sentinels — no drift."""
+        from deile.cli import _DeileCLI
+        assert _DeileCLI._SWITCH_SESSION_KEY == SWITCH_SESSION_KEY
+        assert _DeileCLI._POST_SWITCH_ACTION_KEY == POST_SWITCH_ACTION_KEY

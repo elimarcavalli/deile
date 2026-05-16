@@ -30,6 +30,9 @@ import venv as _venv  # noqa: N812 — local alias for testability (patched as d
 from pathlib import Path
 from typing import List, Optional
 
+from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
+                                       SWITCH_SESSION_KEY)
+
 # ── package root (where deile/ lives) ───────────────────────────────────────
 _PACKAGE_ROOT = Path(__file__).parent.resolve()
 _PROJECT_ROOT = _PACKAGE_ROOT.parent  # repo root when editable, same when installed
@@ -284,14 +287,15 @@ class _DeileCLI:
     # Sentinel returned by get_user_input() when the user presses ESC ESC on
     # an empty prompt — signals the main loop to trigger /rewind.
     _REWIND_SENTINEL = "\x00REWIND\x00"
-    # Context-data key written by /fork, /rewind, /resume to request a session
+    # Context-data keys written by /fork, /rewind, /resume to request a session
     # switch without tight-coupling between the command and the CLI class.
-    _SWITCH_SESSION_KEY = "_switch_session"
-    # Context-data key written alongside the switch key to request additional
-    # UI work after the swap. ``"welcome"`` re-renders the entry banner (used
-    # by /clear); ``"replay"`` clears the screen and re-renders every turn of
-    # the loaded conversation (used by /resume).
-    _POST_SWITCH_ACTION_KEY = "_post_switch_action"
+    # Sourced from deile.commands._sentinels — single source of truth shared
+    # with the commands that write them. _POST_SWITCH_ACTION_KEY carries the
+    # follow-up UI work: ``"welcome"`` re-renders the entry banner (used by
+    # /clear); ``"replay"`` clears the screen and re-renders the loaded
+    # conversation (used by /resume).
+    _SWITCH_SESSION_KEY = SWITCH_SESSION_KEY
+    _POST_SWITCH_ACTION_KEY = POST_SWITCH_ACTION_KEY
 
     def _persist_session(self, user_input: str) -> None:
         """Write current session history to disk so /resume can find it.
