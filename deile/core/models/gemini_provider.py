@@ -961,29 +961,6 @@ class GeminiProvider(ModelProvider):
             # (ver _process_messages_for_gemini).
             contents = messages
 
-            # CORREÇÃO: Cria uma instância do modelo com a system_instruction
-            # model = genai.GenerativeModel(
-            #     model_name=self.gemini_config.model_name,
-            #     system_instruction=system_instruction,
-            #     generation_config=config  # Passa a configuração aqui
-            # )
-
-            # Gera o conteúdo a partir da instância do modelo
-            # response = await asyncio.to_thread(
-            #     model.generate_content,
-            #     contents=contents
-            # )
-
-            # # CORREÇÃO: Cria uma instância do modelo sem a system_instruction
-            # model = genai.GenerativeModel(
-            #     model_name=self.gemini_config.model_name,
-            #     generation_config=config  # Passa a configuração aqui
-            # )
-            
-            # response = await asyncio.to_thread(
-            #         lambda: model.generate_content(contents=contents)
-            #     )
-
             client = self.client
 
             response = await client.aio.models.generate_content(
@@ -1070,10 +1047,3 @@ class GeminiProvider(ModelProvider):
             contents.append({"role": role, "parts": parts})
 
         return contents
-    
-    # Métodos antigos removidos - usando novo Google GenAI SDK
-    # _generate_with_function_calling() substituído por _generate_with_new_sdk()
-    # _extract_function_calls() e _execute_function_call() substituídos por novos métodos
-    # Function Calling agora é automático via automatic_function_calling=True
-    
-    # Métodos auxiliares legacy removidos - novo SDK gerencia Function Calling automaticamente
