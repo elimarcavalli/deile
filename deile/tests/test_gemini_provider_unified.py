@@ -156,6 +156,38 @@ def test_messages_to_gemini_user_input_empty(provider):
 
 
 # ---------------------------------------------------------------------------
+# _process_messages_for_gemini() helper — ModelMessage -> SDK contents
+# ---------------------------------------------------------------------------
+
+def test_process_messages_for_gemini_maps_roles_and_skips_system(provider):
+    messages = [
+        ModelMessage(role="system", content="sys"),
+        ModelMessage(role="user", content="hello"),
+        ModelMessage(role="assistant", content="hi there"),
+    ]
+    contents = provider._process_messages_for_gemini(messages)
+    assert contents == [
+        {"role": "user", "parts": [{"text": "hello"}]},
+        {"role": "assistant", "parts": [{"text": "hi there"}]},
+    ]
+
+
+def test_process_messages_for_gemini_preserves_multimodal_list_content(provider):
+    parts = [{"text": "describe"}, {"file_data": {"file_uri": "x"}}]
+    contents = provider._process_messages_for_gemini(
+        [ModelMessage(role="user", content=parts)]
+    )
+    assert contents == [{"role": "user", "parts": parts}]
+
+
+def test_process_messages_for_gemini_stringifies_other_content(provider):
+    contents = provider._process_messages_for_gemini(
+        [ModelMessage(role="user", content=123)]
+    )
+    assert contents == [{"role": "user", "parts": [{"text": "123"}]}]
+
+
+# ---------------------------------------------------------------------------
 # _extract_system() helper
 # ---------------------------------------------------------------------------
 

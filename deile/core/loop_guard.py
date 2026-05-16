@@ -46,7 +46,10 @@ import logging
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Deque, Dict, Optional
+from typing import TYPE_CHECKING, Any, Deque, Dict, Optional, Tuple
+
+if TYPE_CHECKING:
+    from deile.tools.base import ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -552,7 +555,7 @@ def format_loop_break_message(reason: AbortReason) -> str:
     )
 
 
-def make_loop_break_result(reason: AbortReason) -> tuple:
+def make_loop_break_result(reason: AbortReason) -> Tuple["ToolResult", Dict[str, str]]:
     """Build the synthetic ``(ToolResult, payload)`` pair for a loop-break.
 
     Every non-streaming ``chat_with_tools`` driver, on a guard abort, must

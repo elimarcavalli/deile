@@ -20,6 +20,7 @@ import pytest
 
 from deile.core.loop_guard import (AbortKind, ToolLoopGuard, args_hash_for,
                                    format_loop_break_message, make_guard,
+                                   make_loop_break_result,
                                    tool_result_made_progress)
 from deile.core.models.base import ModelMessage
 from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
@@ -331,6 +332,26 @@ def test_tool_result_made_progress_helper():
     assert tool_result_made_progress(
         ToolResult(status=ToolStatus.SUCCESS, data=None, message="ok")
     ) is True
+
+
+def test_make_loop_break_result_builds_typed_error_and_payload():
+    """The shared helper used by all three non-streaming providers must
+    produce an ERROR ToolResult carrying the loop-break metadata and a
+    JSON-serializable payload echoing the same message."""
+    guard = ToolLoopGuard()
+    guard.check("x", {})
+    guard.check("x", {})
+    abort = guard.check("x", {})
+    assert abort is not None
+
+    tool_result, payload = make_loop_break_result(abort)
+
+    assert tool_result.status is ToolStatus.ERROR
+    assert tool_result.message == abort.user_message()
+    assert tool_result.metadata["loop_break"] is True
+    assert tool_result.metadata["loop_break_kind"] == abort.kind.value
+    assert tool_result.metadata["loop_break_args_hash"] == abort.args_hash
+    assert payload == {"status": "error", "error": abort.user_message()}
 
 
 def test_guard_repeat_idempotent_on_same_hash():
