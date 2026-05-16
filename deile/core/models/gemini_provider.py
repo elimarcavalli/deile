@@ -959,15 +959,11 @@ class GeminiProvider(ModelProvider):
         try:
             # ``messages`` já vem no formato de contents do SDK
             # (ver _process_messages_for_gemini).
-            contents = messages
-
-            client = self.client
-
-            response = await client.aio.models.generate_content(
-                    model=self.gemini_config.model_name,
-                    contents=contents,
-                    config=config  # types.GenerateContentConfig(...) ou dict compatível
-                )
+            response = await self.client.aio.models.generate_content(
+                model=self.gemini_config.model_name,
+                contents=messages,
+                config=config,  # types.GenerateContentConfig(...) ou dict compatível
+            )
             
             # Extrai informações de uso
             usage_metadata = getattr(response, 'usage_metadata', None)
