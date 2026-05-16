@@ -19,8 +19,9 @@ from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import (emit_audit_event, error_panel, get_memory_manager,
                       split_args, success_panel, warning_panel)
-from ._status_collectors import (collect_health_info, collect_models_info,
-                                 collect_system_info, collect_tools_info)
+from ._status_collectors import (_indisponivel, collect_health_info,
+                                 collect_models_info, collect_system_info,
+                                 collect_tools_info)
 
 _PROVIDER_HOSTS: Dict[str, str] = {
     "openai": "api.openai.com",
@@ -45,10 +46,6 @@ async def _probe_host(host: str, port: int = 443, timeout: float = 5.0) -> Tuple
         return True, (time.monotonic() - start) * 1000
     except Exception:
         return False, (time.monotonic() - start) * 1000
-
-
-def _indisponivel(reason: str) -> str:
-    return f"[INDISPONÍVEL: {reason}]"
 
 
 class StatusCommand(DirectCommand):
