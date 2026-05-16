@@ -48,6 +48,7 @@ class HelpCommand(DirectCommand):
                 help_content = command.get_help()
                 if inspect.isawaitable(help_content):
                     help_content = await help_content
+                help_content = str(help_content)
                 aliases = (
                     getattr(command, "aliases", None)
                     or getattr(getattr(command, "config", None), "aliases", None)

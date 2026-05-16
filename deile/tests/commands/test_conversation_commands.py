@@ -327,6 +327,30 @@ class TestRewindCommand:
         assert len(new_sess.conversation_history) == 1
         assert new_sess.conversation_history[0]["content"] == "olá mundo"
 
+    @pytest.mark.unit
+    async def test_rewind_content_none_does_not_crash(self):
+        """History entry with content=None must not raise — truncate_oneline handles it."""
+        from deile.commands.builtin import rewind_command as rw_mod
+        from deile.core.interfaces.selector import SelectorOption
+
+        history_with_none = [
+            {"role": "user", "content": None, "timestamp": 1.0, "metadata": {}},
+            {"role": "assistant", "content": "ok", "timestamp": 1.1, "metadata": {}},
+        ]
+        ctx = _make_context("rewind", history=history_with_none)
+        mock_selector = MagicMock()
+        mock_selector.is_supported.return_value = True
+        mock_selector.select = AsyncMock(
+            return_value=SelectorOption(label="#1 ", value=0)
+        )
+
+        with patch.object(rw_mod, "get_default_selector", return_value=mock_selector):
+            cmd = RewindCommand()
+            result = await cmd.execute(ctx)
+
+        # Should succeed (or return a graceful error), but never raise an exception.
+        assert result is not None
+
 
 # ---------------------------------------------------------------------------
 # ResumeCommand

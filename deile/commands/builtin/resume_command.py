@@ -18,6 +18,8 @@ from ._shared import truncate_oneline, wrap_command_errors
 # Max label width for one-line conversation summaries in the selector.
 _MAX_LABEL = 50
 
+_MAX_LABEL = 50  # max chars for conversation labels in the selector
+
 
 def _fmt_time(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")

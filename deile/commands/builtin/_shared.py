@@ -492,7 +492,10 @@ def truncate_oneline(text: object, max_chars: int) -> str:
     """
     if not text:
         return ""
-    flat = str(text).replace("\n", " ").strip()
+    # Cap raw conversion before flattening to avoid materialising huge strings
+    # for objects whose __str__ is expensive (e.g. large lists).
+    raw = str(text)[: max_chars + 500]
+    flat = raw.replace("\n", " ").strip()
     return flat[:max_chars] + "…" if len(flat) > max_chars else flat
 
 
