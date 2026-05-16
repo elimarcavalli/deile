@@ -35,17 +35,6 @@ class ModelSize(Enum):
     LARGE = "large"    # Para tarefas complexas e críticas
 
 
-def tier_to_model_size(tier: ModelTier) -> ModelSize:
-    """Backward-compat mapping from new ModelTier to legacy ModelSize."""
-    _map = {
-        ModelTier.TIER_1: ModelSize.LARGE,
-        ModelTier.TIER_2: ModelSize.MEDIUM,
-        ModelTier.TIER_3: ModelSize.SMALL,
-        ModelTier.TIER_4: ModelSize.SMALL,
-    }
-    return _map[tier]
-
-
 @dataclass
 class ModelUsage:
     """Informações de uso do modelo"""
@@ -476,65 +465,3 @@ class ModelProvider(ABC):
     
     def __repr__(self) -> str:
         return f"<ModelProvider: {self.provider_name}:{self.model_name}>"
-
-
-class EmbeddingProvider(ModelProvider):
-    """Provedor especializado para embeddings"""
-    
-    @property
-    def supported_types(self) -> List[ModelType]:
-        return [ModelType.EMBEDDING]
-    
-    @abstractmethod
-    async def embed(
-        self, 
-        texts: List[str],
-        **kwargs
-    ) -> List[List[float]]:
-        """Gera embeddings para os textos fornecidos
-        
-        Args:
-            texts: Lista de textos para embeddings
-            **kwargs: Parâmetros específicos
-            
-        Returns:
-            List[List[float]]: Lista de vetores de embedding
-        """
-        pass
-    
-    async def embed_single(self, text: str, **kwargs) -> List[float]:
-        """Gera embedding para um único texto
-        
-        Args:
-            text: Texto para embedding
-            **kwargs: Parâmetros específicos
-            
-        Returns:
-            List[float]: Vetor de embedding
-        """
-        embeddings = await self.embed([text], **kwargs)
-        return embeddings[0] if embeddings else []
-    
-    async def generate(
-        self,
-        messages: List[ModelMessage],
-        system_instruction: Optional[str] = None,
-        **kwargs
-    ) -> ModelResponse:
-        """Implementação para compatibilidade - usa o último message"""
-        if not messages:
-            raise ValueError("No messages provided for embedding")
-        
-        last_message = messages[-1]
-        embedding = await self.embed_single(last_message.content, **kwargs)
-        
-        return ModelResponse(
-            content=str(embedding),  # Serializa o embedding como string
-            model_name=self.model_name,
-            usage=ModelUsage(
-                prompt_tokens=self.estimate_tokens(last_message.content),
-                completion_tokens=len(embedding),
-                total_tokens=self.estimate_tokens(last_message.content) + len(embedding)
-            ),
-            metadata={"embedding_dimension": len(embedding)}
-        )

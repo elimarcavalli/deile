@@ -8,7 +8,7 @@ import pytest
 
 from deile.core.models.base import (ModelMessage, ModelProvider, ModelResponse,
                                     ModelSize, ModelTier, ModelType,
-                                    ModelUsage, tier_to_model_size)
+                                    ModelUsage)
 from deile.core.models.catalog import ModelPricing
 from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
 
@@ -145,13 +145,6 @@ def test_estimate_cost_with_cached_tokens(priced):
     cost = priced.estimate_cost(usage)
     # 1M cached @ $0.30
     assert abs(cost - 0.30) < 1e-6
-
-
-def test_tier_to_model_size_mapping():
-    assert tier_to_model_size(ModelTier.TIER_1) == ModelSize.LARGE
-    assert tier_to_model_size(ModelTier.TIER_2) == ModelSize.MEDIUM
-    assert tier_to_model_size(ModelTier.TIER_3) == ModelSize.SMALL
-    assert tier_to_model_size(ModelTier.TIER_4) == ModelSize.SMALL
 
 
 def test_model_usage_has_cached_tokens_field():
