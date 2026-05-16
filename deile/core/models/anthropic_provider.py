@@ -15,6 +15,7 @@ from deile.core.loop_guard import (format_loop_break_message, make_guard,
 from deile.core.models.base import (ModelMessage, ModelProvider, ModelResponse,
                                     ModelSize, ModelType, ModelUsage)
 from deile.core.models.catalog import ModelHandle, ModelPricing
+from deile.core.models.error_mapping import build_error_envelope
 from deile.core.models.errors import (ProviderErrorEnvelope,
                                       ProviderInvocationError)
 from deile.core.models.provider_config import ProviderConfig
@@ -57,30 +58,9 @@ def _make_envelope(
     provider_id: str,
     model_id: str,
 ) -> ProviderErrorEnvelope:
-    status = getattr(exc, "status_code", None)
-    raw: Dict[str, Any] = {}
-    body = getattr(exc, "body", None)
-    if isinstance(body, dict):
-        raw = body
-    elif isinstance(body, (str, bytes)):
-        try:
-            raw = json.loads(body)
-        except Exception:
-            raw = {"raw_body": str(body)}
-    request_id = getattr(exc, "request_id", None)
-    if request_id is None:
-        headers = getattr(exc, "response", None)
-        if headers is not None:
-            request_id = getattr(headers, "headers", {}).get("request-id")
-    return ProviderErrorEnvelope(
-        provider_id=provider_id,
-        model_id=model_id,
-        error_type=_classify_anthropic_error(exc),
-        message=str(exc),
-        http_status=status,
-        raw_json=raw,
-        request_id=str(request_id) if request_id else None,
-        timestamp=time.time(),
+    """Thin wrapper over :func:`build_error_envelope` with the Anthropic classifier."""
+    return build_error_envelope(
+        exc, provider_id, model_id, _classify_anthropic_error
     )
 
 
