@@ -61,39 +61,11 @@ class ModelMetrics:
     success_rate: float = 1.0
     last_used: float = 0.0
 
-    def update_response_time(self, response_time: float) -> None:
-        """Atualiza tempo médio de resposta"""
-        if self.total_requests == 0:
-            self.avg_response_time = response_time
-        else:
-            self.avg_response_time = (
-                (self.avg_response_time * self.total_requests + response_time) /
-                (self.total_requests + 1)
-            )
-
     def record_request(self) -> None:
         """Registra nova requisição"""
         self.total_requests += 1
         self.active_requests += 1
         self.last_used = time.time()
-
-    def record_completion(self, success: bool, response_time: float) -> None:
-        """Registra conclusão de requisição"""
-        self.active_requests = max(0, self.active_requests - 1)
-        self.update_response_time(response_time)
-
-        if success:
-            self.success_rate = (
-                (self.success_rate * (self.total_requests - 1) + 1.0) /
-                self.total_requests
-            )
-        else:
-            self.success_rate = (
-                (self.success_rate * (self.total_requests - 1) + 0.0) /
-                self.total_requests
-            )
-
-        self.error_rate = 1.0 - self.success_rate
 
 
 def _provider_key(provider: ModelProvider) -> str:
@@ -142,7 +114,7 @@ class RoutingStrategySelector:
         elif strategy == RoutingStrategy.LOAD_BALANCED:
             return self._load_balanced_selection(providers, metrics)
         else:
-            logger.warning(f"Unknown routing strategy: {strategy}")
+            logger.warning("Unknown routing strategy: %s", strategy)
             return providers[0] if providers else None
 
     def _round_robin_selection(
@@ -176,6 +148,9 @@ class RoutingStrategySelector:
         metrics: Dict[str, ModelMetrics],
     ) -> Optional[ModelProvider]:
         """Seleciona provedor otimizado para a tarefa"""
+        if not providers:
+            return None
+
         # Identifica tipo de tarefa baseado no input
         task_type = self._identify_task_type(context.user_input)
         preferred_size = self.task_model_mapping.get(task_type, ModelSize.MEDIUM)
