@@ -251,23 +251,14 @@ class OpenAIProvider(ModelProvider):
                 response = await self._client.chat.completions.create(**create_kwargs)
             except openai.APIError as exc:
                 env = _make_envelope(exc, self.provider_id, self.model_name)
-                _err_usage = ModelUsage(
+                await self._record_failed_usage(
+                    session_id=kwargs.get("session_id", "default"),
+                    start_time=start,
                     prompt_tokens=total_prompt,
                     completion_tokens=total_completion,
-                    total_tokens=total_prompt + total_completion,
                     cached_tokens=total_cached,
-                    request_time=time.time() - start,
+                    error_envelope=env,
                 )
-                try:
-                    await self._record_usage(
-                        session_id=kwargs.get("session_id", "default"),
-                        usage=_err_usage,
-                        latency_ms=int((time.time() - start) * 1000),
-                        success=False,
-                        error_envelope=env,
-                    )
-                except Exception:
-                    pass
                 raise ProviderInvocationError(env) from exc
 
             if response.usage:

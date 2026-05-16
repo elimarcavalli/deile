@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
@@ -420,6 +421,38 @@ class ModelProvider(ABC):
                 getattr(self, "provider_id", "?"), session_id, exc,
             )
     
+    async def _record_failed_usage(
+        self,
+        *,
+        session_id: str,
+        start_time: float,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cached_tokens: int,
+        error_envelope: Any,
+    ) -> None:
+        """Record the partial usage of a request that failed mid-flight.
+
+        Concrete providers call this from their ``chat_with_tools`` error path
+        so cost reports and dashboards still account for the failed request.
+        Delegates to :meth:`_record_usage`, which already fails open on
+        telemetry errors.
+        """
+        elapsed = time.time() - start_time
+        await self._record_usage(
+            session_id=session_id,
+            usage=ModelUsage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+                cached_tokens=cached_tokens,
+                request_time=elapsed,
+            ),
+            latency_ms=int(elapsed * 1000),
+            success=False,
+            error_envelope=error_envelope,
+        )
+
     def _update_stats(self, usage: ModelUsage) -> None:
         """Atualiza estatísticas internas"""
         self._request_count += 1
