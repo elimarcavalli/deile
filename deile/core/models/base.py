@@ -183,6 +183,19 @@ class ModelProvider(ABC):
         """
         pass
     
+    @staticmethod
+    def _extract_system(
+        messages: List["ModelMessage"], system_instruction: Optional[str]
+    ) -> Optional[str]:
+        """Resolve the effective system prompt for a request.
+
+        Precedence: an explicit ``system_instruction`` argument always wins;
+        otherwise fall back to the content of the first ``role == 'system'``
+        message in ``messages`` (``None`` when neither is present).
+        """
+        sys_from_msgs = next((m.content for m in messages if m.role == "system"), None)
+        return system_instruction or sys_from_msgs
+
     def _compose_system_instruction(self, system_instruction: Optional[str]) -> Optional[str]:
         """Acresce um bloco de identidade runtime ao system instruction.
 

@@ -733,13 +733,6 @@ class GeminiProvider(ModelProvider):
         )
         return text, tool_results, usage
 
-    @staticmethod
-    def _extract_system(
-        messages: List[ModelMessage], system_instruction: Optional[str]
-    ) -> Optional[str]:
-        sys_from_msgs = next((m.content for m in messages if m.role == "system"), None)
-        return system_instruction or sys_from_msgs
-
     def _messages_to_gemini_user_input(self, messages: List[ModelMessage]) -> str:
         """Flatten the last user message to a plain string for Gemini chat."""
         user_parts = [m.content for m in messages if m.role == "user"]

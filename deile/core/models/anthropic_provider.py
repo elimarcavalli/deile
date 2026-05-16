@@ -149,11 +149,6 @@ class AnthropicProvider(ModelProvider):
                 result.append({"role": m.role, "content": m.content})
         return result
 
-    @staticmethod
-    def _extract_system(messages: List[ModelMessage], system_instruction: Optional[str]) -> Optional[str]:
-        sys_from_msgs = next((m.content for m in messages if m.role == "system"), None)
-        return system_instruction or sys_from_msgs
-
     # ------------------------------------------------------------------
     # generate()
     # ------------------------------------------------------------------
