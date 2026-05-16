@@ -372,7 +372,10 @@ class GeminiProvider(ModelProvider):
 
         except Exception as e:
             # Non-API failure (serialization, processing). Still surface a typed
-            # envelope so the contract is uniform; classifies as ``unknown``.
+            # envelope so the contract is uniform; classifies as ``unknown``,
+            # which the agent's provider cascade treats as transient/retryable —
+            # the same effect the pre-refactor ``ModelError`` had here, since
+            # neither is flagged permanent by ``_is_permanent_provider_error``.
             execution_time = time.time() - start_time
             envelope = _make_envelope(e, self.provider_id, self.model_name)
 
@@ -673,7 +676,7 @@ class GeminiProvider(ModelProvider):
                 f"Function '{n}' is not registered in this agent. "
                 f"Available tools: {', '.join(avail) if avail else '(none)'}."
             ),
-            context_factory=lambda n, a: ToolContext(
+            context_factory=lambda n, a, tool: ToolContext(
                 user_input="",
                 parsed_args=dict(a or {}),
                 session_data=dict(session_data or {}),
@@ -682,6 +685,7 @@ class GeminiProvider(ModelProvider):
                 metadata={
                     "execution_method": "function_call",
                     "function_name": n,
+                    "tool_name": tool.name,
                 },
             ),
             not_found_metadata={

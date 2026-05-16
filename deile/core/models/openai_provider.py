@@ -585,7 +585,7 @@ class OpenAIProvider(ModelProvider):
             not_found_message_fn=lambda n, avail: (
                 f"Tool '{n}' not found. Available: {', '.join(avail)}"
             ),
-            context_factory=lambda _n, a: ToolContext(
+            context_factory=lambda _n, a, _t: ToolContext(
                 user_input="", parsed_args=dict(a or {})
             ),
             exception_metadata={"function_name": name},
