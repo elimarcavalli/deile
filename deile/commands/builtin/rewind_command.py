@@ -11,8 +11,7 @@ from rich.text import Text
 from ...core.interfaces.selector import SelectorNotSupported, SelectorOption
 from ...infrastructure.selectors import get_default_selector
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import (SWITCH_SESSION_KEY, truncate_oneline,
-                      wrap_command_errors)
+from ._shared import SWITCH_SESSION_KEY, truncate_oneline, wrap_command_errors
 
 _MAX_LABEL = 80
 
