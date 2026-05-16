@@ -1,5 +1,6 @@
 """Comando de ajuda builtin."""
 
+import inspect
 import logging
 
 from rich import box
@@ -44,7 +45,9 @@ class HelpCommand(DirectCommand):
                 if command is None:
                     return CommandResult.error_result(f"Command '/{args}' not found")
 
-                help_content = await command.get_help()
+                help_content = command.get_help()
+                if inspect.isawaitable(help_content):
+                    help_content = await help_content
                 aliases = (
                     getattr(command, "aliases", None)
                     or getattr(getattr(command, "config", None), "aliases", None)
