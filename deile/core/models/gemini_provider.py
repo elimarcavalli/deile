@@ -209,27 +209,6 @@ class GeminiProvider(ModelProvider):
             logger.error(f"Failed to load tools for Function Calling: {e}")
             return None
     
-    def reload_config_from_manager(self) -> None:
-        """Recarrega configuração do ConfigManager (hot-reload)"""
-        try:
-            from ...config.manager import get_config_manager
-            config_manager = get_config_manager()
-            config_manager.reload_config()
-
-            # Atualiza configuração local
-            self.gemini_config = config_manager.get_config().gemini
-            self.generation_config = self.gemini_config.generation_config.copy()
-
-            # Reinicializa ferramentas disponíveis com nova configuração
-            self._available_tools = self._get_available_tools()
-
-            import logging
-            logging.info("GeminiProvider configuration reloaded successfully")
-
-        except Exception as e:
-            import logging
-            logging.error(f"Failed to reload GeminiProvider configuration: {e}")
-    
     @property
     def provider_name(self) -> str:
         return "gemini"
@@ -956,38 +935,6 @@ class GeminiProvider(ModelProvider):
         output_cost = (usage.completion_tokens / 1000) * cost_per_1k_output
         
         return input_cost + output_cost
-    
-    def reload_config_from_gemini(self, gemini_config=None) -> None:
-        """Recarrega configurações do provider a partir de um gemini_config"""
-        if gemini_config is None:
-            try:
-                from ...config import get_config_manager
-                gemini_config = get_config_manager().get_config().gemini
-            except ImportError:
-                return
-        
-        self.gemini_config = gemini_config
-        self.model_name = gemini_config.model_name
-        self._initialize_model()
-        
-        if is_debug_enabled():
-            asyncio.create_task(self.debug_logger.log_debug_info(
-                category="config_reload",
-                data={
-                    "provider": "gemini",
-                    "new_model": gemini_config.model_name,
-                    "generation_config": gemini_config.generation_config
-                }
-            ))
-    
-    def get_current_config(self) -> Dict[str, Any]:
-        """Retorna configuração atual"""
-        return {
-            "model_name": self.gemini_config.model_name,
-            "generation_config": self.gemini_config.generation_config,
-            "tool_config": self.gemini_config.tool_config,
-            "safety_settings": self.gemini_config.safety_settings
-        }
     
     # Métodos auxiliares privados para novo Google GenAI SDK
     
