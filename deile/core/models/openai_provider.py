@@ -591,12 +591,8 @@ class OpenAIProvider(ModelProvider):
             exception_metadata={"function_name": name},
         )
 
-        if outcome == OUTCOME_NOT_FOUND:
-            payload = {"error": result.message, "status": "error"}
-            return result, payload
-        if outcome == OUTCOME_EXCEPTION:
-            payload = {"error": result.message, "status": "error"}
-            return result, payload
+        if outcome in (OUTCOME_NOT_FOUND, OUTCOME_EXCEPTION):
+            return result, {"error": result.message, "status": "error"}
 
         # Stamp tool name on metadata (Gemini's path does the same).
         if result.metadata is None:

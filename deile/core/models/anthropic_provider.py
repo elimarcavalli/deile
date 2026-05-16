@@ -551,9 +551,7 @@ class AnthropicProvider(ModelProvider):
             ),
         )
 
-        if outcome == OUTCOME_NOT_FOUND:
-            payload = {"error": result.message, "status": "error"}
-        elif outcome == OUTCOME_EXCEPTION:
+        if outcome in (OUTCOME_NOT_FOUND, OUTCOME_EXCEPTION):
             payload = {"error": result.message, "status": "error"}
         elif result.is_success:
             payload = {
