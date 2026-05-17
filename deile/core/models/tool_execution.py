@@ -28,7 +28,9 @@ def payload_to_text(payload: Any) -> str:
     A ``str`` payload passes through unchanged; any other object is JSON-encoded
     (``default=str`` for non-serializable leaves), falling back to ``str()`` when
     even that fails. Shared verbatim by the Anthropic ``tool_result`` block and the
-    OpenAI ``role=tool`` message so the two providers cannot drift apart.
+    OpenAI ``role=tool`` message so the two providers cannot drift apart. Gemini is
+    deliberately *not* a caller — its ``function_response`` part needs a different
+    serialization (``GeminiProvider._stringify_for_model``), so do not route it here.
     """
     if isinstance(payload, str):
         return payload
