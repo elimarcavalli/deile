@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
@@ -68,11 +67,7 @@ class OpenAIProvider(ModelProvider):
         self._handle = model_handle
         self._provider_config = provider_config
 
-        api_key = os.getenv(provider_config.api_key_env)
-        if not api_key:
-            raise ValueError(
-                f"OpenAIProvider: env var {provider_config.api_key_env} is not set"
-            )
+        api_key = self._require_api_key(provider_config, "OpenAIProvider")
 
         sdk_kwargs: Dict[str, Any] = dict(provider_config.sdk_kwargs or {})
         self._client = openai.AsyncOpenAI(
