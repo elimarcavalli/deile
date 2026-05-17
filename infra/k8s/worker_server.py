@@ -33,6 +33,7 @@ Security model (defence in depth):
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -66,13 +67,17 @@ MAX_BRIEF_CHARS = int(os.environ.get("DEILE_WORKER_MAX_BRIEF_CHARS", "4000"))
 
 
 def _channel_workdir(channel_id: str) -> str:
-    """Nome de pasta seguro, POR canal/usuário, derivado do channel_id.
+    """Nome de pasta seguro, POR CANAL, derivado do channel_id.
 
-    O workdir do worker é persistente por contexto de conversa: a mesma
-    DM (cujo canal é exclusivo daquele usuário) ou o mesmo canal sempre
-    reusam a mesma pasta — trabalhos anteriores continuam lá. Contextos
-    diferentes ficam isolados (pastas distintas; um não enxerga a do
-    outro, e o envelope trava o CWD do agente nela).
+    O workdir do worker é persistente por canal: dispatches do mesmo
+    channel_id sempre reusam a mesma pasta — trabalhos anteriores
+    continuam lá. O payload de dispatch não traz user_id, então o
+    isolamento é estritamente por canal, não por usuário:
+
+      - numa DM o canal tem um único participante, logo a pasta é, na
+        prática, exclusiva daquele usuário;
+      - num canal de guild todos os participantes compartilham o mesmo
+        channel_id e, portanto, o mesmo workspace.
 
     Discord channel_ids são snowflakes (apenas dígitos); o sanitize é
     defesa em profundidade contra path traversal caso o valor mude.
@@ -208,9 +213,11 @@ Você é DEILE rodando em modo worker isolado dentro de um container k8s.
 
 REGRAS DE JAULA (inegociáveis):
 - Seu CWD é {workdir}. Trabalhe SEMPRE relativo a este diretório.
-- Esta é a área de trabalho PERSISTENTE deste canal/usuário: arquivos
-  de pedidos anteriores podem estar aqui — reaproveite-os quando fizer
-  sentido, em vez de recriar tudo do zero.
+- Esta é a área de trabalho PERSISTENTE deste CANAL: arquivos de
+  pedidos anteriores podem estar aqui — reaproveite-os quando fizer
+  sentido, em vez de recriar tudo do zero. Numa DM o canal tem um
+  único usuário; num canal de guild o workspace é compartilhado por
+  todos os participantes do canal.
 - NUNCA leia/escreva fora deste diretório. Caminhos absolutos para
   /run/secrets, /etc, /proc, /home/deile/.git-credentials, /tmp fora
   desta task → RECUSE explicitamente.
@@ -264,6 +271,26 @@ def _format_final(brief: str, ok: bool, summary: str, files: list[str], elapsed_
     parts.append("")
     parts.append(summary[:1400])
     return "\n".join(parts)
+
+
+def _prune_results_dir(results_dir: Path, keep: int = 200) -> None:
+    """Mantém só os `keep` arquivos de resultado mais recentes (por mtime).
+
+    `WORK_ROOT/.results` acumula um `<task_id>.json` por dispatch e nada
+    o limpa; sem isto cresceria sem limite no PVC.
+    """
+    try:
+        files = [p for p in results_dir.glob("*.json") if p.is_file()]
+    except OSError:
+        return
+    if len(files) <= keep:
+        return
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    for stale in files[keep:]:
+        try:
+            stale.unlink()
+        except OSError:
+            logger.debug("could not prune result file %s", stale, exc_info=True)
 
 
 async def _list_workspace_files(workdir: Path) -> list[str]:
@@ -454,6 +481,7 @@ async def _run_task(
             json.dumps(result, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        _prune_results_dir(results_dir)
     except OSError:
         logger.exception("could not persist result for task %s", task_id)
     return result
@@ -467,7 +495,9 @@ async def _bearer_auth_mw(request: web.Request, handler):
         return await handler(request)
     expected = request.app["auth_token"]
     got = request.headers.get("Authorization", "")
-    if not got.startswith("Bearer ") or got[len("Bearer "):] != expected:
+    if not got.startswith("Bearer ") or not hmac.compare_digest(
+        got[len("Bearer "):], expected
+    ):
         return web.json_response(
             {"error": {"code": "UNAUTHORIZED", "message": "bad bearer"}},
             status=401,
