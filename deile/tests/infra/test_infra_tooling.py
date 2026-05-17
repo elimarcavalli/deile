@@ -8,6 +8,7 @@ exercitada — instalar k3s ou subir serviços de verdade não é testável.
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -191,3 +192,155 @@ def test_channel_workdir_sanitization():
     assert worker_server._channel_workdir(None) == "default"
     # Hífen e underscore são preservados.
     assert worker_server._channel_workdir("abc-DEF_12") == "abc-DEF_12"
+
+
+# ===== deploy.py — resolve_target (precedência) ==============================
+
+def test_resolve_target_explicit_wins(monkeypatch):
+    # --target explícito vence tudo, sem tocar deploy.json nem detectar nada.
+    monkeypatch.setattr(deploy, "read_deploy_target", lambda: "local")
+    monkeypatch.setattr(deploy, "namespace_exists", lambda: True)
+    assert deploy.resolve_target("container") == "container"
+    assert deploy.resolve_target("local") == "local"
+
+
+def test_resolve_target_ignores_invalid_request(monkeypatch):
+    # Valor inválido em --target é descartado; cai no deploy.json.
+    monkeypatch.setattr(deploy, "read_deploy_target", lambda: "container")
+    monkeypatch.setattr(deploy, "namespace_exists", lambda: False)
+    assert deploy.resolve_target("garbage") == "container"
+
+
+def test_resolve_target_saved_state(monkeypatch):
+    # Sem --target, o deploy.json vence a auto-detecção.
+    monkeypatch.setattr(deploy, "read_deploy_target", lambda: "local")
+    monkeypatch.setattr(deploy, "namespace_exists", lambda: True)
+    assert deploy.resolve_target(None) == "local"
+
+
+def test_resolve_target_autodetect_container(monkeypatch):
+    # Sem --target e sem deploy.json: namespace presente → container.
+    monkeypatch.setattr(deploy, "read_deploy_target", lambda: None)
+    monkeypatch.setattr(deploy, "namespace_exists", lambda: True)
+    assert deploy.resolve_target(None) == "container"
+
+
+def test_resolve_target_autodetect_local(monkeypatch):
+    # Sem namespace, mas serviço local rodando → local.
+    monkeypatch.setattr(deploy, "read_deploy_target", lambda: None)
+    monkeypatch.setattr(deploy, "namespace_exists", lambda: False)
+
+    class _FakeSvc:
+        def __init__(self, *_a, **_kw):
+            pass
+
+        def status(self):
+            return True, "rodando"
+
+    monkeypatch.setattr(deploy, "LocalService", _FakeSvc)
+    assert deploy.resolve_target(None) == "local"
+
+
+def test_resolve_target_undetermined(monkeypatch):
+    # Nada configurado e nada rodando → None.
+    monkeypatch.setattr(deploy, "read_deploy_target", lambda: None)
+    monkeypatch.setattr(deploy, "namespace_exists", lambda: False)
+
+    class _FakeSvc:
+        def __init__(self, *_a, **_kw):
+            pass
+
+        def status(self):
+            return False, "parado"
+
+    monkeypatch.setattr(deploy, "LocalService", _FakeSvc)
+    assert deploy.resolve_target(None) is None
+
+
+# ===== deploy.py — _image_build_cmd (seleção de runtime) =====================
+
+def test_image_build_cmd_prefers_nerdctl(monkeypatch):
+    monkeypatch.setattr(deploy, "_resolve", lambda t: "/usr/bin/nerdctl" if t == "nerdctl" else None)
+    monkeypatch.setattr(deploy, "which", lambda t: None)
+    cmd = deploy._image_build_cmd()
+    assert cmd is not None
+    assert cmd[0] == "/usr/bin/nerdctl"
+    assert "--namespace" in cmd and "k8s.io" in cmd
+
+
+def test_image_build_cmd_falls_back_to_colima(monkeypatch):
+    monkeypatch.setattr(deploy, "_resolve", lambda t: None)
+    monkeypatch.setattr(deploy, "which", lambda t: t in ("colima",))
+    cmd = deploy._image_build_cmd()
+    assert cmd is not None
+    assert cmd[0] == "colima"
+    assert cmd[1] == "nerdctl"
+
+
+def test_image_build_cmd_falls_back_to_docker(monkeypatch):
+    monkeypatch.setattr(deploy, "_resolve", lambda t: None)
+    monkeypatch.setattr(deploy, "which", lambda t: t == "docker")
+    cmd = deploy._image_build_cmd()
+    assert cmd is not None
+    assert cmd[0] == "docker"
+    assert cmd[1] == "build"
+
+
+def test_image_build_cmd_no_runtime(monkeypatch):
+    monkeypatch.setattr(deploy, "_resolve", lambda t: None)
+    monkeypatch.setattr(deploy, "which", lambda t: None)
+    assert deploy._image_build_cmd() is None
+
+
+# ===== setup_environment.py — _wants_container ===============================
+
+def _ns(**kw) -> argparse.Namespace:
+    base = {"mode": None, "yes": False}
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def test_wants_container_mode_container():
+    assert setup_environment._wants_container(_ns(mode="container")) is True
+
+
+def test_wants_container_mode_local():
+    assert setup_environment._wants_container(_ns(mode="local")) is False
+
+
+def test_wants_container_yes_defaults_local():
+    # --yes sem --mode: default não-interativo é ambiente local.
+    assert setup_environment._wants_container(_ns(yes=True)) is False
+
+
+def test_wants_container_interactive_prompt(monkeypatch):
+    # Sem --mode e sem --yes: a decisão vem do ui.confirm.
+    monkeypatch.setattr(setup_environment.ui, "confirm", lambda *a, **kw: True)
+    assert setup_environment._wants_container(_ns()) is True
+    monkeypatch.setattr(setup_environment.ui, "confirm", lambda *a, **kw: False)
+    assert setup_environment._wants_container(_ns()) is False
+
+
+# ===== _service.py — LocalService.backend (seleção de backend) ===============
+
+def test_backend_macos_is_launchd(tmp_path, monkeypatch):
+    monkeypatch.setattr(_service.sys, "platform", "darwin")
+    assert _service.LocalService(tmp_path).backend == "launchd"
+
+
+def test_backend_linux_with_systemd(tmp_path, monkeypatch):
+    monkeypatch.setattr(_service.sys, "platform", "linux")
+    monkeypatch.setattr(_service.LocalService, "_systemd_user_ok", staticmethod(lambda: True))
+    assert _service.LocalService(tmp_path).backend == "systemd"
+
+
+def test_backend_linux_without_systemd_is_pidfile(tmp_path, monkeypatch):
+    monkeypatch.setattr(_service.sys, "platform", "linux")
+    monkeypatch.setattr(_service.LocalService, "_systemd_user_ok", staticmethod(lambda: False))
+    assert _service.LocalService(tmp_path).backend == "pidfile"
+
+
+def test_backend_other_platform_is_pidfile(tmp_path, monkeypatch):
+    # Plataforma não-Linux/não-macOS (ex.: win32) → pidfile.
+    monkeypatch.setattr(_service.sys, "platform", "win32")
+    assert _service.LocalService(tmp_path).backend == "pidfile"
