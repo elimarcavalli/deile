@@ -56,14 +56,20 @@ data:
     providers:
       enabled_providers: ["discord"]
 
-    # Allowlist of repos that deile-shell is permitted to clone via git.
-    # Globs follow Python fnmatch rules (e.g. "elimarcavalli/*" matches any
-    # repo under that org). The list is enforced by the ~/bin/git guard
-    # installed by wrapper.py at startup. Omit the section (or leave the
-    # list empty) to allow cloning from any repo (open policy — use with care).
+    # Allowlist of repos que deile-shell pode clonar via git. Globs seguem
+    # as regras de fnmatch do Python. A lista é aplicada pelo guard
+    # ~/bin/git instalado pelo wrapper.py no startup. A entrada única "*" é
+    # a open policy documentada — qualquer repo que a credencial alcance é
+    # permitido (necessário para o bot clonar repositórios públicos
+    # arbitrários pedidos via Discord).
     git_integration:
       clonable_repos:
-        # NOTE: this glob is org-wide and includes private repositories under
-        # the elimarcavalli org. Narrow to specific repos (e.g.
-        # "elimarcavalli/deile") if broader access is undesired.
-        - "elimarcavalli/*"
+        - "*"
+
+    # Login GitHub via Discord (/github_login). O método PAT funciona sem
+    # configuração. O método OAuth (device flow) precisa de um GitHub OAuth
+    # App registrado — cole o Client ID abaixo (o Client ID é público, não
+    # é segredo). Vazio mantém o OAuth desativado; o PAT continua funcionando.
+    github:
+      oauth_client_id: ""
+      oauth_scope: "repo"

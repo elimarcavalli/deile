@@ -318,18 +318,17 @@ cmd_clone() {
   #      performs its own URL validation if the guard is absent.
   # The token never appears in argv; it is read from the Secret-mounted
   # file and written to ~/.git-credentials inside the pod in-process.
-  # CLONE_URL and WORK_DIR are passed via --env so they are never
-  # interpolated into the Python source (no shell-injection risk).
+  # CLONE_URL and WORK_DIR are passed as positional argv (sys.argv[1:]):
+  # `kubectl exec` has NO --env flag, and argv tokens are never
+  # interpolated into the Python source string (no shell-injection risk).
   "$KUBECTL" -n "$NS" exec \
-    --env CLONE_URL="${clone_url}" \
-    --env WORK_DIR="${work_dir}" \
     deploy/deile-shell -- \
     python3 -c '
 import fnmatch, os, posixpath, subprocess, sys, urllib.parse
 from pathlib import Path
 
-clone_url = os.environ["CLONE_URL"]
-work_dir  = os.environ["WORK_DIR"]
+clone_url = sys.argv[1]
+work_dir  = sys.argv[2]
 
 home = Path(os.environ.get("HOME", "/home/deile"))
 token_file = Path("/run/secrets/deile/GITHUB_TOKEN")
@@ -408,7 +407,7 @@ result = subprocess.run(
 if result.returncode != 0:
     sys.exit(result.returncode)
 print("clone complete: " + work_dir)
-'
+' "${clone_url}" "${work_dir}"
   log "done — repo available at ${work_dir} inside deile-shell"
   log "to work: kubectl -n ${NS} exec -it deploy/deile-shell -- python3 /app/wrapper.py deile"
 }
