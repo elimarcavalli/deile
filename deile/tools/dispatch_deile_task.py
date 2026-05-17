@@ -33,7 +33,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, Optional
+from typing import Dict
 
 from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
                    ToolSchema)
