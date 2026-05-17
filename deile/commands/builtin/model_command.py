@@ -286,10 +286,7 @@ EXAMPLES:
         if locked is not None:
             return locked
 
-        try:
-            ctx_data = getattr(context.session, "context_data", {}) or {}
-        except AttributeError:
-            ctx_data = {}
+        ctx_data = self._ctx_data(context)
         if target.lower() == "auto":
             if hasattr(context, "session") and context.session is not None:
                 ctx_data.pop("forced_model", None)
@@ -452,6 +449,14 @@ EXAMPLES:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _ctx_data(context: CommandContext) -> dict:
+        """Return the session's ``context_data`` dict, or an empty dict when absent."""
+        try:
+            return getattr(context.session, "context_data", {}) or {}
+        except AttributeError:
+            return {}
+
+    @staticmethod
     def _locked_result(
         context: CommandContext, extra_line: str = ""
     ) -> Optional[CommandResult]:
@@ -462,10 +467,7 @@ EXAMPLES:
         the session context. ``extra_line`` appends a caller-specific trailing
         sentence (``/model use`` clarifies the override cannot be changed).
         """
-        try:
-            ctx_data = getattr(context.session, "context_data", {}) or {}
-        except AttributeError:
-            ctx_data = {}
+        ctx_data = ModelCommand._ctx_data(context)
         if not ctx_data.get("model_override_locked"):
             return None
 
