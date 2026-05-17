@@ -158,25 +158,9 @@ EXAMPLES:
     async def _select(self, context: CommandContext) -> CommandResult:
         from deile.core.models.catalog import ModelCatalog
 
-        try:
-            ctx_data = getattr(context.session, "context_data", {}) or {}
-        except AttributeError:
-            ctx_data = {}
-        if ctx_data.get("model_override_locked"):
-            locked_model = ctx_data.get("forced_model") or "(unknown)"
-            return CommandResult(
-                success=False,
-                content=Panel(
-                    Text(
-                        "Model selection is locked by bot configuration.\n"
-                        f"Forced model: {locked_model}",
-                        style="yellow",
-                    ),
-                    title="[bold red]Model Override Locked[/bold red]",
-                    border_style="red",
-                ),
-                metadata={"model_override_locked": True, "forced_model": locked_model},
-            )
+        locked = self._locked_result(context)
+        if locked is not None:
+            return locked
 
         selector = self._resolve_selector()
 
@@ -295,27 +279,17 @@ EXAMPLES:
                 ),
             )
 
+        locked = self._locked_result(
+            context,
+            extra_line="Changing it with /model use is not allowed in this session.",
+        )
+        if locked is not None:
+            return locked
+
         try:
             ctx_data = getattr(context.session, "context_data", {}) or {}
         except AttributeError:
             ctx_data = {}
-        if ctx_data.get("model_override_locked"):
-            locked_model = ctx_data.get("forced_model") or "(unknown)"
-            return CommandResult(
-                success=False,
-                content=Panel(
-                    Text(
-                        "Model selection is locked by bot configuration.\n"
-                        f"Forced model: {locked_model}\n"
-                        "Changing it with /model use is not allowed in this session.",
-                        style="yellow",
-                    ),
-                    title="[bold red]Model Override Locked[/bold red]",
-                    border_style="red",
-                ),
-                metadata={"model_override_locked": True, "forced_model": locked_model},
-            )
-
         if target.lower() == "auto":
             if hasattr(context, "session") and context.session is not None:
                 ctx_data.pop("forced_model", None)
@@ -476,6 +450,41 @@ EXAMPLES:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _locked_result(
+        context: CommandContext, extra_line: str = ""
+    ) -> Optional[CommandResult]:
+        """Build the 'Model Override Locked' result when the bot pinned the model.
+
+        Returns ``None`` when the session is free to switch models, or a
+        failing :class:`CommandResult` when ``model_override_locked`` is set in
+        the session context. ``extra_line`` appends a caller-specific trailing
+        sentence (``/model use`` clarifies the override cannot be changed).
+        """
+        try:
+            ctx_data = getattr(context.session, "context_data", {}) or {}
+        except AttributeError:
+            ctx_data = {}
+        if not ctx_data.get("model_override_locked"):
+            return None
+
+        locked_model = ctx_data.get("forced_model") or "(unknown)"
+        message = (
+            "Model selection is locked by bot configuration.\n"
+            f"Forced model: {locked_model}"
+        )
+        if extra_line:
+            message += f"\n{extra_line}"
+        return CommandResult(
+            success=False,
+            content=Panel(
+                Text(message, style="yellow"),
+                title="[bold red]Model Override Locked[/bold red]",
+                border_style="red",
+            ),
+            metadata={"model_override_locked": True, "forced_model": locked_model},
+        )
 
     @staticmethod
     def _get_forced(context: CommandContext) -> Optional[str]:
