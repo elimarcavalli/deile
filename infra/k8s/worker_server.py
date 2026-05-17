@@ -36,6 +36,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import time
 import traceback
@@ -62,6 +63,22 @@ LISTEN_PORT = int(os.environ.get("DEILE_WORKER_PORT", "8766"))
 TASK_TIMEOUT_S = float(os.environ.get("DEILE_WORKER_TASK_TIMEOUT_S", "600"))
 EDIT_INTERVAL_S = float(os.environ.get("DEILE_WORKER_EDIT_INTERVAL_S", "3"))
 MAX_BRIEF_CHARS = int(os.environ.get("DEILE_WORKER_MAX_BRIEF_CHARS", "4000"))
+
+
+def _channel_workdir(channel_id: str) -> str:
+    """Nome de pasta seguro, POR canal/usuário, derivado do channel_id.
+
+    O workdir do worker é persistente por contexto de conversa: a mesma
+    DM (cujo canal é exclusivo daquele usuário) ou o mesmo canal sempre
+    reusam a mesma pasta — trabalhos anteriores continuam lá. Contextos
+    diferentes ficam isolados (pastas distintas; um não enxerga a do
+    outro, e o envelope trava o CWD do agente nela).
+
+    Discord channel_ids são snowflakes (apenas dígitos); o sanitize é
+    defesa em profundidade contra path traversal caso o valor mude.
+    """
+    safe = re.sub(r"[^A-Za-z0-9_-]", "", str(channel_id or ""))
+    return safe or "default"
 
 
 def _read_auth_token() -> str:
@@ -191,6 +208,9 @@ Você é DEILE rodando em modo worker isolado dentro de um container k8s.
 
 REGRAS DE JAULA (inegociáveis):
 - Seu CWD é {workdir}. Trabalhe SEMPRE relativo a este diretório.
+- Esta é a área de trabalho PERSISTENTE deste canal/usuário: arquivos
+  de pedidos anteriores podem estar aqui — reaproveite-os quando fizer
+  sentido, em vez de recriar tudo do zero.
 - NUNCA leia/escreva fora deste diretório. Caminhos absolutos para
   /run/secrets, /etc, /proc, /home/deile/.git-credentials, /tmp fora
   desta task → RECUSE explicitamente.
@@ -272,7 +292,10 @@ async def _run_task(
 ) -> Dict[str, Any]:
     """Body of a single dispatch — only one runs at a time (lock)."""
     start = time.monotonic()
-    workdir = WORK_ROOT / task_id
+    # Workdir POR canal/usuário (não por task): dispatches do mesmo
+    # canal/DM reusam a mesma pasta persistente; contextos diferentes
+    # ficam isolados.
+    workdir = WORK_ROOT / _channel_workdir(channel_id)
     workdir.mkdir(parents=True, exist_ok=True)
 
     # 1. Post stub status message + react on user's message.
@@ -417,16 +440,22 @@ async def _run_task(
         "summary": summary,
         "files": files,
         "channel_id": channel_id,
+        "workdir": str(workdir),
         "status_message_id": status_msg_id,
         "finished_at": datetime.now(timezone.utc).isoformat(),
     }
+    # O resultado vai para um diretório plano por task_id: o workdir é
+    # compartilhado pelo canal, então gravar lá sobrescreveria o de
+    # dispatches anteriores. result_handler lê deste mesmo lugar.
+    results_dir = WORK_ROOT / ".results"
     try:
-        (workdir / "result.json").write_text(
+        results_dir.mkdir(parents=True, exist_ok=True)
+        (results_dir / f"{task_id}.json").write_text(
             json.dumps(result, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
     except OSError:
-        logger.exception("could not persist result.json for task %s", task_id)
+        logger.exception("could not persist result for task %s", task_id)
     return result
 
 
@@ -519,7 +548,7 @@ async def result_handler(request: web.Request) -> web.Response:
     state = _TASKS.get(task_id)
     if state is None:
         # Try to load from disk (PVC persists results across restarts).
-        f = WORK_ROOT / task_id / "result.json"
+        f = WORK_ROOT / ".results" / f"{task_id}.json"
         if f.is_file():
             try:
                 state = json.loads(f.read_text(encoding="utf-8"))
