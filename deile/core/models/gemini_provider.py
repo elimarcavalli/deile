@@ -95,21 +95,32 @@ def _stringify_for_model(value: Any) -> Any:
 class GeminiProvider(ModelProvider):
     """Provedor para modelos Google Gemini"""
     
-    def __init__(
-        self,
-        gemini_config=None,
-        api_key: Optional[str] = None,
-        **config
-    ):
-        # Multi-provider bootstrap path: bootstrap calls cls(ModelHandle, ProviderConfig)
+    @staticmethod
+    def _resolve_init_args(gemini_config, api_key):
+        """Normalize GeminiProvider's overloaded positional init arguments.
+
+        GeminiProvider is constructed two ways: the multi-provider bootstrap
+        calls ``cls(ModelHandle, ProviderConfig)`` while legacy callers pass
+        ``cls(GeminiConfig, api_key)`` (or nothing). This isolates that
+        branching so ``__init__`` stays linear. Returns
+        ``(handle, gemini_config, api_key)`` where ``handle`` is the
+        ``ModelHandle`` when the bootstrap path was taken (else ``None``) and
+        ``gemini_config`` is always a resolved config object.
+        """
+        from types import SimpleNamespace
+
         from deile.core.models.catalog import ModelHandle
         from deile.core.models.provider_config import ProviderConfig as _PC
+
+        handle = None
         if isinstance(gemini_config, ModelHandle):
             handle = gemini_config
             provider_cfg = api_key  # second positional arg is ProviderConfig in bootstrap
-            api_key = os.getenv(provider_cfg.api_key_env) if isinstance(provider_cfg, _PC) else None
-            self._handle = handle
-            from types import SimpleNamespace
+            api_key = (
+                os.getenv(provider_cfg.api_key_env)
+                if isinstance(provider_cfg, _PC)
+                else None
+            )
             gemini_config = SimpleNamespace(
                 model_name=handle.model_id,
                 generation_config={},
@@ -121,16 +132,26 @@ class GeminiProvider(ModelProvider):
             try:
                 from ...config.manager import get_config_manager
                 config_manager = get_config_manager()
-                gemini_config = config_manager.get_config().gemini
-                # Recarrega configuração para garantir valores mais recentes
+                # Recarrega para garantir os valores mais recentes
                 config_manager.reload_config()
                 gemini_config = config_manager.get_config().gemini
             except Exception as e:
                 # Fallback APENAS em caso de erro crítico
                 from ...config.manager import GeminiConfig
                 gemini_config = GeminiConfig()
-                import logging
-                logging.warning(f"Failed to load ConfigManager, using defaults: {e}")
+                logger.warning("Failed to load ConfigManager, using defaults: %s", e)
+
+        return handle, gemini_config, api_key
+
+    def __init__(
+        self,
+        gemini_config=None,
+        api_key: Optional[str] = None,
+        **config
+    ):
+        handle, gemini_config, api_key = self._resolve_init_args(gemini_config, api_key)
+        if handle is not None:
+            self._handle = handle
 
         super().__init__(gemini_config.model_name, **config)
         
