@@ -225,19 +225,23 @@ def test_resolve_target_autodetect_container(monkeypatch):
     assert deploy.resolve_target(None) == "container"
 
 
-def test_resolve_target_autodetect_local(monkeypatch):
-    # Sem namespace, mas serviço local rodando → local.
-    monkeypatch.setattr(deploy, "read_deploy_target", lambda: None)
-    monkeypatch.setattr(deploy, "namespace_exists", lambda: False)
-
+def _fake_local_service(running: bool, detail: str):
+    """Devolve um stub de LocalService cujo status() é fixo."""
     class _FakeSvc:
         def __init__(self, *_a, **_kw):
             pass
 
         def status(self):
-            return True, "rodando"
+            return running, detail
 
-    monkeypatch.setattr(deploy, "LocalService", _FakeSvc)
+    return _FakeSvc
+
+
+def test_resolve_target_autodetect_local(monkeypatch):
+    # Sem namespace, mas serviço local rodando → local.
+    monkeypatch.setattr(deploy, "read_deploy_target", lambda: None)
+    monkeypatch.setattr(deploy, "namespace_exists", lambda: False)
+    monkeypatch.setattr(deploy, "LocalService", _fake_local_service(True, "rodando"))
     assert deploy.resolve_target(None) == "local"
 
 
@@ -245,15 +249,7 @@ def test_resolve_target_undetermined(monkeypatch):
     # Nada configurado e nada rodando → None.
     monkeypatch.setattr(deploy, "read_deploy_target", lambda: None)
     monkeypatch.setattr(deploy, "namespace_exists", lambda: False)
-
-    class _FakeSvc:
-        def __init__(self, *_a, **_kw):
-            pass
-
-        def status(self):
-            return False, "parado"
-
-    monkeypatch.setattr(deploy, "LocalService", _FakeSvc)
+    monkeypatch.setattr(deploy, "LocalService", _fake_local_service(False, "parado"))
     assert deploy.resolve_target(None) is None
 
 

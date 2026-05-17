@@ -351,13 +351,17 @@ def cmd_test(args: dict) -> int:
     _run([kubectl, "-n", NS, "delete", "job", "deile-oneshot", "--ignore-not-found"],
          stdout=subprocess.DEVNULL)
     _run([kubectl, "apply", "-f", str(MANIFESTS / "30-deile-job.yaml")])
-    pod = (_capture([kubectl, "-n", NS, "get", "pods", "-l", "job-name=deile-oneshot",
-                     "-o", "jsonpath={.items[0].metadata.name}"]) or "").strip()
+
+    def _oneshot_pod() -> str:
+        return (_capture([
+            kubectl, "-n", NS, "get", "pods", "-l", "job-name=deile-oneshot",
+            "-o", "jsonpath={.items[0].metadata.name}",
+        ]) or "").strip()
+
+    pod = _oneshot_pod()
     if not pod:
         time.sleep(3)
-        pod = (_capture([kubectl, "-n", NS, "get", "pods",
-                         "-l", "job-name=deile-oneshot",
-                         "-o", "jsonpath={.items[0].metadata.name}"]) or "").strip()
+        pod = _oneshot_pod()
     if not pod:
         ui.err("o pod do Job não apareceu.")
         return 1

@@ -117,16 +117,25 @@ _AGENT_LOCK = asyncio.Lock()
 
 # ---- Bot integration (for status messages) -----------------------------------
 
+def _bot_facade():
+    """Return the bot control-plane facade, or None if it is unavailable.
+
+    All status-UI calls degrade silently — the work itself matters more
+    than the progress message, so a missing facade is never fatal.
+    """
+    from deile.integrations.bot import get_bot_client
+    facade = get_bot_client()
+    return facade if facade.is_available else None
+
+
 async def _post_status_message(channel_id: str, text: str) -> Optional[str]:
     """Post a fresh message to the user's channel via control-plane.
 
-    Returns message_id, or None if the call fails (we degrade silently —
-    the work itself is more important than the status UI).
+    Returns message_id, or None if the call fails (we degrade silently).
     """
     try:
-        from deile.integrations.bot import get_bot_client
-        facade = get_bot_client()
-        if not facade.is_available:
+        facade = _bot_facade()
+        if facade is None:
             logger.warning("bot integration unavailable; skipping status post")
             return None
         result = await facade.channel_post(channel_id=str(channel_id), text=text)
@@ -138,9 +147,8 @@ async def _post_status_message(channel_id: str, text: str) -> Optional[str]:
 
 async def _edit_status_message(channel_id: str, message_id: str, text: str) -> bool:
     try:
-        from deile.integrations.bot import get_bot_client
-        facade = get_bot_client()
-        if not facade.is_available:
+        facade = _bot_facade()
+        if facade is None:
             return False
         await facade.message_edit(
             channel_id=str(channel_id),
@@ -155,9 +163,8 @@ async def _edit_status_message(channel_id: str, message_id: str, text: str) -> b
 
 async def _react(channel_id: str, message_id: str, emoji: str) -> bool:
     try:
-        from deile.integrations.bot import get_bot_client
-        facade = get_bot_client()
-        if not facade.is_available:
+        facade = _bot_facade()
+        if facade is None:
             return False
         await facade.reaction_add(
             channel_id=str(channel_id),
