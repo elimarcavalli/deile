@@ -171,3 +171,49 @@ def make_envelope_builder(
         return build_error_envelope(exc, provider_id, model_id, _classify)
 
     return _build
+
+
+def classify_gemini_error(exc: Exception) -> str:
+    """Classify a Google GenAI SDK exception into an ``error_type`` string.
+
+    The ``google-genai`` SDK surfaces API failures as ``APIError`` (and its
+    ``ClientError`` / ``ServerError`` subclasses). Unlike Anthropic/OpenAI,
+    those exceptions expose the HTTP status as ``code`` (int), a coarse string
+    under ``status`` (e.g. ``RESOURCE_EXHAUSTED``) and the human message under
+    ``message``. Those fields are read by duck typing — keeping this module
+    SDK-free — and the status/sniff logic delegated to
+    :func:`classify_http_error`, so Gemini lands on the same ``error_type``
+    vocabulary as the other providers.
+    """
+    status = getattr(exc, "code", None)
+    if not isinstance(status, int):
+        status = None
+    err_code = str(getattr(exc, "status", "") or "").lower()
+    err_msg = str(getattr(exc, "message", "") or str(exc) or "").lower()
+    return classify_http_error(status, err_code, err_msg)
+
+
+def make_gemini_envelope(
+    exc: Exception, provider_id: str, model_id: str
+) -> ProviderErrorEnvelope:
+    """Build a typed :class:`ProviderErrorEnvelope` from a GenAI SDK exception.
+
+    Built directly (not via :func:`build_error_envelope`) because GenAI
+    exceptions store their HTTP status under ``code`` and the response body
+    under ``details`` — a different layout from the Anthropic/OpenAI SDKs that
+    helper targets.
+    """
+    status = getattr(exc, "code", None)
+    if not isinstance(status, int):
+        status = None
+    details = getattr(exc, "details", None)
+    raw: Dict[str, Any] = details if isinstance(details, dict) else {}
+    message = str(getattr(exc, "message", "") or "") or str(exc)
+    return ProviderErrorEnvelope(
+        provider_id=provider_id,
+        model_id=model_id,
+        error_type=classify_gemini_error(exc),
+        message=message,
+        http_status=status,
+        raw_json=raw,
+    )

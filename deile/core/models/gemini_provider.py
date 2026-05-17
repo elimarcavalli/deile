@@ -19,61 +19,12 @@ from ..loop_guard import (format_loop_break_message, make_guard,
                           make_loop_break_result, tool_result_made_progress)
 from .base import (DEFAULT_MAX_TOOL_ITERATIONS, ModelMessage, ModelProvider,
                    ModelResponse, ModelSize, ModelType, ModelUsage)
-from .error_mapping import classify_http_error
-from .errors import ProviderErrorEnvelope, ProviderInvocationError
+from .error_mapping import make_gemini_envelope
+from .errors import ProviderInvocationError
 from .tool_execution import (OUTCOME_EXCEPTION, OUTCOME_NOT_FOUND,
                              resolve_and_execute_tool)
 
 logger = logging.getLogger(__name__)
-
-
-def _classify_gemini_error(exc: Exception) -> str:
-    """Classify a Google GenAI SDK exception into a provider-agnostic
-    ``error_type`` string.
-
-    The new ``google-genai`` SDK surfaces API failures as
-    :class:`google.genai.errors.APIError` (and its ``ClientError`` /
-    ``ServerError`` subclasses). Unlike Anthropic/OpenAI, those exceptions
-    expose the HTTP status as ``code`` (int), a coarse string under ``status``
-    (e.g. ``RESOURCE_EXHAUSTED``) and the human message under ``message``.
-    This classifier extracts those fields and delegates the status/sniff logic
-    to the shared :func:`classify_http_error`, so Gemini lands on the same
-    ``error_type`` vocabulary as the other providers.
-    """
-    status = getattr(exc, "code", None)
-    if not isinstance(status, int):
-        status = None
-    err_code = str(getattr(exc, "status", "") or "").lower()
-    err_msg = str(getattr(exc, "message", "") or str(exc) or "").lower()
-    return classify_http_error(status, err_code, err_msg)
-
-
-def _make_envelope(
-    exc: Exception,
-    provider_id: str,
-    model_id: str,
-) -> ProviderErrorEnvelope:
-    """Build a typed :class:`ProviderErrorEnvelope` from a GenAI SDK exception.
-
-    Built directly (not via the shared ``build_error_envelope`` helper) because
-    GenAI exceptions store their HTTP status under ``code`` and the response
-    body under ``details`` — a different layout from the Anthropic/OpenAI SDKs
-    that helper targets.
-    """
-    status = getattr(exc, "code", None)
-    if not isinstance(status, int):
-        status = None
-    details = getattr(exc, "details", None)
-    raw: Dict[str, Any] = details if isinstance(details, dict) else {}
-    message = str(getattr(exc, "message", "") or "") or str(exc)
-    return ProviderErrorEnvelope(
-        provider_id=provider_id,
-        model_id=model_id,
-        error_type=_classify_gemini_error(exc),
-        message=message,
-        http_status=status,
-        raw_json=raw,
-    )
 
 
 def _stringify_for_model(value: Any) -> Any:
@@ -375,7 +326,7 @@ class GeminiProvider(ModelProvider):
             # Anthropic/OpenAI providers so ToolLoopExecutor and the agent loop
             # can read ``envelope.error_type`` (e.g. context_length_exceeded).
             execution_time = time.time() - start_time
-            envelope = _make_envelope(e, self.provider_id, self.model_name)
+            envelope = make_gemini_envelope(e, self.provider_id, self.model_name)
 
             if is_debug_enabled():
                 await self.debug_logger.log_error(e, {
@@ -398,7 +349,7 @@ class GeminiProvider(ModelProvider):
             # the same effect the pre-refactor ``ModelError`` had here, since
             # neither is flagged permanent by ``_is_permanent_provider_error``.
             execution_time = time.time() - start_time
-            envelope = _make_envelope(e, self.provider_id, self.model_name)
+            envelope = make_gemini_envelope(e, self.provider_id, self.model_name)
 
             if is_debug_enabled():
                 await self.debug_logger.log_error(e, {
@@ -452,7 +403,7 @@ class GeminiProvider(ModelProvider):
                 # in particular) instead of an ad-hoc dict with no attributes.
                 yield UnifiedStreamEvent(
                     type=StreamEventType.ERROR,
-                    error_envelope=_make_envelope(
+                    error_envelope=make_gemini_envelope(
                         exc, self.provider_id, self.model_name
                     ),
                 )
