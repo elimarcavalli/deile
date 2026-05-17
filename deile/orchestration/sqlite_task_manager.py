@@ -208,8 +208,27 @@ class SQLiteTaskManager:
         # Lock para operações assíncronas
         self._db_lock = asyncio.Lock()
 
-        # Inicializa schema
-        asyncio.create_task(self._initialize_database())
+        # Inicialização lazy de schema: criada on-demand de forma idempotente.
+        # O Lock é criado preguiçosamente (já em contexto async) para suportar
+        # Python 3.9, onde asyncio.Lock() exige um event loop ativo.
+        self._schema_ready = False
+        self._init_lock: Optional[asyncio.Lock] = None
+
+    async def _ensure_schema(self) -> None:
+        """Garante que o schema do DB existe antes de qualquer operação.
+
+        Idempotente e async-safe: a inicialização real roda no máximo uma vez,
+        protegida por lock com double-checked locking.
+        """
+        if self._schema_ready:
+            return
+        if self._init_lock is None:
+            self._init_lock = asyncio.Lock()
+        async with self._init_lock:
+            if self._schema_ready:
+                return
+            await self._initialize_database()
+            self._schema_ready = True
 
     async def _initialize_database(self):
         """Inicializa schema do banco de dados"""
@@ -269,6 +288,7 @@ class SQLiteTaskManager:
     async def create_task_list(self, title: str, description: str = "",
                               sequential: bool = True, auto_start: bool = True) -> TaskList:
         """Cria nova lista de tasks com persistência SQLite"""
+        await self._ensure_schema()
         list_id = str(uuid.uuid4())[:8]
 
         task_list = TaskList(
@@ -302,6 +322,7 @@ class SQLiteTaskManager:
 
     async def activate_task_list(self, list_id: str) -> None:
         """Marca lista como ativa no banco de dados."""
+        await self._ensure_schema()
         async with self._db_lock:
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute(
@@ -319,6 +340,7 @@ class SQLiteTaskManager:
                               metadata: Optional[Dict[str, Any]] = None,
                               tags: Optional[List[str]] = None) -> Task:
         """Adiciona task a uma lista com validação de integridade."""
+        await self._ensure_schema()
 
         # Verifica se lista existe
         task_list = await self.load_task_list(list_id)
@@ -385,6 +407,7 @@ class SQLiteTaskManager:
 
     async def load_task_list(self, list_id: str) -> Optional[TaskList]:
         """Carrega lista de tasks do SQLite com cache"""
+        await self._ensure_schema()
 
         # Verifica cache primeiro
         if list_id in self._cache and self._is_cache_valid(list_id):
@@ -439,6 +462,7 @@ class SQLiteTaskManager:
 
     async def get_next_tasks(self, list_id: str) -> List[Task]:
         """Obtém próximas tasks prontas para execução"""
+        await self._ensure_schema()
         tasks = await self._get_tasks_for_list(list_id)
         task_list = await self.load_task_list(list_id)
 
@@ -468,6 +492,7 @@ class SQLiteTaskManager:
                                 success: bool = True, result_data: Optional[Dict] = None,
                                 error_message: Optional[str] = None) -> bool:
         """Marca task como completada com transação atômica"""
+        await self._ensure_schema()
 
         async with self._db_lock:
             async with aiosqlite.connect(self.db_path) as db:
@@ -512,6 +537,7 @@ class SQLiteTaskManager:
 
     async def get_task_list_status(self, list_id: str) -> Optional[Dict[str, Any]]:
         """Obtém status de uma lista de tasks"""
+        await self._ensure_schema()
         task_list = await self.load_task_list(list_id)
         if not task_list:
             return None
@@ -571,6 +597,7 @@ class SQLiteTaskManager:
 
     async def cleanup_old_tasks(self, days: int = 30):
         """Remove tasks antigas para manter banco limpo"""
+        await self._ensure_schema()
         cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
 
         async with self._db_lock:
