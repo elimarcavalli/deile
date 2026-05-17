@@ -133,6 +133,18 @@ class AnthropicProvider(ModelProvider):
                 result.append({"role": m.role, "content": m.content})
         return result
 
+    @staticmethod
+    def _system_blocks(system: str) -> List[Dict[str, Any]]:
+        """Wrap the system prompt in Anthropic's cached text-block array.
+
+        The ephemeral ``cache_control`` marker lets Anthropic reuse the system
+        prompt across requests. Centralized here so ``generate``,
+        ``chat_with_tools`` and ``generate_stream`` cannot drift apart.
+        """
+        return [
+            {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+        ]
+
     # ------------------------------------------------------------------
     # generate()
     # ------------------------------------------------------------------
@@ -154,9 +166,7 @@ class AnthropicProvider(ModelProvider):
             "messages": anthropic_msgs,
         }
         if system:
-            create_kwargs["system"] = [
-                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
-            ]
+            create_kwargs["system"] = self._system_blocks(system)
 
         try:
             response = await self._client.messages.create(**create_kwargs, **kwargs)
@@ -213,13 +223,7 @@ class AnthropicProvider(ModelProvider):
                 "messages": anthropic_msgs,
             }
             if system:
-                create_kwargs["system"] = [
-                    {
-                        "type": "text",
-                        "text": system,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ]
+                create_kwargs["system"] = self._system_blocks(system)
             if anthropic_tools:
                 create_kwargs["tools"] = anthropic_tools
 
@@ -339,9 +343,7 @@ class AnthropicProvider(ModelProvider):
             "messages": anthropic_msgs,
         }
         if system:
-            create_kwargs["system"] = [
-                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
-            ]
+            create_kwargs["system"] = self._system_blocks(system)
         if tools:
             create_kwargs["tools"] = [t.to_anthropic_tool() for t in tools]
 
