@@ -16,6 +16,7 @@ logs no modo local. Apenas stdlib.
 
 from __future__ import annotations
 
+import getpass
 import os
 import subprocess
 import sys
@@ -144,6 +145,13 @@ class LocalService:
             ui.err("`systemctl --user enable --now` falhou")
             return False
         user = os.environ.get("USER", "")
+        if not user:
+            # $USER pode estar vazio (cron, container) — `loginctl
+            # enable-linger ''` falharia. getpass resolve via getpwuid.
+            try:
+                user = getpass.getuser()
+            except (KeyError, OSError):
+                user = ""
         linger = subprocess.run(
             ["loginctl", "enable-linger", user], capture_output=True
         )

@@ -192,8 +192,15 @@ def install_kubernetes_linux(yes: bool, check_mode: bool) -> bool:
         "No Linux o caminho recomendado é o k3s — um Kubernetes leve, do "
         "mesmo projeto do Rancher. O script oficial precisa de sudo."
     )
+    ui.warn(
+        "ATENÇÃO: o instalador será BAIXADO de get.k3s.io e executado "
+        "como root (sudo) SEM verificação de assinatura/checksum. "
+        "Você está confiando no canal HTTPS e no servidor da Rancher. "
+        "Se preferir, baixe o script, inspecione-o e rode-o à mão."
+    )
     okk = _confirm_and_run(
-        "instalar o k3s (get.k3s.io)",
+        "instalar o k3s (get.k3s.io — baixado e executado com sudo, sem "
+        "verificação de checksum)",
         f"curl -sfL {K3S_INSTALL_URL} | sh -",
         yes=yes, check_mode=check_mode, shell=True,
     )
