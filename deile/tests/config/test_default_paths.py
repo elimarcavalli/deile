@@ -17,7 +17,6 @@ import pytest
 from deile.config.manager import ConfigManager
 from deile.personas.instruction_loader import InstructionLoader
 
-
 # parents[2] do test file aponta diretamente para o pacote ``deile/``.
 _DEILE_PKG = Path(__file__).resolve().parents[2]
 

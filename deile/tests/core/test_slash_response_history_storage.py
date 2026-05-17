@@ -15,7 +15,7 @@ import pytest
 from rich.panel import Panel
 
 from deile.commands.base import CommandResult
-from deile.core.agent import AgentResponse, AgentSession, AgentStatus, DeileAgent
+from deile.core.agent import AgentSession, DeileAgent
 
 
 def _make_agent() -> DeileAgent:
