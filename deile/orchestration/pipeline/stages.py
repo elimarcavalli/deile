@@ -26,7 +26,8 @@ from deile.orchestration.pipeline.claude_dispatcher import (
     render_implement_prompt, render_mention_prompt, render_review_prompt)
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
 from deile.orchestration.pipeline.follow_up_detector import detect_follow_ups
-from deile.orchestration.pipeline.github_client import CommentRef, GhCommandError
+from deile.orchestration.pipeline.github_client import (CommentRef,
+                                                        GhCommandError)
 from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
                                                  REVIEW_PENDING, WORKFLOW_NEW,
