@@ -156,20 +156,3 @@ def next_after(expression: str, after: datetime, *, max_iterations: int = 525600
     raise CronExpressionError(
         f"no match within {max_iterations} minutes for {expression!r}"
     )
-
-
-def previous_or_equal(expression: str, before: datetime, *, max_iterations: int = 525600) -> datetime:
-    """Return the latest datetime *<=* ``before`` that matches the cron.
-
-    Useful for "did this entry miss its slot?" computations.
-    """
-    if before.tzinfo is None:
-        before = before.replace(tzinfo=timezone.utc)
-    candidate = before.replace(second=0, microsecond=0)
-    for _ in range(max_iterations):
-        if matches(expression, candidate):
-            return candidate
-        candidate -= timedelta(minutes=1)
-    raise CronExpressionError(
-        f"no match within last {max_iterations} minutes for {expression!r}"
-    )

@@ -8,27 +8,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from deile.orchestration.pipeline.github_client import (
-    GhCommandError, GitHubClient, IssueRef, PrRef, compute_batch_id,
-    compute_batch_id_for_number)
+    GhCommandError, GitHubClient, IssueRef, PrRef, compute_batch_id_for_number)
 from deile.orchestration.pipeline.labels import (REVIEW_PENDING, WORKFLOW_NEW,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING)
-
-
-class TestComputeBatchId:
-    def test_deterministic(self):
-        assert compute_batch_id("hello") == compute_batch_id("hello")
-
-    def test_changes_with_title(self):
-        assert compute_batch_id("a") != compute_batch_id("b")
-
-    def test_strips_whitespace(self):
-        assert compute_batch_id("  hello  ") == compute_batch_id("hello")
-
-    def test_returns_8_hex_chars(self):
-        bid = compute_batch_id("anything")
-        assert len(bid) == 8
-        int(bid, 16)
 
 
 class TestGitHubClientCtor:
