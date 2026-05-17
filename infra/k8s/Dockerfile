@@ -89,10 +89,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     LC_ALL=C.UTF-8 \
     HOME=/home/deile
 
-# Install tini (zombie reaper) and git (needed for repo cloning in deile-shell).
-# gh CLI is intentionally absent to keep the image lean — use git directly.
+# Install tini (zombie reaper), git (repo cloning) and iputils-ping
+# (basic network reachability checks — sometimes requested by the worker
+# for diagnostics). gh CLI is intentionally absent to keep the image
+# lean — use git directly.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tini git \
+    && apt-get install -y --no-install-recommends tini git iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user. UID 10001 is well above the system uid range
@@ -113,6 +115,10 @@ COPY --from=builder --chown=deile:deile /build/deilebot /app/deilebot
 # Wrapper script — strips secrets before deile runs.
 COPY --chown=deile:deile infra/k8s/wrapper.py /app/wrapper.py
 RUN chmod 0555 /app/wrapper.py
+
+# Worker HTTP server — entry point for the deile-worker pod.
+COPY --chown=deile:deile infra/k8s/worker_server.py /app/worker_server.py
+RUN chmod 0555 /app/worker_server.py
 
 WORKDIR /app
 USER deile:deile

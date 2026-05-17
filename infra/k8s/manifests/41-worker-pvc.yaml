@@ -1,0 +1,17 @@
+# PVC for the deile-worker workspace. Each task lives at
+# /home/deile/work/<task_id>/ inside the worker. Persistence across pod
+# restarts means the operator can `kubectl exec deile-worker -- ls work/`
+# afterward and inspect what got built. 5Gi is generous for code work.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: deile-worker-work
+  namespace: deile
+  labels:
+    app: deile-worker
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+  # storageClassName left unset → cluster default (k3s "local-path")

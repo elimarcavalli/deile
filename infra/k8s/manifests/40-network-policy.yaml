@@ -135,3 +135,45 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+---
+# ---- 4. deile-worker ingress (only from bot) on :8766 ---------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker-ingress-from-bot
+  namespace: deile
+spec:
+  podSelector:
+    matchLabels:
+      app: deile-worker
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: deilebot
+      ports:
+        - protocol: TCP
+          port: 8766
+---
+# ---- 5. bot egress to deile-worker:8766 -----------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bot-egress-to-worker
+  namespace: deile
+spec:
+  podSelector:
+    matchLabels:
+      app: deilebot
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: deile-worker
+      ports:
+        - protocol: TCP
+          port: 8766

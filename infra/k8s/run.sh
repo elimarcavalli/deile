@@ -82,8 +82,8 @@ cmd_build() {
   # With imagePullPolicy: Never, K8s caches images by tag. A rebuild
   # leaves the tag identical but the digest changed — running pods
   # keep serving the OLD image until restarted. Force a rollout
-  # whenever the bot/shell are already deployed.
-  for dep in deilebot deile-shell; do
+  # whenever the bot/shell/worker are already deployed.
+  for dep in deilebot deile-shell deile-worker; do
     if "$KUBECTL" -n "$NS" get deployment "$dep" >/dev/null 2>&1; then
       log "rolling deployment/$dep so it picks up the new image"
       "$KUBECTL" -n "$NS" rollout restart "deployment/$dep" >/dev/null
@@ -136,34 +136,58 @@ cmd_up() {
   printf "DEILE_BOT_DISCORD_TOKEN=%s\nDEILE_BOT_CONTROL_PLANE_AUTH_TOKEN=%s\n%s" \
       "$discord_token" "$bearer_token" "$api_key_pairs" | \
       "$KUBECTL" -n "$NS" create secret generic bot-secrets \
-        --from-env-file=- \
+        --from-env-file=/dev/stdin \
         --dry-run=client -o yaml | "$KUBECTL" apply -f - >/dev/null
 
   # Deile side: same LLM key + Bearer to talk to bot.
   printf "DEILE_BOT_AUTH_TOKEN=%s\n%s" "$bearer_token" "$api_key_pairs" | \
       "$KUBECTL" -n "$NS" create secret generic deile-secrets \
-        --from-env-file=- \
+        --from-env-file=/dev/stdin \
         --dry-run=client -o yaml | "$KUBECTL" apply -f - >/dev/null
 
-  log "applying bot ConfigMap + Deployment + Service + interactive shell"
+  # Worker bearer token: separate from bot bearer. Mint fresh if absent.
+  local worker_token
+  worker_token="$(read_env_var DEILE_WORKER_BEARER_TOKEN "$ENV_FILE" || true)"
+  if [ -z "$worker_token" ]; then
+    worker_token="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+    log "minted fresh worker bearer token (32 bytes)"
+  fi
+  printf "AUTH_TOKEN=%s\n" "$worker_token" | \
+      "$KUBECTL" -n "$NS" create secret generic worker-bearer \
+        --from-env-file=/dev/stdin \
+        --dry-run=client -o yaml | "$KUBECTL" apply -f - >/dev/null
+
+  log "applying ConfigMap + PVCs + Deployments (bot, shell, worker) + Services"
   "$KUBECTL" apply -f "$HERE/manifests/15-bot-config.yaml"
+  "$KUBECTL" apply -f "$HERE/manifests/19-bot-data-pvc.yaml"
   "$KUBECTL" apply -f "$HERE/manifests/20-bot-deployment.yaml"
   "$KUBECTL" apply -f "$HERE/manifests/35-deile-interactive.yaml"
+  "$KUBECTL" apply -f "$HERE/manifests/41-worker-pvc.yaml"
+  "$KUBECTL" apply -f "$HERE/manifests/45-deile-worker-deployment.yaml"
 
   # Env-var values from Secrets are baked into the pod's env block
   # at container creation; a Secret update alone does NOT restart
-  # the pod. Force a rollout so the bot picks up whatever bearer
+  # the pod. Force a rollout so the bot/worker pick up whatever bearer
   # token we just minted.
-  if "$KUBECTL" -n "$NS" get deployment deilebot >/dev/null 2>&1; then
-    log "rolling deilebot so the new Secret values take effect"
-    "$KUBECTL" -n "$NS" rollout restart deployment/deilebot >/dev/null
-  fi
+  for dep in deilebot deile-worker; do
+    if "$KUBECTL" -n "$NS" get deployment "$dep" >/dev/null 2>&1; then
+      log "rolling $dep so the new Secret values take effect"
+      "$KUBECTL" -n "$NS" rollout restart "deployment/$dep" >/dev/null
+    fi
+  done
 
-  log "waiting for bot to become Ready (max 120s)"
-  if ! "$KUBECTL" -n "$NS" rollout status deployment/deilebot --timeout=120s; then
+  log "waiting for bot to become Ready (max 180s)"
+  if ! "$KUBECTL" -n "$NS" rollout status deployment/deilebot --timeout=180s; then
     "$KUBECTL" -n "$NS" describe deploy/deilebot >&2
     "$KUBECTL" -n "$NS" logs deploy/deilebot --tail=80 >&2 || true
     fail "bot did not become Ready"
+  fi
+
+  log "waiting for worker to become Ready (max 180s)"
+  if ! "$KUBECTL" -n "$NS" rollout status deployment/deile-worker --timeout=180s; then
+    "$KUBECTL" -n "$NS" describe deploy/deile-worker >&2
+    "$KUBECTL" -n "$NS" logs deploy/deile-worker --tail=80 >&2 || true
+    fail "worker did not become Ready"
   fi
 }
 
@@ -196,6 +220,13 @@ cmd_test() {
 cmd_logs() {
   log "bot logs (tail 80):"
   "$KUBECTL" -n "$NS" logs deploy/deilebot --tail=80 || true
+  echo
+  log "worker logs (tail 80):"
+  if "$KUBECTL" -n "$NS" get deployment deile-worker >/dev/null 2>&1; then
+    "$KUBECTL" -n "$NS" logs deploy/deile-worker --tail=80 || true
+  else
+    log "no deile-worker deployment yet"
+  fi
   echo
   log "deile job logs (tail 80):"
   pod="$("$KUBECTL" -n "$NS" get pods -l job-name=deile-oneshot \
@@ -253,7 +284,7 @@ cmd_clone() {
   printf "DEILE_BOT_AUTH_TOKEN=%s\nGITHUB_TOKEN=%s\n%s" \
       "$bearer_token" "$github_token" "$api_key_pairs" | \
       "$KUBECTL" -n "$NS" create secret generic deile-secrets \
-        --from-env-file=- \
+        --from-env-file=/dev/stdin \
         --dry-run=client -o yaml | "$KUBECTL" apply -f - >/dev/null
 
   # kubelet syncs projected secret volumes asynchronously (~30-60 s by default).

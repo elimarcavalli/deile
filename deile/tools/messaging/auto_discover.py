@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 _TOOL_CLASSES = (
     "DiscordSendMessageTool",
     "DiscordSendDMTool",
+    "DiscordEditMessageTool",
     "DiscordReactTool",
     "DiscordStartThreadTool",
     "DiscordPinMessageTool",
@@ -58,14 +59,15 @@ def register_messaging_tools(registry: "ToolRegistry") -> int:
 
     # Lazy imports — keep them inside the conditional so absence of
     # deilebot never breaks the deile import chain.
-    from . import (DiscordGetUserProfileTool, DiscordMentionRoleTool,
-                   DiscordPinMessageTool, DiscordReactTool, DiscordSendDMTool,
-                   DiscordSendMessageTool, DiscordStartThreadTool,
-                   WhatsAppSendTemplateTool)
+    from . import (DiscordEditMessageTool, DiscordGetUserProfileTool,
+                   DiscordMentionRoleTool, DiscordPinMessageTool,
+                   DiscordReactTool, DiscordSendDMTool, DiscordSendMessageTool,
+                   DiscordStartThreadTool, WhatsAppSendTemplateTool)
 
     candidates = [
         DiscordSendMessageTool(),
         DiscordSendDMTool(),
+        DiscordEditMessageTool(),
         DiscordReactTool(),
         DiscordStartThreadTool(),
         DiscordPinMessageTool(),

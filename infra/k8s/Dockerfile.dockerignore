@@ -12,6 +12,10 @@
 **/*credentials*
 **/*secret*
 **/*token*
+# Negate source files whose names look like credentials but are not.
+!**/secrets_scanner.py
+!**/secrets_scanner_test.py
+!**/test_secrets_scanner.py
 
 # Local state / caches / IDE
 **/.git
@@ -69,9 +73,10 @@ deilebot/conftest.py
 **/Thumbs.db
 **/desktop.ini
 
-# The infra/ subtree is excluded except for the wrapper entrypoint,
-# which the Dockerfile COPYs explicitly. Excluding all of infra/ would
-# break "COPY infra/k8s/wrapper.py" so we exclude everything except
-# that one file.
+# The infra/ subtree is excluded except for the wrapper entrypoint and
+# the worker server, which the Dockerfile COPYs explicitly. Excluding
+# all of infra/ would break those COPY lines so we exclude everything
+# except those files.
 infra/
 !infra/k8s/wrapper.py
+!infra/k8s/worker_server.py

@@ -65,6 +65,22 @@ spec:
               value: "8765"
             - name: DEILE_BOT_CONTROL_PLANE_ENABLED
               value: "true"
+            # Self-loopback endpoint so the bot's embedded agent can
+            # register the messaging tools (their is_configured check
+            # only requires endpoint+token to be set; the bot does not
+            # actually HTTP to itself — outbound Discord ops go via the
+            # in-process adapter through the egress pipeline).
+            - name: DEILE_BOT_ENDPOINT
+              value: "http://deilebot.deile.svc.cluster.local:8765"
+            # Worker control-plane (where dispatch_deile_task posts).
+            - name: DEILE_WORKER_ENDPOINT
+              value: "http://deile-worker.deile.svc.cluster.local:8766"
+            # Auto-start CronRunner on bot boot. Without this, /agendar
+            # creates entries no DB mas nunca dispara — runner fica off.
+            - name: DEILE_CRON_AUTOSTART
+              value: "1"
+            - name: DEILE_CRON_DB_PATH
+              value: "/home/deile/data/cron.db"
           ports:
             - name: control-plane
               containerPort: 8765
@@ -73,8 +89,19 @@ spec:
             - name: bot-secrets
               mountPath: /run/secrets/bot
               readOnly: true
+            # Worker bearer token mirror — bot reads it to authenticate
+            # against the worker's :8766 control plane.
+            - name: worker-bearer
+              mountPath: /run/secrets/bot/worker
+              readOnly: true
+            # /home/deile generic emptyDir (logs, cache, etc.).
             - name: home
               mountPath: /home/deile
+            # /home/deile/data is the PVC where conversation sqlite,
+            # audit log, sessions and cron schedules live — must
+            # survive restarts.
+            - name: data
+              mountPath: /home/deile/data
             - name: tmp
               mountPath: /tmp
             # The bot reads ./config/deilebot.yaml relative to cwd
@@ -123,15 +150,23 @@ spec:
             # may read; world denied. Octal form is unreliable through
             # Go's YAML→JSON conversion, hence decimal.
             defaultMode: 288
+        - name: worker-bearer
+          secret:
+            secretName: worker-bearer
+            defaultMode: 288
         - name: bot-config
           configMap:
             name: bot-config
             defaultMode: 292   # 0o444 — read-only, world readable inside pod
-        # Writable tmpfs for sqlite + logs (no PVC; bot is fine with
-        # ephemeral state for this scenario).
+        # /home/deile is ephemeral (logs, cache).
         - name: home
           emptyDir:
             sizeLimit: "128Mi"
+        # /home/deile/data is PERSISTENT — conversation history, audit
+        # log, cron schedules, deile sessions. Survives restart/rollout.
+        - name: data
+          persistentVolumeClaim:
+            claimName: deilebot-data
         - name: tmp
           emptyDir:
             medium: Memory

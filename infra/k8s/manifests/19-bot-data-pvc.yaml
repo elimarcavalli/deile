@@ -1,0 +1,18 @@
+# PVC for the deilebot persistent data: conversation sqlite, audit log,
+# session state, cron schedules. Without this PVC, /home/deile/data is
+# emptyDir tmpfs and the bot loses ALL history at every restart/rollout.
+#
+# 2Gi covers many months of typical Discord traffic (sqlite + audit).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: deilebot-data
+  namespace: deile
+  labels:
+    app: deilebot
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+  # storageClassName left unset → cluster default (k3s "local-path")

@@ -56,37 +56,80 @@ _SENSITIVE_KEYS = (
     "DEILE_BOT_AUTH_TOKEN",
     "DEILE_BOT_DISCORD_TOKEN",
     "DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN",
+    # NOTE: DEILE_WORKER_BEARER_TOKEN is NOT popped — the dispatch tool
+    # reads it on every call (not at bootstrap). Popping it would force
+    # the tool to fall back to file reads on the hot path.
 )
 
 
-def _messaging_tool_whitelist() -> frozenset:
-    """Tool names the messaging whitelist permits, regardless of role.
+def _wire_worker_bearer() -> None:
+    """Bot Pod: read worker-bearer Secret file and expose as env var.
 
-    Derived from the messaging package itself (each tool class declares
-    a ``tool_name``) so a rename in deile.tools.messaging cannot
-    silently downgrade the whitelist to "deny all". If the import fails
-    (deilebot extras not installed in deile) we fall back to a static
-    snapshot — the caller will still see "0 kept" in logs and notice.
+    The dispatch_deile_task tool reads DEILE_WORKER_BEARER_TOKEN from the
+    environment (with fallback to the file). We populate the env var here
+    so the tool has it available even before the lazy file fallback.
     """
+    candidates = [
+        Path("/run/secrets/bot/worker/AUTH_TOKEN"),
+        Path("/run/secrets/worker/AUTH_TOKEN"),
+    ]
+    for p in candidates:
+        if p.is_file():
+            try:
+                tok = p.read_text(encoding="utf-8").strip()
+                if tok:
+                    os.environ["DEILE_WORKER_BEARER_TOKEN"] = tok
+                    print(
+                        f"wrapper: worker bearer wired from {p}",
+                        file=sys.stderr,
+                    )
+                    return
+            except OSError as exc:
+                print(f"wrapper: cannot read {p}: {exc}", file=sys.stderr)
+
+
+def _messaging_tool_whitelist() -> frozenset:
+    """Tool names the bot agent is allowed to call.
+
+    Composed of:
+      - every messaging.discord_* tool that the messaging package
+        declares (so renames can't silently shrink the set);
+      - `dispatch_deile_task` — bot's only escape valve for real dev work;
+      - `vision_describe_image` — bot needs to read images attached to DMs.
+
+    If imports fail (deilebot_client not installed in deile) we fall
+    back to a static snapshot so the bot still has a sane minimum.
+    """
+    names = set()
     try:
         from deile.tools import messaging as m
 
-        names = []
         for attr in ("DiscordSendMessageTool", "DiscordSendDMTool",
-                     "DiscordReactTool", "DiscordStartThreadTool",
-                     "DiscordPinMessageTool", "DiscordMentionRoleTool",
-                     "DiscordGetUserProfileTool"):
+                     "DiscordEditMessageTool", "DiscordReactTool",
+                     "DiscordStartThreadTool", "DiscordPinMessageTool",
+                     "DiscordMentionRoleTool", "DiscordGetUserProfileTool"):
             cls = getattr(m, attr, None)
             if cls is not None and getattr(cls, "tool_name", None):
-                names.append(cls.tool_name)
-        if names:
-            return frozenset(names)
+                names.add(cls.tool_name)
     except Exception:  # noqa: BLE001 — best-effort
         pass
+    # Always include — bot's only path to real work + cron tools so it
+    # can schedule from natural-language DM ("me lembre amanhã 9h de X").
+    names.add("dispatch_deile_task")
+    names.add("vision_describe_image")
+    names.add("cron_create")
+    names.add("cron_list")
+    names.add("cron_delete")
+    if names - {"dispatch_deile_task", "vision_describe_image",
+                "cron_create", "cron_list", "cron_delete"}:
+        return frozenset(names)
+    # Fallback when messaging package failed to import.
     return frozenset({
-        "discord_send_message", "discord_send_dm", "discord_react",
-        "discord_start_thread", "discord_pin_message",
+        "discord_send_message", "discord_send_dm", "discord_edit_message",
+        "discord_react", "discord_start_thread", "discord_pin_message",
         "discord_mention_role", "discord_get_user_profile",
+        "dispatch_deile_task", "vision_describe_image",
+        "cron_create", "cron_list", "cron_delete",
     })
 
 
@@ -352,31 +395,37 @@ except FileNotFoundError:
 
 
 def _install_tool_whitelist(role: str) -> None:
-    """Patch DeileAgent.__init__ to disable every tool outside the messaging whitelist.
+    """Disable every tool outside the messaging whitelist after auto-discover.
 
-    The tool registry is a module-level singleton; once disable_tool() is
-    called, tools stay disabled across the process lifetime. We still patch
-    __init__ as defense-in-depth in case the agent is ever reconstructed.
+    Bug history: the previous implementation patched ``DeileAgent.__init__``,
+    which runs BEFORE ``initialize()`` calls ``tool_registry.auto_discover()``.
+    Because messaging tools are conditionally registered inside auto_discover
+    (they require ``DEILE_BOT_ENDPOINT`` + token), the whitelist patch ran
+    before they existed → "0 kept, 17 disabled" in production logs.
 
-    The patch operates on self.tool_registry (the agent's actual registry,
-    which may be a custom instance in tests) rather than the global singleton,
-    so whitelist enforcement is always tied to the registry the agent uses.
+    Fix: patch ``DeileAgent.initialize`` (async), which is the function that
+    actually populates the registry. After awaiting the original initialize,
+    we walk the now-populated registry and disable everything outside the
+    whitelist.
 
-    ``role`` only changes the log prefix; the policy is identical for
-    bot and deile-Job.
+    The whitelist enforcement is tied to ``self.tool_registry`` (the agent's
+    own registry, which may be a custom instance in tests) rather than the
+    global singleton, so the policy is consistent regardless of constructor.
     """
+    import asyncio as _asyncio
+
     import deile.core.agent as agent_mod
 
     whitelist = _messaging_tool_whitelist()
-    original_init: Callable = agent_mod.DeileAgent.__init__
+    original_init: Callable = agent_mod.DeileAgent.initialize
 
-    def _harden_after_init(self, *args, **kwargs):
-        original_init(self, *args, **kwargs)
+    async def _harden_after_initialize(self, *args, **kwargs):
+        result = await original_init(self, *args, **kwargs)
         registry = self.tool_registry
         try:
             tools = registry.list_all()
         except Exception:  # noqa: BLE001 — registry is best-effort
-            return
+            return result
         kept, dropped = [], []
         for tool in tools:
             name = tool.name
@@ -389,8 +438,34 @@ def _install_tool_whitelist(role: str) -> None:
             f"{len(dropped)} disabled. kept={sorted(kept)}",
             file=sys.stderr,
         )
+        return result
 
-    agent_mod.DeileAgent.__init__ = _harden_after_init
+    # Preserve the coroutine signature so callers' ``await agent.initialize()``
+    # still works without warnings.
+    if _asyncio.iscoroutinefunction(original_init):
+        agent_mod.DeileAgent.initialize = _harden_after_initialize
+    else:  # pragma: no cover — defensive: if upstream changes the signature
+        def _sync_harden(self, *args, **kwargs):
+            result = original_init(self, *args, **kwargs)
+            registry = self.tool_registry
+            try:
+                tools = registry.list_all()
+            except Exception:
+                return result
+            kept, dropped = [], []
+            for tool in tools:
+                name = tool.name
+                if name in whitelist:
+                    kept.append(name)
+                elif registry.disable_tool(name):
+                    dropped.append(name)
+            print(
+                f"wrapper({role}): tool whitelist active — {len(kept)} kept, "
+                f"{len(dropped)} disabled. kept={sorted(kept)}",
+                file=sys.stderr,
+            )
+            return result
+        agent_mod.DeileAgent.initialize = _sync_harden
 
 
 def _patch_deile_bootstrap() -> None:
@@ -470,6 +545,7 @@ def _run_deile(passthrough: List[str]) -> int:
 def _run_bot(passthrough: List[str]) -> int:
     _harden_runtime_dirs()
     loaded = _load_secret_files(Path("/run/secrets/bot"))
+    _wire_worker_bearer()
     required = {"DEILE_BOT_DISCORD_TOKEN", "DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN"}
     missing = required - set(loaded)
     if missing:
@@ -479,6 +555,13 @@ def _run_bot(passthrough: List[str]) -> int:
             file=sys.stderr,
         )
         return 78
+    # The bot's embedded agent calls dispatch_deile_task to delegate work
+    # to the worker; the bot must be able to mint DEILE_BOT_AUTH_TOKEN
+    # for that integration. The control-plane token is the same value; mirror.
+    if "DEILE_BOT_AUTH_TOKEN" not in os.environ:
+        ctok = os.environ.get("DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN", "")
+        if ctok:
+            os.environ["DEILE_BOT_AUTH_TOKEN"] = ctok
 
     # Pop LLM keys after deile's bootstrap_providers captures them.
     # DEILE_BOT_DISCORD_TOKEN and DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN cannot
@@ -508,16 +591,122 @@ def _run_bot(passthrough: List[str]) -> int:
     return bot_main() or 0
 
 
+def _run_worker(passthrough: List[str]) -> int:
+    """deile-worker mode: full toolset DEILE behind an HTTP API on :8766.
+
+    Differences from `_run_deile`:
+      - Loads the worker bearer Secret (not the bot Secret).
+      - Skips the messaging-only whitelist (worker has full toolset by design,
+        because its prompt comes from a sanitised envelope, not raw user input).
+      - Bootstraps providers up-front so the first dispatch is fast.
+      - Delegates to `worker_server.main()`.
+    """
+    _harden_runtime_dirs()
+    loaded = _load_secret_files(Path("/run/secrets/deile"))
+    if not _has_llm_key(loaded):
+        print(
+            "wrapper(worker): no *_API_KEY found under /run/secrets/deile — "
+            "worker cannot bootstrap any LLM provider.",
+            file=sys.stderr,
+        )
+        return 78
+    # Make the worker bearer file readable from the standard mount point too.
+    bearer = Path("/run/secrets/worker/AUTH_TOKEN")
+    if bearer.is_file():
+        try:
+            os.environ["DEILE_WORKER_AUTH_TOKEN"] = bearer.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            print(f"wrapper(worker): cannot read worker bearer: {exc}", file=sys.stderr)
+            return 78
+    else:
+        print(
+            "wrapper(worker): worker bearer not mounted at /run/secrets/worker/AUTH_TOKEN",
+            file=sys.stderr,
+        )
+        return 78
+
+    _setup_git_credentials()
+    _setup_git_clone_guard()
+    _patch_deile_bootstrap()
+
+    # NEGATIVE whitelist: keep full toolset (bash/file/python/git) but
+    # disable the discord messaging tools and dispatch_deile_task in the
+    # worker's embedded agent. Reasoning:
+    #   - The worker is who actually executes; it doesn't need to relay
+    #     messages itself (the worker_server.py uses the BotClientFacade
+    #     directly to post/edit status messages).
+    #   - A malicious brief like "send DM to user X with phishing link"
+    #     could otherwise be obeyed because DEILE_BOT_APPROVAL_AUTO=1.
+    #   - dispatch_deile_task in the worker would create infinite recursion
+    #     and deadlock the global _TASK_LOCK.
+    try:
+        _install_worker_negative_whitelist()
+    except Exception as exc:  # noqa: BLE001 — refuse to start unsafe
+        print(f"wrapper(worker): negative whitelist install failed: {exc}", file=sys.stderr)
+        return 78
+
+    # Delegate to the aiohttp server. It bootstraps the agent lazily
+    # on first dispatch (saves cold start when the worker idles).
+    sys.path.insert(0, str(Path("/app")))
+    import worker_server
+    return worker_server.main()
+
+
+def _install_worker_negative_whitelist() -> None:
+    """Disable messaging.* and dispatch_deile_task in the worker's agent.
+
+    Worker keeps EVERYTHING ELSE (bash, file, git, pip, run_tests, etc.)
+    — only what could be abused by a brief is removed.
+    """
+    import asyncio as _asyncio
+
+    import deile.core.agent as agent_mod
+
+    DROP = {
+        "discord_send_message", "discord_send_dm", "discord_edit_message",
+        "discord_react", "discord_start_thread", "discord_pin_message",
+        "discord_mention_role", "discord_get_user_profile",
+        "whatsapp_send_template", "dispatch_deile_task",
+    }
+    original_init = agent_mod.DeileAgent.initialize
+
+    async def _harden(self, *args, **kwargs):
+        result = await original_init(self, *args, **kwargs)
+        registry = self.tool_registry
+        try:
+            tools = registry.list_all()
+        except Exception:
+            return result
+        kept, dropped = [], []
+        for tool in tools:
+            if tool.name in DROP:
+                if registry.disable_tool(tool.name):
+                    dropped.append(tool.name)
+            else:
+                kept.append(tool.name)
+        print(
+            f"wrapper(worker): negative whitelist active — "
+            f"{len(kept)} kept, {len(dropped)} disabled. dropped={sorted(dropped)}",
+            file=sys.stderr,
+        )
+        return result
+
+    if _asyncio.iscoroutinefunction(original_init):
+        agent_mod.DeileAgent.initialize = _harden
+
+
 def main(argv: List[str]) -> int:
     if len(argv) < 2:
-        print("usage: wrapper.py {deile|bot} <args ...>", file=sys.stderr)
+        print("usage: wrapper.py {deile|bot|worker} <args ...>", file=sys.stderr)
         return 64  # EX_USAGE
     role, rest = argv[1], argv[2:]
     if role == "deile":
         return _run_deile(rest)
     if role == "bot":
         return _run_bot(rest)
-    print(f"wrapper: unknown role {role!r} (expected 'deile' or 'bot')", file=sys.stderr)
+    if role == "worker":
+        return _run_worker(rest)
+    print(f"wrapper: unknown role {role!r} (expected 'deile' | 'bot' | 'worker')", file=sys.stderr)
     return 64
 
 

@@ -129,6 +129,9 @@ class BotClientFacade:
     async def message_pin(self, **kwargs):
         return await self._ensure_client().discord_message_pin(**kwargs)
 
+    async def message_edit(self, **kwargs):
+        return await self._ensure_client().discord_message_edit(**kwargs)
+
     async def role_mention(self, **kwargs):
         return await self._ensure_client().discord_role_mention(**kwargs)
 
