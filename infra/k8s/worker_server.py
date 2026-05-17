@@ -319,9 +319,9 @@ async def _run_task(
 ) -> Dict[str, Any]:
     """Body of a single dispatch — only one runs at a time (lock)."""
     start = time.monotonic()
-    # Workdir POR canal/usuário (não por task): dispatches do mesmo
-    # canal/DM reusam a mesma pasta persistente; contextos diferentes
-    # ficam isolados.
+    # Workdir POR canal (não por task): o payload de dispatch não traz
+    # user_id, então dispatches do mesmo channel_id reusam a mesma pasta
+    # persistente; canais diferentes ficam isolados entre si.
     workdir = WORK_ROOT / _channel_workdir(channel_id)
     workdir.mkdir(parents=True, exist_ok=True)
 
