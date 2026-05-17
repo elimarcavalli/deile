@@ -109,10 +109,10 @@ async def edit_probe(agent) -> tuple[bool, list[str]]:
     target.write_text(original, encoding="utf-8")
 
     prompt = (
-        f"Tem um arquivo em test-your-might/edit-file-empirical/shopping_list.py "
-        f"com uma constante TOTAL_PRICE = 100. Altere SOMENTE essa linha para "
-        f"que TOTAL_PRICE seja 42. NÃO mexa em mais nada do arquivo. "
-        f"Sem testar/rodar — só a alteração."
+        "Tem um arquivo em test-your-might/edit-file-empirical/shopping_list.py "
+        "com uma constante TOTAL_PRICE = 100. Altere SOMENTE essa linha para "
+        "que TOTAL_PRICE seja 42. NÃO mexa em mais nada do arquivo. "
+        "Sem testar/rodar — só a alteração."
     )
     session = agent.create_session(
         session_id="edit-empirical-EDIT",
@@ -160,9 +160,9 @@ async def create_probe(agent) -> tuple[bool, list[str]]:
         target.unlink()
 
     prompt = (
-        f"Crie o arquivo test-your-might/edit-file-empirical/fresh.py "
-        f"contendo apenas a linha: print('CREATE_PROOF_99'). "
-        f"Sem testar/rodar — só criar."
+        "Crie o arquivo test-your-might/edit-file-empirical/fresh.py "
+        "contendo apenas a linha: print('CREATE_PROOF_99'). "
+        "Sem testar/rodar — só criar."
     )
     session = agent.create_session(
         session_id="edit-empirical-CREATE",

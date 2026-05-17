@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from deile.core.models.base import ModelMessage, ModelProvider, ModelSize, ModelType
+from deile.core.models.base import ModelProvider, ModelSize, ModelType
 
 
 class _DummyProvider(ModelProvider):

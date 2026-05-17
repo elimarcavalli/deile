@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -91,7 +92,22 @@ class ModelProvider(ABC):
         self._request_count = 0
         self._total_tokens = 0
         self._is_available = True
-    
+
+    @staticmethod
+    def _require_api_key(provider_config: Any, provider_label: str) -> str:
+        """Return the API key named by ``provider_config.api_key_env``.
+
+        Raises ``ValueError`` (labelled with ``provider_label``) when that env
+        var is unset or empty. Shared by the catalog-driven providers so the
+        missing-key failure mode is identical across providers.
+        """
+        api_key = os.getenv(provider_config.api_key_env)
+        if not api_key:
+            raise ValueError(
+                f"{provider_label}: env var {provider_config.api_key_env} is not set"
+            )
+        return api_key
+
     @property
     @abstractmethod
     def provider_name(self) -> str:
@@ -122,8 +138,13 @@ class ModelProvider(ABC):
     def tier(self) -> ModelTier:
         """Model tier used by the new router.
 
-        Defaults to a backward-compat mapping from model_size; override in new providers.
+        Catalog-aware providers store a :class:`~deile.core.models.catalog.ModelHandle`
+        as ``self._handle`` and the tier comes straight from it; providers without
+        a handle fall back to a backward-compat mapping from ``model_size``.
         """
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            return handle.tier
         size_to_tier = {
             ModelSize.LARGE: ModelTier.TIER_1,
             ModelSize.MEDIUM: ModelTier.TIER_2,
@@ -133,7 +154,14 @@ class ModelProvider(ABC):
 
     @property
     def pricing(self) -> Optional["ModelPricing"]:
-        """Pricing info for this model; None until the provider is catalog-aware."""
+        """Pricing info for this model.
+
+        Taken from ``self._handle`` for catalog-aware providers; ``None`` for
+        providers that have not been wired to the catalog.
+        """
+        handle = getattr(self, "_handle", None)
+        if handle is not None:
+            return handle.pricing
         return None
     
     @property

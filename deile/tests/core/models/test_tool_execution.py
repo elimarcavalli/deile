@@ -7,11 +7,13 @@ all three concrete providers; only the payload formatting stays per-provider.
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
 from deile.core.models.tool_execution import (OUTCOME_EXCEPTION,
                                               OUTCOME_NOT_FOUND, OUTCOME_RAN,
+                                              payload_to_text,
                                               resolve_and_execute_tool)
 from deile.tools.base import ToolResult, ToolStatus
 
@@ -157,3 +159,23 @@ async def test_resolve_registry_without_get_or_tools(install_registry):
 
     assert outcome == OUTCOME_NOT_FOUND
     assert result.message == "avail=[]"
+
+
+class TestPayloadToText:
+    """``payload_to_text`` — the serializer shared by the Anthropic/OpenAI payloads."""
+
+    def test_str_passes_through_unchanged(self):
+        assert payload_to_text("already text") == "already text"
+
+    def test_dict_is_json_encoded(self):
+        assert payload_to_text({"a": 1, "b": [2, 3]}) == '{"a": 1, "b": [2, 3]}'
+
+    def test_non_serializable_leaf_uses_default_str(self):
+        sentinel = object()
+        payload = {"k": sentinel}
+        assert payload_to_text(payload) == json.dumps(payload, default=str)
+
+    def test_circular_reference_falls_back_to_str(self):
+        circular = {}
+        circular["self"] = circular
+        assert payload_to_text(circular) == str(circular)
