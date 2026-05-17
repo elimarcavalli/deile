@@ -15,10 +15,27 @@ only on ``deile.tools`` (the in-house tool layer).
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+def payload_to_text(payload: Any) -> str:
+    """Serialize a tool-result payload to the plain-text form a chat protocol expects.
+
+    A ``str`` payload passes through unchanged; any other object is JSON-encoded
+    (``default=str`` for non-serializable leaves), falling back to ``str()`` when
+    even that fails. Shared verbatim by the Anthropic ``tool_result`` block and the
+    OpenAI ``role=tool`` message so the two providers cannot drift apart.
+    """
+    if isinstance(payload, str):
+        return payload
+    try:
+        return json.dumps(payload, default=str)
+    except (TypeError, ValueError):
+        return str(payload)
 
 # Outcome markers returned alongside the ToolResult. The provider uses these to
 # pick the right payload shape (e.g. a not-found / exception error vs an error

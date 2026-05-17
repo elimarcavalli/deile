@@ -25,6 +25,7 @@ from deile.core.models.stream_events import (ModelUsageSnapshot,
 from deile.core.models.tier import ModelTier
 from deile.core.models.tool_execution import (OUTCOME_EXCEPTION,
                                               OUTCOME_NOT_FOUND,
+                                              payload_to_text,
                                               resolve_and_execute_tool)
 
 logger = logging.getLogger(__name__)
@@ -471,13 +472,7 @@ class AnthropicProvider(ModelProvider):
         payload: Any,
     ) -> ModelMessage:
         """Anthropic encodes tool results as a user-turn tool_result block."""
-        if not isinstance(payload, str):
-            try:
-                payload_text = json.dumps(payload, default=str)
-            except (TypeError, ValueError):
-                payload_text = str(payload)
-        else:
-            payload_text = payload
+        payload_text = payload_to_text(payload)
 
         block = {
             "type": "tool_result",
