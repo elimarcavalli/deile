@@ -139,11 +139,10 @@ def deilebot_cloned() -> bool:
 
 def missing_python_deps() -> List[str]:
     """Lista os módulos-chave que ainda não estão importáveis."""
-    missing = []
-    for mod in ("deile", "deilebot", "discord"):
-        if not _module_available(mod):
-            missing.append(mod)
-    return missing
+    return [
+        mod for mod in ("deile", "deilebot", "discord")
+        if not _module_available(mod)
+    ]
 
 
 def kubernetes_ready() -> bool:
@@ -174,11 +173,11 @@ def ensure_deilebot_clone(yes: bool, check_mode: bool) -> bool:
 def install_python_deps(yes: bool, check_mode: bool) -> bool:
     """Instala o agente core e o bot em modo editável."""
     pip = [sys.executable, "-m", "pip", "install", "-e"]
-    okk = _confirm_and_run(
+    core_ok = _confirm_and_run(
         "instalar o agente DEILE (core)", pip + ["."],
         yes=yes, check_mode=check_mode,
     )
-    if not okk:
+    if not core_ok:
         return False
     return _confirm_and_run(
         "instalar o deilebot + discord.py", pip + ["./deilebot[discord]"],
@@ -198,13 +197,13 @@ def install_kubernetes_linux(yes: bool, check_mode: bool) -> bool:
         "Você está confiando no canal HTTPS e no servidor da Rancher. "
         "Se preferir, baixe o script, inspecione-o e rode-o à mão."
     )
-    okk = _confirm_and_run(
+    k3s_ok = _confirm_and_run(
         "instalar o k3s (get.k3s.io — baixado e executado com sudo, sem "
         "verificação de checksum)",
         f"curl -sfL {K3S_INSTALL_URL} | sh -",
         yes=yes, check_mode=check_mode, shell=True,
     )
-    if not okk:
+    if not k3s_ok:
         return False
     # O kubeconfig do k3s nasce root-only em /etc/rancher/k3s/k3s.yaml.
     # Copiá-lo para ~/.kube/config deixa o `kubectl` funcionar sem sudo.
@@ -237,20 +236,20 @@ def install_kubernetes_macos(yes: bool, check_mode: bool) -> bool:
     )
     if not _have("brew"):
         ui.warn("Homebrew não encontrado — ele é necessário para o colima")
-        okk = _confirm_and_run(
+        brew_ok = _confirm_and_run(
             "instalar o Homebrew",
             f'/bin/bash -c "$(curl -fsSL {HOMEBREW_INSTALL_URL})"',
             yes=yes, check_mode=check_mode, shell=True,
         )
-        if not okk:
+        if not brew_ok:
             return False
 
-    okk = _confirm_and_run(
+    colima_ok = _confirm_and_run(
         "instalar colima, kubectl e o cliente docker",
         ["brew", "install", "colima", "kubectl", "docker"],
         yes=yes, check_mode=check_mode,
     )
-    if not okk:
+    if not colima_ok:
         return False
     # `--runtime containerd` deixa o colima usar containerd (igual ao
     # Rancher Desktop), então `colima nerdctl build` alimenta o mesmo
@@ -353,26 +352,24 @@ def main(argv: Optional[List[str]] = None) -> int:
             issues.append("dependências Python")
 
     # 4. Kubernetes (apenas se for usar container)
-    if _wants_container(args):
-        ui.section("4 · Container + Kubernetes")
-        if kubernetes_ready():
-            ui.ok("Kubernetes acessível (cluster respondendo)")
-        elif check_mode:
-            ui.warn("nenhum cluster Kubernetes acessível")
-            issues.append("Kubernetes")
-        else:
-            installed = False
-            if osinfo.is_linux:
-                installed = install_kubernetes_linux(args.yes, check_mode)
-            elif osinfo.is_macos:
-                installed = install_kubernetes_macos(args.yes, check_mode)
-            else:
-                guide_kubernetes_windows()
-            if not installed or not kubernetes_ready():
-                issues.append("Kubernetes")
-    else:
-        ui.section("4 · Container + Kubernetes")
+    ui.section("4 · Container + Kubernetes")
+    if not _wants_container(args):
         ui.info("modo local — Kubernetes não é necessário; pulando.")
+    elif kubernetes_ready():
+        ui.ok("Kubernetes acessível (cluster respondendo)")
+    elif check_mode:
+        ui.warn("nenhum cluster Kubernetes acessível")
+        issues.append("Kubernetes")
+    else:
+        installed = False
+        if osinfo.is_linux:
+            installed = install_kubernetes_linux(args.yes, check_mode)
+        elif osinfo.is_macos:
+            installed = install_kubernetes_macos(args.yes, check_mode)
+        else:
+            guide_kubernetes_windows()
+        if not installed or not kubernetes_ready():
+            issues.append("Kubernetes")
 
     # Resumo
     ui.section("Resumo")
