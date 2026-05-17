@@ -31,7 +31,7 @@ from deile.orchestration.pipeline import stages
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeDispatcher
 from deile.orchestration.pipeline.constants import (
     PIPELINE_POLL_INTERVAL_SECONDS, PIPELINE_STOP_TIMEOUT_SECONDS)
-from deile.orchestration.pipeline.github_client import (GitHubClient, IssueRef)
+from deile.orchestration.pipeline.github_client import GitHubClient, IssueRef
 from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.lockfile import LockHeldError
 from deile.orchestration.pipeline.lockfile import acquire as acquire_lock
