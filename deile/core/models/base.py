@@ -15,6 +15,10 @@ from deile.core.models.tier import ModelTier
 
 logger = logging.getLogger(__name__)
 
+# Defaults shared by tool-loop-capable providers (anthropic, openai, gemini).
+DEFAULT_MAX_TOOL_ITERATIONS = 25
+DEFAULT_MAX_OUTPUT_TOKENS = 16384
+
 if TYPE_CHECKING:
     from deile.core.models.catalog import ModelPricing
     from deile.core.models.stream_events import UnifiedStreamEvent

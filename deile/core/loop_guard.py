@@ -582,6 +582,61 @@ def make_loop_break_result(reason: AbortReason) -> Tuple["ToolResult", Dict[str,
     return tool_result, {"status": "error", "error": abort_msg}
 
 
+@dataclass(frozen=True)
+class LoopBreak:
+    """Everything a ``chat_with_tools`` driver needs to honor a guard abort.
+
+    Bundles the three artifacts each provider used to derive separately on a
+    guard trip: the synthetic ERROR ``tool_result`` to append to its results
+    list, the json-serializable ``payload`` to echo back to the model in place
+    of the refused tool's output, and the user-visible ``message``.
+    """
+
+    tool_result: "ToolResult"
+    payload: Dict[str, str]
+    message: str
+
+
+def check_tool_call(
+    guard: ToolLoopGuard,
+    tool_name: str,
+    args: Optional[Dict[str, Any]],
+) -> Optional[LoopBreak]:
+    """Run the guard's pre-call check for ``tool_name(args)``.
+
+    Returns ``None`` when the call is safe to execute. Returns a
+    :class:`LoopBreak` when the loop must break: the caller MUST NOT run the
+    tool — it appends ``LoopBreak.tool_result`` to its results, echoes
+    ``LoopBreak.payload`` into its provider-native turn, surfaces
+    ``LoopBreak.message`` and breaks the loop. Consolidates the
+    ``make_loop_break_result`` + ``format_loop_break_message`` pair every
+    provider's ``chat_with_tools`` repeated verbatim on a guard trip.
+
+    The streaming ``ToolLoopExecutor`` intentionally does NOT use this helper —
+    its tool-result payload has a different shape, so it keeps calling
+    ``format_loop_break_message`` / ``tool_result_made_progress`` directly.
+    """
+    abort = guard.check(tool_name, args)
+    if abort is None:
+        return None
+    tool_result, payload = make_loop_break_result(abort)
+    return LoopBreak(
+        tool_result=tool_result,
+        payload=payload,
+        message=format_loop_break_message(abort),
+    )
+
+
+def record_tool_outcome(guard: ToolLoopGuard, result: Any) -> None:
+    """Feed an executed tool's result into the guard's no-progress counter.
+
+    Wraps the ``guard.record_result(made_progress=tool_result_made_progress(...))``
+    expression that each provider's ``chat_with_tools`` repeated identically
+    after running a tool.
+    """
+    guard.record_result(made_progress=tool_result_made_progress(result))
+
+
 def args_hash_for(tool_name: str, args: Optional[Dict[str, Any]]) -> str:
     """Public alias for the same hashing scheme the guard uses internally —
     useful in tests and observability code that needs to compare hashes

@@ -11,10 +11,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from deile.core.models.error_mapping import (classify_gemini_error,
+                                             make_gemini_envelope)
 from deile.core.models.errors import (ProviderErrorEnvelope,
                                       ProviderInvocationError)
-from deile.core.models.gemini_provider import (_classify_gemini_error,
-                                               _make_envelope)
 
 
 class _FakeAPIError(Exception):
@@ -57,7 +57,7 @@ def gemini_provider(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _classify_gemini_error
+# classify_gemini_error
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("code,status,message,expected", [
@@ -70,22 +70,22 @@ def gemini_provider(monkeypatch):
 ])
 def test_classify_gemini_error(code, status, message, expected):
     exc = _FakeAPIError(code=code, status=status, message=message)
-    assert _classify_gemini_error(exc) == expected
+    assert classify_gemini_error(exc) == expected
 
 
 def test_classify_gemini_error_non_int_code_is_unknown():
     # A non-int ``code`` (e.g. a string) cannot be an HTTP status -> unknown.
-    assert _classify_gemini_error(_FakeAPIError(code="429")) == "unknown"
+    assert classify_gemini_error(_FakeAPIError(code="429")) == "unknown"
 
 
 # ---------------------------------------------------------------------------
-# _make_envelope
+# make_gemini_envelope
 # ---------------------------------------------------------------------------
 
-def test_make_envelope_basic():
+def test_make_gemini_envelope_basic():
     exc = _FakeAPIError(code=429, status="RESOURCE_EXHAUSTED",
                         message="quota exceeded", details={"reason": "quota"})
-    env = _make_envelope(exc, "gemini", "gemini-2.5-pro")
+    env = make_gemini_envelope(exc, "gemini", "gemini-2.5-pro")
 
     assert isinstance(env, ProviderErrorEnvelope)
     assert env.provider_id == "gemini"
@@ -96,17 +96,17 @@ def test_make_envelope_basic():
     assert env.raw_json == {"reason": "quota"}
 
 
-def test_make_envelope_non_int_code_and_no_details():
-    env = _make_envelope(_FakeAPIError(message="boom"), "gemini", "m")
+def test_make_gemini_envelope_non_int_code_and_no_details():
+    env = make_gemini_envelope(_FakeAPIError(message="boom"), "gemini", "m")
     assert env.http_status is None
     assert env.raw_json == {}
     assert env.error_type == "unknown"
 
 
-def test_make_envelope_message_falls_back_to_str():
+def test_make_gemini_envelope_message_falls_back_to_str():
     exc = _FakeAPIError(code=500)
     exc.args = ("fallback text",)
-    env = _make_envelope(exc, "gemini", "m")
+    env = make_gemini_envelope(exc, "gemini", "m")
     assert env.message == "fallback text"
 
 

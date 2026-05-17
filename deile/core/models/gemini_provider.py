@@ -15,65 +15,15 @@ from google.genai.types import (AutomaticFunctionCallingConfig,
 
 from ...storage.debug_logger import get_debug_logger, is_debug_enabled
 from ..exceptions import ConfigurationError, ModelError
-from ..loop_guard import (format_loop_break_message, make_guard,
-                          make_loop_break_result, tool_result_made_progress)
-from .base import (ModelMessage, ModelProvider, ModelResponse, ModelSize,
-                   ModelType, ModelUsage)
-from .error_mapping import classify_http_error
-from .errors import ProviderErrorEnvelope, ProviderInvocationError
+from ..loop_guard import check_tool_call, make_guard, record_tool_outcome
+from .base import (DEFAULT_MAX_TOOL_ITERATIONS, ModelMessage, ModelProvider,
+                   ModelResponse, ModelSize, ModelType, ModelUsage)
+from .error_mapping import make_gemini_envelope
+from .errors import ProviderInvocationError
 from .tool_execution import (OUTCOME_EXCEPTION, OUTCOME_NOT_FOUND,
                              resolve_and_execute_tool)
 
 logger = logging.getLogger(__name__)
-
-
-def _classify_gemini_error(exc: Exception) -> str:
-    """Classify a Google GenAI SDK exception into a provider-agnostic
-    ``error_type`` string.
-
-    The new ``google-genai`` SDK surfaces API failures as
-    :class:`google.genai.errors.APIError` (and its ``ClientError`` /
-    ``ServerError`` subclasses). Unlike Anthropic/OpenAI, those exceptions
-    expose the HTTP status as ``code`` (int), a coarse string under ``status``
-    (e.g. ``RESOURCE_EXHAUSTED``) and the human message under ``message``.
-    This classifier extracts those fields and delegates the status/sniff logic
-    to the shared :func:`classify_http_error`, so Gemini lands on the same
-    ``error_type`` vocabulary as the other providers.
-    """
-    status = getattr(exc, "code", None)
-    if not isinstance(status, int):
-        status = None
-    err_code = str(getattr(exc, "status", "") or "").lower()
-    err_msg = str(getattr(exc, "message", "") or str(exc) or "").lower()
-    return classify_http_error(status, err_code, err_msg)
-
-
-def _make_envelope(
-    exc: Exception,
-    provider_id: str,
-    model_id: str,
-) -> ProviderErrorEnvelope:
-    """Build a typed :class:`ProviderErrorEnvelope` from a GenAI SDK exception.
-
-    Built directly (not via the shared ``build_error_envelope`` helper) because
-    GenAI exceptions store their HTTP status under ``code`` and the response
-    body under ``details`` — a different layout from the Anthropic/OpenAI SDKs
-    that helper targets.
-    """
-    status = getattr(exc, "code", None)
-    if not isinstance(status, int):
-        status = None
-    details = getattr(exc, "details", None)
-    raw: Dict[str, Any] = details if isinstance(details, dict) else {}
-    message = str(getattr(exc, "message", "") or "") or str(exc)
-    return ProviderErrorEnvelope(
-        provider_id=provider_id,
-        model_id=model_id,
-        error_type=_classify_gemini_error(exc),
-        message=message,
-        http_status=status,
-        raw_json=raw,
-    )
 
 
 def _stringify_for_model(value: Any) -> Any:
@@ -95,21 +45,32 @@ def _stringify_for_model(value: Any) -> Any:
 class GeminiProvider(ModelProvider):
     """Provedor para modelos Google Gemini"""
     
-    def __init__(
-        self,
-        gemini_config=None,
-        api_key: Optional[str] = None,
-        **config
-    ):
-        # Multi-provider bootstrap path: bootstrap calls cls(ModelHandle, ProviderConfig)
+    @staticmethod
+    def _resolve_init_args(gemini_config, api_key):
+        """Normalize GeminiProvider's overloaded positional init arguments.
+
+        GeminiProvider is constructed two ways: the multi-provider bootstrap
+        calls ``cls(ModelHandle, ProviderConfig)`` while legacy callers pass
+        ``cls(GeminiConfig, api_key)`` (or nothing). This isolates that
+        branching so ``__init__`` stays linear. Returns
+        ``(handle, gemini_config, api_key)`` where ``handle`` is the
+        ``ModelHandle`` when the bootstrap path was taken (else ``None``) and
+        ``gemini_config`` is always a resolved config object.
+        """
+        from types import SimpleNamespace
+
         from deile.core.models.catalog import ModelHandle
         from deile.core.models.provider_config import ProviderConfig as _PC
+
+        handle = None
         if isinstance(gemini_config, ModelHandle):
             handle = gemini_config
             provider_cfg = api_key  # second positional arg is ProviderConfig in bootstrap
-            api_key = os.getenv(provider_cfg.api_key_env) if isinstance(provider_cfg, _PC) else None
-            self._handle = handle
-            from types import SimpleNamespace
+            api_key = (
+                os.getenv(provider_cfg.api_key_env)
+                if isinstance(provider_cfg, _PC)
+                else None
+            )
             gemini_config = SimpleNamespace(
                 model_name=handle.model_id,
                 generation_config={},
@@ -121,16 +82,26 @@ class GeminiProvider(ModelProvider):
             try:
                 from ...config.manager import get_config_manager
                 config_manager = get_config_manager()
-                gemini_config = config_manager.get_config().gemini
-                # Recarrega configuração para garantir valores mais recentes
+                # Recarrega para garantir os valores mais recentes
                 config_manager.reload_config()
                 gemini_config = config_manager.get_config().gemini
             except Exception as e:
                 # Fallback APENAS em caso de erro crítico
                 from ...config.manager import GeminiConfig
                 gemini_config = GeminiConfig()
-                import logging
-                logging.warning(f"Failed to load ConfigManager, using defaults: {e}")
+                logger.warning("Failed to load ConfigManager, using defaults: %s", e)
+
+        return handle, gemini_config, api_key
+
+    def __init__(
+        self,
+        gemini_config=None,
+        api_key: Optional[str] = None,
+        **config
+    ):
+        handle, gemini_config, api_key = self._resolve_init_args(gemini_config, api_key)
+        if handle is not None:
+            self._handle = handle
 
         super().__init__(gemini_config.model_name, **config)
         
@@ -340,7 +311,7 @@ class GeminiProvider(ModelProvider):
             # Anthropic/OpenAI providers so ToolLoopExecutor and the agent loop
             # can read ``envelope.error_type`` (e.g. context_length_exceeded).
             execution_time = time.time() - start_time
-            envelope = _make_envelope(e, self.provider_id, self.model_name)
+            envelope = make_gemini_envelope(e, self.provider_id, self.model_name)
 
             if is_debug_enabled():
                 await self.debug_logger.log_error(e, {
@@ -363,7 +334,7 @@ class GeminiProvider(ModelProvider):
             # the same effect the pre-refactor ``ModelError`` had here, since
             # neither is flagged permanent by ``_is_permanent_provider_error``.
             execution_time = time.time() - start_time
-            envelope = _make_envelope(e, self.provider_id, self.model_name)
+            envelope = make_gemini_envelope(e, self.provider_id, self.model_name)
 
             if is_debug_enabled():
                 await self.debug_logger.log_error(e, {
@@ -417,7 +388,7 @@ class GeminiProvider(ModelProvider):
                 # in particular) instead of an ad-hoc dict with no attributes.
                 yield UnifiedStreamEvent(
                     type=StreamEventType.ERROR,
-                    error_envelope=_make_envelope(
+                    error_envelope=make_gemini_envelope(
                         exc, self.provider_id, self.model_name
                     ),
                 )
@@ -578,7 +549,7 @@ class GeminiProvider(ModelProvider):
     # Limite de iterações do loop de function calling manual.
     # Why: cap defensivo contra loops infinitos quando o modelo encadeia chamadas
     # sem convergir para uma resposta final.
-    MAX_TOOL_ITERATIONS = 25
+    MAX_TOOL_ITERATIONS = DEFAULT_MAX_TOOL_ITERATIONS
 
     async def create_chat_session(self, session_id: str, system_instruction: Optional[str] = None) -> Any:
         """Cria ou retorna chat session existente para session_id.
@@ -843,16 +814,15 @@ class GeminiProvider(ModelProvider):
             for call in function_calls:
                 # Loop guard — same defensive logic as the other providers.
                 # See deile.core.loop_guard for the detection rules.
-                abort = guard.check(call["name"], dict(call.get("args") or {}))
-                if abort is not None:
-                    tr, payload = make_loop_break_result(abort)
-                    tool_results.append(tr)
+                brk = check_tool_call(guard, call["name"], dict(call.get("args") or {}))
+                if brk is not None:
+                    tool_results.append(brk.tool_result)
                     function_response_parts.append(
                         types.Part.from_function_response(
-                            name=call["name"], response=payload
+                            name=call["name"], response=brk.payload
                         )
                     )
-                    text_chunks.append(format_loop_break_message(abort))
+                    text_chunks.append(brk.message)
                     loop_aborted = True
                     continue
                 tool_result, payload = await self.execute_function_call(
@@ -862,9 +832,7 @@ class GeminiProvider(ModelProvider):
                     session_data=session_data,
                 )
                 tool_results.append(tool_result)
-                guard.record_result(
-                    made_progress=tool_result_made_progress(tool_result)
-                )
+                record_tool_outcome(guard, tool_result)
                 function_response_parts.append(
                     types.Part.from_function_response(name=call["name"], response=payload)
                 )

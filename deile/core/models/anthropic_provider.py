@@ -9,11 +9,12 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import anthropic
 
-from deile.core.loop_guard import (format_loop_break_message, make_guard,
-                                   make_loop_break_result,
-                                   tool_result_made_progress)
-from deile.core.models.base import (ModelMessage, ModelProvider, ModelResponse,
-                                    ModelSize, ModelType, ModelUsage)
+from deile.core.loop_guard import (check_tool_call, make_guard,
+                                   record_tool_outcome)
+from deile.core.models.base import (DEFAULT_MAX_OUTPUT_TOKENS,
+                                    DEFAULT_MAX_TOOL_ITERATIONS, ModelMessage,
+                                    ModelProvider, ModelResponse, ModelSize,
+                                    ModelType, ModelUsage)
 from deile.core.models.catalog import ModelHandle
 from deile.core.models.error_mapping import make_envelope_builder
 from deile.core.models.errors import ProviderInvocationError
@@ -21,15 +22,11 @@ from deile.core.models.provider_config import ProviderConfig
 from deile.core.models.stream_events import (ModelUsageSnapshot,
                                              StreamEventType,
                                              UnifiedStreamEvent)
-from deile.core.models.tool_execution import (OUTCOME_EXCEPTION,
-                                              OUTCOME_NOT_FOUND,
+from deile.core.models.tool_execution import (build_tool_result_payload,
                                               payload_to_text,
                                               resolve_and_execute_tool)
 
 logger = logging.getLogger(__name__)
-
-_MAX_TOOL_ITERATIONS = 25
-_DEFAULT_MAX_TOKENS = 16384
 
 
 def _anthropic_body_fields(body: Dict[str, Any], exc: Exception) -> Tuple[str, str]:
@@ -149,7 +146,7 @@ class AnthropicProvider(ModelProvider):
 
         create_kwargs: Dict[str, Any] = {
             "model": self.model_name,
-            "max_tokens": kwargs.pop("max_tokens", _DEFAULT_MAX_TOKENS),
+            "max_tokens": kwargs.pop("max_tokens", DEFAULT_MAX_OUTPUT_TOKENS),
             "messages": anthropic_msgs,
         }
         if system:
@@ -203,10 +200,10 @@ class AnthropicProvider(ModelProvider):
         guard = make_guard(session_id=str(kwargs.get("session_id", "")) or None)
         loop_aborted = False
 
-        for iteration in range(_MAX_TOOL_ITERATIONS):
+        for iteration in range(DEFAULT_MAX_TOOL_ITERATIONS):
             create_kwargs: Dict[str, Any] = {
                 "model": self.model_name,
-                "max_tokens": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+                "max_tokens": kwargs.get("max_tokens", DEFAULT_MAX_OUTPUT_TOKENS),
                 "messages": anthropic_msgs,
             }
             if system:
@@ -257,26 +254,25 @@ class AnthropicProvider(ModelProvider):
                 # invocation with a synthetic error result so the model can
                 # see we refused, append the abort text to final_text, and
                 # break out of the entire iteration loop.
-                abort = guard.check(block.name, dict(block.input or {}))
-                if abort is not None:
-                    tr, payload = make_loop_break_result(abort)
-                    tool_results.append(tr)
+                brk = check_tool_call(guard, block.name, dict(block.input or {}))
+                if brk is not None:
+                    tool_results.append(brk.tool_result)
                     tool_result_content.append(
                         {
                             "type": "tool_result",
                             "tool_use_id": block.id,
-                            "content": [{"type": "text", "text": json.dumps(payload)}],
+                            "content": [{"type": "text", "text": json.dumps(brk.payload)}],
                         }
                     )
                     final_text = (
                         (final_text + "\n\n" if final_text else "")
-                        + format_loop_break_message(abort)
+                        + brk.message
                     )
                     loop_aborted = True
                     continue
                 tr, payload = await self._execute_tool(block.name, block.input)
                 tool_results.append(tr)
-                guard.record_result(made_progress=tool_result_made_progress(tr))
+                record_tool_outcome(guard, tr)
                 tool_result_content.append(
                     {
                         "type": "tool_result",
@@ -289,7 +285,7 @@ class AnthropicProvider(ModelProvider):
             if loop_aborted:
                 break
         else:
-            logger.warning("AnthropicProvider: tool loop hit max_iterations=%d", _MAX_TOOL_ITERATIONS)
+            logger.warning("AnthropicProvider: tool loop hit max_iterations=%d", DEFAULT_MAX_TOOL_ITERATIONS)
 
         usage = ModelUsage(
             prompt_tokens=total_input,
@@ -326,7 +322,7 @@ class AnthropicProvider(ModelProvider):
 
         create_kwargs: Dict[str, Any] = {
             "model": self.model_name,
-            "max_tokens": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+            "max_tokens": kwargs.get("max_tokens", DEFAULT_MAX_OUTPUT_TOKENS),
             "messages": anthropic_msgs,
         }
         if system:
@@ -497,13 +493,5 @@ class AnthropicProvider(ModelProvider):
             ),
         )
 
-        if outcome in (OUTCOME_NOT_FOUND, OUTCOME_EXCEPTION):
-            payload = {"error": result.message, "status": "error"}
-        elif result.is_success:
-            payload = {
-                "status": "success",
-                "result": str(result.data) if result.data is not None else "",
-            }
-        else:
-            payload = {"status": "error", "error": result.message or f"{name} failed"}
+        payload = build_tool_result_payload(result, outcome, name)
         return result, payload

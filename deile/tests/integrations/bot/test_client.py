@@ -20,9 +20,10 @@ pytest.importorskip("deilebot_client")
 
 from aiohttp import web  # noqa: E402
 from deilebot_client import BotClientAuthError  # noqa: E402
-from deilebot_client import (BotClientNotReady, BotClientRateLimited,
-                             BotClientTimeoutError, BotClientUpstreamError,
-                             BotControlClient, BotControlSettings)
+from deilebot_client import BotClientNotReady  # noqa: E402
+from deilebot_client import (BotClientRateLimited, BotClientTimeoutError,
+                             BotClientUpstreamError, BotControlClient,
+                             BotControlSettings)
 
 # --- helpers -----------------------------------------------------------------
 
