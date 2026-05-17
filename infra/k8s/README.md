@@ -6,6 +6,13 @@
 > ferramentas, configurar segredos, build da imagem, deploy, teste e
 > troubleshooting.
 
+> **Orquestrador:** o `run.sh` virou um shim — o orquestrador agora é o
+> `infra/k8s/deploy.py` (Python, colorido, com `help`). `bash run.sh X`
+> equivale a `python3 deploy.py X`. Comandos novos: `start`, `stop`,
+> `restart`, `status`, `reset`, `doctor` — veja `python3 deploy.py help`.
+> Para preparar uma máquina do zero (k3s/colima/dependências), use
+> `python3 infra/setup_environment.py`.
+
 ---
 
 ## 1. Pré-requisitos — instalando o ambiente do zero (macOS)
@@ -79,9 +86,9 @@ DEILE_BOT_DISCORD_TOKEN=MTQ5...  # do passo 1.2
 ## 2. Build e deploy — caminho feliz
 
 ```bash
-bash infra/k8s/run.sh build   # ~5–10 min na 1ª vez; cache nas próximas
-bash infra/k8s/run.sh up      # namespace + NPs + Secrets + bot Deployment
-bash infra/k8s/run.sh test    # cria o Job de prova → DM no Discord
+python3 infra/k8s/deploy.py build   # ~5–10 min na 1ª vez; cache nas próximas
+python3 infra/k8s/deploy.py up      # namespace + NPs + Secrets + bot + worker
+python3 infra/k8s/deploy.py test    # cria o Job de prova → DM no Discord
 ```
 
 Sucesso = DM aparece no Discord (no canal direto entre você e o bot)

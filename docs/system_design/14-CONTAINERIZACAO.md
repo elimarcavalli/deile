@@ -76,10 +76,10 @@ com o prompt **fixado no manifest** (ou parametrizado em build time).
 Kubernetes Events.
 
 ```bash
-bash infra/k8s/run.sh build     # uma vez, ou após mudar código
-bash infra/k8s/run.sh up        # namespace + NetworkPolicies + Secrets + bot
-bash infra/k8s/run.sh test      # cria o Job → executa o prompt → sai
-bash infra/k8s/run.sh down      # remove tudo (kubectl delete ns deile)
+python3 infra/k8s/deploy.py build   # uma vez, ou após mudar código
+python3 infra/k8s/deploy.py up      # namespace + NetworkPolicies + Secrets + bot
+python3 infra/k8s/deploy.py test    # cria o Job → executa o prompt → sai
+python3 infra/k8s/deploy.py down    # remove tudo (kubectl delete ns deile)
 ```
 
 Tool whitelist do Job: **só `messaging.*`** (decisão #28 — veja
@@ -144,14 +144,14 @@ vem do operador via `kubectl exec`, então não há risco de prompt-injection.
 |---|---|
 | Credencial | `GITHUB_TOKEN` montado como arquivo em `/run/secrets/deile/GITHUB_TOKEN` (K8s Secret), nunca como env var — frozen em `/proc/<pid>/environ` seria vazio |
 | Uso | `wrapper.py` lê o arquivo, escreve `~/.git-credentials` (`https://oauth2:TOKEN@github.com`) e configura `credential.helper store` antes de iniciar o agente |
-| Allowlist | `wrapper.py` instala `~/bin/git` (guard Python) que lê `DEILE_GIT_CLONE_ALLOWLIST` (derivado de `git_integration.clonable_repos` em `bot-config` ConfigMap) e rejeita `git clone` para URLs fora da lista |
+| Allowlist | `wrapper.py` instala `~/bin/git` (guard Python) que lê `DEILE_GIT_CLONE_ALLOWLIST` (derivado de `git_integration.clonable_repos` em `bot-config` ConfigMap) e rejeita `git clone` para URLs fora da lista. O fluxo de clone é **fail-closed**: se o guard `~/bin/git` não estiver instalado, o clone é RECUSADO em vez de cair para `/usr/bin/git` — assim a allowlist é sempre garantida |
 | Isolamento de rede | NetworkPolicy já permite egress `0.0.0.0/0:443 except RFC1918` — github.com é alcançável; Mac/LAN não |
 
-### Fluxo completo (`run.sh clone <owner/repo>`)
+### Fluxo completo (`deploy.py clone <owner/repo>`)
 
 ```
 operador
-  → run.sh clone elimarcavalli/deile
+  → deploy.py clone elimarcavalli/deile
       → wira GITHUB_TOKEN em deile-secrets (kubectl apply --dry-run)
       → aguarda kubelet sincronizar arquivo no pod (max 90s)
       → kubectl exec deploy/deile-shell -- python3 -c "..."

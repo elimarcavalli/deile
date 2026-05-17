@@ -33,9 +33,11 @@ Security model (defence in depth):
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
+import re
 import sys
 import time
 import traceback
@@ -62,6 +64,26 @@ LISTEN_PORT = int(os.environ.get("DEILE_WORKER_PORT", "8766"))
 TASK_TIMEOUT_S = float(os.environ.get("DEILE_WORKER_TASK_TIMEOUT_S", "600"))
 EDIT_INTERVAL_S = float(os.environ.get("DEILE_WORKER_EDIT_INTERVAL_S", "3"))
 MAX_BRIEF_CHARS = int(os.environ.get("DEILE_WORKER_MAX_BRIEF_CHARS", "4000"))
+
+
+def _channel_workdir(channel_id: str) -> str:
+    """Nome de pasta seguro, POR CANAL, derivado do channel_id.
+
+    O workdir do worker é persistente por canal: dispatches do mesmo
+    channel_id sempre reusam a mesma pasta — trabalhos anteriores
+    continuam lá. O payload de dispatch não traz user_id, então o
+    isolamento é estritamente por canal, não por usuário:
+
+      - numa DM o canal tem um único participante, logo a pasta é, na
+        prática, exclusiva daquele usuário;
+      - num canal de guild todos os participantes compartilham o mesmo
+        channel_id e, portanto, o mesmo workspace.
+
+    Discord channel_ids são snowflakes (apenas dígitos); o sanitize é
+    defesa em profundidade contra path traversal caso o valor mude.
+    """
+    safe = re.sub(r"[^A-Za-z0-9_-]", "", str(channel_id or ""))
+    return safe or "default"
 
 
 def _read_auth_token() -> str:
@@ -95,16 +117,25 @@ _AGENT_LOCK = asyncio.Lock()
 
 # ---- Bot integration (for status messages) -----------------------------------
 
+def _bot_facade():
+    """Return the bot control-plane facade, or None if it is unavailable.
+
+    All status-UI calls degrade silently — the work itself matters more
+    than the progress message, so a missing facade is never fatal.
+    """
+    from deile.integrations.bot import get_bot_client
+    facade = get_bot_client()
+    return facade if facade.is_available else None
+
+
 async def _post_status_message(channel_id: str, text: str) -> Optional[str]:
     """Post a fresh message to the user's channel via control-plane.
 
-    Returns message_id, or None if the call fails (we degrade silently —
-    the work itself is more important than the status UI).
+    Returns message_id, or None if the call fails (we degrade silently).
     """
     try:
-        from deile.integrations.bot import get_bot_client
-        facade = get_bot_client()
-        if not facade.is_available:
+        facade = _bot_facade()
+        if facade is None:
             logger.warning("bot integration unavailable; skipping status post")
             return None
         result = await facade.channel_post(channel_id=str(channel_id), text=text)
@@ -116,9 +147,8 @@ async def _post_status_message(channel_id: str, text: str) -> Optional[str]:
 
 async def _edit_status_message(channel_id: str, message_id: str, text: str) -> bool:
     try:
-        from deile.integrations.bot import get_bot_client
-        facade = get_bot_client()
-        if not facade.is_available:
+        facade = _bot_facade()
+        if facade is None:
             return False
         await facade.message_edit(
             channel_id=str(channel_id),
@@ -133,9 +163,8 @@ async def _edit_status_message(channel_id: str, message_id: str, text: str) -> b
 
 async def _react(channel_id: str, message_id: str, emoji: str) -> bool:
     try:
-        from deile.integrations.bot import get_bot_client
-        facade = get_bot_client()
-        if not facade.is_available:
+        facade = _bot_facade()
+        if facade is None:
             return False
         await facade.reaction_add(
             channel_id=str(channel_id),
@@ -191,6 +220,11 @@ Você é DEILE rodando em modo worker isolado dentro de um container k8s.
 
 REGRAS DE JAULA (inegociáveis):
 - Seu CWD é {workdir}. Trabalhe SEMPRE relativo a este diretório.
+- Esta é a área de trabalho PERSISTENTE deste CANAL: arquivos de
+  pedidos anteriores podem estar aqui — reaproveite-os quando fizer
+  sentido, em vez de recriar tudo do zero. Numa DM o canal tem um
+  único usuário; num canal de guild o workspace é compartilhado por
+  todos os participantes do canal.
 - NUNCA leia/escreva fora deste diretório. Caminhos absolutos para
   /run/secrets, /etc, /proc, /home/deile/.git-credentials, /tmp fora
   desta task → RECUSE explicitamente.
@@ -246,6 +280,26 @@ def _format_final(brief: str, ok: bool, summary: str, files: list[str], elapsed_
     return "\n".join(parts)
 
 
+def _prune_results_dir(results_dir: Path, keep: int = 200) -> None:
+    """Mantém só os `keep` arquivos de resultado mais recentes (por mtime).
+
+    `WORK_ROOT/.results` acumula um `<task_id>.json` por dispatch e nada
+    o limpa; sem isto cresceria sem limite no PVC.
+    """
+    try:
+        files = [p for p in results_dir.glob("*.json") if p.is_file()]
+    except OSError:
+        return
+    if len(files) <= keep:
+        return
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    for stale in files[keep:]:
+        try:
+            stale.unlink()
+        except OSError:
+            logger.debug("could not prune result file %s", stale, exc_info=True)
+
+
 async def _list_workspace_files(workdir: Path) -> list[str]:
     out: list[str] = []
     if not workdir.exists():
@@ -272,7 +326,10 @@ async def _run_task(
 ) -> Dict[str, Any]:
     """Body of a single dispatch — only one runs at a time (lock)."""
     start = time.monotonic()
-    workdir = WORK_ROOT / task_id
+    # Workdir POR canal (não por task): o payload de dispatch não traz
+    # user_id, então dispatches do mesmo channel_id reusam a mesma pasta
+    # persistente; canais diferentes ficam isolados entre si.
+    workdir = WORK_ROOT / _channel_workdir(channel_id)
     workdir.mkdir(parents=True, exist_ok=True)
 
     # 1. Post stub status message + react on user's message.
@@ -417,16 +474,23 @@ async def _run_task(
         "summary": summary,
         "files": files,
         "channel_id": channel_id,
+        "workdir": str(workdir),
         "status_message_id": status_msg_id,
         "finished_at": datetime.now(timezone.utc).isoformat(),
     }
+    # O resultado vai para um diretório plano por task_id: o workdir é
+    # compartilhado pelo canal, então gravar lá sobrescreveria o de
+    # dispatches anteriores. result_handler lê deste mesmo lugar.
+    results_dir = WORK_ROOT / ".results"
     try:
-        (workdir / "result.json").write_text(
+        results_dir.mkdir(parents=True, exist_ok=True)
+        (results_dir / f"{task_id}.json").write_text(
             json.dumps(result, indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        _prune_results_dir(results_dir)
     except OSError:
-        logger.exception("could not persist result.json for task %s", task_id)
+        logger.exception("could not persist result for task %s", task_id)
     return result
 
 
@@ -438,7 +502,9 @@ async def _bearer_auth_mw(request: web.Request, handler):
         return await handler(request)
     expected = request.app["auth_token"]
     got = request.headers.get("Authorization", "")
-    if not got.startswith("Bearer ") or got[len("Bearer "):] != expected:
+    if not got.startswith("Bearer ") or not hmac.compare_digest(
+        got[len("Bearer "):], expected
+    ):
         return web.json_response(
             {"error": {"code": "UNAUTHORIZED", "message": "bad bearer"}},
             status=401,
@@ -519,7 +585,7 @@ async def result_handler(request: web.Request) -> web.Response:
     state = _TASKS.get(task_id)
     if state is None:
         # Try to load from disk (PVC persists results across restarts).
-        f = WORK_ROOT / task_id / "result.json"
+        f = WORK_ROOT / ".results" / f"{task_id}.json"
         if f.is_file():
             try:
                 state = json.loads(f.read_text(encoding="utf-8"))
