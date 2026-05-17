@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional
 from ..core.exceptions import DEILEError
 from ..tools.base import ToolContext, ToolStatus
 from ..tools.registry import get_tool_registry
+from ._objective_steps import derive_step_specs
 from .sqlite_task_manager import (SQLiteTaskManager, Task, TaskList,
                                   TaskPriority, TaskStatus,
                                   get_sqlite_task_manager)
@@ -198,63 +199,34 @@ class WorkflowExecutor:
 
     async def _analyze_objective_to_steps(self, objective: str,
                                          context: Dict[str, Any]) -> List[WorkflowStep]:
-        """Analisa objetivo e converte em steps executáveis."""
-        steps = []
-        objective_lower = objective.lower()
+        """Analisa objetivo e converte em steps executáveis.
 
-        if any(w in objective_lower for w in ['file', 'read', 'analyze', 'check']):
-            steps.append(WorkflowStep(
-                action='read_file',
-                params={'path': context.get('target_file', 'README.md')},
-                description="Read target file for analysis",
-                timeout=30,
-            ))
+        A heurística keyword->tool vive em :func:`derive_step_specs`
+        (``_objective_steps``), compartilhada com ``PlanManager``. Aqui
+        apenas adaptamos cada :class:`StepSpec` neutra ao dataclass
+        ``WorkflowStep`` e aplicamos overrides de ``context``.
+        """
+        # Mapa de overrides por tool: chave do param -> chave em ``context``.
+        context_overrides = {
+            'read_file': {'path': 'target_file'},
+            'find_in_files': {'pattern': 'search_pattern', 'path': 'search_path'},
+            'bash_execute': {'command': 'command'},
+        }
 
-        if any(w in objective_lower for w in ['list', 'files', 'directory', 'explore']):
-            steps.append(WorkflowStep(
-                action='list_files',
-                params={'path': context.get('target_dir', '.'), 'recursive': True},
-                description="List files in target directory",
-                timeout=60,
-            ))
+        steps: List[WorkflowStep] = []
+        for spec in derive_step_specs(objective):
+            params = dict(spec.params)
+            if spec.tool_name == 'list_files' and params.get('recursive') is True:
+                params['path'] = context.get('target_dir', params.get('path', '.'))
+            for param_key, context_key in context_overrides.get(spec.tool_name, {}).items():
+                if context_key in context:
+                    params[param_key] = context[context_key]
 
-        if any(w in objective_lower for w in ['search', 'find', 'grep', 'pattern']):
             steps.append(WorkflowStep(
-                action='find_in_files',
-                params={
-                    'pattern': context.get('search_pattern', 'TODO'),
-                    'path': context.get('search_path', '.'),
-                    'max_results': 50,
-                },
-                description="Search for pattern in files",
-                timeout=120,
-            ))
-
-        if any(w in objective_lower for w in ['run', 'execute', 'command', 'script']):
-            steps.append(WorkflowStep(
-                action='bash_execute',
-                params={
-                    'command': context.get('command', 'echo "Workflow step executed"'),
-                    'show_cli': True,
-                },
-                description="Execute command",
-                timeout=300,
-            ))
-
-        if any(w in objective_lower for w in ['validate', 'verify', 'check', 'test']):
-            steps.append(WorkflowStep(
-                action='validation',
-                params={'validation_type': 'general'},
-                description="Validate workflow results",
-                timeout=60,
-            ))
-
-        if not steps:
-            steps.append(WorkflowStep(
-                action='list_files',
-                params={'path': '.', 'recursive': False},
-                description=f"General analysis step for: {objective}",
-                timeout=60,
+                action=spec.tool_name,
+                params=params,
+                description=spec.description,
+                timeout=spec.timeout,
             ))
 
         return steps
