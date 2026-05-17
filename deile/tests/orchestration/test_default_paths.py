@@ -1,4 +1,4 @@
-"""Testes de resolução de caminhos padrão para SQLiteTaskManager, PlanManager e RunManager.
+"""Testes de resolução de caminhos padrão para SQLiteTaskManager e PlanManager.
 
 Verifica:
 (a) Novo default aponta para .deile/...
@@ -14,7 +14,6 @@ import pytest
 
 from deile.orchestration.sqlite_task_manager import SQLiteTaskManager
 from deile.orchestration.plan_manager import PlanManager
-from deile.orchestration.run_manager import RunManager
 
 
 # ---------------------------------------------------------------------------
@@ -84,30 +83,3 @@ class TestPlanManagerDefaultPaths:
         mgr = PlanManager(plans_dir=tmp_path / "myplans", runs_dir=tmp_path / "myruns")
         assert mgr.plans_dir == tmp_path / "myplans"
         assert mgr.runs_dir == tmp_path / "myruns"
-
-
-# ---------------------------------------------------------------------------
-# RunManager
-# ---------------------------------------------------------------------------
-
-
-class TestRunManagerDefaultPath:
-    def test_novo_default_aponta_para_deile(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        mgr = RunManager()
-        assert mgr.runs_dir == tmp_path / ".deile" / "runs"
-        assert mgr.runs_dir.is_dir()
-
-    def test_legado_preservado_quando_nao_vazio(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        legacy = tmp_path / "RUNS"
-        legacy.mkdir()
-        (legacy / "run.json").touch()
-        mgr = RunManager()
-        assert mgr.runs_dir == legacy
-
-    def test_explicit_runs_dir_respeitado(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        explicit = tmp_path / "custom_runs"
-        mgr = RunManager(runs_dir=explicit)
-        assert mgr.runs_dir == explicit
