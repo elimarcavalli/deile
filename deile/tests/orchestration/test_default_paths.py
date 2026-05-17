@@ -7,15 +7,11 @@ Verifica:
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
-from deile.orchestration.sqlite_task_manager import SQLiteTaskManager
 from deile.orchestration.plan_manager import PlanManager
 from deile.orchestration.run_manager import RunManager
-
+from deile.orchestration.sqlite_task_manager import SQLiteTaskManager
 
 # ---------------------------------------------------------------------------
 # SQLiteTaskManager
