@@ -129,3 +129,36 @@ async def resolve_and_execute_tool(
             ),
             OUTCOME_EXCEPTION,
         )
+
+
+def build_tool_result_payload(
+    result: Any,
+    outcome: str,
+    name: str,
+    *,
+    include_message: bool = False,
+    include_data_on_error: bool = False,
+) -> Dict[str, str]:
+    """Build the json-serialisable status payload a provider returns for a tool call.
+
+    Anthropic and OpenAI both wrap the :class:`ToolResult` from
+    :func:`resolve_and_execute_tool` into a status dict with the same core
+    shape. The only divergences are two optional keys OpenAI carries:
+    ``message`` on success and ``result`` on a tool-reported error — exposed
+    here as ``include_message`` / ``include_data_on_error`` so the byte shape
+    of each provider's payload stays unchanged.
+    """
+    if outcome in (OUTCOME_NOT_FOUND, OUTCOME_EXCEPTION):
+        return {"error": result.message, "status": "error"}
+
+    data_str = str(result.data) if result.data is not None else ""
+    if result.is_success:
+        payload = {"status": "success", "result": data_str}
+        if include_message:
+            payload["message"] = result.message or ""
+        return payload
+
+    payload = {"status": "error", "error": result.message or f"{name} failed"}
+    if include_data_on_error:
+        payload["result"] = data_str
+    return payload

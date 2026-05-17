@@ -25,8 +25,7 @@ from deile.core.models.stream_events import (ModelUsageSnapshot,
                                              StreamEventType,
                                              UnifiedStreamEvent)
 from deile.core.models.tier import ModelTier
-from deile.core.models.tool_execution import (OUTCOME_EXCEPTION,
-                                              OUTCOME_NOT_FOUND,
+from deile.core.models.tool_execution import (build_tool_result_payload,
                                               resolve_and_execute_tool)
 
 logger = logging.getLogger(__name__)
@@ -515,13 +514,5 @@ class AnthropicProvider(ModelProvider):
             ),
         )
 
-        if outcome in (OUTCOME_NOT_FOUND, OUTCOME_EXCEPTION):
-            payload = {"error": result.message, "status": "error"}
-        elif result.is_success:
-            payload = {
-                "status": "success",
-                "result": str(result.data) if result.data is not None else "",
-            }
-        else:
-            payload = {"status": "error", "error": result.message or f"{name} failed"}
+        payload = build_tool_result_payload(result, outcome, name)
         return result, payload

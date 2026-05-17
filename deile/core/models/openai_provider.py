@@ -27,6 +27,7 @@ from deile.core.models.stream_events import (ModelUsageSnapshot,
 from deile.core.models.tier import ModelTier
 from deile.core.models.tool_execution import (OUTCOME_EXCEPTION,
                                               OUTCOME_NOT_FOUND,
+                                              build_tool_result_payload,
                                               resolve_and_execute_tool)
 
 logger = logging.getLogger(__name__)
@@ -556,7 +557,7 @@ class OpenAIProvider(ModelProvider):
         )
 
         if outcome in (OUTCOME_NOT_FOUND, OUTCOME_EXCEPTION):
-            return result, {"error": result.message, "status": "error"}
+            return result, build_tool_result_payload(result, outcome, name)
 
         # Stamp tool name on metadata (Gemini's path does the same).
         if result.metadata is None:
@@ -565,16 +566,9 @@ class OpenAIProvider(ModelProvider):
 
         # Payload carries data (e.g. read_file body) AND message (e.g.
         # write_file's POST_WRITE_VALIDATION_REQUIRED hint).
-        if result.is_success:
-            payload = {
-                "status": "success",
-                "result": str(result.data) if result.data is not None else "",
-                "message": result.message or "",
-            }
-        else:
-            payload = {
-                "status": "error",
-                "error": result.message or f"{name} failed",
-                "result": str(result.data) if result.data is not None else "",
-            }
+        payload = build_tool_result_payload(
+            result, outcome, name,
+            include_message=True,
+            include_data_on_error=True,
+        )
         return result, payload
