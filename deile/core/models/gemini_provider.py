@@ -15,8 +15,7 @@ from google.genai.types import (AutomaticFunctionCallingConfig,
 
 from ...storage.debug_logger import get_debug_logger, is_debug_enabled
 from ..exceptions import ConfigurationError, ModelError
-from ..loop_guard import (format_loop_break_message, make_guard,
-                          make_loop_break_result, tool_result_made_progress)
+from ..loop_guard import check_tool_call, make_guard, record_tool_outcome
 from .base import (DEFAULT_MAX_TOOL_ITERATIONS, ModelMessage, ModelProvider,
                    ModelResponse, ModelSize, ModelType, ModelUsage)
 from .error_mapping import make_gemini_envelope
@@ -829,16 +828,15 @@ class GeminiProvider(ModelProvider):
             for call in function_calls:
                 # Loop guard — same defensive logic as the other providers.
                 # See deile.core.loop_guard for the detection rules.
-                abort = guard.check(call["name"], dict(call.get("args") or {}))
-                if abort is not None:
-                    tr, payload = make_loop_break_result(abort)
-                    tool_results.append(tr)
+                brk = check_tool_call(guard, call["name"], dict(call.get("args") or {}))
+                if brk is not None:
+                    tool_results.append(brk.tool_result)
                     function_response_parts.append(
                         types.Part.from_function_response(
-                            name=call["name"], response=payload
+                            name=call["name"], response=brk.payload
                         )
                     )
-                    text_chunks.append(format_loop_break_message(abort))
+                    text_chunks.append(brk.message)
                     loop_aborted = True
                     continue
                 tool_result, payload = await self.execute_function_call(
@@ -848,9 +846,7 @@ class GeminiProvider(ModelProvider):
                     session_data=session_data,
                 )
                 tool_results.append(tool_result)
-                guard.record_result(
-                    made_progress=tool_result_made_progress(tool_result)
-                )
+                record_tool_outcome(guard, tool_result)
                 function_response_parts.append(
                     types.Part.from_function_response(name=call["name"], response=payload)
                 )

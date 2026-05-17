@@ -10,9 +10,8 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 import openai
 
-from deile.core.loop_guard import (format_loop_break_message, make_guard,
-                                   make_loop_break_result,
-                                   tool_result_made_progress)
+from deile.core.loop_guard import (check_tool_call, make_guard,
+                                   record_tool_outcome)
 from deile.core.models.base import (DEFAULT_MAX_OUTPUT_TOKENS,
                                     DEFAULT_MAX_TOOL_ITERATIONS, ModelMessage,
                                     ModelProvider, ModelResponse, ModelSize,
@@ -285,26 +284,25 @@ class OpenAIProvider(ModelProvider):
                 args = json.loads(tc.function.arguments or "{}")
                 # Loop guard — same defensive logic as Anthropic. See
                 # deile.core.loop_guard for the detection rules.
-                abort = guard.check(tc.function.name, args)
-                if abort is not None:
-                    tr, payload = make_loop_break_result(abort)
-                    tool_results.append(tr)
+                brk = check_tool_call(guard, tc.function.name, args)
+                if brk is not None:
+                    tool_results.append(brk.tool_result)
                     oai_msgs.append(
                         {
                             "role": "tool",
                             "tool_call_id": tc.id,
-                            "content": json.dumps(payload),
+                            "content": json.dumps(brk.payload),
                         }
                     )
                     final_text = (
                         (final_text + "\n\n" if final_text else "")
-                        + format_loop_break_message(abort)
+                        + brk.message
                     )
                     loop_aborted = True
                     continue
                 tr, payload = await self._execute_tool(tc.function.name, args)
                 tool_results.append(tr)
-                guard.record_result(made_progress=tool_result_made_progress(tr))
+                record_tool_outcome(guard, tr)
                 oai_msgs.append(
                     {
                         "role": "tool",
