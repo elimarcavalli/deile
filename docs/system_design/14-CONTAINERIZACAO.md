@@ -144,7 +144,7 @@ vem do operador via `kubectl exec`, então não há risco de prompt-injection.
 |---|---|
 | Credencial | `GITHUB_TOKEN` montado como arquivo em `/run/secrets/deile/GITHUB_TOKEN` (K8s Secret), nunca como env var — frozen em `/proc/<pid>/environ` seria vazio |
 | Uso | `wrapper.py` lê o arquivo, escreve `~/.git-credentials` (`https://oauth2:TOKEN@github.com`) e configura `credential.helper store` antes de iniciar o agente |
-| Allowlist | `wrapper.py` instala `~/bin/git` (guard Python) que lê `DEILE_GIT_CLONE_ALLOWLIST` (derivado de `git_integration.clonable_repos` em `bot-config` ConfigMap) e rejeita `git clone` para URLs fora da lista |
+| Allowlist | `wrapper.py` instala `~/bin/git` (guard Python) que lê `DEILE_GIT_CLONE_ALLOWLIST` (derivado de `git_integration.clonable_repos` em `bot-config` ConfigMap) e rejeita `git clone` para URLs fora da lista. O fluxo de clone é **fail-closed**: se o guard `~/bin/git` não estiver instalado, o clone é RECUSADO em vez de cair para `/usr/bin/git` — assim a allowlist é sempre garantida |
 | Isolamento de rede | NetworkPolicy já permite egress `0.0.0.0/0:443 except RFC1918` — github.com é alcançável; Mac/LAN não |
 
 ### Fluxo completo (`deploy.py clone <owner/repo>`)

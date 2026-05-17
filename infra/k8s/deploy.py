@@ -310,12 +310,12 @@ def cmd_up(args: dict) -> int:
                      "41-worker-pvc.yaml", "45-deile-worker-deployment.yaml"):
         _run([kubectl, "apply", "-f", str(MANIFESTS / manifest)])
 
-    for dep in ("deilebot", "deile-worker"):
+    for dep in K8S_DEPLOYMENTS:
         _run([kubectl, "-n", NS, "rollout", "restart", f"deployment/{dep}"],
              stdout=subprocess.DEVNULL)
 
     ui.info("aguardando os pods ficarem prontos (até 180s cada)")
-    for dep in ("deilebot", "deile-worker"):
+    for dep in K8S_DEPLOYMENTS:
         if _run([kubectl, "-n", NS, "rollout", "status",
                  f"deployment/{dep}", "--timeout=180s"]) != 0:
             ui.err(f"{dep} não ficou pronto.")
@@ -367,7 +367,7 @@ def cmd_test(args: dict) -> int:
 
 
 _CLONE_SNIPPET = r'''
-import fnmatch, os, posixpath, subprocess, sys, urllib.parse
+import os, subprocess, sys
 from pathlib import Path
 
 clone_url = sys.argv[1]
@@ -386,13 +386,18 @@ if token_file.exists():
 
 (home / "work").mkdir(parents=True, exist_ok=True)
 git_bin = home / "bin" / "git"
-if git_bin.exists():
-    git_cmd, cred_args = str(git_bin), []
-else:
-    git_cmd, cred_args = "/usr/bin/git", ["-c", "credential.helper=store"]
+# Fail-closed: a allowlist de clone é enforçada EXCLUSIVAMENTE pelo guard
+# ~/bin/git. Sem ele, cair para /usr/bin/git clonaria qualquer URL sem
+# validação — o que contradiz o modelo de segurança. Recusamos o clone.
+if not git_bin.exists():
+    print("ERRO: guard de clone (~/bin/git) não instalado — a allowlist "
+          "de repositórios não pode ser aplicada. Clone RECUSADO por "
+          "segurança. Verifique o wrapper.py do deile-shell.",
+          file=sys.stderr)
+    sys.exit(1)
 
 result = subprocess.run(
-    [git_cmd, *cred_args, "clone", "--depth", "1", clone_url, work_dir],
+    [str(git_bin), "clone", "--depth", "1", clone_url, work_dir],
     env={**os.environ, "GIT_TERMINAL_PROMPT": "0",
          "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"},
 )
@@ -538,6 +543,9 @@ def cmd_logs(args: dict) -> int:
     target = resolve_target(args["target"])
     ui.section("Logs")
     if target == "local":
+        if args["extra"]:
+            ui.warn(f"filtro `{args['extra'][0]}` ignorado — no modo local "
+                    "só existe o bot.")
         LocalService(ROOT).logs()
         return 0
     if target == "container":
