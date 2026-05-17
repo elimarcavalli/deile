@@ -320,73 +320,73 @@ class ApprovalSystem:
             logger.warning(f"Approval request {request_id} timed out")
             return False
     
-    def approve_request(self, 
+    async def approve_request(self,
                        request_id: str,
                        approved_by: str = "user") -> bool:
         """Approve pending request"""
-        
+
         request = self.pending_requests.get(request_id)
         if not request or request.status != ApprovalStatus.PENDING:
             return False
-        
+
         request.status = ApprovalStatus.APPROVED
         request.approved_by = approved_by
         request.approved_at = time.time()
-        
+
         # Complete future
         future = self.request_futures.get(request_id)
         if future and not future.done():
             future.set_result(True)
-        
+
         # Save and cleanup
-        asyncio.create_task(self._save_request(request))
+        await self._save_request(request)
         self._cleanup_request(request_id)
         
         logger.info(f"Approved request {request_id} by {approved_by}")
         return True
     
-    def deny_request(self, 
-                    request_id: str, 
+    async def deny_request(self,
+                    request_id: str,
                     denied_by: str = "user",
                     reason: str = None) -> bool:
         """Deny pending request"""
-        
+
         request = self.pending_requests.get(request_id)
         if not request or request.status != ApprovalStatus.PENDING:
             return False
-        
+
         request.status = ApprovalStatus.DENIED
         request.denied_by = denied_by
         request.denial_reason = reason or "Denied by user"
-        
+
         # Complete future
         future = self.request_futures.get(request_id)
         if future and not future.done():
             future.set_result(False)
-        
+
         # Save and cleanup
-        asyncio.create_task(self._save_request(request))
+        await self._save_request(request)
         self._cleanup_request(request_id)
         
         logger.info(f"Denied request {request_id} by {denied_by}: {reason}")
         return True
     
-    def cancel_request(self, request_id: str) -> bool:
+    async def cancel_request(self, request_id: str) -> bool:
         """Cancel pending request"""
-        
+
         request = self.pending_requests.get(request_id)
         if not request or request.status != ApprovalStatus.PENDING:
             return False
-        
+
         request.status = ApprovalStatus.CANCELLED
-        
+
         # Complete future
         future = self.request_futures.get(request_id)
         if future and not future.done():
             future.cancel()
-        
+
         # Save and cleanup
-        asyncio.create_task(self._save_request(request))
+        await self._save_request(request)
         self._cleanup_request(request_id)
         
         logger.info(f"Cancelled request {request_id}")
@@ -396,14 +396,14 @@ class ApprovalSystem:
         """Get all pending approval requests"""
         return list(self.pending_requests.values())
     
-    def get_request(self, request_id: str) -> Optional[ApprovalRequest]:
+    async def get_request(self, request_id: str) -> Optional[ApprovalRequest]:
         """Get specific approval request"""
         # Check active requests first
         if request_id in self.pending_requests:
             return self.pending_requests[request_id]
-        
+
         # Load from storage
-        return asyncio.create_task(self._load_request(request_id))
+        return await self._load_request(request_id)
     
     async def list_requests(self,
                            status_filter: Optional[ApprovalStatus] = None,
