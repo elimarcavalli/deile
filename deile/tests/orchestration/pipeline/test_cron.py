@@ -7,8 +7,7 @@ from datetime import datetime, timezone
 import pytest
 
 from deile.orchestration.pipeline.cron import (CronExpressionError, matches,
-                                               next_after, parse,
-                                               previous_or_equal)
+                                               next_after, parse)
 
 
 class TestParse:
@@ -89,17 +88,3 @@ class TestNextAfter:
         # Should not raise.
         nxt = next_after("*/10 * * * *", datetime(2026, 5, 6, 1, 0, 0))
         assert nxt.tzinfo is not None
-
-
-class TestPreviousOrEqual:
-    def _dt(self, s: str) -> datetime:
-        return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
-
-    def test_returns_self_when_match(self):
-        assert previous_or_equal("*/5 * * * *", self._dt("2026-05-06T01:05:00")) == \
-               self._dt("2026-05-06T01:05:00")
-
-    def test_searches_backwards(self):
-        # 01:03 is not a match for */5; previous match is 01:00
-        assert previous_or_equal("*/5 * * * *", self._dt("2026-05-06T01:03:00")) == \
-               self._dt("2026-05-06T01:00:00")

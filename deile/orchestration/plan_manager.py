@@ -15,6 +15,9 @@ from ..security import (AuditEventType, SeverityLevel, get_audit_logger,
                         get_permission_manager)
 from ..tools.base import ToolResult
 from ..tools.registry import get_tool_registry
+from ._deps import all_dependencies_met
+from ._objective_steps import derive_step_specs
+from ._paths import resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -171,14 +174,11 @@ class ExecutionPlan:
                 continue
             
             # Verifica dependências
-            dependencies_met = True
-            for dep_id in step.depends_on:
-                dep_step = self.get_step(dep_id)
-                if not dep_step or dep_step.status != StepStatus.COMPLETED:
-                    dependencies_met = False
-                    break
-            
-            if dependencies_met:
+            if all_dependencies_met(
+                step.depends_on,
+                self.get_step,
+                lambda dep: dep.status == StepStatus.COMPLETED,
+            ):
                 ready_steps.append(step)
         
         return ready_steps
@@ -245,18 +245,12 @@ class PlanManager:
         if plans_dir is not None:
             self.plans_dir = Path(plans_dir)
         else:
-            cwd = Path.cwd()
-            legacy = cwd / "PLANS"
-            new = cwd / ".deile" / "plans"
-            self.plans_dir = legacy if (legacy.is_dir() and any(legacy.iterdir()) and not new.exists()) else new
+            self.plans_dir = resolve_data_dir("PLANS", ".deile/plans")
 
         if runs_dir is not None:
             self.runs_dir = Path(runs_dir)
         else:
-            cwd = Path.cwd()
-            legacy = cwd / "RUNS"
-            new = cwd / ".deile" / "runs"
-            self.runs_dir = legacy if (legacy.is_dir() and any(legacy.iterdir()) and not new.exists()) else new
+            self.runs_dir = resolve_data_dir("RUNS", ".deile/runs")
 
         self.plans_dir.mkdir(parents=True, exist_ok=True)
         self.runs_dir.mkdir(parents=True, exist_ok=True)
@@ -573,74 +567,48 @@ class PlanManager:
             ]
         }
     
-    async def _generate_steps_from_objective(self, objective: str, 
+    async def _generate_steps_from_objective(self, objective: str,
                                            context: Dict[str, Any]) -> List[PlanStep]:
-        """Gera steps baseado no objetivo (versão simplificada - mockup)"""
-        
-        # Esta é uma implementação mockup. Em produção, usaria LLM para gerar steps
-        steps = []
-        
-        # Análise básica do objetivo para determinar steps
-        if "file" in objective.lower() or "read" in objective.lower():
+        """Gera steps baseado no objetivo (versão simplificada - mockup).
+
+        A heurística keyword->tool vive em :func:`derive_step_specs`
+        (``_objective_steps``), compartilhada com ``WorkflowExecutor``. Aqui
+        apenas adaptamos cada :class:`StepSpec` neutra ao dataclass
+        ``PlanStep`` e aplicamos overrides de ``context`` específicos do plano.
+        """
+        # Mapa de overrides por tool: chave do param -> chave em ``context``.
+        context_overrides = {
+            "read_file": {"path": "target_file"},
+            "find_in_files": {"pattern": "search_pattern", "path": "search_path"},
+            "bash_execute": {"command": "command"},
+        }
+
+        steps: List[PlanStep] = []
+        for spec in derive_step_specs(objective):
+            params = dict(spec.params)
+            # O step genérico de fallback (list_files, recursive=False) mantém
+            # ``path`` fixo; o list_files derivado de keyword aceita target_dir.
+            if spec.tool_name == "list_files" and params.get("recursive") is True:
+                params["path"] = context.get("target_dir", params.get("path", "."))
+            for param_key, context_key in context_overrides.get(spec.tool_name, {}).items():
+                if context_key in context:
+                    params[param_key] = context[context_key]
+            # security_level é exclusivo do caminho do PlanManager; o
+            # WorkflowExecutor não o propaga e preserva o default
+            # "moderate" de bash_tool.
+            if spec.security_level is not None:
+                params["security_level"] = spec.security_level
+
             steps.append(PlanStep(
                 id=str(uuid.uuid4())[:8],
-                tool_name="read_file",
-                params={"path": context.get("target_file", "README.md")},
-                description="Read target file",
-                risk_level=RiskLevel.LOW,
-                timeout=30
+                tool_name=spec.tool_name,
+                params=params,
+                description=spec.description,
+                risk_level=RiskLevel(spec.risk_level),
+                timeout=spec.timeout,
+                requires_approval=spec.requires_approval,
             ))
-        
-        if "list" in objective.lower() or "directory" in objective.lower():
-            steps.append(PlanStep(
-                id=str(uuid.uuid4())[:8],
-                tool_name="list_files", 
-                params={"path": context.get("target_dir", "."), "recursive": True},
-                description="List files in directory",
-                risk_level=RiskLevel.LOW,
-                timeout=60
-            ))
-        
-        if "search" in objective.lower() or "find" in objective.lower():
-            steps.append(PlanStep(
-                id=str(uuid.uuid4())[:8],
-                tool_name="find_in_files",
-                params={
-                    "pattern": context.get("search_pattern", "TODO"),
-                    "path": context.get("search_path", "."),
-                    "max_context_lines": 5
-                },
-                description="Search for pattern in files",
-                risk_level=RiskLevel.LOW,
-                timeout=120
-            ))
-        
-        if "run" in objective.lower() or "execute" in objective.lower():
-            steps.append(PlanStep(
-                id=str(uuid.uuid4())[:8],
-                tool_name="bash_execute",
-                params={
-                    "command": context.get("command", "echo 'Hello World'"),
-                    "show_cli": True,
-                    "security_level": "safe"
-                },
-                description="Execute command",
-                risk_level=RiskLevel.MEDIUM,
-                timeout=300,
-                requires_approval=True
-            ))
-        
-        # Se nenhum step específico foi gerado, cria um step genérico
-        if not steps:
-            steps.append(PlanStep(
-                id=str(uuid.uuid4())[:8],
-                tool_name="list_files",
-                params={"path": ".", "recursive": False},
-                description=f"General analysis for: {objective}",
-                risk_level=RiskLevel.LOW,
-                timeout=60
-            ))
-        
+
         return steps
     
     async def _execute_plan_steps(self, plan: ExecutionPlan, 
