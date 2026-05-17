@@ -593,6 +593,11 @@ class PlanManager:
             for param_key, context_key in context_overrides.get(spec.tool_name, {}).items():
                 if context_key in context:
                     params[param_key] = context[context_key]
+            # security_level é exclusivo do caminho do PlanManager; o
+            # WorkflowExecutor não o propaga e preserva o default
+            # "moderate" de bash_tool.
+            if spec.security_level is not None:
+                params["security_level"] = spec.security_level
 
             steps.append(PlanStep(
                 id=str(uuid.uuid4())[:8],

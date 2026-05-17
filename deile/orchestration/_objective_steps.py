@@ -14,7 +14,7 @@ vive apenas aqui — os dois geradores não podem mais duplicá-la.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 __all__ = ["StepSpec", "derive_step_specs"]
 
@@ -24,9 +24,9 @@ class StepSpec:
     """Spec neutra de um step derivado de um objetivo.
 
     Não acoplada a ``PlanStep`` nem a ``WorkflowStep``: carrega apenas os
-    dados comuns a ambos os geradores. ``risk_level`` e
-    ``requires_approval`` são valores neutros (str/bool) consumidos só
-    pelo ``PlanManager``; o ``WorkflowExecutor`` simplesmente os ignora.
+    dados comuns a ambos os geradores. ``risk_level``, ``requires_approval``
+    e ``security_level`` são valores neutros consumidos só pelo
+    ``PlanManager``; o ``WorkflowExecutor`` simplesmente os ignora.
     """
 
     tool_name: str
@@ -36,6 +36,10 @@ class StepSpec:
     # Dados extras consumidos somente pelo PlanManager (neutros aqui).
     risk_level: str = "low"
     requires_approval: bool = False
+    # security_level só é propagado para os params da tool pela adaptação
+    # do PlanManager; o WorkflowExecutor o ignora, preservando o default
+    # "moderate" de bash_tool no caminho do WorkflowExecutor.
+    security_level: Optional[str] = None
 
 
 # Tabela única keyword->tool. Cada entrada usa o superset coerente das duas
@@ -97,12 +101,12 @@ def derive_step_specs(objective: str) -> List[StepSpec]:
             params={
                 "command": "echo 'Hello World'",
                 "show_cli": True,
-                "security_level": "safe",
             },
             description="Execute command",
             timeout=300,
             risk_level="medium",
             requires_approval=True,
+            security_level="safe",
         ))
 
     if any(w in objective_lower for w in ("validate", "verify", "check", "test")):
