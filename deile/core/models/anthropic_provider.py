@@ -15,14 +15,13 @@ from deile.core.loop_guard import (format_loop_break_message, make_guard,
                                    tool_result_made_progress)
 from deile.core.models.base import (ModelMessage, ModelProvider, ModelResponse,
                                     ModelSize, ModelType, ModelUsage)
-from deile.core.models.catalog import ModelHandle, ModelPricing
+from deile.core.models.catalog import ModelHandle
 from deile.core.models.error_mapping import make_envelope_builder
 from deile.core.models.errors import ProviderInvocationError
 from deile.core.models.provider_config import ProviderConfig
 from deile.core.models.stream_events import (ModelUsageSnapshot,
                                              StreamEventType,
                                              UnifiedStreamEvent)
-from deile.core.models.tier import ModelTier
 from deile.core.models.tool_execution import (OUTCOME_EXCEPTION,
                                               OUTCOME_NOT_FOUND,
                                               payload_to_text,
@@ -99,14 +98,6 @@ class AnthropicProvider(ModelProvider):
     @property
     def model_size(self) -> ModelSize:
         return ModelSize.LARGE
-
-    @property
-    def tier(self) -> ModelTier:
-        return self._handle.tier
-
-    @property
-    def pricing(self) -> Optional[ModelPricing]:
-        return self._handle.pricing
 
     # ------------------------------------------------------------------
     # Message conversion helpers
