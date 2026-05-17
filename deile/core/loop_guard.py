@@ -611,6 +611,10 @@ def check_tool_call(
     ``LoopBreak.message`` and breaks the loop. Consolidates the
     ``make_loop_break_result`` + ``format_loop_break_message`` pair every
     provider's ``chat_with_tools`` repeated verbatim on a guard trip.
+
+    The streaming ``ToolLoopExecutor`` intentionally does NOT use this helper —
+    its tool-result payload has a different shape, so it keeps calling
+    ``format_loop_break_message`` / ``tool_result_made_progress`` directly.
     """
     abort = guard.check(tool_name, args)
     if abort is None:
