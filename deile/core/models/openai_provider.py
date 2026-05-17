@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
@@ -16,17 +15,17 @@ from deile.core.models.base import (DEFAULT_MAX_OUTPUT_TOKENS,
                                     DEFAULT_MAX_TOOL_ITERATIONS, ModelMessage,
                                     ModelProvider, ModelResponse, ModelSize,
                                     ModelType, ModelUsage)
-from deile.core.models.catalog import ModelHandle, ModelPricing
+from deile.core.models.catalog import ModelHandle
 from deile.core.models.error_mapping import make_envelope_builder
 from deile.core.models.errors import ProviderInvocationError
 from deile.core.models.provider_config import ProviderConfig
 from deile.core.models.stream_events import (ModelUsageSnapshot,
                                              StreamEventType,
                                              UnifiedStreamEvent)
-from deile.core.models.tier import ModelTier
 from deile.core.models.tool_execution import (OUTCOME_EXCEPTION,
                                               OUTCOME_NOT_FOUND,
                                               build_tool_result_payload,
+                                              payload_to_text,
                                               resolve_and_execute_tool)
 
 logger = logging.getLogger(__name__)
@@ -67,11 +66,7 @@ class OpenAIProvider(ModelProvider):
         self._handle = model_handle
         self._provider_config = provider_config
 
-        api_key = os.getenv(provider_config.api_key_env)
-        if not api_key:
-            raise ValueError(
-                f"OpenAIProvider: env var {provider_config.api_key_env} is not set"
-            )
+        api_key = self._require_api_key(provider_config, "OpenAIProvider")
 
         sdk_kwargs: Dict[str, Any] = dict(provider_config.sdk_kwargs or {})
         self._client = openai.AsyncOpenAI(
@@ -99,14 +94,6 @@ class OpenAIProvider(ModelProvider):
     @property
     def model_size(self) -> ModelSize:
         return ModelSize.LARGE
-
-    @property
-    def tier(self) -> ModelTier:
-        return self._handle.tier
-
-    @property
-    def pricing(self) -> Optional[ModelPricing]:
-        return self._handle.pricing
 
     # ------------------------------------------------------------------
     # Message conversion
@@ -502,13 +489,7 @@ class OpenAIProvider(ModelProvider):
         payload: Any,
     ) -> ModelMessage:
         """OpenAI-compatible: tool results are role=tool messages keyed by tool_call_id."""
-        if not isinstance(payload, str):
-            try:
-                payload_text = json.dumps(payload, default=str)
-            except (TypeError, ValueError):
-                payload_text = str(payload)
-        else:
-            payload_text = payload
+        payload_text = payload_to_text(payload)
         return ModelMessage(
             role="tool",
             content=payload_text,

@@ -242,20 +242,6 @@ class GeminiProvider(ModelProvider):
         return "gemini"
 
     @property
-    def tier(self):
-        handle = getattr(self, "_handle", None)
-        if handle is not None:
-            return handle.tier
-        return super().tier
-
-    @property
-    def pricing(self):
-        handle = getattr(self, "_handle", None)
-        if handle is not None:
-            return handle.pricing
-        return None
-
-    @property
     def supported_types(self) -> List[ModelType]:
         return [ModelType.CHAT, ModelType.VISION, ModelType.CODE]
 
