@@ -13,8 +13,10 @@ import anthropic
 from deile.core.loop_guard import (format_loop_break_message, make_guard,
                                    make_loop_break_result,
                                    tool_result_made_progress)
-from deile.core.models.base import (ModelMessage, ModelProvider, ModelResponse,
-                                    ModelSize, ModelType, ModelUsage)
+from deile.core.models.base import (DEFAULT_MAX_OUTPUT_TOKENS,
+                                    DEFAULT_MAX_TOOL_ITERATIONS, ModelMessage,
+                                    ModelProvider, ModelResponse, ModelSize,
+                                    ModelType, ModelUsage)
 from deile.core.models.catalog import ModelHandle, ModelPricing
 from deile.core.models.error_mapping import make_envelope_builder
 from deile.core.models.errors import ProviderInvocationError
@@ -28,9 +30,6 @@ from deile.core.models.tool_execution import (OUTCOME_EXCEPTION,
                                               resolve_and_execute_tool)
 
 logger = logging.getLogger(__name__)
-
-_MAX_TOOL_ITERATIONS = 25
-_DEFAULT_MAX_TOKENS = 16384
 
 
 def _anthropic_body_fields(body: Dict[str, Any], exc: Exception) -> Tuple[str, str]:
@@ -162,7 +161,7 @@ class AnthropicProvider(ModelProvider):
 
         create_kwargs: Dict[str, Any] = {
             "model": self.model_name,
-            "max_tokens": kwargs.pop("max_tokens", _DEFAULT_MAX_TOKENS),
+            "max_tokens": kwargs.pop("max_tokens", DEFAULT_MAX_OUTPUT_TOKENS),
             "messages": anthropic_msgs,
         }
         if system:
@@ -216,10 +215,10 @@ class AnthropicProvider(ModelProvider):
         guard = make_guard(session_id=str(kwargs.get("session_id", "")) or None)
         loop_aborted = False
 
-        for iteration in range(_MAX_TOOL_ITERATIONS):
+        for iteration in range(DEFAULT_MAX_TOOL_ITERATIONS):
             create_kwargs: Dict[str, Any] = {
                 "model": self.model_name,
-                "max_tokens": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+                "max_tokens": kwargs.get("max_tokens", DEFAULT_MAX_OUTPUT_TOKENS),
                 "messages": anthropic_msgs,
             }
             if system:
@@ -302,7 +301,7 @@ class AnthropicProvider(ModelProvider):
             if loop_aborted:
                 break
         else:
-            logger.warning("AnthropicProvider: tool loop hit max_iterations=%d", _MAX_TOOL_ITERATIONS)
+            logger.warning("AnthropicProvider: tool loop hit max_iterations=%d", DEFAULT_MAX_TOOL_ITERATIONS)
 
         usage = ModelUsage(
             prompt_tokens=total_input,
@@ -339,7 +338,7 @@ class AnthropicProvider(ModelProvider):
 
         create_kwargs: Dict[str, Any] = {
             "model": self.model_name,
-            "max_tokens": kwargs.get("max_tokens", _DEFAULT_MAX_TOKENS),
+            "max_tokens": kwargs.get("max_tokens", DEFAULT_MAX_OUTPUT_TOKENS),
             "messages": anthropic_msgs,
         }
         if system:

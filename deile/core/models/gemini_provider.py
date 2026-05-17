@@ -17,8 +17,8 @@ from ...storage.debug_logger import get_debug_logger, is_debug_enabled
 from ..exceptions import ConfigurationError, ModelError
 from ..loop_guard import (format_loop_break_message, make_guard,
                           make_loop_break_result, tool_result_made_progress)
-from .base import (ModelMessage, ModelProvider, ModelResponse, ModelSize,
-                   ModelType, ModelUsage)
+from .base import (DEFAULT_MAX_TOOL_ITERATIONS, ModelMessage, ModelProvider,
+                   ModelResponse, ModelSize, ModelType, ModelUsage)
 from .error_mapping import classify_http_error
 from .errors import ProviderErrorEnvelope, ProviderInvocationError
 from .tool_execution import (OUTCOME_EXCEPTION, OUTCOME_NOT_FOUND,
@@ -592,7 +592,7 @@ class GeminiProvider(ModelProvider):
     # Limite de iterações do loop de function calling manual.
     # Why: cap defensivo contra loops infinitos quando o modelo encadeia chamadas
     # sem convergir para uma resposta final.
-    MAX_TOOL_ITERATIONS = 25
+    MAX_TOOL_ITERATIONS = DEFAULT_MAX_TOOL_ITERATIONS
 
     async def create_chat_session(self, session_id: str, system_instruction: Optional[str] = None) -> Any:
         """Cria ou retorna chat session existente para session_id.
