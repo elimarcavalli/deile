@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 import aiosqlite
 
 from ..core.exceptions import DEILEError
+from ._deps import all_dependencies_met
 from ._paths import resolve_data_dir
 
 logger = logging.getLogger(__name__)
@@ -476,14 +477,11 @@ class SQLiteTaskManager:
                 continue
 
             # Verifica se todas as dependências foram completadas
-            dependencies_met = True
-            for dep_id in task.depends_on:
-                dep_task = next((t for t in tasks if t.id == dep_id), None)
-                if not dep_task or dep_task.status != TaskStatus.COMPLETED:
-                    dependencies_met = False
-                    break
-
-            if dependencies_met:
+            if all_dependencies_met(
+                task.depends_on,
+                lambda dep_id: next((t for t in tasks if t.id == dep_id), None),
+                lambda dep: dep.status == TaskStatus.COMPLETED,
+            ):
                 ready_tasks.append(task)
 
         return ready_tasks

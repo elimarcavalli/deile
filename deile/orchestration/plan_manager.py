@@ -15,6 +15,7 @@ from ..security import (AuditEventType, SeverityLevel, get_audit_logger,
                         get_permission_manager)
 from ..tools.base import ToolResult
 from ..tools.registry import get_tool_registry
+from ._deps import all_dependencies_met
 from ._objective_steps import derive_step_specs
 from ._paths import resolve_data_dir
 
@@ -173,14 +174,11 @@ class ExecutionPlan:
                 continue
             
             # Verifica dependências
-            dependencies_met = True
-            for dep_id in step.depends_on:
-                dep_step = self.get_step(dep_id)
-                if not dep_step or dep_step.status != StepStatus.COMPLETED:
-                    dependencies_met = False
-                    break
-            
-            if dependencies_met:
+            if all_dependencies_met(
+                step.depends_on,
+                self.get_step,
+                lambda dep: dep.status == StepStatus.COMPLETED,
+            ):
                 ready_steps.append(step)
         
         return ready_steps
