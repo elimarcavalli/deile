@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 import aiosqlite
 
 from ..core.exceptions import DEILEError
+from ._paths import resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -193,10 +194,9 @@ class SQLiteTaskManager:
         if db_path is not None:
             self.db_path = Path(db_path)
         else:
-            cwd = Path.cwd()
-            legacy = cwd / "deile_tasks.db"
-            new = cwd / ".deile" / "db" / "tasks.db"
-            self.db_path = legacy if legacy.exists() and not new.exists() else new
+            self.db_path = resolve_data_dir(
+                "deile_tasks.db", ".deile/db/tasks.db", require_nonempty=False
+            )
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Cache em memória para performance

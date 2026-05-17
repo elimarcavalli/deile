@@ -15,6 +15,7 @@ from ..security import (AuditEventType, SeverityLevel, get_audit_logger,
                         get_permission_manager)
 from ..tools.base import ToolResult
 from ..tools.registry import get_tool_registry
+from ._paths import resolve_data_dir
 
 logger = logging.getLogger(__name__)
 
@@ -245,18 +246,12 @@ class PlanManager:
         if plans_dir is not None:
             self.plans_dir = Path(plans_dir)
         else:
-            cwd = Path.cwd()
-            legacy = cwd / "PLANS"
-            new = cwd / ".deile" / "plans"
-            self.plans_dir = legacy if (legacy.is_dir() and any(legacy.iterdir()) and not new.exists()) else new
+            self.plans_dir = resolve_data_dir("PLANS", ".deile/plans")
 
         if runs_dir is not None:
             self.runs_dir = Path(runs_dir)
         else:
-            cwd = Path.cwd()
-            legacy = cwd / "RUNS"
-            new = cwd / ".deile" / "runs"
-            self.runs_dir = legacy if (legacy.is_dir() and any(legacy.iterdir()) and not new.exists()) else new
+            self.runs_dir = resolve_data_dir("RUNS", ".deile/runs")
 
         self.plans_dir.mkdir(parents=True, exist_ok=True)
         self.runs_dir.mkdir(parents=True, exist_ok=True)
