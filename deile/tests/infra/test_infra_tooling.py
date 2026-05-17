@@ -24,7 +24,6 @@ import _service  # noqa: E402
 import deploy  # noqa: E402
 import setup_environment  # noqa: E402
 
-
 # ===== _cli_ui ===============================================================
 
 def test_paint_with_color_wraps_ansi():
