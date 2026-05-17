@@ -93,17 +93,6 @@ class CommentRef:
     kind: str  # "issue" | "pr_review"
 
 
-def compute_batch_id(title: str) -> str:
-    """SHA-8 of the trimmed title — kept for backward compatibility.
-
-    .. deprecated::
-        Use :func:`compute_batch_id_for_number` — title-based IDs collide
-        when two issues share the same title.
-    """
-    digest = hashlib.sha256(title.strip().encode("utf-8")).hexdigest()
-    return digest[:8]
-
-
 def compute_batch_id_for_number(kind: str, number: int) -> str:
     """SHA-8 of ``<kind>:<number>`` — collision-free unique batch lock id.
 
