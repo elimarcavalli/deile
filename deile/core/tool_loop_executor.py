@@ -440,8 +440,7 @@ class ToolLoopExecutor:
                 # cascade_until yields STAGE events while the awaitable runs
                 # and a final ("result", value) tuple when it completes; it
                 # re-raises the underlying exception if the tool fails.
-                tool_result_value: Any = None
-                tool_exc: Optional[BaseException] = None
+                result: Any = None
                 try:
                     async for item in cascade_until(
                         self._tool_registry.execute_tool(tc_name, ctx),
@@ -450,16 +449,9 @@ class ToolLoopExecutor:
                         **tool_kwargs,
                     ):
                         if isinstance(item, tuple) and item and item[0] == "result":
-                            tool_result_value = item[1]
+                            result = item[1]
                         elif isinstance(item, UnifiedStreamEvent):
                             yield item
-                except Exception as _exc:  # pylint: disable=broad-except
-                    tool_exc = _exc
-
-                try:
-                    if tool_exc is not None:
-                        raise tool_exc
-                    result = tool_result_value
                 except Exception as exc:  # pylint: disable=broad-except
                     logger.error(
                         "Tool '%s' raised in ToolLoopExecutor: %s", tc_name, exc, exc_info=True
