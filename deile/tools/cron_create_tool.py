@@ -27,6 +27,37 @@ from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
 from deile.tools.cron_tool_base import unexpected_error
 
 
+def _resolve_schedule(
+    when_str: Optional[str],
+    cron: Optional[str],
+    run_at_str: Optional[str],
+) -> tuple[Optional[str], Optional[datetime], Optional[ToolResult]]:
+    """Resolve the ``(cron, run_at)`` pair from the schedule inputs.
+
+    Exactly one of ``when_str``/``cron``/``run_at_str`` is expected to be
+    set — the caller enforces that. Returns ``(cron, run_at, error)``: on a
+    parse failure ``error`` is a populated :class:`ToolResult` the caller
+    returns directly, otherwise ``error`` is ``None``.
+    """
+    if when_str:
+        try:
+            cron, run_at = parse_natural_schedule(when_str)
+        except ScheduleParseError as exc:
+            return None, None, ToolResult.error_result(
+                message=str(exc), error=exc, error_code="INVALID_WHEN",
+            )
+        return cron, run_at, None
+    if run_at_str:
+        run_at = parse_iso_datetime(str(run_at_str), naive_tz=timezone.utc)
+        if run_at is None:
+            return None, None, ToolResult.error_result(
+                message=f"invalid run_at: {run_at_str!r}",
+                error_code="INVALID_DATETIME",
+            )
+        return None, run_at, None
+    return cron, None, None
+
+
 class CronCreateTool(Tool):
     """Schedule a prompt for future execution (recurring cron OR one-shot)."""
 
@@ -138,22 +169,11 @@ class CronCreateTool(Tool):
                 error_code="AMBIGUOUS_SCHEDULE",
             )
 
-        run_at: Optional[datetime] = None
-
-        if when_str:
-            try:
-                cron, run_at = parse_natural_schedule(when_str)
-            except ScheduleParseError as exc:
-                return ToolResult.error_result(
-                    message=str(exc), error=exc, error_code="INVALID_WHEN",
-                )
-        elif run_at_str:
-            run_at = parse_iso_datetime(str(run_at_str), naive_tz=timezone.utc)
-            if run_at is None:
-                return ToolResult.error_result(
-                    message=f"invalid run_at: {run_at_str!r}",
-                    error_code="INVALID_DATETIME",
-                )
+        cron, run_at, schedule_error = _resolve_schedule(
+            when_str, cron, run_at_str
+        )
+        if schedule_error is not None:
+            return schedule_error
 
         try:
             entry = CronEntry(
