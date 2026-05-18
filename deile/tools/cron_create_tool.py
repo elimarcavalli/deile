@@ -24,6 +24,7 @@ from deile.cron.store import (CronEntry, CronStoreError, make_id,
                               open_cron_store)
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
+from deile.tools.cron_tool_base import unexpected_error
 
 
 class CronCreateTool(Tool):
@@ -170,10 +171,7 @@ class CronCreateTool(Tool):
                 message=str(exc), error=exc, error_code="CRON_STORE",
             )
         except Exception as exc:  # noqa: BLE001
-            return ToolResult.error_result(
-                message=f"{type(exc).__name__}: {exc}",
-                error=exc, error_code="UNEXPECTED",
-            )
+            return unexpected_error(exc)
 
         serialized = entry.to_dict()
         return ToolResult.success_result(
