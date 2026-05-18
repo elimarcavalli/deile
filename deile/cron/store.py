@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Iterator, List, Optional
 
 from deile.core.exceptions import DEILEError
+from deile.cron.constants import CRON_RESULT_MAX_CHARS
 from deile.orchestration.pipeline.cron import CronExpressionError, next_after
 
 logger = logging.getLogger(__name__)
@@ -253,7 +254,7 @@ class CronStore:
             entry = self._row_to_entry(row)
             entry.last_fired_at = when
             if result is not None:
-                entry.last_result = result[:1000]
+                entry.last_result = result[:CRON_RESULT_MAX_CHARS]
             entry.advance(after=when)
             conn.execute(
                 """UPDATE cron_entries
