@@ -23,7 +23,7 @@ _TYPE_MAPPING: Dict[str, Any] = {
 }
 
 
-def validate_type(value: Any, expected_type: str) -> bool:
+def _validate_type(value: Any, expected_type: str) -> bool:
     """Valida um valor contra um nome de tipo JSON-schema.
 
     Tipos desconhecidos são aceitos (retorna ``True``) — a checagem é
@@ -32,6 +32,10 @@ def validate_type(value: Any, expected_type: str) -> bool:
     expected_python_type = _TYPE_MAPPING.get(expected_type)
     if expected_python_type is None:
         return True
+    # ``bool`` é subclasse de ``int`` em Python; um booleano não é um
+    # número JSON-schema válido, então é rejeitado explicitamente.
+    if isinstance(value, bool) and expected_type in ("integer", "number"):
+        return False
     return isinstance(value, expected_python_type)
 
 
@@ -49,6 +53,7 @@ def validate_function_arguments(
     ``MessagingTool``), então ``parameters["required"]`` não pode ser usado.
     """
     errors = []
+    arguments = arguments or {}
     required_fields = schema.required or []
     properties = schema.parameters.get("properties", {})
 
@@ -59,7 +64,7 @@ def validate_function_arguments(
     for field, value in arguments.items():
         if field in properties:
             expected_type = properties[field].get("type")
-            if expected_type and not validate_type(value, expected_type):
+            if expected_type and not _validate_type(value, expected_type):
                 errors.append(
                     f"Invalid type for field {field}: expected {expected_type}"
                 )

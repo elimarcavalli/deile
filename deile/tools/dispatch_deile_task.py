@@ -274,7 +274,8 @@ class DispatchDeileTaskTool(Tool):
 
             endpoint = _worker_endpoint().rstrip("/") + _DISPATCH_PATH
             # _worker_token() may read secret files from disk — keep that
-            # blocking I/O off the event loop.
+            # blocking I/O off the event loop. `token` is a secret: it must
+            # never be interpolated into log or error messages.
             token = await asyncio.to_thread(_worker_token)
             if not token:
                 return ToolResult.error_result(
