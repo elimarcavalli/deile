@@ -180,21 +180,6 @@ class ToolRegistry:
             if tool.is_enabled and tool.name in self._enabled_tools
         ]
     
-    def list_by_category(self, category: str) -> List[Tool]:
-        """Lista tools por categoria
-        
-        Args:
-            category: Categoria das tools
-            
-        Returns:
-            List[Tool]: Lista de tools da categoria
-        """
-        return self._tools_by_category.get(category, [])
-    
-    def get_categories(self) -> List[str]:
-        """Lista todas as categorias disponíveis"""
-        return list(self._tools_by_category.keys())
-    
     def enable_tool(self, tool_name: str) -> bool:
         """Habilita uma tool
         
