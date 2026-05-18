@@ -42,7 +42,6 @@ class CronDeleteTool(Tool):
             )
         )
 
-
     async def execute(self, context: ToolContext) -> ToolResult:
         args = context.parsed_args or {}
         entry_id = (args.get("id") or "").strip()

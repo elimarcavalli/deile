@@ -39,7 +39,6 @@ class CronListTool(Tool):
             )
         )
 
-
     async def execute(self, context: ToolContext) -> ToolResult:
         args = context.parsed_args or {}
         only_enabled = bool(args.get("only_enabled", False))

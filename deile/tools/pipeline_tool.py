@@ -60,7 +60,6 @@ class PipelineTool(Tool):
             )
         )
 
-
     async def execute(self, context: ToolContext) -> ToolResult:
         action = (context.parsed_args.get("action") or "status").strip().lower()
         if action not in {"start", "stop", "status", "tick", "reset"}:

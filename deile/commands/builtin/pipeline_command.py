@@ -51,8 +51,6 @@ def _parse_start_flags(raw: str):
     return ns
 
 
-
-
 class PipelineCommand(DirectCommand):
     """``/pipeline {start|stop|status|tick|reset}``."""
 
