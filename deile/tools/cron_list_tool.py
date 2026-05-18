@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deile.cron.store import CronStore, resolve_db_path
+from deile.cron.store import open_cron_store
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
 
@@ -45,7 +45,7 @@ class CronListTool(Tool):
         only_enabled = bool(args.get("only_enabled", False))
         creator = args.get("created_by")
         try:
-            store = CronStore(resolve_db_path())
+            store = open_cron_store()
             entries = store.list_all(only_enabled=only_enabled)
         except Exception as exc:  # noqa: BLE001
             return ToolResult.error_result(

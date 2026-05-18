@@ -282,3 +282,12 @@ class CronStore:
 def make_id() -> str:
     """Return a short, unique entry id."""
     return f"cron-{uuid.uuid4().hex[:10]}"
+
+
+def open_cron_store() -> CronStore:
+    """Open the :class:`CronStore` at the configured DB path.
+
+    Single entry point for the cron tools so the store-construction idiom
+    lives with its owner instead of being inlined at each call site.
+    """
+    return CronStore(resolve_db_path())

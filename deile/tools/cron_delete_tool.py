@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deile.cron.store import CronStore, resolve_db_path
+from deile.cron.store import open_cron_store
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
 
@@ -54,7 +54,7 @@ class CronDeleteTool(Tool):
             )
 
         try:
-            store = CronStore(resolve_db_path())
+            store = open_cron_store()
             if disable_only:
                 ok = store.set_enabled(entry_id, False)
                 action_label = "disabled"

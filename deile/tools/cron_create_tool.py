@@ -20,14 +20,10 @@ from typing import Optional
 
 from deile.cron.parsing import (ScheduleParseError, parse_iso_datetime,
                                 parse_natural_schedule)
-from deile.cron.store import (CronEntry, CronStore, CronStoreError, make_id,
-                              resolve_db_path)
+from deile.cron.store import (CronEntry, CronStoreError, make_id,
+                              open_cron_store)
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
-
-
-def _get_store() -> CronStore:
-    return CronStore(resolve_db_path())
 
 
 class CronCreateTool(Tool):
@@ -169,7 +165,7 @@ class CronCreateTool(Tool):
                 created_by=args.get("created_by"),
                 notify_user_id=args.get("notify_user_id"),
             )
-            store = _get_store()
+            store = open_cron_store()
             store.add(entry)
         except CronStoreError as exc:
             return ToolResult.error_result(
