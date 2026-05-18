@@ -28,9 +28,8 @@ from typing import Optional
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
 from deile.config.manager import CommandConfig
 from deile.orchestration.pipeline.constants import resolve_pipeline_repo
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor,
-                                                  build_default_pipeline_config)
+from deile.orchestration.pipeline.monitor import (
+    PipelineConfig, PipelineMonitor, build_default_pipeline_config)
 from deile.orchestration.pipeline.reset import unlock_issue
 from deile.tools._pipeline_paths import resolve_base_path as _resolve_base_path
 

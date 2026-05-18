@@ -14,8 +14,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from deile.orchestration.pipeline.monitor import (PipelineMonitor,
-                                                  build_default_pipeline_config)
+from deile.orchestration.pipeline.monitor import (
+    PipelineMonitor, build_default_pipeline_config)
 from deile.orchestration.pipeline.reset import unlock_issue
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
