@@ -5,6 +5,7 @@ import importlib
 import inspect
 import logging
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -12,6 +13,22 @@ from ..core.exceptions import ToolError, ValidationError
 from .base import SecurityLevel, Tool, ToolContext, ToolResult, ToolSchema
 
 logger = logging.getLogger(__name__)
+
+
+def _run_coro_sync(coro):
+    """Run a coroutine to completion from synchronous code.
+
+    Uses ``asyncio.run`` when no loop is active. When invoked from inside
+    a running loop (e.g. ``PlanManager._run_tool_with_params``), the
+    coroutine is run in a worker thread so it never reenters the live
+    loop — ``loop.run_until_complete`` would raise ``RuntimeError`` there.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
 
 
 class ToolRegistry:
@@ -484,11 +501,10 @@ class ToolRegistry:
             # Se é SyncTool, executa diretamente
             if hasattr(tool, 'execute_sync'):
                 return tool.execute_sync(context)
-            else:
-                # Executa async tool de forma síncrona
-                loop = asyncio.get_event_loop()
-                return loop.run_until_complete(tool.execute(context))
-                
+            # Executa async tool de forma síncrona — seguro tanto fora
+            # quanto dentro de um event loop ativo.
+            return _run_coro_sync(tool.execute(context))
+
         except Exception as e:
             logger.error(f"Error executing function call '{function_name}': {e}")
             return ToolResult.error_result(
