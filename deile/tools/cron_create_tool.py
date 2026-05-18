@@ -102,7 +102,6 @@ class CronCreateTool(Tool):
                             ),
                         },
                     },
-                    "required": ["prompt"],
                 },
                 required=["prompt"],
                 security_level=SecurityLevel.MODERATE,

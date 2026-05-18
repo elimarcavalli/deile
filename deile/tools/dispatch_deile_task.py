@@ -215,7 +215,6 @@ class DispatchDeileTaskTool(Tool):
                             ),
                         },
                     },
-                    "required": ["brief", "channel_id"],
                 },
                 required=["brief", "channel_id"],
                 security_level=SecurityLevel.MODERATE,
