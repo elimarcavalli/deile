@@ -87,7 +87,7 @@ def _semantic_summary(tool_name: str, result: ToolResult) -> Optional[str]:
     meta = result.metadata or {}
     data = result.data
 
-    if tool_name == "bash_execute" or tool_name == "python_execute":
+    if tool_name in ("bash_execute", "python_execute"):
         # bash_tool.py packs data as dict; execution_tools.py packs string in data + dict in metadata.
         exit_code = None
         exec_time = None
