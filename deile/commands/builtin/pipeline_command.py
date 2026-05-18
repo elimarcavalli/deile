@@ -27,11 +27,9 @@ from typing import Optional
 
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
 from deile.config.manager import CommandConfig
-from deile.orchestration.pipeline.constants import resolve_pipeline_repo
 from deile.orchestration.pipeline.monitor import (
-    PipelineConfig, PipelineMonitor, build_default_pipeline_config)
+    PipelineMonitor, build_default_pipeline_config)
 from deile.orchestration.pipeline.reset import unlock_issue
-from deile.tools._pipeline_paths import resolve_base_path as _resolve_base_path
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +125,6 @@ class PipelineCommand(DirectCommand):
             flags = _parse_start_flags(tail)
             # Flags override the monitor's current config when supplied.
             if flags.identity or flags.schedule_file or flags.no_pid_lock:
-                from deile.config.settings import get_settings
                 from deile.orchestration.pipeline.identity import \
                     MonitorIdentity
                 from deile.orchestration.pipeline.post_merge_callback import \
@@ -137,11 +134,8 @@ class PipelineCommand(DirectCommand):
                 from deile.orchestration.pipeline.scheduler import \
                     ScheduleStore
 
-                cfg = PipelineConfig(
-                    repo=resolve_pipeline_repo(),
-                    base_repo_path=_resolve_base_path(),
-                    notify_user_id=get_settings().pipeline_notify_user_id,
-                    use_pid_lock=not flags.no_pid_lock,
+                cfg = build_default_pipeline_config(
+                    use_pid_lock=not flags.no_pid_lock
                 )
                 identity = (
                     MonitorIdentity(monitor_id=flags.identity)
@@ -255,7 +249,10 @@ async def _reset_issue(monitor: PipelineMonitor, issue_number: int) -> CommandRe
     """Remove pipeline lock labels from *issue_number* (gap #34)."""
     result = await unlock_issue(monitor.github, issue_number)
     if not result.ok:
-        return CommandResult(success=False, content=f"❌ {result.error}")
+        return CommandResult(
+            success=False,
+            content=f"❌ falha ao desbloquear issue #{issue_number}: {result.error}",
+        )
     if not result.removed:
         return CommandResult(
             success=True,

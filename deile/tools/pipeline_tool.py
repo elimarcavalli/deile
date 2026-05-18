@@ -172,7 +172,7 @@ class PipelineTool(Tool):
         """Remove lock labels from issue_number (gap #34)."""
         result = await unlock_issue(monitor.github, issue_number)
         if not result.ok:
-            return result.error or f"failed to reset issue #{issue_number}"
+            return f"issue #{issue_number}: {result.error or 'reset failed'}"
         if not result.removed:
             return f"issue #{issue_number} has no lock labels to remove"
         return f"issue #{issue_number} unlocked — removed: {', '.join(result.removed)}"

@@ -21,6 +21,8 @@ class UnlockResult(NamedTuple):
 
     ``ok`` is False only on a gh failure. When ``ok`` is True an empty
     ``removed`` means the issue carried no lock labels (a no-op success).
+    ``error`` carries only the failure reason — call sites add their own
+    issue-number framing so the message is not duplicated.
     """
 
     ok: bool
@@ -33,7 +35,7 @@ async def unlock_issue(github, issue_number: int) -> UnlockResult:
     try:
         issue = await github.get_issue(issue_number)
     except GhCommandError as exc:
-        return UnlockResult(False, [], f"gh error fetching issue #{issue_number}: {exc}")
+        return UnlockResult(False, [], f"gh error fetching issue: {exc}")
 
     to_remove = [
         lb for lb in issue.labels
@@ -45,8 +47,6 @@ async def unlock_issue(github, issue_number: int) -> UnlockResult:
     try:
         await github.remove_labels("issue", issue_number, to_remove)
     except GhCommandError as exc:
-        return UnlockResult(
-            False, [], f"failed to remove labels from #{issue_number}: {exc}"
-        )
+        return UnlockResult(False, [], f"failed to remove labels: {exc}")
 
     return UnlockResult(True, to_remove, None)

@@ -87,12 +87,14 @@ class PipelineConfig:
     enable_worktree_cleanup: bool = True
 
 
-def build_default_pipeline_config() -> "PipelineConfig":
+def build_default_pipeline_config(*, use_pid_lock: bool = True) -> PipelineConfig:
     """Construct a :class:`PipelineConfig` from the default repo/path/settings.
 
     Centralizes the repo + base-path + notify-user resolution shared by the
     ``pipeline`` tool and the ``/pipeline`` slash command, so the two
-    surfaces cannot drift on how a default config is assembled.
+    surfaces cannot drift on how a default config is assembled. ``use_pid_lock``
+    lets the ``/pipeline start --no-pid-lock`` flag route through this helper
+    too instead of hand-building its own config.
     """
     from deile.config.settings import get_settings
     from deile.orchestration.pipeline.constants import resolve_pipeline_repo
@@ -102,6 +104,7 @@ def build_default_pipeline_config() -> "PipelineConfig":
         repo=resolve_pipeline_repo(),
         base_repo_path=resolve_base_path(),
         notify_user_id=get_settings().pipeline_notify_user_id,
+        use_pid_lock=use_pid_lock,
     )
 
 
