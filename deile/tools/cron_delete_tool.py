@@ -5,6 +5,7 @@ from __future__ import annotations
 from deile.cron.store import open_cron_store
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
+from deile.tools.cron_tool_base import unexpected_error
 
 
 class CronDeleteTool(Tool):
@@ -61,10 +62,7 @@ class CronDeleteTool(Tool):
                 ok = store.remove(entry_id)
                 action_label = "removed"
         except Exception as exc:  # noqa: BLE001
-            return ToolResult.error_result(
-                message=f"{type(exc).__name__}: {exc}",
-                error=exc, error_code="UNEXPECTED",
-            )
+            return unexpected_error(exc)
 
         if not ok:
             return ToolResult.error_result(

@@ -80,6 +80,11 @@ def _worker_token() -> str:
     return ""
 
 
+def _bot_context(context: ToolContext) -> Dict[str, object]:
+    """Return the ``bot_context`` dict from session data (``{}`` when absent)."""
+    return context.session_data.get("bot_context") or {}
+
+
 def _build_dispatch_payload(
     *,
     brief: str,
@@ -102,8 +107,7 @@ def _build_dispatch_payload(
     }
     if user_message_id:
         payload["user_message_id"] = str(user_message_id)
-    bot_ctx = context.session_data.get("bot_context") or {}
-    atts = bot_ctx.get("attachments")
+    atts = _bot_context(context).get("attachments")
     if atts:
         payload["attachments"] = atts
     return payload
@@ -233,8 +237,7 @@ class DispatchDeileTaskTool(Tool):
             # the worker's 🔧/✅ reaction UX without depending on persona
             # discipline.
             if not user_message_id:
-                bot_ctx = context.session_data.get("bot_context") or {}
-                umid = bot_ctx.get("user_message_id")
+                umid = _bot_context(context).get("user_message_id")
                 if umid:
                     user_message_id = str(umid)
             persona = args.get("persona") or "developer"
@@ -246,8 +249,7 @@ class DispatchDeileTaskTool(Tool):
                 )
             if not channel_id:
                 # Fall back to bot_context if the LLM forgot.
-                bot_ctx = context.session_data.get("bot_context") or {}
-                channel_id = str(bot_ctx.get("channel_id") or "").strip()
+                channel_id = str(_bot_context(context).get("channel_id") or "").strip()
                 if not channel_id:
                     return ToolResult.error_result(
                         "channel_id is required (and not in bot_context)",
