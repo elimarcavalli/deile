@@ -14,11 +14,9 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from deile.orchestration.pipeline.constants import resolve_pipeline_repo
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+from deile.orchestration.pipeline.monitor import (PipelineMonitor,
+                                                  build_default_pipeline_config)
 from deile.orchestration.pipeline.reset import unlock_issue
-from deile.tools._pipeline_paths import resolve_base_path as _resolve_base_path
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
 
@@ -137,16 +135,13 @@ class PipelineTool(Tool):
     def _get_or_create_monitor(agent: Optional[Any]) -> PipelineMonitor:
         if agent is not None and getattr(agent, "pipeline_monitor", None) is not None:
             return agent.pipeline_monitor
-        from deile.config.settings import get_settings
         from deile.orchestration.pipeline.review_callback import \
             make_review_callback
 
-        cfg = PipelineConfig(
-            repo=resolve_pipeline_repo(),
-            base_repo_path=_resolve_base_path(),
-            notify_user_id=get_settings().pipeline_notify_user_id,
+        monitor = PipelineMonitor(
+            build_default_pipeline_config(),
+            review_callback=make_review_callback(agent),
         )
-        monitor = PipelineMonitor(cfg, review_callback=make_review_callback(agent))
         if agent is not None:
             try:
                 agent.pipeline_monitor = monitor  # type: ignore[attr-defined]

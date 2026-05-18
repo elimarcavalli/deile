@@ -29,7 +29,8 @@ from deile.commands.base import CommandContext, CommandResult, DirectCommand
 from deile.config.manager import CommandConfig
 from deile.orchestration.pipeline.constants import resolve_pipeline_repo
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
+                                                  PipelineMonitor,
+                                                  build_default_pipeline_config)
 from deile.orchestration.pipeline.reset import unlock_issue
 from deile.tools._pipeline_paths import resolve_base_path as _resolve_base_path
 
@@ -103,19 +104,13 @@ class PipelineCommand(DirectCommand):
         monitor: Optional[PipelineMonitor] = getattr(agent, "pipeline_monitor", None)
 
         if monitor is None:
-            from deile.config.settings import get_settings
             from deile.orchestration.pipeline.post_merge_callback import \
                 make_post_merge_callback
             from deile.orchestration.pipeline.review_callback import \
                 make_review_callback
 
-            cfg = PipelineConfig(
-                repo=resolve_pipeline_repo(),
-                base_repo_path=_resolve_base_path(),
-                notify_user_id=get_settings().pipeline_notify_user_id,
-            )
             monitor = PipelineMonitor(
-                cfg,
+                build_default_pipeline_config(),
                 review_callback=make_review_callback(agent),
                 post_merge_callback=make_post_merge_callback(agent),
             )

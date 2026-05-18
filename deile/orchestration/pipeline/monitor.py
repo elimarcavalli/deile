@@ -87,6 +87,24 @@ class PipelineConfig:
     enable_worktree_cleanup: bool = True
 
 
+def build_default_pipeline_config() -> "PipelineConfig":
+    """Construct a :class:`PipelineConfig` from the default repo/path/settings.
+
+    Centralizes the repo + base-path + notify-user resolution shared by the
+    ``pipeline`` tool and the ``/pipeline`` slash command, so the two
+    surfaces cannot drift on how a default config is assembled.
+    """
+    from deile.config.settings import get_settings
+    from deile.orchestration.pipeline.constants import resolve_pipeline_repo
+    from deile.tools._pipeline_paths import resolve_base_path
+
+    return PipelineConfig(
+        repo=resolve_pipeline_repo(),
+        base_repo_path=resolve_base_path(),
+        notify_user_id=get_settings().pipeline_notify_user_id,
+    )
+
+
 @dataclass
 class _Stats:
     ticks: int = 0
