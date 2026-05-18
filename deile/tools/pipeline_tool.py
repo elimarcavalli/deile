@@ -64,9 +64,9 @@ class PipelineTool(Tool):
 
     async def execute(self, context: ToolContext) -> ToolResult:
         action = (context.parsed_args.get("action") or "status").strip().lower()
-        if action not in {"start", "stop", "status", "tick"}:
+        if action not in {"start", "stop", "status", "tick", "reset"}:
             return ToolResult.error_result(
-                message=f"action must be one of start|stop|status|tick, got {action!r}",
+                message=f"action must be one of start|stop|status|tick|reset, got {action!r}",
                 error_code="INVALID_ACTION",
             )
 
