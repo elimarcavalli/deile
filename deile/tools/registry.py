@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from ..core.exceptions import ToolError, ValidationError
 from .base import SecurityLevel, Tool, ToolContext, ToolResult, ToolSchema
+from .schema_validation import validate_function_arguments
 
 logger = logging.getLogger(__name__)
 
@@ -492,7 +493,7 @@ class ToolRegistry:
         
         # Valida argumentos se schema disponível
         if tool.schema:
-            validation_result = self._validate_function_arguments(tool.schema, arguments)
+            validation_result = validate_function_arguments(tool.schema, arguments)
             if not validation_result["valid"]:
                 return ToolResult.error_result(
                     f"Invalid arguments for '{function_name}': {validation_result['errors']}",
@@ -537,49 +538,6 @@ class ToolRegistry:
             SecurityLevel.DANGEROUS: 2
         }
         return level_hierarchy[tool_level] <= level_hierarchy[max_level]
-    
-    def _validate_function_arguments(self, schema: ToolSchema, arguments: Dict[str, Any]) -> Dict[str, Any]:
-        """Valida argumentos de function call contra schema"""
-        # Implementação básica de validação
-        # TODO: Implementar validação completa usando jsonschema
-        
-        errors = []
-        required_fields = schema.parameters.get("required", [])
-        properties = schema.parameters.get("properties", {})
-        
-        # Verifica campos obrigatórios
-        for field in required_fields:
-            if field not in arguments:
-                errors.append(f"Missing required field: {field}")
-        
-        # Verifica tipos básicos
-        for field, value in arguments.items():
-            if field in properties:
-                expected_type = properties[field].get("type")
-                if expected_type and not self._validate_type(value, expected_type):
-                    errors.append(f"Invalid type for field {field}: expected {expected_type}")
-        
-        return {
-            "valid": len(errors) == 0,
-            "errors": errors
-        }
-    
-    def _validate_type(self, value: Any, expected_type: str) -> bool:
-        """Valida tipo básico de valor"""
-        type_mapping = {
-            "string": str,
-            "number": (int, float),
-            "integer": int,
-            "boolean": bool,
-            "array": list,
-            "object": dict
-        }
-        
-        expected_python_type = type_mapping.get(expected_type)
-        if expected_python_type:
-            return isinstance(value, expected_python_type)
-        
-        return True  # Se não conhece o tipo, aceita
     
     def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas do registry"""
