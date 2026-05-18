@@ -3,7 +3,7 @@ anthropic>=0.40.0
 openai>=1.50.0
 aiosqlite==0.22.1
 tenacity>=8.0.0
-python-json-logger>=2.0.0
+python-json-logger>=4.0.0
 pydantic-settings>=2.0.0
 annotated-types==0.7.0
 cachetools==5.5.2
