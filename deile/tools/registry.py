@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from ..core.exceptions import ToolError, ValidationError
+from . import schema_export
 from .base import SecurityLevel, Tool, ToolContext, ToolResult, ToolSchema
 from .schema_validation import validate_function_arguments
 
@@ -339,74 +340,31 @@ class ToolRegistry:
         
         return discovered_count
     
-    def _iter_authorized_tools(
-        self,
-        authorized_only: bool,
-        security_level: Optional[SecurityLevel],
-    ):
-        """Yield tools passing the authorization and security-level filters.
-
-        Shared by the per-provider schema exporters so the filtering
-        logic is defined in exactly one place.
-        """
-        for tool_name, tool in self._tools.items():
-            if authorized_only and tool_name not in self._enabled_tools:
-                continue
-            if security_level and tool.schema:
-                if not self._is_security_level_allowed(tool.schema.security_level, security_level):
-                    continue
-            yield tool
-
     def get_gemini_functions(self, authorized_only: bool = True, security_level: Optional[SecurityLevel] = None) -> List:
-        """Retorna tools no formato FunctionDeclaration para novo Google GenAI SDK
-
-        Args:
-            authorized_only: Se deve retornar apenas tools autorizadas
-            security_level: Nível máximo de segurança das tools
-
-        Returns:
-            List[FunctionDeclaration]: Lista de function declarations para novo SDK
-        """
-        functions = []
-        for tool in self._iter_authorized_tools(authorized_only, security_level):
-            function_def = tool.get_function_definition()
-            if function_def:
-                functions.append(function_def)
-
-        logger.debug(f"Generated {len(functions)} function definitions for Gemini API")
-        return functions
+        """Retorna tools no formato FunctionDeclaration para o Google GenAI SDK."""
+        return schema_export.get_gemini_functions(
+            self._tools, self._enabled_tools, authorized_only, security_level
+        )
 
     def get_anthropic_tools(
         self,
         authorized_only: bool = True,
         security_level: Optional[SecurityLevel] = None,
     ) -> List[Dict]:
-        """Return tools in Anthropic tool_use format.
-
-        Returns:
-            List of dicts compatible with anthropic.types.ToolParam
-        """
-        return [
-            tool.schema.to_anthropic_tool()
-            for tool in self._iter_authorized_tools(authorized_only, security_level)
-            if tool.schema
-        ]
+        """Return tools in Anthropic tool_use format."""
+        return schema_export.get_anthropic_tools(
+            self._tools, self._enabled_tools, authorized_only, security_level
+        )
 
     def get_openai_functions(
         self,
         authorized_only: bool = True,
         security_level: Optional[SecurityLevel] = None,
     ) -> List[Dict]:
-        """Return tools in OpenAI / DeepSeek function_call format.
-
-        Returns:
-            List of dicts compatible with openai.types.chat.ChatCompletionToolParam
-        """
-        return [
-            tool.schema.to_openai_function()
-            for tool in self._iter_authorized_tools(authorized_only, security_level)
-            if tool.schema
-        ]
+        """Return tools in OpenAI / DeepSeek function_call format."""
+        return schema_export.get_openai_functions(
+            self._tools, self._enabled_tools, authorized_only, security_level
+        )
 
     def load_schemas_from_directory(self, schemas_dir: Path) -> int:
         """Carrega schemas de tools de um diretório
@@ -514,15 +472,6 @@ class ToolRegistry:
                 error=e,
                 error_code="EXECUTION_ERROR"
             )
-    
-    def _is_security_level_allowed(self, tool_level: SecurityLevel, max_level: SecurityLevel) -> bool:
-        """Verifica se nível de segurança da tool é permitido"""
-        level_hierarchy = {
-            SecurityLevel.SAFE: 0,
-            SecurityLevel.MODERATE: 1,
-            SecurityLevel.DANGEROUS: 2
-        }
-        return level_hierarchy[tool_level] <= level_hierarchy[max_level]
     
     def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas do registry"""
