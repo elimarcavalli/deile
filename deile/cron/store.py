@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Iterator, List, Optional
 
 from deile.core.exceptions import DEILEError
+from deile.cron.constants import CRON_RESULT_MAX_CHARS
 from deile.orchestration.pipeline.cron import CronExpressionError, next_after
 
 logger = logging.getLogger(__name__)
@@ -115,6 +116,30 @@ class CronEntry:
             except CronExpressionError:
                 self.enabled = False
                 self.next_fire_at = None
+
+    def to_dict(self) -> dict:
+        """Return a JSON-serializable view (datetimes rendered as ISO strings).
+
+        Canonical serialization contract for the cron tools — keeps the
+        datetime-to-ISO conversion in one place instead of repeating the
+        ``x.isoformat() if x else None`` idiom per call site.
+        """
+        def _iso(dt: Optional[datetime]) -> Optional[str]:
+            return dt.isoformat() if dt else None
+
+        return {
+            "id": self.id,
+            "prompt": self.prompt,
+            "cron": self.cron,
+            "run_at": _iso(self.run_at),
+            "next_fire_at": _iso(self.next_fire_at),
+            "last_fired_at": _iso(self.last_fired_at),
+            "enabled": self.enabled,
+            "is_oneshot": self.is_oneshot,
+            "created_by": self.created_by,
+            "notify_user_id": self.notify_user_id,
+            "last_result": self.last_result,
+        }
 
 
 class CronStore:
@@ -229,7 +254,7 @@ class CronStore:
             entry = self._row_to_entry(row)
             entry.last_fired_at = when
             if result is not None:
-                entry.last_result = result[:1000]
+                entry.last_result = result[:CRON_RESULT_MAX_CHARS]
             entry.advance(after=when)
             conn.execute(
                 """UPDATE cron_entries
@@ -282,3 +307,13 @@ class CronStore:
 def make_id() -> str:
     """Return a short, unique entry id."""
     return f"cron-{uuid.uuid4().hex[:10]}"
+
+
+def open_cron_store() -> CronStore:
+    """Open the :class:`CronStore` at the configured DB path.
+
+    Single entry point for cron-store consumers (the ``cron_*`` tools and the
+    ``/pipeline`` command) so the store-construction idiom lives with its
+    owner instead of being inlined at each call site.
+    """
+    return CronStore(resolve_db_path())

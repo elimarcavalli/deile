@@ -24,8 +24,7 @@ class TestCronRunnerStart:
 
         cron_store_mock = MagicMock()
         cron_store_mock.db_path = Path("/tmp/cron.db")
-        with patch("deile.commands.builtin.pipeline_command.resolve_pipeline_repo", return_value="o/r"), \
-             patch("deile.commands.builtin.pipeline_command._resolve_base_path", return_value=Path("/tmp/x")), \
+        with patch("deile.commands.builtin.pipeline_command.build_default_pipeline_config", return_value=MagicMock()), \
              patch("deile.commands.builtin.pipeline_command.PipelineMonitor") as MockMonitor, \
              patch("deile.orchestration.pipeline.review_callback.make_review_callback", return_value=AsyncMock()), \
              patch("deile.cron.store.CronStore", return_value=cron_store_mock), \

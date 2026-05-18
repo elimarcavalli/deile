@@ -20,14 +20,10 @@ from typing import Optional
 
 from deile.cron.parsing import (ScheduleParseError, parse_iso_datetime,
                                 parse_natural_schedule)
-from deile.cron.store import (CronEntry, CronStore, CronStoreError, make_id,
-                              resolve_db_path)
+from deile.cron.store import (CronEntry, CronStoreError, make_id,
+                              open_cron_store)
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
-
-
-def _get_store() -> CronStore:
-    return CronStore(resolve_db_path())
 
 
 class CronCreateTool(Tool):
@@ -114,7 +110,6 @@ class CronCreateTool(Tool):
             )
         )
 
-
     async def execute(self, context: ToolContext) -> ToolResult:
         args = context.parsed_args or {}
         prompt = (args.get("prompt") or "").strip()
@@ -169,7 +164,7 @@ class CronCreateTool(Tool):
                 created_by=args.get("created_by"),
                 notify_user_id=args.get("notify_user_id"),
             )
-            store = _get_store()
+            store = open_cron_store()
             store.add(entry)
         except CronStoreError as exc:
             return ToolResult.error_result(
@@ -181,16 +176,14 @@ class CronCreateTool(Tool):
                 error=exc, error_code="UNEXPECTED",
             )
 
+        serialized = entry.to_dict()
         return ToolResult.success_result(
             data={
-                "id": entry.id,
-                "next_fire_at": entry.next_fire_at.isoformat() if entry.next_fire_at else None,
-                "is_oneshot": entry.is_oneshot,
-                "cron": entry.cron,
-                "run_at": entry.run_at.isoformat() if entry.run_at else None,
+                key: serialized[key]
+                for key in ("id", "next_fire_at", "is_oneshot", "cron", "run_at")
             },
             message=(
                 f"agendado {entry.id!r} — próxima execução em "
-                f"{entry.next_fire_at.isoformat() if entry.next_fire_at else 'never'}"
+                f"{serialized['next_fire_at'] or 'never'}"
             ),
         )

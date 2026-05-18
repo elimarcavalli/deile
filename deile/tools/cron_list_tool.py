@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from deile.cron.store import CronStore, resolve_db_path
+from deile.cron.store import open_cron_store
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
 
@@ -39,13 +39,12 @@ class CronListTool(Tool):
             )
         )
 
-
     async def execute(self, context: ToolContext) -> ToolResult:
         args = context.parsed_args or {}
         only_enabled = bool(args.get("only_enabled", False))
         creator = args.get("created_by")
         try:
-            store = CronStore(resolve_db_path())
+            store = open_cron_store()
             entries = store.list_all(only_enabled=only_enabled)
         except Exception as exc:  # noqa: BLE001
             return ToolResult.error_result(
@@ -56,22 +55,7 @@ class CronListTool(Tool):
         if creator:
             entries = [e for e in entries if e.created_by == creator]
 
-        out = [
-            {
-                "id": e.id,
-                "prompt": e.prompt,
-                "cron": e.cron,
-                "run_at": e.run_at.isoformat() if e.run_at else None,
-                "next_fire_at": e.next_fire_at.isoformat() if e.next_fire_at else None,
-                "last_fired_at": e.last_fired_at.isoformat() if e.last_fired_at else None,
-                "enabled": e.enabled,
-                "is_oneshot": e.is_oneshot,
-                "created_by": e.created_by,
-                "notify_user_id": e.notify_user_id,
-                "last_result": e.last_result,
-            }
-            for e in entries
-        ]
+        out = [e.to_dict() for e in entries]
         return ToolResult.success_result(
             data={"entries": out, "count": len(out)},
             message=f"{len(out)} entries scheduled",

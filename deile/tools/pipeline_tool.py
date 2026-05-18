@@ -14,10 +14,9 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from deile.orchestration.pipeline.constants import resolve_pipeline_repo
-from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                  PipelineMonitor)
-from deile.tools._pipeline_paths import resolve_base_path as _resolve_base_path
+from deile.orchestration.pipeline.monitor import (
+    PipelineMonitor, build_default_pipeline_config)
+from deile.orchestration.pipeline.reset import unlock_issue
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
 
@@ -61,12 +60,11 @@ class PipelineTool(Tool):
             )
         )
 
-
     async def execute(self, context: ToolContext) -> ToolResult:
         action = (context.parsed_args.get("action") or "status").strip().lower()
-        if action not in {"start", "stop", "status", "tick"}:
+        if action not in {"start", "stop", "status", "tick", "reset"}:
             return ToolResult.error_result(
-                message=f"action must be one of start|stop|status|tick, got {action!r}",
+                message=f"action must be one of start|stop|status|tick|reset, got {action!r}",
                 error_code="INVALID_ACTION",
             )
 
@@ -98,7 +96,7 @@ class PipelineTool(Tool):
             if action == "reset":
                 # gap #34: remove lock labels from an issue
                 target = context.parsed_args.get("target")
-                if not target:
+                if target is None:
                     return ToolResult.error_result(
                         message="'target' (issue number) is required for action='reset'",
                         error_code="MISSING_TARGET",
@@ -110,7 +108,14 @@ class PipelineTool(Tool):
                         message=f"'target' must be an integer, got {target!r}",
                         error_code="INVALID_TARGET",
                     )
-                msg = await self._reset_issue(monitor, issue_number)
+                if issue_number < 1:
+                    return ToolResult.error_result(
+                        message=f"'target' must be a positive issue number, got {issue_number}",
+                        error_code="INVALID_TARGET",
+                    )
+                ok, msg = await self._reset_issue(monitor, issue_number)
+                if not ok:
+                    return ToolResult.error_result(message=msg, error_code="RESET_FAILED")
                 return ToolResult.success_result(data={"issue": issue_number}, message=msg)
             # status (default)
             running = self._is_running(monitor)
@@ -136,16 +141,13 @@ class PipelineTool(Tool):
     def _get_or_create_monitor(agent: Optional[Any]) -> PipelineMonitor:
         if agent is not None and getattr(agent, "pipeline_monitor", None) is not None:
             return agent.pipeline_monitor
-        from deile.config.settings import get_settings
         from deile.orchestration.pipeline.review_callback import \
             make_review_callback
 
-        cfg = PipelineConfig(
-            repo=resolve_pipeline_repo(),
-            base_repo_path=_resolve_base_path(),
-            notify_user_id=get_settings().pipeline_notify_user_id,
+        monitor = PipelineMonitor(
+            build_default_pipeline_config(),
+            review_callback=make_review_callback(agent),
         )
-        monitor = PipelineMonitor(cfg, review_callback=make_review_callback(agent))
         if agent is not None:
             try:
                 agent.pipeline_monitor = monitor  # type: ignore[attr-defined]
@@ -172,29 +174,18 @@ class PipelineTool(Tool):
         }
 
     @staticmethod
-    async def _reset_issue(monitor: PipelineMonitor, issue_number: int) -> str:
-        """Remove lock labels from issue_number (gap #34)."""
-        from deile.orchestration.pipeline.github_client import GhCommandError
-        from deile.orchestration.pipeline.labels import BATCH_LABEL_PREFIX
+    async def _reset_issue(
+        monitor: PipelineMonitor, issue_number: int
+    ) -> tuple[bool, str]:
+        """Remove lock labels from issue_number (gap #34).
 
-        github = monitor.github
-        try:
-            issue = await github.get_issue(issue_number)
-        except GhCommandError as exc:
-            return f"gh error fetching issue #{issue_number}: {exc}"
-
-        to_remove = [
-            lb for lb in issue.labels
-            if lb.startswith(BATCH_LABEL_PREFIX) or lb.startswith("~by:")
-        ]
-        if not to_remove:
-            return f"issue #{issue_number} has no lock labels to remove"
-
-        try:
-            await github.remove_labels("issue", issue_number, to_remove)
-        except GhCommandError as exc:
-            return f"failed to remove labels from #{issue_number}: {exc}"
-
-        return (
-            f"issue #{issue_number} unlocked — removed: {', '.join(to_remove)}"
-        )
+        Returns ``(ok, message)`` — ``ok`` is False when the gh operation
+        failed, so the caller maps it to an error ToolResult instead of
+        reporting a failed reset as success.
+        """
+        result = await unlock_issue(monitor.github, issue_number)
+        if not result.ok:
+            return False, f"issue #{issue_number}: {result.error or 'reset failed'}"
+        if not result.removed:
+            return True, f"issue #{issue_number} has no lock labels to remove"
+        return True, f"issue #{issue_number} unlocked — removed: {', '.join(result.removed)}"
