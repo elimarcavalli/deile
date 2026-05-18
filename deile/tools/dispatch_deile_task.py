@@ -29,6 +29,7 @@ new requests on the same channel resume normally.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -273,7 +274,9 @@ class DispatchDeileTaskTool(Tool):
             self._LAST_DISPATCH[channel_id] = now
 
             endpoint = _worker_endpoint().rstrip("/") + _DISPATCH_PATH
-            token = _worker_token()
+            # _worker_token() may read secret files from disk — keep that
+            # blocking I/O off the event loop.
+            token = await asyncio.to_thread(_worker_token)
             if not token:
                 return ToolResult.error_result(
                     "WORKER_BEARER_TOKEN not configured in this Pod",
