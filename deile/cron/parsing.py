@@ -50,9 +50,11 @@ def parse_iso_datetime(text: str, naive_tz: timezone = BRT) -> Optional[datetime
     em ``naive_tz`` antes da conversão para UTC. Retorna ``None`` quando a
     string não casa com ISO-8601.
     """
-    iso_attempt = text.strip().replace("Z", "+00:00")
+    stripped = text.strip()
+    if stripped.endswith("Z"):
+        stripped = stripped[:-1] + "+00:00"
     try:
-        dt = datetime.fromisoformat(iso_attempt)
+        dt = datetime.fromisoformat(stripped)
     except ValueError:
         return None
     if dt.tzinfo is None:

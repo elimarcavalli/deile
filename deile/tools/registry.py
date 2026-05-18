@@ -22,6 +22,22 @@ def _run_coro_sync(coro):
     a running loop (e.g. ``PlanManager._run_tool_with_params``), the
     coroutine is run in a worker thread so it never reenters the live
     loop — ``loop.run_until_complete`` would raise ``RuntimeError`` there.
+
+    Two constraints apply when the worker-thread path is taken, and
+    callers must account for both:
+
+    1. Cancellation/timeout does NOT cross into the worker thread. An
+       ``asyncio.CancelledError`` or timeout raised against the caller
+       (e.g. an ``asyncio.wait_for`` wrapping a ``PlanManager`` step)
+       cannot interrupt the blocking ``.result()`` call — the worker
+       runs the coroutine to completion regardless. Step-level
+       timeout/cancellation therefore does not propagate into the tool.
+    2. The coroutine runs on a fresh event loop in a different thread.
+       Any tool invoked through this sync bridge must NOT hold or
+       capture resources bound to the caller's event loop (e.g.
+       ``asyncio.Lock``, connection pools, async clients/sessions);
+       such resources will misbehave or raise
+       ``RuntimeError: ... attached to a different loop``.
     """
     try:
         asyncio.get_running_loop()
