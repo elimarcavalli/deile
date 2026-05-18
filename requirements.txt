@@ -26,7 +26,7 @@ markdown-it-py==3.0.0
 mdurl==0.1.2
 numpy==2.2.6
 packaging==26.0
-pathspec==0.12.1
+pathspec==1.1.1
 pluggy==1.6.0
 prompt_toolkit==3.0.52
 proto-plus==1.26.1
