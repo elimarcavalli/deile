@@ -340,7 +340,11 @@ class ToolRegistry:
         
         return discovered_count
     
-    def get_gemini_functions(self, authorized_only: bool = True, security_level: Optional[SecurityLevel] = None) -> List:
+    def get_gemini_functions(
+        self,
+        authorized_only: bool = True,
+        security_level: Optional[SecurityLevel] = None,
+    ) -> List[object]:
         """Retorna tools no formato FunctionDeclaration para o Google GenAI SDK."""
         return schema_export.get_gemini_functions(
             self._tools, self._enabled_tools, authorized_only, security_level

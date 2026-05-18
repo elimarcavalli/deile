@@ -57,7 +57,7 @@ def get_gemini_functions(
     enabled: Set[str],
     authorized_only: bool = True,
     security_level: Optional[SecurityLevel] = None,
-) -> List:
+) -> List[object]:
     """Retorna tools no formato FunctionDeclaration para o Google GenAI SDK."""
     functions = []
     for tool in iter_authorized_tools(
