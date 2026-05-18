@@ -18,7 +18,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Optional
 
-from deile.cron.parsing import ScheduleParseError, parse_natural_schedule
+from deile.cron.parsing import (ScheduleParseError, parse_iso_datetime,
+                                parse_natural_schedule)
 from deile.cron.store import (CronEntry, CronStore, CronStoreError, make_id,
                               resolve_db_path)
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
@@ -152,15 +153,12 @@ class CronCreateTool(Tool):
                     message=str(exc), error=exc, error_code="INVALID_WHEN",
                 )
         elif run_at_str:
-            try:
-                run_at = datetime.fromisoformat(str(run_at_str).rstrip("Z"))
-            except ValueError as exc:
+            run_at = parse_iso_datetime(str(run_at_str), naive_tz=timezone.utc)
+            if run_at is None:
                 return ToolResult.error_result(
                     message=f"invalid run_at: {run_at_str!r}",
-                    error=exc, error_code="INVALID_DATETIME",
+                    error_code="INVALID_DATETIME",
                 )
-            if run_at.tzinfo is None:
-                run_at = run_at.replace(tzinfo=timezone.utc)
 
         try:
             entry = CronEntry(

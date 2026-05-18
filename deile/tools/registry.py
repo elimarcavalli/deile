@@ -5,6 +5,7 @@ import importlib
 import inspect
 import logging
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -12,6 +13,38 @@ from ..core.exceptions import ToolError, ValidationError
 from .base import SecurityLevel, Tool, ToolContext, ToolResult, ToolSchema
 
 logger = logging.getLogger(__name__)
+
+
+def _run_coro_sync(coro):
+    """Run a coroutine to completion from synchronous code.
+
+    Uses ``asyncio.run`` when no loop is active. When invoked from inside
+    a running loop (e.g. ``PlanManager._run_tool_with_params``), the
+    coroutine is run in a worker thread so it never reenters the live
+    loop — ``loop.run_until_complete`` would raise ``RuntimeError`` there.
+
+    Two constraints apply when the worker-thread path is taken, and
+    callers must account for both:
+
+    1. Cancellation/timeout does NOT cross into the worker thread. An
+       ``asyncio.CancelledError`` or timeout raised against the caller
+       (e.g. an ``asyncio.wait_for`` wrapping a ``PlanManager`` step)
+       cannot interrupt the blocking ``.result()`` call — the worker
+       runs the coroutine to completion regardless. Step-level
+       timeout/cancellation therefore does not propagate into the tool.
+    2. The coroutine runs on a fresh event loop in a different thread.
+       Any tool invoked through this sync bridge must NOT hold or
+       capture resources bound to the caller's event loop (e.g.
+       ``asyncio.Lock``, connection pools, async clients/sessions);
+       such resources will misbehave or raise
+       ``RuntimeError: ... attached to a different loop``.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
 
 
 class ToolRegistry:
@@ -320,33 +353,40 @@ class ToolRegistry:
         
         return discovered_count
     
+    def _iter_authorized_tools(
+        self,
+        authorized_only: bool,
+        security_level: Optional[SecurityLevel],
+    ):
+        """Yield tools passing the authorization and security-level filters.
+
+        Shared by the per-provider schema exporters so the filtering
+        logic is defined in exactly one place.
+        """
+        for tool_name, tool in self._tools.items():
+            if authorized_only and tool_name not in self._enabled_tools:
+                continue
+            if security_level and tool.schema:
+                if not self._is_security_level_allowed(tool.schema.security_level, security_level):
+                    continue
+            yield tool
+
     def get_gemini_functions(self, authorized_only: bool = True, security_level: Optional[SecurityLevel] = None) -> List:
         """Retorna tools no formato FunctionDeclaration para novo Google GenAI SDK
-        
+
         Args:
             authorized_only: Se deve retornar apenas tools autorizadas
             security_level: Nível máximo de segurança das tools
-            
+
         Returns:
             List[FunctionDeclaration]: Lista de function declarations para novo SDK
         """
         functions = []
-        
-        for tool_name, tool in self._tools.items():
-            # Verifica se tool está habilitada
-            if authorized_only and tool_name not in self._enabled_tools:
-                continue
-            
-            # Verifica nível de segurança
-            if security_level and tool.schema:
-                if not self._is_security_level_allowed(tool.schema.security_level, security_level):
-                    continue
-            
-            # Obtém definição da função
+        for tool in self._iter_authorized_tools(authorized_only, security_level):
             function_def = tool.get_function_definition()
             if function_def:
                 functions.append(function_def)
-        
+
         logger.debug(f"Generated {len(functions)} function definitions for Gemini API")
         return functions
 
@@ -360,16 +400,11 @@ class ToolRegistry:
         Returns:
             List of dicts compatible with anthropic.types.ToolParam
         """
-        result = []
-        for tool_name, tool in self._tools.items():
-            if authorized_only and tool_name not in self._enabled_tools:
-                continue
-            if security_level and tool.schema:
-                if not self._is_security_level_allowed(tool.schema.security_level, security_level):
-                    continue
-            if tool.schema:
-                result.append(tool.schema.to_anthropic_tool())
-        return result
+        return [
+            tool.schema.to_anthropic_tool()
+            for tool in self._iter_authorized_tools(authorized_only, security_level)
+            if tool.schema
+        ]
 
     def get_openai_functions(
         self,
@@ -381,16 +416,11 @@ class ToolRegistry:
         Returns:
             List of dicts compatible with openai.types.chat.ChatCompletionToolParam
         """
-        result = []
-        for tool_name, tool in self._tools.items():
-            if authorized_only and tool_name not in self._enabled_tools:
-                continue
-            if security_level and tool.schema:
-                if not self._is_security_level_allowed(tool.schema.security_level, security_level):
-                    continue
-            if tool.schema:
-                result.append(tool.schema.to_openai_function())
-        return result
+        return [
+            tool.schema.to_openai_function()
+            for tool in self._iter_authorized_tools(authorized_only, security_level)
+            if tool.schema
+        ]
 
     def load_schemas_from_directory(self, schemas_dir: Path) -> int:
         """Carrega schemas de tools de um diretório
@@ -487,11 +517,10 @@ class ToolRegistry:
             # Se é SyncTool, executa diretamente
             if hasattr(tool, 'execute_sync'):
                 return tool.execute_sync(context)
-            else:
-                # Executa async tool de forma síncrona
-                loop = asyncio.get_event_loop()
-                return loop.run_until_complete(tool.execute(context))
-                
+            # Executa async tool de forma síncrona — seguro tanto fora
+            # quanto dentro de um event loop ativo.
+            return _run_coro_sync(tool.execute(context))
+
         except Exception as e:
             logger.error(f"Error executing function call '{function_name}': {e}")
             return ToolResult.error_result(

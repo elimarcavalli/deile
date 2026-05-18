@@ -25,16 +25,23 @@ from .discord_send_message import DiscordSendMessageTool
 from .discord_start_thread import DiscordStartThreadTool
 from .whatsapp_send_template import WhatsAppSendTemplateTool
 
+# Single source of truth for the messaging tool classes. The tuple
+# order is the registration order used by register_messaging_tools().
+MESSAGING_TOOL_CLASSES = (
+    DiscordSendMessageTool,
+    DiscordSendDMTool,
+    DiscordEditMessageTool,
+    DiscordReactTool,
+    DiscordStartThreadTool,
+    DiscordPinMessageTool,
+    DiscordMentionRoleTool,
+    DiscordGetUserProfileTool,
+    WhatsAppSendTemplateTool,
+)
+
 __all__ = [
     "MessagingTool",
-    "DiscordSendMessageTool",
-    "DiscordSendDMTool",
-    "DiscordEditMessageTool",
-    "DiscordReactTool",
-    "DiscordStartThreadTool",
-    "DiscordPinMessageTool",
-    "DiscordMentionRoleTool",
-    "DiscordGetUserProfileTool",
-    "WhatsAppSendTemplateTool",
+    "MESSAGING_TOOL_CLASSES",
     "register_messaging_tools",
+    *(cls.__name__ for cls in MESSAGING_TOOL_CLASSES),
 ]

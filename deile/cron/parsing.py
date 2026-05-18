@@ -43,6 +43,25 @@ class ScheduleParseError(ValueError):
     """Falha ao interpretar a string de agendamento."""
 
 
+def parse_iso_datetime(text: str, naive_tz: timezone = BRT) -> Optional[datetime]:
+    """Interpreta uma string ISO-8601 e retorna um ``datetime`` em UTC.
+
+    Aceita o sufixo ``Z``. Datetimes naive (sem offset) são interpretados
+    em ``naive_tz`` antes da conversão para UTC. Retorna ``None`` quando a
+    string não casa com ISO-8601.
+    """
+    stripped = text.strip()
+    if stripped.endswith("Z"):
+        stripped = stripped[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(stripped)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=naive_tz)
+    return dt.astimezone(timezone.utc)
+
+
 def parse_natural_schedule(text: str) -> Tuple[Optional[str], Optional[datetime]]:
     """Interpreta uma string de agendamento e retorna ``(cron_expr, run_at_utc)``.
 
@@ -61,16 +80,10 @@ def parse_natural_schedule(text: str) -> Tuple[Optional[str], Optional[datetime]
     if _CRON_RE.match(stripped):
         return stripped, None
 
-    # 2. ISO 8601 (com ou sem timezone). Aceita 'Z' como sufixo.
-    iso_attempt = stripped.replace("Z", "+00:00")
-    try:
-        dt = datetime.fromisoformat(iso_attempt)
-    except ValueError:
-        dt = None
+    # 2. ISO 8601 (com ou sem timezone). Naive assume BRT.
+    dt = parse_iso_datetime(stripped, naive_tz=BRT)
     if dt is not None:
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=BRT)
-        return None, dt.astimezone(timezone.utc)
+        return None, dt
 
     # 3. BR humano: DD/MM[/YYYY] HH[:MM|hMM]
     m = _BR_DATE_RE.match(stripped)

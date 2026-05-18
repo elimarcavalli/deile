@@ -26,19 +26,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-_TOOL_CLASSES = (
-    "DiscordSendMessageTool",
-    "DiscordSendDMTool",
-    "DiscordEditMessageTool",
-    "DiscordReactTool",
-    "DiscordStartThreadTool",
-    "DiscordPinMessageTool",
-    "DiscordMentionRoleTool",
-    "DiscordGetUserProfileTool",
-    "WhatsAppSendTemplateTool",
-)
-
-
 def register_messaging_tools(registry: "ToolRegistry") -> int:
     """Register messaging tools on the given registry. Returns count.
 
@@ -57,27 +44,14 @@ def register_messaging_tools(registry: "ToolRegistry") -> int:
         logger.debug("messaging tools skipped: bot integration not configured")
         return 0
 
-    # Lazy imports — keep them inside the conditional so absence of
-    # deilebot never breaks the deile import chain.
-    from . import (DiscordEditMessageTool, DiscordGetUserProfileTool,
-                   DiscordMentionRoleTool, DiscordPinMessageTool,
-                   DiscordReactTool, DiscordSendDMTool, DiscordSendMessageTool,
-                   DiscordStartThreadTool, WhatsAppSendTemplateTool)
-
-    candidates = [
-        DiscordSendMessageTool(),
-        DiscordSendDMTool(),
-        DiscordEditMessageTool(),
-        DiscordReactTool(),
-        DiscordStartThreadTool(),
-        DiscordPinMessageTool(),
-        DiscordMentionRoleTool(),
-        DiscordGetUserProfileTool(),
-        WhatsAppSendTemplateTool(),
-    ]
+    # Lazy import — kept inside the conditional so absence of deilebot
+    # never breaks the deile import chain. MESSAGING_TOOL_CLASSES is the
+    # single source of truth for the messaging tool roster.
+    from . import MESSAGING_TOOL_CLASSES
 
     registered = 0
-    for tool in candidates:
+    for tool_cls in MESSAGING_TOOL_CLASSES:
+        tool = tool_cls()
         if tool.name in registry:
             continue  # idempotent — register_messaging_tools is safe to call twice
         try:
