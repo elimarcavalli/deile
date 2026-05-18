@@ -79,6 +79,60 @@ def _worker_token() -> str:
     return ""
 
 
+def _build_dispatch_payload(
+    *,
+    brief: str,
+    channel_id: str,
+    persona: str,
+    wait: bool,
+    user_message_id: object,
+    context: ToolContext,
+) -> Dict[str, object]:
+    """Assemble the JSON body POSTed to the worker control plane.
+
+    Attachments are forwarded from ``bot_context`` so the worker can call
+    vision tools without re-downloading from the (expiring) Discord CDN.
+    """
+    payload: Dict[str, object] = {
+        "brief": brief,
+        "channel_id": channel_id,
+        "persona": persona,
+        "wait_for_result": wait,
+    }
+    if user_message_id:
+        payload["user_message_id"] = str(user_message_id)
+    bot_ctx = context.session_data.get("bot_context") or {}
+    atts = bot_ctx.get("attachments")
+    if atts:
+        payload["attachments"] = atts
+    return payload
+
+
+def _summarize_worker_response(data: object) -> str:
+    """Build the compact one-line summary handed back to the bot LLM.
+
+    The user already sees the rich status message edited live by the
+    worker, so this stays terse on purpose — do NOT echo the full output.
+    """
+    if not isinstance(data, dict):
+        return ""
+    if data.get("ok") is True:
+        files = data.get("files") or []
+        elapsed = data.get("elapsed_s") or 0
+        return (
+            f"worker concluiu em {float(elapsed):.1f}s — "
+            f"{len(files)} arquivo(s): " + ", ".join(files[:5])
+        )
+    if data.get("ok") is False:
+        return (
+            f"worker FALHOU: {str(data.get('summary') or data.get('error'))[:300]}"
+        )
+    return (
+        f"worker dispatch aceito (task_id={data.get('task_id')}); "
+        "use wait_for_result=true para acompanhar."
+    )
+
+
 class DispatchDeileTaskTool(Tool):
     """Delegate a code task to a deile-worker Pod and stream UX to Discord."""
 
@@ -226,21 +280,14 @@ class DispatchDeileTaskTool(Tool):
                     error_code="WORKER_AUTH_MISSING",
                 )
 
-            payload = {
-                "brief": brief,
-                "channel_id": channel_id,
-                "persona": persona,
-                "wait_for_result": wait,
-            }
-            if user_message_id:
-                payload["user_message_id"] = str(user_message_id)
-            # Forward attachments from bot_context so the worker can call
-            # vision_describe_image / process file inputs without us
-            # needing to re-download from the (expiring) Discord CDN.
-            bot_ctx = context.session_data.get("bot_context") or {}
-            atts = bot_ctx.get("attachments")
-            if atts:
-                payload["attachments"] = atts
+            payload = _build_dispatch_payload(
+                brief=brief,
+                channel_id=channel_id,
+                persona=persona,
+                wait=wait,
+                user_message_id=user_message_id,
+                context=context,
+            )
 
             try:
                 import httpx
@@ -285,27 +332,7 @@ class DispatchDeileTaskTool(Tool):
                 msg = (err or {}).get("message") or f"HTTP {resp.status_code}"
                 return ToolResult.error_result(msg, error_code=code)
 
-            # Compact summary returned to the LLM. The user already sees the
-            # rich status message edited live by the worker — do NOT echo it.
-            short_summary = ""
-            if isinstance(data, dict):
-                if data.get("ok") is True:
-                    files = data.get("files") or []
-                    elapsed = data.get("elapsed_s") or 0
-                    short_summary = (
-                        f"worker concluiu em {float(elapsed):.1f}s — "
-                        f"{len(files)} arquivo(s): "
-                        + ", ".join(files[:5])
-                    )
-                elif data.get("ok") is False:
-                    short_summary = (
-                        f"worker FALHOU: {str(data.get('summary') or data.get('error'))[:300]}"
-                    )
-                else:
-                    short_summary = (
-                        f"worker dispatch aceito (task_id={data.get('task_id')}); "
-                        "use wait_for_result=true para acompanhar."
-                    )
+            short_summary = _summarize_worker_response(data)
 
             return ToolResult.success_result(
                 data={

@@ -5,7 +5,7 @@ When a :class:`CronEntry` becomes due, the runner:
 1. Loads the entry from :class:`CronStore`.
 2. Builds a fresh DEILE turn using ``entry.prompt`` (the user's natural-
    language scheduled instruction).
-3. Calls a host-supplied ``fire_callback(prompt, entry)`` which is expected
+3. Calls a host-supplied ``fire_callback(entry)`` which is expected
    to invoke the agent and return a short summary string.
 4. Persists ``last_fired_at`` / ``next_fire_at`` (recurring) or disables
    (one-shot) and records the summary in ``last_result``.
@@ -34,10 +34,6 @@ logger = logging.getLogger(__name__)
 
 
 FireCallback = Callable[[CronEntry], Awaitable[str]]
-
-
-def _default_fire_callback_factory(_entry: CronEntry) -> str:
-    return "(no fire callback wired)"
 
 
 class CronRunner:
