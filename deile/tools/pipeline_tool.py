@@ -17,6 +17,7 @@ from typing import Any, Optional
 from deile.orchestration.pipeline.constants import resolve_pipeline_repo
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
+from deile.orchestration.pipeline.reset import unlock_issue
 from deile.tools._pipeline_paths import resolve_base_path as _resolve_base_path
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
@@ -174,27 +175,9 @@ class PipelineTool(Tool):
     @staticmethod
     async def _reset_issue(monitor: PipelineMonitor, issue_number: int) -> str:
         """Remove lock labels from issue_number (gap #34)."""
-        from deile.orchestration.pipeline.github_client import GhCommandError
-        from deile.orchestration.pipeline.labels import BATCH_LABEL_PREFIX
-
-        github = monitor.github
-        try:
-            issue = await github.get_issue(issue_number)
-        except GhCommandError as exc:
-            return f"gh error fetching issue #{issue_number}: {exc}"
-
-        to_remove = [
-            lb for lb in issue.labels
-            if lb.startswith(BATCH_LABEL_PREFIX) or lb.startswith("~by:")
-        ]
-        if not to_remove:
+        result = await unlock_issue(monitor.github, issue_number)
+        if not result.ok:
+            return result.error or f"failed to reset issue #{issue_number}"
+        if not result.removed:
             return f"issue #{issue_number} has no lock labels to remove"
-
-        try:
-            await github.remove_labels("issue", issue_number, to_remove)
-        except GhCommandError as exc:
-            return f"failed to remove labels from #{issue_number}: {exc}"
-
-        return (
-            f"issue #{issue_number} unlocked — removed: {', '.join(to_remove)}"
-        )
+        return f"issue #{issue_number} unlocked — removed: {', '.join(result.removed)}"

@@ -28,9 +28,9 @@ from typing import Optional
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
 from deile.config.manager import CommandConfig
 from deile.orchestration.pipeline.constants import resolve_pipeline_repo
-from deile.orchestration.pipeline.labels import BATCH_LABEL_PREFIX
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
+from deile.orchestration.pipeline.reset import unlock_issue
 from deile.tools._pipeline_paths import resolve_base_path as _resolve_base_path
 
 logger = logging.getLogger(__name__)
@@ -259,37 +259,23 @@ class PipelineCommand(DirectCommand):
 
 async def _reset_issue(monitor: PipelineMonitor, issue_number: int) -> CommandResult:
     """Remove pipeline lock labels from *issue_number* (gap #34)."""
-    from deile.orchestration.pipeline.github_client import GhCommandError
-
-    github = monitor.github
-    try:
-        issue = await github.get_issue(issue_number)
-    except GhCommandError as exc:
-        return CommandResult(success=False, content=f"❌ gh error: {exc}")
-
-    to_remove = [
-        lb for lb in issue.labels
-        if lb.startswith(BATCH_LABEL_PREFIX) or lb.startswith("~by:")
-    ]
-    if not to_remove:
+    result = await unlock_issue(monitor.github, issue_number)
+    if not result.ok:
+        return CommandResult(success=False, content=f"❌ {result.error}")
+    if not result.removed:
         return CommandResult(
             success=True,
             content=f"ℹ️ issue #{issue_number} não tem labels de lock para remover.",
         )
 
-    try:
-        await github.remove_labels("issue", issue_number, to_remove)
-    except GhCommandError as exc:
-        return CommandResult(success=False, content=f"❌ falha ao remover labels: {exc}")
-
     logger.info(
-        "pipeline reset: removed labels %s from issue #%d", to_remove, issue_number
+        "pipeline reset: removed labels %s from issue #%d", result.removed, issue_number
     )
     return CommandResult(
         success=True,
         content=(
             f"✅ issue #{issue_number} desbloqueada — labels removidas: "
-            f"{', '.join(to_remove)}.\n"
+            f"{', '.join(result.removed)}.\n"
             f"A issue será reprocessada no próximo tick."
         ),
     )
