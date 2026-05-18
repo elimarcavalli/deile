@@ -56,22 +56,7 @@ class CronListTool(Tool):
         if creator:
             entries = [e for e in entries if e.created_by == creator]
 
-        out = [
-            {
-                "id": e.id,
-                "prompt": e.prompt,
-                "cron": e.cron,
-                "run_at": e.run_at.isoformat() if e.run_at else None,
-                "next_fire_at": e.next_fire_at.isoformat() if e.next_fire_at else None,
-                "last_fired_at": e.last_fired_at.isoformat() if e.last_fired_at else None,
-                "enabled": e.enabled,
-                "is_oneshot": e.is_oneshot,
-                "created_by": e.created_by,
-                "notify_user_id": e.notify_user_id,
-                "last_result": e.last_result,
-            }
-            for e in entries
-        ]
+        out = [e.to_dict() for e in entries]
         return ToolResult.success_result(
             data={"entries": out, "count": len(out)},
             message=f"{len(out)} entries scheduled",

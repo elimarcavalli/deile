@@ -177,16 +177,14 @@ class CronCreateTool(Tool):
                 error=exc, error_code="UNEXPECTED",
             )
 
+        serialized = entry.to_dict()
         return ToolResult.success_result(
             data={
-                "id": entry.id,
-                "next_fire_at": entry.next_fire_at.isoformat() if entry.next_fire_at else None,
-                "is_oneshot": entry.is_oneshot,
-                "cron": entry.cron,
-                "run_at": entry.run_at.isoformat() if entry.run_at else None,
+                key: serialized[key]
+                for key in ("id", "next_fire_at", "is_oneshot", "cron", "run_at")
             },
             message=(
                 f"agendado {entry.id!r} — próxima execução em "
-                f"{entry.next_fire_at.isoformat() if entry.next_fire_at else 'never'}"
+                f"{serialized['next_fire_at'] or 'never'}"
             ),
         )

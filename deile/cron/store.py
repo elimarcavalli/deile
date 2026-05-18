@@ -116,6 +116,30 @@ class CronEntry:
                 self.enabled = False
                 self.next_fire_at = None
 
+    def to_dict(self) -> dict:
+        """Return a JSON-serializable view (datetimes rendered as ISO strings).
+
+        Canonical serialization contract for the cron tools — keeps the
+        datetime-to-ISO conversion in one place instead of repeating the
+        ``x.isoformat() if x else None`` idiom per call site.
+        """
+        def _iso(dt: Optional[datetime]) -> Optional[str]:
+            return dt.isoformat() if dt else None
+
+        return {
+            "id": self.id,
+            "prompt": self.prompt,
+            "cron": self.cron,
+            "run_at": _iso(self.run_at),
+            "next_fire_at": _iso(self.next_fire_at),
+            "last_fired_at": _iso(self.last_fired_at),
+            "enabled": self.enabled,
+            "is_oneshot": self.is_oneshot,
+            "created_by": self.created_by,
+            "notify_user_id": self.notify_user_id,
+            "last_result": self.last_result,
+        }
+
 
 class CronStore:
     """Thread-safe SQLite-backed CRUD for :class:`CronEntry`."""
