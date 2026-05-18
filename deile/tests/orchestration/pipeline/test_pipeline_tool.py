@@ -230,7 +230,16 @@ class TestPipelineToolReset:
         assert result.status == ToolStatus.ERROR
         assert result.metadata.get("error_code") == "INVALID_TARGET"
 
-    async def test_reset_surfaces_gh_fetch_failure(self):
+    async def test_reset_rejects_non_positive_target(self):
+        tool = PipelineTool()
+        agent = MagicMock()
+        agent.pipeline_monitor = _make_monitor()
+        for bad in (0, -3):
+            result = await tool.execute(self._reset_context(bad, agent))
+            assert result.status == ToolStatus.ERROR
+            assert result.metadata.get("error_code") == "INVALID_TARGET"
+
+    async def test_reset_gh_fetch_failure_returns_error(self):
         tool = PipelineTool()
         agent = MagicMock()
         monitor = _make_monitor()
@@ -239,11 +248,12 @@ class TestPipelineToolReset:
         )
         agent.pipeline_monitor = monitor
         result = await tool.execute(self._reset_context(9, agent))
-        assert result.status == ToolStatus.SUCCESS
+        assert result.status == ToolStatus.ERROR
+        assert result.metadata.get("error_code") == "RESET_FAILED"
         assert "issue #9" in result.message
         assert "gh error fetching issue" in result.message
 
-    async def test_reset_surfaces_remove_labels_failure(self):
+    async def test_reset_remove_labels_failure_returns_error(self):
         tool = PipelineTool()
         agent = MagicMock()
         monitor = _make_monitor()
@@ -254,7 +264,8 @@ class TestPipelineToolReset:
         )
         agent.pipeline_monitor = monitor
         result = await tool.execute(self._reset_context(10, agent))
-        assert result.status == ToolStatus.SUCCESS
+        assert result.status == ToolStatus.ERROR
+        assert result.metadata.get("error_code") == "RESET_FAILED"
         assert "failed to remove labels" in result.message
 
 

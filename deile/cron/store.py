@@ -312,7 +312,8 @@ def make_id() -> str:
 def open_cron_store() -> CronStore:
     """Open the :class:`CronStore` at the configured DB path.
 
-    Single entry point for the cron tools so the store-construction idiom
-    lives with its owner instead of being inlined at each call site.
+    Single entry point for cron-store consumers (the ``cron_*`` tools and the
+    ``/pipeline`` command) so the store-construction idiom lives with its
+    owner instead of being inlined at each call site.
     """
     return CronStore(resolve_db_path())

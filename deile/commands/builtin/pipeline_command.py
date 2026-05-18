@@ -164,9 +164,9 @@ class PipelineCommand(DirectCommand):
             from deile.cron.agent_bridge import \
                 make_fire_callback as _make_cron_cb
             from deile.cron.runner import CronRunner  # noqa: PLC0415
-            from deile.cron.store import CronStore, resolve_db_path
+            from deile.cron.store import open_cron_store
 
-            _cron_store = CronStore(resolve_db_path())
+            _cron_store = open_cron_store()
 
             async def _cron_agent_provider():
                 return agent

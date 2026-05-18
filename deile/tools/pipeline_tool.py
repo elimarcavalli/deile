@@ -97,7 +97,7 @@ class PipelineTool(Tool):
             if action == "reset":
                 # gap #34: remove lock labels from an issue
                 target = context.parsed_args.get("target")
-                if not target:
+                if target is None:
                     return ToolResult.error_result(
                         message="'target' (issue number) is required for action='reset'",
                         error_code="MISSING_TARGET",
@@ -109,7 +109,14 @@ class PipelineTool(Tool):
                         message=f"'target' must be an integer, got {target!r}",
                         error_code="INVALID_TARGET",
                     )
-                msg = await self._reset_issue(monitor, issue_number)
+                if issue_number < 1:
+                    return ToolResult.error_result(
+                        message=f"'target' must be a positive issue number, got {issue_number}",
+                        error_code="INVALID_TARGET",
+                    )
+                ok, msg = await self._reset_issue(monitor, issue_number)
+                if not ok:
+                    return ToolResult.error_result(message=msg, error_code="RESET_FAILED")
                 return ToolResult.success_result(data={"issue": issue_number}, message=msg)
             # status (default)
             running = self._is_running(monitor)
@@ -168,11 +175,18 @@ class PipelineTool(Tool):
         }
 
     @staticmethod
-    async def _reset_issue(monitor: PipelineMonitor, issue_number: int) -> str:
-        """Remove lock labels from issue_number (gap #34)."""
+    async def _reset_issue(
+        monitor: PipelineMonitor, issue_number: int
+    ) -> tuple[bool, str]:
+        """Remove lock labels from issue_number (gap #34).
+
+        Returns ``(ok, message)`` — ``ok`` is False when the gh operation
+        failed, so the caller maps it to an error ToolResult instead of
+        reporting a failed reset as success.
+        """
         result = await unlock_issue(monitor.github, issue_number)
         if not result.ok:
-            return f"issue #{issue_number}: {result.error or 'reset failed'}"
+            return False, f"issue #{issue_number}: {result.error or 'reset failed'}"
         if not result.removed:
-            return f"issue #{issue_number} has no lock labels to remove"
-        return f"issue #{issue_number} unlocked — removed: {', '.join(result.removed)}"
+            return True, f"issue #{issue_number} has no lock labels to remove"
+        return True, f"issue #{issue_number} unlocked — removed: {', '.join(result.removed)}"
