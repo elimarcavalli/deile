@@ -36,10 +36,6 @@ logger = logging.getLogger(__name__)
 FireCallback = Callable[[CronEntry], Awaitable[str]]
 
 
-def _default_fire_callback_factory(_entry: CronEntry) -> str:
-    return "(no fire callback wired)"
-
-
 class CronRunner:
     """Polls :class:`CronStore` and fires due entries via callback."""
 
