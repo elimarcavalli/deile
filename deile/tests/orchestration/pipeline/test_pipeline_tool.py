@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+from deile.orchestration.pipeline.github_client import GhCommandError, IssueRef
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
 from deile.tools.base import ToolContext, ToolStatus
@@ -45,6 +46,7 @@ class TestPipelineToolSchema:
         assert "stop" in properties["action"]["enum"]
         assert "status" in properties["action"]["enum"]
         assert "tick" in properties["action"]["enum"]
+        assert "reset" in properties["action"]["enum"]
         # And the ToolSchema serializes correctly for OpenAI function calling.
         fn = schema.to_openai_function()
         assert fn["function"]["parameters"]["type"] == "object"
@@ -169,6 +171,91 @@ class TestPipelineToolFailureHandling:
         assert result.status == ToolStatus.ERROR
         assert "kaboom" in result.message
         assert result.metadata.get("error_code") == "PIPELINE_OP_FAILED"
+
+
+class TestPipelineToolReset:
+    """action='reset' — gap #34 lock-label removal via the LLM-callable tool."""
+
+    @staticmethod
+    def _reset_context(target, agent) -> ToolContext:
+        ctx = ToolContext(
+            user_input="", parsed_args={"action": "reset", "target": target}
+        )
+        ctx.session_data["agent"] = agent
+        return ctx
+
+    async def test_reset_removes_lock_labels(self):
+        tool = PipelineTool()
+        agent = MagicMock()
+        monitor = _make_monitor()
+        issue = IssueRef(
+            number=7, title="t", url="u",
+            labels=("intent", "~batch:abc12345", "~by:default"),
+        )
+        monitor.github.get_issue = AsyncMock(return_value=issue)
+        monitor.github.remove_labels = AsyncMock()
+        agent.pipeline_monitor = monitor
+        result = await tool.execute(self._reset_context(7, agent))
+        assert result.status == ToolStatus.SUCCESS
+        assert result.data["issue"] == 7
+        assert "unlocked" in result.message
+        monitor.github.remove_labels.assert_awaited_once()
+
+    async def test_reset_noop_when_no_lock_labels(self):
+        tool = PipelineTool()
+        agent = MagicMock()
+        monitor = _make_monitor()
+        issue = IssueRef(number=8, title="t", url="u", labels=("intent", "bug"))
+        monitor.github.get_issue = AsyncMock(return_value=issue)
+        monitor.github.remove_labels = AsyncMock()
+        agent.pipeline_monitor = monitor
+        result = await tool.execute(self._reset_context(8, agent))
+        assert result.status == ToolStatus.SUCCESS
+        assert "no lock labels" in result.message
+        monitor.github.remove_labels.assert_not_called()
+
+    async def test_reset_missing_target_returns_error(self):
+        tool = PipelineTool()
+        agent = MagicMock()
+        agent.pipeline_monitor = _make_monitor()
+        result = await tool.execute(self._reset_context(None, agent))
+        assert result.status == ToolStatus.ERROR
+        assert result.metadata.get("error_code") == "MISSING_TARGET"
+
+    async def test_reset_invalid_target_returns_error(self):
+        tool = PipelineTool()
+        agent = MagicMock()
+        agent.pipeline_monitor = _make_monitor()
+        result = await tool.execute(self._reset_context("abc", agent))
+        assert result.status == ToolStatus.ERROR
+        assert result.metadata.get("error_code") == "INVALID_TARGET"
+
+    async def test_reset_surfaces_gh_fetch_failure(self):
+        tool = PipelineTool()
+        agent = MagicMock()
+        monitor = _make_monitor()
+        monitor.github.get_issue = AsyncMock(
+            side_effect=GhCommandError(["gh", "issue", "view"], 1, "", "not found")
+        )
+        agent.pipeline_monitor = monitor
+        result = await tool.execute(self._reset_context(9, agent))
+        assert result.status == ToolStatus.SUCCESS
+        assert "issue #9" in result.message
+        assert "gh error fetching issue" in result.message
+
+    async def test_reset_surfaces_remove_labels_failure(self):
+        tool = PipelineTool()
+        agent = MagicMock()
+        monitor = _make_monitor()
+        issue = IssueRef(number=10, title="t", url="u", labels=("~batch:abc12345",))
+        monitor.github.get_issue = AsyncMock(return_value=issue)
+        monitor.github.remove_labels = AsyncMock(
+            side_effect=GhCommandError(["gh", "issue", "edit"], 1, "", "boom")
+        )
+        agent.pipeline_monitor = monitor
+        result = await tool.execute(self._reset_context(10, agent))
+        assert result.status == ToolStatus.SUCCESS
+        assert "failed to remove labels" in result.message
 
 
 class TestAutoDiscover:
