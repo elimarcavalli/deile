@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import ast
 import io
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -28,7 +29,6 @@ from rich.console import Console
 from deile.commands.builtin.sandbox_command import SandboxCommand
 from deile.evolution.improvement_loop import ImprovementLoop
 from deile.plugins.sandbox import PluginSandbox
-from deile.tools.bash_tool import BashExecuteTool
 
 
 def _render_rich(renderable) -> str:
@@ -39,9 +39,19 @@ def _render_rich(renderable) -> str:
 
 @pytest.mark.security
 def test_bash_sandbox_param_description_does_not_promise_isolation():
-    """Issue #57: schema description must say it does NOT isolate."""
-    tool = BashExecuteTool()
-    schema = tool.get_schema()
+    """Issue #57: schema description must say it does NOT isolate.
+
+    Asserts against the production schema artifact (``bash_execute.json``)
+    that ``ToolRegistry.load_schemas_from_directory`` feeds to the LLM —
+    not a Python helper, which could drift from the live schema.
+    """
+    schema_path = (
+        Path(__file__).resolve().parents[2]
+        / "tools"
+        / "schemas"
+        / "bash_execute.json"
+    )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
     desc = schema["parameters"]["properties"]["sandbox"]["description"].lower()
 
     assert "does not provide isolation" in desc, (

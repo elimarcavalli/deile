@@ -18,7 +18,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import List, Tuple
 
 from ..core.exceptions import ToolError
 from .base import DisplayPolicy, SyncTool, ToolContext, ToolResult, ToolStatus
@@ -109,63 +109,6 @@ class SearchTool(SyncTool):
             '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd',
             '.sql', '.graphql', '.proto', '.dockerfile', '.makefile',
             '.r', '.R', '.m', '.pl', '.lua', '.vim'
-        }
-    
-    def get_schema(self) -> Dict[str, Any]:
-        """Get tool schema for function calling - SITUAÇÃO 6 compliant"""
-        return {
-            "name": self.name,
-            "description": self.description,
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "query": {
-                        "type": "STRING",
-                        "description": "Search pattern or regex to find in files"
-                    },
-                    "path": {
-                        "type": "STRING", 
-                        "description": "Directory or file path to search (default: current directory)"
-                    },
-                    "file_patterns": {
-                        "type": "ARRAY",
-                        "items": {"type": "STRING"},
-                        "description": "File patterns to include (e.g., ['*.py', '*.js'])"
-                    },
-                    "max_context_lines": {
-                        "type": "NUMBER",
-                        "description": "Maximum total context lines per match (HARD LIMIT: 50)",
-                        "minimum": 1,
-                        "maximum": 50,
-                        "default": 25
-                    },
-                    "max_matches": {
-                        "type": "NUMBER",
-                        "description": "Maximum matches to return (default: 20)",
-                        "minimum": 1,
-                        "maximum": 50,
-                        "default": 20
-                    },
-                    "case_sensitive": {
-                        "type": "BOOLEAN",
-                        "description": "Case sensitive search (default: false)"
-                    },
-                    "regex_mode": {
-                        "type": "BOOLEAN",
-                        "description": "Enable regex pattern matching (default: false)"
-                    },
-                    "exclude_patterns": {
-                        "type": "ARRAY",
-                        "items": {"type": "STRING"},
-                        "description": "Additional patterns to exclude"
-                    },
-                    "show_cli": {
-                        "type": "BOOLEAN",
-                        "description": "Display results in terminal (default: true)"
-                    }
-                },
-                "required": ["query"]
-            }
         }
     
     def execute_sync(self, context: ToolContext) -> ToolResult:
