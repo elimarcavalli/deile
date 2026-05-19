@@ -13,8 +13,7 @@ from ..core.exceptions import ValidationError
 # direct caller in this module — see `__all__` below.
 from ._path_resolution import (LocalFileAccessViolation, ResolvedPath,
                                _apply_post_write_hint, _extract_path_arg,
-                               _looks_like_outside_project,
-                               _not_found_message,
+                               _looks_like_outside_project, _not_found_message,
                                _post_write_validation_hint,
                                _resolve_project_path,
                                _validate_path_within_working_directory)
