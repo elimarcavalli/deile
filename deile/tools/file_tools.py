@@ -14,6 +14,7 @@ from ..core.exceptions import ValidationError
 from ._path_resolution import (LocalFileAccessViolation, ResolvedPath,
                                _apply_post_write_hint, _extract_path_arg,
                                _looks_like_outside_project,
+                               _not_found_message,
                                _post_write_validation_hint,
                                _resolve_project_path,
                                _validate_path_within_working_directory)
@@ -386,23 +387,14 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
 
             # Verifica se arquivo existe
             if not full_path.exists():
-                norm_hint = (
-                    f" (input was {resolved.input!r} → {resolved.note})"
-                    if resolved.note
-                    else ""
-                )
-                bash_hint = (
-                    " If the file lives OUTSIDE the project, use "
-                    f"bash_execute(command=\"cat {resolved.absolute}\") instead — "
-                    "bash_execute has no working-directory sandbox."
-                    if (resolved.note or _looks_like_outside_project(file_path))
-                    else ""
-                )
                 return ToolResult.error_result(
-                    message=(
-                        f"File not found: {resolved.relative_to_cwd}"
-                        f"{norm_hint}. Use list_files to inspect the project tree "
-                        f"before assuming a path.{bash_hint}"
+                    message=_not_found_message(
+                        resolved,
+                        file_path,
+                        detail="Use list_files to inspect the project tree "
+                               "before assuming a path.",
+                        include_bash_hint=True,
+                        bash_verb="cat",
                     ),
                     error=FileNotFoundError(
                         f"File '{resolved.relative_to_cwd}' not found"
@@ -867,16 +859,12 @@ class EditFileTool(SyncTool):
 
         full_path = Path(resolved.absolute)
         if not full_path.exists():
-            norm_hint = (
-                f" (input was {resolved.input!r} → {resolved.note})"
-                if resolved.note
-                else ""
-            )
             return ToolResult.error_result(
-                message=(
-                    f"File not found: {resolved.relative_to_cwd}{norm_hint}. "
-                    f"edit_file only modifies existing files — use write_file "
-                    f"to create new ones."
+                message=_not_found_message(
+                    resolved,
+                    file_path,
+                    detail="edit_file only modifies existing files — use "
+                           "write_file to create new ones.",
                 ),
                 error=FileNotFoundError(
                     f"File '{resolved.relative_to_cwd}' not found"
@@ -1431,22 +1419,12 @@ class DeleteFileTool(SyncTool):
             full_path = Path(resolved.absolute)
 
             if not full_path.exists():
-                norm_hint = (
-                    f" (input was {resolved.input!r} → {resolved.note})"
-                    if resolved.note
-                    else ""
-                )
-                bash_hint = (
-                    " If the file lives OUTSIDE the project, use "
-                    f"bash_execute(command=\"rm {resolved.absolute}\") instead — "
-                    "bash_execute has no working-directory sandbox."
-                    if (resolved.note or _looks_like_outside_project(file_path))
-                    else ""
-                )
                 return ToolResult.error_result(
-                    message=(
-                        f"File not found: {resolved.relative_to_cwd}"
-                        f"{norm_hint}.{bash_hint}"
+                    message=_not_found_message(
+                        resolved,
+                        file_path,
+                        include_bash_hint=True,
+                        bash_verb="rm",
                     ),
                     error=FileNotFoundError(f"File '{resolved.relative_to_cwd}' not found"),
                 )

@@ -347,3 +347,41 @@ def _extract_path_arg(parsed_args: Dict[str, Any]) -> Optional[str]:
         if value:
             return value
     return None
+
+
+def _not_found_message(
+    resolved: ResolvedPath,
+    original_input: Optional[str],
+    *,
+    detail: str = "",
+    include_bash_hint: bool = False,
+    bash_verb: str = "cat",
+) -> str:
+    """Compose the canonical "file not found" message for the file tools.
+
+    Read/Edit/Delete each rebuilt this message near-identically: the
+    normalization hint (``input was ... → note``) plus an optional
+    ``bash_execute`` escape hatch for paths that clearly target outside
+    the project. ``detail`` carries the tool-specific middle sentence
+    (e.g. Read's "use list_files", Edit's "use write_file"); ``bash_verb``
+    is the command shown in the bash hint (``cat`` for read, ``rm`` for
+    delete). The exact wording is load-bearing — it steers the LLM out of
+    retry loops — so keep it stable when editing.
+    """
+    norm_hint = (
+        f" (input was {resolved.input!r} → {resolved.note})"
+        if resolved.note
+        else ""
+    )
+    bash_hint = ""
+    if include_bash_hint and (resolved.note or _looks_like_outside_project(original_input)):
+        bash_hint = (
+            " If the file lives OUTSIDE the project, use "
+            f'bash_execute(command="{bash_verb} {resolved.absolute}") instead — '
+            "bash_execute has no working-directory sandbox."
+        )
+    detail_part = f" {detail}" if detail else ""
+    return (
+        f"File not found: {resolved.relative_to_cwd}{norm_hint}."
+        f"{detail_part}{bash_hint}"
+    )
