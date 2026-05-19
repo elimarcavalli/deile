@@ -12,7 +12,7 @@ from ..core.exceptions import ValidationError
 # test imports (`from deile.tools.file_tools import ...`); they have no
 # direct caller in this module — see `__all__` below.
 from ._path_resolution import (LocalFileAccessViolation, ResolvedPath,
-                               _apply_post_write_hint,
+                               _apply_post_write_hint, _extract_path_arg,
                                _looks_like_outside_project,
                                _post_write_validation_hint,
                                _resolve_project_path,
@@ -261,20 +261,12 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
         logger.debug(f"ReadFileTool - file_list: {context.file_list}")
         
         # Obtém caminho do arquivo dos argumentos parseados ou da file_list
-        file_path = context.parsed_args.get("file_path") or context.parsed_args.get("path")
-        
+        file_path = _extract_path_arg(context.parsed_args)
+
         # Fallback para file_list se disponível
         if not file_path and context.file_list:
             file_path = context.file_list[0]  # Primeiro arquivo da lista
-        
-        # Fallback para argumentos posicionais se disponível
-        if not file_path:
-            # Tenta extrair path de outros argumentos comuns
-            for key in ["file", "filename", "filepath"]:
-                if context.parsed_args.get(key):
-                    file_path = context.parsed_args.get(key)
-                    break
-        
+
         # NOVO: Fallback para argumentos sem nome (posicionais)
         if not file_path and context.parsed_args:
             # Se há apenas um argumento, assume que é o file_path
@@ -528,17 +520,8 @@ class WriteFileTool(SyncTool):
         overwrite = context.parsed_args.get("overwrite", True)
         
         # 1. Tenta argumentos nomeados primeiro
-        if 'file_path' in context.parsed_args:
-            file_path = context.parsed_args['file_path']
-        elif 'filename' in context.parsed_args:
-            file_path = context.parsed_args['filename']
-        elif 'path' in context.parsed_args:
-            file_path = context.parsed_args['path']
-        elif 'file' in context.parsed_args:
-            file_path = context.parsed_args['file']
-        elif 'filepath' in context.parsed_args:
-            file_path = context.parsed_args['filepath']
-            
+        file_path = _extract_path_arg(context.parsed_args)
+
         if 'content' in context.parsed_args:
             content = context.parsed_args['content']
         elif 'text' in context.parsed_args:
@@ -805,13 +788,7 @@ class EditFileTool(SyncTool):
         logger.debug(f"EditFileTool - parsed_args keys: {list(context.parsed_args.keys())}")
 
         # 1. Extrai file_path (fallbacks consistentes com WriteFileTool)
-        file_path = (
-            context.parsed_args.get("file_path")
-            or context.parsed_args.get("path")
-            or context.parsed_args.get("filename")
-            or context.parsed_args.get("file")
-            or context.parsed_args.get("filepath")
-        )
+        file_path = _extract_path_arg(context.parsed_args)
         if not file_path:
             return ToolResult.error_result(
                 message=(
@@ -1430,16 +1407,9 @@ class DeleteFileTool(SyncTool):
     
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Executa deleção de arquivo"""
-        file_path = context.parsed_args.get("file_path") or context.parsed_args.get("path")
+        file_path = _extract_path_arg(context.parsed_args)
         force = context.parsed_args.get("force", False)
-        
-        # Fallback para argumentos alternativos
-        if not file_path:
-            for key in ["file", "filename", "filepath"]:
-                if context.parsed_args.get(key):
-                    file_path = context.parsed_args.get(key)
-                    break
-        
+
         if not file_path:
             return ToolResult.error_result(
                 message="No file path provided. Please specify a file to delete.",

@@ -1,6 +1,6 @@
 """Path resolution + post-write validation hints for `file_tools`.
 
-Two concerns colocated because both are pure helpers that operate on
+Three concerns colocated because all are pure helpers that operate on
 LLM-supplied path strings without any tool execution context:
 
 1. Path normalization: turn the noisy strings LLMs produce
@@ -10,6 +10,10 @@ LLM-supplied path strings without any tool execution context:
 2. Post-write validation hints: given a freshly written file, what cheap
    command should the LLM run to verify it parses / compiles? See
    ``_post_write_validation_hint`` and ``_apply_post_write_hint``.
+
+3. Path-argument extraction: pick the target path out of ``parsed_args``
+   using a single canonical synonym precedence shared by all four file
+   tools. See ``_extract_path_arg``.
 
 Extracted from `file_tools.py` (formerly 1813 LOC, MI 0.00) to keep that
 file focused on the five `SyncTool` classes (Read/Write/Edit/List/Delete).
@@ -321,3 +325,25 @@ def _validate_path_within_working_directory(file_path: str, working_directory: s
     the normalization ``note`` and surface it to the LLM.
     """
     return _resolve_project_path(file_path, working_directory).absolute
+
+
+# Argument keys the LLM may use for the target path, in canonical precedence
+# order. ``file_path`` is the documented schema key; the rest are defensive
+# fallbacks for when the model passes a near-miss synonym.
+_PATH_ARG_KEYS = ("file_path", "path", "filename", "file", "filepath")
+
+
+def _extract_path_arg(parsed_args: Dict[str, Any]) -> Optional[str]:
+    """Return the first non-empty path argument from ``parsed_args``.
+
+    Read/Write/Edit/Delete file tools all accept the same set of path
+    synonyms; centralizing the lookup keeps their precedence consistent
+    (it previously diverged per tool). Returns ``None`` when no path-like
+    key carries a truthy value — the caller's remaining fallbacks
+    (file_list, positional args, user_input) take over from there.
+    """
+    for key in _PATH_ARG_KEYS:
+        value = parsed_args.get(key)
+        if value:
+            return value
+    return None
