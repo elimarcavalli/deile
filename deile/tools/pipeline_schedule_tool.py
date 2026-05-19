@@ -24,6 +24,7 @@ from deile.orchestration.pipeline.scheduler import (OneshotEntry,
 from deile.tools._pipeline_paths import resolve_base_path as _resolve_base_path
 from deile.tools.base import (SecurityLevel, Tool, ToolCategory, ToolContext,
                               ToolResult, ToolSchema)
+from deile.tools.cron_tool_base import unexpected_error
 
 
 class PipelineScheduleTool(Tool):
@@ -226,7 +227,4 @@ class PipelineScheduleTool(Tool):
                 message=str(exc), error=exc, error_code="SCHEDULE_ERROR",
             )
         except Exception as exc:  # noqa: BLE001
-            return ToolResult.error_result(
-                message=f"{type(exc).__name__}: {exc}",
-                error=exc, error_code="UNEXPECTED",
-            )
+            return unexpected_error(exc)

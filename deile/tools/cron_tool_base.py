@@ -1,10 +1,10 @@
-"""Helpers compartilhados pelas ``cron_*`` tools.
+"""Helpers compartilhados por tools que padronizam erros de ``execute()``.
 
-As tools ``cron_create`` e ``cron_delete`` repetiam o mesmo bloco de
-tratamento de exceção inesperada em ``execute()``. Este módulo centraliza
-esse padrão (DRY) — nenhuma das tools precisa de estado, então o helper
-vive como função de módulo. (``cron_list`` usa um ``error_code`` próprio
-e fica de fora.)
+As tools ``cron_create``, ``cron_delete`` e ``pipeline_schedule``
+repetiam o mesmo bloco de tratamento de exceção inesperada em
+``execute()``. Este módulo centraliza esse padrão (DRY) — nenhuma das
+tools precisa de estado, então o helper vive como função de módulo.
+(``cron_list`` usa um ``error_code`` próprio e fica de fora.)
 """
 
 from __future__ import annotations
