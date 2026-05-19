@@ -1,8 +1,6 @@
 """Sistema de Registry para Tools do DEILE com Function Calling support"""
 
 import asyncio
-import importlib
-import inspect
 import logging
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -10,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from ..core.exceptions import ToolError, ValidationError
-from . import schema_export
+from . import discovery, schema_export
 from .base import SecurityLevel, Tool, ToolContext, ToolResult, ToolSchema
 from .schema_validation import validate_function_arguments
 
@@ -273,28 +271,17 @@ class ToolRegistry:
         """
         if not self._auto_discovery_enabled:
             return 0
-        
+
         if package_names is None:
-            package_names = [
-                'deile.tools.file_tools',
-                'deile.tools.execution_tools',
-                'deile.tools.search_tool',
-                'deile.tools.bash_tool',
-                'deile.tools.vision_tool',
-                'deile.tools.pipeline_tool',
-                'deile.tools.pipeline_schedule_tool',
-                'deile.tools.cron_create_tool',
-                'deile.tools.cron_list_tool',
-                'deile.tools.cron_delete_tool',
-                'deile.tools.worktree_tool',
-                'deile.tools.dispatch_deile_task',
-            ]
+            package_names = discovery.DEFAULT_TOOL_PACKAGES
 
         discovered_count = 0
 
         for package_name in package_names:
             try:
-                discovered_count += self._discover_in_package(package_name)
+                discovered_count += discovery.discover_tools_in_package(
+                    self, package_name
+                )
             except Exception as e:
                 logger.warning(f"Failed to discover tools in {package_name}: {e}")
 
@@ -309,37 +296,7 @@ class ToolRegistry:
             logger.warning(f"messaging tool registration failed: {e}")
 
         return discovered_count
-    
-    def _discover_in_package(self, package_name: str) -> int:
-        """Descobre tools em um pacote específico"""
-        try:
-            module = importlib.import_module(package_name)
-        except ImportError:
-            logger.debug(f"Package {package_name} not found for auto-discovery")
-            return 0
-        
-        discovered_count = 0
-        
-        # Procura por classes que herdam de Tool
-        for name in dir(module):
-            obj = getattr(module, name)
-            if (
-                inspect.isclass(obj) and 
-                issubclass(obj, Tool) and 
-                obj != Tool and
-                not inspect.isabstract(obj)
-            ):
-                try:
-                    # Instancia e registra a tool
-                    tool_instance = obj()
-                    if tool_instance.name not in self._tools:
-                        self.register(tool_instance)
-                        discovered_count += 1
-                except Exception as e:
-                    logger.warning(f"Failed to register discovered tool {name}: {e}")
-        
-        return discovered_count
-    
+
     def get_gemini_functions(
         self,
         authorized_only: bool = True,
