@@ -1,50 +1,15 @@
 """Sistema de Registry para Tools do DEILE com Function Calling support"""
 
-import asyncio
 import logging
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from ..core.exceptions import ToolError, ValidationError
-from . import discovery, schema_export
+from . import discovery, function_call, schema_export
 from .base import SecurityLevel, Tool, ToolContext, ToolResult, ToolSchema
-from .schema_validation import validate_function_arguments
 
 logger = logging.getLogger(__name__)
-
-
-def _run_coro_sync(coro):
-    """Run a coroutine to completion from synchronous code.
-
-    Uses ``asyncio.run`` when no loop is active. When invoked from inside
-    a running loop (e.g. ``PlanManager._run_tool_with_params``), the
-    coroutine is run in a worker thread so it never reenters the live
-    loop — ``loop.run_until_complete`` would raise ``RuntimeError`` there.
-
-    Two constraints apply when the worker-thread path is taken, and
-    callers must account for both:
-
-    1. Cancellation/timeout does NOT cross into the worker thread. An
-       ``asyncio.CancelledError`` or timeout raised against the caller
-       (e.g. an ``asyncio.wait_for`` wrapping a ``PlanManager`` step)
-       cannot interrupt the blocking ``.result()`` call — the worker
-       runs the coroutine to completion regardless. Step-level
-       timeout/cancellation therefore does not propagate into the tool.
-    2. The coroutine runs on a fresh event loop in a different thread.
-       Any tool invoked through this sync bridge must NOT hold or
-       capture resources bound to the caller's event loop (e.g.
-       ``asyncio.Lock``, connection pools, async clients/sessions);
-       such resources will misbehave or raise
-       ``RuntimeError: ... attached to a different loop``.
-    """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
 
 
 class ToolRegistry:
@@ -362,78 +327,20 @@ class ToolRegistry:
         return loaded_count
     
     def execute_function_call(
-        self, 
-        function_name: str, 
+        self,
+        function_name: str,
         arguments: Dict[str, Any],
-        execution_context: Optional[Dict[str, Any]] = None
+        execution_context: Optional[Dict[str, Any]] = None,
     ) -> ToolResult:
-        """Executa uma function call da Gemini API
-        
-        Args:
-            function_name: Nome da função a ser executada
-            arguments: Argumentos da função
-            execution_context: Contexto de execução adicional
-            
-        Returns:
-            ToolResult: Resultado da execução
-        """
-        # Resolve nome da tool (pode ser alias)
-        tool_name = self._tool_aliases.get(function_name, function_name)
-        
-        if tool_name not in self._tools:
-            return ToolResult.error_result(
-                f"Function '{function_name}' not found",
-                error_code="FUNCTION_NOT_FOUND"
-            )
-        
-        tool = self._tools[tool_name]
-        
-        # Verifica se tool está habilitada
-        if tool_name not in self._enabled_tools:
-            return ToolResult.error_result(
-                f"Function '{function_name}' is disabled",
-                error_code="FUNCTION_DISABLED"
-            )
-        
-        # Valida argumentos se schema disponível
-        if tool.schema:
-            validation_result = validate_function_arguments(tool.schema, arguments)
-            if not validation_result["valid"]:
-                return ToolResult.error_result(
-                    f"Invalid arguments for '{function_name}': {validation_result['errors']}",
-                    error_code="INVALID_ARGUMENTS"
-                )
-        
-        # Cria contexto de execução
-        context = ToolContext(
-            user_input="",  # Function calls não têm user_input direto
-            parsed_args=arguments,
-            session_data=execution_context or {},
-            working_directory=execution_context.get("working_directory", ".") if execution_context else ".",
-            metadata={
-                "execution_method": "function_call",
-                "function_name": function_name,
-                "tool_name": tool_name
-            }
-        )
-        
-        # Executa tool de forma síncrona (Function Calling é síncrono na API)
-        try:
-            # Se é SyncTool, executa diretamente
-            if hasattr(tool, 'execute_sync'):
-                return tool.execute_sync(context)
-            # Executa async tool de forma síncrona — seguro tanto fora
-            # quanto dentro de um event loop ativo.
-            return _run_coro_sync(tool.execute(context))
+        """Executa uma function call de forma síncrona.
 
-        except Exception as e:
-            logger.error(f"Error executing function call '{function_name}': {e}")
-            return ToolResult.error_result(
-                f"Execution error: {str(e)}",
-                error=e,
-                error_code="EXECUTION_ERROR"
-            )
-    
+        Wrapper fino sobre :func:`deile.tools.function_call.execute_function_call`
+        — a ponte síncrona de Function Calling vive em módulo dedicado (SRP).
+        """
+        return function_call.execute_function_call(
+            self, function_name, arguments, execution_context
+        )
+
     def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas do registry"""
         total_tools = len(self._tools)
