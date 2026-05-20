@@ -45,6 +45,12 @@ class GhCommandError(DEILEError):
         self.stderr = stderr
 
 
+def _labels_from_gh(item: dict) -> Tuple[str, ...]:
+    return tuple(
+        lab["name"] for lab in item.get("labels", []) if isinstance(lab, dict)
+    )
+
+
 @dataclass(frozen=True)
 class IssueRef:
     number: int
@@ -60,6 +66,17 @@ class IssueRef:
             if is_batch_label(label):
                 return batch_id_from_label(label)
         return None
+
+    @classmethod
+    def from_gh_json(cls, item: dict) -> "IssueRef":
+        return cls(
+            number=int(item["number"]),
+            title=str(item.get("title", "")),
+            url=str(item.get("url", "")),
+            labels=_labels_from_gh(item),
+            body=str(item.get("body") or ""),
+            state=str(item.get("state", "open")),
+        )
 
 
 @dataclass(frozen=True)
@@ -79,6 +96,19 @@ class PrRef:
             if is_batch_label(label):
                 return batch_id_from_label(label)
         return None
+
+    @classmethod
+    def from_gh_json(cls, item: dict, *, default_state: str = "open") -> "PrRef":
+        return cls(
+            number=int(item["number"]),
+            title=str(item.get("title", "")),
+            url=str(item.get("url", "")),
+            labels=_labels_from_gh(item),
+            head_ref=str(item.get("headRefName") or ""),
+            base_ref=str(item.get("baseRefName") or "main"),
+            state=str(item.get("state", default_state)),
+            is_draft=bool(item.get("isDraft", False)),
+        )
 
 
 @dataclass(frozen=True)
@@ -151,17 +181,7 @@ class GitHubClient:
             "--json", "number,title,url,labels,body,state",
         )
         data = json.loads(out or "[]")
-        return [
-            IssueRef(
-                number=item["number"],
-                title=item["title"],
-                url=item["url"],
-                labels=tuple(lab["name"] for lab in item.get("labels", [])),
-                body=item.get("body", "") or "",
-                state=item.get("state", "open"),
-            )
-            for item in data
-        ]
+        return [IssueRef.from_gh_json(item) for item in data]
 
     async def get_issue(self, number: int) -> IssueRef:
         out = await self._run_checked(
@@ -169,15 +189,7 @@ class GitHubClient:
             "--repo", self.repo,
             "--json", "number,title,url,labels,body,state",
         )
-        item = json.loads(out)
-        return IssueRef(
-            number=item["number"],
-            title=item["title"],
-            url=item["url"],
-            labels=tuple(lab["name"] for lab in item.get("labels", [])),
-            body=item.get("body", "") or "",
-            state=item.get("state", "open"),
-        )
+        return IssueRef.from_gh_json(json.loads(out))
 
     async def get_pr(self, number: int) -> Optional[PrRef]:
         """Fetch a single PR by number; returns None if not found / not open."""
@@ -192,16 +204,7 @@ class GitHubClient:
         item = json.loads(out)
         if item.get("state", "open").lower() not in ("open",):
             return None
-        return PrRef(
-            number=item["number"],
-            title=item["title"],
-            url=item["url"],
-            labels=tuple(lab["name"] for lab in item.get("labels", [])),
-            head_ref=item.get("headRefName", ""),
-            base_ref=item.get("baseRefName", "main"),
-            state=item.get("state", "open"),
-            is_draft=bool(item.get("isDraft", False)),
-        )
+        return PrRef.from_gh_json(item)
 
     # -- pull requests ------------------------------------------------
 
@@ -214,19 +217,7 @@ class GitHubClient:
             "--json", "number,title,url,labels,headRefName,baseRefName,state,isDraft",
         )
         data = json.loads(out or "[]")
-        return [
-            PrRef(
-                number=item["number"],
-                title=item["title"],
-                url=item["url"],
-                labels=tuple(lab["name"] for lab in item.get("labels", [])),
-                head_ref=item.get("headRefName", ""),
-                base_ref=item.get("baseRefName", "main"),
-                state=item.get("state", "open"),
-                is_draft=bool(item.get("isDraft", False)),
-            )
-            for item in data
-        ]
+        return [PrRef.from_gh_json(item) for item in data]
 
     # -- labels -------------------------------------------------------
 
@@ -459,23 +450,13 @@ class GitHubClient:
             new_items = 0
             for item in data:
                 try:
-                    number = int(item["number"])
-                    if number in seen:
+                    issue = IssueRef.from_gh_json(item)
+                    if issue.number in seen:
                         continue
-                    seen.add(number)
-                    labels = tuple(
-                        lab["name"] for lab in item.get("labels", []) if isinstance(lab, dict)
-                    )
-                    if any(lb.startswith("~") for lb in labels):
+                    seen.add(issue.number)
+                    if any(lb.startswith("~") for lb in issue.labels):
                         continue
-                    result.append(IssueRef(
-                        number=number,
-                        title=str(item.get("title", "")),
-                        url=str(item.get("url", "")),
-                        labels=labels,
-                        body=str(item.get("body") or ""),
-                        state=str(item.get("state", "open")),
-                    ))
+                    result.append(issue)
                     new_items += 1
                 except (KeyError, TypeError, ValueError) as exc:
                     logger.warning("skipping malformed issue payload: %s", exc)
@@ -509,19 +490,7 @@ class GitHubClient:
             logger.warning("list_recently_merged_prs failed: %s", exc)
             return []
         data = json.loads(out or "[]")
-        return [
-            PrRef(
-                number=item["number"],
-                title=item["title"],
-                url=item["url"],
-                labels=tuple(lab["name"] for lab in item.get("labels", [])),
-                head_ref=item.get("headRefName", ""),
-                base_ref=item.get("baseRefName", "main"),
-                state=item.get("state", "merged"),
-                is_draft=bool(item.get("isDraft", False)),
-            )
-            for item in data
-        ]
+        return [PrRef.from_gh_json(item, default_state="merged") for item in data]
 
     async def list_unclassified_prs(self) -> List[PrRef]:
         """Return open, non-draft PRs with no pipeline labels (no ``~*``).
