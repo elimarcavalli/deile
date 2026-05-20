@@ -224,11 +224,6 @@ class ToolLoopExecutor:
         produced by this executor for each tool the registry runs.
         """
         history = list(messages)
-        _ = (
-            getattr(provider, "model_name", None)
-            or getattr(provider, "provider_id", None)
-            or "model"
-        )
         # Per-turn loop detector. Defensive against the model spinning on
         # the same call when its previous tool returned an error or empty
         # data — see deile.core.loop_guard for the detection rules.
