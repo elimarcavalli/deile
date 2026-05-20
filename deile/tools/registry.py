@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from ..core.exceptions import ToolError, ValidationError
 from . import discovery, function_call, schema_export
-from .base import SecurityLevel, Tool, ToolContext, ToolResult, ToolSchema
+from .base import SecurityLevel, Tool, ToolContext, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -295,38 +295,13 @@ class ToolRegistry:
         )
 
     def load_schemas_from_directory(self, schemas_dir: Path) -> int:
-        """Carrega schemas de tools de um diretório
-        
-        Args:
-            schemas_dir: Diretório contendo arquivos JSON de schemas
-            
-        Returns:
-            int: Número de schemas carregados
+        """Carrega schemas de tools de um diretório.
+
+        Wrapper fino sobre :func:`deile.tools.discovery.load_schemas_from_directory`
+        — o I/O de descoberta de schemas vive em módulo dedicado (SRP),
+        no mesmo padrão de ``auto_discover`` e ``execute_function_call``.
         """
-        if not schemas_dir.exists():
-            logger.warning(f"Schemas directory not found: {schemas_dir}")
-            return 0
-        
-        loaded_count = 0
-        
-        for schema_file in schemas_dir.glob("*.json"):
-            try:
-                schema = ToolSchema.from_json_file(schema_file)
-                
-                # Associa schema à tool se ela existir
-                if schema.name in self._tools:
-                    tool = self._tools[schema.name]
-                    tool.set_schema(schema)
-                    loaded_count += 1
-                    logger.debug(f"Loaded schema for tool: {schema.name}")
-                else:
-                    logger.warning(f"Schema found for unregistered tool: {schema.name}")
-                    
-            except Exception as e:
-                logger.error(f"Failed to load schema from {schema_file}: {e}")
-        
-        logger.info(f"Loaded {loaded_count} tool schemas from {schemas_dir}")
-        return loaded_count
+        return discovery.load_schemas_from_directory(self, schemas_dir)
     
     def execute_function_call(
         self,
