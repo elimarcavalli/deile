@@ -42,6 +42,34 @@ logger = logging.getLogger(__name__)
 
 _PR_URL_RE = re.compile(r"https://github\.com/[^\s\"'<>]+/pull/\d+", re.IGNORECASE)
 
+
+async def _record_gh_error(
+    monitor: "PipelineMonitor",
+    description: str,
+    exc: Exception,
+    *,
+    notifier_label: Optional[str] = None,
+) -> None:
+    """Bump ``errors`` + ``gh_errors`` counters, log, optionally notify.
+
+    Centralises the four-line pattern (counters + logger.error + optional
+    notifier) that recurred ~10 times across the stage handlers. The
+    ``description`` becomes the log prefix (``"<description>: <exc>"``);
+    when ``notifier_label`` is given, a Discord error notification is
+    posted with ``str(exc)`` as detail.
+
+    The function is ``async`` because the optional notifier path
+    (``monitor.notifier.error(...)``) is async; the counter bump and log
+    call themselves are sync.  Keeping the signature uniform lets every
+    call-site simply ``await`` it, whether or not it ends up notifying.
+    """
+    monitor._stats.errors += 1
+    monitor._stats.gh_errors += 1
+    logger.error("%s: %s", description, exc)
+    if notifier_label is not None:
+        await monitor.notifier.error(notifier_label, str(exc))
+
+
 _CLASSIFY_COMMENT = (
     f"🤖 **DEILE auto-classificação** — esta issue foi adicionada à fila do pipeline "
     f"autônomo (`{WORKFLOW_NEW}`).\n\n"
@@ -67,10 +95,10 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
     try:
         issues = await monitor.github.list_unclassified_issues()
     except GhCommandError as exc:
-        monitor._stats.errors += 1
-        monitor._stats.gh_errors += 1
-        logger.error("could not list unclassified issues (gh error): %s", exc)
-        await monitor.notifier.error("classify/list", str(exc))
+        await _record_gh_error(
+            monitor, "could not list unclassified issues (gh error)", exc,
+            notifier_label="classify/list",
+        )
         return
     except Exception as exc:  # noqa: BLE001 — JSON parse error etc.
         monitor._stats.errors += 1
@@ -97,10 +125,10 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
         try:
             batch = await monitor.github.claim_with_batch("issue", issue.number, issue.title)
         except GhCommandError as exc:
-            monitor._stats.errors += 1
-            monitor._stats.gh_errors += 1
-            logger.error("auto-classify claim #%s failed: %s", issue.number, exc)
-            await monitor.notifier.error(f"auto-classify claim #{issue.number}", str(exc))
+            await _record_gh_error(
+                monitor, f"auto-classify claim #{issue.number} failed", exc,
+                notifier_label=f"auto-classify claim #{issue.number}",
+            )
             continue
         if batch is None:
             logger.debug("issue #%s already claimed by another monitor; skipping", issue.number)
@@ -108,10 +136,10 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
         try:
             await monitor.github.add_labels("issue", issue.number, [WORKFLOW_NEW])
         except GhCommandError as exc:
-            monitor._stats.errors += 1
-            monitor._stats.gh_errors += 1
-            logger.error("auto-classify label #%s failed: %s", issue.number, exc)
-            await monitor.notifier.error(f"auto-classify #{issue.number}", str(exc))
+            await _record_gh_error(
+                monitor, f"auto-classify label #{issue.number} failed", exc,
+                notifier_label=f"auto-classify #{issue.number}",
+            )
             continue
         except Exception as exc:  # noqa: BLE001 — best-effort, never abort loop
             monitor._stats.errors += 1
@@ -122,7 +150,6 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
         logger.info("auto-classified issue #%s as %s", issue.number, WORKFLOW_NEW)
         await monitor.notifier.issue_auto_classified(issue.number, issue.title, issue.url)
         # Post the standard "added to pipeline" comment, optionally with template reminder
-        comment = _CLASSIFY_COMMENT
         if empty_body:
             comment = (
                 f"🤖 **DEILE auto-classificação** — esta issue foi adicionada à fila do pipeline "
@@ -132,6 +159,8 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
                 f"gerar implementações incompletas.\n\n"
                 f"Para excluir da fila, remova o label `{WORKFLOW_NEW}`."
             )
+        else:
+            comment = _CLASSIFY_COMMENT
         try:
             await monitor.github.comment_on_issue(issue.number, comment)
         except Exception as exc:  # noqa: BLE001 — comment is best-effort; label already applied
@@ -145,10 +174,10 @@ async def classify_new_prs(monitor: "PipelineMonitor") -> None:
     try:
         prs = await monitor.github.list_unclassified_prs()
     except GhCommandError as exc:
-        monitor._stats.errors += 1
-        monitor._stats.gh_errors += 1
-        logger.error("could not list unclassified PRs (gh error): %s", exc)
-        await monitor.notifier.error("pr_triage/list", str(exc))
+        await _record_gh_error(
+            monitor, "could not list unclassified PRs (gh error)", exc,
+            notifier_label="pr_triage/list",
+        )
         return
     except Exception as exc:  # noqa: BLE001
         monitor._stats.errors += 1
@@ -161,9 +190,9 @@ async def classify_new_prs(monitor: "PipelineMonitor") -> None:
         try:
             batch = await monitor.github.claim_with_batch("pr", pr.number, pr.title)
         except GhCommandError as exc:
-            monitor._stats.errors += 1
-            monitor._stats.gh_errors += 1
-            logger.error("pr_triage claim #%s failed: %s", pr.number, exc)
+            await _record_gh_error(
+                monitor, f"pr_triage claim #{pr.number} failed", exc,
+            )
             continue
         if batch is None:
             logger.debug("PR #%s already claimed; skipping pr_triage", pr.number)
@@ -171,10 +200,10 @@ async def classify_new_prs(monitor: "PipelineMonitor") -> None:
         try:
             await monitor.github.add_labels("pr", pr.number, [REVIEW_PENDING])
         except GhCommandError as exc:
-            monitor._stats.errors += 1
-            monitor._stats.gh_errors += 1
-            logger.error("pr_triage label #%s failed: %s", pr.number, exc)
-            await monitor.notifier.error(f"pr_triage #{pr.number}", str(exc))
+            await _record_gh_error(
+                monitor, f"pr_triage label #{pr.number} failed", exc,
+                notifier_label=f"pr_triage #{pr.number}",
+            )
             continue
         # Release the batch claim so Stage 3 can pick this PR up via its own claim.
         await monitor.github.clear_batch_label("pr", pr.number)
@@ -226,10 +255,10 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
     try:
         issues = await monitor.github.list_issues_with_label(WORKFLOW_NEW, limit=50)
     except GhCommandError as exc:
-        monitor._stats.errors += 1
-        monitor._stats.gh_errors += 1
-        logger.error("could not list new issues (gh error): %s", exc)
-        await monitor.notifier.error("review/list", str(exc))
+        await _record_gh_error(
+            monitor, "could not list new issues (gh error)", exc,
+            notifier_label="review/list",
+        )
         return
     # Shard filter: only consider issues whose hash falls in our shard.
     target = next(
@@ -296,10 +325,10 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
     try:
         issues = await monitor.github.list_issues_with_label(WORKFLOW_REVIEWED, limit=50)
     except GhCommandError as exc:
-        monitor._stats.errors += 1
-        monitor._stats.gh_errors += 1
-        logger.error("could not list reviewed issues (gh error): %s", exc)
-        await monitor.notifier.error("implement/list", str(exc))
+        await _record_gh_error(
+            monitor, "could not list reviewed issues (gh error)", exc,
+            notifier_label="implement/list",
+        )
         return
     # Accept issues without ~batch: when the ownership label proves this monitor did the
     # review (e.g. operator manually promoted to ~workflow:revisada or batch label removed).
@@ -348,9 +377,9 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
             target.number, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_PR
         )
     except GhCommandError as exc:
-        monitor._stats.errors += 1
-        monitor._stats.gh_errors += 1
-        logger.error("could not transition issue #%s to em_pr: %s", target.number, exc)
+        await _record_gh_error(
+            monitor, f"could not transition issue #{target.number} to em_pr", exc,
+        )
     monitor._stats.issues_implemented += 1
     await monitor.notifier.implementation_finished(target.number, pr_url)
 
@@ -361,10 +390,10 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     try:
         prs = await monitor.github.list_open_prs(limit=50)
     except GhCommandError as exc:
-        monitor._stats.errors += 1
-        monitor._stats.gh_errors += 1
-        logger.error("could not list PRs (gh error): %s", exc)
-        await monitor.notifier.error("pr_review/list", str(exc))
+        await _record_gh_error(
+            monitor, "could not list PRs (gh error)", exc,
+            notifier_label="pr_review/list",
+        )
         return
     # Scope stage 3 to PRs whose head branch belongs to THIS monitor
     # (so we never review a peer's PR). Default-identity monitors keep
@@ -424,9 +453,9 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
             target.number, from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_CONCLUDED
         )
     except GhCommandError as exc:
-        monitor._stats.errors += 1
-        monitor._stats.gh_errors += 1
-        logger.error("could not transition PR #%s to concluida: %s", target.number, exc)
+        await _record_gh_error(
+            monitor, f"could not transition PR #{target.number} to concluida", exc,
+        )
     # Remove lock label so the PR doesn't accumulate an orphaned ~batch: forever.
     await monitor.github.clear_batch_label("pr", target.number)
     monitor._stats.prs_reviewed += 1

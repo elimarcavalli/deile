@@ -19,7 +19,7 @@ import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from deile.core.exceptions import DEILEError
 
@@ -154,39 +154,28 @@ class WorktreeManager:
                 )
         return Worktree(path=target, branch=branch, base_repo=self.base_repo)
 
-    async def cleanup_merged_branches(self, repo: str) -> int:
-        """Delete on-disk worktrees whose corresponding PR has been merged (gap #26).
+    async def cleanup_merged_branches(self, merged_branches: Sequence[str]) -> int:
+        """Delete on-disk worktrees whose branch is in *merged_branches* (gap #26).
 
-        Queries ``gh pr list --state merged`` for the given *repo* and removes
-        any local ``.worktrees/`` sub-directory whose branch name appears in
-        the merged PR list.  Returns the number of worktrees deleted.
+        The caller supplies the set of branch names that have already been
+        merged on the remote — this module no longer talks to GitHub. Any
+        local ``.worktrees/`` sub-directory whose relative path matches one
+        of those branches is removed. Returns the number of worktrees
+        deleted.
 
-        Best-effort: individual errors are logged at WARNING, never raised.
+        ``merged_branches`` is typed as :class:`~typing.Sequence` (not
+        ``Iterable``) because it is iterated once to build a lookup set —
+        a single-use generator would silently empty before the rglob walk
+        begins.  Callers should pass a list/tuple.
+
+        Best-effort: individual remove errors are logged at WARNING, never
+        raised.
         """
-        import json as _json
-        import shutil as _shutil
+        merged_set = frozenset(b for b in merged_branches if b)
+        if not merged_set or not self.branches_dir.exists():
+            return 0
 
         deleted = 0
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "gh", "pr", "list",
-                "--repo", repo,
-                "--state", "merged",
-                "--limit", "100",
-                "--json", "headRefName",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout_b, _ = await proc.communicate()
-            data = _json.loads((stdout_b or b"").decode("utf-8", "replace") or "[]")
-            merged_branches = {item.get("headRefName", "") for item in data if item.get("headRefName")}
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("cleanup_merged_branches: gh pr list failed: %s", exc)
-            return 0
-
-        if not self.branches_dir.exists():
-            return 0
-
         # Walk recursively: branches are stored at branches_dir / branch_name
         # where branch_name can contain path separators (e.g. "auto/issue-42").
         # We need the path relative to branches_dir to reconstruct the branch name.
@@ -199,9 +188,9 @@ class WorktreeManager:
                 branch_name = str(candidate.relative_to(self.branches_dir))
             except ValueError:
                 continue
-            if branch_name in merged_branches:
+            if branch_name in merged_set:
                 try:
-                    await asyncio.to_thread(_shutil.rmtree, candidate, ignore_errors=False)
+                    await asyncio.to_thread(shutil.rmtree, candidate, ignore_errors=False)
                     logger.info("cleaned up merged worktree: %s (branch=%s)", candidate, branch_name)
                     deleted += 1
                 except Exception as exc:  # noqa: BLE001

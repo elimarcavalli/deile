@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from deile.orchestration.pipeline.actions import ACTION_NAMES
 from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.scheduler import (OneshotEntry,
                                                     RecurringEntry,
@@ -59,7 +60,7 @@ class PipelineScheduleTool(Tool):
                         },
                         "trigger_action": {
                             "type": "string",
-                            "enum": ["review", "implement", "pr_review", "classify"],
+                            "enum": list(ACTION_NAMES),
                             "description": "Pipeline action this entry fires.",
                         },
                         "cron": {

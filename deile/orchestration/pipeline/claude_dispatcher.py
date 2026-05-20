@@ -13,6 +13,7 @@ import os
 import shlex
 import shutil
 import textwrap
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Mapping, Optional, Sequence
@@ -99,8 +100,7 @@ class ClaudeDispatcher:
         cmd: List[str] = [self._claude, *extra_args, "-p", prompt]
         logger.info("invoking Claude Code: %s in %s", shlex.join(cmd[:3]) + " …", cwd)
 
-        loop = asyncio.get_event_loop()
-        start = loop.time()
+        start = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(cwd),
@@ -115,7 +115,7 @@ class ClaudeDispatcher:
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-            duration = loop.time() - start
+            duration = time.monotonic() - start
             return ClaudeRunResult(
                 returncode=124,
                 stdout="",
@@ -123,7 +123,7 @@ class ClaudeDispatcher:
                 duration_seconds=duration,
                 cmd=tuple(cmd),
             )
-        duration = loop.time() - start
+        duration = time.monotonic() - start
         stderr_text = stderr_b.decode("utf-8", "replace")
         rc = proc.returncode or 0
         if rc != 0 and self.prefer_subscription_auth:

@@ -13,12 +13,16 @@ like ``bug``, ``enhancement``, ``intent``).
 from __future__ import annotations
 
 # Issue workflow ----------------------------------------------------------
+# Only the states actually transitioned by the pipeline live here.
+# Stage 0 sets ``WORKFLOW_NEW``, Stage 1 transitions to ``WORKFLOW_REVIEWING``
+# and then ``WORKFLOW_REVIEWED``, Stage 2 to ``WORKFLOW_PR``. There is
+# currently no handler that transitions through ``em_implementacao`` or
+# closes to ``concluida`` (the PR is the final state for the issue's
+# perspective), so those labels are intentionally absent.
 WORKFLOW_NEW = "~workflow:nova"
 WORKFLOW_REVIEWING = "~workflow:em_revisao"
 WORKFLOW_REVIEWED = "~workflow:revisada"
-WORKFLOW_IMPLEMENTING = "~workflow:em_implementacao"
 WORKFLOW_PR = "~workflow:em_pr"
-WORKFLOW_DONE = "~workflow:concluida"
 
 # PR workflow -------------------------------------------------------------
 REVIEW_PENDING = "~review:pendente"
@@ -32,9 +36,7 @@ WORKFLOW_LABELS = (
     WORKFLOW_NEW,
     WORKFLOW_REVIEWING,
     WORKFLOW_REVIEWED,
-    WORKFLOW_IMPLEMENTING,
     WORKFLOW_PR,
-    WORKFLOW_DONE,
 )
 
 REVIEW_LABELS = (REVIEW_PENDING, REVIEW_IN_PROGRESS, REVIEW_CONCLUDED)
@@ -43,9 +45,7 @@ LABEL_COLORS = {
     WORKFLOW_NEW: "0e8a16",
     WORKFLOW_REVIEWING: "fbca04",
     WORKFLOW_REVIEWED: "5319e7",
-    WORKFLOW_IMPLEMENTING: "1d76db",
     WORKFLOW_PR: "0052cc",
-    WORKFLOW_DONE: "0e8a16",
     REVIEW_PENDING: "0e8a16",
     REVIEW_IN_PROGRESS: "fbca04",
     REVIEW_CONCLUDED: "0e8a16",
@@ -55,9 +55,7 @@ LABEL_DESCRIPTIONS = {
     WORKFLOW_NEW: "Pipeline: issue nova, ainda não revisada",
     WORKFLOW_REVIEWING: "Pipeline: DEILE revisando (lock)",
     WORKFLOW_REVIEWED: "Pipeline: revisada, pronta para implementação",
-    WORKFLOW_IMPLEMENTING: "Pipeline: Claude Code implementando (lock)",
     WORKFLOW_PR: "Pipeline: PR aberta",
-    WORKFLOW_DONE: "Pipeline: concluída",
     REVIEW_PENDING: "Pipeline: PR aguardando revisão",
     REVIEW_IN_PROGRESS: "Pipeline: PR em revisão (lock)",
     REVIEW_CONCLUDED: "Pipeline: PR revisada/mergeada",

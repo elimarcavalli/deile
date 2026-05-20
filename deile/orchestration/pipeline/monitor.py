@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from deile.orchestration.pipeline import stages
+from deile.orchestration.pipeline.actions import ACTIONS_BY_NAME
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeDispatcher
 from deile.orchestration.pipeline.constants import (
     PIPELINE_POLL_INTERVAL_SECONDS, PIPELINE_STOP_TIMEOUT_SECONDS)
@@ -260,7 +261,22 @@ class PipelineMonitor:
         # Opportunistic cleanup: remove on-disk worktrees for already-merged PRs.
         if self.config.enable_worktree_cleanup:
             try:
-                deleted = await self.worktrees.cleanup_merged_branches(self.config.repo)
+                merged_prs = await self.github.list_recently_merged_prs(limit=100)
+                merged_branches = [pr.head_ref for pr in merged_prs if pr.head_ref]
+                # PR numbers are public metadata (already in the URL) so a
+                # bounded sample is safe to log; head_refs leak branch
+                # conventions and stay out.
+                dropped_pr_numbers = sorted(
+                    pr.number for pr in merged_prs if not pr.head_ref
+                )
+                if dropped_pr_numbers:
+                    logger.debug(
+                        "cleanup_merged_branches: dropped %d entries with empty "
+                        "head_ref (PRs: %s)",
+                        len(dropped_pr_numbers),
+                        dropped_pr_numbers[:10],
+                    )
+                deleted = await self.worktrees.cleanup_merged_branches(merged_branches)
                 if deleted:
                     logger.info("startup: cleaned up %d merged worktrees", deleted)
             except Exception as exc:  # noqa: BLE001 — cleanup is best-effort
@@ -301,42 +317,25 @@ class PipelineMonitor:
 
     async def _run_scheduled(self, run: PendingRun) -> None:
         """Execute a single scheduled action by name."""
-        _ENABLE_FLAGS = {
-            "classify": self.config.enable_classify,
-            "review": self.config.enable_review,
-            "implement": self.config.enable_implement,
-            "pr_review": self.config.enable_pr_review,
-            "follow_ups": self.config.enable_follow_ups,
-            "pr_triage": self.config.enable_pr_triage,
-            "mention_handling": self.config.enable_mention_handling,
-        }
-        flag = _ENABLE_FLAGS.get(run.action)
-        if flag is False:
+        action_def = ACTIONS_BY_NAME.get(run.action)
+        if action_def is None:
+            logger.debug("scheduled action %s unknown; skipped", run.action)
+            return
+
+        # ``enable_attr`` is documented in :class:`ActionDef` as "must return
+        # True" — use ``is not True`` so ``Optional[bool] = None`` and other
+        # falsy-but-not-False values are treated as disabled too.
+        if getattr(self.config, action_def.enable_attr) is not True:
             # Operator scheduled this action but disabled it in config — warn loudly.
             logger.warning(
-                "scheduled action %r is disabled (enable_%s=False); "
+                "scheduled action %r is disabled (%s is not True); "
                 "skipping run at %s. Remove the schedule entry or re-enable the flag.",
-                run.action, run.action, run.when.isoformat(),
+                run.action, action_def.enable_attr, run.when.isoformat(),
             )
             self._stats.skipped_runs += 1
             return
 
-        if run.action == "classify":
-            await self._classify_new_issues()
-        elif run.action == "review":
-            await self._review_one_new_issue()
-        elif run.action == "implement":
-            await self._implement_one_reviewed_issue()
-        elif run.action == "pr_review":
-            await self._review_one_open_pr()
-        elif run.action == "follow_ups":
-            await self._standalone_follow_ups()
-        elif run.action == "pr_triage":
-            await self._classify_new_prs()
-        elif run.action == "mention_handling":
-            await self._process_mentions()
-        else:
-            logger.debug("scheduled action %s unknown; skipped", run.action)
+        await getattr(self, action_def.method)()
 
     async def stop(self) -> None:
         self._stop_event.set()

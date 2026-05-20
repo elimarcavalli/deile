@@ -18,10 +18,11 @@ import logging
 import re
 import shutil
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 from deile.core.exceptions import DEILEError
+from deile.orchestration.pipeline._time_utils import format_iso_utc
 from deile.orchestration.pipeline.labels import (BATCH_LABEL_PREFIX,
                                                  LABEL_COLORS,
                                                  LABEL_DESCRIPTIONS,
@@ -45,6 +46,12 @@ class GhCommandError(DEILEError):
         self.stderr = stderr
 
 
+def _labels_from_gh(item: dict) -> Tuple[str, ...]:
+    return tuple(
+        lab["name"] for lab in item.get("labels", []) if isinstance(lab, dict)
+    )
+
+
 @dataclass(frozen=True)
 class IssueRef:
     number: int
@@ -56,10 +63,21 @@ class IssueRef:
 
     @property
     def batch_id(self) -> Optional[str]:
-        for label in self.labels:
-            if is_batch_label(label):
-                return batch_id_from_label(label)
-        return None
+        return next(
+            (batch_id_from_label(lb) for lb in self.labels if is_batch_label(lb)),
+            None,
+        )
+
+    @classmethod
+    def from_gh_json(cls, item: dict) -> "IssueRef":
+        return cls(
+            number=int(item["number"]),
+            title=str(item.get("title", "")),
+            url=str(item.get("url", "")),
+            labels=_labels_from_gh(item),
+            body=str(item.get("body") or ""),
+            state=str(item.get("state", "open")),
+        )
 
 
 @dataclass(frozen=True)
@@ -75,10 +93,23 @@ class PrRef:
 
     @property
     def batch_id(self) -> Optional[str]:
-        for label in self.labels:
-            if is_batch_label(label):
-                return batch_id_from_label(label)
-        return None
+        return next(
+            (batch_id_from_label(lb) for lb in self.labels if is_batch_label(lb)),
+            None,
+        )
+
+    @classmethod
+    def from_gh_json(cls, item: dict, *, default_state: str = "open") -> "PrRef":
+        return cls(
+            number=int(item["number"]),
+            title=str(item.get("title", "")),
+            url=str(item.get("url", "")),
+            labels=_labels_from_gh(item),
+            head_ref=str(item.get("headRefName") or ""),
+            base_ref=str(item.get("baseRefName") or "main"),
+            state=str(item.get("state", default_state)),
+            is_draft=bool(item.get("isDraft", False)),
+        )
 
 
 @dataclass(frozen=True)
@@ -112,9 +143,21 @@ def compute_batch_id_for_number(kind: str, number: int) -> str:
 class GitHubClient:
     """Thin async wrapper around `gh` for the pipeline."""
 
+    # Matches ``owner/name`` where each segment is non-empty and uses only
+    # GitHub-legal characters (alnum, dot, underscore, hyphen).  Rejects
+    # path-traversal sequences ('..') and any character that could escape
+    # the ``repos/<repo>/`` prefix used to build REST endpoints.
+    _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
+
     def __init__(self, repo: str, *, gh_path: Optional[str] = None) -> None:
-        if "/" not in repo:
-            raise ValueError(f"repo must be 'owner/name', got {repo!r}")
+        # Fail-fast on path-traversal-prone shapes so the endpoint guard
+        # in ``_list_comments_since`` (which checks ``startswith(repos/{repo}/)``
+        # and ``".." not in endpoint``) cannot be defeated by feeding
+        # ``..`` *through* ``self.repo``. The regex enforces a strict
+        # ``owner/name`` shape and rejects shell metachars, whitespace,
+        # extra segments, and leading/trailing ``/``.
+        if "/" not in repo or ".." in repo or not self._REPO_RE.fullmatch(repo):
+            raise ValueError(f"invalid repo: {repo!r}")
         self.repo = repo
         self._gh = gh_path or shutil.which("gh") or "gh"
 
@@ -151,17 +194,7 @@ class GitHubClient:
             "--json", "number,title,url,labels,body,state",
         )
         data = json.loads(out or "[]")
-        return [
-            IssueRef(
-                number=item["number"],
-                title=item["title"],
-                url=item["url"],
-                labels=tuple(lab["name"] for lab in item.get("labels", [])),
-                body=item.get("body", "") or "",
-                state=item.get("state", "open"),
-            )
-            for item in data
-        ]
+        return [IssueRef.from_gh_json(item) for item in data]
 
     async def get_issue(self, number: int) -> IssueRef:
         out = await self._run_checked(
@@ -169,15 +202,7 @@ class GitHubClient:
             "--repo", self.repo,
             "--json", "number,title,url,labels,body,state",
         )
-        item = json.loads(out)
-        return IssueRef(
-            number=item["number"],
-            title=item["title"],
-            url=item["url"],
-            labels=tuple(lab["name"] for lab in item.get("labels", [])),
-            body=item.get("body", "") or "",
-            state=item.get("state", "open"),
-        )
+        return IssueRef.from_gh_json(json.loads(out))
 
     async def get_pr(self, number: int) -> Optional[PrRef]:
         """Fetch a single PR by number; returns None if not found / not open."""
@@ -192,16 +217,7 @@ class GitHubClient:
         item = json.loads(out)
         if item.get("state", "open").lower() not in ("open",):
             return None
-        return PrRef(
-            number=item["number"],
-            title=item["title"],
-            url=item["url"],
-            labels=tuple(lab["name"] for lab in item.get("labels", [])),
-            head_ref=item.get("headRefName", ""),
-            base_ref=item.get("baseRefName", "main"),
-            state=item.get("state", "open"),
-            is_draft=bool(item.get("isDraft", False)),
-        )
+        return PrRef.from_gh_json(item)
 
     # -- pull requests ------------------------------------------------
 
@@ -214,19 +230,7 @@ class GitHubClient:
             "--json", "number,title,url,labels,headRefName,baseRefName,state,isDraft",
         )
         data = json.loads(out or "[]")
-        return [
-            PrRef(
-                number=item["number"],
-                title=item["title"],
-                url=item["url"],
-                labels=tuple(lab["name"] for lab in item.get("labels", [])),
-                head_ref=item.get("headRefName", ""),
-                base_ref=item.get("baseRefName", "main"),
-                state=item.get("state", "open"),
-                is_draft=bool(item.get("isDraft", False)),
-            )
-            for item in data
-        ]
+        return [PrRef.from_gh_json(item) for item in data]
 
     # -- labels -------------------------------------------------------
 
@@ -250,28 +254,21 @@ class GitHubClient:
             "--remove-label", ",".join(labels_list),
         )
 
-    async def transition(
-        self,
-        kind: str,
-        number: int,
-        *,
-        from_label: Optional[str],
-        to_label: str,
-    ) -> None:
-        """Swap a workflow label on an issue or PR (kind='issue'|'pr')."""
-        if from_label is not None:
-            await self.remove_labels(kind, number, [from_label])
-        await self.add_labels(kind, number, [to_label])
-
     async def transition_issue(
         self, number: int, *, from_label: Optional[str], to_label: str,
     ) -> None:
-        await self.transition("issue", number, from_label=from_label, to_label=to_label)
+        """Swap a workflow label on an issue (remove from_label, add to_label)."""
+        if from_label is not None:
+            await self.remove_labels("issue", number, [from_label])
+        await self.add_labels("issue", number, [to_label])
 
     async def transition_pr(
         self, number: int, *, from_label: Optional[str], to_label: str,
     ) -> None:
-        await self.transition("pr", number, from_label=from_label, to_label=to_label)
+        """Swap a workflow label on a PR (remove from_label, add to_label)."""
+        if from_label is not None:
+            await self.remove_labels("pr", number, [from_label])
+        await self.add_labels("pr", number, [to_label])
 
     async def claim_with_batch(
         self,
@@ -291,14 +288,13 @@ class GitHubClient:
         distributed lock (no ``If-Match``/ETag support in ``gh``), but it
         catches the common case where two monitors overlap on a fast repo.
         """
+        if kind not in ("issue", "pr"):
+            raise ValueError(f"kind must be 'issue' or 'pr', got {kind!r}")
+
         async def _fetch_current():
             if kind == "issue":
                 return await self.get_issue(number)
-            cur = await self.get_pr(number)
-            return cur  # may be None
-
-        if kind not in ("issue", "pr"):
-            raise ValueError(f"kind must be 'issue' or 'pr', got {kind!r}")
+            return await self.get_pr(number)  # may be None
 
         current = await _fetch_current()
         if current is None:
@@ -459,23 +455,13 @@ class GitHubClient:
             new_items = 0
             for item in data:
                 try:
-                    number = int(item["number"])
-                    if number in seen:
+                    issue = IssueRef.from_gh_json(item)
+                    if issue.number in seen:
                         continue
-                    seen.add(number)
-                    labels = tuple(
-                        lab["name"] for lab in item.get("labels", []) if isinstance(lab, dict)
-                    )
-                    if any(lb.startswith("~") for lb in labels):
+                    seen.add(issue.number)
+                    if any(lb.startswith("~") for lb in issue.labels):
                         continue
-                    result.append(IssueRef(
-                        number=number,
-                        title=str(item.get("title", "")),
-                        url=str(item.get("url", "")),
-                        labels=labels,
-                        body=str(item.get("body") or ""),
-                        state=str(item.get("state", "open")),
-                    ))
+                    result.append(issue)
                     new_items += 1
                 except (KeyError, TypeError, ValueError) as exc:
                     logger.warning("skipping malformed issue payload: %s", exc)
@@ -509,19 +495,7 @@ class GitHubClient:
             logger.warning("list_recently_merged_prs failed: %s", exc)
             return []
         data = json.loads(out or "[]")
-        return [
-            PrRef(
-                number=item["number"],
-                title=item["title"],
-                url=item["url"],
-                labels=tuple(lab["name"] for lab in item.get("labels", [])),
-                head_ref=item.get("headRefName", ""),
-                base_ref=item.get("baseRefName", "main"),
-                state=item.get("state", "merged"),
-                is_draft=bool(item.get("isDraft", False)),
-            )
-            for item in data
-        ]
+        return [PrRef.from_gh_json(item, default_state="merged") for item in data]
 
     async def list_unclassified_prs(self) -> List[PrRef]:
         """Return open, non-draft PRs with no pipeline labels (no ``~*``).
@@ -538,21 +512,33 @@ class GitHubClient:
             and not any(lb.startswith("~") for lb in pr.labels)
         ]
 
-    async def list_issue_comments_since(self, since: datetime) -> List[CommentRef]:
-        """Return all issue comments posted after *since* (UTC).
-
-        Uses the GitHub REST API via ``gh api``. Returns empty list on error.
-        """
-        since_iso = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    async def _list_comments_since(
+        self,
+        endpoint: str,
+        *,
+        since: datetime,
+        kind: str,
+        url_field: str,
+        log_label: str,
+    ) -> List[CommentRef]:
+        """Shared implementation for list_issue_comments_since / list_pr_review_comments_since."""
+        # Defence-in-depth: every current caller builds ``endpoint`` from
+        # ``self.repo``; assert here so a future caller cannot pass an
+        # attacker-influenced REST path through to ``gh api``.
+        expected_prefix = f"repos/{self.repo}/"
+        if not endpoint.startswith(expected_prefix) or ".." in endpoint:
+            raise ValueError(
+                f"endpoint must start with {expected_prefix!r} and contain no '..'"
+            )
+        since_iso = format_iso_utc(since)
         try:
             out = await self._run_checked(
-                "api",
-                f"repos/{self.repo}/issues/comments",
+                "api", endpoint,
                 "--field", f"since={since_iso}",
                 "--field", "per_page=100",
             )
         except GhCommandError as exc:
-            logger.warning("list_issue_comments_since failed: %s", exc)
+            logger.warning("%s failed: %s", log_label, exc)
             return []
         data = json.loads(out or "[]")
         result: List[CommentRef] = []
@@ -562,46 +548,39 @@ class GitHubClient:
                     comment_id=int(item["id"]),
                     body=str(item.get("body") or ""),
                     html_url=str(item.get("html_url", "")),
-                    issue_url=str(item.get("issue_url", "")),
+                    issue_url=str(item.get(url_field, "")),
                     author=str((item.get("user") or {}).get("login", "")),
-                    kind="issue",
+                    kind=kind,
                 ))
             except (KeyError, TypeError, ValueError) as exc:
-                logger.warning("skipping malformed issue comment payload: %s", exc)
+                logger.warning("skipping malformed %s comment payload: %s", kind, exc)
         return result
+
+    async def list_issue_comments_since(self, since: datetime) -> List[CommentRef]:
+        """Return all issue comments posted after *since* (UTC).
+
+        Uses the GitHub REST API via ``gh api``. Returns empty list on error.
+        """
+        return await self._list_comments_since(
+            f"repos/{self.repo}/issues/comments",
+            since=since,
+            kind="issue",
+            url_field="issue_url",
+            log_label="list_issue_comments_since",
+        )
 
     async def list_pr_review_comments_since(self, since: datetime) -> List[CommentRef]:
         """Return all PR review comments posted after *since* (UTC).
 
         Uses the GitHub REST API via ``gh api``. Returns empty list on error.
         """
-        since_iso = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        try:
-            out = await self._run_checked(
-                "api",
-                f"repos/{self.repo}/pulls/comments",
-                "--field", f"since={since_iso}",
-                "--field", "per_page=100",
-            )
-        except GhCommandError as exc:
-            logger.warning("list_pr_review_comments_since failed: %s", exc)
-            return []
-        data = json.loads(out or "[]")
-        result: List[CommentRef] = []
-        for item in data:
-            try:
-                pr_url = str(item.get("pull_request_url", ""))
-                result.append(CommentRef(
-                    comment_id=int(item["id"]),
-                    body=str(item.get("body") or ""),
-                    html_url=str(item.get("html_url", "")),
-                    issue_url=pr_url,
-                    author=str((item.get("user") or {}).get("login", "")),
-                    kind="pr_review",
-                ))
-            except (KeyError, TypeError, ValueError) as exc:
-                logger.warning("skipping malformed PR review comment payload: %s", exc)
-        return result
+        return await self._list_comments_since(
+            f"repos/{self.repo}/pulls/comments",
+            since=since,
+            kind="pr_review",
+            url_field="pull_request_url",
+            log_label="list_pr_review_comments_since",
+        )
 
     async def clear_batch_label(self, kind: str, number: int) -> None:
         """Remove all ``~batch:*`` labels from an issue or PR (gap #9).
