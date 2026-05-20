@@ -57,6 +57,11 @@ async def _record_gh_error(
     ``description`` becomes the log prefix (``"<description>: <exc>"``);
     when ``notifier_label`` is given, a Discord error notification is
     posted with ``str(exc)`` as detail.
+
+    The function is ``async`` because the optional notifier path
+    (``monitor.notifier.error(...)``) is async; the counter bump and log
+    call themselves are sync.  Keeping the signature uniform lets every
+    call-site simply ``await`` it, whether or not it ends up notifying.
     """
     monitor._stats.errors += 1
     monitor._stats.gh_errors += 1

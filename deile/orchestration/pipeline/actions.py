@@ -56,6 +56,11 @@ ACTIONS: Tuple[ActionDef, ...] = (
     ActionDef("implement", "_implement_one_reviewed_issue", "enable_implement"),
     ActionDef("pr_review", "_review_one_open_pr", "enable_pr_review"),
     ActionDef("pr_triage", "_classify_new_prs", "enable_pr_triage"),
+    # ``mention_handling`` also has its own polling cursor
+    # (``_mention_cursor_path``) driven by the tick loop.  Scheduling it via
+    # a recurring/oneshot entry runs the same handler from the scheduler
+    # path; both paths share the cursor so duplicate processing is
+    # prevented, but the action will fire from BOTH places when scheduled.
     ActionDef("mention_handling", "_process_mentions", "enable_mention_handling"),
     ActionDef("follow_ups", "_standalone_follow_ups", "enable_follow_ups"),
 )
