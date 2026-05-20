@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from deile.orchestration.pipeline import stages
+from deile.orchestration.pipeline.actions import ACTIONS_BY_NAME
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeDispatcher
 from deile.orchestration.pipeline.constants import (
     PIPELINE_POLL_INTERVAL_SECONDS, PIPELINE_STOP_TIMEOUT_SECONDS)
@@ -303,42 +304,22 @@ class PipelineMonitor:
 
     async def _run_scheduled(self, run: PendingRun) -> None:
         """Execute a single scheduled action by name."""
-        _ENABLE_FLAGS = {
-            "classify": self.config.enable_classify,
-            "review": self.config.enable_review,
-            "implement": self.config.enable_implement,
-            "pr_review": self.config.enable_pr_review,
-            "follow_ups": self.config.enable_follow_ups,
-            "pr_triage": self.config.enable_pr_triage,
-            "mention_handling": self.config.enable_mention_handling,
-        }
-        flag = _ENABLE_FLAGS.get(run.action)
-        if flag is False:
+        action_def = ACTIONS_BY_NAME.get(run.action)
+        if action_def is None:
+            logger.debug("scheduled action %s unknown; skipped", run.action)
+            return
+
+        if getattr(self.config, action_def.enable_attr) is False:
             # Operator scheduled this action but disabled it in config — warn loudly.
             logger.warning(
-                "scheduled action %r is disabled (enable_%s=False); "
+                "scheduled action %r is disabled (%s=False); "
                 "skipping run at %s. Remove the schedule entry or re-enable the flag.",
-                run.action, run.action, run.when.isoformat(),
+                run.action, action_def.enable_attr, run.when.isoformat(),
             )
             self._stats.skipped_runs += 1
             return
 
-        if run.action == "classify":
-            await self._classify_new_issues()
-        elif run.action == "review":
-            await self._review_one_new_issue()
-        elif run.action == "implement":
-            await self._implement_one_reviewed_issue()
-        elif run.action == "pr_review":
-            await self._review_one_open_pr()
-        elif run.action == "follow_ups":
-            await self._standalone_follow_ups()
-        elif run.action == "pr_triage":
-            await self._classify_new_prs()
-        elif run.action == "mention_handling":
-            await self._process_mentions()
-        else:
-            logger.debug("scheduled action %s unknown; skipped", run.action)
+        await getattr(self, action_def.method)()
 
     async def stop(self) -> None:
         self._stop_event.set()

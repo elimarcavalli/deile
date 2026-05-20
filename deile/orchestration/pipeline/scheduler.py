@@ -50,12 +50,17 @@ import yaml
 from deile.core.exceptions import DEILEError
 from deile.orchestration.pipeline._time_utils import (format_iso_utc, now_utc,
                                                      parse_iso_utc)
+from deile.orchestration.pipeline.actions import ACTION_NAMES
 from deile.orchestration.pipeline.cron import CronExpressionError, next_after
 
 logger = logging.getLogger(__name__)
 
 
-VALID_ACTIONS = {"review", "implement", "pr_review", "classify", "follow_ups"}
+# Derived from the canonical registry in ``actions.py``. Previously this
+# was a hand-maintained subset and silently rejected ``pr_triage`` and
+# ``mention_handling`` entries despite ``PipelineMonitor`` knowing how to
+# run them.
+VALID_ACTIONS = frozenset(ACTION_NAMES)
 
 
 class ScheduleError(DEILEError):
