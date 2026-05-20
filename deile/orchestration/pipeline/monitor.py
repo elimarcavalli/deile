@@ -260,7 +260,9 @@ class PipelineMonitor:
         # Opportunistic cleanup: remove on-disk worktrees for already-merged PRs.
         if self.config.enable_worktree_cleanup:
             try:
-                deleted = await self.worktrees.cleanup_merged_branches(self.config.repo)
+                merged_prs = await self.github.list_recently_merged_prs(limit=100)
+                merged_branches = [pr.head_ref for pr in merged_prs if pr.head_ref]
+                deleted = await self.worktrees.cleanup_merged_branches(merged_branches)
                 if deleted:
                     logger.info("startup: cleaned up %d merged worktrees", deleted)
             except Exception as exc:  # noqa: BLE001 — cleanup is best-effort

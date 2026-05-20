@@ -689,8 +689,6 @@ class TestCleanupMergedBranchesNestedPath:
     which never matched full branch names like 'auto/issue-42'. Now uses relative_to()."""
 
     async def test_deletes_nested_worktree_when_branch_merged(self, tmp_path):
-        import json as _json
-
         from deile.orchestration.pipeline.worktree_manager import \
             WorktreeManager
 
@@ -703,23 +701,12 @@ class TestCleanupMergedBranchesNestedPath:
         wt_dir.mkdir(parents=True)
         (wt_dir / ".git").mkdir()
 
-        merged_prs_json = _json.dumps([{"headRefName": "auto/issue-42"}]).encode()
-
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        mock_proc = MagicMock()
-        mock_proc.communicate = AsyncMock(return_value=(merged_prs_json, b""))
-        mock_proc.returncode = 0
-
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            deleted = await wm.cleanup_merged_branches("owner/repo")
+        deleted = await wm.cleanup_merged_branches(["auto/issue-42"])
 
         assert deleted == 1
         assert not wt_dir.exists()
 
     async def test_no_delete_when_branch_not_merged(self, tmp_path):
-        import json as _json
-
         from deile.orchestration.pipeline.worktree_manager import \
             WorktreeManager
 
@@ -730,17 +717,7 @@ class TestCleanupMergedBranchesNestedPath:
         wt_dir.mkdir(parents=True)
         (wt_dir / ".git").mkdir()
 
-        # merged list is empty
-        merged_prs_json = _json.dumps([]).encode()
-
-        from unittest.mock import AsyncMock, MagicMock, patch
-
-        mock_proc = MagicMock()
-        mock_proc.communicate = AsyncMock(return_value=(merged_prs_json, b""))
-        mock_proc.returncode = 0
-
-        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
-            deleted = await wm.cleanup_merged_branches("owner/repo")
+        deleted = await wm.cleanup_merged_branches([])
 
         assert deleted == 0
         assert wt_dir.exists()

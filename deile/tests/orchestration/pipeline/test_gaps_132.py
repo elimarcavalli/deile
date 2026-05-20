@@ -389,6 +389,8 @@ class TestFollowUpsAction:
 
 class TestStartupWiring:
     async def test_cleanup_merged_branches_called_on_catchup(self, tmp_path):
+        from deile.orchestration.pipeline.github_client import PrRef
+
         cfg = PipelineConfig(
             repo="owner/repo", base_repo_path=tmp_path,
             use_pid_lock=False, enable_worktree_cleanup=True,
@@ -400,16 +402,22 @@ class TestStartupWiring:
         worktrees = AsyncMock()
         worktrees.cleanup_merged_branches = AsyncMock(return_value=2)
 
+        github = AsyncMock()
+        github.list_recently_merged_prs = AsyncMock(return_value=[
+            PrRef(number=1, title="t", url="u", labels=(), head_ref="feat/a", state="merged"),
+            PrRef(number=2, title="t", url="u", labels=(), head_ref="feat/b", state="merged"),
+        ])
+
         monitor = PipelineMonitor(
             cfg,
-            github=AsyncMock(),
+            github=github,
             worktrees=worktrees,
             claude=AsyncMock(),
             notifier=AsyncMock(),
             schedule_store=schedule_store,
         )
         await monitor._catch_up_pending()
-        worktrees.cleanup_merged_branches.assert_called_once_with("owner/repo")
+        worktrees.cleanup_merged_branches.assert_called_once_with(["feat/a", "feat/b"])
 
     async def test_cleanup_skipped_when_disabled(self, tmp_path):
         cfg = PipelineConfig(
