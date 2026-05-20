@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 
 from deile.core.tool_scenario_kwargs import (TOOL_SCENARIO_MAP,
-                                              build_tool_stage_kwargs)
+                                             build_tool_stage_kwargs)
 
 
 @pytest.mark.unit
