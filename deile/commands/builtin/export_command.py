@@ -1,5 +1,6 @@
 """Comando /export — exporta histórico de conversa e dados da sessão"""
 
+import asyncio
 import json
 import zipfile
 from datetime import datetime, timezone
@@ -92,9 +93,11 @@ class ExportCommand(DirectCommand):
         export_dir.mkdir(parents=True, exist_ok=True)
 
         if format_type == "zip":
-            exported_files = [str(self._create_zip_export(export_data, export_dir))]
+            exported_files = [str(await self._create_zip_export(export_data, export_dir))]
         else:
-            exported_files = self._create_individual_exports(export_data, export_dir, format_type)
+            exported_files = await self._create_individual_exports(
+                export_data, export_dir, format_type
+            )
 
         return self._create_export_summary(exported_files, export_data, format_type)
 
@@ -217,18 +220,21 @@ class ExportCommand(DirectCommand):
 
         return data
 
-    def _create_individual_exports(
+    async def _create_individual_exports(
         self, data: Dict[str, Any], export_dir: Path, format_type: str
     ) -> List[str]:
         exported = []
 
         if format_type == "json":
             jf = export_dir / "deile_export_complete.json"
-            jf.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+            await asyncio.to_thread(
+                jf.write_text, json.dumps(data, indent=2, default=str), encoding="utf-8"
+            )
             exported.append(str(jf))
         else:
             conv_file = export_dir / f"conversation.{format_type}"
-            conv_file.write_text(
+            await asyncio.to_thread(
+                conv_file.write_text,
                 self._format_conversation(data.get("conversation", {}), format_type),
                 encoding="utf-8",
             )
@@ -236,43 +242,65 @@ class ExportCommand(DirectCommand):
 
             if "session_info" in data:
                 sf = export_dir / f"session_info.{format_type}"
-                sf.write_text(
-                    self._format_session(data["session_info"], format_type), encoding="utf-8"
+                await asyncio.to_thread(
+                    sf.write_text,
+                    self._format_session(data["session_info"], format_type),
+                    encoding="utf-8",
                 )
                 exported.append(str(sf))
 
             if "artifacts" in data and data["artifacts"].get("count", 0) > 0:
                 af = export_dir / f"artifacts_manifest.{format_type}"
-                af.write_text(
-                    self._format_artifacts(data["artifacts"], format_type), encoding="utf-8"
+                await asyncio.to_thread(
+                    af.write_text,
+                    self._format_artifacts(data["artifacts"], format_type),
+                    encoding="utf-8",
                 )
                 exported.append(str(af))
 
             if "plans" in data and data["plans"].get("count", 0) > 0:
                 pf = export_dir / f"plans_manifest.{format_type}"
-                pf.write_text(
-                    self._format_plans(data["plans"], format_type), encoding="utf-8"
+                await asyncio.to_thread(
+                    pf.write_text,
+                    self._format_plans(data["plans"], format_type),
+                    encoding="utf-8",
                 )
                 exported.append(str(pf))
 
         return exported
 
-    def _create_zip_export(self, data: Dict[str, Any], export_dir: Path) -> Path:
+    async def _create_zip_export(self, data: Dict[str, Any], export_dir: Path) -> Path:
         zip_path = export_dir / "deile_complete_export.zip"
 
-        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("data/complete_export.json", json.dumps(data, indent=2, default=str))
-            zf.writestr("conversation.md", self._format_conversation(data.get("conversation", {}), "md"))
-            if "session_info" in data:
-                zf.writestr("session_info.md", self._format_session(data["session_info"], "md"))
-            manifest = {
+        # Pre-render all string contents on the event loop, then perform the
+        # blocking zipfile I/O in a single threaded call.
+        complete_json = json.dumps(data, indent=2, default=str)
+        conversation_md = self._format_conversation(data.get("conversation", {}), "md")
+        session_md = (
+            self._format_session(data["session_info"], "md")
+            if "session_info" in data
+            else None
+        )
+        manifest_json = json.dumps(
+            {
                 "generated_at": data["export_metadata"]["generated_at"],
                 "deile_version": __version__,
                 "session_id": data["export_metadata"]["session_id"],
                 "data_sources": data["export_metadata"].get("data_sources", []),
-            }
-            zf.writestr("MANIFEST.json", json.dumps(manifest, indent=2, default=str))
+            },
+            indent=2,
+            default=str,
+        )
 
+        def _write_zip() -> None:
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("data/complete_export.json", complete_json)
+                zf.writestr("conversation.md", conversation_md)
+                if session_md is not None:
+                    zf.writestr("session_info.md", session_md)
+                zf.writestr("MANIFEST.json", manifest_json)
+
+        await asyncio.to_thread(_write_zip)
         return zip_path
 
     def _format_conversation(self, conv: Dict[str, Any], fmt: str) -> str:
