@@ -151,15 +151,12 @@ def execute_function_call(
                 error_code="INVALID_ARGUMENTS",
             )
 
+    ec = execution_context or {}
     context = ToolContext(
         user_input="",  # Function calls não têm user_input direto
         parsed_args=arguments,
-        session_data=execution_context or {},
-        working_directory=(
-            execution_context.get("working_directory", ".")
-            if execution_context
-            else "."
-        ),
+        session_data=ec,
+        working_directory=ec.get("working_directory", "."),
         metadata={
             "execution_method": "function_call",
             "function_name": function_name,
