@@ -126,16 +126,14 @@ def _collect_entries(
     if isinstance(recursive_flag, str):
         recursive_flag = recursive_flag.strip().lower() in {"true", "1", "yes"}
 
+    # `iterdir()` is intentional (not `glob("*")`) for the non-recursive,
+    # no-pattern path: it skips the glob-engine overhead for the common case.
     if recursive_flag:
-        if pattern:
-            entries = full_path.rglob(pattern)
-        else:
-            entries = full_path.rglob("*")
+        entries = full_path.rglob(pattern or "*")
+    elif pattern:
+        entries = full_path.glob(pattern)
     else:
-        if pattern:
-            entries = full_path.glob(pattern)
-        else:
-            entries = full_path.iterdir()
+        entries = full_path.iterdir()
 
     for entry in entries:
         # Pula arquivos ocultos se não solicitado
