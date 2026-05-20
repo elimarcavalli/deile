@@ -48,6 +48,8 @@ from typing import List, Optional
 import yaml
 
 from deile.core.exceptions import DEILEError
+from deile.orchestration.pipeline._time_utils import (format_iso_utc, now_utc,
+                                                     parse_iso_utc)
 from deile.orchestration.pipeline.cron import CronExpressionError, next_after
 
 logger = logging.getLogger(__name__)
@@ -61,28 +63,18 @@ class ScheduleError(DEILEError):
 
 
 def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
+    return now_utc()
 
 
 def _parse_dt(value) -> Optional[datetime]:
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-    if isinstance(value, str):
-        s = value.strip().rstrip("Z")
-        try:
-            dt = datetime.fromisoformat(s)
-        except ValueError as exc:
-            raise ScheduleError(f"invalid ISO datetime: {value!r}") from exc
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    raise ScheduleError(f"unsupported datetime value: {value!r}")
+    try:
+        return parse_iso_utc(value)
+    except ValueError as exc:
+        raise ScheduleError(str(exc)) from exc
 
 
 def _serialize_dt(dt: Optional[datetime]) -> Optional[str]:
-    if dt is None:
-        return None
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return format_iso_utc(dt)
 
 
 @dataclass

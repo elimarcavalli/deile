@@ -1,0 +1,43 @@
+"""ISO-8601 UTC datetime helpers shared by pipeline modules.
+
+The scheduler used to define ``_now_utc``/``_parse_dt``/``_serialize_dt``
+inline; ``cron/store.py`` carried the same pair under different names
+(``_to_iso``/``_from_iso``). Centralising them here keeps the
+canonical wire format (``%Y-%m-%dT%H:%M:%SZ``, always UTC-normalised)
+in a single place.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Optional
+
+
+def now_utc() -> datetime:
+    """Return the current time as a timezone-aware UTC datetime."""
+    return datetime.now(timezone.utc)
+
+
+def format_iso_utc(dt: Optional[datetime]) -> Optional[str]:
+    """Format ``dt`` as ``YYYY-MM-DDTHH:MM:SSZ`` (UTC). ``None`` passes through."""
+    if dt is None:
+        return None
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_iso_utc(value) -> Optional[datetime]:
+    """Parse a datetime/str into a UTC-aware ``datetime``.
+
+    Accepts ``None`` (returns ``None``), a ``datetime`` (returned UTC-aware),
+    or a string (ISO-8601, optionally with trailing ``Z``). Raises
+    ``ValueError`` on any unsupported input — callers wrap into their own
+    domain exception when needed.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        dt = datetime.fromisoformat(value.strip().rstrip("Z"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    raise ValueError(f"unsupported datetime value: {value!r}")
