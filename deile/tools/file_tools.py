@@ -11,6 +11,7 @@ from ..core.exceptions import ValidationError
 # `_validate_path_within_working_directory` are re-exported for existing
 # test imports (`from deile.tools.file_tools import ...`); they have no
 # direct caller in this module — see `__all__` below.
+from ._file_arg_extraction import extract_file_path_arg
 from ._path_resolution import (LocalFileAccessViolation, ResolvedPath,
                                _apply_post_write_hint,
                                _looks_like_outside_project,
@@ -260,21 +261,15 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
         logger.debug(f"ReadFileTool - parsed_args: {context.parsed_args}")
         logger.debug(f"ReadFileTool - file_list: {context.file_list}")
         
-        # Obtém caminho do arquivo dos argumentos parseados ou da file_list
-        file_path = context.parsed_args.get("file_path") or context.parsed_args.get("path")
-        
-        # Fallback para file_list se disponível
-        if not file_path and context.file_list:
-            file_path = context.file_list[0]  # Primeiro arquivo da lista
-        
-        # Fallback para argumentos posicionais se disponível
-        if not file_path:
-            # Tenta extrair path de outros argumentos comuns
-            for key in ["file", "filename", "filepath"]:
-                if context.parsed_args.get(key):
-                    file_path = context.parsed_args.get(key)
-                    break
-        
+        # Obtém caminho do arquivo dos argumentos parseados ou da file_list.
+        # Try canonical aliases first; fall through to file_list and to the
+        # less-common aliases before giving up.
+        file_path = (
+            extract_file_path_arg(context.parsed_args, aliases=("file_path", "path"))
+            or (context.file_list[0] if context.file_list else None)
+            or extract_file_path_arg(context.parsed_args)
+        )
+
         # NOVO: Fallback para argumentos sem nome (posicionais)
         if not file_path and context.parsed_args:
             # Se há apenas um argumento, assume que é o file_path
@@ -520,25 +515,15 @@ class WriteFileTool(SyncTool):
         logger.debug(f"WriteFileTool - user_input: {context.user_input}")
 
         # Extração robusta dos argumentos com fallbacks múltiplos
-        file_path = None
         content = None
         # Default permissivo: quando o usuário pede para alterar/criar um
         # arquivo, a tool não pergunta — apenas garante fidelidade total via
         # escrita atômica + read-back (ver _atomic_write_text abaixo).
         overwrite = context.parsed_args.get("overwrite", True)
-        
+
         # 1. Tenta argumentos nomeados primeiro
-        if 'file_path' in context.parsed_args:
-            file_path = context.parsed_args['file_path']
-        elif 'filename' in context.parsed_args:
-            file_path = context.parsed_args['filename']
-        elif 'path' in context.parsed_args:
-            file_path = context.parsed_args['path']
-        elif 'file' in context.parsed_args:
-            file_path = context.parsed_args['file']
-        elif 'filepath' in context.parsed_args:
-            file_path = context.parsed_args['filepath']
-            
+        file_path = extract_file_path_arg(context.parsed_args)
+
         if 'content' in context.parsed_args:
             content = context.parsed_args['content']
         elif 'text' in context.parsed_args:
@@ -805,13 +790,7 @@ class EditFileTool(SyncTool):
         logger.debug(f"EditFileTool - parsed_args keys: {list(context.parsed_args.keys())}")
 
         # 1. Extrai file_path (fallbacks consistentes com WriteFileTool)
-        file_path = (
-            context.parsed_args.get("file_path")
-            or context.parsed_args.get("path")
-            or context.parsed_args.get("filename")
-            or context.parsed_args.get("file")
-            or context.parsed_args.get("filepath")
-        )
+        file_path = extract_file_path_arg(context.parsed_args)
         if not file_path:
             return ToolResult.error_result(
                 message=(
@@ -1430,16 +1409,9 @@ class DeleteFileTool(SyncTool):
     
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Executa deleção de arquivo"""
-        file_path = context.parsed_args.get("file_path") or context.parsed_args.get("path")
+        file_path = extract_file_path_arg(context.parsed_args)
         force = context.parsed_args.get("force", False)
-        
-        # Fallback para argumentos alternativos
-        if not file_path:
-            for key in ["file", "filename", "filepath"]:
-                if context.parsed_args.get(key):
-                    file_path = context.parsed_args.get(key)
-                    break
-        
+
         if not file_path:
             return ToolResult.error_result(
                 message="No file path provided. Please specify a file to delete.",
