@@ -353,6 +353,9 @@ class DispatchDeileTaskTool(Tool):
                 or _bot_context(context).get("user_message_id")
             )
             persona = args.get("persona") or "developer"
+            # Defense-in-depth: JSON-Schema enum already blocks values from the
+            # LLM, but this runtime check covers internal callers that bypass
+            # schema validation (e.g. programmatic invocations of execute()).
             if persona not in _PERSONA_ALLOWLIST:
                 return ToolResult.error_result(
                     f"persona {persona!r} is not allowed "
@@ -376,7 +379,11 @@ class DispatchDeileTaskTool(Tool):
 
             # Anti-loop guard: refuse a 2nd dispatch within COOLDOWN_S on
             # the same channel. Worker spawning is expensive AND the user
-            # sees duplicate status messages — both bad UX.
+            # sees duplicate status messages — both bad UX. The check
+            # happens HERE (before config validation) so a recent dispatch
+            # short-circuits without touching env vars/secret files; the
+            # RECORD happens after config is validated so an invalid
+            # endpoint/token doesn't burn the cooldown on the channel.
             now = time.monotonic()
             last = self._LAST_DISPATCH.get(channel_id)
             if last is not None and (now - last) < self._DISPATCH_COOLDOWN_S:
@@ -389,8 +396,6 @@ class DispatchDeileTaskTool(Tool):
                     f"esperando resultado diferente.",
                     error_code="DISPATCH_COOLDOWN",
                 )
-            # Record BEFORE the HTTP call so concurrent retries also block.
-            self._LAST_DISPATCH[channel_id] = now
 
             endpoint = _worker_endpoint().rstrip("/") + _DISPATCH_PATH
             # _worker_token() may read secret files from disk — keep that
@@ -402,6 +407,11 @@ class DispatchDeileTaskTool(Tool):
                     "WORKER_BEARER_TOKEN not configured in this Pod",
                     error_code="WORKER_AUTH_MISSING",
                 )
+            # Record AFTER all config validation passed (endpoint + token +
+            # persona). If validation throws/returns above, the cooldown is
+            # NOT burned — corrupted config wouldn't otherwise block the
+            # channel for 30s without a real dispatch attempt.
+            self._LAST_DISPATCH[channel_id] = now
 
             payload = _build_dispatch_payload(
                 brief=brief,
@@ -429,6 +439,19 @@ class DispatchDeileTaskTool(Tool):
                     "summary_for_llm": short_summary,
                 },
                 message=short_summary or "dispatch ok",
+            )
+        except _DispatchConfigError as exc:
+            # Config-time validation failure (invalid endpoint scheme/netloc,
+            # or bearer token outside RFC 6750 token68). Distinct from
+            # WORKER_AUTH_MISSING (token absent) — here the value is PRESENT
+            # but rejected by validation. Don't leak the raw value: ``exc``
+            # carries a sanitized message that names the symptom, not the
+            # token.
+            logger.warning("dispatch_deile_task config rejected: %s", exc)
+            return ToolResult.error_result(
+                f"worker config invalid: {exc}",
+                error=exc,
+                error_code="WORKER_CONFIG_INVALID",
             )
         except Exception as exc:  # noqa: BLE001 — top-level guard required by Tool contract
             logger.exception("dispatch_deile_task failed unexpectedly")
