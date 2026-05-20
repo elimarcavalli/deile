@@ -16,7 +16,8 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import (export_timestamp, get_memory_manager, get_session,
-                      split_args, success_panel, wrap_command_errors)
+                      raise_command_error, split_args, success_panel,
+                      wrap_command_errors)
 
 _CHECKPOINT_DIR = Path.home() / ".deile" / "checkpoints"
 _CHECKPOINT_INDEX = _CHECKPOINT_DIR / "index.json"
@@ -71,16 +72,13 @@ class MemoryCommand(DirectCommand):
             "export": lambda: self._export_memory_state(context, parts[1:]),
             "compact": lambda: self._compact_memory(context),
             "save": lambda: self._save_checkpoint(context, parts[1] if len(parts) > 1 else f"checkpoint_{int(__import__('time').time())}"),
-            "restore": lambda: self._restore_checkpoint(context, parts[1]) if len(parts) >= 2 else self._err("restore requer nome do checkpoint"),
+            "restore": lambda: self._restore_checkpoint(context, parts[1]) if len(parts) >= 2 else raise_command_error("restore requer nome do checkpoint"),
             "list": lambda: self._list_checkpoints(),
         }
         handler = dispatch.get(action)
         if not handler:
             raise CommandError(f"Ação desconhecida: {action}")
         return await handler()
-
-    async def _err(self, msg: str) -> CommandResult:
-        raise CommandError(msg)
 
     # ------------------------------------------------------------------
     # Status

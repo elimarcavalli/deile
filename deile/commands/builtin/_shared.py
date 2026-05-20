@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from rich.panel import Panel
 from rich.text import Text
@@ -134,6 +134,19 @@ def get_memory_manager(context: CommandContext) -> MemoryManager | None:
     padrão antes duplicado em compact, memory e status commands."""
     agent = get_agent(context)
     return getattr(agent, "memory_manager", None) if agent else None
+
+
+def raise_command_error(msg: str) -> NoReturn:
+    """Raise :class:`CommandError` with ``msg`` — module-level helper.
+
+    Replaces the per-command ``async def _err(self, msg)`` pattern used by
+    :class:`MemoryCommand` and :class:`PermissionsCommand` inside dispatch
+    lambdas. The function is sync — callers wrap in lambdas when they need
+    a deferred raise inside an async dispatch dict (the surrounding
+    ``wrap_command_errors`` decorator lets :class:`CommandError` propagate
+    untouched).
+    """
+    raise CommandError(msg)
 
 
 def wrap_command_errors(
