@@ -12,7 +12,8 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import ArgSpec, parse_flag_args, split_args, truncate
+from ._shared import (ArgSpec, parse_flag_args, promote_positional_format,
+                      split_args, truncate)
 
 
 class ToolsCommand(DirectCommand):
@@ -53,11 +54,11 @@ class ToolsCommand(DirectCommand):
             tool_name = None
             # Positional: first {list,detailed,json} promotes to format (if still default);
             # any other positional is treated as tool name (last wins, matching prior behaviour).
-            for token in positionals:
-                if format_type == "list" and token in ("list", "detailed", "json"):
-                    format_type = token
-                else:
-                    tool_name = token
+            format_type, leftover_positionals = promote_positional_format(
+                positionals, format_type, "list", ("list", "detailed", "json"),
+            )
+            for token in leftover_positionals:
+                tool_name = token
 
             if format_type not in ["list", "detailed", "json"]:
                 raise CommandError("Format must be one of: list, detailed, json")

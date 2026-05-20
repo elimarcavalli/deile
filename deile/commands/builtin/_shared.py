@@ -443,6 +443,37 @@ def parse_flag_args(
     return flags, positionals
 
 
+def promote_positional_format(
+    positionals: Sequence[str],
+    current_format: str,
+    default_format: str,
+    valid_formats: Iterable[str],
+) -> tuple[str, list[str]]:
+    """Promote a positional token to the ``--format`` value, returning leftovers.
+
+    Both ``/export`` and ``/tools`` walk their positional args and let the
+    first known format word (e.g. ``json``) become the effective ``--format``
+    when the user did not pass ``--format`` explicitly (i.e. when
+    ``current_format`` still equals ``default_format``). Any other token —
+    or a format token arriving after promotion — falls through to the
+    leftovers list which the caller folds into ``export_path`` / ``tool_name``
+    with last-wins semantics.
+
+    Returns ``(format_value, leftover_positionals)``; the input list is not
+    mutated. ``valid_formats`` is materialised once so callers can pass a
+    tuple, list or set interchangeably.
+    """
+    allowed = set(valid_formats)
+    format_value = current_format
+    leftover: list[str] = []
+    for token in positionals:
+        if format_value == default_format and token in allowed:
+            format_value = token
+        else:
+            leftover.append(token)
+    return format_value, leftover
+
+
 def format_change_summary_lines(
     summary: dict[str, Any],
     header: str = "**Overall Changes:**",

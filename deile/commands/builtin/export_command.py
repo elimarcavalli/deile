@@ -15,7 +15,7 @@ from deile.__version__ import __version__
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import (ArgSpec, export_timestamp, get_agent, get_session,
-                      parse_flag_args, split_args)
+                      parse_flag_args, promote_positional_format, split_args)
 
 
 class ExportCommand(DirectCommand):
@@ -55,11 +55,11 @@ class ExportCommand(DirectCommand):
             include_session = not flags.get("no_session")
             # Positionals: first known format word promotes to format (only if still
             # default); otherwise it sets export_path (last wins, matching prior).
-            for token in positionals:
-                if format_type == "md" and token in ("txt", "md", "json", "zip"):
-                    format_type = token
-                else:
-                    export_path = token
+            format_type, leftover_positionals = promote_positional_format(
+                positionals, format_type, "md", ("txt", "md", "json", "zip"),
+            )
+            for token in leftover_positionals:
+                export_path = token
 
             if format_type not in ("txt", "md", "json", "zip"):
                 raise CommandError("Formato deve ser um de: txt, md, json, zip")
