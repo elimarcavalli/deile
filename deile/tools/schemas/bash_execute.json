@@ -22,7 +22,7 @@
       },
       "sandbox": {
         "type": "BOOLEAN",
-        "description": "Disable PTY allocation (use plain subprocess). Does NOT provide isolation, containerization, or any security boundary — the command still runs on the host with the DEILE process privileges. Default: false"
+        "description": "Disable PTY allocation (use plain subprocess). Does NOT provide isolation, containerization, or any security boundary — the command still runs on the host with the DEILE process privileges. Default: false. May be force-enabled by the sandbox_code_execution operator setting independent of this argument."
       },
       "show_cli": {
         "type": "BOOLEAN",
