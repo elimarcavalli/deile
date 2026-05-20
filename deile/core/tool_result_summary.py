@@ -1,9 +1,10 @@
 """One-line ``ToolResult`` summaries for inline UI rendering.
 
-Pure presentation logic — given a :class:`ToolResult` (and, where useful,
-the originating tool name pulled from ``metadata.function_name``), produce
-a short single-line preview that the cascade renderer drops into stage
-messages. No I/O, no orchestration, no executor state.
+Renderer-agnostic formatters for ToolResult — given a :class:`ToolResult`
+(and, where useful, the originating tool name pulled from
+``metadata.function_name``), produce a short single-line preview that the
+cascade renderer drops into stage messages. No I/O, no orchestration, no
+executor state.
 
 Lives outside ``tool_loop_executor`` because the loop owns iteration and
 registry execution; the formatters only read fields off ``ToolResult``
