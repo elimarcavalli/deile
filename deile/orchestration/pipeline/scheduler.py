@@ -67,19 +67,18 @@ class ScheduleError(DEILEError):
     """Raised for invalid schedule configuration or operations."""
 
 
-def _now_utc() -> datetime:
-    return now_utc()
-
-
 def _parse_dt(value) -> Optional[datetime]:
+    """Parse ISO datetime, wrapping ValueError into ScheduleError.
+
+    The wrapping (and the original error wording ``invalid ISO datetime: ...``)
+    is preserved here so callers in :class:`ScheduleStore` keep raising
+    domain-typed errors. ``_time_utils.parse_iso_utc`` itself stays generic
+    and raises stdlib :class:`ValueError`.
+    """
     try:
         return parse_iso_utc(value)
     except ValueError as exc:
-        raise ScheduleError(str(exc)) from exc
-
-
-def _serialize_dt(dt: Optional[datetime]) -> Optional[str]:
-    return format_iso_utc(dt)
+        raise ScheduleError(f"invalid ISO datetime: {value!r}") from exc
 
 
 @dataclass
@@ -102,12 +101,12 @@ class RecurringEntry:
             )
         # Validate cron eagerly.
         try:
-            next_after(self.cron, _now_utc())
+            next_after(self.cron, now_utc())
         except CronExpressionError as exc:
             raise ScheduleError(f"invalid cron {self.cron!r}: {exc}") from exc
 
     def next_run_at(self, *, after: Optional[datetime] = None) -> datetime:
-        anchor = after or self.last_run_at or _now_utc()
+        anchor = after or self.last_run_at or now_utc()
         return next_after(self.cron, anchor)
 
     def to_dict(self) -> dict:
@@ -116,7 +115,7 @@ class RecurringEntry:
             "action": self.action,
             "cron": self.cron,
             "enabled": self.enabled,
-            "last_run_at": _serialize_dt(self.last_run_at),
+            "last_run_at": format_iso_utc(self.last_run_at),
             "replay_all": self.replay_all,
         }
 
@@ -148,7 +147,7 @@ class OneshotEntry:
         return {
             "id": self.id,
             "action": self.action,
-            "run_at": _serialize_dt(self.run_at),
+            "run_at": format_iso_utc(self.run_at),
             "target_issue": self.target_issue,
             "target_pr": self.target_pr,
             "completed": self.completed,
@@ -222,7 +221,7 @@ class Schedule:
         ``None`` (default) means unlimited look-back — the same as the
         legacy behaviour.
         """
-        now = now or _now_utc()
+        now = now or now_utc()
         cutoff = (now - timedelta(hours=replay_window_hours)) if replay_window_hours else None
         out: List[PendingRun] = []
 
@@ -298,7 +297,7 @@ class Schedule:
 
     def mark_run(self, run: PendingRun, *, when: Optional[datetime] = None) -> None:
         """Update last_run_at / completed after a PendingRun executes."""
-        when = when or _now_utc()
+        when = when or now_utc()
         if run.is_oneshot:
             o = self.get_oneshot(run.entry_id)
             if o is not None:
@@ -313,7 +312,7 @@ class Schedule:
 
         Returns the number of entries removed.
         """
-        cutoff = _now_utc() - timedelta(days=max_age_days)
+        cutoff = now_utc() - timedelta(days=max_age_days)
         before = len(self.oneshot)
         self.oneshot = [
             o for o in self.oneshot
