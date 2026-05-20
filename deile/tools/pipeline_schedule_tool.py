@@ -14,8 +14,7 @@ the next monitor tick.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
+from deile.orchestration.pipeline._time_utils import parse_iso_utc
 from deile.orchestration.pipeline.actions import ACTION_NAMES
 from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.scheduler import (OneshotEntry,
@@ -157,14 +156,12 @@ class PipelineScheduleTool(Tool):
                         error_code="MISSING_ARGS",
                     )
                 try:
-                    run_at = datetime.fromisoformat(run_at_str.rstrip("Z"))
+                    run_at = parse_iso_utc(run_at_str)
                 except ValueError as exc:
                     return ToolResult.error_result(
                         message=f"invalid run_at: {run_at_str!r}",
                         error=exc, error_code="INVALID_DATETIME",
                     )
-                if run_at.tzinfo is None:
-                    run_at = run_at.replace(tzinfo=timezone.utc)
                 entry_id = (
                     args.get("id")
                     or f"oneshot-{trigger}-{int(run_at.timestamp())}"
