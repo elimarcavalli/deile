@@ -81,8 +81,9 @@ def test_read_token_all_empty(monkeypatch):
         ("abc\rdef", False),   # CR
         ("abc\x00def", False), # NUL
         ("abc def", False),    # space — not allowed in bearer charset here
-        ("short", False),      # below 8 char floor
-        ("a" * 8, True),       # exact floor
+        ("short", False),      # below 16 char floor
+        ("a" * 15, False),     # one below the floor
+        ("a" * 16, True),      # exact floor — aligned with secrets_scanner
     ],
 )
 def test_validate_token_charset(tok: str, ok: bool):

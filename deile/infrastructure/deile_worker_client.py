@@ -51,8 +51,12 @@ _TOKEN_FILES = (
 
 # Tokens são tratados como bearer values: rejeitamos qualquer caractere
 # que possa quebrar o header HTTP (CR, LF, NUL) — defense-in-depth contra
-# header injection em caso de secret file corrompido.
-_TOKEN_SAFE_CHARS = re.compile(r"^[A-Za-z0-9._\-+/=:~]{8,4096}$")
+# header injection em caso de secret file corrompido. O floor de 16
+# caracteres alinha com ``secrets_scanner`` (``DEILE_BOT_AUTH_TOKEN`` /
+# ``DEILE_WORKER_BEARER_TOKEN`` exigem ``{16,}`` no scanner — ver pilar
+# 08 §"Padrões cobertos"); manter o floor uniforme garante que o scanner
+# e o validador concordem sobre o que é "token plausível".
+_TOKEN_SAFE_CHARS = re.compile(r"^[A-Za-z0-9._\-+/=:~]{16,4096}$")
 
 # Personas suportadas pelo worker — espelha
 # deile/personas/library/*.yaml. Manter sincronizado quando uma persona
@@ -187,6 +191,14 @@ class DeileWorkerClient:
         """
         # Valida o payload antes de tocar em I/O — falhas locais não
         # contam contra o cooldown anti-loop da tool.
+        #
+        # Defense-in-depth: this is the LAST line of validation before the
+        # wire. ``DispatchDeileTaskTool.execute()`` also calls
+        # ``DispatchPayload.model_validate(payload)`` before recording the
+        # cooldown, but callers that bypass the tool (custom scripts, tests
+        # constructing payloads by hand) must NOT skip-validate here —
+        # ``DispatchPayload`` is the contract with the worker and the
+        # validation belongs to this adapter as the authoritative gatekeeper.
         try:
             validated = DispatchPayload.model_validate(payload)
             body = validated.model_dump(exclude_none=True)
