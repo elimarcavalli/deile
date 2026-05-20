@@ -47,6 +47,9 @@ def discover_tools_in_package(
     Tools cujo ``name`` já consta no registry são ignoradas. Falhas de
     instanciação/registro de uma tool individual são logadas e não
     interrompem a varredura das demais.
+
+    Returns:
+        número de tools efetivamente registradas nesta chamada.
     """
     try:
         module = importlib.import_module(package_name)
@@ -65,7 +68,7 @@ def discover_tools_in_package(
         ):
             try:
                 tool_instance = obj()
-                if tool_instance.name not in registry._tools:
+                if tool_instance.name not in registry:
                     registry.register(tool_instance)
                     discovered_count += 1
             except Exception as e:
