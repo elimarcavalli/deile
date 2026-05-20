@@ -150,7 +150,6 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
         logger.info("auto-classified issue #%s as %s", issue.number, WORKFLOW_NEW)
         await monitor.notifier.issue_auto_classified(issue.number, issue.title, issue.url)
         # Post the standard "added to pipeline" comment, optionally with template reminder
-        comment = _CLASSIFY_COMMENT
         if empty_body:
             comment = (
                 f"🤖 **DEILE auto-classificação** — esta issue foi adicionada à fila do pipeline "
@@ -160,6 +159,8 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
                 f"gerar implementações incompletas.\n\n"
                 f"Para excluir da fila, remova o label `{WORKFLOW_NEW}`."
             )
+        else:
+            comment = _CLASSIFY_COMMENT
         try:
             await monitor.github.comment_on_issue(issue.number, comment)
         except Exception as exc:  # noqa: BLE001 — comment is best-effort; label already applied
