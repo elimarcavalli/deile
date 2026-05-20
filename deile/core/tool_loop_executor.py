@@ -20,9 +20,11 @@ from deile.core.loop_guard import (ToolLoopGuard, format_loop_break_message,
                                    make_guard, tool_result_made_progress)
 from deile.core.models.base import ModelMessage, ModelProvider
 from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
+from deile.core.models.tool_execution import (OUTCOME_EXCEPTION, OUTCOME_RAN,
+                                              build_tool_result_payload)
+from deile.core.tool_scenario_kwargs import build_tool_stage_kwargs
 from deile.tools.base import ToolContext, ToolResult, ToolStatus
 from deile.tools.registry import ToolRegistry, get_tool_registry
-from deile.core.tool_scenario_kwargs import build_tool_stage_kwargs
 from deile.ui.stage_cascade import cascade_stream, cascade_until
 from deile.ui.stage_messages import get_stage_message  # noqa: F401
 
@@ -176,19 +178,6 @@ def _semantic_summary(tool_name: str, result: ToolResult) -> Optional[str]:
     return None
 
 
-def _payload_for_model(result: ToolResult) -> Dict[str, Any]:
-    """Encode a ToolResult into a JSON-serializable dict for the next round-trip."""
-    if result.status == ToolStatus.ERROR:
-        return {
-            "status": "error",
-            "error": result.message or (str(result.error) if result.error else "tool failed"),
-        }
-    payload: Dict[str, Any] = {"status": "success"}
-    if result.data is not None:
-        payload["result"] = str(result.data)
-    if result.message:
-        payload["message"] = result.message
-    return payload
 
 
 class ToolLoopExecutor:
@@ -428,7 +417,13 @@ class ToolLoopExecutor:
                         provider.format_tool_result_message(
                             tc_id,
                             tc_name,
-                            _payload_for_model(err_result),
+                            build_tool_result_payload(
+                                err_result,
+                                OUTCOME_EXCEPTION,
+                                tc_name,
+                                include_message=True,
+                                include_data_on_error=True,
+                            ),
                         )
                     )
                     # An exception escaping the registry is always "no progress"
@@ -455,7 +450,15 @@ class ToolLoopExecutor:
                 )
                 history.append(
                     provider.format_tool_result_message(
-                        tc_id, tc_name, _payload_for_model(result)
+                        tc_id,
+                        tc_name,
+                        build_tool_result_payload(
+                            result,
+                            OUTCOME_RAN,
+                            tc_name,
+                            include_message=True,
+                            include_data_on_error=True,
+                        ),
                     )
                 )
                 # Feed the result into the guard so the no-progress rule can
