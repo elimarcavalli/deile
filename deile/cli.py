@@ -123,15 +123,30 @@ async def _construct_agent(model_router, config_manager):
     return agent
 
 
-def _bootstrap_with_recovery(bootstrap_fn) -> list:
+def _bootstrap_with_recovery(bootstrap_fn, *, spinner_factory=None) -> list:
     """Run ``bootstrap_fn`` once; if it registered nothing, prompt the user for
     API keys via the TTY wizard and retry. ``bootstrap_fn`` is a zero-arg
     callable returning the list of registered provider names.
+
+    ``spinner_factory`` (optional) is a zero-arg callable returning a fresh
+    context manager (e.g. Rich ``Status``). When provided, the spinner is
+    active during each bootstrap attempt but is paused around the
+    interactive recovery wizard so ``getpass`` prompts render cleanly.
     """
-    registered = bootstrap_fn()
-    if not registered and _run_env_recovery():
+    if spinner_factory is None:
         registered = bootstrap_fn()
-    return registered
+        if not registered and _run_env_recovery():
+            registered = bootstrap_fn()
+        return registered
+
+    with spinner_factory():
+        registered = bootstrap_fn()
+    if registered:
+        return registered
+    if not _run_env_recovery():
+        return registered
+    with spinner_factory():
+        return bootstrap_fn()
 
 
 def _run_env_recovery() -> bool:
@@ -227,10 +242,12 @@ class _DeileCLI:
             self.config_manager.load_config()
 
             model_router = get_model_router()
-            with self.ui.show_loading("Acordando DEILE..."):
-                registered = _bootstrap_with_recovery(
-                    lambda: bootstrap_providers(router=model_router)
-                )
+            # Pass a spinner factory so the spinner pauses around the
+            # interactive recovery wizard (getpass) but resumes for the retry.
+            registered = _bootstrap_with_recovery(
+                lambda: bootstrap_providers(router=model_router),
+                spinner_factory=lambda: self.ui.show_loading("Acordando DEILE..."),
+            )
 
             if not registered:
                 self.ui.display_error(
