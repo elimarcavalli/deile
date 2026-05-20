@@ -14,7 +14,7 @@ This file is the deduplication target for the previous per-provider
 from __future__ import annotations
 
 import logging
-from typing import Any, AsyncIterator, Dict, List, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from deile.core.loop_guard import (ToolLoopGuard, format_loop_break_message,
                                    make_guard, tool_result_made_progress)
