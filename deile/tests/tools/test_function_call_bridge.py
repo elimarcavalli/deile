@@ -129,15 +129,37 @@ def test_run_coro_sync_outside_event_loop():
 
 def test_run_coro_sync_inside_event_loop():
     """When called from inside a running loop, the bridge offloads to a
-    worker thread — this is the path exercised by ``PlanManager``."""
+    worker thread — this is the path exercised by ``PlanManager``.
 
-    async def inner():
-        async def coro():
-            return "from-thread"
+    Crítico: ``_run_coro_sync`` precisa ser chamado de dentro de uma
+    coroutine cujo loop está ATIVO no mesmo thread — exatamente o que
+    ``PlanManager._run_tool_with_params`` faz. Usar
+    ``await asyncio.to_thread(_run_coro_sync, ...)`` NÃO exercita esse
+    caminho: o callable roda em uma thread sem loop e cai no branch
+    ``asyncio.run(coro)``, deixando o bridge intacto. Por isso aqui
+    construímos um loop manual e rodamos ``run_until_complete`` para
+    que ``asyncio.get_running_loop()`` dentro de ``_run_coro_sync``
+    encontre um loop e force a ponte para o ``_BRIDGE_EXECUTOR``.
+    """
+    from deile.tools import function_call as fc_mod
 
-        # Must be invoked from inside an active loop to hit the worker-thread
-        # branch.
-        return await asyncio.to_thread(_run_coro_sync, coro())
+    async def coro():
+        return "from-bridge"
 
-    result = asyncio.run(inner())
-    assert result == "from-thread"
+    async def caller():
+        # Chamada DIRETA — sem to_thread — para garantir que estamos no
+        # mesmo thread do loop ativo, hitting o branch do worker-pool.
+        return _run_coro_sync(coro())
+
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(caller())
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
+
+    assert result == "from-bridge"
+    # Pin: o caminho do bridge foi efetivamente exercitado — o executor
+    # módulo-level precisa ter sido materializado pela chamada acima.
+    assert fc_mod._BRIDGE_EXECUTOR is not None

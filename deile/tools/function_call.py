@@ -42,21 +42,29 @@ def _get_bridge_executor() -> ThreadPoolExecutor:
     Lazy-init com double-checked locking. ``max_workers=1`` é intencional:
     a ponte serializa coroutines (uma por vez) — paralelismo deve usar a
     própria API async, não esta ponte.
+
+    Decisão sobre ``daemon`` da worker thread: **não marcamos** a thread
+    como daemon. ``ThreadPoolExecutor`` invoca o ``initializer`` dentro
+    de ``_worker()`` *depois* de ``Thread.start()``; mutar
+    ``Thread.daemon`` em thread já ativa levanta
+    ``RuntimeError: cannot set daemon status of active thread`` e marca
+    o pool como ``_broken`` — toda chamada subsequente lança
+    ``BrokenThreadPool``. A alternativa de subclassar o executor e
+    sobrescrever ``_adjust_thread_count`` para criar a Thread com
+    ``daemon=True`` antes do ``start()`` acopla este módulo a uma API
+    privada de ``concurrent.futures.thread``. O ``atexit`` handler
+    ``concurrent.futures.thread._python_exit`` já dá join nos workers
+    no shutdown normal do interpretador; sob ``SIGTERM`` qualquer
+    coroutine em vôo completa antes do exit — comportamento desejável
+    para evitar perda de trabalho de tool em execução.
     """
     global _BRIDGE_EXECUTOR
     if _BRIDGE_EXECUTOR is None:
         with _BRIDGE_LOCK:
             if _BRIDGE_EXECUTOR is None:
-                # Worker é daemon para não bloquear shutdown indefinidamente
-                # caso uma coroutine longa esteja em execução durante SIGTERM.
-                # ThreadPoolExecutor não aceita ``daemon`` no construtor — o
-                # ``initializer`` roda na worker thread e marca daemon=True.
                 _BRIDGE_EXECUTOR = ThreadPoolExecutor(
                     max_workers=1,
                     thread_name_prefix="deile-sync-bridge",
-                    initializer=lambda: setattr(
-                        threading.current_thread(), "daemon", True
-                    ),
                 )
     return _BRIDGE_EXECUTOR
 
@@ -84,15 +92,18 @@ def _run_coro_sync(coro):
        ``asyncio.Lock``, connection pools, async clients/sessions);
        such resources will misbehave or raise
        ``RuntimeError: ... attached to a different loop``.
-    3. Re-entrancy is unsupported. The module-level executor has
-       ``max_workers=1``, so calling ``_run_coro_sync`` from within a
-       coroutine that itself is already being bridged (via
+    3. Re-entrancy is unsupported. Tools (sync OR async) invocadas
+       via este bridge NÃO devem chamar ``execute_function_call``
+       recursivamente, direta ou transitivamente — isso causa deadlock
+       no executor single-worker. O módulo-level executor tem
+       ``max_workers=1``, então chamar ``_run_coro_sync`` de dentro de
+       uma coroutine que já está sendo bridged (via
        ``execute_function_call`` → ``tool.execute`` → ... →
-       ``_run_coro_sync``) deadlocks: the worker is busy on the outer
-       task and cannot drain the inner ``submit()``. Tools async
-       invocadas via este bridge NÃO devem chamar
-       ``execute_function_call`` recursivamente nem usar este helper
-       internamente.
+       ``_run_coro_sync``) trava: o worker está ocupado com a tarefa
+       externa e não consegue drenar o ``submit()`` interno. Aplica-se
+       também ao caminho ``SyncTool.execute_sync`` que chama
+       ``execute_function_call`` indiretamente — qualquer reentrada
+       transitiva no bridge a partir do worker é proibida.
     """
     try:
         asyncio.get_running_loop()
