@@ -63,10 +63,10 @@ class IssueRef:
 
     @property
     def batch_id(self) -> Optional[str]:
-        for label in self.labels:
-            if is_batch_label(label):
-                return batch_id_from_label(label)
-        return None
+        return next(
+            (batch_id_from_label(lb) for lb in self.labels if is_batch_label(lb)),
+            None,
+        )
 
     @classmethod
     def from_gh_json(cls, item: dict) -> "IssueRef":
@@ -93,10 +93,10 @@ class PrRef:
 
     @property
     def batch_id(self) -> Optional[str]:
-        for label in self.labels:
-            if is_batch_label(label):
-                return batch_id_from_label(label)
-        return None
+        return next(
+            (batch_id_from_label(lb) for lb in self.labels if is_batch_label(lb)),
+            None,
+        )
 
     @classmethod
     def from_gh_json(cls, item: dict, *, default_state: str = "open") -> "PrRef":
