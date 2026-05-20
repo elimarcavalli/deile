@@ -24,13 +24,19 @@ import re
 import uuid
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from deile.core.exceptions import DEILEError
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_S: float = 600.0
+# Budget máximo permitido para um dispatch ``wait=True`` — compartilhado
+# entre o ``max_execution_time`` da tool e o timeout do cliente httpx, de
+# modo que um cancel upstream não mascare ``WORKER_TIMEOUT`` como
+# ``CancelledError``.
+MAX_DISPATCH_BUDGET_S: float = DEFAULT_TIMEOUT_S + 60.0
+_NOWAIT_TIMEOUT_S: float = 30.0
 
 _DISPATCH_PATH = "/v1/dispatch"
 _DEFAULT_ENDPOINT = "http://deile-worker.deile.svc.cluster.local:8766"
@@ -88,12 +94,19 @@ class DispatchPayload(BaseModel):
 
     @field_validator("channel_id", "user_message_id")
     @classmethod
-    def _strip_optional_str(cls, v: Optional[str]) -> Optional[str]:
+    def _strip_optional_str(
+        cls, v: Optional[str], info: ValidationInfo
+    ) -> Optional[str]:
+        # Whitespace-only on the optional ``user_message_id`` collapses to
+        # ``None`` so ``model_dump(exclude_none=True)`` drops the field;
+        # on the required ``channel_id`` we hand back ``""`` so the
+        # ``min_length=1`` constraint reports the right error rather than
+        # being swallowed by a None.
         if v is None:
             return v
         stripped = v.strip()
         if not stripped:
-            return None if cls.model_fields.get("channel_id") is None else ""
+            return None if info.field_name == "user_message_id" else ""
         return stripped
 
 
@@ -112,11 +125,16 @@ def _resolve_endpoint() -> str:
 def _read_token() -> str:
     """Resolve o bearer token. Tolerante a layouts de bot e de worker.
 
-    Ordem de resolução:
+    Resolução por **precedência** (primeiro match não-vazio vence — não é
+    fallback; uma fonte anterior não-vazia esconde todas as seguintes):
+
       1. env var ``DEILE_WORKER_BEARER_TOKEN`` (set pelo wrapper antes do bootstrap)
       2. arquivo ``/run/secrets/bot/worker/AUTH_TOKEN`` (bot pod, mount real K8s)
       3. arquivo ``/run/secrets/worker/AUTH_TOKEN``     (worker pod)
       4. arquivo ``/run/secrets/bot/WORKER_BEARER_TOKEN`` (fallback legado)
+
+    O código-fonte resolvido é emitido em ``logger.debug`` (sem o valor)
+    para permitir diagnóstico via ``kubectl logs | grep "token resolved"``.
 
     Faz I/O de disco bloqueante — deve ser chamada via ``asyncio.to_thread``.
     Mesma razão de ``_resolve_endpoint``: leitura pré-bootstrap, sem
@@ -124,12 +142,14 @@ def _read_token() -> str:
     """
     val = os.environ.get(_TOKEN_ENV, "").strip()
     if val:
+        logger.debug("worker token resolved from env (%s)", _TOKEN_ENV)
         return val
     for path in _TOKEN_FILES:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 v = f.read().strip()
                 if v:
+                    logger.debug("worker token resolved from %s", path)
                     return v
         except OSError:
             continue
@@ -204,7 +224,7 @@ class DeileWorkerClient:
             ) from exc
 
         request_id = str(uuid.uuid4())
-        timeout: float = (DEFAULT_TIMEOUT_S + 60.0) if wait else 30.0
+        timeout: float = MAX_DISPATCH_BUDGET_S if wait else _NOWAIT_TIMEOUT_S
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",

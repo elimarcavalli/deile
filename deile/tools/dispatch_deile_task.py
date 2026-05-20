@@ -41,11 +41,13 @@ only: payload assembly, the anti-loop guard, the LLM-facing summary.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+from collections import defaultdict
 from typing import Dict, Optional
 
-from deile.infrastructure.deile_worker_client import (DEFAULT_TIMEOUT_S,
+from deile.infrastructure.deile_worker_client import (MAX_DISPATCH_BUDGET_S,
                                                       DeileWorkerClient,
                                                       DispatchPayload,
                                                       WorkerDispatchError)
@@ -127,6 +129,12 @@ class DispatchDeileTaskTool(Tool):
     # next dispatch attempt. Bounds memory under sustained traffic
     # without needing a background task.
     _CLEANUP_FACTOR = 5
+    # Per-channel lock so the cooldown check + the cooldown write are
+    # atomic — two coroutines on the same ``channel_id`` cannot both
+    # observe ``last=None`` and both spawn a worker. Distinct channels
+    # never contend. ``asyncio.Lock`` binds to the running loop on first
+    # acquire, so the defaultdict materialising locks eagerly is safe.
+    _CHANNEL_LOCKS: "Dict[str, asyncio.Lock]" = defaultdict(asyncio.Lock)
 
     @property
     def name(self) -> str:
@@ -208,7 +216,7 @@ class DispatchDeileTaskTool(Tool):
                 required=["brief", "channel_id"],
                 security_level=SecurityLevel.MODERATE,
                 category=ToolCategory.OTHER,
-                max_execution_time=int(DEFAULT_TIMEOUT_S) + 30,
+                max_execution_time=int(MAX_DISPATCH_BUDGET_S),
             )
         )
 
@@ -225,6 +233,15 @@ class DispatchDeileTaskTool(Tool):
             cls._LAST_DISPATCH.pop(cid, None)
 
     async def execute(self, context: ToolContext) -> ToolResult:
+        # TODO(#237): this tool bridges untrusted Discord input → privileged
+        # remote execution (full DEILE toolset in an isolated worker) but
+        # currently has no ``PermissionManager`` gate and emits no
+        # ``AuditEvent``. The follow-up issue covers the ``dispatch:<channel_id>``
+        # permission rule plus three audit emissions (pending / success /
+        # failed with SHA8(brief), channel_id, user_message_id, persona,
+        # task_id, error_code). Deferred to keep this PR scoped to the
+        # hexagonal transport extraction; the bot's embedded-agent
+        # whitelist provides depth-of-defense in the meantime.
         try:
             args = dict(context.parsed_args or {})
             brief = str(args.get("brief", "")).strip()
@@ -253,23 +270,6 @@ class DispatchDeileTaskTool(Tool):
                         error_code="BAD_REQUEST",
                     )
 
-            # Anti-loop guard: refuse a 2nd dispatch within COOLDOWN_S on
-            # the same channel. Worker spawning is expensive AND the user
-            # sees duplicate status messages — both bad UX.
-            now = time.monotonic()
-            self._prune_expired_dispatch_entries(now)
-            last = self._LAST_DISPATCH.get(channel_id)
-            if last is not None and (now - last) < self._DISPATCH_COOLDOWN_S:
-                remaining = self._DISPATCH_COOLDOWN_S - (now - last)
-                return ToolResult.error_result(
-                    f"dispatch já feito há {now - last:.0f}s nesse canal; "
-                    f"aguarde {remaining:.0f}s e relate ao usuário em vez de retentar. "
-                    f"Se a 1ª chamada falhou (ex: 'ping' não existe no worker), "
-                    f"explique isso ao usuário — NÃO chame dispatch_deile_task de novo "
-                    f"esperando resultado diferente.",
-                    error_code="DISPATCH_COOLDOWN",
-                )
-
             payload = _build_dispatch_payload(
                 brief=brief,
                 channel_id=channel_id,
@@ -290,11 +290,31 @@ class DispatchDeileTaskTool(Tool):
                     error_code="BAD_REQUEST",
                 )
 
-            # Record BEFORE the HTTP call so concurrent retries also block.
-            # If the client raises a pre-network failure (auth/transport
-            # missing), we ROLL BACK the timestamp so the LLM can retry
-            # with corrected env — the worker was never contacted.
-            self._LAST_DISPATCH[channel_id] = now
+            # Anti-loop guard: refuse a 2nd dispatch within COOLDOWN_S on
+            # the same channel. Worker spawning is expensive AND the user
+            # sees duplicate status messages — both bad UX. The per-channel
+            # lock makes the check+write atomic: two coroutines arriving on
+            # the same channel before the first finishes cannot both observe
+            # ``last=None`` and both spawn a worker.
+            async with self._CHANNEL_LOCKS[channel_id]:
+                now = time.monotonic()
+                self._prune_expired_dispatch_entries(now)
+                last = self._LAST_DISPATCH.get(channel_id)
+                if last is not None and (now - last) < self._DISPATCH_COOLDOWN_S:
+                    remaining = self._DISPATCH_COOLDOWN_S - (now - last)
+                    return ToolResult.error_result(
+                        f"dispatch já feito há {now - last:.0f}s nesse canal; "
+                        f"aguarde {remaining:.0f}s e relate ao usuário em vez de retentar. "
+                        f"Se a 1ª chamada falhou (ex: 'ping' não existe no worker), "
+                        f"explique isso ao usuário — NÃO chame dispatch_deile_task de novo "
+                        f"esperando resultado diferente.",
+                        error_code="DISPATCH_COOLDOWN",
+                    )
+                # Record BEFORE the HTTP call (still inside the lock) so any
+                # concurrent retry observes the timestamp. If the client
+                # later raises a pre-network failure (auth/transport
+                # missing), the timestamp is ROLLED BACK below.
+                self._LAST_DISPATCH[channel_id] = now
 
             try:
                 data = await self._worker_client.dispatch(payload, wait=wait)
