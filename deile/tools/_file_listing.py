@@ -118,9 +118,10 @@ def _collect_entries(
     # Se é um diretório, carrega padrões do .gitignore
     gitignore_patterns = _load_gitignore_patterns(working_directory)
 
-    # ``recursive`` and ``pattern`` come from the LLM as either
-    # native bool/str or stringified ("True"/"False"). Coerce both
-    # so the rglob/glob branch is reachable.
+    # ``recursive`` comes from the LLM as either a native bool or a
+    # stringified ("True"/"False"); coerce so the rglob/glob branch is
+    # reachable. ``pattern`` is used raw — coercion of stringified globs
+    # (e.g. quoted ``"*.py"``) is a separate concern left for a followup.
     recursive_flag = recursive
     if isinstance(recursive_flag, str):
         recursive_flag = recursive_flag.strip().lower() in {"true", "1", "yes"}
