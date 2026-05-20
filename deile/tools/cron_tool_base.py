@@ -13,11 +13,14 @@ from .base import ToolResult
 
 
 def unexpected_error(exc: Exception) -> ToolResult:
-    """Padroniza o ``ToolResult`` para uma exceção não-esperada de cron tool.
+    """Padroniza o ``ToolResult`` para uma exceção não-esperada de tool.
 
-    Usa o nome da classe da exceção como prefixo da mensagem (em vez de
-    vazar a string crua) e o ``error_code`` ``UNEXPECTED`` que os callers
-    do agente já reconhecem.
+    Usado pelas tools que adotam o padrão central de tratamento de
+    ``except Exception`` em ``execute()`` (atualmente ``cron_create``,
+    ``cron_delete`` e ``pipeline_schedule``; o escopo é genérico, não
+    exclusivo de cron). Usa o nome da classe da exceção como prefixo da
+    mensagem (em vez de vazar a string crua) e o ``error_code``
+    ``UNEXPECTED`` que os callers do agente já reconhecem.
     """
     return ToolResult.error_result(
         message=f"{type(exc).__name__}: {exc}",
