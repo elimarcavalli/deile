@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -404,9 +405,13 @@ def _not_found_message(
     )
     bash_hint = ""
     if include_bash_hint and (resolved.note or _looks_like_outside_project(original_input)):
+        # Shell-escape the resolved absolute path so paths containing ``;``,
+        # ``&``, ``$``, backticks, spaces or quotes can't fabricate a shell
+        # command injection inside the hint string the LLM is shown.
+        quoted_path = shlex.quote(str(resolved.absolute))
         bash_hint = (
             " If the file lives OUTSIDE the project, use "
-            f'bash_execute(command="{bash_verb} {resolved.absolute}") instead — '
+            f'bash_execute(command="{bash_verb} {quoted_path}") instead — '
             "bash_execute has no working-directory sandbox."
         )
     detail_part = f" {detail}" if detail else ""
