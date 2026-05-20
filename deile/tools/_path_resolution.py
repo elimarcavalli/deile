@@ -296,14 +296,21 @@ def _resolve_project_path(file_path: str, working_directory: str) -> ResolvedPat
     try:
         target.relative_to(work_dir)
     except ValueError:
+        # Shell-escape ``target`` for the same reason ``_not_found_message``
+        # quotes its absolute path: this message is rendered back to the
+        # LLM, which may copy the ``ls``/``cat`` suggestion verbatim into a
+        # follow-up ``bash_execute`` call. A path containing ``;``, ``&``,
+        # ``$``, backticks, spaces or quotes would otherwise fabricate a
+        # shell command at execution time.
+        target_quoted = shlex.quote(str(target))
         raise LocalFileAccessViolation(
             f"path {raw!r} resolves to {target}, which is OUTSIDE the project "
             f"working directory {work_dir}. Use a project-relative path "
             f"(e.g. drop any leading '..' that escapes the project root). "
             f"For files OUTSIDE the project (parent repo, sibling project, "
             f"system paths like /etc/), use `bash_execute` (e.g. "
-            f"`ls {target}` or `cat {target}`) — bash_execute has no "
-            f"working-directory sandbox."
+            f"`ls {target_quoted}` or `cat {target_quoted}`) — bash_execute "
+            f"has no working-directory sandbox."
         )
 
     # POSIX-style relative for display (works across platforms in messages)

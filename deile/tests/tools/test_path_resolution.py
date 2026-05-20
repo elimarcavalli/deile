@@ -14,9 +14,11 @@ import pytest
 from deile.tools._path_resolution import (_PATH_ARG_KEYS_EDIT,
                                           _PATH_ARG_KEYS_FALLBACK,
                                           _PATH_ARG_KEYS_PRIMARY,
-                                          _PATH_ARG_KEYS_WRITE, ResolvedPath,
-                                          _extract_path_arg,
-                                          _not_found_message)
+                                          _PATH_ARG_KEYS_WRITE,
+                                          LocalFileAccessViolation,
+                                          ResolvedPath, _extract_path_arg,
+                                          _not_found_message,
+                                          _resolve_project_path)
 
 # ---------------------------------------------------------------------------
 # _extract_path_arg
@@ -209,3 +211,26 @@ def test_not_found_message_uses_custom_bash_verb():
         bash_verb="rm",
     )
     assert "rm " in msg
+
+
+# ---------------------------------------------------------------------------
+# _resolve_project_path — security parity with _not_found_message
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_resolve_project_path_shell_quotes_violation_path(tmp_path):
+    """When a path escapes the working directory, the raised
+    ``LocalFileAccessViolation`` message suggests ``bash_execute`` with
+    ``ls``/``cat`` commands. Just like ``_not_found_message``, the target
+    path must be shell-quoted so a dangerous input cannot fabricate a
+    shell command inside the message the LLM reads back.
+    """
+    with pytest.raises(LocalFileAccessViolation) as exc:
+        _resolve_project_path("../../etc; rm -rf /", str(tmp_path))
+    msg = str(exc.value)
+    # The dangerous bare-token sequence must not appear unquoted in the
+    # ls/cat suggestion — shlex.quote wraps the whole path in single
+    # quotes when it contains shell metacharacters.
+    assert "ls ; rm -rf /" not in msg
+    assert "cat ; rm -rf /" not in msg
