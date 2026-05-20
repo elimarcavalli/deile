@@ -101,6 +101,28 @@ def _load_exported_env_vars() -> None:
         pass
 
 
+async def _construct_agent(model_router, config_manager):
+    """Build and initialize a :class:`DeileAgent` from a bootstrapped router.
+
+    The caller is responsible for bootstrapping providers, creating sessions
+    and arranging UI affordances (spinners, autostart) — this helper only
+    centralizes the constructor + ``await agent.initialize()`` so any future
+    change to either lands in one place.
+    """
+    from deile.core.agent import DeileAgent
+    from deile.parsers.registry import get_parser_registry
+    from deile.tools.registry import get_tool_registry
+
+    agent = DeileAgent(
+        model_router=model_router,
+        tool_registry=get_tool_registry(),
+        parser_registry=get_parser_registry(),
+        config_manager=config_manager,
+    )
+    await agent.initialize()
+    return agent
+
+
 def _bootstrap_with_recovery(bootstrap_fn) -> list:
     """Run ``bootstrap_fn`` once; if it registered nothing, prompt the user for
     API keys via the TTY wizard and retry. ``bootstrap_fn`` is a zero-arg
@@ -216,10 +238,7 @@ class _DeileCLI:
     async def initialize(self) -> bool:
         from deile.config.manager import ConfigManager
         from deile.config.settings import get_settings
-        from deile.core.agent import DeileAgent
         from deile.core.models.router import get_model_router
-        from deile.parsers.registry import get_parser_registry
-        from deile.tools.registry import get_tool_registry
         from deile.ui import ConsoleUIManager, UITheme
 
         self.settings = get_settings()
@@ -247,13 +266,7 @@ class _DeileCLI:
                 return False
 
             with self.ui.show_loading("Finalizando inicialização..."):
-                self.agent = DeileAgent(
-                    model_router=model_router,
-                    tool_registry=get_tool_registry(),
-                    parser_registry=get_parser_registry(),
-                    config_manager=self.config_manager,
-                )
-                await self.agent.initialize()
+                self.agent = await _construct_agent(model_router, self.config_manager)
 
                 # gap #3: autostart the pipeline monitor when DEILE_PIPELINE_AUTOSTART=true
                 if self.settings.pipeline_autostart:
@@ -689,11 +702,8 @@ async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
     """Single-turn non-interactive. stdout = response.content."""
     from deile.config.manager import ConfigManager
     from deile.config.settings import get_settings
-    from deile.core.agent import DeileAgent
     from deile.core.models.bootstrap import bootstrap_providers
     from deile.core.models.router import get_model_router
-    from deile.parsers.registry import get_parser_registry
-    from deile.tools.registry import get_tool_registry
 
     settings = get_settings()
     settings.working_directory = Path.cwd()
@@ -712,13 +722,7 @@ async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
         )
         return 1
 
-    agent = DeileAgent(
-        model_router=model_router,
-        tool_registry=get_tool_registry(),
-        parser_registry=get_parser_registry(),
-        config_manager=config_manager,
-    )
-    await agent.initialize()
+    agent = await _construct_agent(model_router, config_manager)
 
     session = agent.create_session(
         session_id="oneshot_cli_session",
@@ -1211,11 +1215,8 @@ async def _run_command_flag(
     if requires_provider:
         # Only spin up the full agent (and require an API key) when the flag
         # genuinely needs an LLM provider. Most --flags don't.
-        from deile.core.agent import DeileAgent
         from deile.core.models.bootstrap import bootstrap_providers
         from deile.core.models.router import get_model_router
-        from deile.parsers.registry import get_parser_registry
-        from deile.tools.registry import get_tool_registry
 
         model_router = get_model_router()
         registered = _bootstrap_with_recovery(
@@ -1228,13 +1229,7 @@ async def _run_command_flag(
                 file=sys.stderr,
             )
             return 1
-        agent = DeileAgent(
-            model_router=model_router,
-            tool_registry=get_tool_registry(),
-            parser_registry=get_parser_registry(),
-            config_manager=config_manager,
-        )
-        await agent.initialize()
+        agent = await _construct_agent(model_router, config_manager)
         registry = agent.command_registry
     else:
         registry = get_command_registry(config_manager)
