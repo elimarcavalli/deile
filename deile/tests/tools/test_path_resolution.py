@@ -213,6 +213,37 @@ def test_not_found_message_uses_custom_bash_verb():
     assert "rm " in msg
 
 
+@pytest.mark.unit
+def test_not_found_message_handles_single_quote_path():
+    """Paths containing ``'`` must still be shell-quoted in the bash hint.
+
+    ``shlex.quote("foo'bar")`` returns ``'foo'"'"'bar'`` — the path itself
+    is shell-safe even though the inner ``"``/``'`` sequence reads oddly
+    inside the double-quoted ``bash_execute(command="...")`` wrapper. Pin
+    that the rendered hint still carries the escaped form (any of
+    ``'"'"'`` or ``\\'``) and never embeds the raw single-quote between
+    the verb and the closing wrapper.
+    """
+    resolved = ResolvedPath(
+        input="foo'bar",
+        relative_to_cwd="foo'bar",
+        absolute="/tmp/foo'bar",
+        note="leading '/' stripped",
+    )
+    msg = _not_found_message(
+        resolved,
+        original_input="foo'bar",
+        include_bash_hint=True,
+        bash_verb="cat",
+    )
+    # Path must be shell-safe in the hint: either the POSIX-style
+    # ``'"'"'`` escape or a backslash-escaped quote.
+    assert "'\"'\"'" in msg or "\\'" in msg
+    # And the raw, unescaped single-quote-in-path must not appear inside
+    # the command argument (would mean shlex.quote was skipped).
+    assert "cat /tmp/foo'bar" not in msg
+
+
 # ---------------------------------------------------------------------------
 # _resolve_project_path — security parity with _not_found_message
 # ---------------------------------------------------------------------------
