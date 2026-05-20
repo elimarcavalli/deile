@@ -158,11 +158,16 @@ def summarize_dispatch_response(data: Any) -> str:
         return ""
     ok = data.get("ok")
     if ok is True:
-        files = data.get("files") or []
-        elapsed = data.get("elapsed_s") or 0
+        files = data.get("files")
+        if not isinstance(files, list):
+            files = []
+        try:
+            elapsed = float(data.get("elapsed_s") or 0)
+        except (TypeError, ValueError):
+            elapsed = 0.0
         return (
-            f"worker concluiu em {float(elapsed):.1f}s — "
-            f"{len(files)} arquivo(s): " + ", ".join(files[:5])
+            f"worker concluiu em {elapsed:.1f}s — "
+            f"{len(files)} arquivo(s): " + ", ".join(str(f) for f in files[:5])
         )
     if ok is False:
         return (
