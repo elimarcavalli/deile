@@ -225,6 +225,7 @@ class DispatchDeileTaskTool(Tool):
         # default-deny (decisão #27), and the 30s cooldown below.
         try:
             args = dict(context.parsed_args or {})
+            bot_ctx = _bot_context(context)
             brief = str(args.get("brief", "")).strip()
             channel_id = str(args.get("channel_id", "")).strip()
             # Auto-fill from bot_context if the LLM forgot — this enables
@@ -232,8 +233,7 @@ class DispatchDeileTaskTool(Tool):
             # discipline. ``build_dispatch_payload`` ``str()``-ifies and
             # drops falsy values, so a single ``or`` covers both fallbacks.
             user_message_id = (
-                args.get("user_message_id")
-                or _bot_context(context).get("user_message_id")
+                args.get("user_message_id") or bot_ctx.get("user_message_id")
             )
             persona = args.get("persona") or "developer"
             wait = bool(args.get("wait_for_result", True))
@@ -244,7 +244,7 @@ class DispatchDeileTaskTool(Tool):
                 )
             if not channel_id:
                 # Fall back to bot_context if the LLM forgot.
-                channel_id = str(_bot_context(context).get("channel_id") or "").strip()
+                channel_id = str(bot_ctx.get("channel_id") or "").strip()
                 if not channel_id:
                     return ToolResult.error_result(
                         "channel_id is required (and not in bot_context)",
@@ -257,7 +257,7 @@ class DispatchDeileTaskTool(Tool):
                 persona=persona,
                 wait=wait,
                 user_message_id=user_message_id,
-                attachments=_bot_context(context).get("attachments"),
+                attachments=bot_ctx.get("attachments"),
             )
 
             # Validate payload BEFORE recording the cooldown — a payload
