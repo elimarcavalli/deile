@@ -233,15 +233,21 @@ class DispatchDeileTaskTool(Tool):
             cls._LAST_DISPATCH.pop(cid, None)
 
     async def execute(self, context: ToolContext) -> ToolResult:
-        # TODO(#237): this tool bridges untrusted Discord input → privileged
-        # remote execution (full DEILE toolset in an isolated worker) but
-        # currently has no ``PermissionManager`` gate and emits no
-        # ``AuditEvent``. The follow-up issue covers the ``dispatch:<channel_id>``
-        # permission rule plus three audit emissions (pending / success /
-        # failed with SHA8(brief), channel_id, user_message_id, persona,
-        # task_id, error_code). Deferred to keep this PR scoped to the
-        # hexagonal transport extraction; the bot's embedded-agent
-        # whitelist provides depth-of-defense in the meantime.
+        # TODO(deferred — decisão #29): this tool bridges untrusted Discord
+        # input → privileged remote execution (full DEILE toolset in an
+        # isolated worker) but currently has no ``PermissionManager`` gate
+        # and emits no ``AuditEvent``. See
+        # ``docs/system_design/DECISOES.md`` (Decisão #29) for the full
+        # rationale: the gate requires a new resource-string convention,
+        # a corresponding ``config/permissions.yaml`` rule, and pillar 08
+        # expansion — each a separate design decision, deferred to keep
+        # PR #233 scoped to the hexagonal transport extraction. Follow-up
+        # issue must cover the ``dispatch:<channel_id>`` permission rule
+        # plus three audit emissions (pending / success / failed with
+        # SHA8(brief), channel_id, user_message_id, persona, task_id,
+        # error_code). Compensating controls in the meantime: bot
+        # embedded-agent whitelist (decisão #28), NetworkPolicy
+        # default-deny (decisão #27), and the 30s cooldown below.
         try:
             args = dict(context.parsed_args or {})
             brief = str(args.get("brief", "")).strip()

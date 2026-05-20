@@ -98,6 +98,7 @@
 | 26 | Project layer de `.deile/settings.json` exige opt-in via `trust.project_layer_dirs` + permission/audit em `set_setting` (issue #125) | V1 patch | Segurança (08), Configuração (09) |
 | 27 | Stack de containerização em K8s (Rancher Desktop / k3s) para isolar deile-Job/bot/deile-shell do host — secrets como files (não env), pop após bootstrap, NetworkPolicy default-deny, PSS restricted, drop ALL caps | V1 | Containerização (14), Segurança (08) |
 | 28 | Tool whitelist no agente embutido do bot e default-`messaging` no `deile-oneshot` Job — Discord input é untrusted, prompt do Job é fixo; toolset cheio só no `deile-shell` interativo (prompt vem do operador via kubectl exec) | V1 | Containerização (14), Componentes (04) |
+| 29 | Permission gate + audit logging do `dispatch_deile_task` adiados para feature dedicada — refator hexagonal isolado; compensado por tool whitelist (#28), NetworkPolicy (#27) e cooldown de 30s | V1 | Segurança (08) |
 
 ## Estado dos pilares
 
