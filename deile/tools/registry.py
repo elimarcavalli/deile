@@ -129,7 +129,7 @@ class ToolRegistry:
             Tool: Instância da tool se habilitada, None caso contrário
         """
         tool = self.get(tool_name)
-        if tool and tool.is_enabled and tool_name in self._enabled_tools:
+        if tool and tool.is_enabled and tool.name in self._enabled_tools:
             return tool
         return None
     
@@ -227,10 +227,12 @@ class ToolRegistry:
     
     def auto_discover(self, package_names: Optional[List[str]] = None) -> int:
         """Descobre automaticamente tools em pacotes
-        
+
         Args:
-            package_names: Lista de pacotes para descobrir (opcional)
-            
+            package_names: Lista de pacotes para descobrir (opcional). Quando
+                ``None``, usa o conjunto-padrão definido em
+                :data:`deile.tools.discovery.DEFAULT_TOOL_PACKAGES`.
+
         Returns:
             int: Número de tools descobertas
         """
