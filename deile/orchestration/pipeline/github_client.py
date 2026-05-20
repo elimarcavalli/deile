@@ -146,6 +146,14 @@ class GitHubClient:
     def __init__(self, repo: str, *, gh_path: Optional[str] = None) -> None:
         if "/" not in repo:
             raise ValueError(f"repo must be 'owner/name', got {repo!r}")
+        # Fail-fast on path-traversal-prone shapes so the endpoint guard
+        # in ``_list_comments_since`` (which checks ``startswith(repos/{repo}/)``
+        # and ``".." not in endpoint``) cannot be defeated by feeding
+        # ``..`` *through* ``self.repo``.
+        if ".." in repo or repo.startswith("/") or repo.endswith("/"):
+            raise ValueError(
+                f"repo must not contain '..' or leading/trailing '/', got {repo!r}"
+            )
         self.repo = repo
         self._gh = gh_path or shutil.which("gh") or "gh"
 

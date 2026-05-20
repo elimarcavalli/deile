@@ -46,6 +46,27 @@ def test_parse_iso_utc_handles_z_suffix():
 
 
 def test_parse_iso_utc_rejects_double_z_suffix():
-    """Only one trailing Z is stripped — malformed inputs still raise."""
-    with pytest.raises(ValueError):
+    """Only one trailing Z is stripped — ``...ZZ`` must still raise.
+
+    Python 3.11+ ``datetime.fromisoformat`` natively accepts a single
+    trailing ``Z``, so after the strip the helper must explicitly reject
+    any remaining ``Z`` suffix — otherwise ``...ZZ`` would silently
+    parse as midnight UTC.
+    """
+    with pytest.raises(ValueError, match="invalid ISO datetime"):
+        parse_iso_utc("2026-05-19T12:00:00ZZ")
+
+
+def test_parse_iso_utc_rejects_triple_z_suffix():
+    with pytest.raises(ValueError, match="invalid ISO datetime"):
         parse_iso_utc("2026-05-19T12:00:00ZZZ")
+
+
+def test_parse_iso_utc_rejects_empty_string():
+    with pytest.raises(ValueError, match="invalid ISO datetime"):
+        parse_iso_utc("")
+
+
+def test_parse_iso_utc_rejects_bare_z():
+    with pytest.raises(ValueError, match="invalid ISO datetime"):
+        parse_iso_utc("Z")

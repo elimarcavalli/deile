@@ -40,10 +40,18 @@ def parse_iso_utc(value) -> Optional[datetime]:
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if isinstance(value, str):
         stripped = value.strip()
+        if not stripped:
+            raise ValueError(f"invalid ISO datetime: {value!r}")
         # Trim at most one trailing ``Z`` so a malformed ``...ZZ`` does not
-        # silently parse as midnight UTC.
+        # silently parse as midnight UTC. Python 3.11+ ``fromisoformat``
+        # natively accepts a single trailing ``Z``, so after the strip we
+        # must reject any remaining ``Z`` suffix explicitly — otherwise
+        # ``...ZZ`` → strip-one → ``...Z`` → fromisoformat → success, and
+        # the malformation is silently accepted.
         if stripped.endswith("Z"):
             stripped = stripped[:-1]
+            if stripped.endswith("Z"):
+                raise ValueError(f"invalid ISO datetime: {value!r}")
         try:
             dt = datetime.fromisoformat(stripped)
         except ValueError as exc:

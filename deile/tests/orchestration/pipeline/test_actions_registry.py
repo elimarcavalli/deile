@@ -16,6 +16,13 @@ from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
 
 
+def test_actions_registry_is_nonempty():
+    """Guard the per-element assertions below: an empty ``ACTIONS`` tuple
+    would let every ``for a in ACTIONS: assert ...`` test pass vacuously.
+    """
+    assert ACTIONS, "ACTIONS registry must declare at least one action"
+
+
 def test_each_action_method_exists_on_monitor():
     """Every ActionDef.method is a real attribute of PipelineMonitor."""
     for a in ACTIONS:
