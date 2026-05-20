@@ -33,8 +33,10 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from typing import Dict, Optional, Tuple
+from urllib.parse import urlparse
 
 from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
                    ToolSchema)
@@ -44,13 +46,57 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT_S = 600.0
 _DISPATCH_PATH = "/v1/dispatch"
+_ALLOWED_ENDPOINT_SCHEMES = ("http", "https")
+_PERSONA_ALLOWLIST = ("developer", "architect", "debugger")
+# RFC 6750: token68 = 1*( ALPHA / DIGIT / "-" / "." / "_" / "~" / "+" / "/" )
+# followed by optional "=" padding. We keep the validation strict: anything
+# outside this set (notably CR, LF, NUL, space) would let a malicious value
+# inject extra headers into the Authorization line ("header smuggling").
+_BEARER_TOKEN_RE = re.compile(r"^[A-Za-z0-9\-._~+/]+=*$")
+
+
+class _DispatchConfigError(ValueError):
+    """Raised when a dispatch-time config value (endpoint/token) is invalid."""
 
 
 def _worker_endpoint() -> str:
-    return os.environ.get(
+    """Return the worker control-plane endpoint URL.
+
+    Validates the scheme against an explicit allowlist (``http``/``https``).
+    Schemes like ``file://`` or ``gopher://`` may load local resources or
+    exhibit version-dependent behavior under httpx; rejecting them at config
+    time prevents the worker from being aimed at a non-HTTP target.
+    """
+    raw = os.environ.get(
         "DEILE_WORKER_ENDPOINT",
         "http://deile-worker.deile.svc.cluster.local:8766",
     )
+    parsed = urlparse(raw)
+    if parsed.scheme.lower() not in _ALLOWED_ENDPOINT_SCHEMES:
+        raise _DispatchConfigError(
+            f"DEILE_WORKER_ENDPOINT scheme {parsed.scheme!r} is not allowed "
+            f"(allowed: {_ALLOWED_ENDPOINT_SCHEMES})"
+        )
+    if not parsed.netloc:
+        raise _DispatchConfigError(
+            "DEILE_WORKER_ENDPOINT is missing host (netloc)"
+        )
+    return raw
+
+
+def _validate_bearer_token(value: str) -> str:
+    """Reject control chars (CR/LF/NUL/space/...) in the bearer token.
+
+    Embedding ``\\r\\n`` in the token would let an attacker append fake HTTP
+    headers to the ``Authorization`` line (header smuggling). We enforce the
+    RFC 6750 ``token68`` grammar — anything outside that set is rejected.
+    """
+    if not _BEARER_TOKEN_RE.match(value):
+        raise _DispatchConfigError(
+            "worker bearer token contains characters outside RFC 6750 token68 "
+            "(possible CR/LF/NUL — refusing to send to avoid header smuggling)"
+        )
+    return value
 
 
 def _worker_token() -> str:
@@ -61,10 +107,13 @@ def _worker_token() -> str:
       2. file /run/secrets/bot/worker/AUTH_TOKEN  (bot pod, real K8s mount)
       3. file /run/secrets/worker/AUTH_TOKEN      (worker pod itself)
       4. file /run/secrets/bot/WORKER_BEARER_TOKEN (legacy fallback)
+
+    Whichever source is used, the resolved value is validated against
+    :func:`_validate_bearer_token` before being returned.
     """
     val = os.environ.get("DEILE_WORKER_BEARER_TOKEN", "").strip()
     if val:
-        return val
+        return _validate_bearer_token(val)
     for path in (
         "/run/secrets/bot/worker/AUTH_TOKEN",
         "/run/secrets/worker/AUTH_TOKEN",
@@ -74,7 +123,7 @@ def _worker_token() -> str:
             with open(path, "r", encoding="utf-8") as f:
                 v = f.read().strip()
                 if v:
-                    return v
+                    return _validate_bearer_token(v)
         except OSError:
             continue
     return ""
@@ -261,6 +310,8 @@ class DispatchDeileTaskTool(Tool):
                         },
                         "persona": {
                             "type": "string",
+                            "enum": list(_PERSONA_ALLOWLIST),
+                            "default": "developer",
                             "description": (
                                 "Optional persona for the worker DEILE "
                                 "(default: 'developer'). Choose 'architect' for design-"
@@ -270,11 +321,13 @@ class DispatchDeileTaskTool(Tool):
                         },
                         "wait_for_result": {
                             "type": "boolean",
+                            "default": False,
                             "description": (
-                                "When true (default), block until the worker finishes "
-                                "(timeout ~10min). When false, returns immediately with "
-                                "the task_id so the LLM can keep talking; UX continues "
-                                "via the worker editing the status message in background."
+                                "When true, block until the worker finishes "
+                                "(timeout ~10min). When false (default), returns "
+                                "immediately with the task_id so the LLM can keep "
+                                "talking; UX continues via the worker editing the "
+                                "status message in background."
                             ),
                         },
                     },
@@ -300,7 +353,13 @@ class DispatchDeileTaskTool(Tool):
                 or _bot_context(context).get("user_message_id")
             )
             persona = args.get("persona") or "developer"
-            wait = bool(args.get("wait_for_result", True))
+            if persona not in _PERSONA_ALLOWLIST:
+                return ToolResult.error_result(
+                    f"persona {persona!r} is not allowed "
+                    f"(allowed: {_PERSONA_ALLOWLIST})",
+                    error_code="BAD_REQUEST",
+                )
+            wait = bool(args.get("wait_for_result", False))
 
             if not brief:
                 return ToolResult.error_result(
