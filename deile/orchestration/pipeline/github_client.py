@@ -507,21 +507,25 @@ class GitHubClient:
             and not any(lb.startswith("~") for lb in pr.labels)
         ]
 
-    async def list_issue_comments_since(self, since: datetime) -> List[CommentRef]:
-        """Return all issue comments posted after *since* (UTC).
-
-        Uses the GitHub REST API via ``gh api``. Returns empty list on error.
-        """
+    async def _list_comments_since(
+        self,
+        endpoint: str,
+        *,
+        since: datetime,
+        kind: str,
+        url_field: str,
+        log_label: str,
+    ) -> List[CommentRef]:
+        """Shared implementation for list_issue_comments_since / list_pr_review_comments_since."""
         since_iso = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
             out = await self._run_checked(
-                "api",
-                f"repos/{self.repo}/issues/comments",
+                "api", endpoint,
                 "--field", f"since={since_iso}",
                 "--field", "per_page=100",
             )
         except GhCommandError as exc:
-            logger.warning("list_issue_comments_since failed: %s", exc)
+            logger.warning("%s failed: %s", log_label, exc)
             return []
         data = json.loads(out or "[]")
         result: List[CommentRef] = []
@@ -531,46 +535,39 @@ class GitHubClient:
                     comment_id=int(item["id"]),
                     body=str(item.get("body") or ""),
                     html_url=str(item.get("html_url", "")),
-                    issue_url=str(item.get("issue_url", "")),
+                    issue_url=str(item.get(url_field, "")),
                     author=str((item.get("user") or {}).get("login", "")),
-                    kind="issue",
+                    kind=kind,
                 ))
             except (KeyError, TypeError, ValueError) as exc:
-                logger.warning("skipping malformed issue comment payload: %s", exc)
+                logger.warning("skipping malformed %s comment payload: %s", kind, exc)
         return result
+
+    async def list_issue_comments_since(self, since: datetime) -> List[CommentRef]:
+        """Return all issue comments posted after *since* (UTC).
+
+        Uses the GitHub REST API via ``gh api``. Returns empty list on error.
+        """
+        return await self._list_comments_since(
+            f"repos/{self.repo}/issues/comments",
+            since=since,
+            kind="issue",
+            url_field="issue_url",
+            log_label="list_issue_comments_since",
+        )
 
     async def list_pr_review_comments_since(self, since: datetime) -> List[CommentRef]:
         """Return all PR review comments posted after *since* (UTC).
 
         Uses the GitHub REST API via ``gh api``. Returns empty list on error.
         """
-        since_iso = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        try:
-            out = await self._run_checked(
-                "api",
-                f"repos/{self.repo}/pulls/comments",
-                "--field", f"since={since_iso}",
-                "--field", "per_page=100",
-            )
-        except GhCommandError as exc:
-            logger.warning("list_pr_review_comments_since failed: %s", exc)
-            return []
-        data = json.loads(out or "[]")
-        result: List[CommentRef] = []
-        for item in data:
-            try:
-                pr_url = str(item.get("pull_request_url", ""))
-                result.append(CommentRef(
-                    comment_id=int(item["id"]),
-                    body=str(item.get("body") or ""),
-                    html_url=str(item.get("html_url", "")),
-                    issue_url=pr_url,
-                    author=str((item.get("user") or {}).get("login", "")),
-                    kind="pr_review",
-                ))
-            except (KeyError, TypeError, ValueError) as exc:
-                logger.warning("skipping malformed PR review comment payload: %s", exc)
-        return result
+        return await self._list_comments_since(
+            f"repos/{self.repo}/pulls/comments",
+            since=since,
+            kind="pr_review",
+            url_field="pull_request_url",
+            log_label="list_pr_review_comments_since",
+        )
 
     async def clear_batch_label(self, kind: str, number: int) -> None:
         """Remove all ``~batch:*`` labels from an issue or PR (gap #9).
