@@ -6,10 +6,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..core.exceptions import ValidationError
-# `LocalFileAccessViolation`, `_post_write_validation_hint`, and
-# `_validate_path_within_working_directory` are re-exported for existing
-# test imports (`from deile.tools.file_tools import ...`); they have no
-# direct caller in this module — see `__all__` below.
+# `LocalFileAccessViolation` is both caught locally (6 `except` clauses
+# in Read/Write/Edit/List/Delete `execute_sync`) and re-exported for
+# existing test imports. `_post_write_validation_hint` and
+# `_validate_path_within_working_directory` are re-exported only
+# (no direct caller in this module) — see `__all__` below.
 from ._file_listing import _collect_entries, _render_tree
 from ._path_resolution import (_PATH_ARG_KEYS_EDIT, _PATH_ARG_KEYS_FALLBACK,
                                _PATH_ARG_KEYS_PRIMARY, _PATH_ARG_KEYS_WRITE,
