@@ -22,21 +22,9 @@ from deile.core.models.base import ModelMessage, ModelProvider
 from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
 from deile.tools.base import ToolContext, ToolResult, ToolStatus
 from deile.tools.registry import ToolRegistry, get_tool_registry
+from deile.core.tool_scenario_kwargs import build_tool_stage_kwargs
 from deile.ui.stage_cascade import cascade_stream, cascade_until
 from deile.ui.stage_messages import get_stage_message  # noqa: F401
-
-# Map tool names (as emitted by the model) to message-library scenario keys.
-# When a tool is registered, use its specific scenario for richer feedback.
-_TOOL_SCENARIO_MAP: Dict[str, str] = {
-    "pip_install": "tool_pip_install",
-    "run_tests": "tool_run_tests",
-    "test_runner": "tool_run_tests",
-    "find_in_files": "tool_find_files",
-    "search_tool": "tool_find_files",
-    "bash_execute": "tool_bash",
-    "write_file": "tool_write_file",
-    "file_write": "tool_write_file",
-}
 
 logger = logging.getLogger(__name__)
 
@@ -343,43 +331,7 @@ class ToolLoopExecutor:
 
             # Execute each tool sequentially, emitting TOOL_RESULT events.
             for tc_id, tc_name, tc_args in pending_tool_calls:
-                # Use a specific scenario key when available for richer feedback.
-                tool_key = _TOOL_SCENARIO_MAP.get(tc_name, "tool_executing")
-                tool_kwargs: Dict[str, Any] = {"tool": tc_name}
-                if tool_key == "tool_pip_install":
-                    tool_kwargs["package"] = (
-                        str(list(tc_args.values())[0]) if tc_args else tc_name
-                    )
-                elif tool_key == "tool_bash":
-                    raw_cmd = ""
-                    if tc_args:
-                        raw_cmd = str(
-                            tc_args.get("command")
-                            or tc_args.get("cmd")
-                            or tc_args.get("script")
-                            or list(tc_args.values())[0]
-                        )
-                    tool_kwargs["cmd"] = raw_cmd[:60] or tc_name
-                elif tool_key == "tool_write_file":
-                    tool_kwargs["file"] = str(
-                        tc_args.get("path") or tc_args.get("file_path") or tc_name
-                    ) if tc_args else tc_name
-                elif tool_key == "tool_find_files":
-                    tool_kwargs.setdefault(
-                        "path",
-                        str(tc_args.get("path") or tc_args.get("directory") or "workspace")
-                        if tc_args
-                        else "workspace",
-                    )
-                    tool_kwargs.setdefault("matches", 0)
-                    tool_kwargs.setdefault("scanned", 0)
-                elif tool_key == "tool_run_tests":
-                    tool_kwargs["target"] = (
-                        str(tc_args.get("target") or tc_args.get("path") or tc_name)
-                        if tc_args
-                        else tc_name
-                    )
-                    tool_kwargs.setdefault("count", 0)
+                tool_key, tool_kwargs = build_tool_stage_kwargs(tc_name, tc_args)
 
                 # ── Loop guard: detect identical-call / windowed / no-progress
                 # spirals before we burn another round-trip. If the guard
