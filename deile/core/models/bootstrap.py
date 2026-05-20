@@ -39,6 +39,9 @@ def _bootstrap_legacy_gemini_only(router) -> List[str]:
     if not os.getenv("GOOGLE_API_KEY"):
         return []
     if router is None:
+        logger.debug(
+            "bootstrap: skipping legacy gemini registration, router is None"
+        )
         return []
     from deile.core.models.gemini_provider import GeminiProvider
     router.register_provider(GeminiProvider(), priority=1)
