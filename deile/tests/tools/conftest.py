@@ -21,6 +21,24 @@ def _reset_settings_singleton():
     reset_settings()
 
 
+@pytest.fixture(autouse=True)
+def _reset_bridge_executor():
+    """Reset o ``_BRIDGE_EXECUTOR`` module-level entre testes.
+
+    Evita leak de estado entre testes que materializam o executor
+    (notavelmente ``test_run_coro_sync_inside_event_loop``) — sem isso
+    o pool de threads sobrevive ao teste e a asserção
+    ``fc_mod._BRIDGE_EXECUTOR is not None`` poderia passar por estado
+    residual de outro teste em vez do que o teste atual provou.
+    """
+    from deile.tools import function_call as fc_mod
+
+    yield
+    if fc_mod._BRIDGE_EXECUTOR is not None:
+        fc_mod._BRIDGE_EXECUTOR.shutdown(wait=False)
+        fc_mod._BRIDGE_EXECUTOR = None
+
+
 # Repo root — used by fixtures that need a safe-root-compatible temp directory.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 

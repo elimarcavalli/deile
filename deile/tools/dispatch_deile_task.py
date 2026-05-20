@@ -34,7 +34,7 @@ import json
 import logging
 import os
 import time
-from typing import Dict
+from typing import Dict, Optional, Tuple
 
 from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
                    ToolSchema)
@@ -111,6 +111,65 @@ def _build_dispatch_payload(
     if atts:
         payload["attachments"] = atts
     return payload
+
+
+async def _post_dispatch(
+    *,
+    endpoint: str,
+    payload: Dict[str, object],
+    token: str,
+    wait: bool,
+) -> Tuple[Optional[dict], Optional[ToolResult]]:
+    """POST the dispatch payload to the worker control plane.
+
+    Returns ``(data, None)`` on a successful response, or
+    ``(None, error_result)`` on any transport, decoding or HTTP-status
+    failure. ``token`` is a secret — it is never logged or echoed.
+    """
+    try:
+        import httpx
+    except ImportError:
+        return None, ToolResult.error_result(
+            "httpx is not installed in this image", error_code="INTERNAL_ERROR"
+        )
+
+    timeout = _DEFAULT_TIMEOUT_S + 60 if wait else 30
+    async with httpx.AsyncClient(timeout=timeout) as cli:
+        try:
+            resp = await cli.post(
+                endpoint,
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+            )
+        except httpx.TimeoutException as exc:
+            return None, ToolResult.error_result(
+                f"worker timeout after {timeout}s", error=exc,
+                error_code="WORKER_TIMEOUT",
+            )
+        except httpx.HTTPError as exc:
+            return None, ToolResult.error_result(
+                f"worker unreachable: {type(exc).__name__}", error=exc,
+                error_code="WORKER_UNREACHABLE",
+            )
+
+    try:
+        data = resp.json()
+    except json.JSONDecodeError:
+        return None, ToolResult.error_result(
+            f"worker returned non-JSON (status={resp.status_code})",
+            error_code="WORKER_BAD_RESPONSE",
+        )
+
+    if resp.status_code >= 400:
+        err = data.get("error") if isinstance(data, dict) else {}
+        code = (err or {}).get("code") or "WORKER_ERROR"
+        msg = (err or {}).get("message") or f"HTTP {resp.status_code}"
+        return None, ToolResult.error_result(msg, error_code=code)
+
+    return data, None
 
 
 def _summarize_worker_response(data: object) -> str:
@@ -232,14 +291,14 @@ class DispatchDeileTaskTool(Tool):
             args = dict(context.parsed_args or {})
             brief = str(args.get("brief", "")).strip()
             channel_id = str(args.get("channel_id", "")).strip()
-            user_message_id = args.get("user_message_id")
             # Auto-fill from bot_context if the LLM forgot — this enables
             # the worker's 🔧/✅ reaction UX without depending on persona
-            # discipline.
-            if not user_message_id:
-                umid = _bot_context(context).get("user_message_id")
-                if umid:
-                    user_message_id = str(umid)
+            # discipline. ``_build_dispatch_payload`` ``str()``-ifies and
+            # drops falsy values, so a single ``or`` covers both fallbacks.
+            user_message_id = (
+                args.get("user_message_id")
+                or _bot_context(context).get("user_message_id")
+            )
             persona = args.get("persona") or "developer"
             wait = bool(args.get("wait_for_result", True))
 
@@ -294,48 +353,11 @@ class DispatchDeileTaskTool(Tool):
                 context=context,
             )
 
-            try:
-                import httpx
-            except ImportError:
-                return ToolResult.error_result(
-                    "httpx is not installed in this image", error_code="INTERNAL_ERROR"
-                )
-
-            timeout = _DEFAULT_TIMEOUT_S + 60 if wait else 30
-            async with httpx.AsyncClient(timeout=timeout) as cli:
-                try:
-                    resp = await cli.post(
-                        endpoint,
-                        json=payload,
-                        headers={
-                            "Authorization": f"Bearer {token}",
-                            "Content-Type": "application/json",
-                        },
-                    )
-                except httpx.TimeoutException as exc:
-                    return ToolResult.error_result(
-                        f"worker timeout after {timeout}s", error=exc,
-                        error_code="WORKER_TIMEOUT",
-                    )
-                except httpx.HTTPError as exc:
-                    return ToolResult.error_result(
-                        f"worker unreachable: {type(exc).__name__}", error=exc,
-                        error_code="WORKER_UNREACHABLE",
-                    )
-
-            try:
-                data = resp.json()
-            except json.JSONDecodeError:
-                return ToolResult.error_result(
-                    f"worker returned non-JSON (status={resp.status_code})",
-                    error_code="WORKER_BAD_RESPONSE",
-                )
-
-            if resp.status_code >= 400:
-                err = data.get("error") if isinstance(data, dict) else {}
-                code = (err or {}).get("code") or "WORKER_ERROR"
-                msg = (err or {}).get("message") or f"HTTP {resp.status_code}"
-                return ToolResult.error_result(msg, error_code=code)
+            data, error = await _post_dispatch(
+                endpoint=endpoint, payload=payload, token=token, wait=wait,
+            )
+            if error is not None:
+                return error
 
             short_summary = _summarize_worker_response(data)
 
