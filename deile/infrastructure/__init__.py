@@ -1,15 +1,7 @@
-"""Infrastructure layer do DEILE - External integrations"""
+"""Infrastructure layer do DEILE — External integrations.
 
-from .deile_worker_client import (DEFAULT_TIMEOUT_S, DeileWorkerClient,
-                                  DispatchPayload, WorkerDispatchError)
-from .google_file_api import FileUploadResult, GoogleFileUploader, UploadError
-
-__all__ = [
-    "GoogleFileUploader",
-    "FileUploadResult",
-    "UploadError",
-    "DeileWorkerClient",
-    "WorkerDispatchError",
-    "DispatchPayload",
-    "DEFAULT_TIMEOUT_S",
-]
+Submodules expose their own surfaces; callers import directly from the
+submodule (``from deile.infrastructure.deile_worker_client import ...``).
+No package-level re-exports — those existed historically but had zero
+production consumers and only invited shadow contracts.
+"""
