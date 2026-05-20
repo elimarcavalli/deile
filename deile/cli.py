@@ -123,6 +123,32 @@ async def _construct_agent(model_router, config_manager):
     return agent
 
 
+def _bootstrap_with_recovery(bootstrap_fn, *, spinner_factory=None) -> list:
+    """Run ``bootstrap_fn`` once; if it registered nothing, prompt the user for
+    API keys via the TTY wizard and retry. ``bootstrap_fn`` is a zero-arg
+    callable returning the list of registered provider names.
+
+    ``spinner_factory`` (optional) is a zero-arg callable returning a fresh
+    context manager (e.g. Rich ``Status``). When provided, the spinner is
+    active during each bootstrap attempt but is paused around the
+    interactive recovery wizard so ``getpass`` prompts render cleanly.
+    """
+    if spinner_factory is None:
+        registered = bootstrap_fn()
+        if not registered and _run_env_recovery():
+            registered = bootstrap_fn()
+        return registered
+
+    with spinner_factory():
+        registered = bootstrap_fn()
+    if registered:
+        return registered
+    if not _run_env_recovery():
+        return registered
+    with spinner_factory():
+        return bootstrap_fn()
+
+
 def _bootstrap_provider_router_or_print_error():
     """Bootstrap a model router with provider recovery; print stderr error on miss.
 
@@ -150,32 +176,6 @@ def _bootstrap_provider_router_or_print_error():
         )
         return None
     return model_router
-
-
-def _bootstrap_with_recovery(bootstrap_fn, *, spinner_factory=None) -> list:
-    """Run ``bootstrap_fn`` once; if it registered nothing, prompt the user for
-    API keys via the TTY wizard and retry. ``bootstrap_fn`` is a zero-arg
-    callable returning the list of registered provider names.
-
-    ``spinner_factory`` (optional) is a zero-arg callable returning a fresh
-    context manager (e.g. Rich ``Status``). When provided, the spinner is
-    active during each bootstrap attempt but is paused around the
-    interactive recovery wizard so ``getpass`` prompts render cleanly.
-    """
-    if spinner_factory is None:
-        registered = bootstrap_fn()
-        if not registered and _run_env_recovery():
-            registered = bootstrap_fn()
-        return registered
-
-    with spinner_factory():
-        registered = bootstrap_fn()
-    if registered:
-        return registered
-    if not _run_env_recovery():
-        return registered
-    with spinner_factory():
-        return bootstrap_fn()
 
 
 def _run_env_recovery() -> bool:
