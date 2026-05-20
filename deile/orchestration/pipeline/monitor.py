@@ -263,6 +263,11 @@ class PipelineMonitor:
             try:
                 merged_prs = await self.github.list_recently_merged_prs(limit=100)
                 merged_branches = [pr.head_ref for pr in merged_prs if pr.head_ref]
+                dropped = len(merged_prs) - len(merged_branches)
+                if dropped:
+                    logger.debug(
+                        "cleanup: ignored %d merged PRs with empty head_ref", dropped
+                    )
                 deleted = await self.worktrees.cleanup_merged_branches(merged_branches)
                 if deleted:
                     logger.info("startup: cleaned up %d merged worktrees", deleted)

@@ -19,7 +19,7 @@ import logging
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Collection, Optional
 
 from deile.core.exceptions import DEILEError
 
@@ -154,7 +154,7 @@ class WorktreeManager:
                 )
         return Worktree(path=target, branch=branch, base_repo=self.base_repo)
 
-    async def cleanup_merged_branches(self, merged_branches: Iterable[str]) -> int:
+    async def cleanup_merged_branches(self, merged_branches: Collection[str]) -> int:
         """Delete on-disk worktrees whose branch is in *merged_branches* (gap #26).
 
         The caller supplies the set of branch names that have already been
@@ -166,7 +166,7 @@ class WorktreeManager:
         Best-effort: individual remove errors are logged at WARNING, never
         raised.
         """
-        merged_set = {b for b in merged_branches if b}
+        merged_set = frozenset(b for b in merged_branches if b)
         if not merged_set or not self.branches_dir.exists():
             return 0
 

@@ -29,15 +29,24 @@ def parse_iso_utc(value) -> Optional[datetime]:
     """Parse a datetime/str into a UTC-aware ``datetime``.
 
     Accepts ``None`` (returns ``None``), a ``datetime`` (returned UTC-aware),
-    or a string (ISO-8601, optionally with trailing ``Z``). Raises
-    ``ValueError`` on any unsupported input — callers wrap into their own
-    domain exception when needed.
+    or a string (ISO-8601, optionally with a single trailing ``Z``). Raises
+    ``ValueError`` with a clear prefix (``"invalid ISO datetime: <repr>"``)
+    on any unsupported input — callers wrap into their own domain exception
+    when needed.
     """
     if value is None:
         return None
     if isinstance(value, datetime):
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     if isinstance(value, str):
-        dt = datetime.fromisoformat(value.strip().rstrip("Z"))
+        stripped = value.strip()
+        # Trim at most one trailing ``Z`` so a malformed ``...ZZ`` does not
+        # silently parse as midnight UTC.
+        if stripped.endswith("Z"):
+            stripped = stripped[:-1]
+        try:
+            dt = datetime.fromisoformat(stripped)
+        except ValueError as exc:
+            raise ValueError(f"invalid ISO datetime: {value!r}") from exc
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     raise ValueError(f"unsupported datetime value: {value!r}")

@@ -510,6 +510,14 @@ class GitHubClient:
         log_label: str,
     ) -> List[CommentRef]:
         """Shared implementation for list_issue_comments_since / list_pr_review_comments_since."""
+        # Defence-in-depth: every current caller builds ``endpoint`` from
+        # ``self.repo``; assert here so a future caller cannot pass an
+        # attacker-influenced REST path through to ``gh api``.
+        expected_prefix = f"repos/{self.repo}/"
+        if not endpoint.startswith(expected_prefix) or ".." in endpoint:
+            raise ValueError(
+                f"endpoint must start with {expected_prefix!r} and contain no '..'"
+            )
         since_iso = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
             out = await self._run_checked(

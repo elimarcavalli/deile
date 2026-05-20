@@ -46,6 +46,10 @@ class ActionDef:
     enable_attr: str
 
 
+# Note: ``mention_handling`` keeps its own ``_mention_cursor_path`` and is
+# designed to run on every poll tick. Scheduling it via cron works but
+# means two cursors compete (the schedule's ``last_run_at`` and the
+# on-disk cursor) — prefer leaving it to the polling loop.
 ACTIONS: Tuple[ActionDef, ...] = (
     ActionDef("classify", "_classify_new_issues", "enable_classify"),
     ActionDef("review", "_review_one_new_issue", "enable_review"),
