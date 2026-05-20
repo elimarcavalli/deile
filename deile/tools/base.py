@@ -396,31 +396,6 @@ class Tool(ABC):
         """
         pass
     
-    async def validate_context(self, context: ToolContext) -> bool:
-        """Valida se o contexto é adequado para esta tool
-        
-        Args:
-            context: Contexto a ser validado
-            
-        Returns:
-            bool: True se o contexto é válido
-            
-        Raises:
-            ValidationError: Se o contexto é inválido
-        """
-        return True
-
-    async def get_help(self) -> str:
-        """Retorna ajuda sobre como usar a tool"""
-        return f"""
-Tool: {self.name}
-Description: {self.description}
-Category: {self.category}
-Version: {self.version}
-Status: {'Enabled' if self.is_enabled else 'Disabled'}
-Executions: {self.execution_count}
-"""
-    
     def __str__(self) -> str:
         return f"{self.name} ({self.category})"
     

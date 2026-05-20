@@ -241,14 +241,6 @@ class ToolRegistry:
             )
         
         try:
-            # Valida contexto
-            if not await tool.validate_context(context):
-                raise ToolError(
-                    f"Invalid context for tool '{tool_name}'",
-                    tool_name=tool_name,
-                    error_code="INVALID_CONTEXT"
-                )
-            
             # Executa a tool
             return await tool.execute(context)
             
