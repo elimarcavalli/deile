@@ -93,6 +93,22 @@ def test_alias_lookup_resolves_for_enabled_tool():
     assert result.data == "async-ok"
 
 
+def test_alias_lookup_for_disabled_tool_returns_function_disabled():
+    """Pin o caminho dual: o alias resolve para a tool real, e a tool
+    estando desabilitada retorna ``FUNCTION_DISABLED`` (não
+    ``FUNCTION_NOT_FOUND``). Garante que disable opera sobre o nome
+    real mesmo quando a invocação chega via alias."""
+    registry = ToolRegistry()
+    tool = _AsyncEchoTool()
+    registry.register(tool, aliases=["echo_alias"])
+    registry.disable_tool(tool.name)
+
+    result = execute_function_call(registry, "echo_alias", {})
+
+    assert result.is_error
+    assert result.metadata["error_code"] == "FUNCTION_DISABLED"
+
+
 def test_sync_tool_uses_execute_sync_branch():
     registry = ToolRegistry()
     tool = _SyncEchoTool()

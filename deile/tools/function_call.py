@@ -47,8 +47,16 @@ def _get_bridge_executor() -> ThreadPoolExecutor:
     if _BRIDGE_EXECUTOR is None:
         with _BRIDGE_LOCK:
             if _BRIDGE_EXECUTOR is None:
+                # Worker é daemon para não bloquear shutdown indefinidamente
+                # caso uma coroutine longa esteja em execução durante SIGTERM.
+                # ThreadPoolExecutor não aceita ``daemon`` no construtor — o
+                # ``initializer`` roda na worker thread e marca daemon=True.
                 _BRIDGE_EXECUTOR = ThreadPoolExecutor(
-                    max_workers=1, thread_name_prefix="deile-sync-bridge"
+                    max_workers=1,
+                    thread_name_prefix="deile-sync-bridge",
+                    initializer=lambda: setattr(
+                        threading.current_thread(), "daemon", True
+                    ),
                 )
     return _BRIDGE_EXECUTOR
 
@@ -61,8 +69,8 @@ def _run_coro_sync(coro):
     coroutine is run in a worker thread so it never reenters the live
     loop — ``loop.run_until_complete`` would raise ``RuntimeError`` there.
 
-    Two constraints apply when the worker-thread path is taken, and
-    callers must account for both:
+    Three constraints apply when the worker-thread path is taken, and
+    callers must account for all of them:
 
     1. Cancellation/timeout does NOT cross into the worker thread. An
        ``asyncio.CancelledError`` or timeout raised against the caller
@@ -76,6 +84,15 @@ def _run_coro_sync(coro):
        ``asyncio.Lock``, connection pools, async clients/sessions);
        such resources will misbehave or raise
        ``RuntimeError: ... attached to a different loop``.
+    3. Re-entrancy is unsupported. The module-level executor has
+       ``max_workers=1``, so calling ``_run_coro_sync`` from within a
+       coroutine that itself is already being bridged (via
+       ``execute_function_call`` → ``tool.execute`` → ... →
+       ``_run_coro_sync``) deadlocks: the worker is busy on the outer
+       task and cannot drain the inner ``submit()``. Tools async
+       invocadas via este bridge NÃO devem chamar
+       ``execute_function_call`` recursivamente nem usar este helper
+       internamente.
     """
     try:
         asyncio.get_running_loop()
@@ -150,6 +167,8 @@ def execute_function_call(
         logger.error(f"Error executing function call '{function_name}': {e}")
         return ToolResult.error_result(
             f"Execution error: {type(e).__name__}",
+            # error= preserva exceção crua p/ introspecção; surfaces NÃO
+            # devem str(result.error) — usar result.message
             error=e,
             error_code="EXECUTION_ERROR",
         )
