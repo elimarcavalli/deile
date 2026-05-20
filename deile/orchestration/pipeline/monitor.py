@@ -263,15 +263,18 @@ class PipelineMonitor:
             try:
                 merged_prs = await self.github.list_recently_merged_prs(limit=100)
                 merged_branches = [pr.head_ref for pr in merged_prs if pr.head_ref]
-                dropped = len(merged_prs) - len(merged_branches)
-                if dropped:
-                    # PR numbers are public metadata (already in the URL) so a
-                    # bounded sample is safe to log; head_refs leak branch
-                    # conventions and stay out.
-                    sample = [pr.number for pr in merged_prs if not pr.head_ref][:5]
+                # PR numbers are public metadata (already in the URL) so a
+                # bounded sample is safe to log; head_refs leak branch
+                # conventions and stay out.
+                dropped_pr_numbers = sorted(
+                    pr.number for pr in merged_prs if not pr.head_ref
+                )
+                if dropped_pr_numbers:
                     logger.debug(
-                        "cleanup_merged_branches: dropped %d entries with empty head_ref (sample: %s)",
-                        dropped, sample,
+                        "cleanup_merged_branches: dropped %d entries with empty "
+                        "head_ref (PRs: %s)",
+                        len(dropped_pr_numbers),
+                        dropped_pr_numbers[:10],
                     )
                 deleted = await self.worktrees.cleanup_merged_branches(merged_branches)
                 if deleted:

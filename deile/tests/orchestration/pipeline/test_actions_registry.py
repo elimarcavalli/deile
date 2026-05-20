@@ -25,6 +25,7 @@ def test_actions_registry_is_nonempty():
 
 def test_each_action_method_exists_on_monitor():
     """Every ActionDef.method is a real attribute of PipelineMonitor."""
+    assert ACTIONS, "ACTIONS registry must not be empty"
     for a in ACTIONS:
         assert hasattr(PipelineMonitor, a.method), (
             f"ActionDef(name={a.name!r}) references method "
@@ -33,10 +34,23 @@ def test_each_action_method_exists_on_monitor():
 
 
 def test_each_action_enable_attr_is_a_config_field():
-    """Every ActionDef.enable_attr maps to a real PipelineConfig field."""
-    field_names = {f.name for f in dataclasses.fields(PipelineConfig)}
+    """Every ActionDef.enable_attr maps to a real PipelineConfig field.
+
+    Also asserts the field's annotation is ``bool`` (or the string form
+    ``"bool"`` under ``from __future__ import annotations``) — the runtime
+    dispatch uses ``getattr(config, enable_attr) is not True`` to decide
+    whether to skip a run, so any non-bool field would silently disable
+    the action.
+    """
+    assert ACTIONS, "ACTIONS registry must not be empty"
+    fields_by_name = {f.name: f for f in dataclasses.fields(PipelineConfig)}
     for a in ACTIONS:
-        assert a.enable_attr in field_names, (
+        assert a.enable_attr in fields_by_name, (
             f"ActionDef(name={a.name!r}) references enable_attr "
             f"{a.enable_attr!r} which is not a PipelineConfig field"
+        )
+        field = fields_by_name[a.enable_attr]
+        assert field.type in (bool, "bool"), (
+            f"ActionDef(name={a.name!r}) enable_attr {a.enable_attr!r} "
+            f"must be annotated as bool, got {field.type!r}"
         )
