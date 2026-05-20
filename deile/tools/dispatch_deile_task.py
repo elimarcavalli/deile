@@ -99,14 +99,15 @@ def _summarize_worker_response(data: object) -> str:
     """
     if not isinstance(data, dict):
         return ""
-    if data.get("ok") is True:
+    ok = data.get("ok")
+    if ok is True:
         files = data.get("files") or []
         elapsed = data.get("elapsed_s") or 0
         return (
             f"worker concluiu em {float(elapsed):.1f}s — "
             f"{len(files)} arquivo(s): " + ", ".join(files[:5])
         )
-    if data.get("ok") is False:
+    if ok is False:
         return (
             f"worker FALHOU: {str(data.get('summary') or data.get('error'))[:300]}"
         )
@@ -114,6 +115,18 @@ def _summarize_worker_response(data: object) -> str:
         f"worker dispatch aceito (task_id={data.get('task_id')}); "
         "use wait_for_result=true para acompanhar."
     )
+
+
+# Pre-network errors that roll back the cooldown — no HTTP call was issued,
+# so the channel slot is freed for the user to retry after fixing input.
+_ROLLBACK_ERROR_CODES = frozenset(
+    {
+        "WORKER_AUTH_MISSING",
+        "WORKER_AUTH_MALFORMED",
+        "WORKER_TRANSPORT_MISSING",
+        "BAD_REQUEST",
+    }
+)
 
 
 class DispatchDeileTaskTool(Tool):
@@ -339,12 +352,7 @@ class DispatchDeileTaskTool(Tool):
             try:
                 data = await self._worker_client.dispatch(payload, wait=wait)
             except WorkerDispatchError as exc:
-                if exc.error_code in {
-                    "WORKER_AUTH_MISSING",
-                    "WORKER_AUTH_MALFORMED",
-                    "WORKER_TRANSPORT_MISSING",
-                    "BAD_REQUEST",
-                }:
+                if exc.error_code in _ROLLBACK_ERROR_CODES:
                     # Roll back: no HTTP request was ever issued.
                     self._LAST_DISPATCH.pop(channel_id, None)
                 return ToolResult.error_result(
