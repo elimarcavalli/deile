@@ -33,10 +33,13 @@ consume the cooldown slot, so the LLM can retry with corrected input.
 
 Transport layer
 ---------------
-HTTP transport, endpoint resolution, secret-file reads and bearer-token
-sanitization live in :mod:`deile.infrastructure.deile_worker_client`
-(hexagonal — pilar 03 §2). This module owns the bot-facing orchestration
-only: payload assembly, the anti-loop guard, the LLM-facing summary.
+HTTP transport, endpoint resolution, secret-file reads, bearer-token
+sanitization, payload assembly (``build_dispatch_payload``) and the
+LLM-facing summary (``summarize_dispatch_response``) all live in
+:mod:`deile.infrastructure.deile_worker_client` (hexagonal — pilar
+03 §2). This module owns only the bot-facing LLM tool surface plus the
+anti-loop guard; wire-format and response shaping are delegated to the
+adapter.
 """
 
 from __future__ import annotations
