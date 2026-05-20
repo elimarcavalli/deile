@@ -350,6 +350,19 @@
 
 ---
 
+## Decisão #29 — Permission gate + audit logging do `dispatch_deile_task` adiados para feature dedicada
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 |
+| Pilar dono | 08-Segurança |
+| Decisão | A tool `dispatch_deile_task` (em `deile/tools/dispatch_deile_task.py`) atravessa input não confiável do Discord para execução remota privilegiada (toolset completo do DEILE em worker isolado), **mas não passa por `PermissionManager.check_permission()` nem emite `AuditEvent(TOOL_EXECUTION)`** hoje. Esta lacuna é **conhecida e adiada**: a PR atual (#233) é refator hexagonal puro do transporte (extração para `deile/infrastructure/deile_worker_client.py`); introduzir o gate exige (1) convenção nova de resource string (`dispatch:<channel_id>` ou similar — não existe padrão precedente para tools `bot → worker`), (2) atualização correspondente de `config/permissions.yaml` com regra default fail-closed + override interactive, (3) expansão do pilar 08 (seção "Mensageria proativa") para cobrir o novo gate e os campos de `details` do audit (SHA8(brief), channel_id, user_message_id, persona, task_id, error_code, três emissões: pending/success/failed). Cada um desses itens é decisão de design separada; agrupá-los nesta PR seria scope creep. Defense-in-depth provisória: o `wrapper.py` em `infra/k8s/` aplica tool whitelist `messaging` no role `bot` (decisão #28), impedindo que o bot embutido invoque tools privilegiadas além do conjunto `messaging.*` + `dispatch_deile_task` — qualquer abuso fica confinado ao próprio worker, que roda em pod isolado com NetworkPolicy default-deny (decisão #27). O cooldown anti-loop de 30s por `channel_id` adiciona uma terceira camada compensatória contra flooding. |
+| Evidência | TODO inline em `deile/tools/dispatch_deile_task.py:execute()` (referencia esta decisão); `deile/tools/dispatch_deile_task.py` (sem chamada a `PermissionManager` ou `audit_logger`); contraste com `deile/tools/messaging/_base.py` (gate + audit no padrão `MessagingTool`); `infra/k8s/wrapper.py:_install_tool_whitelist` (decisão #28) |
+| Motivação | (1) **Atomicidade do refator**: extrair o transporte para a fronteira hexagonal (decisão #5) é mudança puramente estrutural — adicionar gate + audit é mudança comportamental e de superfície de configuração; misturá-los obscurece o diff. (2) **Convenção de resource string**: nenhuma tool tipo "ponte para serviço remoto" tem precedente em `permissions.yaml`; escolher o formato exige discussão (channel_id como leaf? persona como component? brief hash como qualifier?). (3) **Cobertura compensatória atual**: tool whitelist (#28) + NetworkPolicy (#27) + cooldown de 30s reduzem a janela explorável; o ataque que o gate bloquearia (abusar do bot para spawnar workers para canais não autorizados) já está restrito ao perímetro do cluster. (4) **Rastreabilidade**: o TODO no código aponta para esta entrada — qualquer revisor futuro encontra o motivo do adiamento sem caçar PR/issue history. |
+| Follow-up | Issue dedicada deve cobrir: (a) regra `dispatch_deile_task_default` em `config/permissions.yaml` com `resource_pattern: '^dispatch:.*$'` e `permission_level: read` (deny); (b) regra opt-in `dispatch_deile_task_allowed_channels` com `resource_pattern: '^dispatch:(<canal_id_1>\|<canal_id_2>)$'`; (c) helper `_resolve_permission_manager` análogo ao de `messaging/_base.py`; (d) três `log_tool_execution` (pending pré-cooldown, success com `task_id`, failed com `error_code`); (e) atualização do pilar 08 incluindo `dispatch_deile_task` na tabela "Mensageria proativa". |
+
+---
+
 ## Como adicionar uma nova decisão
 
 | # | Passo |
