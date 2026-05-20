@@ -25,6 +25,11 @@ from typing import Iterator, List, Optional
 
 from deile.core.exceptions import DEILEError
 from deile.cron.constants import CRON_RESULT_MAX_CHARS
+from deile.orchestration.pipeline._time_utils import (
+    format_iso_utc,
+    now_utc,
+    parse_iso_utc,
+)
 from deile.orchestration.pipeline.cron import CronExpressionError, next_after
 
 logger = logging.getLogger(__name__)
@@ -46,22 +51,6 @@ class CronStoreError(DEILEError):
     """Raised on scheduling / persistence problems."""
 
 
-def _now_utc() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _to_iso(dt: Optional[datetime]) -> Optional[str]:
-    if dt is None:
-        return None
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _from_iso(value: Optional[str]) -> Optional[datetime]:
-    if value is None:
-        return None
-    return datetime.fromisoformat(value.rstrip("Z")).replace(tzinfo=timezone.utc)
-
-
 @dataclass
 class CronEntry:
     """A scheduled prompt — recurring (cron) OR one-shot (run_at)."""
@@ -75,7 +64,7 @@ class CronEntry:
     created_by: Optional[str] = None  # provider:user_id (e.g. "discord:1234")
     notify_user_id: Optional[str] = None  # Discord snowflake to DM result to
     enabled: bool = True
-    created_at: datetime = field(default_factory=_now_utc)
+    created_at: datetime = field(default_factory=now_utc)
     last_result: Optional[str] = None  # short summary of last fire outcome
 
     def __post_init__(self) -> None:
@@ -110,7 +99,7 @@ class CronEntry:
             self.enabled = False
             self.next_fire_at = None
         else:
-            anchor = after or _now_utc()
+            anchor = after or now_utc()
             try:
                 self.next_fire_at = next_after(self.cron, anchor)  # type: ignore[arg-type]
             except CronExpressionError:
@@ -120,20 +109,18 @@ class CronEntry:
     def to_dict(self) -> dict:
         """Return a JSON-serializable view (datetimes rendered as ISO strings).
 
-        Canonical serialization contract for the cron tools — keeps the
-        datetime-to-ISO conversion in one place instead of repeating the
-        ``x.isoformat() if x else None`` idiom per call site.
+        Datetimes use ``format_iso_utc`` so the wire format is byte-identical
+        to the strings persisted in SQLite (``YYYY-MM-DDTHH:MM:SSZ``);
+        previously ``dt.isoformat()`` rendered ``+00:00``, diverging from the
+        write path for the same instant.
         """
-        def _iso(dt: Optional[datetime]) -> Optional[str]:
-            return dt.isoformat() if dt else None
-
         return {
             "id": self.id,
             "prompt": self.prompt,
             "cron": self.cron,
-            "run_at": _iso(self.run_at),
-            "next_fire_at": _iso(self.next_fire_at),
-            "last_fired_at": _iso(self.last_fired_at),
+            "run_at": format_iso_utc(self.run_at),
+            "next_fire_at": format_iso_utc(self.next_fire_at),
+            "last_fired_at": format_iso_utc(self.last_fired_at),
             "enabled": self.enabled,
             "is_oneshot": self.is_oneshot,
             "created_by": self.created_by,
@@ -196,10 +183,10 @@ class CronStore:
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         entry.id, entry.prompt, entry.cron,
-                        _to_iso(entry.run_at), _to_iso(entry.next_fire_at),
-                        _to_iso(entry.last_fired_at), entry.created_by,
+                        format_iso_utc(entry.run_at), format_iso_utc(entry.next_fire_at),
+                        format_iso_utc(entry.last_fired_at), entry.created_by,
                         entry.notify_user_id, int(entry.enabled),
-                        _to_iso(entry.created_at), entry.last_result,
+                        format_iso_utc(entry.created_at), entry.last_result,
                     ),
                 )
             except sqlite3.IntegrityError as exc:
@@ -223,14 +210,14 @@ class CronStore:
 
     def list_due(self, *, now: Optional[datetime] = None) -> List[CronEntry]:
         """Return enabled entries whose ``next_fire_at <= now``."""
-        now = now or _now_utc()
+        now = now or now_utc()
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT * FROM cron_entries
                    WHERE enabled = 1 AND next_fire_at IS NOT NULL
                      AND next_fire_at <= ?
                    ORDER BY next_fire_at ASC""",
-                (_to_iso(now),),
+                (format_iso_utc(now),),
             ).fetchall()
         return [self._row_to_entry(r) for r in rows]
 
@@ -244,7 +231,7 @@ class CronStore:
     def mark_fired(self, entry_id: str, *, when: Optional[datetime] = None,
                    result: Optional[str] = None) -> None:
         """Update ``last_fired_at`` + ``next_fire_at`` after firing (atomic)."""
-        when = when or _now_utc()
+        when = when or now_utc()
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM cron_entries WHERE id = ?", (entry_id,)
@@ -262,8 +249,8 @@ class CronStore:
                        last_result = ?
                    WHERE id = ?""",
                 (
-                    _to_iso(entry.last_fired_at),
-                    _to_iso(entry.next_fire_at),
+                    format_iso_utc(entry.last_fired_at),
+                    format_iso_utc(entry.next_fire_at),
                     int(entry.enabled),
                     entry.last_result,
                     entry_id,
@@ -288,13 +275,13 @@ class CronStore:
         e.id = row["id"]
         e.prompt = row["prompt"]
         e.cron = row["cron"]
-        e.run_at = _from_iso(row["run_at"])
-        e.next_fire_at = _from_iso(row["next_fire_at"])
-        e.last_fired_at = _from_iso(row["last_fired_at"])
+        e.run_at = parse_iso_utc(row["run_at"])
+        e.next_fire_at = parse_iso_utc(row["next_fire_at"])
+        e.last_fired_at = parse_iso_utc(row["last_fired_at"])
         e.created_by = row["created_by"]
         e.notify_user_id = row["notify_user_id"]
         e.enabled = bool(row["enabled"])
-        e.created_at = _from_iso(row["created_at"]) or _now_utc()
+        e.created_at = parse_iso_utc(row["created_at"]) or now_utc()
         e.last_result = row["last_result"]
         # Guard: cron XOR run_at — catches DB corruption early.
         assert bool(e.cron) != bool(e.run_at), (
