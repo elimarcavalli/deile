@@ -33,10 +33,13 @@ consume the cooldown slot, so the LLM can retry with corrected input.
 
 Transport layer
 ---------------
-HTTP transport, endpoint resolution, secret-file reads and bearer-token
-sanitization live in :mod:`deile.infrastructure.deile_worker_client`
-(hexagonal — pilar 03 §2). This module owns the bot-facing orchestration
-only: payload assembly, the anti-loop guard, the LLM-facing summary.
+HTTP transport, endpoint resolution, secret-file reads, bearer-token
+sanitization, payload assembly (``build_dispatch_payload``) and the
+LLM-facing summary (``summarize_dispatch_response``) all live in
+:mod:`deile.infrastructure.deile_worker_client` (hexagonal — pilar
+03 §2). This module owns only the bot-facing LLM tool surface plus the
+anti-loop guard; wire-format and response shaping are delegated to the
+adapter.
 """
 
 from __future__ import annotations
@@ -47,10 +50,9 @@ import time
 from collections import defaultdict
 from typing import Dict, Optional
 
-from deile.infrastructure.deile_worker_client import (MAX_DISPATCH_BUDGET_S,
-                                                      DeileWorkerClient,
-                                                      DispatchPayload,
-                                                      WorkerDispatchError)
+from deile.infrastructure.deile_worker_client import (
+    MAX_DISPATCH_BUDGET_S, DeileWorkerClient, DispatchPayload,
+    WorkerDispatchError, build_dispatch_payload, summarize_dispatch_response)
 
 from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
                    ToolSchema)
@@ -61,60 +63,6 @@ logger = logging.getLogger(__name__)
 def _bot_context(context: ToolContext) -> Dict[str, object]:
     """Return the ``bot_context`` dict from session data (``{}`` when absent)."""
     return context.session_data.get("bot_context") or {}
-
-
-def _build_dispatch_payload(
-    *,
-    brief: str,
-    channel_id: str,
-    persona: str,
-    wait: bool,
-    user_message_id: object,
-    context: ToolContext,
-) -> Dict[str, object]:
-    """Assemble the JSON body POSTed to the worker control plane.
-
-    Attachments are forwarded from ``bot_context`` so the worker can call
-    vision tools without re-downloading from the (expiring) Discord CDN.
-    """
-    payload: Dict[str, object] = {
-        "brief": brief,
-        "channel_id": channel_id,
-        "persona": persona,
-        "wait_for_result": wait,
-    }
-    if user_message_id:
-        payload["user_message_id"] = str(user_message_id)
-    atts = _bot_context(context).get("attachments")
-    if atts:
-        payload["attachments"] = atts
-    return payload
-
-
-def _summarize_worker_response(data: object) -> str:
-    """Build the compact one-line summary handed back to the bot LLM.
-
-    The user already sees the rich status message edited live by the
-    worker, so this stays terse on purpose — do NOT echo the full output.
-    """
-    if not isinstance(data, dict):
-        return ""
-    ok = data.get("ok")
-    if ok is True:
-        files = data.get("files") or []
-        elapsed = data.get("elapsed_s") or 0
-        return (
-            f"worker concluiu em {float(elapsed):.1f}s — "
-            f"{len(files)} arquivo(s): " + ", ".join(files[:5])
-        )
-    if ok is False:
-        return (
-            f"worker FALHOU: {str(data.get('summary') or data.get('error'))[:300]}"
-        )
-    return (
-        f"worker dispatch aceito (task_id={data.get('task_id')}); "
-        "use wait_for_result=true para acompanhar."
-    )
 
 
 # Pre-network errors that roll back the cooldown — no HTTP call was issued,
@@ -277,15 +225,15 @@ class DispatchDeileTaskTool(Tool):
         # default-deny (decisão #27), and the 30s cooldown below.
         try:
             args = dict(context.parsed_args or {})
+            bot_ctx = _bot_context(context)
             brief = str(args.get("brief", "")).strip()
             channel_id = str(args.get("channel_id", "")).strip()
             # Auto-fill from bot_context if the LLM forgot — this enables
             # the worker's 🔧/✅ reaction UX without depending on persona
-            # discipline. ``_build_dispatch_payload`` ``str()``-ifies and
+            # discipline. ``build_dispatch_payload`` ``str()``-ifies and
             # drops falsy values, so a single ``or`` covers both fallbacks.
             user_message_id = (
-                args.get("user_message_id")
-                or _bot_context(context).get("user_message_id")
+                args.get("user_message_id") or bot_ctx.get("user_message_id")
             )
             persona = args.get("persona") or "developer"
             wait = bool(args.get("wait_for_result", True))
@@ -296,20 +244,20 @@ class DispatchDeileTaskTool(Tool):
                 )
             if not channel_id:
                 # Fall back to bot_context if the LLM forgot.
-                channel_id = str(_bot_context(context).get("channel_id") or "").strip()
+                channel_id = str(bot_ctx.get("channel_id") or "").strip()
                 if not channel_id:
                     return ToolResult.error_result(
                         "channel_id is required (and not in bot_context)",
                         error_code="BAD_REQUEST",
                     )
 
-            payload = _build_dispatch_payload(
+            payload = build_dispatch_payload(
                 brief=brief,
                 channel_id=channel_id,
                 persona=persona,
                 wait=wait,
                 user_message_id=user_message_id,
-                context=context,
+                attachments=bot_ctx.get("attachments"),
             )
 
             # Validate payload BEFORE recording the cooldown — a payload
@@ -359,7 +307,7 @@ class DispatchDeileTaskTool(Tool):
                     exc.message, error=exc, error_code=exc.error_code
                 )
 
-            short_summary = _summarize_worker_response(data)
+            short_summary = summarize_dispatch_response(data)
 
             return ToolResult.success_result(
                 data={

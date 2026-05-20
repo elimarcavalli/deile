@@ -117,6 +117,68 @@ class DispatchPayload(BaseModel):
         raise ValueError(f"{info.field_name} must not be whitespace-only")
 
 
+def build_dispatch_payload(
+    *,
+    brief: str,
+    channel_id: str,
+    persona: str = "developer",
+    wait: bool = True,
+    user_message_id: Optional[Any] = None,
+    attachments: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Assemble the JSON body POSTed to ``POST /v1/dispatch``.
+
+    Wire-format builder — falsy ``user_message_id`` / ``attachments`` are
+    dropped so ``model_dump(exclude_none=True)`` keeps the payload minimal.
+    Lives in the infrastructure module because the wire format is owned by
+    the worker adapter, not by the bot-side tool.
+    """
+    payload: Dict[str, Any] = {
+        "brief": brief,
+        "channel_id": channel_id,
+        "persona": persona,
+        "wait_for_result": wait,
+    }
+    if user_message_id:
+        payload["user_message_id"] = str(user_message_id)
+    if attachments:
+        payload["attachments"] = attachments
+    return payload
+
+
+def summarize_dispatch_response(data: Any) -> str:
+    """Compact one-line summary of a worker dispatch response for the bot LLM.
+
+    The user already sees the rich status message edited live by the worker,
+    so this stays terse on purpose — do NOT echo the full output. Lives in
+    the infrastructure module because the response shape (``ok``, ``files``,
+    ``elapsed_s``, ``task_id``) is owned by the worker adapter.
+    """
+    if not isinstance(data, dict):
+        return ""
+    ok = data.get("ok")
+    if ok is True:
+        files = data.get("files")
+        if not isinstance(files, list):
+            files = []
+        try:
+            elapsed = float(data.get("elapsed_s") or 0)
+        except (TypeError, ValueError):
+            elapsed = 0.0
+        return (
+            f"worker concluiu em {elapsed:.1f}s — "
+            f"{len(files)} arquivo(s): " + ", ".join(str(f) for f in files[:5])
+        )
+    if ok is False:
+        return (
+            f"worker FALHOU: {str(data.get('summary') or data.get('error'))[:300]}"
+        )
+    return (
+        f"worker dispatch aceito (task_id={data.get('task_id')}); "
+        "use wait_for_result=true para acompanhar."
+    )
+
+
 # Módulo-level (não @staticmethod) propositalmente — facilita
 # monkeypatching nos testes sem ter que instanciar o cliente.
 def _resolve_endpoint() -> str:

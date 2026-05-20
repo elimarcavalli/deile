@@ -136,7 +136,11 @@ class ToolRegistry:
     def list_all(self) -> List[Tool]:
         """Lista todas as tools registradas"""
         return list(self._tools.values())
-    
+
+    def list_names(self) -> List[str]:
+        """Lista os nomes de todas as tools registradas, em ordem alfabética."""
+        return sorted(self._tools.keys())
+
     def list_enabled(self) -> List[Tool]:
         """Lista apenas as tools habilitadas"""
         return [
@@ -179,21 +183,19 @@ class ToolRegistry:
         return True
     
     async def execute_tool(
-        self, 
-        tool_name: str, 
+        self,
+        tool_name: str,
         context: ToolContext
     ) -> ToolResult:
-        """Executa uma tool específica
-        
-        Args:
-            tool_name: Nome da tool
-            context: Contexto de execução
-            
-        Returns:
-            ToolResult: Resultado da execução
-            
+        """Executa uma tool específica.
+
+        Per the Tool contract (pilar 03 §8), ``Tool.execute()`` is
+        responsible for returning ``ToolResult.error_result(...)`` instead
+        of raising — exceptions that do escape are the tool's bug and are
+        intentionally allowed to propagate so callers see the real stack.
+
         Raises:
-            ToolError: Se a tool não existe ou não está habilitada
+            ToolError: Se a tool não existe ou não está habilitada.
         """
         tool = self.get_enabled(tool_name)
         if not tool:
@@ -202,28 +204,8 @@ class ToolRegistry:
                 tool_name=tool_name,
                 error_code="TOOL_NOT_AVAILABLE"
             )
-        
-        try:
-            # Valida contexto
-            if not await tool.validate_context(context):
-                raise ToolError(
-                    f"Invalid context for tool '{tool_name}'",
-                    tool_name=tool_name,
-                    error_code="INVALID_CONTEXT"
-                )
-            
-            # Executa a tool
-            return await tool.execute(context)
-            
-        except Exception as e:
-            if isinstance(e, ToolError):
-                raise
-            
-            raise ToolError(
-                f"Error executing tool '{tool_name}': {str(e)}",
-                tool_name=tool_name,
-                error_code="EXECUTION_ERROR"
-            ) from e
+
+        return await tool.execute(context)
     
     def auto_discover(self, package_names: Optional[List[str]] = None) -> int:
         """Descobre automaticamente tools em pacotes

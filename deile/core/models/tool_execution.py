@@ -101,9 +101,7 @@ async def resolve_and_execute_tool(
     tool = registry.get(name) if hasattr(registry, "get") else None
 
     if tool is None:
-        available = (
-            sorted(registry._tools.keys()) if hasattr(registry, "_tools") else []
-        )
+        available = registry.list_names() if hasattr(registry, "list_names") else []
         message = not_found_message_fn(name, available)
         if log_calls:
             logger.warning(

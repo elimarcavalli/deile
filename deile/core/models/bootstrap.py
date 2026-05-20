@@ -31,6 +31,23 @@ def _import_provider_class(dotted: str):
     return getattr(mod, class_name)
 
 
+def _bootstrap_legacy_gemini_only(router) -> List[str]:
+    """Legacy single-provider path used when use_legacy_gemini_only is set.
+
+    Registers GeminiProvider in the router only if GOOGLE_API_KEY is set.
+    """
+    if not os.getenv("GOOGLE_API_KEY"):
+        return []
+    if router is None:
+        logger.debug(
+            "bootstrap: skipping legacy gemini registration, router is None"
+        )
+        return []
+    from deile.core.models.gemini_provider import GeminiProvider
+    router.register_provider(GeminiProvider(), priority=1)
+    return ["gemini"]
+
+
 def bootstrap_providers(
     yaml_path: Optional[Path] = None,
     router=None,
@@ -39,11 +56,18 @@ def bootstrap_providers(
 
     Returns a list of successfully registered provider_ids.
     Logs warnings for providers with missing API keys.
+
+    Honors the ``feature_flags.use_legacy_gemini_only`` toggle: when set,
+    only the Gemini provider is registered (and only if ``GOOGLE_API_KEY``
+    is present), bypassing the multi-provider catalog path entirely.
     """
     path = yaml_path or _DEFAULT_YAML
 
     with open(path) as f:
         data = yaml.safe_load(f)
+
+    if bool(data.get("feature_flags", {}).get("use_legacy_gemini_only", False)):
+        return _bootstrap_legacy_gemini_only(router)
 
     catalog = ModelCatalog.from_yaml(path)
     providers_cfg = data.get("providers", {})
@@ -97,7 +121,6 @@ def bootstrap_providers(
         # the legacy ModelRouter and the TierRouter. The TierRouter is now keyed by
         # full provider:model_id, so each tier cascade can resolve to the right model
         # (haiku for tier_3, opus for tier_1, etc.) within the same provider.
-        registered_models = 0
         instances: List[Any] = []
         for idx, handle in enumerate(handles):
             try:
@@ -116,7 +139,6 @@ def bootstrap_providers(
                         "bootstrap: could not register %s:%s in legacy router: %s",
                         provider_id, handle.model_id, exc,
                     )
-            registered_models += 1
 
         # Register every instance in TierRouter under its full provider:model key
         if router is not None and instances:
@@ -130,13 +152,13 @@ def bootstrap_providers(
                     "bootstrap: TierRouter registration skipped for %s: %s", provider_id, exc
                 )
 
-        if registered_models == 0:
+        if not instances:
             continue
 
         registered.append(provider_id)
         logger.info(
             "bootstrap: registered provider %s (%d model instance(s))",
-            provider_id, registered_models,
+            provider_id, len(instances),
         )
 
     return registered
