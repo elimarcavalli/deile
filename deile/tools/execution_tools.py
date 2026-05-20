@@ -1,4 +1,4 @@
-"""Execution tools for DEILE — subprocess-based command, Python, pip, and pytest runners."""
+"""Execution tools for DEILE — subprocess-based Python, pip, and pytest runners."""
 
 import logging
 import os
@@ -7,95 +7,11 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Dict
 
 from ..core.exceptions import ValidationError
-from ._shell_security import is_blocked
 from .base import SyncTool, ToolContext, ToolResult, ToolStatus
 
 logger = logging.getLogger(__name__)
-
-
-class EnhancedExecutionTool(SyncTool):
-    """Subprocess-based shell command execution with timeout and basic safety screen."""
-
-    @property
-    def name(self) -> str:
-        return "execute_command_enhanced"
-
-    @property
-    def description(self) -> str:
-        return "Executes a shell command via subprocess with timeout and a basic safety screen"
-
-    @property
-    def category(self) -> str:
-        return "execution"
-
-    def execute_sync(self, context: ToolContext) -> ToolResult:
-        command = context.parsed_args.get("command")
-        timeout = context.parsed_args.get("timeout", 30)
-        env_vars = context.parsed_args.get("env", {})
-
-        if not command:
-            return ToolResult.error_result(
-                message="No command provided",
-                error=ValidationError("command is required"),
-            )
-
-        if not self._is_command_safe(command):
-            return ToolResult.error_result(
-                message=f"Potentially dangerous command blocked: {command}",
-                error=PermissionError("Command blocked by security policy"),
-            )
-
-        try:
-            return self._execute_standard(command, context, timeout, env_vars)
-        except Exception as e:
-            logger.error("Enhanced execution error: %s", e)
-            return ToolResult.error_result(
-                message=f"Execution failed: {str(e)}",
-                error=e,
-            )
-
-    def _execute_standard(self, command: str, context: ToolContext,
-                          timeout: int, env_vars: Dict[str, str]) -> ToolResult:
-        try:
-            full_env = {**os.environ, **env_vars}
-            result = subprocess.run(
-                command,
-                shell=True,  # nosec B602 — execution tool; command validated upstream
-                cwd=context.working_directory,
-                env=full_env,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-
-            output = result.stdout.strip() if result.stdout else ""
-            error_output = result.stderr.strip() if result.stderr else ""
-            status = ToolStatus.SUCCESS if result.returncode == 0 else ToolStatus.ERROR
-
-            return ToolResult(
-                status=status,
-                data=output,
-                message=f"Command executed with exit code {result.returncode}",
-                metadata={
-                    "command": command,
-                    "exit_code": result.returncode,
-                    "stdout": output,
-                    "stderr": error_output,
-                    "working_directory": context.working_directory,
-                },
-            )
-        except subprocess.TimeoutExpired:
-            return ToolResult.error_result(
-                message=f"Command timed out after {timeout} seconds",
-                error=TimeoutError(f"Command timeout: {timeout}s"),
-            )
-
-    def _is_command_safe(self, command: str) -> bool:
-        """Reject commands matching any DANGEROUS pattern in `_shell_security`."""
-        return not is_blocked(command)
 
 
 class PythonExecutionTool(SyncTool):
