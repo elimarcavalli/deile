@@ -23,6 +23,20 @@ class TestGitHubClientCtor:
         client = GitHubClient("owner/name")
         assert client.repo == "owner/name"
 
+    @pytest.mark.parametrize("bad_repo", [
+        "owner/..evil",       # path-traversal in name
+        "../owner/name",      # leading traversal
+        "owner/name/extra",   # too many segments
+        "owner/",             # empty name
+        "/name",              # empty owner
+        "owner/name space",   # invalid char (space)
+        "owner/name;rm",      # shell metachar
+        "owner/name\nfoo",    # newline
+    ])
+    def test_rejects_path_traversal_and_bad_chars(self, bad_repo):
+        with pytest.raises(ValueError):
+            GitHubClient(bad_repo)
+
 
 class TestListIssues:
     async def test_list_issues_with_label_parses_json(self):

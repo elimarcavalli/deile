@@ -143,17 +143,21 @@ def compute_batch_id_for_number(kind: str, number: int) -> str:
 class GitHubClient:
     """Thin async wrapper around `gh` for the pipeline."""
 
+    # Matches ``owner/name`` where each segment is non-empty and uses only
+    # GitHub-legal characters (alnum, dot, underscore, hyphen).  Rejects
+    # path-traversal sequences ('..') and any character that could escape
+    # the ``repos/<repo>/`` prefix used to build REST endpoints.
+    _REPO_RE = re.compile(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+")
+
     def __init__(self, repo: str, *, gh_path: Optional[str] = None) -> None:
-        if "/" not in repo:
-            raise ValueError(f"repo must be 'owner/name', got {repo!r}")
         # Fail-fast on path-traversal-prone shapes so the endpoint guard
         # in ``_list_comments_since`` (which checks ``startswith(repos/{repo}/)``
         # and ``".." not in endpoint``) cannot be defeated by feeding
-        # ``..`` *through* ``self.repo``.
-        if ".." in repo or repo.startswith("/") or repo.endswith("/"):
-            raise ValueError(
-                f"repo must not contain '..' or leading/trailing '/', got {repo!r}"
-            )
+        # ``..`` *through* ``self.repo``. The regex enforces a strict
+        # ``owner/name`` shape and rejects shell metachars, whitespace,
+        # extra segments, and leading/trailing ``/``.
+        if "/" not in repo or ".." in repo or not self._REPO_RE.fullmatch(repo):
+            raise ValueError(f"invalid repo: {repo!r}")
         self.repo = repo
         self._gh = gh_path or shutil.which("gh") or "gh"
 
