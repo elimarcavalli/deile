@@ -101,6 +101,17 @@ def _load_exported_env_vars() -> None:
         pass
 
 
+def _bootstrap_with_recovery(bootstrap_fn) -> list:
+    """Run ``bootstrap_fn`` once; if it registered nothing, prompt the user for
+    API keys via the TTY wizard and retry. ``bootstrap_fn`` is a zero-arg
+    callable returning the list of registered provider names.
+    """
+    registered = bootstrap_fn()
+    if not registered and _run_env_recovery():
+        registered = bootstrap_fn()
+    return registered
+
+
 def _run_env_recovery() -> bool:
     """Interactive wizard: prompt for API keys, write .env, reload os.environ.
 
@@ -223,12 +234,9 @@ class _DeileCLI:
 
             model_router = get_model_router()
             with self.ui.show_loading("Acordando DEILE..."):
-                # _bootstrap_providers is sync — call it directly, no asyncio.to_thread
-                registered = self._bootstrap_providers(model_router)
-
-            if not registered and _run_env_recovery():
-                with self.ui.show_loading("Acordando DEILE..."):
-                    registered = self._bootstrap_providers(model_router)
+                registered = _bootstrap_with_recovery(
+                    lambda: self._bootstrap_providers(model_router)
+                )
 
             if not registered:
                 self.ui.display_error(
@@ -693,9 +701,9 @@ async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
     config_manager.load_config()
 
     model_router = get_model_router()
-    registered = bootstrap_providers(router=model_router)
-    if not registered and _run_env_recovery():
-        registered = bootstrap_providers(router=model_router)
+    registered = _bootstrap_with_recovery(
+        lambda: bootstrap_providers(router=model_router)
+    )
     if not registered:
         print(
             "ERROR: no provider configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, "
@@ -1210,7 +1218,9 @@ async def _run_command_flag(
         from deile.tools.registry import get_tool_registry
 
         model_router = get_model_router()
-        registered = bootstrap_providers(router=model_router)
+        registered = _bootstrap_with_recovery(
+            lambda: bootstrap_providers(router=model_router)
+        )
         if not registered:
             print(
                 "ERROR: no provider configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, "
