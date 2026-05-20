@@ -136,7 +136,11 @@ class ToolRegistry:
     def list_all(self) -> List[Tool]:
         """Lista todas as tools registradas"""
         return list(self._tools.values())
-    
+
+    def list_names(self) -> List[str]:
+        """Lista os nomes de todas as tools registradas, em ordem alfabética."""
+        return sorted(self._tools.keys())
+
     def list_enabled(self) -> List[Tool]:
         """Lista apenas as tools habilitadas"""
         return [

@@ -37,6 +37,9 @@ class _FakeRegistry:
     def get(self, name):
         return self._tools.get(name)
 
+    def list_names(self):
+        return sorted(self._tools.keys())
+
 
 @pytest.fixture
 def install_registry(monkeypatch):
