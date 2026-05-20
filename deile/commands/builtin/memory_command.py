@@ -16,7 +16,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import (export_timestamp, get_memory_manager, get_session,
-                      split_args, success_panel)
+                      split_args, success_panel, wrap_command_errors)
 
 _CHECKPOINT_DIR = Path.home() / ".deile" / "checkpoints"
 _CHECKPOINT_INDEX = _CHECKPOINT_DIR / "index.json"
@@ -58,30 +58,26 @@ class MemoryCommand(DirectCommand):
         )
         super().__init__(config)
 
+    @wrap_command_errors("memory", message_template="Falha ao executar /{name}: {exc}")
     async def execute(self, context: CommandContext) -> CommandResult:
-        try:
-            parts = split_args(context)
-            if not parts:
-                return await self._show_memory_status(context)
-            action = parts[0].lower()
-            dispatch = {
-                "status": lambda: self._show_memory_status(context),
-                "clear": lambda: self._clear_memory_type(context, parts[1] if len(parts) > 1 else "conversation"),
-                "usage": lambda: self._show_memory_usage(context),
-                "export": lambda: self._export_memory_state(context, parts[1:]),
-                "compact": lambda: self._compact_memory(context),
-                "save": lambda: self._save_checkpoint(context, parts[1] if len(parts) > 1 else f"checkpoint_{int(__import__('time').time())}"),
-                "restore": lambda: self._restore_checkpoint(context, parts[1]) if len(parts) >= 2 else self._err("restore requer nome do checkpoint"),
-                "list": lambda: self._list_checkpoints(),
-            }
-            handler = dispatch.get(action)
-            if not handler:
-                raise CommandError(f"Ação desconhecida: {action}")
-            return await handler()
-        except Exception as exc:
-            if isinstance(exc, CommandError):
-                raise
-            raise CommandError(f"Falha ao executar /memory: {exc}") from exc
+        parts = split_args(context)
+        if not parts:
+            return await self._show_memory_status(context)
+        action = parts[0].lower()
+        dispatch = {
+            "status": lambda: self._show_memory_status(context),
+            "clear": lambda: self._clear_memory_type(context, parts[1] if len(parts) > 1 else "conversation"),
+            "usage": lambda: self._show_memory_usage(context),
+            "export": lambda: self._export_memory_state(context, parts[1:]),
+            "compact": lambda: self._compact_memory(context),
+            "save": lambda: self._save_checkpoint(context, parts[1] if len(parts) > 1 else f"checkpoint_{int(__import__('time').time())}"),
+            "restore": lambda: self._restore_checkpoint(context, parts[1]) if len(parts) >= 2 else self._err("restore requer nome do checkpoint"),
+            "list": lambda: self._list_checkpoints(),
+        }
+        handler = dispatch.get(action)
+        if not handler:
+            raise CommandError(f"Ação desconhecida: {action}")
+        return await handler()
 
     async def _err(self, msg: str) -> CommandResult:
         raise CommandError(msg)

@@ -18,7 +18,8 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import (emit_audit_event, error_panel, get_memory_manager,
-                      indisponivel, split_args, success_panel, warning_panel)
+                      indisponivel, split_args, success_panel, warning_panel,
+                      wrap_command_errors)
 from ._status_collectors import (collect_health_info, collect_models_info,
                                  collect_system_info, collect_tools_info)
 
@@ -72,21 +73,17 @@ class StatusCommand(DirectCommand):
         "performance": "_show_performance_status",
     }
 
+    @wrap_command_errors("status", message_template="Falha ao executar /{name}: {exc}")
     async def execute(self, context: CommandContext) -> CommandResult:
         self._emit_audit_event(context)
-        try:
-            parts = split_args(context)
-            if not parts:
-                return await self._show_complete_status(context)
-            section = parts[0].lower()
-            method_name = self._DISPATCH.get(section)
-            if not method_name:
-                raise CommandError(f"Seção desconhecida: {section}")
-            return await getattr(self, method_name)(context)
-        except CommandError:
-            raise
-        except Exception as exc:
-            raise CommandError(f"Falha ao executar /status: {exc}") from exc
+        parts = split_args(context)
+        if not parts:
+            return await self._show_complete_status(context)
+        section = parts[0].lower()
+        method_name = self._DISPATCH.get(section)
+        if not method_name:
+            raise CommandError(f"Seção desconhecida: {section}")
+        return await getattr(self, method_name)(context)
 
     # ------------------------------------------------------------------
     # Audit

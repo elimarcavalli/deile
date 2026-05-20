@@ -14,7 +14,7 @@ from ...core.exceptions import CommandError
 from ...security.audit_logger import (AuditEvent, AuditEventType,
                                       SeverityLevel, get_audit_logger)
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import split_args, truncate
+from ._shared import split_args, truncate, wrap_command_errors
 
 logger = logging.getLogger(__name__)
 
@@ -77,52 +77,46 @@ class LogsCommand(DirectCommand):
         super().__init__(config)
         self.audit_logger = get_audit_logger()
 
+    @wrap_command_errors("logs", message_template="Falha ao executar /{name}: {exc}")
     async def execute(self, context: CommandContext) -> CommandResult:
-        try:
-            parts = split_args(context)
+        parts = split_args(context)
 
-            if not parts:
-                return await self._show_logs_overview()
+        if not parts:
+            return await self._show_logs_overview()
 
-            action = parts[0].lower()
+        action = parts[0].lower()
 
-            if action == "recent":
-                limit = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 50
-                return await self._show_recent_logs(limit)
-            elif action == "security":
-                return await self._show_security_logs(parts[1:])
-            elif action == "permissions":
-                return await self._show_permission_logs(parts[1:])
-            elif action == "secrets":
-                return await self._show_secret_logs(parts[1:])
-            elif action == "tools":
-                return await self._show_tool_logs(parts[1:])
-            elif action == "plans":
-                return await self._show_plan_logs(parts[1:])
-            elif action == "errors":
-                return await self._show_error_logs(parts[1:])
-            elif action == "summary":
-                return await self._show_summary()
-            elif action == "export":
-                if len(parts) < 2:
-                    raise CommandError("logs export requer nome de arquivo: /logs export <arquivo> [formato]")
-                safe_name = Path(parts[1]).name
-                if not safe_name:
-                    raise CommandError("Nome de arquivo inválido")
-                format_type = parts[2] if len(parts) > 2 else "json"
-                if format_type not in _VALID_EXPORT_FORMATS:
-                    raise CommandError(f"Formato inválido. Use: {', '.join(sorted(_VALID_EXPORT_FORMATS))}")
-                return await self._export_logs(safe_name, format_type)
-            elif action == "clear":
-                return await self._clear_logs()
-            else:
-                raise CommandError(f"Ação desconhecida: {action}")
-
-        except CommandError:
-            raise
-        except Exception as e:
-            logger.error("Falha inesperada no comando logs: %s", e, exc_info=True)
-            raise CommandError(f"Falha ao executar comando logs: {str(e)}")
+        if action == "recent":
+            limit = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 50
+            return await self._show_recent_logs(limit)
+        elif action == "security":
+            return await self._show_security_logs(parts[1:])
+        elif action == "permissions":
+            return await self._show_permission_logs(parts[1:])
+        elif action == "secrets":
+            return await self._show_secret_logs(parts[1:])
+        elif action == "tools":
+            return await self._show_tool_logs(parts[1:])
+        elif action == "plans":
+            return await self._show_plan_logs(parts[1:])
+        elif action == "errors":
+            return await self._show_error_logs(parts[1:])
+        elif action == "summary":
+            return await self._show_summary()
+        elif action == "export":
+            if len(parts) < 2:
+                raise CommandError("logs export requer nome de arquivo: /logs export <arquivo> [formato]")
+            safe_name = Path(parts[1]).name
+            if not safe_name:
+                raise CommandError("Nome de arquivo inválido")
+            format_type = parts[2] if len(parts) > 2 else "json"
+            if format_type not in _VALID_EXPORT_FORMATS:
+                raise CommandError(f"Formato inválido. Use: {', '.join(sorted(_VALID_EXPORT_FORMATS))}")
+            return await self._export_logs(safe_name, format_type)
+        elif action == "clear":
+            return await self._clear_logs()
+        else:
+            raise CommandError(f"Ação desconhecida: {action}")
 
     async def _show_logs_overview(self) -> CommandResult:
         summary = self.audit_logger.get_security_summary()
