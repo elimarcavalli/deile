@@ -1,6 +1,5 @@
 """Ferramentas para manipulação de arquivos"""
 
-import fnmatch
 import logging
 import re
 from pathlib import Path
@@ -12,6 +11,7 @@ from ..core.exceptions import ValidationError
 # test imports (`from deile.tools.file_tools import ...`); they have no
 # direct caller in this module — see `__all__` below.
 from ._file_arg_extraction import extract_file_path_arg
+from ._gitignore import load_gitignore_patterns, should_ignore_path
 from ._path_resolution import (LocalFileAccessViolation, ResolvedPath,
                                _apply_post_write_hint,
                                _looks_like_outside_project,
@@ -1098,60 +1098,6 @@ class ListFilesTool(SyncTool):
     def category(self) -> str:
         return "file"
     
-    def _load_gitignore_patterns(self, working_directory: Path) -> List[str]:
-        """Carrega padrões do .gitignore"""
-        gitignore_path = working_directory / ".gitignore"
-        patterns = []
-        
-        if gitignore_path.exists():
-            try:
-                content = gitignore_path.read_text(encoding='utf-8')
-                for line in content.splitlines():
-                    line = line.strip()
-                    # Ignora linhas vazias e comentários
-                    if line and not line.startswith('#'):
-                        patterns.append(line)
-            except Exception:
-                # Se não conseguir ler o .gitignore, continua sem padrões
-                pass
-        
-        return patterns
-    
-    def _should_ignore(self, file_path: Path, patterns: List[str], working_directory: Path) -> bool:
-        """Verifica se um arquivo deve ser ignorado baseado nos padrões do .gitignore"""
-        if not patterns:
-            return False
-        
-        try:
-            # Caminho relativo ao diretório de trabalho
-            relative_path = file_path.relative_to(working_directory)
-            path_str = str(relative_path).replace('\\', '/')
-            
-            # Verifica cada padrão
-            for pattern in patterns:
-                # Remove / no final para diretórios
-                clean_pattern = pattern.rstrip('/')
-                
-                # Verifica match direto
-                if fnmatch.fnmatch(path_str, clean_pattern):
-                    return True
-                
-                # Verifica match com padrão de diretório
-                if fnmatch.fnmatch(path_str, clean_pattern + '/*'):
-                    return True
-                
-                # Verifica se está dentro de um diretório ignorado
-                parts = path_str.split('/')
-                for i in range(len(parts)):
-                    partial_path = '/'.join(parts[:i+1])
-                    if fnmatch.fnmatch(partial_path, clean_pattern):
-                        return True
-            
-            return False
-        except ValueError:
-            # Se não conseguir calcular caminho relativo, não ignora
-            return False
-    
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Executa listagem de arquivos"""
         # Extração robusta dos argumentos com fallbacks múltiplos
@@ -1286,7 +1232,7 @@ class ListFilesTool(SyncTool):
                 })
             else:
                 # Se é um diretório, carrega padrões do .gitignore
-                gitignore_patterns = self._load_gitignore_patterns(working_dir)
+                gitignore_patterns = load_gitignore_patterns(working_dir)
                 
                 # ``recursive`` and ``pattern`` come from the LLM as either
                 # native bool/str or stringified ("True"/"False"). Coerce both
@@ -1312,7 +1258,7 @@ class ListFilesTool(SyncTool):
                         continue
                     
                     # Verifica se deve ser ignorado pelo .gitignore
-                    if self._should_ignore(entry, gitignore_patterns, working_dir):
+                    if should_ignore_path(entry, gitignore_patterns, working_dir):
                         continue
                     
                     try:
