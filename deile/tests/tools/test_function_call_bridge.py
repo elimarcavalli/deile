@@ -163,3 +163,47 @@ def test_run_coro_sync_inside_event_loop():
     # Pin: o caminho do bridge foi efetivamente exercitado — o executor
     # módulo-level precisa ter sido materializado pela chamada acima.
     assert fc_mod._BRIDGE_EXECUTOR is not None
+
+
+def test_run_coro_sync_reentrancy_raises_instead_of_deadlocking():
+    """Pin the re-entrancy invariant documented in ``_run_coro_sync``.
+
+    A guarda ``_BRIDGE_ACTIVE`` (threading.local) detecta uma chamada de
+    bridge transitiva no MESMO thread e levanta ``RuntimeError`` antes do
+    ``submit()`` — caso contrário a chamada bloquearia em ``future.result()``
+    enquanto o worker single-thread está ocupado com a tarefa externa.
+
+    Simulamos o estado "já dentro de uma chamada" setando
+    ``_BRIDGE_ACTIVE.in_call = True`` no thread atual e disparando
+    ``_run_coro_sync`` de dentro de uma coroutine cujo loop está ativo
+    nesse mesmo thread — exatamente o estado em que a guarda deve disparar.
+    Usamos ``asyncio.wait_for(..., timeout=2.0)`` como cinturão de segurança:
+    se a guarda falhar (volta a deadlockar), o teste estoura por timeout
+    em vez de pendurar a suíte.
+    """
+    import pytest
+
+    from deile.tools import function_call as fc_mod
+
+    async def inner():
+        return "should-not-reach"
+
+    async def caller():
+        # ``inner()`` é criada antes do raise para que a guarda possa
+        # fechá-la — pinning the lifecycle: o coro não pode "vazar"
+        # com ``RuntimeWarning: coroutine was never awaited``.
+        return _run_coro_sync(inner())
+
+    # Simulate "already inside a bridge call on this thread".
+    fc_mod._BRIDGE_ACTIVE.in_call = True
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        with pytest.raises(RuntimeError, match="re-entrant bridge call"):
+            loop.run_until_complete(asyncio.wait_for(caller(), timeout=2.0))
+    finally:
+        # Tear down loop+flag even if the assertion fails, so the autouse
+        # fixture _reset_bridge_executor doesn't see leaked state.
+        loop.close()
+        asyncio.set_event_loop(None)
+        fc_mod._BRIDGE_ACTIVE.in_call = False
