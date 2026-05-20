@@ -288,14 +288,13 @@ class GitHubClient:
         distributed lock (no ``If-Match``/ETag support in ``gh``), but it
         catches the common case where two monitors overlap on a fast repo.
         """
+        if kind not in ("issue", "pr"):
+            raise ValueError(f"kind must be 'issue' or 'pr', got {kind!r}")
+
         async def _fetch_current():
             if kind == "issue":
                 return await self.get_issue(number)
-            cur = await self.get_pr(number)
-            return cur  # may be None
-
-        if kind not in ("issue", "pr"):
-            raise ValueError(f"kind must be 'issue' or 'pr', got {kind!r}")
+            return await self.get_pr(number)  # may be None
 
         current = await _fetch_current()
         if current is None:
