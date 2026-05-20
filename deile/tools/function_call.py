@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Dict, Optional
@@ -34,6 +35,27 @@ logger = logging.getLogger(__name__)
 # reaproveitada, eliminando o overhead de spawn/teardown por call.
 _BRIDGE_EXECUTOR: Optional[ThreadPoolExecutor] = None
 _BRIDGE_LOCK = threading.Lock()
+
+# Re-entrancy detection: per-thread flag, set in the caller (NOT in the worker)
+# while a bridge submit is in flight. If the same thread re-enters
+# ``_run_coro_sync`` while already mid-bridge — i.e. a tool invoked via the
+# bridge transitively triggered another ``execute_function_call`` — we raise
+# instead of submitting and deadlocking on the single-worker executor.
+_BRIDGE_ACTIVE = threading.local()
+
+# Control-character/ANSI-escape stripper for values that flow into log records
+# (e.g. ``function_name`` originates from the LLM, ``str(exc)`` may contain
+# arbitrary content). Removes C0/C1 controls so a malicious value cannot inject
+# fake log lines via CR/LF or hide tracks with ANSI cursor controls.
+_LOG_SANITIZE_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _sanitize_for_log(value: object, limit: int = 200) -> str:
+    """Strip control chars from ``value`` and truncate for safe logging."""
+    text = _LOG_SANITIZE_RE.sub("?", str(value))
+    if len(text) > limit:
+        text = text[:limit] + "..."
+    return text
 
 
 def _get_bridge_executor() -> ThreadPoolExecutor:
@@ -59,9 +81,15 @@ def _get_bridge_executor() -> ThreadPoolExecutor:
     para evitar perda de trabalho de tool em execução.
     """
     global _BRIDGE_EXECUTOR
-    if _BRIDGE_EXECUTOR is None:
+    # Treat a shut-down executor identically to "not yet created": a late
+    # call arriving after an external ``atexit`` (or test teardown) ran would
+    # otherwise hit ``submit() -> RuntimeError`` and leak the unawaited
+    # coroutine. Re-instantiate lazily instead.
+    if _BRIDGE_EXECUTOR is None or getattr(_BRIDGE_EXECUTOR, "_shutdown", False):
         with _BRIDGE_LOCK:
-            if _BRIDGE_EXECUTOR is None:
+            if _BRIDGE_EXECUTOR is None or getattr(
+                _BRIDGE_EXECUTOR, "_shutdown", False
+            ):
                 _BRIDGE_EXECUTOR = ThreadPoolExecutor(
                     max_workers=1,
                     thread_name_prefix="deile-sync-bridge",
@@ -103,13 +131,38 @@ def _run_coro_sync(coro):
        externa e não consegue drenar o ``submit()`` interno. Aplica-se
        também ao caminho ``SyncTool.execute_sync`` que chama
        ``execute_function_call`` indiretamente — qualquer reentrada
-       transitiva no bridge a partir do worker é proibida.
+       transitiva no bridge a partir do worker é proibida. Esta invariante
+       é enforced em runtime via ``_BRIDGE_ACTIVE`` (threading.local) — a
+       reentrada levanta ``RuntimeError`` antes do ``submit()`` em vez de
+       deadlockar.
     """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
-    return _get_bridge_executor().submit(asyncio.run, coro).result()
+    # Re-entrancy guard: if this thread is already mid-bridge, submitting
+    # would deadlock on the single-worker pool (constraint 3 above). Detect
+    # and raise instead.
+    if getattr(_BRIDGE_ACTIVE, "in_call", False):
+        coro.close()
+        raise RuntimeError(
+            "re-entrant bridge call: _run_coro_sync invoked transitively "
+            "from a coroutine already being bridged (would deadlock the "
+            "single-worker executor)"
+        )
+    _BRIDGE_ACTIVE.in_call = True
+    try:
+        try:
+            future = _get_bridge_executor().submit(asyncio.run, coro)
+        except RuntimeError:
+            # Executor was shut down between the lazy check and submit() —
+            # close the coroutine to avoid the "coroutine was never awaited"
+            # warning and re-raise so the caller sees the lifecycle issue.
+            coro.close()
+            raise
+        return future.result()
+    finally:
+        _BRIDGE_ACTIVE.in_call = False
 
 
 def execute_function_call(
@@ -172,7 +225,16 @@ def execute_function_call(
         # quanto dentro de um event loop ativo.
         return _run_coro_sync(tool.execute(context))
     except Exception as e:
-        logger.error(f"Error executing function call '{function_name}': {e}")
+        # ``function_name`` is LLM-controlled and ``str(e)`` may carry
+        # untrusted/secret content — sanitize both before they reach the
+        # log record. ``exc_info=True`` captures the traceback through the
+        # logger's own handlers (no string interpolation of the exception).
+        logger.error(
+            "Error executing function call '%s' (%s)",
+            _sanitize_for_log(function_name),
+            type(e).__name__,
+            exc_info=True,
+        )
         return ToolResult.error_result(
             f"Execution error: {type(e).__name__}",
             # error= preserva exceção crua p/ introspecção; surfaces NÃO
