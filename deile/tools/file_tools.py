@@ -312,9 +312,8 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
             # discard it so the smart resolver below can handle case
             # variations (e.g. "readme" → README.md) and partial names.
             if file_path and context.working_directory:
-                from pathlib import Path as _Path
-                candidate = _Path(context.working_directory) / file_path
-                if not candidate.exists() and not _Path(file_path).is_absolute():
+                candidate = Path(context.working_directory) / file_path
+                if not candidate.exists() and not Path(file_path).is_absolute():
                     logger.debug(
                         f"Regex-extracted path '{file_path}' does not exist; "
                         f"deferring to smart file resolution."
