@@ -101,17 +101,20 @@ class DispatchPayload(BaseModel):
     def _strip_optional_str(
         cls, v: Optional[str], info: ValidationInfo
     ) -> Optional[str]:
-        # Whitespace-only on the optional ``user_message_id`` collapses to
-        # ``None`` so ``model_dump(exclude_none=True)`` drops the field;
-        # on the required ``channel_id`` we hand back ``""`` so the
-        # ``min_length=1`` constraint reports the right error rather than
-        # being swallowed by a None.
+        # Pydantic v2 ``@field_validator`` defaults to ``mode='after'``, so
+        # the ``min_length=1`` constraint already ran on the raw value
+        # before this validator. After stripping, an empty result must be
+        # rejected explicitly here — returning ``""`` would silently pass.
+        # On the optional ``user_message_id`` we collapse to ``None`` so
+        # ``model_dump(exclude_none=True)`` drops the field on the wire.
         if v is None:
             return v
         stripped = v.strip()
-        if not stripped:
-            return None if info.field_name == "user_message_id" else ""
-        return stripped
+        if stripped:
+            return stripped
+        if info.field_name == "user_message_id":
+            return None
+        raise ValueError(f"{info.field_name} must not be whitespace-only")
 
 
 # Módulo-level (não @staticmethod) propositalmente — facilita

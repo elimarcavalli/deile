@@ -222,7 +222,11 @@ class DispatchDeileTaskTool(Tool):
 
     @classmethod
     def _prune_expired_dispatch_entries(cls, now: float) -> None:
-        """Drop ``_LAST_DISPATCH`` entries older than ``COOLDOWN × FACTOR``."""
+        """Drop ``_LAST_DISPATCH`` entries older than ``COOLDOWN × FACTOR``,
+        and the matching ``_CHANNEL_LOCKS`` entries when those locks are
+        not currently held — bounds memory on both class-level dicts
+        without racing against a coroutine that owns its lock.
+        """
         cutoff = cls._DISPATCH_COOLDOWN_S * cls._CLEANUP_FACTOR
         stale = [
             cid
@@ -231,6 +235,16 @@ class DispatchDeileTaskTool(Tool):
         ]
         for cid in stale:
             cls._LAST_DISPATCH.pop(cid, None)
+        # Drop locks for channels no longer tracked AND not currently
+        # held. The ``lock.locked()`` check is essential: another
+        # coroutine may still own its lock while we prune.
+        orphan_locks = [
+            cid
+            for cid, lock in cls._CHANNEL_LOCKS.items()
+            if cid not in cls._LAST_DISPATCH and not lock.locked()
+        ]
+        for cid in orphan_locks:
+            cls._CHANNEL_LOCKS.pop(cid, None)
 
     async def execute(self, context: ToolContext) -> ToolResult:
         # TODO(deferred — decisão #29): this tool bridges untrusted Discord
