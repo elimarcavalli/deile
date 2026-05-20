@@ -166,44 +166,42 @@ def test_run_coro_sync_inside_event_loop():
 
 
 def test_run_coro_sync_reentrancy_raises_instead_of_deadlocking():
-    """Pin the re-entrancy invariant documented in ``_run_coro_sync``.
+    """Pin the production re-entrancy invariant of ``_run_coro_sync``.
 
-    A guarda ``_BRIDGE_ACTIVE`` (threading.local) detecta uma chamada de
-    bridge transitiva no MESMO thread e levanta ``RuntimeError`` antes do
-    ``submit()`` — caso contrário a chamada bloquearia em ``future.result()``
-    enquanto o worker single-thread está ocupado com a tarefa externa.
+    O deadlock real só pode acontecer DENTRO do worker do
+    ``_BRIDGE_EXECUTOR`` (que tem ``max_workers=1``): se uma tool
+    executada no worker chama ``_run_coro_sync`` de novo, o submit
+    interno fica enfileirado esperando o mesmo worker — que está
+    bloqueado no ``future.result()`` da tarefa externa. A guarda
+    discrimina o thread pelo nome (prefixo ``deile-sync-bridge``) e
+    levanta ``RuntimeError`` antes do ``submit()`` interno.
 
-    Simulamos o estado "já dentro de uma chamada" setando
-    ``_BRIDGE_ACTIVE.in_call = True`` no thread atual e disparando
-    ``_run_coro_sync`` de dentro de uma coroutine cujo loop está ativo
-    nesse mesmo thread — exatamente o estado em que a guarda deve disparar.
-    Usamos ``asyncio.wait_for(..., timeout=2.0)`` como cinturão de segurança:
-    se a guarda falhar (volta a deadlockar), o teste estoura por timeout
+    Este teste exercita o caminho de produção: ``outer()`` é submetida
+    via ``_run_coro_sync`` e, ao executar no worker, chama
+    ``_run_coro_sync(inner())``. A guarda deve levantar rápido. O
+    ``asyncio.wait_for(..., timeout=2.0)`` ao redor do ``caller()``
+    serve de cinturão: se a guarda falhar, o teste estoura por timeout
     em vez de pendurar a suíte.
     """
     import pytest
 
-    from deile.tools import function_call as fc_mod
-
     async def inner():
         return "should-not-reach"
 
-    async def caller():
-        # ``inner()`` é criada antes do raise para que a guarda possa
-        # fechá-la — pinning the lifecycle: o coro não pode "vazar"
-        # com ``RuntimeWarning: coroutine was never awaited``.
+    async def outer():
+        # Roda no worker thread quando ``outer()`` é submetida via
+        # _run_coro_sync; chamar _run_coro_sync de novo aqui é a
+        # re-entrada que produz deadlock em produção.
         return _run_coro_sync(inner())
 
-    # Simulate "already inside a bridge call on this thread".
-    fc_mod._BRIDGE_ACTIVE.in_call = True
+    async def caller():
+        return _run_coro_sync(outer())
+
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
-        with pytest.raises(RuntimeError, match="re-entrant bridge call"):
+        with pytest.raises(RuntimeError, match="re-entrant _run_coro_sync"):
             loop.run_until_complete(asyncio.wait_for(caller(), timeout=2.0))
     finally:
-        # Tear down loop+flag even if the assertion fails, so the autouse
-        # fixture _reset_bridge_executor doesn't see leaked state.
         loop.close()
         asyncio.set_event_loop(None)
-        fc_mod._BRIDGE_ACTIVE.in_call = False

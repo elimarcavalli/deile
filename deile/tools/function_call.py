@@ -36,12 +36,12 @@ logger = logging.getLogger(__name__)
 _BRIDGE_EXECUTOR: Optional[ThreadPoolExecutor] = None
 _BRIDGE_LOCK = threading.Lock()
 
-# Re-entrancy detection: per-thread flag, set in the caller (NOT in the worker)
-# while a bridge submit is in flight. If the same thread re-enters
-# ``_run_coro_sync`` while already mid-bridge — i.e. a tool invoked via the
-# bridge transitively triggered another ``execute_function_call`` — we raise
-# instead of submitting and deadlocking on the single-worker executor.
-_BRIDGE_ACTIVE = threading.local()
+# Thread-name prefix used by the bridge executor. The worker thread's name is
+# checked at the top of ``_run_coro_sync`` to detect re-entrancy from inside
+# the worker itself — the only place where re-entrancy actually deadlocks. A
+# caller-thread flag (e.g. ``threading.local``) is by design NOT visible in
+# the worker, so it cannot defend the real failure mode.
+_BRIDGE_THREAD_NAME_PREFIX = "deile-sync-bridge"
 
 # Control-character/ANSI-escape stripper for values that flow into log records
 # (e.g. ``function_name`` originates from the LLM, ``str(exc)`` may contain
@@ -85,6 +85,8 @@ def _get_bridge_executor() -> ThreadPoolExecutor:
     # call arriving after an external ``atexit`` (or test teardown) ran would
     # otherwise hit ``submit() -> RuntimeError`` and leak the unawaited
     # coroutine. Re-instantiate lazily instead.
+    # concurrent.futures._shutdown is private API but stable across Py3.x;
+    # failure mode is silent no-op via getattr default.
     if _BRIDGE_EXECUTOR is None or getattr(_BRIDGE_EXECUTOR, "_shutdown", False):
         with _BRIDGE_LOCK:
             if _BRIDGE_EXECUTOR is None or getattr(
@@ -92,7 +94,7 @@ def _get_bridge_executor() -> ThreadPoolExecutor:
             ):
                 _BRIDGE_EXECUTOR = ThreadPoolExecutor(
                     max_workers=1,
-                    thread_name_prefix="deile-sync-bridge",
+                    thread_name_prefix=_BRIDGE_THREAD_NAME_PREFIX,
                 )
     return _BRIDGE_EXECUTOR
 
@@ -131,38 +133,41 @@ def _run_coro_sync(coro):
        externa e não consegue drenar o ``submit()`` interno. Aplica-se
        também ao caminho ``SyncTool.execute_sync`` que chama
        ``execute_function_call`` indiretamente — qualquer reentrada
-       transitiva no bridge a partir do worker é proibida. Esta invariante
-       é enforced em runtime via ``_BRIDGE_ACTIVE`` (threading.local) — a
-       reentrada levanta ``RuntimeError`` antes do ``submit()`` em vez de
-       deadlockar.
+       transitiva no bridge a partir do worker é proibida. Esta
+       invariante é enforced em runtime comparando o nome do thread
+       atual com ``_BRIDGE_THREAD_NAME_PREFIX``: re-entrada do worker
+       levanta ``RuntimeError`` antes do ``submit()`` em vez de deadlockar.
+       (Um caller-thread flag via ``threading.local`` foi descartado:
+       ``threading.local`` é per-thread por design, então um flag setado
+       no caller NÃO é visível no worker — exatamente o thread onde a
+       re-entrada perigosa acontece.)
     """
+    # Re-entrancy guard: a re-entrant call from the bridge worker thread
+    # would submit() to the same single-worker executor that is already
+    # blocked on the outer coroutine — classic deadlock. The discriminator
+    # is the worker's thread name (set via ``thread_name_prefix``); any
+    # thread name matching that prefix means we are inside the bridge.
+    if threading.current_thread().name.startswith(_BRIDGE_THREAD_NAME_PREFIX):
+        coro.close()
+        raise RuntimeError(
+            "re-entrant _run_coro_sync from bridge worker; tool must use "
+            "'await' not the sync bridge"
+        )
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
-    # Re-entrancy guard: if this thread is already mid-bridge, submitting
-    # would deadlock on the single-worker pool (constraint 3 above). Detect
-    # and raise instead.
-    if getattr(_BRIDGE_ACTIVE, "in_call", False):
-        coro.close()
-        raise RuntimeError(
-            "re-entrant bridge call: _run_coro_sync invoked transitively "
-            "from a coroutine already being bridged (would deadlock the "
-            "single-worker executor)"
-        )
-    _BRIDGE_ACTIVE.in_call = True
     try:
-        try:
-            future = _get_bridge_executor().submit(asyncio.run, coro)
-        except RuntimeError:
-            # Executor was shut down between the lazy check and submit() —
-            # close the coroutine to avoid the "coroutine was never awaited"
-            # warning and re-raise so the caller sees the lifecycle issue.
-            coro.close()
-            raise
-        return future.result()
-    finally:
-        _BRIDGE_ACTIVE.in_call = False
+        # Guards against race between _get_bridge_executor() and submit() if
+        # executor is shutdown concurrently.
+        future = _get_bridge_executor().submit(asyncio.run, coro)
+    except RuntimeError:
+        # Executor was shut down between the lazy check and submit() —
+        # close the coroutine to avoid the "coroutine was never awaited"
+        # warning and re-raise so the caller sees the lifecycle issue.
+        coro.close()
+        raise
+    return future.result()
 
 
 def execute_function_call(
