@@ -16,8 +16,8 @@ monitor           1-minute polling loop that drives the whole pipeline.
 from deile.orchestration.pipeline.labels import (BATCH_LABEL_PREFIX,
                                                  REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
-                                                 REVIEW_PENDING,
-                                                 WORKFLOW_NEW, WORKFLOW_PR,
+                                                 REVIEW_PENDING, WORKFLOW_NEW,
+                                                 WORKFLOW_PR,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING)
 
