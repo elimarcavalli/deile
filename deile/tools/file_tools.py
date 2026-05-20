@@ -11,7 +11,9 @@ from ..core.exceptions import ValidationError
 # test imports (`from deile.tools.file_tools import ...`); they have no
 # direct caller in this module — see `__all__` below.
 from ._file_listing import _collect_entries, _render_tree
-from ._path_resolution import (LocalFileAccessViolation, ResolvedPath,
+from ._path_resolution import (_PATH_ARG_KEYS_EDIT, _PATH_ARG_KEYS_FALLBACK,
+                               _PATH_ARG_KEYS_PRIMARY, _PATH_ARG_KEYS_WRITE,
+                               LocalFileAccessViolation, ResolvedPath,
                                _apply_post_write_hint, _extract_path_arg,
                                _looks_like_outside_project, _not_found_message,
                                _post_write_validation_hint,
@@ -260,12 +262,22 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
         logger.debug(f"ReadFileTool - parsed_args: {context.parsed_args}")
         logger.debug(f"ReadFileTool - file_list: {context.file_list}")
         
-        # Obtém caminho do arquivo dos argumentos parseados ou da file_list
-        file_path = _extract_path_arg(context.parsed_args)
+        # Obtém caminho do arquivo dos argumentos parseados ou da file_list.
+        # ReadFileTool's historical precedence is two-stage: PRIMARY keys
+        # (``file_path``, ``path``) beat ``file_list``, but ``file_list`` beats
+        # the FALLBACK synonyms (``file``, ``filename``, ``filepath``). Splitting
+        # the lookup into two calls preserves that exact order.
+        file_path = _extract_path_arg(context.parsed_args, keys=_PATH_ARG_KEYS_PRIMARY)
 
         # Fallback para file_list se disponível
         if not file_path and context.file_list:
             file_path = context.file_list[0]  # Primeiro arquivo da lista
+
+        # Synonym fallback runs AFTER file_list — preserving the original
+        # behavior where an explicit ``file_list`` argument beats the LLM's
+        # near-miss synonyms.
+        if not file_path:
+            file_path = _extract_path_arg(context.parsed_args, keys=_PATH_ARG_KEYS_FALLBACK)
 
         # NOVO: Fallback para argumentos sem nome (posicionais)
         if not file_path and context.parsed_args:
@@ -510,8 +522,11 @@ class WriteFileTool(SyncTool):
         # escrita atômica + read-back (ver _atomic_write_text abaixo).
         overwrite = context.parsed_args.get("overwrite", True)
         
-        # 1. Tenta argumentos nomeados primeiro
-        file_path = _extract_path_arg(context.parsed_args)
+        # 1. Tenta argumentos nomeados primeiro. WriteFileTool's original
+        # precedence is ``file_path > filename > path > file > filepath`` —
+        # pinned via ``_PATH_ARG_KEYS_WRITE`` so the centralized helper does
+        # not silently reshuffle the synonym order.
+        file_path = _extract_path_arg(context.parsed_args, keys=_PATH_ARG_KEYS_WRITE)
 
         if 'content' in context.parsed_args:
             content = context.parsed_args['content']
@@ -778,8 +793,10 @@ class EditFileTool(SyncTool):
         """Aplica patches ao arquivo, atomicamente."""
         logger.debug(f"EditFileTool - parsed_args keys: {list(context.parsed_args.keys())}")
 
-        # 1. Extrai file_path (fallbacks consistentes com WriteFileTool)
-        file_path = _extract_path_arg(context.parsed_args)
+        # 1. Extrai file_path. EditFileTool's canonical order is
+        # ``file_path > path > filename > file > filepath`` — pinned via
+        # ``_PATH_ARG_KEYS_EDIT``.
+        file_path = _extract_path_arg(context.parsed_args, keys=_PATH_ARG_KEYS_EDIT)
         if not file_path:
             return ToolResult.error_result(
                 message=(
@@ -1255,7 +1272,13 @@ class DeleteFileTool(SyncTool):
     
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Executa deleção de arquivo"""
-        file_path = _extract_path_arg(context.parsed_args)
+        # DeleteFileTool's historical precedence is two-stage: ``file_path``/
+        # ``path`` first, then ``file``/``filename``/``filepath`` as fallback.
+        # We preserve that ordering by calling the helper twice with the
+        # per-tier keys, matching the pre-DRY behavior in commit 0ea6af1.
+        file_path = _extract_path_arg(context.parsed_args, keys=_PATH_ARG_KEYS_PRIMARY)
+        if not file_path:
+            file_path = _extract_path_arg(context.parsed_args, keys=_PATH_ARG_KEYS_FALLBACK)
         force = context.parsed_args.get("force", False)
 
         if not file_path:
