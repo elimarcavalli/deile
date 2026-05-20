@@ -266,7 +266,8 @@ class PipelineMonitor:
                 dropped = len(merged_prs) - len(merged_branches)
                 if dropped:
                     logger.debug(
-                        "cleanup: ignored %d merged PRs with empty head_ref", dropped
+                        "cleanup_merged_branches: dropped %d entries with empty head_ref",
+                        dropped,
                     )
                 deleted = await self.worktrees.cleanup_merged_branches(merged_branches)
                 if deleted:
@@ -314,10 +315,13 @@ class PipelineMonitor:
             logger.debug("scheduled action %s unknown; skipped", run.action)
             return
 
-        if getattr(self.config, action_def.enable_attr) is False:
+        # ``enable_attr`` is documented in :class:`ActionDef` as "must return
+        # True" — use ``is not True`` so ``Optional[bool] = None`` and other
+        # falsy-but-not-False values are treated as disabled too.
+        if getattr(self.config, action_def.enable_attr) is not True:
             # Operator scheduled this action but disabled it in config — warn loudly.
             logger.warning(
-                "scheduled action %r is disabled (%s=False); "
+                "scheduled action %r is disabled (%s is not True); "
                 "skipping run at %s. Remove the schedule entry or re-enable the flag.",
                 run.action, action_def.enable_attr, run.when.isoformat(),
             )
