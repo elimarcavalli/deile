@@ -18,10 +18,11 @@ import logging
 import re
 import shutil
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 from deile.core.exceptions import DEILEError
+from deile.orchestration.pipeline._time_utils import format_iso_utc
 from deile.orchestration.pipeline.labels import (BATCH_LABEL_PREFIX,
                                                  LABEL_COLORS,
                                                  LABEL_DESCRIPTIONS,
@@ -518,7 +519,7 @@ class GitHubClient:
             raise ValueError(
                 f"endpoint must start with {expected_prefix!r} and contain no '..'"
             )
-        since_iso = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        since_iso = format_iso_utc(since)
         try:
             out = await self._run_checked(
                 "api", endpoint,
