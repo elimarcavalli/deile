@@ -209,35 +209,10 @@ class _DeileCLI:
         self.ui: object = None
         self.config_manager: object = None
 
-    def _bootstrap_providers(self, model_router) -> list:
-        """Bootstrap model providers, preferring the new path with legacy fallback.
-
-        NOTE: this is a *synchronous* method — it does not await anything.
-        It runs in the current thread (not via asyncio.to_thread) to avoid
-        the "coroutine was never awaited" warning.
-        """
-        # check feature flag
-        try:
-            import yaml
-            yaml_path = _PACKAGE_ROOT / "config" / "model_providers.yaml"
-            with open(yaml_path) as f:
-                data = yaml.safe_load(f)
-            if bool(data.get("feature_flags", {}).get("use_legacy_gemini_only", False)):
-                if os.getenv("GOOGLE_API_KEY"):
-                    from deile.core.models.gemini_provider import \
-                        GeminiProvider
-                    model_router.register_provider(GeminiProvider(), priority=1)
-                    return ["gemini"]
-                return []
-        except Exception:
-            pass
-
-        from deile.core.models.bootstrap import bootstrap_providers
-        return bootstrap_providers(router=model_router)
-
     async def initialize(self) -> bool:
         from deile.config.manager import ConfigManager
         from deile.config.settings import get_settings
+        from deile.core.models.bootstrap import bootstrap_providers
         from deile.core.models.router import get_model_router
         from deile.ui import ConsoleUIManager, UITheme
 
@@ -254,7 +229,7 @@ class _DeileCLI:
             model_router = get_model_router()
             with self.ui.show_loading("Acordando DEILE..."):
                 registered = _bootstrap_with_recovery(
-                    lambda: self._bootstrap_providers(model_router)
+                    lambda: bootstrap_providers(router=model_router)
                 )
 
             if not registered:

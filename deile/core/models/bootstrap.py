@@ -31,6 +31,20 @@ def _import_provider_class(dotted: str):
     return getattr(mod, class_name)
 
 
+def _bootstrap_legacy_gemini_only(router) -> List[str]:
+    """Legacy single-provider path used when use_legacy_gemini_only is set.
+
+    Registers GeminiProvider in the router only if GOOGLE_API_KEY is set.
+    """
+    if not os.getenv("GOOGLE_API_KEY"):
+        return []
+    if router is None:
+        return []
+    from deile.core.models.gemini_provider import GeminiProvider
+    router.register_provider(GeminiProvider(), priority=1)
+    return ["gemini"]
+
+
 def bootstrap_providers(
     yaml_path: Optional[Path] = None,
     router=None,
@@ -39,11 +53,18 @@ def bootstrap_providers(
 
     Returns a list of successfully registered provider_ids.
     Logs warnings for providers with missing API keys.
+
+    Honors the ``feature_flags.use_legacy_gemini_only`` toggle: when set,
+    only the Gemini provider is registered (and only if ``GOOGLE_API_KEY``
+    is present), bypassing the multi-provider catalog path entirely.
     """
     path = yaml_path or _DEFAULT_YAML
 
     with open(path) as f:
         data = yaml.safe_load(f)
+
+    if bool(data.get("feature_flags", {}).get("use_legacy_gemini_only", False)):
+        return _bootstrap_legacy_gemini_only(router)
 
     catalog = ModelCatalog.from_yaml(path)
     providers_cfg = data.get("providers", {})
