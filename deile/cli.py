@@ -149,6 +149,35 @@ def _bootstrap_with_recovery(bootstrap_fn, *, spinner_factory=None) -> list:
         return bootstrap_fn()
 
 
+def _bootstrap_provider_router_or_print_error():
+    """Bootstrap a model router with provider recovery; print stderr error on miss.
+
+    Shared by the two plain-stdio entry points (``_run_oneshot`` and
+    ``_run_command_flag``) that print the same byte-identical error and
+    return exit code 1 when no provider key is set. The interactive
+    ``_DeileCLI.initialize()`` path stays inline because it renders the
+    failure via ``ui.display_error`` (PT-BR) and drives ``spinner_factory``.
+
+    Returns the bootstrapped router on success, ``None`` when no provider
+    registered after the env-recovery wizard — callers map ``None`` → 1.
+    """
+    from deile.core.models.bootstrap import bootstrap_providers
+    from deile.core.models.router import get_model_router
+
+    model_router = get_model_router()
+    registered = _bootstrap_with_recovery(
+        lambda: bootstrap_providers(router=model_router)
+    )
+    if not registered:
+        print(
+            "ERROR: no provider configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, "
+            "DEEPSEEK_API_KEY, or GOOGLE_API_KEY.",
+            file=sys.stderr,
+        )
+        return None
+    return model_router
+
+
 def _run_env_recovery() -> bool:
     """Interactive wizard: prompt for API keys, write .env, reload os.environ.
 
@@ -694,24 +723,14 @@ async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
     """Single-turn non-interactive. stdout = response.content."""
     from deile.config.manager import ConfigManager
     from deile.config.settings import get_settings
-    from deile.core.models.bootstrap import bootstrap_providers
-    from deile.core.models.router import get_model_router
 
     settings = get_settings()
     settings.working_directory = Path.cwd()
     config_manager = ConfigManager()
     config_manager.load_config()
 
-    model_router = get_model_router()
-    registered = _bootstrap_with_recovery(
-        lambda: bootstrap_providers(router=model_router)
-    )
-    if not registered:
-        print(
-            "ERROR: no provider configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, "
-            "DEEPSEEK_API_KEY, or GOOGLE_API_KEY.",
-            file=sys.stderr,
-        )
+    model_router = _bootstrap_provider_router_or_print_error()
+    if model_router is None:
         return 1
 
     agent = await _construct_agent(model_router, config_manager)
@@ -1207,19 +1226,8 @@ async def _run_command_flag(
     if requires_provider:
         # Only spin up the full agent (and require an API key) when the flag
         # genuinely needs an LLM provider. Most --flags don't.
-        from deile.core.models.bootstrap import bootstrap_providers
-        from deile.core.models.router import get_model_router
-
-        model_router = get_model_router()
-        registered = _bootstrap_with_recovery(
-            lambda: bootstrap_providers(router=model_router)
-        )
-        if not registered:
-            print(
-                "ERROR: no provider configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, "
-                "DEEPSEEK_API_KEY, or GOOGLE_API_KEY.",
-                file=sys.stderr,
-            )
+        model_router = _bootstrap_provider_router_or_print_error()
+        if model_router is None:
             return 1
         agent = await _construct_agent(model_router, config_manager)
         registry = agent.command_registry
