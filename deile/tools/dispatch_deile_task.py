@@ -386,10 +386,11 @@ class DispatchDeileTaskTool(Tool):
             # endpoint/token doesn't burn the cooldown on the channel.
             now = time.monotonic()
             last = self._LAST_DISPATCH.get(channel_id)
-            if last is not None and (now - last) < self._DISPATCH_COOLDOWN_S:
-                remaining = self._DISPATCH_COOLDOWN_S - (now - last)
+            elapsed = (now - last) if last is not None else None
+            if elapsed is not None and elapsed < self._DISPATCH_COOLDOWN_S:
+                remaining = self._DISPATCH_COOLDOWN_S - elapsed
                 return ToolResult.error_result(
-                    f"dispatch já feito há {now - last:.0f}s nesse canal; "
+                    f"dispatch já feito há {elapsed:.0f}s nesse canal; "
                     f"aguarde {remaining:.0f}s e relate ao usuário em vez de retentar. "
                     f"Se a 1ª chamada falhou (ex: 'ping' não existe no worker), "
                     f"explique isso ao usuário — NÃO chame dispatch_deile_task de novo "
