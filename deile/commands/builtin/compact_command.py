@@ -56,29 +56,34 @@ class CompactCommand(DirectCommand):
         parts: list[str] = split_args(context)
         action = parts[0].lower() if parts else "summary"
 
+        dispatch = {
+            "summary": lambda: self._cmd_summary(context),
+            "compress": lambda: self._cmd_compress(
+                context,
+                int(parts[1]) if len(parts) > 1 else _COMPRESS_THRESHOLD_DAYS,
+            ),
+            "purge": lambda: self._cmd_purge(
+                context,
+                int(parts[1]) if len(parts) > 1 else _PURGE_THRESHOLD_DAYS,
+                "--confirm" in parts
+                or (len(parts) > 2 and parts[2].lower() in ("s", "sim", "yes", "y")),
+            ),
+            "analyze": lambda: self._cmd_analyze(context),
+            "export": lambda: self._cmd_export(
+                context,
+                parts[1] if len(parts) > 1 else "json",
+                parts[2] if len(parts) > 2 else None,
+            ),
+            "import": lambda: self._cmd_import(
+                context, parts[1] if len(parts) > 1 else None
+            ),
+        }
+        handler = dispatch.get(action)
+        if handler is None:
+            return CommandResult.error_result(f"Ação desconhecida: {action}")
+
         try:
-            if action == "summary":
-                return await self._cmd_summary(context)
-            elif action == "compress":
-                days = int(parts[1]) if len(parts) > 1 else _COMPRESS_THRESHOLD_DAYS
-                return await self._cmd_compress(context, days)
-            elif action == "purge":
-                days = int(parts[1]) if len(parts) > 1 else _PURGE_THRESHOLD_DAYS
-                confirm = "--confirm" in parts or (
-                    len(parts) > 2 and parts[2].lower() in ("s", "sim", "yes", "y")
-                )
-                return await self._cmd_purge(context, days, confirm)
-            elif action == "analyze":
-                return await self._cmd_analyze(context)
-            elif action == "export":
-                fmt = parts[1] if len(parts) > 1 else "json"
-                fname = parts[2] if len(parts) > 2 else None
-                return await self._cmd_export(context, fmt, fname)
-            elif action == "import":
-                fname = parts[1] if len(parts) > 1 else None
-                return await self._cmd_import(context, fname)
-            else:
-                return CommandResult.error_result(f"Ação desconhecida: {action}")
+            return await handler()
         except ValueError as exc:
             return CommandResult.error_result(f"Parâmetro inválido: {exc}")
         except Exception as exc:

@@ -56,38 +56,35 @@ class LogsCommand(DirectCommand):
             return await self._show_logs_overview()
 
         action = parts[0].lower()
-
-        if action == "recent":
-            limit = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 50
-            return await self._show_recent_logs(limit)
-        elif action == "security":
-            return await self._show_security_logs(parts[1:])
-        elif action == "permissions":
-            return await self._show_permission_logs(parts[1:])
-        elif action == "secrets":
-            return await self._show_secret_logs(parts[1:])
-        elif action == "tools":
-            return await self._show_tool_logs(parts[1:])
-        elif action == "plans":
-            return await self._show_plan_logs(parts[1:])
-        elif action == "errors":
-            return await self._show_error_logs(parts[1:])
-        elif action == "summary":
-            return await self._show_summary()
-        elif action == "export":
-            if len(parts) < 2:
-                raise CommandError("logs export requer nome de arquivo: /logs export <arquivo> [formato]")
-            safe_name = Path(parts[1]).name
-            if not safe_name:
-                raise CommandError("Nome de arquivo inválido")
-            format_type = parts[2] if len(parts) > 2 else "json"
-            if format_type not in _VALID_EXPORT_FORMATS:
-                raise CommandError(f"Formato inválido. Use: {', '.join(sorted(_VALID_EXPORT_FORMATS))}")
-            return await self._export_logs(safe_name, format_type)
-        elif action == "clear":
-            return await self._clear_logs()
-        else:
+        dispatch = {
+            "recent": lambda: self._show_recent_logs(
+                int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 50
+            ),
+            "security": lambda: self._show_security_logs(parts[1:]),
+            "permissions": lambda: self._show_permission_logs(parts[1:]),
+            "secrets": lambda: self._show_secret_logs(parts[1:]),
+            "tools": lambda: self._show_tool_logs(parts[1:]),
+            "plans": lambda: self._show_plan_logs(parts[1:]),
+            "errors": lambda: self._show_error_logs(parts[1:]),
+            "summary": lambda: self._show_summary(),
+            "export": lambda: self._dispatch_export(parts),
+            "clear": lambda: self._clear_logs(),
+        }
+        handler = dispatch.get(action)
+        if handler is None:
             raise CommandError(f"Ação desconhecida: {action}")
+        return await handler()
+
+    async def _dispatch_export(self, parts: List[str]) -> CommandResult:
+        if len(parts) < 2:
+            raise CommandError("logs export requer nome de arquivo: /logs export <arquivo> [formato]")
+        safe_name = Path(parts[1]).name
+        if not safe_name:
+            raise CommandError("Nome de arquivo inválido")
+        format_type = parts[2] if len(parts) > 2 else "json"
+        if format_type not in _VALID_EXPORT_FORMATS:
+            raise CommandError(f"Formato inválido. Use: {', '.join(sorted(_VALID_EXPORT_FORMATS))}")
+        return await self._export_logs(safe_name, format_type)
 
     async def _show_logs_overview(self) -> CommandResult:
         summary = self.audit_logger.get_security_summary()
