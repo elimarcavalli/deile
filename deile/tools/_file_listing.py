@@ -20,6 +20,12 @@ from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
+# Display caps for `_render_tree`. Promoted from inline literals so the two
+# branches that compute the truncated views (and the "... e mais N itens"
+# remainder line) read from a single source of truth.
+_MAX_DIRS_SHOWN = 8
+_MAX_FILES_SHOWN = 15
+
 
 def _load_gitignore_patterns(working_directory: Path) -> List[str]:
     """Carrega padrões do .gitignore"""
@@ -34,9 +40,12 @@ def _load_gitignore_patterns(working_directory: Path) -> List[str]:
                 # Ignora linhas vazias e comentários
                 if line and not line.startswith('#'):
                     patterns.append(line)
-        except Exception:
-            # Se não conseguir ler o .gitignore, continua sem padrões
-            pass
+        except (OSError, UnicodeDecodeError) as exc:
+            # If the file can't be read or decoded, continue with no patterns;
+            # log so the silent fallback is at least diagnosable.
+            logger.debug(
+                "failed to read .gitignore at %s: %s", gitignore_path, exc
+            )
 
     return patterns
 
@@ -157,8 +166,8 @@ def _collect_entries(
 def _render_tree(target_path: str, files_info: List[Dict[str, Any]]) -> str:
     """Render the rich tree display for a directory listing.
 
-    Caps at 8 directories and 15 files; a trailing "... e mais N itens"
-    line accounts for the remainder.
+    Caps at ``_MAX_DIRS_SHOWN`` directories and ``_MAX_FILES_SHOWN`` files;
+    a trailing "... e mais N itens" line accounts for the remainder.
     """
     rich_display_lines = [
         f"● list_files({target_path})",
@@ -171,22 +180,28 @@ def _render_tree(target_path: str, files_info: List[Dict[str, Any]]) -> str:
         dirs = [f for f in files_info if f["type"] == "directory"]
         files = [f for f in files_info if f["type"] == "file"]
 
+        shown_dirs = dirs[:_MAX_DIRS_SHOWN]
+        shown_files = files[:_MAX_FILES_SHOWN]
+
         rich_display_lines.append(f"   {target_path}/")
 
-        # Mostra diretórios primeiro (máximo 8)
-        for i, dir_info in enumerate(dirs[:8]):
-            is_last_dir = i == len(dirs[:8]) - 1 and not files
+        # Mostra diretórios primeiro (máximo _MAX_DIRS_SHOWN)
+        for i, dir_info in enumerate(shown_dirs):
+            is_last_dir = i == len(shown_dirs) - 1 and not files
             prefix = "└── " if is_last_dir else "├── "
             rich_display_lines.append(f"   {prefix}📁 {dir_info['name']}/")
 
-        # Mostra arquivos (máximo 15)
-        for i, file_info in enumerate(files[:15]):
-            is_last_file = i == len(files[:15]) - 1
+        # Mostra arquivos (máximo _MAX_FILES_SHOWN)
+        for i, file_info in enumerate(shown_files):
+            is_last_file = i == len(shown_files) - 1
             prefix = "└── " if is_last_file else "├── "
             rich_display_lines.append(f"   {prefix}📄 {file_info['name']}")
 
-        # Indica se há mais arquivos
-        total_remaining = len(files_info) - len(dirs[:8]) - len(files[:15])
+        # Indica se há mais itens (dirs hidden + files hidden).
+        total_remaining = (
+            (len(dirs) - len(shown_dirs))
+            + (len(files) - len(shown_files))
+        )
         if total_remaining > 0:
             rich_display_lines.append(f"   └── ... e mais {total_remaining} itens")
     else:
