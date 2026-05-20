@@ -34,8 +34,6 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_ITERATIONS = 25
 
 
-
-
 class ToolLoopExecutor:
     """Run a multi-iteration tool-use loop against any provider.
 
