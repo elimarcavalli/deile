@@ -87,13 +87,12 @@ class ToolRegistry:
         # Remove dos habilitados
         self._enabled_tools.discard(tool_name)
         
-        # Remove aliases
-        aliases_to_remove = [
-            alias for alias, name in self._tool_aliases.items() 
-            if name == tool_name
-        ]
-        for alias in aliases_to_remove:
-            del self._tool_aliases[alias]
+        # Remove aliases pointing at this tool (rebuild without them).
+        self._tool_aliases = {
+            alias: name
+            for alias, name in self._tool_aliases.items()
+            if name != tool_name
+        }
         
         # Remove a tool
         del self._tools[tool_name]
