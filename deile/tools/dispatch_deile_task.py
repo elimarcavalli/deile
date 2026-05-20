@@ -291,14 +291,14 @@ class DispatchDeileTaskTool(Tool):
             args = dict(context.parsed_args or {})
             brief = str(args.get("brief", "")).strip()
             channel_id = str(args.get("channel_id", "")).strip()
-            user_message_id = args.get("user_message_id")
             # Auto-fill from bot_context if the LLM forgot — this enables
             # the worker's 🔧/✅ reaction UX without depending on persona
-            # discipline.
-            if not user_message_id:
-                umid = _bot_context(context).get("user_message_id")
-                if umid:
-                    user_message_id = str(umid)
+            # discipline. ``_build_dispatch_payload`` ``str()``-ifies and
+            # drops falsy values, so a single ``or`` covers both fallbacks.
+            user_message_id = (
+                args.get("user_message_id")
+                or _bot_context(context).get("user_message_id")
+            )
             persona = args.get("persona") or "developer"
             wait = bool(args.get("wait_for_result", True))
 
