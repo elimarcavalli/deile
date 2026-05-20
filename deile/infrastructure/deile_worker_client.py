@@ -155,11 +155,11 @@ def _read_token() -> str:
         try:
             with open(path, "r", encoding="utf-8") as f:
                 v = f.read().strip()
-                if v:
-                    logger.debug("worker token resolved from %s", path)
-                    return v
         except OSError:
             continue
+        if v:
+            logger.debug("worker token resolved from %s", path)
+            return v
     return ""
 
 
@@ -275,9 +275,9 @@ class DeileWorkerClient:
             ) from exc
 
         if resp.status_code >= 400:
-            err = data.get("error") if isinstance(data, dict) else {}
-            code = (err or {}).get("code") or "WORKER_ERROR"
-            msg = (err or {}).get("message") or f"HTTP {resp.status_code}"
+            err = (data.get("error") if isinstance(data, dict) else None) or {}
+            code = err.get("code") or "WORKER_ERROR"
+            msg = err.get("message") or f"HTTP {resp.status_code}"
             raise WorkerDispatchError(
                 f"{msg} (request_id={request_id})", error_code=code
             )
