@@ -6,12 +6,16 @@ para tools async — é uma responsabilidade de I/O distinta do registro e
 da descoberta de tools. O registry expõe ``execute_function_call()`` que
 delega para estas funções, no mesmo padrão de ``schema_export.py`` e
 ``schema_validation.py``.
+
+O helper de bridging síncrono :func:`_run_coro_sync` é privado ao módulo
+— callers externos devem usar :func:`execute_function_call`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
@@ -24,7 +28,32 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def run_coro_sync(coro):
+# Executor module-level reusado entre chamadas a :func:`_run_coro_sync` quando
+# há event loop ativo. Cada submit ainda executa ``asyncio.run(coro)``, então
+# a semântica de "loop fresco por chamada" é preservada — apenas a thread é
+# reaproveitada, eliminando o overhead de spawn/teardown por call.
+_BRIDGE_EXECUTOR: Optional[ThreadPoolExecutor] = None
+_BRIDGE_LOCK = threading.Lock()
+
+
+def _get_bridge_executor() -> ThreadPoolExecutor:
+    """Retorna o ``ThreadPoolExecutor`` único usado pela ponte sync→async.
+
+    Lazy-init com double-checked locking. ``max_workers=1`` é intencional:
+    a ponte serializa coroutines (uma por vez) — paralelismo deve usar a
+    própria API async, não esta ponte.
+    """
+    global _BRIDGE_EXECUTOR
+    if _BRIDGE_EXECUTOR is None:
+        with _BRIDGE_LOCK:
+            if _BRIDGE_EXECUTOR is None:
+                _BRIDGE_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=1, thread_name_prefix="deile-sync-bridge"
+                )
+    return _BRIDGE_EXECUTOR
+
+
+def _run_coro_sync(coro):
     """Run a coroutine to completion from synchronous code.
 
     Uses ``asyncio.run`` when no loop is active. When invoked from inside
@@ -52,8 +81,7 @@ def run_coro_sync(coro):
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
+    return _get_bridge_executor().submit(asyncio.run, coro).result()
 
 
 def execute_function_call(
@@ -65,15 +93,25 @@ def execute_function_call(
     """Executa uma function call de forma síncrona.
 
     Function Calling é síncrono na API dos providers; tools async são
-    executadas via :func:`run_coro_sync`. Retorna sempre um ``ToolResult``
+    executadas via :func:`_run_coro_sync`. Retorna sempre um ``ToolResult``
     — falhas de resolução, validação ou execução são mapeadas para
     ``ToolResult.error_result``.
+
+    A distinção entre ``FUNCTION_NOT_FOUND`` (tool inexistente) e
+    ``FUNCTION_DISABLED`` (tool registrada mas desabilitada) é preservada
+    com lookup explícito — ``registry.get_enabled`` sozinho colapsaria
+    os dois casos no mesmo ``None``.
     """
-    tool = registry.get_enabled(function_name)
+    tool = registry.get(function_name)
     if tool is None:
         return ToolResult.error_result(
-            f"Function '{function_name}' not found or disabled",
+            f"Function '{function_name}' not found",
             error_code="FUNCTION_NOT_FOUND",
+        )
+    if registry.get_enabled(tool.name) is None:
+        return ToolResult.error_result(
+            f"Function '{function_name}' is disabled",
+            error_code="FUNCTION_DISABLED",
         )
 
     if tool.schema:
@@ -107,11 +145,11 @@ def execute_function_call(
             return tool.execute_sync(context)
         # Executa async tool de forma síncrona — seguro tanto fora
         # quanto dentro de um event loop ativo.
-        return run_coro_sync(tool.execute(context))
+        return _run_coro_sync(tool.execute(context))
     except Exception as e:
         logger.error(f"Error executing function call '{function_name}': {e}")
         return ToolResult.error_result(
-            f"Execution error: {str(e)}",
+            f"Execution error: {type(e).__name__}",
             error=e,
             error_code="EXECUTION_ERROR",
         )
