@@ -64,22 +64,23 @@ def discover_tools_in_package(
     discovered_count = 0
     for name in dir(module):
         obj = getattr(module, name)
-        if (
+        if not (
             inspect.isclass(obj)
             and issubclass(obj, Tool)
             and obj is not Tool
             and not inspect.isabstract(obj)
         ):
-            try:
-                tool_instance = obj()
-                if tool_instance.name not in registry:
-                    registry.register(tool_instance)
-                    discovered_count += 1
-            except Exception as e:
-                logger.warning(
-                    f"Failed to register discovered tool {name}: {e}",
-                    exc_info=True,
-                )
+            continue
+        try:
+            tool_instance = obj()
+            if tool_instance.name not in registry:
+                registry.register(tool_instance)
+                discovered_count += 1
+        except Exception as e:
+            logger.warning(
+                f"Failed to register discovered tool {name}: {e}",
+                exc_info=True,
+            )
 
     return discovered_count
 
@@ -115,16 +116,17 @@ def load_schemas_from_directory(
             )
             continue
 
-        if schema.name in registry:
-            tool = registry.get(schema.name)
-            if tool is not None:
-                tool.set_schema(schema)
-                loaded_count += 1
-                logger.debug(f"Loaded schema for tool: {schema.name}")
-        else:
+        if schema.name not in registry:
             logger.warning(
                 f"Schema found for unregistered tool: {schema.name}"
             )
+            continue
+
+        tool = registry.get(schema.name)
+        if tool is not None:
+            tool.set_schema(schema)
+            loaded_count += 1
+            logger.debug(f"Loaded schema for tool: {schema.name}")
 
     logger.info(f"Loaded {loaded_count} tool schemas from {schemas_dir}")
     return loaded_count
