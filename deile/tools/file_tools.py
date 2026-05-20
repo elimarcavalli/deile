@@ -1,19 +1,22 @@
 """Ferramentas para manipulação de arquivos"""
 
-import fnmatch
 import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..core.exceptions import ValidationError
-# `LocalFileAccessViolation`, `_post_write_validation_hint`, and
-# `_validate_path_within_working_directory` are re-exported for existing
-# test imports (`from deile.tools.file_tools import ...`); they have no
-# direct caller in this module — see `__all__` below.
-from ._path_resolution import (LocalFileAccessViolation, ResolvedPath,
-                               _apply_post_write_hint,
-                               _looks_like_outside_project,
+# `LocalFileAccessViolation` is both caught locally (6 `except` clauses
+# in Read/Write/Edit/List/Delete `execute_sync`) and re-exported for
+# existing test imports. `_post_write_validation_hint` and
+# `_validate_path_within_working_directory` are re-exported only
+# (no direct caller in this module) — see `__all__` below.
+from ._file_listing import _collect_entries, _render_tree
+from ._path_resolution import (_PATH_ARG_KEYS_EDIT, _PATH_ARG_KEYS_FALLBACK,
+                               _PATH_ARG_KEYS_PRIMARY, _PATH_ARG_KEYS_WRITE,
+                               LocalFileAccessViolation, ResolvedPath,
+                               _apply_post_write_hint, _extract_path_arg,
+                               _looks_like_outside_project, _not_found_message,
                                _post_write_validation_hint,
                                _resolve_project_path,
                                _validate_path_within_working_directory)
@@ -260,21 +263,23 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
         logger.debug(f"ReadFileTool - parsed_args: {context.parsed_args}")
         logger.debug(f"ReadFileTool - file_list: {context.file_list}")
         
-        # Obtém caminho do arquivo dos argumentos parseados ou da file_list
-        file_path = context.parsed_args.get("file_path") or context.parsed_args.get("path")
-        
+        # Obtém caminho do arquivo dos argumentos parseados ou da file_list.
+        # ReadFileTool's historical precedence is two-stage: PRIMARY keys
+        # (``file_path``, ``path``) beat ``file_list``, but ``file_list`` beats
+        # the FALLBACK synonyms (``file``, ``filename``, ``filepath``). Splitting
+        # the lookup into two calls preserves that exact order.
+        file_path = _extract_path_arg(context.parsed_args, keys=_PATH_ARG_KEYS_PRIMARY)
+
         # Fallback para file_list se disponível
         if not file_path and context.file_list:
             file_path = context.file_list[0]  # Primeiro arquivo da lista
-        
-        # Fallback para argumentos posicionais se disponível
+
+        # Synonym fallback runs AFTER file_list — preserving the original
+        # behavior where an explicit ``file_list`` argument beats the LLM's
+        # near-miss synonyms.
         if not file_path:
-            # Tenta extrair path de outros argumentos comuns
-            for key in ["file", "filename", "filepath"]:
-                if context.parsed_args.get(key):
-                    file_path = context.parsed_args.get(key)
-                    break
-        
+            file_path = _extract_path_arg(context.parsed_args, keys=_PATH_ARG_KEYS_FALLBACK)
+
         # NOVO: Fallback para argumentos sem nome (posicionais)
         if not file_path and context.parsed_args:
             # Se há apenas um argumento, assume que é o file_path
@@ -307,9 +312,8 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
             # discard it so the smart resolver below can handle case
             # variations (e.g. "readme" → README.md) and partial names.
             if file_path and context.working_directory:
-                from pathlib import Path as _Path
-                candidate = _Path(context.working_directory) / file_path
-                if not candidate.exists() and not _Path(file_path).is_absolute():
+                candidate = Path(context.working_directory) / file_path
+                if not candidate.exists() and not Path(file_path).is_absolute():
                     logger.debug(
                         f"Regex-extracted path '{file_path}' does not exist; "
                         f"deferring to smart file resolution."
@@ -394,23 +398,14 @@ Primeira linha de bytes (ascii): {raw_data[:32].decode('ascii', errors='replace'
 
             # Verifica se arquivo existe
             if not full_path.exists():
-                norm_hint = (
-                    f" (input was {resolved.input!r} → {resolved.note})"
-                    if resolved.note
-                    else ""
-                )
-                bash_hint = (
-                    " If the file lives OUTSIDE the project, use "
-                    f"bash_execute(command=\"cat {resolved.absolute}\") instead — "
-                    "bash_execute has no working-directory sandbox."
-                    if (resolved.note or _looks_like_outside_project(file_path))
-                    else ""
-                )
                 return ToolResult.error_result(
-                    message=(
-                        f"File not found: {resolved.relative_to_cwd}"
-                        f"{norm_hint}. Use list_files to inspect the project tree "
-                        f"before assuming a path.{bash_hint}"
+                    message=_not_found_message(
+                        resolved,
+                        file_path,
+                        detail="Use list_files to inspect the project tree "
+                               "before assuming a path.",
+                        include_bash_hint=True,
+                        bash_verb="cat",
                     ),
                     error=FileNotFoundError(
                         f"File '{resolved.relative_to_cwd}' not found"
@@ -527,18 +522,12 @@ class WriteFileTool(SyncTool):
         # escrita atômica + read-back (ver _atomic_write_text abaixo).
         overwrite = context.parsed_args.get("overwrite", True)
         
-        # 1. Tenta argumentos nomeados primeiro
-        if 'file_path' in context.parsed_args:
-            file_path = context.parsed_args['file_path']
-        elif 'filename' in context.parsed_args:
-            file_path = context.parsed_args['filename']
-        elif 'path' in context.parsed_args:
-            file_path = context.parsed_args['path']
-        elif 'file' in context.parsed_args:
-            file_path = context.parsed_args['file']
-        elif 'filepath' in context.parsed_args:
-            file_path = context.parsed_args['filepath']
-            
+        # 1. Tenta argumentos nomeados primeiro. WriteFileTool's original
+        # precedence is ``file_path > filename > path > file > filepath`` —
+        # pinned via ``_PATH_ARG_KEYS_WRITE`` so the centralized helper does
+        # not silently reshuffle the synonym order.
+        file_path = _extract_path_arg(context.parsed_args, keys=_PATH_ARG_KEYS_WRITE)
+
         if 'content' in context.parsed_args:
             content = context.parsed_args['content']
         elif 'text' in context.parsed_args:
@@ -804,14 +793,10 @@ class EditFileTool(SyncTool):
         """Aplica patches ao arquivo, atomicamente."""
         logger.debug(f"EditFileTool - parsed_args keys: {list(context.parsed_args.keys())}")
 
-        # 1. Extrai file_path (fallbacks consistentes com WriteFileTool)
-        file_path = (
-            context.parsed_args.get("file_path")
-            or context.parsed_args.get("path")
-            or context.parsed_args.get("filename")
-            or context.parsed_args.get("file")
-            or context.parsed_args.get("filepath")
-        )
+        # 1. Extrai file_path. EditFileTool's canonical order is
+        # ``file_path > path > filename > file > filepath`` — pinned via
+        # ``_PATH_ARG_KEYS_EDIT``.
+        file_path = _extract_path_arg(context.parsed_args, keys=_PATH_ARG_KEYS_EDIT)
         if not file_path:
             return ToolResult.error_result(
                 message=(
@@ -890,16 +875,12 @@ class EditFileTool(SyncTool):
 
         full_path = Path(resolved.absolute)
         if not full_path.exists():
-            norm_hint = (
-                f" (input was {resolved.input!r} → {resolved.note})"
-                if resolved.note
-                else ""
-            )
             return ToolResult.error_result(
-                message=(
-                    f"File not found: {resolved.relative_to_cwd}{norm_hint}. "
-                    f"edit_file only modifies existing files — use write_file "
-                    f"to create new ones."
+                message=_not_found_message(
+                    resolved,
+                    file_path,
+                    detail="edit_file only modifies existing files — use "
+                           "write_file to create new ones.",
                 ),
                 error=FileNotFoundError(
                     f"File '{resolved.relative_to_cwd}' not found"
@@ -1119,60 +1100,6 @@ class ListFilesTool(SyncTool):
     def category(self) -> str:
         return "file"
     
-    def _load_gitignore_patterns(self, working_directory: Path) -> List[str]:
-        """Carrega padrões do .gitignore"""
-        gitignore_path = working_directory / ".gitignore"
-        patterns = []
-        
-        if gitignore_path.exists():
-            try:
-                content = gitignore_path.read_text(encoding='utf-8')
-                for line in content.splitlines():
-                    line = line.strip()
-                    # Ignora linhas vazias e comentários
-                    if line and not line.startswith('#'):
-                        patterns.append(line)
-            except Exception:
-                # Se não conseguir ler o .gitignore, continua sem padrões
-                pass
-        
-        return patterns
-    
-    def _should_ignore(self, file_path: Path, patterns: List[str], working_directory: Path) -> bool:
-        """Verifica se um arquivo deve ser ignorado baseado nos padrões do .gitignore"""
-        if not patterns:
-            return False
-        
-        try:
-            # Caminho relativo ao diretório de trabalho
-            relative_path = file_path.relative_to(working_directory)
-            path_str = str(relative_path).replace('\\', '/')
-            
-            # Verifica cada padrão
-            for pattern in patterns:
-                # Remove / no final para diretórios
-                clean_pattern = pattern.rstrip('/')
-                
-                # Verifica match direto
-                if fnmatch.fnmatch(path_str, clean_pattern):
-                    return True
-                
-                # Verifica match com padrão de diretório
-                if fnmatch.fnmatch(path_str, clean_pattern + '/*'):
-                    return True
-                
-                # Verifica se está dentro de um diretório ignorado
-                parts = path_str.split('/')
-                for i in range(len(parts)):
-                    partial_path = '/'.join(parts[:i+1])
-                    if fnmatch.fnmatch(partial_path, clean_pattern):
-                        return True
-            
-            return False
-        except ValueError:
-            # Se não conseguir calcular caminho relativo, não ignora
-            return False
-    
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Executa listagem de arquivos"""
         # Extração robusta dos argumentos com fallbacks múltiplos
@@ -1293,101 +1220,16 @@ class ListFilesTool(SyncTool):
                     error=FileNotFoundError(f"Path '{target_path}' not found")
                 )
             
-            files_info = []
-            
-            if full_path.is_file():
-                # Se é um arquivo específico, não aplica filtros do .gitignore
-                stat = full_path.stat()
-                files_info.append({
-                    "name": full_path.name,
-                    "type": "file",
-                    "size": stat.st_size,
-                    "modified": stat.st_mtime,
-                    "path": str(full_path.relative_to(context.working_directory))
-                })
-            else:
-                # Se é um diretório, carrega padrões do .gitignore
-                gitignore_patterns = self._load_gitignore_patterns(working_dir)
-                
-                # ``recursive`` and ``pattern`` come from the LLM as either
-                # native bool/str or stringified ("True"/"False"). Coerce both
-                # so the rglob/glob branch is reachable.
-                recursive_flag = recursive
-                if isinstance(recursive_flag, str):
-                    recursive_flag = recursive_flag.strip().lower() in {"true", "1", "yes"}
+            files_info = _collect_entries(
+                full_path,
+                working_dir,
+                recursive=recursive,
+                show_hidden=show_hidden,
+                pattern=pattern,
+            )
 
-                if recursive_flag:
-                    if pattern:
-                        entries = full_path.rglob(pattern)
-                    else:
-                        entries = full_path.rglob("*")
-                else:
-                    if pattern:
-                        entries = full_path.glob(pattern)
-                    else:
-                        entries = full_path.iterdir()
+            rich_display = _render_tree(target_path, files_info)
 
-                for entry in entries:
-                    # Pula arquivos ocultos se não solicitado
-                    if not show_hidden and entry.name.startswith('.'):
-                        continue
-                    
-                    # Verifica se deve ser ignorado pelo .gitignore
-                    if self._should_ignore(entry, gitignore_patterns, working_dir):
-                        continue
-                    
-                    try:
-                        stat = entry.stat()
-                        files_info.append({
-                            "name": entry.name,
-                            "type": "directory" if entry.is_dir() else "file",
-                            "size": stat.st_size if entry.is_file() else None,
-                            "modified": stat.st_mtime,
-                            "path": str(entry.relative_to(working_dir))
-                        })
-                    except (PermissionError, OSError):
-                        # Pula arquivos sem permissão
-                        continue
-            
-            # Ordena por nome
-            files_info.sort(key=lambda x: x["name"].lower())
-            
-            # Prepara display rico com quebras de linha FORÇADAS
-            rich_display_lines = [
-                f"● list_files({target_path})",
-                "⎿ Estrutura do projeto:"
-            ]
-            
-            # Cria tree structure visual
-            if files_info:
-                # Agrupa por diretórios e arquivos
-                dirs = [f for f in files_info if f["type"] == "directory"]
-                files = [f for f in files_info if f["type"] == "file"]
-                
-                rich_display_lines.append(f"   {target_path}/")
-                
-                # Mostra diretórios primeiro (máximo 8)
-                for i, dir_info in enumerate(dirs[:8]):
-                    is_last_dir = i == len(dirs[:8]) - 1 and not files
-                    prefix = "└── " if is_last_dir else "├── "
-                    rich_display_lines.append(f"   {prefix}📁 {dir_info['name']}/")
-                
-                # Mostra arquivos (máximo 15) 
-                for i, file_info in enumerate(files[:15]):
-                    is_last_file = i == len(files[:15]) - 1
-                    prefix = "└── " if is_last_file else "├── "
-                    rich_display_lines.append(f"   {prefix}📄 {file_info['name']}")
-                
-                # Indica se há mais arquivos
-                total_remaining = len(files_info) - len(dirs[:8]) - len(files[:15])
-                if total_remaining > 0:
-                    rich_display_lines.append(f"   └── ... e mais {total_remaining} itens")
-            else:
-                rich_display_lines.append("   (pasta vazia)")
-            
-            # FORÇA quebras de linha duplas para garantir formatação
-            rich_display = "\n".join(rich_display_lines) + "\n"
-            
             return ToolResult(
                 status=ToolStatus.SUCCESS,
                 data=files_info,
@@ -1430,16 +1272,15 @@ class DeleteFileTool(SyncTool):
     
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Executa deleção de arquivo"""
-        file_path = context.parsed_args.get("file_path") or context.parsed_args.get("path")
-        force = context.parsed_args.get("force", False)
-        
-        # Fallback para argumentos alternativos
+        # DeleteFileTool's historical precedence is two-stage: ``file_path``/
+        # ``path`` first, then ``file``/``filename``/``filepath`` as fallback.
+        # We preserve that ordering by calling the helper twice with the
+        # per-tier keys, matching the pre-DRY behavior in commit 0ea6af1.
+        file_path = _extract_path_arg(context.parsed_args, keys=_PATH_ARG_KEYS_PRIMARY)
         if not file_path:
-            for key in ["file", "filename", "filepath"]:
-                if context.parsed_args.get(key):
-                    file_path = context.parsed_args.get(key)
-                    break
-        
+            file_path = _extract_path_arg(context.parsed_args, keys=_PATH_ARG_KEYS_FALLBACK)
+        force = context.parsed_args.get("force", False)
+
         if not file_path:
             return ToolResult.error_result(
                 message="No file path provided. Please specify a file to delete.",
@@ -1461,22 +1302,12 @@ class DeleteFileTool(SyncTool):
             full_path = Path(resolved.absolute)
 
             if not full_path.exists():
-                norm_hint = (
-                    f" (input was {resolved.input!r} → {resolved.note})"
-                    if resolved.note
-                    else ""
-                )
-                bash_hint = (
-                    " If the file lives OUTSIDE the project, use "
-                    f"bash_execute(command=\"rm {resolved.absolute}\") instead — "
-                    "bash_execute has no working-directory sandbox."
-                    if (resolved.note or _looks_like_outside_project(file_path))
-                    else ""
-                )
                 return ToolResult.error_result(
-                    message=(
-                        f"File not found: {resolved.relative_to_cwd}"
-                        f"{norm_hint}.{bash_hint}"
+                    message=_not_found_message(
+                        resolved,
+                        file_path,
+                        include_bash_hint=True,
+                        bash_verb="rm",
                     ),
                     error=FileNotFoundError(f"File '{resolved.relative_to_cwd}' not found"),
                 )

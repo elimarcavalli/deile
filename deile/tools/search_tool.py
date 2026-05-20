@@ -18,7 +18,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import List, Tuple
 
 from ..core.exceptions import ToolError
 from .base import DisplayPolicy, SyncTool, ToolContext, ToolResult, ToolStatus
@@ -111,63 +111,6 @@ class SearchTool(SyncTool):
             '.r', '.R', '.m', '.pl', '.lua', '.vim'
         }
     
-    def get_schema(self) -> Dict[str, Any]:
-        """Get tool schema for function calling - SITUAÇÃO 6 compliant"""
-        return {
-            "name": self.name,
-            "description": self.description,
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "query": {
-                        "type": "STRING",
-                        "description": "Search pattern or regex to find in files"
-                    },
-                    "path": {
-                        "type": "STRING", 
-                        "description": "Directory or file path to search (default: current directory)"
-                    },
-                    "file_patterns": {
-                        "type": "ARRAY",
-                        "items": {"type": "STRING"},
-                        "description": "File patterns to include (e.g., ['*.py', '*.js'])"
-                    },
-                    "max_context_lines": {
-                        "type": "NUMBER",
-                        "description": "Maximum total context lines per match (HARD LIMIT: 50)",
-                        "minimum": 1,
-                        "maximum": 50,
-                        "default": 25
-                    },
-                    "max_matches": {
-                        "type": "NUMBER",
-                        "description": "Maximum matches to return (default: 20)",
-                        "minimum": 1,
-                        "maximum": 50,
-                        "default": 20
-                    },
-                    "case_sensitive": {
-                        "type": "BOOLEAN",
-                        "description": "Case sensitive search (default: false)"
-                    },
-                    "regex_mode": {
-                        "type": "BOOLEAN",
-                        "description": "Enable regex pattern matching (default: false)"
-                    },
-                    "exclude_patterns": {
-                        "type": "ARRAY",
-                        "items": {"type": "STRING"},
-                        "description": "Additional patterns to exclude"
-                    },
-                    "show_cli": {
-                        "type": "BOOLEAN",
-                        "description": "Display results in terminal (default: true)"
-                    }
-                },
-                "required": ["query"]
-            }
-        }
-    
     def execute_sync(self, context: ToolContext) -> ToolResult:
         """Execute search with SITUAÇÃO 6 compliance - max 50 lines per match"""
         try:
@@ -188,17 +131,14 @@ class SearchTool(SyncTool):
             exclude_patterns = args.get("exclude_patterns", [])
             show_cli = args.get("show_cli", True)
             
-            # Prepare search pattern
-            if regex_mode:
-                try:
-                    flags = 0 if case_sensitive else re.IGNORECASE
-                    pattern = re.compile(query, flags)
-                except re.error as e:
-                    raise ToolError(f"Invalid regex pattern: {e}")
-            else:
-                escaped_query = re.escape(query)
-                flags = 0 if case_sensitive else re.IGNORECASE
-                pattern = re.compile(escaped_query, flags)
+            # Prepare search pattern. ``flags`` is identical in both branches;
+            # only the pattern source differs (raw user query vs. re.escape'd).
+            flags = 0 if case_sensitive else re.IGNORECASE
+            pattern_source = query if regex_mode else re.escape(query)
+            try:
+                pattern = re.compile(pattern_source, flags)
+            except re.error as e:
+                raise ToolError(f"Invalid regex pattern: {e}")
             
             # Validate and prepare search path
             search_path = Path(path).resolve()

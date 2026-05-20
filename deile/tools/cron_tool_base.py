@@ -1,10 +1,10 @@
-"""Helpers compartilhados pelas ``cron_*`` tools.
+"""Helpers compartilhados por tools que padronizam erros de ``execute()``.
 
-As tools ``cron_create`` e ``cron_delete`` repetiam o mesmo bloco de
-tratamento de exceção inesperada em ``execute()``. Este módulo centraliza
-esse padrão (DRY) — nenhuma das tools precisa de estado, então o helper
-vive como função de módulo. (``cron_list`` usa um ``error_code`` próprio
-e fica de fora.)
+As tools ``cron_create``, ``cron_delete`` e ``pipeline_schedule``
+repetiam o mesmo bloco de tratamento de exceção inesperada em
+``execute()``. Este módulo centraliza esse padrão (DRY) — nenhuma das
+tools precisa de estado, então o helper vive como função de módulo.
+(``cron_list`` usa um ``error_code`` próprio e fica de fora.)
 """
 
 from __future__ import annotations
@@ -13,11 +13,14 @@ from .base import ToolResult
 
 
 def unexpected_error(exc: Exception) -> ToolResult:
-    """Padroniza o ``ToolResult`` para uma exceção não-esperada de cron tool.
+    """Padroniza o ``ToolResult`` para uma exceção não-esperada de tool.
 
-    Usa o nome da classe da exceção como prefixo da mensagem (em vez de
-    vazar a string crua) e o ``error_code`` ``UNEXPECTED`` que os callers
-    do agente já reconhecem.
+    Usado pelas tools que adotam o padrão central de tratamento de
+    ``except Exception`` em ``execute()`` (atualmente ``cron_create``,
+    ``cron_delete`` e ``pipeline_schedule``; o escopo é genérico, não
+    exclusivo de cron). Usa o nome da classe da exceção como prefixo da
+    mensagem (em vez de vazar a string crua) e o ``error_code``
+    ``UNEXPECTED`` que os callers do agente já reconhecem.
     """
     return ToolResult.error_result(
         message=f"{type(exc).__name__}: {exc}",
