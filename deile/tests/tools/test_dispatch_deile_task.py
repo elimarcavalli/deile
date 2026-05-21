@@ -1,8 +1,12 @@
 """Unit tests for ``deile.tools.dispatch_deile_task``.
 
 Cover Pydantic payload validation, anti-loop cooldown rollback on
-pre-network failures, and the TTL-based cleanup that bounds the
-``_LAST_DISPATCH`` cache size under sustained traffic.
+pre-network failures, the TTL-based cleanup that bounds the
+``_LAST_DISPATCH`` cache size under sustained traffic, and the recent-
+history forwarding: the ingress pipeline injects
+``bot_context.recent_history`` on the bot-mediated path and the tool
+forwards it to the worker, while the ``/deile`` passthrough (whose
+ToolContext carries no ``recent_history``) stays one-shot.
 """
 from __future__ import annotations
 
@@ -17,14 +21,58 @@ from deile.tools.base import ToolContext
 from deile.tools.dispatch_deile_task import DispatchDeileTaskTool
 
 
+class _FakeResponse:
+    status_code = 200
+
+    def __init__(self, data):
+        self._data = data
+
+    def json(self):
+        return self._data
+
+
+class _FakeAsyncClient:
+    """Captures the POST payload; returns a canned worker success.
+
+    The history-forwarding tests drive the REAL ``DeileWorkerClient`` (no
+    injected stub) so the captured ``last_payload`` is the actual wire body
+    — i.e. after ``DispatchPayload`` validation and
+    ``model_dump(exclude_none=True)``. That is what guards that ``history``
+    survives the Pydantic round-trip instead of being silently dropped.
+    """
+
+    last_payload = None
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def post(self, url, json=None, headers=None):
+        _FakeAsyncClient.last_payload = json
+        return _FakeResponse(
+            {"ok": True, "task_id": "t-1", "elapsed_s": 1.0, "files": []}
+        )
+
+
 @pytest.fixture(autouse=True)
-def _clear_dispatch_state():
+def _isolate(monkeypatch):
     # Isolate class-level state between tests. ``_CHANNEL_LOCKS`` is
     # cleared too because cached ``asyncio.Lock`` instances bind to the
-    # event loop on first acquire — keeping them across tests can
-    # entangle distinct test loops.
+    # event loop on first acquire — keeping them across tests can entangle
+    # distinct test loops. The token env + httpx patch let the history
+    # tests drive the REAL client without touching network or secrets; the
+    # token must be >=16 chars to pass the adapter's bearer charset check.
+    httpx = pytest.importorskip("httpx")
+    monkeypatch.setenv("DEILE_WORKER_BEARER_TOKEN", "test-token-0123456789abcdef")
     DispatchDeileTaskTool._LAST_DISPATCH.clear()
     DispatchDeileTaskTool._CHANNEL_LOCKS.clear()
+    _FakeAsyncClient.last_payload = None
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
     yield
     DispatchDeileTaskTool._LAST_DISPATCH.clear()
     DispatchDeileTaskTool._CHANNEL_LOCKS.clear()
@@ -262,3 +310,46 @@ async def test_prune_drops_orphan_unlocked_channel_lock():
         assert "held" in DispatchDeileTaskTool._CHANNEL_LOCKS
     finally:
         held.release()
+
+
+# ----- recent-history forwarding (bot-mediated path vs /deile passthrough) -----
+
+
+async def test_forwards_recent_history_from_bot_context():
+    # Drives the REAL client so the assertion runs on the wire body,
+    # proving ``history`` survives DispatchPayload validation + model_dump.
+    tool = DispatchDeileTaskTool()
+    ctx = ToolContext(
+        user_input="faz X",
+        parsed_args={"brief": "faz X", "channel_id": "chan-a"},
+        session_data={"bot_context": {"recent_history": "[user] oi\n[deile] olá"}},
+    )
+    result = await tool.execute(ctx)
+    assert result.is_success
+    assert _FakeAsyncClient.last_payload["history"] == "[user] oi\n[deile] olá"
+
+
+async def test_omits_history_when_bot_context_has_none():
+    tool = DispatchDeileTaskTool()
+    ctx = ToolContext(
+        user_input="faz Y",
+        parsed_args={"brief": "faz Y", "channel_id": "chan-b"},
+        session_data={"bot_context": {}},
+    )
+    result = await tool.execute(ctx)
+    assert result.is_success
+    assert "history" not in _FakeAsyncClient.last_payload
+
+
+async def test_omits_history_on_passthrough_without_bot_context():
+    # The /deile passthrough builds a ToolContext without recent_history,
+    # so the worker stays one-shot there.
+    tool = DispatchDeileTaskTool()
+    ctx = ToolContext(
+        user_input="faz Z",
+        parsed_args={"brief": "faz Z", "channel_id": "chan-c"},
+        session_data={},
+    )
+    result = await tool.execute(ctx)
+    assert result.is_success
+    assert "history" not in _FakeAsyncClient.last_payload

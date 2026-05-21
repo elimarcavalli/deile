@@ -234,6 +234,41 @@ def _setup_git_credentials() -> None:
     print("wrapper(deile): GITHUB_TOKEN wired into ~/.git-credentials", file=sys.stderr)
 
 
+def _setup_gh_auth() -> None:
+    """Wire GITHUB_TOKEN into the GitHub CLI's auth config.
+
+    Parallels _setup_git_credentials but for `gh`, which reads
+    ~/.config/gh/hosts.yml. Writing the token there (mode 0600) lets the
+    worker run `gh issue create` / `gh pr create` / `gh repo clone`
+    without the token living in os.environ — subprocesses still inherit a
+    clean environment, same posture as the git credential store.
+
+    MUST be called BEFORE _setup_git_credentials(), which pops
+    GITHUB_TOKEN from the environment.
+    """
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if not token:
+        return
+    home = Path(os.environ.get("HOME", "/home/deile"))
+    gh_dir = home / ".config" / "gh"
+    try:
+        gh_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        hosts = gh_dir / "hosts.yml"
+        # Atomic 0600 create — the token is never world-readable, even
+        # transiently, so there is no TOCTOU window.
+        fd = os.open(str(hosts), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(
+                "github.com:\n"
+                f"    oauth_token: {token}\n"
+                "    git_protocol: https\n"
+            )
+    except OSError as exc:
+        print(f"wrapper: could not write ~/.config/gh/hosts.yml: {exc}", file=sys.stderr)
+        return
+    print("wrapper: GITHUB_TOKEN wired into ~/.config/gh/hosts.yml", file=sys.stderr)
+
+
 def _setup_git_clone_guard(config_path: str = "") -> None:
     """Install ~/bin/git, a guard that enforces the clonable_repos allowlist.
 
@@ -513,6 +548,7 @@ def _run_deile(passthrough: List[str]) -> int:
         )
         return 78  # EX_CONFIG
 
+    _setup_gh_auth()
     _setup_git_credentials()
     _setup_git_clone_guard()
     _patch_deile_bootstrap()
@@ -625,6 +661,7 @@ def _run_worker(passthrough: List[str]) -> int:
         )
         return 78
 
+    _setup_gh_auth()
     _setup_git_credentials()
     _setup_git_clone_guard()
     _patch_deile_bootstrap()

@@ -340,3 +340,63 @@ def test_backend_other_platform_is_pidfile(tmp_path, monkeypatch):
     # Plataforma não-Linux/não-macOS (ex.: win32) → pidfile.
     monkeypatch.setattr(_service.sys, "platform", "win32")
     assert _service.LocalService(tmp_path).backend == "pidfile"
+
+
+# ===== worker_server.py — envelope do prompt (one-shot + histórico) ==========
+
+def test_build_prompt_without_history():
+    pytest.importorskip("aiohttp")
+    import worker_server
+
+    prompt = worker_server._build_prompt("faça X", Path("/work/c1"))
+    assert "<user_brief>\nfaça X\n</user_brief>" in prompt
+    # Sem histórico → sem bloco conversation_history. A tag de fechamento
+    # só existe quando o bloco é renderizado (a regra-prosa não a usa).
+    assert "</conversation_history>" not in prompt
+    # O placeholder {workdir} é interpolado.
+    assert "/work/c1" in prompt
+    assert "{workdir}" not in prompt
+
+
+def test_build_prompt_with_history():
+    pytest.importorskip("aiohttp")
+    import worker_server
+
+    prompt = worker_server._build_prompt(
+        "faça X", Path("/work/c1"), history="[user] oi\n[deile] olá"
+    )
+    assert "</conversation_history>" in prompt
+    assert "[user] oi" in prompt
+    # O bloco de histórico fecha antes do <user_brief> fechar — vem antes.
+    assert prompt.index("</conversation_history>") < prompt.index("</user_brief>")
+
+
+def test_build_prompt_drops_pedido_echo():
+    # A instrução de resposta final é 2 blocos (Feito/Prova), sem eco do pedido.
+    pytest.importorskip("aiohttp")
+    import worker_server
+
+    prompt = worker_server._build_prompt("faça X", Path("/work/c1"))
+    assert "Feito / Prova" in prompt
+    assert "Pedido / Feito / Prova" not in prompt
+
+
+def test_build_prompt_brief_with_braces_is_literal():
+    # O brief pode conter { } literais — não pode quebrar a interpolação.
+    pytest.importorskip("aiohttp")
+    import worker_server
+
+    prompt = worker_server._build_prompt("use {x} e {y}", Path("/work/c1"))
+    assert "use {x} e {y}" in prompt
+
+
+def test_build_prompt_history_is_capped():
+    pytest.importorskip("aiohttp")
+    import worker_server
+
+    huge = "Z" * 50000
+    prompt = worker_server._build_prompt("X", Path("/w"), history=huge)
+    cap = worker_server.MAX_HISTORY_CHARS
+    # Exatamente MAX_HISTORY_CHARS Z's consecutivos; nunca MAX+1.
+    assert ("Z" * cap) in prompt
+    assert ("Z" * (cap + 1)) not in prompt

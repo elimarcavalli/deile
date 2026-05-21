@@ -89,12 +89,22 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     LC_ALL=C.UTF-8 \
     HOME=/home/deile
 
-# Install tini (zombie reaper), git (repo cloning) and iputils-ping
-# (basic network reachability checks — sometimes requested by the worker
-# for diagnostics). gh CLI is intentionally absent to keep the image
-# lean — use git directly.
+# Install tini (zombie reaper), git, iputils-ping (diagnostics), curl
+# (REST calls + gh repo key) and the GitHub CLI `gh`. The worker opens
+# issues/PRs and clones via gh, so it must be present (the previous
+# "lean, use git directly" stance broke `gh issue create`). gh ships in
+# GitHub's own apt repo, added here with a signed keyring.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends tini git iputils-ping \
+    && apt-get install -y --no-install-recommends \
+        tini git iputils-ping curl ca-certificates gnupg jq \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user. UID 10001 is well above the system uid range

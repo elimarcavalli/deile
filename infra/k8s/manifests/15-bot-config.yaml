@@ -14,11 +14,11 @@ data:
       default_persona: developer
       intent_classifier: heuristic
       agent_bridge_mode: in_process
-      # Default solicitado pelo operador: deepseek-v4-flash.
-      # NOTA: testamos gemini-3.1-pro-preview e claude-sonnet-4-6 também e
-      # NENHUM dos 3 chamou tools. O bug está no pipeline DEILE (não no
-      # modelo) — investigação em andamento.
-      forced_model: "deepseek:deepseek-v4-flash"
+      # Bot model (forced). deepseek-v4-flash (tier-3) alucinava resultado
+      # de dev — fabricava "arquivo criado / py_compile exit 0" sem chamar
+      # dispatch_deile_task. Trocado para v4-pro (tier-1, mesmo provider,
+      # mais barato que Anthropic/OpenAI) — issue de cognição do bot.
+      forced_model: "deepseek:deepseek-v4-pro"
       # Worker dispatches can take up to ~10 min (worker_server.TASK_TIMEOUT_S=600).
       # Add headroom so the bot's bridge does not time out before the worker.
       agent_invocation_timeout_seconds: 660

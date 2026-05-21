@@ -88,6 +88,13 @@ class DispatchPayload(BaseModel):
     wait_for_result: bool = True
     user_message_id: Optional[str] = Field(default=None, max_length=64)
     attachments: Optional[List[Dict[str, Any]]] = None
+    # Recent channel history rendered by the bot's ingress pipeline
+    # (``render_history_for_worker``) on the bot-mediated path so the worker
+    # can resolve follow-ups. Absent on the ``/deile`` passthrough, keeping
+    # that path one-shot. Generous cap: the renderer already bounds it to
+    # ~8000 chars and the worker re-truncates, so this only guards against a
+    # pathological payload — it must not hard-reject a legitimate render.
+    history: Optional[str] = Field(default=None, max_length=20000)
 
     @field_validator("brief")
     @classmethod
@@ -159,6 +166,7 @@ def build_dispatch_payload(
     wait: bool = True,
     user_message_id: Optional[Any] = None,
     attachments: Optional[List[Dict[str, Any]]] = None,
+    history: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Assemble the JSON body POSTed to ``POST /v1/dispatch``.
 
@@ -177,6 +185,8 @@ def build_dispatch_payload(
         payload["user_message_id"] = str(user_message_id)
     if attachments:
         payload["attachments"] = attachments
+    if history:
+        payload["history"] = str(history)
     return payload
 
 

@@ -259,6 +259,12 @@ class DispatchDeileTaskTool(Tool):
                 wait=wait,
                 user_message_id=user_message_id,
                 attachments=bot_ctx.get("attachments"),
+                # Forward recent channel history so the worker can resolve
+                # follow-ups ("agora adiciona um teste pra aquele arquivo").
+                # The ingress pipeline injects bot_context.recent_history on
+                # the bot-mediated path; the /deile passthrough builds its own
+                # ToolContext without it, keeping that path one-shot.
+                history=bot_ctx.get("recent_history"),
             )
 
             # Validate payload BEFORE recording the cooldown — a payload
