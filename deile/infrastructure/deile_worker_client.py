@@ -117,6 +117,28 @@ class DispatchPayload(BaseModel):
         raise ValueError(f"{info.field_name} must not be whitespace-only")
 
 
+def validate_dispatch_payload(payload: Dict[str, Any]) -> DispatchPayload:
+    """Validate a raw dispatch ``payload`` dict against the wire contract.
+
+    Single source of payload validation (pilar 03 §2 — the wire contract is
+    owned by this adapter). Raises :class:`WorkerDispatchError` with
+    ``error_code="BAD_REQUEST"`` on any schema violation, so the bot-side tool
+    (which validates pre-cooldown so a rejection never consumes the channel
+    slot) and :meth:`DeileWorkerClient.dispatch` (the authoritative pre-wire
+    gate for callers that bypass the tool) reject malformed payloads
+    identically instead of each rebuilding the error inline.
+    """
+    try:
+        return DispatchPayload.model_validate(payload)
+    except WorkerDispatchError:
+        raise
+    except Exception as exc:
+        raise WorkerDispatchError(
+            f"invalid dispatch payload: {str(exc)[:200]}",
+            error_code="BAD_REQUEST",
+        ) from exc
+
+
 def build_dispatch_payload(
     *,
     brief: str,
@@ -259,19 +281,13 @@ class DeileWorkerClient:
         #
         # Defense-in-depth: this is the LAST line of validation before the
         # wire. ``DispatchDeileTaskTool.execute()`` also calls
-        # ``DispatchPayload.model_validate(payload)`` before recording the
+        # ``validate_dispatch_payload(payload)`` before recording the
         # cooldown, but callers that bypass the tool (custom scripts, tests
         # constructing payloads by hand) must NOT skip-validate here —
         # ``DispatchPayload`` is the contract with the worker and the
         # validation belongs to this adapter as the authoritative gatekeeper.
-        try:
-            validated = DispatchPayload.model_validate(payload)
-            body = validated.model_dump(exclude_none=True)
-        except Exception as exc:
-            raise WorkerDispatchError(
-                f"invalid dispatch payload: {str(exc)[:200]}",
-                error_code="BAD_REQUEST",
-            ) from exc
+        validated = validate_dispatch_payload(payload)
+        body = validated.model_dump(exclude_none=True)
 
         endpoint = _resolve_endpoint().rstrip("/") + _DISPATCH_PATH
         # Token resolution touches secret files on disk — keep that blocking

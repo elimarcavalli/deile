@@ -51,8 +51,9 @@ from collections import defaultdict
 from typing import Dict, Optional
 
 from deile.infrastructure.deile_worker_client import (
-    MAX_DISPATCH_BUDGET_S, DeileWorkerClient, DispatchPayload,
-    WorkerDispatchError, build_dispatch_payload, summarize_dispatch_response)
+    MAX_DISPATCH_BUDGET_S, DeileWorkerClient, WorkerDispatchError,
+    build_dispatch_payload, summarize_dispatch_response,
+    validate_dispatch_payload)
 
 from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
                    ToolSchema)
@@ -262,13 +263,14 @@ class DispatchDeileTaskTool(Tool):
 
             # Validate payload BEFORE recording the cooldown — a payload
             # rejection is a programming error, not a worker invocation,
-            # and should not consume the channel's cooldown slot.
+            # and should not consume the channel's cooldown slot. The
+            # validation rule lives in the adapter (single source of truth);
+            # here we only translate its WorkerDispatchError into a ToolResult.
             try:
-                DispatchPayload.model_validate(payload)
-            except Exception as exc:
+                validate_dispatch_payload(payload)
+            except WorkerDispatchError as exc:
                 return ToolResult.error_result(
-                    f"invalid payload: {str(exc)[:300]}",
-                    error_code="BAD_REQUEST",
+                    exc.message, error=exc, error_code=exc.error_code
                 )
 
             # Anti-loop guard: refuse a 2nd dispatch within COOLDOWN_S on
