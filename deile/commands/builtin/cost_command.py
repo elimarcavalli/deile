@@ -297,8 +297,7 @@ EXEMPLOS:
 
     def _show_budget_list(self) -> "CommandResult":
         try:
-            self.cost_tracker._load_budget_limits()
-            budgets = self.cost_tracker.budget_limits
+            budgets = self.cost_tracker.list_budget_limits()
 
             if not budgets:
                 return CommandResult.success_result(

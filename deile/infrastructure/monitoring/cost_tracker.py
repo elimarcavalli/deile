@@ -267,8 +267,18 @@ class CostTracker:
                     
         except Exception as e:
             logger.error(f"Failed to load budget limits: {e}")
-    
-    def track_cost(self, 
+
+    def list_budget_limits(self) -> Dict[str, BudgetLimit]:
+        """Reload budget limits from the DB and return the current map.
+
+        Public read accessor so callers (e.g. ``/cost budget list``) get a
+        fresh snapshot without reaching into the private
+        ``_load_budget_limits`` or the ``budget_limits`` attribute directly.
+        """
+        self._load_budget_limits()
+        return self.budget_limits
+
+    def track_cost(self,
                    category: Union[str, CostCategory],
                    subcategory: str,
                    amount: Union[float, Decimal],
