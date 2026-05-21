@@ -24,7 +24,8 @@ import re
 import uuid
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import (BaseModel, Field, ValidationError, ValidationInfo,
+                      field_validator)
 
 from deile.core.exceptions import DEILEError
 
@@ -130,11 +131,22 @@ def validate_dispatch_payload(payload: Dict[str, Any]) -> DispatchPayload:
     """
     try:
         return DispatchPayload.model_validate(payload)
-    except WorkerDispatchError:
-        raise
+    except ValidationError as exc:
+        # Build the rejection from loc+msg only — never echo input values.
+        # ``brief``/``channel_id`` carry untrusted (Discord) content that may
+        # include PII, and this message is surfaced to the LLM and logged
+        # (pilar 08 — never log request bodies/secrets).
+        details = "; ".join(
+            f"{'.'.join(str(p) for p in err['loc']) or '<payload>'}: {err['msg']}"
+            for err in exc.errors(include_url=False, include_input=False)
+        )
+        raise WorkerDispatchError(
+            f"invalid dispatch payload: {details[:200]}",
+            error_code="BAD_REQUEST",
+        ) from exc
     except Exception as exc:
         raise WorkerDispatchError(
-            f"invalid dispatch payload: {str(exc)[:200]}",
+            f"invalid dispatch payload: {type(exc).__name__}",
             error_code="BAD_REQUEST",
         ) from exc
 
