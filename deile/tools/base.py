@@ -395,7 +395,7 @@ class Tool(ABC):
             ToolError: Erro específico da tool
         """
         pass
-    
+
     def __str__(self) -> str:
         return f"{self.name} ({self.category})"
     

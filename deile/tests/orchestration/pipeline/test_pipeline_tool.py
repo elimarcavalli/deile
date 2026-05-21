@@ -271,10 +271,8 @@ class TestPipelineToolReset:
 
 class TestAutoDiscover:
     def test_pipeline_tool_in_default_packages(self):
-        # Construct a registry and inspect the default discovery list.
-        # We don't actually import; just check the constant.
-        import inspect
+        # Check the default discovery list directly — it lives in the
+        # extracted discovery module, not inline in auto_discover.
+        from deile.tools.discovery import DEFAULT_TOOL_PACKAGES
 
-        from deile.tools.registry import ToolRegistry
-        src = inspect.getsource(ToolRegistry.auto_discover)
-        assert "deile.tools.pipeline_tool" in src
+        assert "deile.tools.pipeline_tool" in DEFAULT_TOOL_PACKAGES

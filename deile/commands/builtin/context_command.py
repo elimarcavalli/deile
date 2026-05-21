@@ -12,7 +12,8 @@ from rich.text import Text
 
 from ...core.exceptions import CommandError
 from ..base import CommandResult, DirectCommand
-from ._shared import export_timestamp, get_agent, get_session, split_args
+from ._shared import (export_timestamp, get_agent, get_session, get_session_id,
+                      split_args)
 
 
 def _indisponivel(motivo: str = "") -> Dict[str, Any]:
@@ -195,7 +196,7 @@ class ContextCommand(DirectCommand):
         session_data: Dict[str, Any]
         try:
             if session:
-                session_id = getattr(session, "session_id", "desconhecido")
+                session_id = get_session_id(context, "desconhecido")
                 created_at = getattr(session, "created_at", None)
                 session_data = {
                     "id": session_id,

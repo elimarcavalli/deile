@@ -56,57 +56,6 @@ class BashExecuteTool(SyncTool):
         self.artifact_manager = artifact_manager
         self.platform = platform.system()
 
-    def get_schema(self) -> Dict[str, Any]:
-        """Get tool schema for function calling"""
-        return {
-            "name": self.name,
-            "description": self.description,
-            "parameters": {
-                "type": "OBJECT",
-                "properties": {
-                    "command": {
-                        "type": "STRING",
-                        "description": "Bash command to execute. Can include pipes, redirects and multiple commands."
-                    },
-                    "working_directory": {
-                        "type": "STRING",
-                        "description": "Working directory for command execution. Defaults to session working directory."
-                    },
-                    "timeout": {
-                        "type": "NUMBER",
-                        "description": "Timeout in seconds. Default: 60"
-                    },
-                    "use_pty": {
-                        "type": "BOOLEAN",
-                        "description": "Force PTY usage for interactive commands. Auto-detected if not specified."
-                    },
-                    "sandbox": {
-                        "type": "BOOLEAN",
-                        "description": "Disable PTY allocation (use plain subprocess). Does NOT provide isolation, containerization, or any security boundary — the command still runs on the host with the DEILE process privileges. Default: false"
-                    },
-                    "show_cli": {
-                        "type": "BOOLEAN",
-                        "description": "Show command output in terminal in real-time. Default: true"
-                    },
-                    "capture_output": {
-                        "type": "BOOLEAN",
-                        "description": "Capture output for artifact generation. Default: true"
-                    },
-                    "environment": {
-                        "type": "OBJECT",
-                        "description": "Additional environment variables",
-                        "additionalProperties": {"type": "STRING"}
-                    },
-                    "security_level": {
-                        "type": "STRING",
-                        "enum": ["safe", "moderate", "dangerous"],
-                        "description": "Security level for blacklist checking"
-                    }
-                },
-                "required": ["command"]
-            }
-        }
-    
     def _assess_security_risk(self, command: str) -> Tuple[str, List[str]]:
         """Assess security risk of command (delegated to `_shell_security`)."""
         return assess_risk(command)

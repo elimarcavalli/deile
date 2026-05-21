@@ -13,6 +13,7 @@ import pytest
 
 from deile.core.models.tool_execution import (OUTCOME_EXCEPTION,
                                               OUTCOME_NOT_FOUND, OUTCOME_RAN,
+                                              build_tool_result_payload,
                                               payload_to_text,
                                               resolve_and_execute_tool)
 from deile.tools.base import ToolResult, ToolStatus
@@ -36,6 +37,9 @@ class _FakeRegistry:
 
     def get(self, name):
         return self._tools.get(name)
+
+    def list_names(self):
+        return sorted(self._tools.keys())
 
 
 @pytest.fixture
@@ -179,3 +183,63 @@ class TestPayloadToText:
         circular = {}
         circular["self"] = circular
         assert payload_to_text(circular) == str(circular)
+
+
+class TestBuildToolResultPayload:
+    """Wire-format regression for the per-provider payload builder.
+
+    Anthropic and OpenAI both wrap a ``ToolResult`` via this helper; the
+    byte shape of each payload is observed by downstream tests and by the
+    real provider clients, so divergences must be intentional. The cases
+    below document the contract post-#238 (issue 7 in the refactor):
+    success carries both ``result`` and (optionally) ``message`` even when
+    empty; error fallback is ``f"{name} failed"``; not-found and
+    exception outcomes collapse to a flat ``{"error", "status"}`` shape.
+    """
+
+    def test_success_minimal_shape(self):
+        result = ToolResult(status=ToolStatus.SUCCESS, message="ok", data="payload")
+        out = build_tool_result_payload(result, OUTCOME_RAN, "t")
+        assert out == {"status": "success", "result": "payload"}
+
+    def test_success_with_include_message_keeps_empty_message_key(self):
+        # OpenAI flag: ``message`` is always present (even empty) so the
+        # provider's downstream JSON shape stays stable.
+        result = ToolResult(status=ToolStatus.SUCCESS, message="", data="payload")
+        out = build_tool_result_payload(
+            result, OUTCOME_RAN, "t", include_message=True
+        )
+        assert out == {"status": "success", "result": "payload", "message": ""}
+
+    def test_success_with_none_data_serialises_to_empty_string(self):
+        result = ToolResult(status=ToolStatus.SUCCESS, message="ok", data=None)
+        out = build_tool_result_payload(result, OUTCOME_RAN, "t")
+        assert out["result"] == ""
+
+    def test_tool_reported_error_uses_message(self):
+        result = ToolResult(status=ToolStatus.ERROR, message="boom", data="x")
+        out = build_tool_result_payload(result, OUTCOME_RAN, "t")
+        assert out == {"status": "error", "error": "boom"}
+
+    def test_tool_reported_error_fallback_message_uses_name(self):
+        # No explicit message → fallback is ``f"{name} failed"``.
+        result = ToolResult(status=ToolStatus.ERROR, message="", data=None)
+        out = build_tool_result_payload(result, OUTCOME_RAN, "my_tool")
+        assert out == {"status": "error", "error": "my_tool failed"}
+
+    def test_tool_reported_error_with_include_data_carries_result(self):
+        result = ToolResult(status=ToolStatus.ERROR, message="boom", data="ctx")
+        out = build_tool_result_payload(
+            result, OUTCOME_RAN, "t", include_data_on_error=True
+        )
+        assert out == {"status": "error", "error": "boom", "result": "ctx"}
+
+    def test_not_found_outcome_returns_flat_error_shape(self):
+        result = ToolResult(status=ToolStatus.ERROR, message="no such tool", data=None)
+        out = build_tool_result_payload(result, OUTCOME_NOT_FOUND, "ghost")
+        assert out == {"error": "no such tool", "status": "error"}
+
+    def test_exception_outcome_returns_flat_error_shape(self):
+        result = ToolResult(status=ToolStatus.ERROR, message="kaboom", data=None)
+        out = build_tool_result_payload(result, OUTCOME_EXCEPTION, "t")
+        assert out == {"error": "kaboom", "status": "error"}

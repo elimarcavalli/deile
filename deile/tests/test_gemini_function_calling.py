@@ -182,7 +182,7 @@ class TestExecuteFunctionCall:
     ) -> None:
         registry = MagicMock()
         registry.get.return_value = None
-        registry._tools = {"bash_execute": object(), "read_file": object()}
+        registry.list_names.return_value = ["bash_execute", "read_file"]
         monkeypatch.setattr(
             "deile.tools.registry.get_tool_registry", lambda: registry
         )

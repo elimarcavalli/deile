@@ -2705,7 +2705,7 @@ class DeileAgent:
                 if not tool_name:
                     continue
 
-                if tool_name not in self.tool_registry._tools:
+                if tool_name not in self.tool_registry:
                     self.logger.warning(f"Proactive tool {tool_name} not available")
                     continue
 

@@ -107,6 +107,83 @@ def _load_exported_env_vars() -> None:
         pass
 
 
+async def _construct_agent(model_router, config_manager):
+    """Build and initialize a :class:`DeileAgent` from a bootstrapped router.
+
+    The caller is responsible for bootstrapping providers, creating sessions
+    and arranging UI affordances (spinners, autostart) — this helper only
+    centralizes the constructor + ``await agent.initialize()`` so any future
+    change to either lands in one place.
+    """
+    from deile.core.agent import DeileAgent
+    from deile.parsers.registry import get_parser_registry
+    from deile.tools.registry import get_tool_registry
+
+    agent = DeileAgent(
+        model_router=model_router,
+        tool_registry=get_tool_registry(),
+        parser_registry=get_parser_registry(),
+        config_manager=config_manager,
+    )
+    await agent.initialize()
+    return agent
+
+
+def _bootstrap_with_recovery(bootstrap_fn, *, spinner_factory=None) -> list:
+    """Run ``bootstrap_fn`` once; if it registered nothing, prompt the user for
+    API keys via the TTY wizard and retry. ``bootstrap_fn`` is a zero-arg
+    callable returning the list of registered provider names.
+
+    ``spinner_factory`` (optional) is a zero-arg callable returning a fresh
+    context manager (e.g. Rich ``Status``). When provided, the spinner is
+    active during each bootstrap attempt but is paused around the
+    interactive recovery wizard so ``getpass`` prompts render cleanly.
+    """
+    if spinner_factory is None:
+        registered = bootstrap_fn()
+        if not registered and _run_env_recovery():
+            registered = bootstrap_fn()
+        return registered
+
+    with spinner_factory():
+        registered = bootstrap_fn()
+    if registered:
+        return registered
+    if not _run_env_recovery():
+        return registered
+    with spinner_factory():
+        return bootstrap_fn()
+
+
+def _bootstrap_provider_router_or_print_error():
+    """Bootstrap a model router with provider recovery; print stderr error on miss.
+
+    Shared by the two plain-stdio entry points (``_run_oneshot`` and
+    ``_run_command_flag``) that print the same byte-identical error and
+    return exit code 1 when no provider key is set. The interactive
+    ``_DeileCLI.initialize()`` path stays inline because it renders the
+    failure via ``ui.display_error`` (PT-BR) and drives ``spinner_factory``.
+
+    Returns the bootstrapped router on success, ``None`` when no provider
+    registered after the env-recovery wizard — callers map ``None`` → 1.
+    """
+    from deile.core.models.bootstrap import bootstrap_providers
+    from deile.core.models.router import get_model_router
+
+    model_router = get_model_router()
+    registered = _bootstrap_with_recovery(
+        lambda: bootstrap_providers(router=model_router)
+    )
+    if not registered:
+        print(
+            "ERROR: no provider configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, "
+            "DEEPSEEK_API_KEY, or GOOGLE_API_KEY.",
+            file=sys.stderr,
+        )
+        return None
+    return model_router
+
+
 def _run_env_recovery() -> bool:
     """Interactive wizard: prompt for API keys, write .env, reload os.environ.
 
@@ -182,39 +259,11 @@ class _DeileCLI:
         self.ui: object = None
         self.config_manager: object = None
 
-    def _bootstrap_providers(self, model_router) -> list:
-        """Bootstrap model providers, preferring the new path with legacy fallback.
-
-        NOTE: this is a *synchronous* method — it does not await anything.
-        It runs in the current thread (not via asyncio.to_thread) to avoid
-        the "coroutine was never awaited" warning.
-        """
-        # check feature flag
-        try:
-            import yaml
-            yaml_path = _PACKAGE_ROOT / "config" / "model_providers.yaml"
-            with open(yaml_path) as f:
-                data = yaml.safe_load(f)
-            if bool(data.get("feature_flags", {}).get("use_legacy_gemini_only", False)):
-                if os.getenv("GOOGLE_API_KEY"):
-                    from deile.core.models.gemini_provider import \
-                        GeminiProvider
-                    model_router.register_provider(GeminiProvider(), priority=1)
-                    return ["gemini"]
-                return []
-        except Exception:
-            pass
-
-        from deile.core.models.bootstrap import bootstrap_providers
-        return bootstrap_providers(router=model_router)
-
     async def initialize(self) -> bool:
         from deile.config.manager import ConfigManager
         from deile.config.settings import get_settings
-        from deile.core.agent import DeileAgent
+        from deile.core.models.bootstrap import bootstrap_providers
         from deile.core.models.router import get_model_router
-        from deile.parsers.registry import get_parser_registry
-        from deile.tools.registry import get_tool_registry
         from deile.ui import ConsoleUIManager, UITheme
 
         self.settings = get_settings()
@@ -228,13 +277,12 @@ class _DeileCLI:
             self.config_manager.load_config()
 
             model_router = get_model_router()
-            with self.ui.show_loading("Acordando DEILE..."):
-                # _bootstrap_providers is sync — call it directly, no asyncio.to_thread
-                registered = self._bootstrap_providers(model_router)
-
-            if not registered and _run_env_recovery():
-                with self.ui.show_loading("Acordando DEILE..."):
-                    registered = self._bootstrap_providers(model_router)
+            # Pass a spinner factory so the spinner pauses around the
+            # interactive recovery wizard (getpass) but resumes for the retry.
+            registered = _bootstrap_with_recovery(
+                lambda: bootstrap_providers(router=model_router),
+                spinner_factory=lambda: self.ui.show_loading("Acordando DEILE..."),
+            )
 
             if not registered:
                 self.ui.display_error(
@@ -245,13 +293,7 @@ class _DeileCLI:
                 return False
 
             with self.ui.show_loading("Finalizando inicialização..."):
-                self.agent = DeileAgent(
-                    model_router=model_router,
-                    tool_registry=get_tool_registry(),
-                    parser_registry=get_parser_registry(),
-                    config_manager=self.config_manager,
-                )
-                await self.agent.initialize()
+                self.agent = await _construct_agent(model_router, self.config_manager)
 
                 # gap #3: autostart the pipeline monitor when DEILE_PIPELINE_AUTOSTART=true
                 if self.settings.pipeline_autostart:
@@ -624,36 +666,17 @@ async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
     """Single-turn non-interactive. stdout = response.content."""
     from deile.config.manager import ConfigManager
     from deile.config.settings import get_settings
-    from deile.core.agent import DeileAgent
-    from deile.core.models.bootstrap import bootstrap_providers
-    from deile.core.models.router import get_model_router
-    from deile.parsers.registry import get_parser_registry
-    from deile.tools.registry import get_tool_registry
 
     settings = get_settings()
     settings.working_directory = Path.cwd()
     config_manager = ConfigManager()
     config_manager.load_config()
 
-    model_router = get_model_router()
-    registered = bootstrap_providers(router=model_router)
-    if not registered and _run_env_recovery():
-        registered = bootstrap_providers(router=model_router)
-    if not registered:
-        print(
-            "ERROR: no provider configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, "
-            "DEEPSEEK_API_KEY, or GOOGLE_API_KEY.",
-            file=sys.stderr,
-        )
+    model_router = _bootstrap_provider_router_or_print_error()
+    if model_router is None:
         return 1
 
-    agent = DeileAgent(
-        model_router=model_router,
-        tool_registry=get_tool_registry(),
-        parser_registry=get_parser_registry(),
-        config_manager=config_manager,
-    )
-    await agent.initialize()
+    agent = await _construct_agent(model_router, config_manager)
 
     session = agent.create_session(
         session_id="oneshot_cli_session",
@@ -1146,28 +1169,10 @@ async def _run_command_flag(
     if requires_provider:
         # Only spin up the full agent (and require an API key) when the flag
         # genuinely needs an LLM provider. Most --flags don't.
-        from deile.core.agent import DeileAgent
-        from deile.core.models.bootstrap import bootstrap_providers
-        from deile.core.models.router import get_model_router
-        from deile.parsers.registry import get_parser_registry
-        from deile.tools.registry import get_tool_registry
-
-        model_router = get_model_router()
-        registered = bootstrap_providers(router=model_router)
-        if not registered:
-            print(
-                "ERROR: no provider configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, "
-                "DEEPSEEK_API_KEY, or GOOGLE_API_KEY.",
-                file=sys.stderr,
-            )
+        model_router = _bootstrap_provider_router_or_print_error()
+        if model_router is None:
             return 1
-        agent = DeileAgent(
-            model_router=model_router,
-            tool_registry=get_tool_registry(),
-            parser_registry=get_parser_registry(),
-            config_manager=config_manager,
-        )
-        await agent.initialize()
+        agent = await _construct_agent(model_router, config_manager)
         registry = agent.command_registry
     else:
         registry = get_command_registry(config_manager)

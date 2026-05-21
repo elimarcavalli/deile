@@ -1,6 +1,6 @@
 """Path resolution + post-write validation hints for `file_tools`.
 
-Two concerns colocated because both are pure helpers that operate on
+Four concerns colocated because all are pure helpers that operate on
 LLM-supplied path strings without any tool execution context:
 
 1. Path normalization: turn the noisy strings LLMs produce
@@ -11,6 +11,15 @@ LLM-supplied path strings without any tool execution context:
    command should the LLM run to verify it parses / compiles? See
    ``_post_write_validation_hint`` and ``_apply_post_write_hint``.
 
+3. Path-argument extraction: pick the target path out of ``parsed_args``
+   using each tool's canonical synonym precedence. See ``_extract_path_arg``
+   and the per-tool ``_PATH_ARG_KEYS_*`` tuples below.
+
+4. File-not-found message composition: build the shared "File not found"
+   text that Read/Edit/Delete return when the resolved path doesn't exist
+   — including the optional ``bash_execute`` escape hatch for paths that
+   clearly target outside the project. See ``_not_found_message``.
+
 Extracted from `file_tools.py` (formerly 1813 LOC, MI 0.00) to keep that
 file focused on the five `SyncTool` classes (Read/Write/Edit/List/Delete).
 """
@@ -19,10 +28,11 @@ from __future__ import annotations
 
 import logging
 import re
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from ..core.exceptions import ValidationError
 
@@ -286,14 +296,21 @@ def _resolve_project_path(file_path: str, working_directory: str) -> ResolvedPat
     try:
         target.relative_to(work_dir)
     except ValueError:
+        # Shell-escape ``target`` for the same reason ``_not_found_message``
+        # quotes its absolute path: this message is rendered back to the
+        # LLM, which may copy the ``ls``/``cat`` suggestion verbatim into a
+        # follow-up ``bash_execute`` call. A path containing ``;``, ``&``,
+        # ``$``, backticks, spaces or quotes would otherwise fabricate a
+        # shell command at execution time.
+        target_quoted = shlex.quote(str(target))
         raise LocalFileAccessViolation(
             f"path {raw!r} resolves to {target}, which is OUTSIDE the project "
             f"working directory {work_dir}. Use a project-relative path "
             f"(e.g. drop any leading '..' that escapes the project root). "
             f"For files OUTSIDE the project (parent repo, sibling project, "
             f"system paths like /etc/), use `bash_execute` (e.g. "
-            f"`ls {target}` or `cat {target}`) — bash_execute has no "
-            f"working-directory sandbox."
+            f"`ls {target_quoted}` or `cat {target_quoted}`) — bash_execute "
+            f"has no working-directory sandbox."
         )
 
     # POSIX-style relative for display (works across platforms in messages)
@@ -321,3 +338,91 @@ def _validate_path_within_working_directory(file_path: str, working_directory: s
     the normalization ``note`` and surface it to the LLM.
     """
     return _resolve_project_path(file_path, working_directory).absolute
+
+
+# Argument keys the LLM may use for the target path. ``file_path`` is the
+# documented schema key; the rest are defensive fallbacks for when the model
+# passes a near-miss synonym. Each tool has historically used a slightly
+# different ordering — the per-tool tuples below pin the original behavior
+# so a single centralized helper doesn't silently change precedence.
+#
+# WriteFileTool original order (pre-DRY refactor): file_path > filename >
+# path > file > filepath. Other tools share file_path/path as the canonical
+# primary pair; ReadFileTool and DeleteFileTool further split the lookup
+# around a file_list fallback (see two-stage callsites in file_tools.py).
+_PATH_ARG_KEYS_PRIMARY: Tuple[str, ...] = ("file_path", "path")
+_PATH_ARG_KEYS_FALLBACK: Tuple[str, ...] = ("file", "filename", "filepath")
+_PATH_ARG_KEYS_WRITE: Tuple[str, ...] = (
+    "file_path", "filename", "path", "file", "filepath",
+)
+_PATH_ARG_KEYS_EDIT: Tuple[str, ...] = (
+    "file_path", "path", "filename", "file", "filepath",
+)
+# Default precedence kept for backwards-compatible callers (and matches
+# EditFileTool's historical order, which is the same as the canonical
+# "file_path first, all synonyms after" sequence).
+_PATH_ARG_KEYS: Tuple[str, ...] = _PATH_ARG_KEYS_EDIT
+
+
+def _extract_path_arg(
+    parsed_args: Dict[str, Any],
+    keys: Optional[Iterable[str]] = None,
+) -> Optional[str]:
+    """Return the first non-empty string path argument from ``parsed_args``.
+
+    Each file tool passes its own canonical precedence tuple via ``keys``;
+    a missing ``keys`` falls back to ``_PATH_ARG_KEYS`` (full synonym set)
+    for legacy/test callers. Only ``str`` values count — the previous
+    truthy-check accidentally accepted lists, dicts and ints when the LLM
+    sent a malformed payload. Returns ``None`` when no path-like key
+    carries a non-empty string; the caller's remaining fallbacks
+    (file_list, positional args, user_input) take over from there.
+    """
+    selected = tuple(keys) if keys is not None else _PATH_ARG_KEYS
+    for key in selected:
+        value = parsed_args.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _not_found_message(
+    resolved: ResolvedPath,
+    original_input: Optional[str],
+    *,
+    detail: str = "",
+    include_bash_hint: bool = False,
+    bash_verb: str = "cat",
+) -> str:
+    """Compose the canonical "file not found" message for the file tools.
+
+    Read/Edit/Delete each rebuilt this message near-identically: the
+    normalization hint (``input was ... → note``) plus an optional
+    ``bash_execute`` escape hatch for paths that clearly target outside
+    the project. ``detail`` carries the tool-specific middle sentence
+    (e.g. Read's "use list_files", Edit's "use write_file"); ``bash_verb``
+    is the command shown in the bash hint (``cat`` for read, ``rm`` for
+    delete). The exact wording is load-bearing — it steers the LLM out of
+    retry loops — so keep it stable when editing.
+    """
+    norm_hint = (
+        f" (input was {resolved.input!r} → {resolved.note})"
+        if resolved.note
+        else ""
+    )
+    bash_hint = ""
+    if include_bash_hint and (resolved.note or _looks_like_outside_project(original_input)):
+        # Shell-escape the resolved absolute path so paths containing ``;``,
+        # ``&``, ``$``, backticks, spaces or quotes can't fabricate a shell
+        # command injection inside the hint string the LLM is shown.
+        quoted_path = shlex.quote(str(resolved.absolute))
+        bash_hint = (
+            " If the file lives OUTSIDE the project, use "
+            f'bash_execute(command="{bash_verb} {quoted_path}") instead — '
+            "bash_execute has no working-directory sandbox."
+        )
+    detail_part = f" {detail}" if detail else ""
+    return (
+        f"File not found: {resolved.relative_to_cwd}{norm_hint}."
+        f"{detail_part}{bash_hint}"
+    )

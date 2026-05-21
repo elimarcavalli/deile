@@ -17,24 +17,43 @@ re-narrate everything — the user already sees the rich status message.
 
 Anti-loop guard
 ---------------
-The LLM sometimes retries `dispatch_deile_task` 2-3x when the first
-result looks "empty" or "wrong" (e.g. worker missing `ping`), causing
+The LLM sometimes retries ``dispatch_deile_task`` 2-3x when the first
+result looks "empty" or "wrong" (e.g. worker missing ``ping``), causing
 duplicate workers to spawn for the same user message. This module
 maintains a class-level cache keyed by ``channel_id`` with a 30s
 cooldown: any 2nd attempt within that window returns an idempotency
 error to the LLM with a clear message. The LLM then reports the error
 to the user instead of looping. Cooldown is short enough that genuinely
 new requests on the same channel resume normally.
+
+The cooldown is recorded ONLY when we are about to actually issue the
+HTTP request — pre-network validation failures (missing brief, missing
+channel_id, payload validation, missing token, missing httpx) do NOT
+consume the cooldown slot, so the LLM can retry with corrected input.
+
+Transport layer
+---------------
+HTTP transport, endpoint resolution, secret-file reads, bearer-token
+sanitization, payload assembly (``build_dispatch_payload``) and the
+LLM-facing summary (``summarize_dispatch_response``) all live in
+:mod:`deile.infrastructure.deile_worker_client` (hexagonal — pilar
+03 §2). This module owns only the bot-facing LLM tool surface plus the
+anti-loop guard; wire-format and response shaping are delegated to the
+adapter.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import os
 import time
-from typing import Dict
+from collections import defaultdict
+from typing import Dict, Optional
+
+from deile.infrastructure.deile_worker_client import (
+    MAX_DISPATCH_BUDGET_S, DeileWorkerClient, WorkerDispatchError,
+    build_dispatch_payload, summarize_dispatch_response,
+    validate_dispatch_payload)
 
 from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
                    ToolSchema)
@@ -42,100 +61,21 @@ from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
 logger = logging.getLogger(__name__)
 
 
-_DEFAULT_TIMEOUT_S = 600.0
-_DISPATCH_PATH = "/v1/dispatch"
-
-
-def _worker_endpoint() -> str:
-    return os.environ.get(
-        "DEILE_WORKER_ENDPOINT",
-        "http://deile-worker.deile.svc.cluster.local:8766",
-    )
-
-
-def _worker_token() -> str:
-    """Read the worker bearer token. Tolerant of both bot and worker layouts.
-
-    Order of resolution:
-      1. env var DEILE_WORKER_BEARER_TOKEN (set by wrapper before bootstrap)
-      2. file /run/secrets/bot/worker/AUTH_TOKEN  (bot pod, real K8s mount)
-      3. file /run/secrets/worker/AUTH_TOKEN      (worker pod itself)
-      4. file /run/secrets/bot/WORKER_BEARER_TOKEN (legacy fallback)
-    """
-    val = os.environ.get("DEILE_WORKER_BEARER_TOKEN", "").strip()
-    if val:
-        return val
-    for path in (
-        "/run/secrets/bot/worker/AUTH_TOKEN",
-        "/run/secrets/worker/AUTH_TOKEN",
-        "/run/secrets/bot/WORKER_BEARER_TOKEN",
-    ):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                v = f.read().strip()
-                if v:
-                    return v
-        except OSError:
-            continue
-    return ""
-
-
 def _bot_context(context: ToolContext) -> Dict[str, object]:
     """Return the ``bot_context`` dict from session data (``{}`` when absent)."""
     return context.session_data.get("bot_context") or {}
 
 
-def _build_dispatch_payload(
-    *,
-    brief: str,
-    channel_id: str,
-    persona: str,
-    wait: bool,
-    user_message_id: object,
-    context: ToolContext,
-) -> Dict[str, object]:
-    """Assemble the JSON body POSTed to the worker control plane.
-
-    Attachments are forwarded from ``bot_context`` so the worker can call
-    vision tools without re-downloading from the (expiring) Discord CDN.
-    """
-    payload: Dict[str, object] = {
-        "brief": brief,
-        "channel_id": channel_id,
-        "persona": persona,
-        "wait_for_result": wait,
+# Pre-network errors that roll back the cooldown — no HTTP call was issued,
+# so the channel slot is freed for the user to retry after fixing input.
+_ROLLBACK_ERROR_CODES = frozenset(
+    {
+        "WORKER_AUTH_MISSING",
+        "WORKER_AUTH_MALFORMED",
+        "WORKER_TRANSPORT_MISSING",
+        "BAD_REQUEST",
     }
-    if user_message_id:
-        payload["user_message_id"] = str(user_message_id)
-    atts = _bot_context(context).get("attachments")
-    if atts:
-        payload["attachments"] = atts
-    return payload
-
-
-def _summarize_worker_response(data: object) -> str:
-    """Build the compact one-line summary handed back to the bot LLM.
-
-    The user already sees the rich status message edited live by the
-    worker, so this stays terse on purpose — do NOT echo the full output.
-    """
-    if not isinstance(data, dict):
-        return ""
-    if data.get("ok") is True:
-        files = data.get("files") or []
-        elapsed = data.get("elapsed_s") or 0
-        return (
-            f"worker concluiu em {float(elapsed):.1f}s — "
-            f"{len(files)} arquivo(s): " + ", ".join(files[:5])
-        )
-    if data.get("ok") is False:
-        return (
-            f"worker FALHOU: {str(data.get('summary') or data.get('error'))[:300]}"
-        )
-    return (
-        f"worker dispatch aceito (task_id={data.get('task_id')}); "
-        "use wait_for_result=true para acompanhar."
-    )
+)
 
 
 class DispatchDeileTaskTool(Tool):
@@ -143,10 +83,20 @@ class DispatchDeileTaskTool(Tool):
 
     # Class-level cooldown registry — keyed by channel_id, value is the
     # monotonic timestamp of the LAST dispatch. Used to block the LLM
-    # from rajaring the worker when the first attempt comes back vazio
+    # from hammering the worker when the first attempt comes back empty
     # or with an error it's tempted to "retry".
     _LAST_DISPATCH: Dict[str, float] = {}
     _DISPATCH_COOLDOWN_S = 30.0
+    # Periodic cleanup: entries older than 5×COOLDOWN are dropped on
+    # next dispatch attempt. Bounds memory under sustained traffic
+    # without needing a background task.
+    _CLEANUP_FACTOR = 5
+    # Per-channel lock so the cooldown check + the cooldown write are
+    # atomic — two coroutines on the same ``channel_id`` cannot both
+    # observe ``last=None`` and both spawn a worker. Distinct channels
+    # never contend. ``asyncio.Lock`` binds to the running loop on first
+    # acquire, so the defaultdict materialising locks eagerly is safe.
+    _CHANNEL_LOCKS: "Dict[str, asyncio.Lock]" = defaultdict(asyncio.Lock)
 
     @property
     def name(self) -> str:
@@ -169,7 +119,12 @@ class DispatchDeileTaskTool(Tool):
     def category(self) -> str:
         return ToolCategory.OTHER.value
 
-    def __init__(self) -> None:
+    def __init__(
+        self, worker_client: Optional[DeileWorkerClient] = None
+    ) -> None:
+        # Constructor injection: tests pass a stub client; production
+        # falls back to the default stateless adapter.
+        self._worker_client = worker_client or DeileWorkerClient()
         super().__init__(
             schema=ToolSchema(
                 name=self.name,
@@ -223,23 +178,64 @@ class DispatchDeileTaskTool(Tool):
                 required=["brief", "channel_id"],
                 security_level=SecurityLevel.MODERATE,
                 category=ToolCategory.OTHER,
-                max_execution_time=int(_DEFAULT_TIMEOUT_S) + 30,
+                max_execution_time=int(MAX_DISPATCH_BUDGET_S),
             )
         )
 
+    @classmethod
+    def _prune_expired_dispatch_entries(cls, now: float) -> None:
+        """Drop ``_LAST_DISPATCH`` entries older than ``COOLDOWN × FACTOR``,
+        and the matching ``_CHANNEL_LOCKS`` entries when those locks are
+        not currently held — bounds memory on both class-level dicts
+        without racing against a coroutine that owns its lock.
+        """
+        cutoff = cls._DISPATCH_COOLDOWN_S * cls._CLEANUP_FACTOR
+        stale = [
+            cid
+            for cid, ts in cls._LAST_DISPATCH.items()
+            if (now - ts) > cutoff
+        ]
+        for cid in stale:
+            cls._LAST_DISPATCH.pop(cid, None)
+        # Drop locks for channels no longer tracked AND not currently
+        # held. The ``lock.locked()`` check is essential: another
+        # coroutine may still own its lock while we prune.
+        orphan_locks = [
+            cid
+            for cid, lock in cls._CHANNEL_LOCKS.items()
+            if cid not in cls._LAST_DISPATCH and not lock.locked()
+        ]
+        for cid in orphan_locks:
+            cls._CHANNEL_LOCKS.pop(cid, None)
+
     async def execute(self, context: ToolContext) -> ToolResult:
+        # TODO(deferred — decisão #29): this tool bridges untrusted Discord
+        # input → privileged remote execution (full DEILE toolset in an
+        # isolated worker) but currently has no ``PermissionManager`` gate
+        # and emits no ``AuditEvent``. See
+        # ``docs/system_design/DECISOES.md`` (Decisão #29) for the full
+        # rationale: the gate requires a new resource-string convention,
+        # a corresponding ``config/permissions.yaml`` rule, and pillar 08
+        # expansion — each a separate design decision, deferred to keep
+        # PR #233 scoped to the hexagonal transport extraction. Follow-up
+        # issue must cover the ``dispatch:<channel_id>`` permission rule
+        # plus three audit emissions (pending / success / failed with
+        # SHA8(brief), channel_id, user_message_id, persona, task_id,
+        # error_code). Compensating controls in the meantime: bot
+        # embedded-agent whitelist (decisão #28), NetworkPolicy
+        # default-deny (decisão #27), and the 30s cooldown below.
         try:
             args = dict(context.parsed_args or {})
+            bot_ctx = _bot_context(context)
             brief = str(args.get("brief", "")).strip()
             channel_id = str(args.get("channel_id", "")).strip()
-            user_message_id = args.get("user_message_id")
             # Auto-fill from bot_context if the LLM forgot — this enables
             # the worker's 🔧/✅ reaction UX without depending on persona
-            # discipline.
-            if not user_message_id:
-                umid = _bot_context(context).get("user_message_id")
-                if umid:
-                    user_message_id = str(umid)
+            # discipline. ``build_dispatch_payload`` ``str()``-ifies and
+            # drops falsy values, so a single ``or`` covers both fallbacks.
+            user_message_id = (
+                args.get("user_message_id") or bot_ctx.get("user_message_id")
+            )
             persona = args.get("persona") or "developer"
             wait = bool(args.get("wait_for_result", True))
 
@@ -249,95 +245,71 @@ class DispatchDeileTaskTool(Tool):
                 )
             if not channel_id:
                 # Fall back to bot_context if the LLM forgot.
-                channel_id = str(_bot_context(context).get("channel_id") or "").strip()
+                channel_id = str(bot_ctx.get("channel_id") or "").strip()
                 if not channel_id:
                     return ToolResult.error_result(
                         "channel_id is required (and not in bot_context)",
                         error_code="BAD_REQUEST",
                     )
 
-            # Anti-loop guard: refuse a 2nd dispatch within COOLDOWN_S on
-            # the same channel. Worker spawning is expensive AND the user
-            # sees duplicate status messages — both bad UX.
-            now = time.monotonic()
-            last = self._LAST_DISPATCH.get(channel_id)
-            if last is not None and (now - last) < self._DISPATCH_COOLDOWN_S:
-                remaining = self._DISPATCH_COOLDOWN_S - (now - last)
-                return ToolResult.error_result(
-                    f"dispatch já feito há {now - last:.0f}s nesse canal; "
-                    f"aguarde {remaining:.0f}s e relate ao usuário em vez de retentar. "
-                    f"Se a 1ª chamada falhou (ex: 'ping' não existe no worker), "
-                    f"explique isso ao usuário — NÃO chame dispatch_deile_task de novo "
-                    f"esperando resultado diferente.",
-                    error_code="DISPATCH_COOLDOWN",
-                )
-            # Record BEFORE the HTTP call so concurrent retries also block.
-            self._LAST_DISPATCH[channel_id] = now
-
-            endpoint = _worker_endpoint().rstrip("/") + _DISPATCH_PATH
-            # _worker_token() may read secret files from disk — keep that
-            # blocking I/O off the event loop. `token` is a secret: it must
-            # never be interpolated into log or error messages.
-            token = await asyncio.to_thread(_worker_token)
-            if not token:
-                return ToolResult.error_result(
-                    "WORKER_BEARER_TOKEN not configured in this Pod",
-                    error_code="WORKER_AUTH_MISSING",
-                )
-
-            payload = _build_dispatch_payload(
+            payload = build_dispatch_payload(
                 brief=brief,
                 channel_id=channel_id,
                 persona=persona,
                 wait=wait,
                 user_message_id=user_message_id,
-                context=context,
+                attachments=bot_ctx.get("attachments"),
             )
 
+            # Validate payload BEFORE recording the cooldown — a payload
+            # rejection is a programming error, not a worker invocation,
+            # and should not consume the channel's cooldown slot. The
+            # validation rule lives in the adapter (single source of truth);
+            # here we only translate its WorkerDispatchError into a ToolResult.
             try:
-                import httpx
-            except ImportError:
+                validate_dispatch_payload(payload)
+            except WorkerDispatchError as exc:
                 return ToolResult.error_result(
-                    "httpx is not installed in this image", error_code="INTERNAL_ERROR"
+                    exc.message, error=exc, error_code=exc.error_code
                 )
 
-            timeout = _DEFAULT_TIMEOUT_S + 60 if wait else 30
-            async with httpx.AsyncClient(timeout=timeout) as cli:
-                try:
-                    resp = await cli.post(
-                        endpoint,
-                        json=payload,
-                        headers={
-                            "Authorization": f"Bearer {token}",
-                            "Content-Type": "application/json",
-                        },
-                    )
-                except httpx.TimeoutException as exc:
+            # Anti-loop guard: refuse a 2nd dispatch within COOLDOWN_S on
+            # the same channel. Worker spawning is expensive AND the user
+            # sees duplicate status messages — both bad UX. The per-channel
+            # lock makes the check+write atomic: two coroutines arriving on
+            # the same channel before the first finishes cannot both observe
+            # ``last=None`` and both spawn a worker.
+            async with self._CHANNEL_LOCKS[channel_id]:
+                now = time.monotonic()
+                self._prune_expired_dispatch_entries(now)
+                last = self._LAST_DISPATCH.get(channel_id)
+                if last is not None and (now - last) < self._DISPATCH_COOLDOWN_S:
+                    remaining = self._DISPATCH_COOLDOWN_S - (now - last)
                     return ToolResult.error_result(
-                        f"worker timeout after {timeout}s", error=exc,
-                        error_code="WORKER_TIMEOUT",
+                        f"dispatch já feito há {now - last:.0f}s nesse canal; "
+                        f"aguarde {remaining:.0f}s e relate ao usuário em vez de retentar. "
+                        f"Se a 1ª chamada falhou (ex: 'ping' não existe no worker), "
+                        f"explique isso ao usuário — NÃO chame dispatch_deile_task de novo "
+                        f"esperando resultado diferente.",
+                        error_code="DISPATCH_COOLDOWN",
                     )
-                except httpx.HTTPError as exc:
-                    return ToolResult.error_result(
-                        f"worker unreachable: {type(exc).__name__}", error=exc,
-                        error_code="WORKER_UNREACHABLE",
-                    )
+                # Record BEFORE the HTTP call (still inside the lock) so any
+                # concurrent retry observes the timestamp. If the client
+                # later raises a pre-network failure (auth/transport
+                # missing), the timestamp is ROLLED BACK below.
+                self._LAST_DISPATCH[channel_id] = now
 
             try:
-                data = resp.json()
-            except json.JSONDecodeError:
+                data = await self._worker_client.dispatch(payload, wait=wait)
+            except WorkerDispatchError as exc:
+                if exc.error_code in _ROLLBACK_ERROR_CODES:
+                    # Roll back: no HTTP request was ever issued.
+                    self._LAST_DISPATCH.pop(channel_id, None)
                 return ToolResult.error_result(
-                    f"worker returned non-JSON (status={resp.status_code})",
-                    error_code="WORKER_BAD_RESPONSE",
+                    exc.message, error=exc, error_code=exc.error_code
                 )
 
-            if resp.status_code >= 400:
-                err = data.get("error") if isinstance(data, dict) else {}
-                code = (err or {}).get("code") or "WORKER_ERROR"
-                msg = (err or {}).get("message") or f"HTTP {resp.status_code}"
-                return ToolResult.error_result(msg, error_code=code)
-
-            short_summary = _summarize_worker_response(data)
+            short_summary = summarize_dispatch_response(data)
 
             return ToolResult.success_result(
                 data={

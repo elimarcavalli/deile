@@ -131,17 +131,14 @@ class SearchTool(SyncTool):
             exclude_patterns = args.get("exclude_patterns", [])
             show_cli = args.get("show_cli", True)
             
-            # Prepare search pattern
-            if regex_mode:
-                try:
-                    flags = 0 if case_sensitive else re.IGNORECASE
-                    pattern = re.compile(query, flags)
-                except re.error as e:
-                    raise ToolError(f"Invalid regex pattern: {e}")
-            else:
-                escaped_query = re.escape(query)
-                flags = 0 if case_sensitive else re.IGNORECASE
-                pattern = re.compile(escaped_query, flags)
+            # Prepare search pattern. ``flags`` is identical in both branches;
+            # only the pattern source differs (raw user query vs. re.escape'd).
+            flags = 0 if case_sensitive else re.IGNORECASE
+            pattern_source = query if regex_mode else re.escape(query)
+            try:
+                pattern = re.compile(pattern_source, flags)
+            except re.error as e:
+                raise ToolError(f"Invalid regex pattern: {e}")
             
             # Validate and prepare search path
             search_path = Path(path).resolve()
