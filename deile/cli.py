@@ -87,6 +87,12 @@ def _silence_genai_shutdown_noise() -> None:
     _gc.Client.__del__ = _safe_del
 
 
+def _silence_logging() -> None:
+    """Suppress all logging output for one-shot/CLI dispatch paths."""
+    import logging
+    logging.disable()
+
+
 def _load_exported_env_vars() -> None:
     """Load env vars from ~/.deile/settings.json env.exports into os.environ.
 
@@ -1306,8 +1312,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # No args → interactive
     if not argv:
-        import logging
-        logging.disable()
+        _silence_logging()
         asyncio.run(_DeileCLI().run_interactive())
         return 0
 
@@ -1398,8 +1403,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     active_spec = find_active_spec(flag_specs, args) if flag_specs else None
 
     if active_spec is not None:
-        import logging
-        logging.disable()
+        _silence_logging()
         cmd_args = get_arg_value(active_spec, args)
         return asyncio.run(_run_command_flag(
             command_name=active_spec.command_name,
@@ -1413,14 +1417,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     if not msg:
         # --debug or --model without a message → fall through to interactive mode.
         if getattr(args, "debug", False) or args.model:
-            import logging
-            logging.disable()
+            _silence_logging()
             asyncio.run(_DeileCLI().run_interactive())
             return 0
         parser.error("no message provided (pass as positional arg, via stdin, or use a --flag)")
 
-    import logging
-    logging.disable()
+    _silence_logging()
     return asyncio.run(_run_oneshot(msg, forced_model=args.model))
 
 
