@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from deile.commands._sentinels import POST_SWITCH_ACTION_KEY, SWITCH_SESSION_KEY
+from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
+                                       SWITCH_SESSION_KEY)
 
 
 def persist_session(session: Any, user_input: str) -> None:
