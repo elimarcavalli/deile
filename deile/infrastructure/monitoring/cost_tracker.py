@@ -243,14 +243,15 @@ class CostTracker:
     def _load_budget_limits(self):
         """Load budget limits from database"""
         try:
+            loaded: Dict[str, BudgetLimit] = {}
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.execute("""
-                    SELECT category, period, limit_amount, currency, 
+                    SELECT category, period, limit_amount, currency,
                            alert_threshold, hard_limit, created_at
-                    FROM budget_limits 
+                    FROM budget_limits
                     WHERE active = TRUE
                 """)
-                
+
                 for row in cursor.fetchall():
                     budget = BudgetLimit(
                         category=row[0],
@@ -261,14 +262,31 @@ class CostTracker:
                         hard_limit=bool(row[5]),
                         created_at=row[6]
                     )
-                    
+
                     key = f"{budget.category}_{budget.period}"
-                    self.budget_limits[key] = budget
-                    
+                    loaded[key] = budget
+
+            # Atomic full replace under the lock: a reload is authoritative
+            # (drops budgets deactivated in the DB) and concurrent readers
+            # never observe a half-populated map. A DB failure preserves the
+            # previously loaded limits (swap only happens on success).
+            with self.lock:
+                self.budget_limits = loaded
+
         except Exception as e:
             logger.error(f"Failed to load budget limits: {e}")
-    
-    def track_cost(self, 
+
+    def list_budget_limits(self) -> Dict[str, BudgetLimit]:
+        """Reload budget limits from the DB and return the current map.
+
+        Public read accessor so callers (e.g. ``/cost budget list``) get a
+        fresh snapshot without reaching into the private
+        ``_load_budget_limits`` or the ``budget_limits`` attribute directly.
+        """
+        self._load_budget_limits()
+        return self.budget_limits
+
+    def track_cost(self,
                    category: Union[str, CostCategory],
                    subcategory: str,
                    amount: Union[float, Decimal],

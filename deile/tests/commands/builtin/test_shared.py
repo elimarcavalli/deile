@@ -15,8 +15,9 @@ from rich.panel import Panel
 from deile.commands.base import CommandContext
 from deile.commands.builtin._shared import (_colored_panel, emit_audit_event,
                                             error_panel, export_timestamp,
-                                            get_memory_manager, split_args,
-                                            success_panel, warning_panel)
+                                            get_memory_manager, get_session_id,
+                                            split_args, success_panel,
+                                            warning_panel)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -185,6 +186,40 @@ def test_get_memory_manager_agent_without_memory_manager():
     ctx.agent = mock_agent
     result = get_memory_manager(ctx)
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# get_session_id
+# ---------------------------------------------------------------------------
+
+@pytest.mark.unit
+def test_get_session_id_no_session_returns_default():
+    ctx = _make_context()  # no session attribute
+    assert get_session_id(ctx) is None
+    assert get_session_id(ctx, "default") == "default"
+
+
+@pytest.mark.unit
+def test_get_session_id_none_session_returns_default():
+    ctx = _make_context()
+    ctx.session = None
+    assert get_session_id(ctx, "desconhecido") == "desconhecido"
+
+
+@pytest.mark.unit
+def test_get_session_id_returns_session_id():
+    ctx = _make_context()
+    mock_session = MagicMock()
+    mock_session.session_id = "sess-123"
+    ctx.session = mock_session
+    assert get_session_id(ctx, "default") == "sess-123"
+
+
+@pytest.mark.unit
+def test_get_session_id_session_without_attr_returns_default():
+    ctx = _make_context()
+    ctx.session = MagicMock(spec=[])  # no session_id attribute
+    assert get_session_id(ctx, "default") == "default"
 
 
 # ---------------------------------------------------------------------------

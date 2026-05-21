@@ -14,13 +14,10 @@ import httpx
 import pytest
 
 from deile.infrastructure import deile_worker_client as wc
-from deile.infrastructure.deile_worker_client import (DEFAULT_TIMEOUT_S,
-                                                      DeileWorkerClient,
-                                                      DispatchPayload,
-                                                      WorkerDispatchError,
-                                                      _read_token,
-                                                      _resolve_endpoint,
-                                                      _validate_token_charset)
+from deile.infrastructure.deile_worker_client import (
+    DEFAULT_TIMEOUT_S, DeileWorkerClient, DispatchPayload, WorkerDispatchError,
+    _read_token, _resolve_endpoint, _validate_token_charset,
+    validate_dispatch_payload)
 
 # ----- endpoint resolution -----
 
@@ -136,6 +133,34 @@ def test_payload_accepts_attachments_and_user_message_id():
     body = p.model_dump(exclude_none=True)
     assert body["user_message_id"] == "msg-1"
     assert body["attachments"] == [{"url": "http://x"}]
+
+
+# ----- validate_dispatch_payload -----
+
+def test_validate_dispatch_payload_valid_returns_model():
+    p = validate_dispatch_payload({"brief": "hello", "channel_id": "12345"})
+    assert isinstance(p, DispatchPayload)
+    assert p.brief == "hello"
+
+
+def test_validate_dispatch_payload_invalid_raises_bad_request():
+    with pytest.raises(WorkerDispatchError) as ei:
+        validate_dispatch_payload({"brief": "", "channel_id": "c"})
+    assert ei.value.error_code == "BAD_REQUEST"
+
+
+def test_validate_dispatch_payload_does_not_leak_input_values():
+    # The brief is untrusted (Discord) content and may carry PII — the
+    # rejection message must describe the failing field WITHOUT echoing the
+    # offending value (pilar 08).
+    secret = "SUPER-SECRET-PII-abc123"
+    with pytest.raises(WorkerDispatchError) as ei:
+        validate_dispatch_payload(
+            {"brief": secret, "channel_id": "c", "persona": "evil"}
+        )
+    assert ei.value.error_code == "BAD_REQUEST"
+    assert secret not in ei.value.message
+    assert "persona" in ei.value.message
 
 
 # ----- dispatch error code coverage -----

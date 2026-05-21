@@ -14,7 +14,7 @@ from deile.__version__ import __version__
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import (ArgSpec, export_timestamp, get_agent, get_session,
-                      parse_flag_args, split_args)
+                      get_session_id, parse_flag_args, split_args)
 
 
 class ExportCommand(DirectCommand):
@@ -109,7 +109,7 @@ class ExportCommand(DirectCommand):
         session = get_session(context)
 
         # --- Sessão e histórico ---
-        session_id = getattr(session, "session_id", None) if session else None
+        session_id = get_session_id(context)
         history: List[Dict[str, Any]] = getattr(session, "conversation_history", []) if session else []
         created_at = getattr(session, "created_at", None) if session else None
 
