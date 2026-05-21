@@ -15,8 +15,8 @@ from deile.__version__ import __version__
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import (ArgSpec, export_timestamp, get_agent, get_session,
-                      get_session_id, parse_flag_args, promote_positional_format,
-                      split_args)
+                      get_session_id, parse_flag_args,
+                      promote_positional_format, split_args)
 
 
 class ExportCommand(DirectCommand):
