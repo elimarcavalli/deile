@@ -301,85 +301,22 @@ class _DeileCLI:
     _POST_SWITCH_ACTION_KEY = POST_SWITCH_ACTION_KEY
 
     def _persist_session(self, user_input: str) -> None:
-        """Write current session history to disk so /resume can find it.
-
-        Only persists after real LLM turns (not slash commands) to avoid
-        storing noise.  Failures are silently ignored — non-fatal.
-        """
-        if user_input.startswith("/"):
-            return
-        session = self.default_session
-        history = getattr(session, "conversation_history", [])
-        if not history:
-            return
-        try:
-            from .commands.builtin._session_store import SessionHistoryStore
-            name = session.context_data.get("conversation_name", "")
-            SessionHistoryStore().save(session.session_id, list(history), name)
-        except Exception:
-            pass
+        from .cli_session_helpers import persist_session
+        persist_session(self.default_session, user_input)
 
     def _rollback_history(self, baseline_len: int) -> None:
-        """Trim ``conversation_history`` back to ``baseline_len``.
-
-        Required after ESC/Ctrl+C: providers (DeepSeek, OpenAI) collapse two
-        consecutive ``user`` turns with ``/`` as a separator, so leaving an
-        orphan user entry poisons the next reply.
-        """
-        history = getattr(self.default_session, "conversation_history", None)
-        if history is None:
-            return
-        if len(history) > baseline_len:
-            del history[baseline_len:]
+        from .cli_session_helpers import rollback_history
+        rollback_history(self.default_session, baseline_len)
 
     def _check_session_switch(self) -> None:
-        """If a command requested a session switch, apply it."""
-        ctx = self.default_session.context_data
-        new_sid = ctx.pop(self._SWITCH_SESSION_KEY, None)
-        action = ctx.pop(self._POST_SWITCH_ACTION_KEY, None)
-        if not new_sid:
-            return
-        new_session = self.agent.get_session(new_sid)
-        if new_session is None:
-            self.ui.console.print(f"[yellow]Sessão {new_sid!r} não encontrada — mantendo atual.[/yellow]")
-            return
-        self.default_session = new_session
-
-        if action == "welcome":
-            self.ui.show_welcome(self.default_session)
-            return
-        if action == "replay":
-            self._replay_history(list(new_session.conversation_history or []))
-            return
-
-        name = new_session.context_data.get("conversation_name", "")
-        label = f'"{name}"' if name else new_sid
-        self.ui.console.print(f"\n[dim cyan]› Sessão alternada para {label}[/dim cyan]")
+        from .cli_session_helpers import check_session_switch
+        new_session = check_session_switch(self.default_session, self.agent, self.ui)
+        if new_session is not None:
+            self.default_session = new_session
 
     def _replay_history(self, history: list) -> None:
-        """Re-render a loaded conversation as if it had just happened.
-
-        Re-uses :meth:`UIManager.show_welcome` (which clears the screen) so the
-        replay always starts from a fresh canvas, then iterates the stored
-        ``conversation_history`` rendering each ``user`` entry with the same
-        prompt prefix the live loop uses (``\\n > <text>``) and each
-        ``assistant`` entry through :meth:`display_response` (which prints the
-        ``Deile >`` header). Non-string contents are normalized via
-        ``_normalize_history_content`` to handle any Rich renderable that
-        slipped through.
-        """
-        from .core.agent import _normalize_history_content
-        self.ui.show_welcome(self.default_session)
-        for entry in history:
-            role = entry.get("role")
-            raw = entry.get("content")
-            text = _normalize_history_content(raw)
-            if not text:
-                continue
-            if role == "user":
-                self.ui.console.print(f"\n > {text}")
-            elif role == "assistant":
-                self.ui.display_response(text, metadata=None)
+        from .cli_session_helpers import replay_history
+        replay_history(self.ui, self.default_session, history)
 
     async def _stream_with_esc_cancel(self, event_stream) -> bool:
         """Run display_streaming_turn, cancelling on ESC keypress.
