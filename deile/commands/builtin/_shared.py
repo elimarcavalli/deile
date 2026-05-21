@@ -129,6 +129,23 @@ def get_session(context: CommandContext | None) -> Any | None:
     return getattr(context, "session", None)
 
 
+def get_session_id(context: CommandContext | None, default: Any = None) -> Any:
+    """Resolve o ``session_id`` do *objeto de sessão* (``context.session.session_id``).
+
+    Retorna ``default`` quando não há sessão ou ela não expõe ``session_id`` —
+    consolidando a forma inline ``getattr(session, "session_id", default) if
+    session else default`` que aparecia em cost/export/context/model commands
+    com fallbacks divergentes (``None``/``"desconhecido"``/``"default"``).
+
+    NOTA: lê o objeto de sessão, **não** o campo ``CommandContext.session_id``.
+    São fontes distintas — o campo é sempre populado (inclusive no caminho
+    oneshot-CLI, onde ``context.session`` é ``None``), por isso status_command
+    intencionalmente usa o campo e não passa por aqui.
+    """
+    session = get_session(context)
+    return getattr(session, "session_id", default) if session else default
+
+
 def get_memory_manager(context: CommandContext) -> MemoryManager | None:
     """Retorna ``context.agent.memory_manager`` ou ``None`` quando ausente —
     padrão antes duplicado em compact, memory e status commands."""

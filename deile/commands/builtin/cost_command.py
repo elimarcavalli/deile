@@ -15,7 +15,7 @@ from rich.text import Text
 
 from deile.__version__ import __version__
 from deile.commands.base import CommandContext, CommandResult, DirectCommand
-from deile.commands.builtin._shared import (export_timestamp, get_session,
+from deile.commands.builtin._shared import (export_timestamp, get_session_id,
                                             split_args, success_panel)
 
 logger = logging.getLogger(__name__)
@@ -89,8 +89,7 @@ EXEMPLOS:
     async def execute(self, context: CommandContext) -> CommandResult:
         args_list: List[str] = split_args(context)
 
-        session = get_session(context)
-        session_id = getattr(session, "session_id", None) if session else None
+        session_id = get_session_id(context)
 
         try:
             if not args_list:

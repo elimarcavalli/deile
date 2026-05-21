@@ -19,7 +19,7 @@ from ...storage.usage_repository import BudgetGuard, get_usage_repository
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._model_views import (build_budget_panel, build_cost_table,
                            build_current_panel, build_list_table)
-from ._shared import error_panel, get_agent, split_args
+from ._shared import error_panel, get_agent, get_session_id, split_args
 
 logger = logging.getLogger(__name__)
 
@@ -417,7 +417,7 @@ EXAMPLES:
 
     async def _cost(self, context: CommandContext) -> CommandResult:
         repo = get_usage_repository()
-        session_id = self._session_id(context)
+        session_id = get_session_id(context, "default")
         total = repo.cost_for_session(session_id)
         records = repo.records_for_session(session_id)
         table = build_cost_table(records, total, session_id)
@@ -437,7 +437,7 @@ EXAMPLES:
                 content=Panel(Text("Could not load budget from YAML."), title="Budget", border_style="yellow"),
             )
 
-        session_id = self._session_id(context)
+        session_id = get_session_id(context, "default")
         session_spent = repo.cost_for_session(session_id)
         return CommandResult(
             success=True,
@@ -494,10 +494,3 @@ EXAMPLES:
             return context.session.context_data.get("forced_model")
         except AttributeError:
             return None
-
-    @staticmethod
-    def _session_id(context: CommandContext) -> str:
-        try:
-            return context.session.session_id
-        except AttributeError:
-            return "default"
