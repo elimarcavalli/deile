@@ -40,6 +40,7 @@ def get_system_uptime() -> str:
 def collect_system_info() -> Dict[str, Any]:
     """Host + DEILE-version + memory snapshot for the System panel."""
     try:
+        mem = psutil.virtual_memory()
         return {
             "deile_version": __version__,
             "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
@@ -50,9 +51,9 @@ def collect_system_info() -> Dict[str, Any]:
             "hostname": platform.node(),
             "uptime": get_system_uptime(),
             "cpu_count": psutil.cpu_count(),
-            "memory_total": psutil.virtual_memory().total,
-            "memory_used": psutil.virtual_memory().used,
-            "memory_percent": psutil.virtual_memory().percent,
+            "memory_total": mem.total,
+            "memory_used": mem.used,
+            "memory_percent": mem.percent,
             "disk_usage": psutil.disk_usage(".").percent,
         }
     except Exception as exc:
