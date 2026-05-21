@@ -1,5 +1,7 @@
 """Pure mathematical utility functions."""
 
+from __future__ import annotations
+
 
 def somar(a: int, b: int) -> int:
     """Retorna a soma de dois números inteiros.
