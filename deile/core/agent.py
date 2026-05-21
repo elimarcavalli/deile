@@ -2023,7 +2023,7 @@ class DeileAgent:
     ]
 
     _VALIDATION_TOOL_NAMES = {
-        "bash_execute", "python_execute", "run_tests", "execute_command_enhanced",
+        "bash_execute", "python_execute", "run_tests",
     }
 
     @classmethod

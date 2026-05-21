@@ -40,6 +40,7 @@ def get_system_uptime() -> str:
 def collect_system_info() -> Dict[str, Any]:
     """Host + DEILE-version + memory snapshot for the System panel."""
     try:
+        mem = psutil.virtual_memory()
         return {
             "deile_version": __version__,
             "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
@@ -50,9 +51,9 @@ def collect_system_info() -> Dict[str, Any]:
             "hostname": platform.node(),
             "uptime": get_system_uptime(),
             "cpu_count": psutil.cpu_count(),
-            "memory_total": psutil.virtual_memory().total,
-            "memory_used": psutil.virtual_memory().used,
-            "memory_percent": psutil.virtual_memory().percent,
+            "memory_total": mem.total,
+            "memory_used": mem.used,
+            "memory_percent": mem.percent,
             "disk_usage": psutil.disk_usage(".").percent,
         }
     except Exception as exc:
@@ -132,3 +133,49 @@ def collect_health_info() -> Dict[str, Any]:
         }
     except Exception as exc:
         return {"error": str(exc), "overall_status": "desconhecido"}
+
+
+def collect_performance_info() -> Dict[str, Any]:
+    """CPU/memory probe for the Performance panel.
+
+    Keeps the psutil import fenced inside this collectors module so the
+    command file (`status_command.py`) does not depend on psutil at the
+    top level — preserves the Pilar 02 boundary between presentation
+    (command) and infrastructure observation (collectors).
+    """
+    try:
+        cpu_percent = psutil.cpu_percent(interval=0)
+        memory = psutil.virtual_memory()
+        return {
+            "cpu_percent": cpu_percent,
+            "memory_percent": memory.percent,
+            "memory_available_mb": memory.available // (1024 ** 2),
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def collect_usage_summary(session_id: str) -> Dict[str, Any]:
+    """Aggregate token/cost/request counts for a session.
+
+    Routes through the ``get_usage_repository()`` singleton (Pilar 02 —
+    infra access via factories) instead of instantiating
+    ``UsageRepository`` directly, matching the pattern already used by
+    ``model_command``.
+    """
+    try:
+        from deile.storage.usage_repository import get_usage_repository
+        repo = get_usage_repository()
+        records = repo.records_for_session(session_id)
+        return {
+            "total_tokens": sum(getattr(r, "total_tokens", 0) for r in records),
+            "total_cost": repo.cost_for_session(session_id),
+            "request_count": len(records),
+        }
+    except Exception as exc:
+        return {
+            "error": str(exc),
+            "total_tokens": 0,
+            "total_cost": 0.0,
+            "request_count": 0,
+        }

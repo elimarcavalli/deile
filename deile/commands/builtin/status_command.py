@@ -8,7 +8,6 @@ import sys
 import time
 from typing import Any, Dict, Tuple
 
-import psutil
 from rich.columns import Columns
 from rich.console import Group
 from rich.panel import Panel
@@ -18,9 +17,11 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import (emit_audit_event, error_panel, get_memory_manager,
-                      indisponivel, split_args, success_panel, warning_panel)
+                      indisponivel, split_args, success_panel, warning_panel,
+                      wrap_command_errors)
 from ._status_collectors import (collect_health_info, collect_models_info,
-                                 collect_system_info, collect_tools_info)
+                                 collect_performance_info, collect_system_info,
+                                 collect_tools_info, collect_usage_summary)
 
 _PROVIDER_HOSTS: Dict[str, str] = {
     "openai": "api.openai.com",
@@ -72,21 +73,17 @@ class StatusCommand(DirectCommand):
         "performance": "_show_performance_status",
     }
 
+    @wrap_command_errors("status", message_template="Falha ao executar /{name}: {exc}")
     async def execute(self, context: CommandContext) -> CommandResult:
         self._emit_audit_event(context)
-        try:
-            parts = split_args(context)
-            if not parts:
-                return await self._show_complete_status(context)
-            section = parts[0].lower()
-            method_name = self._DISPATCH.get(section)
-            if not method_name:
-                raise CommandError(f"Seção desconhecida: {section}")
-            return await getattr(self, method_name)(context)
-        except CommandError:
-            raise
-        except Exception as exc:
-            raise CommandError(f"Falha ao executar /status: {exc}") from exc
+        parts = split_args(context)
+        if not parts:
+            return await self._show_complete_status(context)
+        section = parts[0].lower()
+        method_name = self._DISPATCH.get(section)
+        if not method_name:
+            raise CommandError(f"Seção desconhecida: {section}")
+        return await getattr(self, method_name)(context)
 
     # ------------------------------------------------------------------
     # Audit
@@ -427,32 +424,20 @@ class StatusCommand(DirectCommand):
     # ------------------------------------------------------------------
 
     async def _show_performance_status(self, context: CommandContext) -> CommandResult:
-        try:
-            from ...storage.usage_repository import UsageRepository
-            repo = UsageRepository()
-            session_id = context.session_id if hasattr(context, "session_id") else "default"
-            records = repo.records_for_session(session_id)
-            total_tokens = sum(getattr(r, "total_tokens", 0) for r in records)
-            total_cost = repo.cost_for_session(session_id)
-            request_count = len(records)
-        except Exception:
-            total_tokens = 0
-            total_cost = 0.0
-            request_count = 0
-
-        cpu_percent = psutil.cpu_percent(interval=0)
-        memory = psutil.virtual_memory()
+        session_id = context.session_id if hasattr(context, "session_id") else "default"
+        perf_info = collect_performance_info()
+        usage_info = collect_usage_summary(session_id)
 
         table = Table(title="📊 Performance do Sistema", show_header=True, header_style="bold green")
         table.add_column("Métrica", style="cyan", width=25)
         table.add_column("Valor", style="white", width=20)
 
-        table.add_row("CPU (%)", f"{cpu_percent:.1f}%")
-        table.add_row("Memória usada (%)", f"{memory.percent:.1f}%")
-        table.add_row("Memória disponível", f"{memory.available // (1024**2)} MB")
-        table.add_row("Requisições na sessão", str(request_count))
-        table.add_row("Tokens na sessão", str(total_tokens))
-        table.add_row("Custo na sessão (USD)", f"${total_cost:.6f}")
+        table.add_row("CPU (%)", f"{perf_info.get('cpu_percent', 0):.1f}%")
+        table.add_row("Memória usada (%)", f"{perf_info.get('memory_percent', 0):.1f}%")
+        table.add_row("Memória disponível", f"{perf_info.get('memory_available_mb', 0)} MB")
+        table.add_row("Requisições na sessão", str(usage_info.get("request_count", 0)))
+        table.add_row("Tokens na sessão", str(usage_info.get("total_tokens", 0)))
+        table.add_row("Custo na sessão (USD)", f"${usage_info.get('total_cost', 0.0):.6f}")
 
         return CommandResult.success_result(table, "rich")
 

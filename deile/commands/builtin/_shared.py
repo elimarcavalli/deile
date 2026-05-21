@@ -13,7 +13,7 @@ from collections.abc import Awaitable, Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from rich.panel import Panel
 from rich.text import Text
@@ -151,6 +151,19 @@ def get_memory_manager(context: CommandContext) -> MemoryManager | None:
     padrão antes duplicado em compact, memory e status commands."""
     agent = get_agent(context)
     return getattr(agent, "memory_manager", None) if agent else None
+
+
+def raise_command_error(msg: str) -> NoReturn:
+    """Raise :class:`CommandError` with ``msg`` — module-level helper.
+
+    Replaces the per-command ``async def _err(self, msg)`` pattern used by
+    :class:`MemoryCommand` and :class:`PermissionsCommand` inside dispatch
+    lambdas. The function is sync — callers wrap in lambdas when they need
+    a deferred raise inside an async dispatch dict (the surrounding
+    ``wrap_command_errors`` decorator lets :class:`CommandError` propagate
+    untouched).
+    """
+    raise CommandError(msg)
 
 
 def wrap_command_errors(
@@ -445,6 +458,37 @@ def parse_flag_args(
         positionals.append(token)
         i += 1
     return flags, positionals
+
+
+def promote_positional_format(
+    positionals: Sequence[str],
+    current_format: str,
+    default_format: str,
+    valid_formats: Iterable[str],
+) -> tuple[str, list[str]]:
+    """Promote a positional token to the ``--format`` value, returning leftovers.
+
+    Both ``/export`` and ``/tools`` walk their positional args and let the
+    first known format word (e.g. ``json``) become the effective ``--format``
+    when the user did not pass ``--format`` explicitly (i.e. when
+    ``current_format`` still equals ``default_format``). Any other token —
+    or a format token arriving after promotion — falls through to the
+    leftovers list which the caller folds into ``export_path`` / ``tool_name``
+    with last-wins semantics.
+
+    Returns ``(format_value, leftover_positionals)``; the input list is not
+    mutated. ``valid_formats`` is materialised once so callers can pass a
+    tuple, list or set interchangeably.
+    """
+    allowed = set(valid_formats)
+    format_value = current_format
+    leftover: list[str] = []
+    for token in positionals:
+        if format_value == default_format and token in allowed:
+            format_value = token
+        else:
+            leftover.append(token)
+    return format_value, leftover
 
 
 def format_change_summary_lines(

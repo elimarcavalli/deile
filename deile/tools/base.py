@@ -396,17 +396,6 @@ class Tool(ABC):
         """
         pass
 
-    async def get_help(self) -> str:
-        """Retorna ajuda sobre como usar a tool"""
-        return f"""
-Tool: {self.name}
-Description: {self.description}
-Category: {self.category}
-Version: {self.version}
-Status: {'Enabled' if self.is_enabled else 'Disabled'}
-Executions: {self.execution_count}
-"""
-    
     def __str__(self) -> str:
         return f"{self.name} ({self.category})"
     

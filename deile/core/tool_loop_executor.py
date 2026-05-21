@@ -18,7 +18,8 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from deile.core.loop_guard import (ToolLoopGuard, format_loop_break_message,
                                    make_guard, tool_result_made_progress)
-from deile.core.models.base import ModelMessage, ModelProvider
+from deile.core.models.base import (DEFAULT_MAX_TOOL_ITERATIONS, ModelMessage,
+                                    ModelProvider)
 from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
 from deile.core.models.tool_execution import (OUTCOME_EXCEPTION, OUTCOME_RAN,
                                               build_tool_result_payload)
@@ -31,7 +32,7 @@ from deile.ui.stage_messages import get_stage_message  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
-MAX_TOOL_ITERATIONS = 25
+MAX_TOOL_ITERATIONS = DEFAULT_MAX_TOOL_ITERATIONS
 
 
 class ToolLoopExecutor:

@@ -14,8 +14,9 @@ from ...core.exceptions import CommandError
 from ...security.permissions import (PermissionLevel, PermissionRule,
                                      ResourceType, get_permission_manager)
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import (emit_audit_event, error_panel, split_args, success_panel,
-                      truncate, warning_panel)
+from ._shared import (emit_audit_event, error_panel, raise_command_error,
+                      split_args, success_panel, truncate, warning_panel,
+                      wrap_command_errors)
 
 
 def _persist(pm) -> None:
@@ -37,35 +38,28 @@ class PermissionsCommand(DirectCommand):
         super().__init__(config)
         self.permission_manager = get_permission_manager()
 
+    @wrap_command_errors("permissions", message_template="Falha ao executar /{name}: {exc}")
     async def execute(self, context: CommandContext) -> CommandResult:
-        try:
-            parts = split_args(context)
-            if not parts:
-                return await self._show_permissions_overview()
-            action = parts[0].lower()
-            dispatch = {
-                "list": lambda: self._list_rules(parts[1:]),
-                "show": lambda: self._show_rule(parts[1]) if len(parts) >= 2 else self._err("show requer ID: /permissions show <id>"),
-                "check": lambda: self._check_permission(parts[1], parts[2], parts[3]) if len(parts) >= 4 else self._err("check requer: /permissions check <tool> <resource> <action>"),
-                "add": lambda: self._add_rule(parts[1:]) if len(parts) >= 6 else self._err("add requer: /permissions add <id> <nome> <tipo> <padrão> <nível> [tools]"),
-                "enable": lambda: self._enable_rule(parts[1], True) if len(parts) >= 2 else self._err("enable requer ID"),
-                "disable": lambda: self._enable_rule(parts[1], False) if len(parts) >= 2 else self._err("disable requer ID"),
-                "remove": lambda: self._remove_rule(parts[1], "--confirm" in parts) if len(parts) >= 2 else self._err("remove requer ID"),
-                "audit": lambda: self._show_audit_log(parts[1:]),
-                "sandbox": lambda: self._manage_sandbox(parts[1]) if len(parts) >= 2 else self._err("sandbox requer: on|off|status"),
-                "help": lambda: self._show_help(),
-            }
-            handler = dispatch.get(action)
-            if not handler:
-                raise CommandError(f"Ação desconhecida: {action}")
-            return await handler()
-        except Exception as exc:
-            if isinstance(exc, CommandError):
-                raise
-            raise CommandError(f"Falha ao executar /permissions: {exc}") from exc
-
-    async def _err(self, msg: str) -> CommandResult:
-        raise CommandError(msg)
+        parts = split_args(context)
+        if not parts:
+            return await self._show_permissions_overview()
+        action = parts[0].lower()
+        dispatch = {
+            "list": lambda: self._list_rules(parts[1:]),
+            "show": lambda: self._show_rule(parts[1]) if len(parts) >= 2 else raise_command_error("show requer ID: /permissions show <id>"),
+            "check": lambda: self._check_permission(parts[1], parts[2], parts[3]) if len(parts) >= 4 else raise_command_error("check requer: /permissions check <tool> <resource> <action>"),
+            "add": lambda: self._add_rule(parts[1:]) if len(parts) >= 6 else raise_command_error("add requer: /permissions add <id> <nome> <tipo> <padrão> <nível> [tools]"),
+            "enable": lambda: self._enable_rule(parts[1], True) if len(parts) >= 2 else raise_command_error("enable requer ID"),
+            "disable": lambda: self._enable_rule(parts[1], False) if len(parts) >= 2 else raise_command_error("disable requer ID"),
+            "remove": lambda: self._remove_rule(parts[1], "--confirm" in parts) if len(parts) >= 2 else raise_command_error("remove requer ID"),
+            "audit": lambda: self._show_audit_log(parts[1:]),
+            "sandbox": lambda: self._manage_sandbox(parts[1]) if len(parts) >= 2 else raise_command_error("sandbox requer: on|off|status"),
+            "help": lambda: self._show_help(),
+        }
+        handler = dispatch.get(action)
+        if not handler:
+            raise CommandError(f"Ação desconhecida: {action}")
+        return await handler()
 
     # ------------------------------------------------------------------
     # Overview
