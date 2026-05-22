@@ -633,16 +633,13 @@ class GitHubClient:
         offset = 0
         while True:
             batch_limit = page_size + offset
-            try:
-                out = await self._run_checked(
-                    "issue", "list",
-                    "--repo", self.repo,
-                    "--state", "open",
-                    "--limit", str(batch_limit),
-                    "--json", "number,title,url,labels,body,state",
-                )
-            except GhCommandError:
-                raise
+            out = await self._run_checked(
+                "issue", "list",
+                "--repo", self.repo,
+                "--state", "open",
+                "--limit", str(batch_limit),
+                "--json", "number,title,url,labels,body,state",
+            )
             data = json.loads(out or "[]")
             new_items = 0
             for item in data:
@@ -690,10 +687,7 @@ class GitHubClient:
 
         Candidates for automatic PR triage (Stage 0 for PRs).
         """
-        try:
-            prs = await self.list_open_prs()
-        except GhCommandError:
-            raise
+        prs = await self.list_open_prs()
         return [
             pr for pr in prs
             if not pr.is_draft
