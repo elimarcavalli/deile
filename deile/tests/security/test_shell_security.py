@@ -165,7 +165,7 @@ class TestIssue267Regression:
         ]
         for dev in pseudo_devices:
             cmd = f"echo test > {dev}"
-            is_blocked(cmd)  # assertion via next line — não deve lançar
+            assert not is_blocked(cmd), f"Pseudo-device {dev} foi bloqueado indevidamente"
             level, _ = assess_risk(cmd)
             assert level != SecurityLevel.DANGEROUS.value, (
                 f"Pseudo-device {dev} classificado como DANGEROUS"
