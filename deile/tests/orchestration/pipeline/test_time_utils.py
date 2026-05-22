@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -70,3 +70,11 @@ def test_parse_iso_utc_rejects_empty_string():
 def test_parse_iso_utc_rejects_bare_z():
     with pytest.raises(ValueError, match="invalid ISO datetime"):
         parse_iso_utc("Z")
+
+
+def test_format_iso_utc_converts_aware_to_utc():
+    """Aware datetime in a non-UTC zone must be converted to UTC."""
+    brt = timezone(offset=timedelta(hours=-3))
+    dt = datetime(2026, 1, 2, 6, 4, 5, tzinfo=brt)  # 06:04 BRT = 09:04 UTC
+    s = format_iso_utc(dt)
+    assert s == "2026-01-02T09:04:05Z"

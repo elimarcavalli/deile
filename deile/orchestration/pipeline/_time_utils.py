@@ -22,7 +22,11 @@ def format_iso_utc(dt: Optional[datetime]) -> Optional[str]:
     """Format ``dt`` as ``YYYY-MM-DDTHH:MM:SSZ`` (UTC). ``None`` passes through."""
     if dt is None:
         return None
-    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def parse_iso_utc(value) -> Optional[datetime]:
