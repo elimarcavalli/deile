@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from deile.orchestration.pipeline.github_client import (
-    GhCommandError, GitHubClient, IssueRef, PrRef, compute_batch_id_for_number)
+    CommentRef, GhCommandError, GitHubClient, IssueRef, MentionTrigger,
+    PrRef, compute_batch_id_for_number)
 from deile.orchestration.pipeline.labels import (REVIEW_PENDING, WORKFLOW_NEW,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING)
@@ -262,3 +263,202 @@ class TestEnsureLabelOnClaim:
         assert ensure_idx < add_idx, (
             f"_ensure_label (idx={ensure_idx}) must precede add_labels (idx={add_idx})"
         )
+
+
+# ----- MentionTrigger (issue #253) ----------------------------------------
+
+
+class TestMentionTrigger:
+    def test_dedup_key_groups_by_target(self):
+        """Two triggers on the same issue share a dedup key."""
+        issue = IssueRef(number=42, title="t", url="u", labels=())
+        t1 = MentionTrigger(trigger_type="assignee", issue=issue)
+        t2 = MentionTrigger(trigger_type="body", issue=issue)
+        assert t1.dedup_key == t2.dedup_key == "issue:42"
+
+    def test_dedup_key_different_targets(self):
+        """Triggers on different issues have different dedup keys."""
+        i1 = IssueRef(number=1, title="a", url="u", labels=())
+        i2 = IssueRef(number=2, title="b", url="u", labels=())
+        t1 = MentionTrigger(trigger_type="assignee", issue=i1)
+        t2 = MentionTrigger(trigger_type="body", issue=i2)
+        assert t1.dedup_key != t2.dedup_key
+
+    def test_dedup_key_pr(self):
+        """PR triggers produce 'pr:N' dedup key."""
+        pr = PrRef(number=7, title="t", url="u", labels=())
+        t = MentionTrigger(trigger_type="reviewer", pr=pr)
+        assert t.dedup_key == "pr:7"
+
+    def test_target_kind_from_issue(self):
+        issue = IssueRef(number=1, title="t", url="u", labels=())
+        t = MentionTrigger(trigger_type="assignee", issue=issue)
+        assert t.target_kind == "issue"
+
+    def test_target_kind_from_pr(self):
+        pr = PrRef(number=1, title="t", url="u", labels=())
+        t = MentionTrigger(trigger_type="reviewer", pr=pr)
+        assert t.target_kind == "pr"
+
+    def test_target_kind_from_issue_comment(self):
+        comment = CommentRef(
+            comment_id=1, body="x", html_url="https://github.com/o/r/issues/5#c1",
+            issue_url="https://api.github.com/repos/o/r/issues/5",
+            author="u", kind="issue",
+        )
+        t = MentionTrigger(trigger_type="comment", comment=comment)
+        assert t.target_kind == "issue"
+
+    def test_target_kind_from_pr_comment(self):
+        comment = CommentRef(
+            comment_id=2, body="x", html_url="https://github.com/o/r/pull/8#discussion",
+            issue_url="https://api.github.com/repos/o/r/pulls/8",
+            author="u", kind="pr_review",
+        )
+        t = MentionTrigger(trigger_type="comment", comment=comment)
+        assert t.target_kind == "pr"
+
+    def test_target_number_from_issue(self):
+        issue = IssueRef(number=99, title="t", url="u", labels=())
+        t = MentionTrigger(trigger_type="assignee", issue=issue)
+        assert t.target_number == 99
+
+    def test_target_number_from_pr(self):
+        pr = PrRef(number=55, title="t", url="u", labels=())
+        t = MentionTrigger(trigger_type="reviewer", pr=pr)
+        assert t.target_number == 55
+
+    def test_target_number_from_comment_url(self):
+        comment = CommentRef(
+            comment_id=3, body="x",
+            html_url="https://github.com/o/r/issues/123#issuecomment-456",
+            issue_url="https://api.github.com/repos/o/r/issues/123",
+            author="u", kind="issue",
+        )
+        t = MentionTrigger(trigger_type="comment", comment=comment)
+        assert t.target_number == 123
+
+    def test_unknown_target_kind(self):
+        """Trigger with no issue, pr, or comment returns 'unknown'."""
+        t = MentionTrigger(trigger_type="assignee")
+        assert t.target_kind == "unknown"
+        assert t.target_number == 0
+
+
+# ----- New GitHubClient methods (issue #253) ------------------------------
+
+
+class TestListIssuesAssignedTo:
+    async def test_parses_assigned_issues(self):
+        client = GitHubClient("owner/name")
+        payload = json.dumps([
+            {"number": 10, "title": "bug", "url": "u",
+             "labels": [], "body": "b", "state": "open"},
+        ])
+        with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
+            issues = await client.list_issues_assigned_to("deile-one")
+        assert len(issues) == 1
+        assert issues[0].number == 10
+
+    async def test_gh_error_returns_empty(self):
+        client = GitHubClient("owner/name")
+        with patch.object(client, "_run_checked",
+                          new=AsyncMock(side_effect=GhCommandError(("x",), 1, "", "err"))):
+            issues = await client.list_issues_assigned_to("deile-one")
+        assert issues == []
+
+
+class TestListPrsAssignedTo:
+    async def test_parses_assigned_prs(self):
+        client = GitHubClient("owner/name")
+        payload = json.dumps([
+            {"number": 20, "title": "feat", "url": "u",
+             "labels": [], "headRefName": "auto/issue-20",
+             "baseRefName": "main", "state": "open", "isDraft": False},
+        ])
+        with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
+            prs = await client.list_prs_assigned_to("deile-one")
+        assert len(prs) == 1
+        assert prs[0].number == 20
+
+    async def test_gh_error_returns_empty(self):
+        client = GitHubClient("owner/name")
+        with patch.object(client, "_run_checked",
+                          new=AsyncMock(side_effect=GhCommandError(("x",), 1, "", "err"))):
+            prs = await client.list_prs_assigned_to("deile-one")
+        assert prs == []
+
+
+class TestListPrsWithReviewRequests:
+    async def test_parses_review_requested_prs(self):
+        client = GitHubClient("owner/name")
+        payload = json.dumps([
+            {"number": 30, "title": "pr", "url": "u",
+             "labels": [{"name": "bug"}],
+             "headRefName": "feat/x", "baseRefName": "main",
+             "state": "open", "isDraft": False},
+        ])
+        with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
+            prs = await client.list_prs_with_review_requests("deile-one")
+        assert len(prs) == 1
+        assert prs[0].number == 30
+
+    async def test_single_object_normalized_to_list(self):
+        """gh api --jq returns a single dict when 1 match; must be normalized."""
+        client = GitHubClient("owner/name")
+        payload = json.dumps({
+            "number": 31, "title": "single", "url": "u",
+            "labels": [{"name": "enhancement"}],
+            "headRefName": "feat/y", "baseRefName": "main",
+            "state": "open", "isDraft": False,
+        })
+        with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
+            prs = await client.list_prs_with_review_requests("deile-one")
+        assert len(prs) == 1
+        assert prs[0].number == 31
+
+    async def test_string_labels_normalized(self):
+        """String labels like ["bug", "feat"] must be normalized to [{name: ...}]."""
+        client = GitHubClient("owner/name")
+        payload = json.dumps([
+            {"number": 32, "title": "string labels", "url": "u",
+             "labels": ["bug", "feat"],
+             "headRefName": "feat/z", "baseRefName": "main",
+             "state": "open", "isDraft": False},
+        ])
+        with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
+            prs = await client.list_prs_with_review_requests("deile-one")
+        assert len(prs) == 1
+        assert "bug" in prs[0].labels
+
+    async def test_gh_error_returns_empty(self):
+        client = GitHubClient("owner/name")
+        with patch.object(client, "_run_checked",
+                          new=AsyncMock(side_effect=GhCommandError(("x",), 1, "", "err"))):
+            prs = await client.list_prs_with_review_requests("deile-one")
+        assert prs == []
+
+
+class TestSearchItemsMentioning:
+    async def test_separates_issues_from_prs(self):
+        client = GitHubClient("owner/name")
+        payload = json.dumps([
+            {"number": 5, "title": "issue", "url": "https://github.com/o/r/issues/5",
+             "labels": [], "body": "@deile-one", "state": "open"},
+            {"number": 6, "title": "pr", "url": "https://github.com/o/r/pull/6",
+             "labels": [], "body": "@deile-one", "state": "open"},
+        ])
+        with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
+            issues, prs = await client.search_items_mentioning("@deile-one")
+        assert len(issues) == 1
+        assert issues[0].number == 5
+        assert len(prs) == 1
+        assert prs[0].number == 6
+
+    async def test_gh_error_returns_empty(self):
+        client = GitHubClient("owner/name")
+        with patch.object(client, "_run_checked",
+                          new=AsyncMock(side_effect=GhCommandError(("x",), 1, "", "err"))):
+            issues, prs = await client.search_items_mentioning("@deile-one")
+        assert issues == []
+        assert prs == []

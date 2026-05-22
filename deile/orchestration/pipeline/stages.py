@@ -26,7 +26,10 @@ from typing import TYPE_CHECKING, Optional
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
 from deile.orchestration.pipeline.follow_up_detector import detect_follow_ups
 from deile.orchestration.pipeline.github_client import (CommentRef,
-                                                        GhCommandError)
+                                                        GhCommandError,
+                                                        IssueRef,
+                                                        MentionTrigger,
+                                                        PrRef)
 from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
                                                  REVIEW_PENDING,
@@ -236,36 +239,147 @@ async def classify_new_prs(monitor: "PipelineMonitor") -> None:
         await monitor.notifier.pr_auto_classified(pr.number, pr.title, pr.url)
 
 
-# ----- mention handling: dispatch @deile-one comments to Claude ----------
+# ----- mention handling: unified trigger polling (issue #253) ----------
 
 async def process_mentions(monitor: "PipelineMonitor") -> None:
-    """Poll issue/PR comments since cursor, dispatch @deile-one mentions to Claude."""
-    since = monitor._load_mention_cursor()
+    """Unified mention processing: poll ALL trigger types and dispatch deduplicated.
+
+    Trigger types monitored (RF1):
+    - Comment mentions (@deile-one in issue/PR comments)
+    - Body mentions (@deile-one in issue/PR body)
+    - Assignee (DEILE assigned to an issue/PR)
+    - Reviewer (DEILE requested as reviewer on a PR)
+
+    Deduplication: triggers targeting the same issue/PR are grouped and dispatched
+    once with full context of ALL trigger types, avoiding duplicate processing
+    across ticks (comment cursor + batch locking) and within the same tick
+    (dedup key on target).
+    """
     handle = monitor.config.mention_handle.lower()
+    gh_login = handle.lstrip("@")  # "deile-one"
+    triggers: list[MentionTrigger] = []
+
+    # ---- 1. Comment mentions (existing cursor-based polling) ------------
+    since = monitor._load_mention_cursor()
     try:
         issue_comments = await monitor.github.list_issue_comments_since(since)
         pr_comments = await monitor.github.list_pr_review_comments_since(since)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("mention poll failed: %s", exc)
-        return
-    all_comments: list[CommentRef] = issue_comments + pr_comments
-    now = datetime.now(tz=timezone.utc)
+        logger.warning("mention poll (comments) failed: %s", exc)
+        issue_comments = []
+        pr_comments = []
+    all_comments: list[CommentRef] = list(issue_comments) + list(pr_comments)
     for ref in all_comments:
         if handle not in ref.body.lower():
             continue
+        triggers.append(MentionTrigger(
+            trigger_type="comment",
+            comment=ref,
+        ))
+
+    # ---- 2. Assignee triggers -------------------------------------------
+    try:
+        assigned_issues = await monitor.github.list_issues_assigned_to(gh_login)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("mention poll (assigned issues) failed: %s", exc)
+        assigned_issues = []
+    for issue in assigned_issues:
+        triggers.append(MentionTrigger(
+            trigger_type="assignee",
+            issue=issue,
+        ))
+    try:
+        assigned_prs = await monitor.github.list_prs_assigned_to(gh_login)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("mention poll (assigned PRs) failed: %s", exc)
+        assigned_prs = []
+    for pr in assigned_prs:
+        triggers.append(MentionTrigger(
+            trigger_type="assignee",
+            pr=pr,
+        ))
+
+    # ---- 3. Review request triggers -------------------------------------
+    try:
+        review_prs = await monitor.github.list_prs_with_review_requests(gh_login)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("mention poll (review requests) failed: %s", exc)
+        review_prs = []
+    for pr in review_prs:
+        triggers.append(MentionTrigger(
+            trigger_type="reviewer",
+            pr=pr,
+        ))
+
+    # ---- 4. Body mentions -----------------------------------------------
+    try:
+        body_issues, body_prs = await monitor.github.search_items_mentioning(handle)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("mention poll (body search) failed: %s", exc)
+        body_issues = []
+        body_prs = []
+    for issue in body_issues:
+        triggers.append(MentionTrigger(
+            trigger_type="body",
+            issue=issue,
+        ))
+    for pr in body_prs:
+        triggers.append(MentionTrigger(
+            trigger_type="body",
+            pr=pr,
+        ))
+
+    if not triggers:
+        monitor._save_mention_cursor(datetime.now(tz=timezone.utc))
+        return
+
+    # ---- Deduplicate by target ------------------------------------------
+    groups: dict[str, list[MentionTrigger]] = {}
+    for t in triggers:
+        key = t.dedup_key
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(t)
+
+    # ---- Dispatch each group --------------------------------------------
+    now = datetime.now(tz=timezone.utc)
+    for dedup_key, group in groups.items():
+        # Build a rich context string from all trigger types in this group
+        trigger_types = sorted(set(t.trigger_type for t in group))
+        primary = group[0]
+        logger.info(
+            "mention group %s: triggers=%s",
+            dedup_key, trigger_types,
+        )
+
         try:
-            outcome = await monitor.implementer.mention(monitor, ref)
+            outcome = await monitor.implementer.mention(
+                monitor,
+                primary,
+                trigger_types=trigger_types,
+                all_triggers=group,
+            )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("mention dispatch error for %s: %s", ref.html_url, exc)
+            logger.warning("mention dispatch error for %s: %s", dedup_key, exc)
             continue
+
         if not outcome.ok:
             logger.warning(
-                "mention dispatch failed for %s: %s", ref.html_url, outcome.error
+                "mention dispatch failed for %s: %s", dedup_key, outcome.error
             )
             continue
+
         monitor._stats.mentions_processed += 1
-        logger.info("mention processed: %s by @%s", ref.html_url, ref.author)
-        await monitor.notifier.mention_processed(ref.html_url, ref.author)
+        author = ""
+        for t in group:
+            if t.comment is not None:
+                author = t.comment.author
+                break
+        await monitor.notifier.mention_processed(
+            primary.comment.html_url if primary.comment else dedup_key,
+            author or gh_login,
+        )
+
     monitor._save_mention_cursor(now)
 
 

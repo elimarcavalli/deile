@@ -14,6 +14,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
+from deile.orchestration.pipeline.github_client import (CommentRef,
+                                                        IssueRef,
+                                                        MentionTrigger)
 from deile.orchestration.pipeline.implementer import (ClaudeImplementer,
                                                       WorkerImplementer,
                                                       WorkOutcome,
@@ -57,8 +60,32 @@ def _pr(number=7, title="t", head_ref="auto/issue-242"):
 def _comment():
     return SimpleNamespace(
         html_url="https://github.com/owner/name/issues/1#c1",
-        body="@deile-one olá", author="someone",
+        body="@deile-one ol\u221a\u00b0", author="someone",
     )
+
+
+def _mention_trigger_comment(*, trigger_type: str = "comment") -> MentionTrigger:
+    """Build a MentionTrigger wrapping a synthetic CommentRef."""
+    comment = CommentRef(
+        comment_id=1,
+        body="@deile-one ola",
+        html_url="https://github.com/owner/name/issues/1#issuecomment-1",
+        issue_url="https://api.github.com/repos/owner/name/issues/1",
+        author="someone",
+        kind="issue",
+    )
+    return MentionTrigger(trigger_type=trigger_type, comment=comment)
+
+
+def _mention_trigger_assignee_issue(number: int = 100) -> MentionTrigger:
+    """Build a MentionTrigger for an assignee on an issue."""
+    issue = IssueRef(
+        number=number,
+        title="test issue",
+        url=f"https://github.com/owner/name/issues/{number}",
+        labels=(),
+    )
+    return MentionTrigger(trigger_type="assignee", issue=issue)
 
 
 # ----- factory ------------------------------------------------------------
@@ -111,7 +138,12 @@ class TestClaudeImplementer:
 
     async def test_mention_runs_in_base_repo_path(self):
         monitor = _make_monitor(claude_stdout="done")
-        out = await ClaudeImplementer().mention(monitor, _comment())
+        trigger = _mention_trigger_comment()
+        out = await ClaudeImplementer().mention(
+            monitor, trigger,
+            trigger_types=["comment"],
+            all_triggers=[trigger],
+        )
         assert out.ok is True
         _, kwargs = monitor.claude.run.call_args
         assert kwargs["cwd"] == monitor.config.base_repo_path
@@ -171,11 +203,16 @@ class TestWorkerImplementer:
         assert "merged" in out.text.lower()
         assert client.last_payload["channel_id"] == "pipeline-pr-7"
 
-    async def test_mention_dispatches_to_mentions_channel(self):
+    async def test_mention_dispatches_to_mention_channel(self):
         client = _FakeClient({"ok": True, "summary": "respondido"})
-        out = await WorkerImplementer(client=client).mention(_make_monitor(), _comment())
+        trigger = _mention_trigger_comment()
+        out = await WorkerImplementer(client=client).mention(
+            _make_monitor(), trigger,
+            trigger_types=["comment"],
+            all_triggers=[trigger],
+        )
         assert out.ok is True
-        assert client.last_payload["channel_id"] == "pipeline-mentions"
+        assert client.last_payload["channel_id"] == "pipeline-mention-issue-1"
 
 
 class TestWorkOutcome:
