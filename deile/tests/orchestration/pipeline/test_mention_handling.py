@@ -9,7 +9,10 @@ from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
 from deile.orchestration.pipeline.github_client import (CommentRef, IssueRef,
                                                         PrRef)
 from deile.orchestration.pipeline.implementer import WorkOutcome
-from deile.orchestration.pipeline.labels import MENTION_DONE, WORKFLOW_NEW
+from deile.orchestration.pipeline.labels import (MENTION_DONE,
+                                                 WORKFLOW_ARCHITECTURE,
+                                                 WORKFLOW_NEW,
+                                                 WORKFLOW_WAITING)
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
 
@@ -58,6 +61,13 @@ def _make_monitor(
     # The mention stage marks sticky triggers ~mention:processado after a
     # successful dispatch (issue #253 cross-tick dedup fix).
     github.add_labels = AsyncMock()
+    github.remove_labels = AsyncMock()
+    # Gate integration (issue #257): a comment mention on an issue checks the
+    # issue's current ~workflow: state. Default = no labels (not gated) so the
+    # legacy one-shot path is preserved; specific tests override this.
+    github.get_issue = AsyncMock(
+        return_value=IssueRef(number=1, title="t", url="https://github.com/o/r/issues/1", labels=())
+    )
 
     notifier = MagicMock()
     for attr in (
@@ -489,3 +499,41 @@ class TestProcessMentionsModeRouting:
         await monitor._process_mentions()
         assert monitor.implementer.mention.call_args.kwargs["mode"] == "work_merge"
         github.add_labels.assert_called_once_with("pr", 77, [MENTION_DONE])
+
+
+class TestCommentMentionGateIntegration:
+    """Issue #257: a comment mention must NOT pull an issue out of the flow it is
+    already in. Mentioning the target by name in a comment is normal."""
+
+    async def test_comment_on_gated_issue_does_not_one_shot(self):
+        # Issue is mid-gate (em_arquitetura) → the comment must not spawn a
+        # parallel one-shot implementation.
+        comment = _comment(1, "boa @deile-one, segue a opção A")
+        monitor, github, notifier = _make_monitor(issue_comments=[comment])
+        github.get_issue = AsyncMock(return_value=IssueRef(
+            number=1, title="t", url="https://github.com/o/r/issues/1",
+            labels=(WORKFLOW_ARCHITECTURE, "refinar"),
+        ))
+        await monitor._process_mentions()
+        monitor.claude.run.assert_not_called()  # no one-shot dispatch
+
+    async def test_comment_on_waiting_issue_lifts_the_pause(self):
+        # Issue paused for the stakeholder → the comment IS the decision: lift the
+        # waiting overlay (resume refine), no one-shot.
+        comment = _comment(1, "@deile-one decisão: opção C")
+        monitor, github, notifier = _make_monitor(issue_comments=[comment])
+        github.get_issue = AsyncMock(return_value=IssueRef(
+            number=1, title="t", url="https://github.com/o/r/issues/1",
+            labels=(WORKFLOW_ARCHITECTURE, WORKFLOW_WAITING, "refinar"),
+        ))
+        await monitor._process_mentions()
+        github.remove_labels.assert_any_await("issue", 1, [WORKFLOW_WAITING])
+        monitor.claude.run.assert_not_called()
+
+    async def test_comment_on_ungated_issue_still_one_shot(self):
+        # No ~workflow: label → standalone request → one-shot preserved (legacy).
+        comment = _comment(1, "@deile-one cria um script aí")
+        monitor, github, notifier = _make_monitor(issue_comments=[comment])
+        # default get_issue returns labels=() (not gated)
+        await monitor._process_mentions()
+        monitor.claude.run.assert_called()  # one-shot dispatched

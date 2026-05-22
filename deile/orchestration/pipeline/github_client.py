@@ -305,6 +305,37 @@ class GitHubClient:
 
     # -- pull requests ------------------------------------------------
 
+    async def has_open_pr_for_issue(self, number: int) -> bool:
+        """True if an OPEN PR already targets/closes issue ``number`` (dedup guard).
+
+        Issue #257: the implement stage must not open a SECOND PR for an issue that
+        was already implemented through another path (e.g. a ``@deile-one`` comment
+        mention firing the one-shot handler while the issue is still flowing through
+        the refinement gate). Matches a PR whose body uses a closing keyword for the
+        issue OR whose head branch references it — covering both the pipeline's
+        ``auto/issue-N`` branches and ad-hoc branches opened via the mention path.
+        Best-effort: a query failure returns False (never block work on a hiccup).
+        """
+        try:
+            out = await self._run_checked(
+                "pr", "list", "--repo", self.repo, "--state", "open",
+                "--search", str(number), "--limit", "30",
+                "--json", "number,body,headRefName",
+            )
+            prs = json.loads(out)
+        except (GhCommandError, json.JSONDecodeError) as exc:
+            logger.warning("has_open_pr_for_issue #%d failed: %s", number, exc)
+            return False
+        closes = re.compile(rf"\b(?:clos\w*|fix\w*|resolv\w*)\s+#{number}\b", re.IGNORECASE)
+        needle = f"issue-{number}"
+        for pr in prs:
+            head = (pr.get("headRefName") or "")
+            if needle in head or head.endswith(f"-{number}"):
+                return True
+            if closes.search(pr.get("body") or ""):
+                return True
+        return False
+
     async def list_open_prs(self, *, limit: int = 50) -> List[PrRef]:
         return await self._list_refs(
             "pr", "list",

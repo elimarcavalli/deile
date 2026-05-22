@@ -25,7 +25,7 @@ from deile.orchestration.pipeline.labels import (REFINAR,
                                                  WORKFLOW_BLOCKED,
                                                  WORKFLOW_DECOMPOSED,
                                                  WORKFLOW_IMPLEMENTING,
-                                                 WORKFLOW_NEW,
+                                                 WORKFLOW_NEW, WORKFLOW_PR,
                                                  WORKFLOW_REFINING,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING,
@@ -87,6 +87,7 @@ def _make_monitor(
         side_effect=lambda label, **_: list(lm.get(label, []))
     )
     github.list_open_prs = AsyncMock(return_value=[])
+    github.has_open_pr_for_issue = AsyncMock(return_value=False)
     github.claim_with_batch = AsyncMock(return_value="abc12345")
     github.clear_batch_label = AsyncMock()
     github.transition_issue = AsyncMock()
@@ -147,7 +148,9 @@ class TestCritique:
         t = _transitions(monitor.github)
         assert (1, WORKFLOW_NEW, WORKFLOW_REVIEWING) in t
         assert (1, WORKFLOW_REVIEWING, WORKFLOW_REVIEWED) in t
-        monitor.github.remove_labels.assert_any_await("issue", 1, [REFINAR])
+        # CLARO drops the refinar marker (+ any stale refine state, defensively).
+        removed = [c.args[2] for c in monitor.github.remove_labels.await_args_list if c.args[1] == 1]
+        assert any(REFINAR in lst for lst in removed)
 
     async def test_poor_feature_goes_to_arquitetura(self):
         monitor, _, _ = _make_monitor(
@@ -280,3 +283,14 @@ class TestParallelImplement:
         )
         await monitor._implement_one_reviewed_issue()
         assert client.payloads == []  # intent is decomposed, not implemented
+
+    async def test_skips_and_parks_when_open_pr_already_exists(self):
+        # Dedup guard: a PR already implements #50 (e.g. via the mention path) →
+        # do NOT open a second PR; park the issue in em_pr instead.
+        monitor, _, client = _make_monitor(
+            label_map={WORKFLOW_REVIEWED: [_issue(50, "feature", "~batch:abc12345")]},
+        )
+        monitor.github.has_open_pr_for_issue = AsyncMock(return_value=True)
+        await monitor._implement_one_reviewed_issue()
+        assert client.payloads == []  # no implementation dispatched
+        assert (50, WORKFLOW_REVIEWED, WORKFLOW_PR) in _transitions(monitor.github)

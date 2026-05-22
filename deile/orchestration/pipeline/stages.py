@@ -412,6 +412,31 @@ async def _dispatch_mention_group(
         await _route_issue_to_pipeline(monitor, group, number, dedup_key, gh_login)
         return
 
+    # Comment mention on an ISSUE: integrate with the flow it is ALREADY in
+    # (issue #257) instead of spawning a parallel one-shot. Mentioning the target
+    # by name in a comment is NORMAL and must NOT pull an issue out of the gate.
+    if kind == "issue":
+        try:
+            gated = await monitor.github.get_issue(number)
+            glabels = set(gated.labels)
+        except Exception:  # noqa: BLE001 — best-effort; fall through to one-shot
+            glabels = set()
+        if WORKFLOW_WAITING in glabels:
+            # The comment IS the stakeholder's decision → lift the pause so the
+            # refine loop resumes (the refiner reads this comment on its next pass).
+            try:
+                await monitor.github.remove_labels("issue", number, [WORKFLOW_WAITING])
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("mention #%d: could not lift aguardando_stakeholder: %s", number, exc)
+            logger.info("mention #%d: decisão do stakeholder → retoma refino (sem one-shot)", number)
+            return
+        active = next((lb for lb in glabels if lb.startswith("~workflow:")), None)
+        if active:
+            # Already owned by the gate — do NOT spawn a parallel flow; the gate's
+            # next worker dispatch reads the new comment.
+            logger.info("mention #%d ignorada p/ roteamento: já está no gate (%s)", number, active)
+            return
+
     # Decide the dispatch mode from the role.
     if kind == "pr" and "assignee" in has:
         mode = "work_merge"
@@ -662,8 +687,10 @@ async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
         await monitor.github.transition_issue(
             number, from_label=WORKFLOW_REVIEWING, to_label=WORKFLOW_REVIEWED
         )
-        # The refinement marker (if any) is done now that scope is clear.
-        await monitor.github.remove_labels("issue", number, [REFINAR])
+        # Scope is clear now: drop the refinement marker AND any stale refine
+        # state (em_refinamento/em_arquitetura) so the issue carries exactly one
+        # ~workflow: label — defensive against residue from a raced cycle.
+        await monitor.github.remove_labels("issue", number, [REFINAR, *REFINE_WORKFLOW_STATES])
         monitor._stats.issues_reviewed += 1
         await monitor.notifier.issue_reviewed(number, target.title, target.url)
         return
@@ -893,6 +920,24 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
 
     claimed = []
     for target in batch:
+        # Dedup guard (issue #257), gate-only: if an OPEN PR already implements
+        # this issue — belt-and-suspenders behind the mention/gate integration —
+        # do NOT open a second PR. Park it in em_pr so it leaves the queue (the
+        # existing PR is the work).
+        if monitor.config.enable_refinement_gate and await monitor.github.has_open_pr_for_issue(target.number):
+            logger.info("implement #%d: PR aberta já existe — parkando em em_pr (sem duplicar)", target.number)
+            try:
+                await monitor.github.transition_issue(
+                    target.number, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_PR
+                )
+            except GhCommandError as exc:
+                await _record_gh_error(monitor, f"could not park #{target.number} in em_pr", exc)
+            # Drop any stale refine residue so the issue carries one ~workflow:.
+            await monitor.github.remove_labels(
+                "issue", target.number, [REFINAR, *REFINE_WORKFLOW_STATES]
+            )
+            monitor._resume_tracker.clear(target.number)
+            continue
         # Best-effort claim (sequential-tick lock): revisada → em_implementacao.
         # transition_issue is remove-then-add (not atomic); multi-monitor safety
         # relies on the PID lock + single-replica Recreate + hash sharding.
@@ -906,6 +951,13 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
                 notifier_label=f"implement claim #{target.number}",
             )
             continue
+        # Defensive (gate-only): an issue reaching implementation carries exactly
+        # one ~workflow: state — drop any refine residue (em_arquitetura/refinar)
+        # left by a raced gate cycle.
+        if monitor.config.enable_refinement_gate:
+            await monitor.github.remove_labels(
+                "issue", target.number, [REFINAR, *REFINE_WORKFLOW_STATES]
+            )
         await monitor.notifier.implementation_started(
             target.number, target.title, monitor.branch_for_issue(target.number)
         )

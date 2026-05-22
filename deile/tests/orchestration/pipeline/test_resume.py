@@ -119,6 +119,7 @@ def _make_monitor(
         side_effect=lambda label, **_: list(label_map.get(label, []))
     )
     github.list_open_prs = AsyncMock(return_value=list(prs or []))
+    github.has_open_pr_for_issue = AsyncMock(return_value=False)
     github.claim_with_batch = AsyncMock(return_value="abc12345")
     github.transition_issue = AsyncMock()
     github.transition_pr = AsyncMock()
