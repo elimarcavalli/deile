@@ -80,3 +80,4 @@ deilebot/conftest.py
 infra/
 !infra/k8s/wrapper.py
 !infra/k8s/worker_server.py
+!infra/k8s/_worker_resume.py
