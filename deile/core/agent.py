@@ -185,6 +185,14 @@ def _select_configured_model_provider(
     soft_candidates = [
         ("preferred_model", context_data.get("preferred_model")),
         ("_bot_forced_model", context_data.get("_bot_forced_model")),
+        # Operator-set GLOBAL preference (env DEILE_PREFERRED_MODEL /
+        # settings.json model.preferred). Soft: skipped when unset (default
+        # None) or when the handle is not registered. This is what lets a
+        # deployment pin its model (e.g. the deile-worker to
+        # ``deepseek:deepseek-v4-pro``) without a hard ``/model`` lock — and it
+        # makes the long-existing DEILE_PREFERRED_MODEL env actually take effect
+        # (previously it was read into Settings but never consulted here).
+        ("settings.preferred_model", get_settings().preferred_model),
         ("default_model", _get_config_default_model()),
     ]
     for source, raw_handle in soft_candidates:
