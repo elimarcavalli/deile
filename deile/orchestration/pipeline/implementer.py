@@ -415,8 +415,8 @@ def _render_worker_implement_brief(
     )
 
 
-def _render_worker_review_brief(repo: str, main: str, number: int, title: str) -> str:
-    return _WORKER_REVIEW_BRIEF.format(repo=repo, main=main, number=number, title=title)
+def _render_worker_review_brief(repo: str, main: str, number: int) -> str:
+    return _WORKER_REVIEW_BRIEF.format(repo=repo, main=main, number=number)
 
 
 # The journal lives in the worker's per-channel PVC workspace (one level above
@@ -446,10 +446,10 @@ def _render_worker_implement_resume_brief(
 
 
 def _render_worker_review_resume_brief(
-    repo: str, main: str, number: int, title: str
+    repo: str, main: str, number: int
 ) -> str:
     return _WORKER_REVIEW_RESUME_BRIEF.format(
-        repo=repo, main=main, number=number, title=title, progress_block=_PROGRESS_BLOCK
+        repo=repo, main=main, number=number, progress_block=_PROGRESS_BLOCK
     )
 
 
@@ -631,11 +631,11 @@ class WorkerImplementer(PipelineImplementer):
     ) -> WorkOutcome:
         if resume:
             brief = _render_worker_review_resume_brief(
-                monitor.config.repo, monitor.config.main_branch, pr.number, pr.title
+                monitor.config.repo, monitor.config.main_branch, pr.number
             )
         else:
             brief = _render_worker_review_brief(
-                monitor.config.repo, monitor.config.main_branch, pr.number, pr.title
+                monitor.config.repo, monitor.config.main_branch, pr.number
             )
         resume_block = _build_resume_block(
             monitor.config.repo, monitor.config.main_branch,
@@ -695,8 +695,8 @@ class WorkerImplementer(PipelineImplementer):
             )
         if mode == "work_merge":
             brief = (
-                _render_worker_review_resume_brief(repo, main, number, "")
-                if resume else _render_worker_review_brief(repo, main, number, "")
+                _render_worker_review_resume_brief(repo, main, number)
+                if resume else _render_worker_review_brief(repo, main, number)
             )
             return await self._dispatch(
                 brief, channel_id=channel_id, persona="reviewer",
