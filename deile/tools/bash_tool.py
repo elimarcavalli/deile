@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 # PTY imports for Unix-like systems
 try:
@@ -56,10 +56,6 @@ class BashExecuteTool(SyncTool):
         self.artifact_manager = artifact_manager
         self.platform = platform.system()
 
-    def _assess_security_risk(self, command: str) -> Tuple[str, List[str]]:
-        """Assess security risk of command (delegated to `_shell_security`)."""
-        return assess_risk(command)
-    
     def _should_use_pty(self, command: str, force_pty: Optional[bool] = None) -> bool:
         """Determine if PTY should be used"""
         
@@ -328,7 +324,7 @@ class BashExecuteTool(SyncTool):
                 raise ToolError(f"Working directory does not exist: {working_directory}")
             
             # Security assessment
-            risk_level, security_warnings = self._assess_security_risk(command)
+            risk_level, security_warnings = assess_risk(command)
             
             # Check if risk level is acceptable
             risk_hierarchy = ["safe", "moderate", "dangerous"]
