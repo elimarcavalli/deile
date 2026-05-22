@@ -176,6 +176,8 @@ class TestWorkerImplementer:
         assert "pull/12" in out.text
         assert client.last_payload["channel_id"] == "pipeline-issue-242"
         assert client.last_wait is True
+        # Implementation runs under the developer persona.
+        assert client.last_payload["persona"] == "developer"
         # The brief must name the repo, the issue number and the branch.
         brief = client.last_payload["brief"]
         assert "owner/name" in brief
@@ -202,6 +204,21 @@ class TestWorkerImplementer:
         assert out.ok is True
         assert "merged" in out.text.lower()
         assert client.last_payload["channel_id"] == "pipeline-pr-7"
+        # The review/merge stage is the final quality gate: it runs under the
+        # dedicated ``reviewer`` persona, not ``developer``.
+        assert client.last_payload["persona"] == "reviewer"
+        # And the brief must demand a real quality review, not just green tests.
+        brief = client.last_payload["brief"]
+        assert "QUALITY GATE" in brief
+        assert "SOLID" in brief
+
+    async def test_review_resume_uses_reviewer_persona(self):
+        client = _FakeClient({"ok": True, "summary": "https://github.com/owner/name/pull/7 MERGED"})
+        out = await WorkerImplementer(client=client).review(
+            _make_monitor(), _pr(number=7), resume=True
+        )
+        assert out.ok is True
+        assert client.last_payload["persona"] == "reviewer"
 
     async def test_mention_dispatches_to_mention_channel(self):
         client = _FakeClient({"ok": True, "summary": "respondido"})
@@ -213,6 +230,8 @@ class TestWorkerImplementer:
         )
         assert out.ok is True
         assert client.last_payload["channel_id"] == "pipeline-mention-issue-1"
+        # Mentions run under the developer persona (only PR review uses reviewer).
+        assert client.last_payload["persona"] == "developer"
 
 
 class TestWorkOutcome:

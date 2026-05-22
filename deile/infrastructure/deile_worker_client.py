@@ -61,8 +61,10 @@ _TOKEN_SAFE_CHARS = re.compile(r"^[A-Za-z0-9._\-+/=:~]{16,4096}$")
 
 # Personas suportadas pelo worker — espelha
 # deile/personas/library/*.yaml. Manter sincronizado quando uma persona
-# nova for adicionada ao worker.
-WorkerPersona = Literal["developer", "architect", "debugger"]
+# nova for adicionada ao worker. ``reviewer`` é a persona do quality-gate
+# de review de PR (pilar 04 §Personas; instruções em
+# personas/instructions/reviewer.md), usada pelo estágio de review do pipeline.
+WorkerPersona = Literal["developer", "architect", "debugger", "reviewer"]
 
 
 class WorkerDispatchError(DEILEError):
