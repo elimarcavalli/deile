@@ -89,6 +89,42 @@ class TestSimpleReviewBriefs:
         assert "NÃO mergeie" in out
 
 
+class TestFullSuiteGate:
+    """Os briefs-portão (que aprovam/mergeiam) exigem a SUÍTE COMPLETA verde,
+    não só os arquivos do diff — uma mudança quebra testes em arquivos que não
+    tocou (regressão: PR #275 aprovou com a suíte vermelha por rodar só o subset).
+    """
+
+    FULL_SUITE = "pytest deile/tests/"
+
+    def test_review_brief_requires_full_suite(self):
+        out = _render_worker_review_brief("o/r", "main", 11)
+        assert self.FULL_SUITE in out
+        assert "SUÍTE COMPLETA" in out
+
+    def test_review_resume_brief_requires_full_suite(self):
+        out = _render_worker_review_resume_brief("o/r", "main", 4)
+        assert self.FULL_SUITE in out
+        assert "SUÍTE COMPLETA" in out
+
+    def test_review_only_brief_runs_full_suite_before_approve(self):
+        out = _render_worker_review_only_brief("o/r", "main", 11)
+        # review_only ANTES não rodava teste nenhum — agora roda a suíte completa
+        # e só aprova se verde.
+        assert self.FULL_SUITE in out
+        assert "REQUEST_CHANGES" in out
+
+    def test_implement_brief_requires_full_suite_before_pr(self):
+        out = _render_worker_implement_brief("o/r", "main", "b", 1, "T", "body")
+        assert self.FULL_SUITE in out
+
+    def test_implement_resume_brief_requires_full_suite(self):
+        out = _render_worker_implement_resume_brief(
+            "o/r", "main", "b", 3, "T", "body"
+        )
+        assert self.FULL_SUITE in out
+
+
 class TestResumeBriefs:
     def test_implement_resume_injects_progress_block(self):
         out = _render_worker_implement_resume_brief(
