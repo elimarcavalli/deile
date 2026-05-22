@@ -157,12 +157,27 @@ class TestClaimWithBatch:
 class TestEnsureLabels:
     async def test_creates_all_labels_idempotent(self):
         client = GitHubClient("owner/name")
-        # `_run` returns rc=0 first call, rc=1 thereafter (already exists).
-        rcs = iter([(0, "", ""), (1, "", "exists"), (1, "", ""), (1, "", ""),
-                    (1, "", ""), (1, "", ""), (1, "", ""), (1, "", ""), (1, "", "")])
-        with patch.object(client, "_run", new=AsyncMock(side_effect=lambda *a: next(rcs))):
+        # `_run` always returns rc=0 (created) — robust regardless of label count.
+        with patch.object(client, "_run", new=AsyncMock(return_value=(0, "", ""))):
             # Should not raise, regardless of existing/missing.
             await client.ensure_pipeline_labels()
+
+    async def test_creates_blocked_label(self):
+        # Resume feature (issue #254): ensure_pipeline_labels must create the
+        # ~workflow:bloqueada label so the block flow can apply it.
+        from deile.orchestration.pipeline.labels import WORKFLOW_BLOCKED
+        client = GitHubClient("owner/name")
+        created: list = []
+
+        async def fake_run(*args):
+            # ``label create <name> --repo ...`` — capture the label name.
+            if args and args[0] == "label" and args[1] == "create":
+                created.append(args[2])
+            return (0, "", "")
+
+        with patch.object(client, "_run", new=AsyncMock(side_effect=fake_run)):
+            await client.ensure_pipeline_labels()
+        assert WORKFLOW_BLOCKED in created
 
 
 class TestGhCommandError:

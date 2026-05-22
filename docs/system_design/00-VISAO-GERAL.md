@@ -99,6 +99,7 @@
 | 27 | Stack de containerização em K8s (Rancher Desktop / k3s) para isolar deile-Job/bot/deile-shell do host — secrets como files (não env), pop após bootstrap, NetworkPolicy default-deny, PSS restricted, drop ALL caps | V1 | Containerização (14), Segurança (08) |
 | 28 | Tool whitelist no agente embutido do bot e default-`messaging` no `deile-oneshot` Job — Discord input é untrusted, prompt do Job é fixo; toolset cheio só no `deile-shell` interativo (prompt vem do operador via kubectl exec) | V1 | Containerização (14), Componentes (04) |
 | 29 | Permission gate + audit logging do `dispatch_deile_task` adiados para feature dedicada — refator hexagonal isolado; compensado por tool whitelist (#28), NetworkPolicy (#27) e cooldown de 30s | V1 | Segurança (08) |
+| 30 | Resume de trabalho parcial no pipeline (in-place no PVC, sem `reset --hard`); detecção de fim ground-truth-first; guarda de progresso por fingerprint substantivo; teto de tentativas/orçamento; `~workflow:bloqueada` exclui do auto-resume — issue #254 | V1 | Arquitetura (02), Fluxo (05), Segurança (08) |
 
 ## Estado dos pilares
 

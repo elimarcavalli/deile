@@ -61,6 +61,12 @@ spec:
             # the operator; the worker's prompt is sanitised by envelope.
             - { name: DEILE_BOT_APPROVAL_AUTO,      value: "1" }
             - { name: DEILE_DEFAULT_PERSONA,        value: developer }
+            # Pin the worker to DeepSeek V4 Pro for implementation/review work:
+            # a stronger model than the cheap tier-3 flash the router might
+            # otherwise pick (the PRO performs near Claude Sonnet). Soft
+            # preference — falls back to the router if deepseek is unavailable.
+            # Configurable: change the value or remove this line.
+            - { name: DEILE_PREFERRED_MODEL,        value: "deepseek:deepseek-v4-pro" }
             # Worker's own listener.
             - { name: DEILE_WORKER_HOST,            value: "0.0.0.0" }
             - { name: DEILE_WORKER_PORT,            value: "8766" }

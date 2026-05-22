@@ -143,6 +143,12 @@ RUN chmod 0555 /app/wrapper.py
 COPY --chown=deile:deile infra/k8s/worker_server.py /app/worker_server.py
 RUN chmod 0555 /app/worker_server.py
 
+# Pure-logic helper imported by worker_server.py (``import _worker_resume``):
+# resume fingerprint / journal / end-detection (issue #254). It MUST sit in
+# /app next to worker_server.py or the worker crashes on import at startup.
+COPY --chown=deile:deile infra/k8s/_worker_resume.py /app/_worker_resume.py
+RUN chmod 0555 /app/_worker_resume.py
+
 WORKDIR /app
 USER deile:deile
 

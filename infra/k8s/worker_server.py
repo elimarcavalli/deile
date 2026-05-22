@@ -49,6 +49,12 @@ from typing import Any, Dict, Optional
 # aiohttp comes from the deilebot extra (already in the image).
 from aiohttp import web
 
+# Resume-mode helpers (issue #254). Sibling module under infra/k8s — the worker
+# runs with this directory on sys.path (set by the entrypoint / Dockerfile), so
+# a plain import resolves it. Done as a module so the git/fingerprint/journal
+# logic is unit-testable without aiohttp.
+import _worker_resume as resume
+
 logger = logging.getLogger("deile.worker_server")
 logging.basicConfig(
     level=os.environ.get("DEILE_WORKER_LOG_LEVEL", "INFO"),
@@ -342,6 +348,77 @@ async def _list_workspace_files(workdir: Path) -> list[str]:
     return out
 
 
+def _compute_resume_result(
+    workdir: Path,
+    transcript: str,
+    loop_ended: str,
+    resume_ctx: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Compute the structured resume result + persist the per-issue state.
+
+    Runs synchronously while cwd is the workspace (so git sees ``./repo``).
+    Side effects, in order:
+      1. Harden the clone so ``.deile-progress.*`` can never enter a commit/PR
+         (workspace-local ignore + un-stage if force-added).
+      2. Decide ``ended``/``pr_url``/``motivo_bloqueio``/``motivo_fim_loop`` from
+         ground truth (real git/PR state first; the agent's ``BLOQUEADO:`` line
+         is the one model-sourced signal).
+      3. Compute the substantive fingerprint (item 4) and bump the attempt
+         counter + accumulated budget in ``.deile-progress.json``.
+      4. Write the journal: keep the agent's ``.deile-progress.md`` if it wrote
+         one this attempt; otherwise auto-summarize the transcript (hybrid).
+
+    Returns ``{ended, pr_url, motivo_bloqueio, motivo_fim_loop, fingerprint,
+    tentativa}`` — the control-plane → pipeline contract.
+    """
+    repo = resume.repo_dir(workdir)
+    main_branch = str(resume_ctx.get("main_branch") or "main")
+    expect_merge = bool(resume_ctx.get("expect_merge"))
+    pr_url_hint = str(resume_ctx.get("pr_url_hint") or "")
+    elapsed_this = float(resume_ctx.get("elapsed_s") or 0.0)
+
+    # 1. Harden against the state files entering the PR.
+    resume.ensure_state_files_ignored(repo)
+    resume.strip_state_files_from_index(repo)
+
+    # 2. Ground-truth end detection.
+    end = resume.detect_end_state(
+        repo,
+        transcript,
+        main_branch=main_branch,
+        loop_ended=loop_ended,
+        expect_merge=expect_merge,
+        pr_url_hint=pr_url_hint,
+    )
+
+    # 3. Substantive fingerprint + attempt/budget bookkeeping.
+    fingerprint = resume.compute_fingerprint(repo, main_branch=main_branch)
+    prev_state = resume.read_progress_state(workdir)
+    attempt = int(prev_state.get("tentativa") or 0) + 1
+    budget = float(prev_state.get("budget_acumulado_s") or 0.0) + elapsed_this
+    resume.write_progress_state(
+        workdir, attempt=attempt, fingerprint=fingerprint, budget_acumulado_s=budget
+    )
+
+    # 4. Journal: agent's own write wins; else synthesize from the transcript.
+    if not resume.agent_wrote_progress(workdir):
+        fallback = resume.summarize_transcript_fallback(
+            transcript,
+            ended=end["ended"],
+            motivo_fim_loop=end["motivo_fim_loop"],
+            pr_url=end.get("pr_url", ""),
+            attempt=attempt,
+        )
+        resume.write_progress_md(workdir, fallback)
+
+    end["fingerprint"] = fingerprint
+    end["tentativa"] = attempt
+    # Accumulated wall-clock budget across attempts (PVC-durable); the pipeline
+    # uses it for the budget ceiling (item 6).
+    end["budget_acumulado_s"] = budget
+    return end
+
+
 async def _run_task(
     task_id: str,
     brief: str,
@@ -350,12 +427,23 @@ async def _run_task(
     persona: Optional[str],
     attachments: Optional[list] = None,
     history: Optional[str] = None,
+    *,
+    resume_ctx: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Body of a single dispatch — only one runs at a time (lock).
 
     ``history`` is a pre-rendered text block of recent channel turns,
     supplied only on the bot-mediated path; the /deile passthrough sends
     none (one-shot by design).
+
+    ``resume_ctx`` (issue #254), when present, switches on the resume
+    machinery for pipeline dispatches: after the agent runs, the worker reads
+    the real git/PR state of ``./repo`` and returns a STRUCTURED result
+    (``ended``/``pr_url``/``motivo_bloqueio``/``motivo_fim_loop``/``fingerprint``/
+    ``tentativa``) that the pipeline cross-checks. It also writes/auto-summarizes
+    the ``.deile-progress.md`` journal and persists ``.deile-progress.json`` for
+    the progress guard + attempt/budget ceiling. Shape:
+    ``{"repo": str, "branch": str, "main_branch": str, "expect_merge": bool}``.
     """
     start = time.monotonic()
     # Workdir POR canal (não por task): o payload de dispatch não traz
@@ -388,6 +476,11 @@ async def _run_task(
     final_text = ""
     ok = False
     error_repr = ""
+    # How the agent's tool-loop ended — drives the structured resume result.
+    # Default "natural"; the timeout/exception handlers below override it.
+    loop_ended = resume.LOOP_NATURAL
+    # Structured resume result, populated only on the pipeline path.
+    resume_result: Optional[Dict[str, Any]] = None
     async with _TASK_LOCK:
         prev_cwd = os.getcwd()
         try:
@@ -479,11 +572,26 @@ async def _run_task(
         except asyncio.TimeoutError:
             error_repr = f"timeout após {TASK_TIMEOUT_S}s"
             final_text = error_repr
+            loop_ended = resume.LOOP_TIMEOUT
         except Exception as exc:
             error_repr = f"{type(exc).__name__}: {exc}"
             final_text = error_repr + "\n\n" + traceback.format_exc()[-1500:]
             logger.exception("task %s failed", task_id)
+            loop_ended = resume.LOOP_ERROR
         finally:
+            # Resume bookkeeping (issue #254) — computed WHILE cwd is still the
+            # workspace so git sees ``./repo``. Wrapped so a failure here never
+            # breaks the dispatch; on the non-pipeline path it is a no-op.
+            try:
+                if resume_ctx is not None:
+                    # Pass the wall-clock spent so far so the accumulated budget
+                    # (item 6) advances even on a timeout/crash path.
+                    resume_ctx = {**resume_ctx, "elapsed_s": time.monotonic() - start}
+                    resume_result = _compute_resume_result(
+                        workdir, final_text, loop_ended, resume_ctx
+                    )
+            except Exception:  # noqa: BLE001 — never break the dispatch
+                logger.exception("resume bookkeeping failed for task %s", task_id)
             os.chdir(prev_cwd)
 
     elapsed = time.monotonic() - start
@@ -510,6 +618,11 @@ async def _run_task(
         "status_message_id": status_msg_id,
         "finished_at": datetime.now(timezone.utc).isoformat(),
     }
+    # Pipeline path (issue #254): embed the structured resume result so the
+    # pipeline can cross-check ground truth (PR/diff) and drive label
+    # transitions (concluido/incompleto/bloqueado).
+    if resume_result is not None:
+        result["resume"] = resume_result
     # O resultado vai para um diretório plano por task_id: o workdir é
     # compartilhado pelo canal, então gravar lá sobrescreveria o de
     # dispatches anteriores. result_handler lê deste mesmo lugar.
@@ -550,6 +663,30 @@ async def health_handler(request: web.Request) -> web.Response:
     )
 
 
+def _parse_resume_ctx(body: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extract the resume context block from a dispatch body (issue #254).
+
+    Present only on pipeline dispatches. Shape:
+    ``{"resume": {"repo": str, "branch": str, "main_branch": str,
+    "expect_merge": bool, "pr_url_hint": str}}``. A truthy ``resume`` block (even
+    one carrying ``mode=fresh``) turns on the structured-result + journal +
+    fingerprint machinery — the *brief* decides reset-vs-keep; the worker always
+    reports ground truth so a FRESH attempt still seeds ``.deile-progress.json``.
+    Returns None for non-pipeline dispatches.
+    """
+    raw = body.get("resume")
+    if not isinstance(raw, dict) or not raw:
+        return None
+    return {
+        "mode": str(raw.get("mode") or "fresh"),
+        "repo": str(raw.get("repo") or ""),
+        "branch": str(raw.get("branch") or ""),
+        "main_branch": str(raw.get("main_branch") or "main"),
+        "expect_merge": bool(raw.get("expect_merge")),
+        "pr_url_hint": str(raw.get("pr_url_hint") or ""),
+    }
+
+
 async def dispatch_handler(request: web.Request) -> web.Response:
     try:
         body = await request.json()
@@ -582,6 +719,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     history = body.get("history")
     if history is not None:
         history = str(history)
+    # Resume context — present only on pipeline dispatches (issue #254).
+    resume_ctx = _parse_resume_ctx(body)
 
     task_id = uuid.uuid4().hex[:12]
     _TASKS[task_id] = {
@@ -595,7 +734,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     if wait_for_result:
         try:
             result = await asyncio.wait_for(
-                _run_task(task_id, brief, channel_id, user_message_id, persona, attachments, history),
+                _run_task(task_id, brief, channel_id, user_message_id, persona,
+                          attachments, history, resume_ctx=resume_ctx),
                 timeout=TASK_TIMEOUT_S + 30,
             )
             _TASKS[task_id] = result
@@ -607,7 +747,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         # Fire-and-forget — caller polls /v1/result/{id}
         async def _bg():
             try:
-                _TASKS[task_id] = await _run_task(task_id, brief, channel_id, user_message_id, persona, attachments, history)
+                _TASKS[task_id] = await _run_task(task_id, brief, channel_id, user_message_id, persona,
+                                                  attachments, history, resume_ctx=resume_ctx)
             except Exception as exc:
                 _TASKS[task_id] = {
                     "task_id": task_id, "ok": False,

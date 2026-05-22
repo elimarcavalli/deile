@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
@@ -29,17 +30,31 @@ from deile.orchestration.pipeline.github_client import (CommentRef,
 from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
                                                  REVIEW_PENDING,
+                                                 WORKFLOW_BLOCKED,
                                                  WORKFLOW_IMPLEMENTING,
                                                  WORKFLOW_NEW, WORKFLOW_PR,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from deile.orchestration.pipeline.implementer import WorkOutcome
     from deile.orchestration.pipeline.monitor import PipelineMonitor
+
+# Worker structured-result ``ended`` values (issue #254). Mirrors the constants
+# in ``infra/k8s/_worker_resume.py`` — kept as plain literals here to avoid the
+# pipeline importing from the infra tree (different sys.path at runtime).
+_ENDED_CONCLUIDO = "concluido"
+_ENDED_INCOMPLETO = "incompleto"
+_ENDED_BLOQUEADO = "bloqueado"
 
 logger = logging.getLogger(__name__)
 
 _PR_URL_RE = re.compile(r"https://github\.com/[^\s\"'<>]+/pull/\d+", re.IGNORECASE)
+
+
+def _monotonic() -> float:
+    """Monotonic clock used for resume cadence (wrapped for test injection)."""
+    return time.monotonic()
 
 
 async def _record_gh_error(
@@ -348,6 +363,10 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
             # case of an issue transiently carrying both labels (partial
             # transition, operator mislabel) — the bug class behind #253.
             and WORKFLOW_IMPLEMENTING not in i.labels
+            # A blocked issue must never re-enter the implement queue (issue
+            # #254). It keeps em_implementacao + bloqueada until a human removes
+            # bloqueada, so this guard is belt-and-suspenders with the query.
+            and WORKFLOW_BLOCKED not in i.labels
             and monitor._this_monitor_owns(i)
             and (i.batch_id is not None or ownership_label in i.labels)
         ),
@@ -381,53 +400,211 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
         return
     branch = monitor.branch_for_issue(target.number)
     await monitor.notifier.implementation_started(target.number, target.title, branch)
+    monitor._resume_tracker.record_dispatch(target.number, _monotonic())
     # Delegate the actual implementation to the configured strategy
     # (claude -p in a worktree, or a dispatch to the deile-worker). The
     # strategy returns a uniform outcome; label orchestration stays here.
-    outcome = await monitor.implementer.implement(monitor, target)
-    pr_url = _extract_pr_url(outcome.text)
-    # A real failure (worker errored / unreachable): the issue is now parked in
-    # ~workflow:em_implementacao (NOT reverted to revisada), so it will not be
-    # re-picked. Ping the operator once; requeue is a deliberate human action
-    # (move the label back to ~workflow:revisada). Auto-retry-forever was what
-    # produced the duplicate-DM storm.
-    if not outcome.ok:
+    outcome = await monitor.implementer.implement(monitor, target, resume=False)
+    await _finalize_implement_outcome(monitor, target.number, outcome, resume=False)
+
+
+# ----- stage 2b: resume parked, continuable implementations (issue #254) -----
+
+async def resume_in_progress_issues(monitor: "PipelineMonitor") -> None:
+    """Re-dispatch parked, continuable implementations in RESUME mode.
+
+    Selects issues parked in ``~workflow:em_implementacao`` that are NOT
+    ``~workflow:bloqueada`` (a block excludes from the auto-resume) and belong to
+    this monitor. For the first eligible one (one issue per tick, mirroring the
+    implement stage) it enforces, in order:
+
+      1. **Cadence** (item 9): honor ``resume_interval`` since the last dispatch.
+      2. **Attempt ceiling** (item 6): ``resume_max_attempts`` → block flow.
+      3. **Budget ceiling** (item 6): accumulated ``resume_budget`` s → block flow.
+
+    Then re-dispatches in RESUME mode (no reset; reuses branch + untracked) and
+    finalizes the outcome via the shared ground-truth handler — which also runs
+    the progress guard (item 4: identical substantive fingerprint = 0 progress
+    → block flow).
+    """
+    try:
+        issues = await monitor.github.list_issues_with_label(WORKFLOW_IMPLEMENTING, limit=50)
+    except GhCommandError as exc:
+        await _record_gh_error(
+            monitor, "could not list in-progress issues (gh error)", exc,
+            notifier_label="resume/list",
+        )
+        return
+    now = _monotonic()
+    target = next(
+        (
+            i for i in issues
+            if WORKFLOW_BLOCKED not in i.labels
+            and WORKFLOW_PR not in i.labels
+            and monitor._this_monitor_owns(i)
+            and monitor._resume_tracker.cadence_ok(
+                i.number, now, monitor.config.resume_interval
+            )
+        ),
+        None,
+    )
+    if target is None:
+        return
+
+    state = monitor._resume_tracker.get(target.number)
+    # Attempt ceiling — block before spending another dispatch.
+    if state.attempt >= monitor.config.resume_max_attempts:
+        await _block_issue(
+            monitor, target.number,
+            f"teto de tentativas atingido ({state.attempt}/"
+            f"{monitor.config.resume_max_attempts}) sem concluir",
+        )
+        return
+    # Budget ceiling (0 = disabled).
+    if monitor.config.resume_budget > 0 and state.budget_s >= monitor.config.resume_budget:
+        await _block_issue(
+            monitor, target.number,
+            f"orçamento de tempo esgotado ({state.budget_s:.0f}s >= "
+            f"{monitor.config.resume_budget}s) sem concluir",
+        )
+        return
+
+    await monitor.notifier.implementation_resumed(target.number, state.attempt + 1)
+    monitor._resume_tracker.record_dispatch(target.number, now)
+    monitor._stats.resume_dispatches += 1
+    outcome = await monitor.implementer.implement(monitor, target, resume=True)
+    await _finalize_implement_outcome(monitor, target.number, outcome, resume=True)
+
+
+async def _finalize_implement_outcome(
+    monitor: "PipelineMonitor",
+    number: int,
+    outcome: "WorkOutcome",
+    *,
+    resume: bool,
+) -> None:
+    """Decide CONCLUÍDO / INCOMPLETO / BLOQUEADO from ground truth (item 5).
+
+    Ground-truth-first: a confirmed PR (the worker's structured ``ended`` or, on
+    the Claude path, a PR URL in the text) means done; an agent-declared block
+    means block; everything else is parked/resumable. Runs the progress guard
+    against the PREVIOUS fingerprint, THEN absorbs the worker's new
+    fingerprint/attempt into the resume tracker.
+    """
+    pr_url = outcome.pr_url or _extract_pr_url(outcome.text)
+    ended = outcome.ended  # "" on the Claude path; ground-truth on the worker path
+
+    # Progress guard verdict computed against the PREVIOUS fingerprint, BEFORE
+    # absorbing this attempt's fingerprint (otherwise the comparison would be
+    # against itself and always read as zero progress).
+    zero_progress = monitor._resume_tracker.is_zero_progress(number, outcome.fingerprint)
+    monitor._resume_tracker.update_from_worker(
+        number,
+        fingerprint=outcome.fingerprint,
+        attempt=outcome.tentativa,
+        budget_s=outcome.budget_acumulado_s,
+    )
+
+    # 1. BLOQUEADO — the agent declared a hard impediment.
+    if ended == _ENDED_BLOQUEADO:
+        reason = outcome.motivo_bloqueio or "o agente declarou BLOQUEADO sem motivo"
+        await _block_issue(monitor, number, reason)
+        return
+
+    # 2. A transport/worker failure with no structured verdict: park (resumable).
+    if not outcome.ok and not ended:
         monitor._stats.errors += 1
         monitor._stats.claude_errors += 1
         err_detail = (outcome.error or "implementation failed")[:PIPELINE_MSG_TRUNCATE_CHARS]
         logger.error(
             "implement #%d failed: %s — parked in %s",
-            target.number, err_detail, WORKFLOW_IMPLEMENTING,
+            number, err_detail, WORKFLOW_IMPLEMENTING,
         )
-        await monitor.notifier.implementation_parked(target.number, err_detail)
+        await _park_or_keep(monitor, number, err_detail, resume=resume)
         return
-    # ok=True but no PR URL: the agent finished its turn without actually
-    # opening a PR (common for vague/meta issues). Same treatment as a failure
-    # — park in ~workflow:em_implementacao and notify once, never silently
-    # retry (the silent retry kept the issue in revisada and re-fired the
-    # "Implementação iniciada" DM every tick).
-    if not pr_url:
-        monitor._stats.errors += 1
-        monitor._stats.claude_errors += 1
-        logger.warning(
-            "implement #%d: agent finished but produced no PR URL — parked in %s",
-            target.number, WORKFLOW_IMPLEMENTING,
-        )
-        await monitor.notifier.implementation_parked(
-            target.number, "o agente finalizou sem abrir PR"
+
+    # 3. CONCLUÍDO — a real PR exists (and, when expected, was merged).
+    if ended == _ENDED_CONCLUIDO or (not ended and outcome.ok and pr_url):
+        try:
+            await monitor.github.transition_issue(
+                number, from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_PR
+            )
+        except GhCommandError as exc:
+            await _record_gh_error(
+                monitor, f"could not transition issue #{number} to em_pr", exc,
+            )
+        monitor._resume_tracker.clear(number)
+        monitor._stats.issues_implemented += 1
+        await monitor.notifier.implementation_finished(number, pr_url)
+        return
+
+    # 4. INCOMPLETO — no PR yet. Block when the progress guard fired (two
+    # consecutive attempts with the SAME substantive fingerprint = 0 progress).
+    if zero_progress:
+        await _block_issue(
+            monitor, number,
+            "duas tentativas seguidas sem progresso substantivo (diff idêntico)",
         )
         return
-    # Success: a real PR exists. Move ~workflow:em_implementacao → ~workflow:em_pr.
+    monitor._stats.errors += 1
+    monitor._stats.claude_errors += 1
+    logger.warning(
+        "implement #%d: incompleto (sem PR) — parked in %s%s",
+        number, WORKFLOW_IMPLEMENTING, " (será retomada)" if resume else "",
+    )
+    await _park_or_keep(
+        monitor, number, "o agente finalizou sem abrir PR", resume=resume
+    )
+
+
+async def _park_or_keep(
+    monitor: "PipelineMonitor", number: int, reason: str, *, resume: bool
+) -> None:
+    """Park an incomplete issue.
+
+    When resume is enabled the issue simply stays in ``~workflow:em_implementacao``
+    for the resume sweep to pick up — we DM "parked" only on the first
+    (non-resume) attempt so the operator is not pinged on every resume tick. When
+    resume is disabled, this preserves the legacy "park forever + DM once"
+    behaviour.
+    """
+    if resume or monitor.config.enable_resume:
+        # Will be retried by the resume sweep; stay quiet to avoid DM spam.
+        logger.debug("issue #%d left parked for resume: %s", number, reason)
+        return
+    await monitor.notifier.implementation_parked(number, reason)
+
+
+async def _block_issue(monitor: "PipelineMonitor", number: int, reason: str) -> None:
+    """Block flow (item 7): comment the real impediment + label + DM.
+
+    The issue KEEPS ``~workflow:em_implementacao`` and gains
+    ``~workflow:bloqueada`` so it leaves BOTH the implement queue and the
+    auto-resume. The real impediment is commented on the issue and a Discord DM
+    is sent. A human removes ``~workflow:bloqueada`` to unblock.
+    """
+    short = reason[:PIPELINE_MSG_TRUNCATE_CHARS]
+    comment = (
+        f"⛔ **Pipeline bloqueou esta issue** (`{WORKFLOW_BLOCKED}`).\n\n"
+        f"**Motivo:** {short}\n\n"
+        f"O trabalho parcial foi preservado na branch. Para retomar, remova o "
+        f"label `{WORKFLOW_BLOCKED}` — o pipeline volta a retomar a implementação "
+        f"de onde parou."
+    )
     try:
-        await monitor.github.transition_issue(
-            target.number, from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_PR
-        )
+        await monitor.github.comment_on_issue(number, comment)
+    except Exception as exc:  # noqa: BLE001 — comment is best-effort; label still applied
+        logger.warning("block: could not comment on #%d: %s", number, exc)
+    try:
+        await monitor.github.add_labels("issue", number, [WORKFLOW_BLOCKED])
     except GhCommandError as exc:
         await _record_gh_error(
-            monitor, f"could not transition issue #{target.number} to em_pr", exc,
+            monitor, f"could not apply {WORKFLOW_BLOCKED} to #{number}", exc,
         )
-    monitor._stats.issues_implemented += 1
-    await monitor.notifier.implementation_finished(target.number, pr_url)
+    monitor._resume_tracker.clear(number)
+    monitor._stats.issues_blocked += 1
+    logger.warning("issue #%d BLOCKED: %s", number, short)
+    await monitor.notifier.implementation_blocked(number, short)
 
 
 # ----- stage 3: review PR ------------------------------------------------
@@ -444,39 +621,85 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     # Scope stage 3 to PRs whose head branch belongs to THIS monitor
     # (so we never review a peer's PR). Default-identity monitors keep
     # the legacy behaviour: any PR with a matching head_ref or none.
-    target = next(
-        (
-            pr
-            for pr in prs
-            if not pr.is_draft
-            and REVIEW_CONCLUDED not in pr.labels
-            and REVIEW_IN_PROGRESS not in pr.labels
-            and pr.batch_id is None
-            and monitor._owns_pr_branch(pr.head_ref, pr_number=pr.number)
-        ),
-        None,
-    )
+    #
+    # Resume (issue #254): when ``enable_resume`` is on, a PR left parked in
+    # ~review:em_andamento by a prior incomplete review/merge IS a candidate
+    # (it is re-dispatched in RESUME mode). Without resume, in-progress PRs stay
+    # out of the set (legacy behaviour). A ~workflow:bloqueada PR is always
+    # excluded. Cadence is honored so resume does not re-fire every tick.
+    resume_enabled = monitor.config.enable_resume
+    now = _monotonic()
+
+    def _candidate(pr) -> bool:
+        if pr.is_draft or REVIEW_CONCLUDED in pr.labels or WORKFLOW_BLOCKED in pr.labels:
+            return False
+        if not monitor._owns_pr_branch(pr.head_ref, pr_number=pr.number):
+            return False
+        if REVIEW_IN_PROGRESS in pr.labels:
+            # In-progress: only resumable when resume is enabled, cadence ok,
+            # and not currently batch-locked by another monitor's live attempt.
+            return (
+                resume_enabled
+                and pr.batch_id is None
+                and monitor._resume_tracker.cadence_ok(
+                    pr.number, now, monitor.config.resume_interval
+                )
+            )
+        # Fresh: unclaimed PR awaiting first review.
+        return pr.batch_id is None
+
+    target = next((pr for pr in prs if _candidate(pr)), None)
     if target is None:
         return
+    is_resume = REVIEW_IN_PROGRESS in target.labels
     batch = await monitor.github.claim_with_batch("pr", target.number, target.title)
     if batch is None:
         return
     # Tag ownership so other monitors can identify who claimed this PR —
     # mirrors the identical pattern in stage 1 for issues.
     await monitor.github.add_labels("pr", target.number, [monitor.identity.ownership_label()])
-    await monitor.notifier.pr_picked_up(target.number, target.title, target.url)
-    try:
-        await monitor.github.transition_pr(
-            target.number, from_label=REVIEW_PENDING, to_label=REVIEW_IN_PROGRESS
-        )
-    except GhCommandError:
-        # ~review:pendente may not be set; that's ok.
-        await monitor.github.add_labels("pr", target.number, [REVIEW_IN_PROGRESS])
+    if is_resume:
+        state = monitor._resume_tracker.get(target.number)
+        # Attempt ceiling for review/merge — same block flow as implement.
+        if state.attempt >= monitor.config.resume_max_attempts:
+            await monitor.github.clear_batch_label("pr", target.number)
+            await _block_pr(
+                monitor, target.number, target.title, target.url,
+                f"teto de tentativas atingido ({state.attempt}/"
+                f"{monitor.config.resume_max_attempts}) sem mergear",
+            )
+            return
+        await monitor.notifier.implementation_resumed(target.number, state.attempt + 1)
+        monitor._stats.resume_dispatches += 1
+    else:
+        await monitor.notifier.pr_picked_up(target.number, target.title, target.url)
+        try:
+            await monitor.github.transition_pr(
+                target.number, from_label=REVIEW_PENDING, to_label=REVIEW_IN_PROGRESS
+            )
+        except GhCommandError:
+            # ~review:pendente may not be set; that's ok.
+            await monitor.github.add_labels("pr", target.number, [REVIEW_IN_PROGRESS])
+    monitor._resume_tracker.record_dispatch(target.number, now)
     # Delegate the review/merge work to the configured strategy. The Claude
     # strategy checks out the branch in a worktree; the worker strategy clones
     # and runs ``gh pr checkout`` inside its own sandbox.
-    outcome = await monitor.implementer.review(monitor, target)
-    merged = outcome.ok and "merged" in outcome.text.lower()
+    outcome = await monitor.implementer.review(monitor, target, resume=is_resume)
+    # Progress guard verdict BEFORE absorbing the new fingerprint (see the
+    # implement stage for why the order matters).
+    zero_progress = monitor._resume_tracker.is_zero_progress(
+        target.number, outcome.fingerprint
+    )
+    monitor._resume_tracker.update_from_worker(
+        target.number, fingerprint=outcome.fingerprint, attempt=outcome.tentativa,
+        budget_s=outcome.budget_acumulado_s,
+    )
+    # Ground-truth merge detection: the worker's structured ``ended`` is
+    # authoritative; fall back to scanning the text for the MERGED marker.
+    merged = outcome.ended == _ENDED_CONCLUIDO or (
+        not outcome.ended and outcome.ok and "merged" in outcome.text.lower()
+    )
+    blocked = outcome.ended == _ENDED_BLOQUEADO
     if not outcome.ok:
         monitor._stats.errors += 1
         monitor._stats.claude_errors += 1
@@ -484,6 +707,47 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
             "pr_review #%d failed: %s", target.number,
             (outcome.error or "review failed")[:PIPELINE_MSG_TRUNCATE_CHARS],
         )
+
+    if blocked:
+        await monitor.github.clear_batch_label("pr", target.number)
+        await _block_pr(
+            monitor, target.number, target.title, target.url,
+            outcome.motivo_bloqueio or "o agente declarou BLOQUEADO sem motivo",
+        )
+        return
+
+    if merged:
+        try:
+            await monitor.github.transition_pr(
+                target.number, from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_CONCLUDED
+            )
+        except GhCommandError as exc:
+            await _record_gh_error(
+                monitor, f"could not transition PR #{target.number} to concluida", exc,
+            )
+        await monitor.github.clear_batch_label("pr", target.number)
+        monitor._resume_tracker.clear(target.number)
+        monitor._stats.prs_reviewed += 1
+        await monitor.notifier.pr_reviewed(target.number, target.title, target.url, merged=True)
+        await _post_merge_follow_ups(monitor, target)
+        return
+
+    # Not merged. With resume enabled, keep the PR in ~review:em_andamento for
+    # the next resume tick (progress guard catches a stuck loop). Without
+    # resume, preserve the legacy behaviour: mark concluded so the PR drops out.
+    if resume_enabled:
+        if zero_progress:
+            await monitor.github.clear_batch_label("pr", target.number)
+            await _block_pr(
+                monitor, target.number, target.title, target.url,
+                "duas tentativas de review/merge sem progresso (diff idêntico)",
+            )
+            return
+        # Release the batch lock so the next tick can re-claim; keep em_andamento.
+        await monitor.github.clear_batch_label("pr", target.number)
+        logger.info("pr_review #%d incompleto — em_andamento (será retomada)", target.number)
+        return
+
     try:
         await monitor.github.transition_pr(
             target.number, from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_CONCLUDED
@@ -492,17 +756,51 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
         await _record_gh_error(
             monitor, f"could not transition PR #{target.number} to concluida", exc,
         )
-    # Remove lock label so the PR doesn't accumulate an orphaned ~batch: forever.
     await monitor.github.clear_batch_label("pr", target.number)
     monitor._stats.prs_reviewed += 1
-    await monitor.notifier.pr_reviewed(target.number, target.title, target.url, merged=merged)
-    if merged and monitor.config.enable_follow_ups:
+    await monitor.notifier.pr_reviewed(target.number, target.title, target.url, merged=False)
+
+
+async def _post_merge_follow_ups(monitor: "PipelineMonitor", target) -> None:
+    """Run the post-merge follow-up + callback hooks (extracted for reuse)."""
+    if monitor.config.enable_follow_ups:
         await monitor._stage4_follow_ups(target.number, target.title, target.url)
-    if merged and monitor._post_merge_cb is not None:
+    if monitor._post_merge_cb is not None:
         try:
             await monitor._post_merge_cb(target.number, target.title, target.url)
         except Exception as exc:  # noqa: BLE001
             logger.warning("post_merge_callback failed for PR #%d: %s", target.number, exc)
+
+
+async def _block_pr(
+    monitor: "PipelineMonitor", number: int, title: str, url: str, reason: str
+) -> None:
+    """Block flow for a PR review/merge (item 7): comment + label + DM.
+
+    Mirrors :func:`_block_issue` but for the review/merge stage: the PR keeps
+    ~review:em_andamento and gains ~workflow:bloqueada, excluding it from the
+    resume sweep until a human removes the label.
+    """
+    short = reason[:PIPELINE_MSG_TRUNCATE_CHARS]
+    comment = (
+        f"⛔ **Pipeline bloqueou o review/merge desta PR** (`{WORKFLOW_BLOCKED}`).\n\n"
+        f"**Motivo:** {short}\n\n"
+        f"Para retomar, remova o label `{WORKFLOW_BLOCKED}`."
+    )
+    try:
+        await monitor.github.comment_on_pr(number, comment)
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning("block PR: could not comment on #%d: %s", number, exc)
+    try:
+        await monitor.github.add_labels("pr", number, [WORKFLOW_BLOCKED])
+    except GhCommandError as exc:
+        await _record_gh_error(
+            monitor, f"could not apply {WORKFLOW_BLOCKED} to PR #{number}", exc,
+        )
+    monitor._resume_tracker.clear(number)
+    monitor._stats.issues_blocked += 1
+    logger.warning("PR #%d BLOCKED: %s", number, short)
+    await monitor.notifier.implementation_blocked(number, short)
 
 
 # ----- stage 4: follow-up issues from merged PR --------------------------

@@ -36,6 +36,10 @@ _DEILE_DEPRECATED_ENV_VARS: Dict[str, str] = {
     "DEILE_PIPELINE_CLAUDE_TIMEOUT": "pipeline.claude_timeout",
     "DEILE_PIPELINE_AUTOSTART": "pipeline.autostart",
     "DEILE_PIPELINE_DISPATCH_MODE": "pipeline.dispatch_mode",
+    "DEILE_PIPELINE_RESUME_ENABLED": "pipeline.resume_enabled",
+    "DEILE_PIPELINE_RESUME_INTERVAL": "pipeline.resume_interval",
+    "DEILE_PIPELINE_RESUME_MAX_ATTEMPTS": "pipeline.resume_max_attempts",
+    "DEILE_PIPELINE_RESUME_BUDGET": "pipeline.resume_budget",
     "DEILE_CRON_DB_PATH": "cron.db_path",
     "DEILE_CRON_POLL_INTERVAL": "cron.poll_interval",
     "DEILE_DEBUG": "debug.enabled",
@@ -102,6 +106,37 @@ def _mb_to_bytes(value: Any) -> int:
     return int(value) * 1024 * 1024
 
 
+def _to_nonneg_int(value: Any) -> int:
+    """Coerce to a non-negative int (rejects negatives and bools).
+
+    Used by the pipeline resume knobs (interval/max_attempts/budget) where 0 is
+    a meaningful value (``interval=0`` = immediate, ``budget=0`` = no ceiling)
+    but a negative would be nonsensical.
+    """
+    if isinstance(value, bool):
+        raise TypeError("expected int, got bool")
+    iv = int(value)
+    if iv < 0:
+        raise ValueError(f"value must be >= 0, got {iv}")
+    return iv
+
+
+def _to_pos_int(value: Any) -> int:
+    """Coerce to a positive int (>= 1; rejects 0/negatives and bools).
+
+    Used by ``resume_max_attempts``: a 0 or negative ceiling would make
+    ``attempt >= max_attempts`` true on the first check and block every resume
+    instantly. A rejected value is caught by ``apply_overrides`` and leaves the
+    default (10) in place.
+    """
+    if isinstance(value, bool):
+        raise TypeError("expected int, got bool")
+    iv = int(value)
+    if iv < 1:
+        raise ValueError(f"value must be >= 1, got {iv}")
+    return iv
+
+
 # Map of nested JSON paths in ``.deile/settings.json`` to ``Settings`` flat
 # fields, with a converter for each. Unknown keys are silently ignored —
 # that's how future-compatible forward-compat works.
@@ -141,6 +176,11 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     "deile_md.max_bytes": ("deile_md_max_bytes", int),
     "environment": ("environment", str),
     "debug": ("debug", _to_bool),
+    # Pipeline resume knobs (issue #254)
+    "pipeline.resume_enabled": ("pipeline_resume_enabled", _to_bool),
+    "pipeline.resume_interval": ("pipeline_resume_interval", _to_nonneg_int),
+    "pipeline.resume_max_attempts": ("pipeline_resume_max_attempts", _to_pos_int),
+    "pipeline.resume_budget": ("pipeline_resume_budget", _to_nonneg_int),
     # Trust boundary (issue #125): allowlist of directories whose
     # ``./.deile/settings.json`` is honored as the project layer.
     "trust.project_layer_dirs": ("trust_project_layer_dirs", _to_str_list),
@@ -278,6 +318,22 @@ class Settings:
     # worker Pod, the product default — Claude is optional) or "claude"
     # (claude -p one-shot in a local worktree). Set via DEILE_PIPELINE_DISPATCH_MODE.
     pipeline_dispatch_mode: str = "deile_worker"
+    # Pipeline resume (issue #254): when an implement/review stops mid-way
+    # (iteration cap, timeout/crash, or the agent declared INCOMPLETO), the
+    # next attempt RESUMES the partial work (reusing the branch + untracked
+    # files in the persistent workspace) instead of resetting to main.
+    #   resume_enabled       — master switch; when False, parked work is never
+    #                           auto-resumed (legacy "park forever" behaviour).
+    #   resume_interval      — min seconds between resume attempts for the same
+    #                           issue; 0 (default) = retry on the next free tick.
+    #   resume_max_attempts  — hard ceiling on attempts per issue before the
+    #                           block flow fires (comment + ~workflow:bloqueada + DM).
+    #   resume_budget        — accumulated wall-clock seconds across attempts
+    #                           before the block flow fires; 0 = no time ceiling.
+    pipeline_resume_enabled: bool = True
+    pipeline_resume_interval: int = 0
+    pipeline_resume_max_attempts: int = 10
+    pipeline_resume_budget: int = 0
 
     # Cron
     cron_db_path: Optional[Path] = None
@@ -629,6 +685,10 @@ _JSON_FIELD_MAP: Dict[str, str] = {
     "pipeline.notify_user_id": "pipeline_notify_user_id",
     "pipeline.autostart": "pipeline_autostart",
     "pipeline.dispatch_mode": "pipeline_dispatch_mode",
+    "pipeline.resume_enabled": "pipeline_resume_enabled",
+    "pipeline.resume_interval": "pipeline_resume_interval",
+    "pipeline.resume_max_attempts": "pipeline_resume_max_attempts",
+    "pipeline.resume_budget": "pipeline_resume_budget",
     "cron.db_path": "cron_db_path",
     "cron.poll_interval": "cron_poll_interval",
     "agent.max_tool_iterations": "max_tool_iterations",
@@ -834,6 +894,25 @@ def _apply_env_overrides(settings: "Settings") -> None:
     if raw:
         _warn("DEILE_PIPELINE_DISPATCH_MODE", "pipeline.dispatch_mode")
         settings.pipeline_dispatch_mode = raw.strip().lower()
+
+    # pipeline resume (issue #254)
+    raw = env("DEILE_PIPELINE_RESUME_ENABLED")
+    if raw:
+        _warn("DEILE_PIPELINE_RESUME_ENABLED", "pipeline.resume_enabled")
+        settings.pipeline_resume_enabled = raw.strip().lower() in ("1", "true", "yes", "on")
+
+    for env_var, attr, floor in (
+        ("DEILE_PIPELINE_RESUME_INTERVAL", "pipeline_resume_interval", 0),
+        ("DEILE_PIPELINE_RESUME_MAX_ATTEMPTS", "pipeline_resume_max_attempts", 1),
+        ("DEILE_PIPELINE_RESUME_BUDGET", "pipeline_resume_budget", 0),
+    ):
+        raw = env(env_var)
+        if raw:
+            _warn(env_var, _DEILE_DEPRECATED_ENV_VARS.get(env_var, env_var))
+            try:
+                setattr(settings, attr, max(floor, int(raw)))
+            except ValueError:
+                pass
 
     # cron
     raw = env("DEILE_CRON_DB_PATH")

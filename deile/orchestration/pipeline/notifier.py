@@ -18,7 +18,8 @@ import logging
 from typing import Awaitable, Callable, Optional
 
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
-from deile.orchestration.pipeline.labels import (WORKFLOW_IMPLEMENTING,
+from deile.orchestration.pipeline.labels import (WORKFLOW_BLOCKED,
+                                                 WORKFLOW_IMPLEMENTING,
                                                  WORKFLOW_NEW,
                                                  WORKFLOW_REVIEWED)
 
@@ -131,6 +132,37 @@ class DiscordNotifier:
             f"A issue ficou em `{WORKFLOW_IMPLEMENTING}` (fora da fila, sem "
             f"re-tentativa automática). Para tentar de novo, mova o label de "
             f"volta para `{WORKFLOW_REVIEWED}`."
+        )
+
+    async def implementation_resumed(self, number: int, attempt: int) -> None:
+        """Fired when a partially-done implementation is re-dispatched (resume).
+
+        Resume reuses the existing branch + untracked files in the persistent
+        workspace (no ``git reset --hard``); ``attempt`` is the 1-based attempt
+        counter so the operator can see progress accruing across ticks.
+        """
+        await self._send(
+            f"🔄 **Retomando implementação** — issue #{number} (tentativa {attempt}).\n"
+            f"A branch e o trabalho parcial são preservados (sem reset)."
+        )
+
+    async def implementation_blocked(self, number: int, reason: str) -> None:
+        """Fired when an implementation is BLOCKED (issue #254).
+
+        A block is a serious, non-continuable stop: the agent declared
+        ``BLOQUEADO``, the progress guard detected 0 substantive progress
+        between attempts, or the attempt/budget ceiling was hit. The issue
+        keeps ``~workflow:em_implementacao`` AND gains ``~workflow:bloqueada``,
+        which excludes it from both the implement queue and the auto-resume.
+        The real impediment is also commented on the issue. To unblock, the
+        operator removes ``~workflow:bloqueada``.
+        """
+        await self._send(
+            f"⛔ **Implementação bloqueada** — issue #{number}: "
+            f"{reason[:PIPELINE_MSG_TRUNCATE_CHARS]}\n"
+            f"Apliquei `{WORKFLOW_BLOCKED}` (fora da fila e do auto-resume) e "
+            f"comentei o impedimento na issue. Para desbloquear, remova o label "
+            f"`{WORKFLOW_BLOCKED}`."
         )
 
     async def pr_picked_up(self, number: int, title: str, url: str) -> None:

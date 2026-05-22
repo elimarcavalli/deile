@@ -87,6 +87,35 @@ class TestNotifierEvents:
         assert "~workflow:em_implementacao" in sent[0]
         assert "~workflow:revisada" in sent[0]
 
+    async def test_implementation_resumed_mentions_attempt(self):
+        # Resume feature (issue #254): the DM names the issue + attempt and
+        # reassures the operator the partial work is preserved.
+        sent = []
+
+        async def fake_dm(uid, text):
+            sent.append(text)
+
+        n = DiscordNotifier(user_id="42", dm_fn=fake_dm)
+        await n.implementation_resumed(7, 3)
+        assert len(sent) == 1
+        assert "#7" in sent[0]
+        assert "3" in sent[0]
+        assert "sem reset" in sent[0]
+
+    async def test_implementation_blocked_is_actionable(self):
+        # The block DM names the issue, the reason, the label, and how to unblock.
+        sent = []
+
+        async def fake_dm(uid, text):
+            sent.append(text)
+
+        n = DiscordNotifier(user_id="42", dm_fn=fake_dm)
+        await n.implementation_blocked(9, "falta a credencial X")
+        assert len(sent) == 1
+        assert "#9" in sent[0]
+        assert "falta a credencial X" in sent[0]
+        assert "~workflow:bloqueada" in sent[0]
+
     async def test_dm_failure_swallowed(self):
         async def failing_dm(uid, text):
             raise RuntimeError("network")
