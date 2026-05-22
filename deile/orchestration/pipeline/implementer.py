@@ -31,12 +31,14 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 from deile.orchestration.pipeline.claude_dispatcher import (
-    render_implement_prompt, render_mention_prompt, render_review_prompt)
+    render_implement_prompt, render_review_prompt)
 from deile.orchestration.pipeline.constants import ISSUE_BODY_MAX_CHARS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from deile.orchestration.pipeline.github_client import (CommentRef,
-                                                            IssueRef, PrRef)
+                                                            IssueRef,
+                                                            MentionTrigger,
+                                                            PrRef)
     from deile.orchestration.pipeline.monitor import PipelineMonitor
 
 logger = logging.getLogger(__name__)
@@ -95,7 +97,14 @@ class PipelineImplementer(ABC):
         ...
 
     @abstractmethod
-    async def mention(self, monitor: "PipelineMonitor", ref: "CommentRef") -> WorkOutcome:
+    async def mention(
+        self,
+        monitor: "PipelineMonitor",
+        ref: "MentionTrigger",
+        *,
+        trigger_types: list[str] | None = None,
+        all_triggers: list["MentionTrigger"] | None = None,
+    ) -> WorkOutcome:
         ...
 
 
@@ -149,9 +158,17 @@ class ClaudeImplementer(PipelineImplementer):
         result = await monitor.claude.run(prompt, cwd=wt.path)
         return WorkOutcome(ok=result.ok, text=result.stdout, error=result.stderr.strip())
 
-    async def mention(self, monitor: "PipelineMonitor", ref: "CommentRef") -> WorkOutcome:
-        prompt = render_mention_prompt(
-            monitor.config.repo, ref.html_url, ref.body, ref.author
+    async def mention(
+        self,
+        monitor: "PipelineMonitor",
+        ref: "MentionTrigger",
+        *,
+        trigger_types: list[str] | None = None,
+        all_triggers: list["MentionTrigger"] | None = None,
+    ) -> WorkOutcome:
+        # Build context-aware prompt from all trigger types
+        prompt = _render_claude_mention_prompt(
+            monitor.config.repo, ref, trigger_types or [], all_triggers or []
         )
         result = await monitor.claude.run(prompt, cwd=monitor.config.base_repo_path)
         return WorkOutcome(ok=result.ok, text=result.stdout, error=result.stderr.strip())
@@ -254,14 +271,119 @@ RETOMADA da revisão/merge da Pull Request #{number} do repositório {repo} — 
 """
 
 _WORKER_MENTION_BRIEF = """\
-Você foi mencionado por @{author} em {context_url} (repositório {repo}).
+Você foi acionado por {trigger_summary} no repositório {repo}.
 
-Mensagem recebida:
-{body}
+Contexto completo dos gatilhos detectados:
+{trigger_details}
 
-Responda de forma concreta ao que foi pedido e poste a resposta como comentário usando o gh
-(gh issue comment <n> --repo {repo}  ou  gh pr comment <n> --repo {repo}) apontando para {context_url}.
+Ação esperada:
+{expected_action}
+
+IMPORTANTE:
+- Se for um ASSIGNEE em uma issue SEM PR aberta, implemente a issue completa (use o fluxo normal de implementação: branch + commit + teste + PR).
+- Se for um ASSIGNEE em uma issue que JÁ TEM PR aberta, verifique se a PR cobre tudo da issue. Se não cobrir, faça checkout do branch da PR e continue a implementação.
+- Se for REQUESTED REVIEWER, faça review completa (arquitetura, DRY, KISS, SOLID, clean code) + teste + corrija o que precisar + commit + push + comente as evidências + merge.
+- Se for MENTION em comentário, responda diretamente ao que foi pedido. Se o comentário está numa PR, trabalhe no branch da PR.
+- Poste SEMPRE a resposta ou evidências como comentário no GitHub.
+- Na ÚLTIMA LINHA, escreva a URL relevante (PR, issue, etc).
 """
+
+# Context-aware worker mention brief builder (issue #253)
+def _render_worker_mention_brief(
+    repo: str,
+    ref: "MentionTrigger",
+    trigger_types: list[str],
+    all_triggers: list["MentionTrigger"],
+) -> str:
+    """Build a context-rich mention brief from all trigger types."""
+    # Summarize trigger types
+    type_labels = {
+        "assignee": "assignee (atribuído a você)",
+        "reviewer": "reviewer (solicitado como revisor)",
+        "comment": "menção em comentário (@deile-one)",
+        "body": "menção no corpo (@deile-one)",
+    }
+    trigger_summary = " + ".join(type_labels.get(t, t) for t in trigger_types)
+
+    # Detailed trigger info
+    details_parts: list[str] = []
+    for t in all_triggers:
+        if t.trigger_type == "comment" and t.comment is not None:
+            details_parts.append(
+                f"- **Comentário** de @{t.comment.author} em {t.comment.html_url}:\n"
+                f"  ```\n  {t.comment.body[:500]}\n  ```"
+            )
+        elif t.trigger_type == "assignee" and t.issue is not None:
+            details_parts.append(
+                f"- **Assignado** na issue #{t.issue.number}: [{t.issue.title}]({t.issue.url})"
+            )
+        elif t.trigger_type == "assignee" and t.pr is not None:
+            details_parts.append(
+                f"- **Assignado** na PR #{t.pr.number}: [{t.pr.title}]({t.pr.url})"
+            )
+        elif t.trigger_type == "reviewer" and t.pr is not None:
+            details_parts.append(
+                f"- **Solicitado como reviewer** na PR #{t.pr.number}: [{t.pr.title}]({t.pr.url})"
+            )
+        elif t.trigger_type == "body":
+            if t.issue is not None:
+                details_parts.append(
+                    f"- **Menção no corpo** da issue #{t.issue.number}: [{t.issue.title}]({t.issue.url})"
+                )
+            elif t.pr is not None:
+                details_parts.append(
+                    f"- **Menção no corpo** da PR #{t.pr.number}: [{t.pr.title}]({t.pr.url})"
+                )
+    trigger_details = "\n".join(details_parts)
+
+    # Determine expected action
+    target_kind = ref.target_kind
+    has_assignee = "assignee" in trigger_types
+    has_reviewer = "reviewer" in trigger_types
+    has_comment = "comment" in trigger_types
+    has_body = "body" in trigger_types
+
+    if has_reviewer and target_kind == "pr":
+        expected_action = (
+            f"**REVIEW REQUEST**: Você foi solicitado como revisor da PR #{ref.target_number}. "
+            f"Faça uma revisão completa (arquitetura, DRY, KISS, SOLID, clean code), "
+            f"rode os testes, corrija problemas, faça commit + push, poste evidências como "
+            f"comentário na PR e faça o merge."
+        )
+    elif has_assignee and target_kind == "issue":
+        expected_action = (
+            f"**ASSIGNED**: Você foi atribuído à issue #{ref.target_number}. "
+            f"Implemente a feature completa, crie testes, abra uma PR. "
+            f"Se já existir uma PR para esta issue, verifique se cobre tudo e "
+            f"continue a implementação no branch existente."
+        )
+    elif has_assignee and target_kind == "pr":
+        expected_action = (
+            f"**ASSIGNED TO PR**: Você foi atribuído à PR #{ref.target_number}. "
+            f"Revise, corrija, teste, faça commit + push e mergeie se estiver pronto."
+        )
+    elif has_comment or has_body:
+        if target_kind == "pr":
+            expected_action = (
+                f"**MENTION ON PR**: Você foi mencionado na PR #{ref.target_number}. "
+                f"Atenda ao que foi pedido no comentário/corpo, trabalhe no branch da PR, "
+                f"teste, faça commit + push e poste a resposta como comentário na PR."
+            )
+        else:
+            expected_action = (
+                f"**MENTION ON ISSUE**: Você foi mencionado na issue #{ref.target_number}. "
+                f"Atenda ao que foi pedido no comentário/corpo. "
+                f"Se a issue já tem PR aberta, trabalhe no branch da PR."
+            )
+    else:
+        expected_action = "Atenda ao contexto acima da forma mais apropriada."
+
+    return _WORKER_MENTION_BRIEF.format(
+        repo=repo,
+        trigger_summary=trigger_summary,
+        trigger_details=trigger_details,
+        expected_action=expected_action,
+    )
 
 
 def _render_worker_implement_brief(
@@ -315,10 +437,7 @@ def _render_worker_review_resume_brief(
     )
 
 
-def _render_worker_mention_brief(repo: str, context_url: str, body: str, author: str) -> str:
-    return _WORKER_MENTION_BRIEF.format(
-        repo=repo, context_url=context_url, body=(body or "").strip()[:2000], author=author
-    )
+# (removed duplicate _render_worker_mention_brief — the context-aware version above is authoritative)
 
 
 def _build_resume_block(
@@ -467,11 +586,115 @@ class WorkerImplementer(PipelineImplementer):
             brief, channel_id=f"pipeline-pr-{pr.number}", resume_block=resume_block
         )
 
-    async def mention(self, monitor: "PipelineMonitor", ref: "CommentRef") -> WorkOutcome:
+    async def mention(
+        self,
+        monitor: "PipelineMonitor",
+        ref: "MentionTrigger",
+        *,
+        trigger_types: list[str] | None = None,
+        all_triggers: list["MentionTrigger"] | None = None,
+    ) -> WorkOutcome:
         brief = _render_worker_mention_brief(
-            monitor.config.repo, ref.html_url, ref.body, ref.author
+            monitor.config.repo, ref,
+            trigger_types or [],
+            all_triggers or [],
         )
-        return await self._dispatch(brief, channel_id="pipeline-mentions")
+        channel_id = f"pipeline-mention-{ref.target_kind}-{ref.target_number}"
+        return await self._dispatch(brief, channel_id=channel_id)
+
+
+# ---------------------------------------------------------------------------
+# Claude mention prompt builder (issue #253)
+# ---------------------------------------------------------------------------
+
+def _render_claude_mention_prompt(
+    repo: str,
+    ref: "MentionTrigger",
+    trigger_types: list[str],
+    all_triggers: list["MentionTrigger"],
+) -> str:
+    """Build a context-rich mention prompt for the Claude path."""
+    type_labels = {
+        "assignee": "assignee (atribuído a você)",
+        "reviewer": "reviewer (solicitado como revisor)",
+        "comment": "menção em comentário (@deile-one)",
+        "body": "menção no corpo (@deile-one)",
+    }
+    trigger_summary = " + ".join(type_labels.get(t, t) for t in trigger_types)
+
+    details_parts: list[str] = []
+    for t in all_triggers:
+        if t.trigger_type == "comment" and t.comment is not None:
+            details_parts.append(
+                f"- Comentário de @{t.comment.author} em {t.comment.html_url}:\n"
+                f"  {t.comment.body[:500]}"
+            )
+        elif t.trigger_type == "assignee" and t.issue is not None:
+            details_parts.append(
+                f"- Assignado na issue #{t.issue.number}: {t.issue.title} ({t.issue.url})"
+            )
+        elif t.trigger_type == "assignee" and t.pr is not None:
+            details_parts.append(
+                f"- Assignado na PR #{t.pr.number}: {t.pr.title} ({t.pr.url})"
+            )
+        elif t.trigger_type == "reviewer" and t.pr is not None:
+            details_parts.append(
+                f"- Solicitado como reviewer na PR #{t.pr.number}: {t.pr.title} ({t.pr.url})"
+            )
+        elif t.trigger_type == "body":
+            if t.issue is not None:
+                details_parts.append(
+                    f"- Menção no corpo da issue #{t.issue.number}: {t.issue.title} ({t.issue.url})"
+                )
+            elif t.pr is not None:
+                details_parts.append(
+                    f"- Menção no corpo da PR #{t.pr.number}: {t.pr.title} ({t.pr.url})"
+                )
+    trigger_details = "\n".join(details_parts)
+
+    target_kind = ref.target_kind
+    has_assignee = "assignee" in trigger_types
+    has_reviewer = "reviewer" in trigger_types
+    has_comment = "comment" in trigger_types
+    has_body = "body" in trigger_types
+
+    if has_reviewer and target_kind == "pr":
+        action = (
+            f"REVIEW REQUEST: Revise a PR #{ref.target_number} completamente "
+            f"(arquitetura, DRY, KISS, SOLID, clean code), rode testes, corrija, "
+            f"commit + push, comente evidências e faça merge."
+        )
+    elif has_assignee and target_kind == "issue":
+        action = (
+            f"ASSIGNED: Implemente a issue #{ref.target_number} completa. "
+            f"Crie testes, abra PR. Se já existir PR, continue no branch existente."
+        )
+    elif has_assignee and target_kind == "pr":
+        action = (
+            f"ASSIGNED TO PR: Revise/corrija a PR #{ref.target_number}, "
+            f"teste, commit + push e mergeie."
+        )
+    elif has_comment or has_body:
+        if target_kind == "pr":
+            action = (
+                f"MENTION ON PR: Atenda ao pedido na PR #{ref.target_number}, "
+                f"trabalhe no branch da PR, teste, commit + push, comente resposta."
+            )
+        else:
+            action = (
+                f"MENTION ON ISSUE: Atenda ao pedido na issue #{ref.target_number}. "
+                f"Se a issue já tem PR aberta, trabalhe no branch da PR."
+            )
+    else:
+        action = "Atenda ao contexto acima da forma mais apropriada."
+
+    return (
+        f"Você foi acionado por {trigger_summary} no repositório {repo}.\n\n"
+        f"Contexto:\n{trigger_details}\n\n"
+        f"Ação esperada:\n{action}\n\n"
+        f"IMPORTANTE: Poste a resposta como comentário no GitHub usando gh. "
+        f"Na última linha, escreva a URL relevante."
+    )
 
 
 # ---------------------------------------------------------------------------

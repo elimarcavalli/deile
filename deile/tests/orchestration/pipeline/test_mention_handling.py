@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
-from deile.orchestration.pipeline.github_client import CommentRef
+from deile.orchestration.pipeline.github_client import (CommentRef, IssueRef, PrRef)
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
 
@@ -48,6 +48,10 @@ def _make_monitor(
     github.list_unclassified_prs = AsyncMock(return_value=[])
     github.list_issue_comments_since = AsyncMock(return_value=list(issue_comments or []))
     github.list_pr_review_comments_since = AsyncMock(return_value=list(pr_comments or []))
+    github.list_issues_assigned_to = AsyncMock(return_value=[])
+    github.list_prs_assigned_to = AsyncMock(return_value=[])
+    github.list_prs_with_review_requests = AsyncMock(return_value=[])
+    github.search_items_mentioning = AsyncMock(return_value=([], []))
 
     notifier = MagicMock()
     for attr in (
@@ -163,3 +167,145 @@ class TestProcessMentions:
         monitor.config.enable_pr_triage = False
         await monitor.tick()
         github.list_issue_comments_since.assert_not_called()
+
+
+# ----- Multi-trigger mention handling (issue #253) ------------------------
+
+def _issue_ref(number=100):
+    return IssueRef(
+        number=number, title="test", url=f"https://github.com/o/r/issues/{number}",
+        labels=(),
+    )
+
+
+def _pr_ref(number=200):
+    return PrRef(
+        number=number, title="pr", url=f"https://github.com/o/r/pull/{number}",
+        labels=(), head_ref=f"auto/issue-{number}",
+    )
+
+
+class TestProcessMentionsMultiTrigger:
+    async def test_assignee_issue_dispatches(self):
+        """When DEILE is assigned to an issue, a mention dispatch fires."""
+        monitor, github, notifier = _make_monitor()
+        github.list_issues_assigned_to = AsyncMock(return_value=[_issue_ref(42)])
+        await monitor._process_mentions()
+        notifier.mention_processed.assert_called_once()
+        assert monitor.stats.mentions_processed == 1
+
+    async def test_assignee_pr_dispatches(self):
+        """When DEILE is assigned to a PR, a mention dispatch fires."""
+        monitor, github, notifier = _make_monitor()
+        github.list_prs_assigned_to = AsyncMock(return_value=[_pr_ref(77)])
+        await monitor._process_mentions()
+        notifier.mention_processed.assert_called_once()
+        assert monitor.stats.mentions_processed == 1
+
+    async def test_reviewer_request_dispatches(self):
+        """When DEILE is requested as reviewer, a mention dispatch fires."""
+        monitor, github, notifier = _make_monitor()
+        github.list_prs_with_review_requests = AsyncMock(return_value=[_pr_ref(88)])
+        await monitor._process_mentions()
+        notifier.mention_processed.assert_called_once()
+        assert monitor.stats.mentions_processed == 1
+
+    async def test_body_mention_issue_dispatches(self):
+        """When @deile-one appears in an issue body, a dispatch fires."""
+        monitor, github, notifier = _make_monitor()
+        github.search_items_mentioning = AsyncMock(
+            return_value=([_issue_ref(55)], [])
+        )
+        await monitor._process_mentions()
+        notifier.mention_processed.assert_called_once()
+        assert monitor.stats.mentions_processed == 1
+
+    async def test_body_mention_pr_dispatches(self):
+        """When @deile-one appears in a PR body, a dispatch fires."""
+        monitor, github, notifier = _make_monitor()
+        github.search_items_mentioning = AsyncMock(
+            return_value=([], [_pr_ref(66)])
+        )
+        await monitor._process_mentions()
+        notifier.mention_processed.assert_called_once()
+        assert monitor.stats.mentions_processed == 1
+
+    async def test_dedup_assignee_plus_comment_same_issue(self):
+        """Assignee + mention on the SAME issue = single dispatch with full context."""
+        comment = _comment(50, "Hey @deile-one fix this")
+        monitor, github, notifier = _make_monitor(issue_comments=[comment])
+        github.list_issues_assigned_to = AsyncMock(return_value=[_issue_ref(1)])
+        await monitor._process_mentions()
+        # Both triggers target issue #1 → deduped into ONE dispatch
+        assert monitor.stats.mentions_processed == 1
+        notifier.mention_processed.assert_called_once()
+
+    async def test_dedup_two_comments_same_issue(self):
+        """Two @deile-one comments on the same issue = single dispatch."""
+        c1 = _comment(100, "@deile-one do X")
+        c2 = _comment(101, "@deile-one also Y")
+        monitor, github, notifier = _make_monitor(issue_comments=[c1, c2])
+        await monitor._process_mentions()
+        # Both comments target issue #1 → deduped
+        assert monitor.stats.mentions_processed == 1
+
+    async def test_no_dedup_different_issues(self):
+        """Mentions on different issues = separate dispatches."""
+        c1 = _comment(200, "@deile-one", author="a")
+        c2 = _comment(201, "@deile-one", author="b")
+        # Change issue_url so they point to different issues
+        c2 = CommentRef(
+            comment_id=201, body="@deile-one",
+            html_url="https://github.com/o/r/issues/2#issuecomment-201",
+            issue_url="https://api.github.com/repos/o/r/issues/2",
+            author="b", kind="issue",
+        )
+        monitor, github, notifier = _make_monitor(issue_comments=[c1, c2])
+        await monitor._process_mentions()
+        assert monitor.stats.mentions_processed == 2
+
+    async def test_assignee_exception_does_not_crash(self):
+        """Exception polling assignee must not crash the mention loop."""
+        monitor, github, notifier = _make_monitor()
+        github.list_issues_assigned_to = AsyncMock(side_effect=RuntimeError("boom"))
+        await monitor._process_mentions()
+        assert monitor.stats.mentions_processed == 0
+
+    async def test_reviewer_exception_does_not_crash(self):
+        """Exception polling reviewers must not crash the mention loop."""
+        monitor, github, notifier = _make_monitor()
+        github.list_prs_with_review_requests = AsyncMock(side_effect=RuntimeError("boom"))
+        await monitor._process_mentions()
+        assert monitor.stats.mentions_processed == 0
+
+    async def test_body_search_exception_does_not_crash(self):
+        """Exception searching bodies must not crash the mention loop."""
+        monitor, github, notifier = _make_monitor()
+        github.search_items_mentioning = AsyncMock(side_effect=RuntimeError("boom"))
+        await monitor._process_mentions()
+        assert monitor.stats.mentions_processed == 0
+
+    async def test_cursor_saved_with_new_triggers(self, tmp_path):
+        """Cursor must be saved even when new trigger types are used."""
+        cfg = PipelineConfig(
+            repo="owner/name",
+            base_repo_path=tmp_path,
+            notify_user_id="42",
+        )
+        github = MagicMock()
+        github.list_issue_comments_since = AsyncMock(return_value=[])
+        github.list_pr_review_comments_since = AsyncMock(return_value=[])
+        github.list_issues_assigned_to = AsyncMock(return_value=[])
+        github.list_prs_assigned_to = AsyncMock(return_value=[])
+        github.list_prs_with_review_requests = AsyncMock(return_value=[])
+        github.search_items_mentioning = AsyncMock(return_value=([], []))
+        notifier = MagicMock()
+        for attr in ("mention_processed", "error"):
+            setattr(notifier, attr, AsyncMock())
+        claude = MagicMock()
+        claude.run = AsyncMock(return_value=ClaudeRunResult(
+            returncode=0, stdout="", stderr="", duration_seconds=0.0, cmd=("claude",)
+        ))
+        monitor = PipelineMonitor(cfg, github=github, worktrees=MagicMock(), claude=claude, notifier=notifier)
+        await monitor._process_mentions()
+        assert monitor._mention_cursor_path.exists()

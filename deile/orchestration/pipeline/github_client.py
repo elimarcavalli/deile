@@ -125,6 +125,61 @@ class CommentRef:
     kind: str  # "issue" | "pr_review"
 
 
+@dataclass(frozen=True)
+class MentionTrigger:
+    """A detected mention/assignment trigger from any GitHub source.
+
+    Carries the full context so the stage handler can decide which action to
+    take (implement, review, respond) without re-fetching from the API.
+    """
+
+    trigger_type: str
+    # "assignee" — DEILE was assigned to an issue/PR
+    # "reviewer"  — DEILE was requested as reviewer on a PR
+    # "comment"   — @deile-one appeared in a comment
+    # "body"      — @deile-one appeared in the body of an issue/PR
+
+    issue: Optional["IssueRef"] = None
+    pr: Optional["PrRef"] = None
+    comment: Optional["CommentRef"] = None
+
+    @property
+    def target_number(self) -> int:
+        """Return the issue or PR number this trigger targets."""
+        if self.issue is not None:
+            return self.issue.number
+        if self.pr is not None:
+            return self.pr.number
+        if self.comment is not None:
+            # Extract number from the comment's html_url or issue_url
+            import re
+            m = re.search(r"/(\d+)(?:#|$)", self.comment.html_url)
+            if m:
+                return int(m.group(1))
+        return 0
+
+    @property
+    def target_kind(self) -> str:
+        """Return 'issue' or 'pr' depending on what this trigger targets."""
+        if self.pr is not None:
+            return "pr"
+        if self.issue is not None:
+            return "issue"
+        if self.comment is not None:
+            return "pr" if self.comment.kind == "pr_review" else "issue"
+        return "unknown"
+
+    @property
+    def dedup_key(self) -> str:
+        """Return a stable deduplication key for this trigger.
+
+        Groups triggers by the target object (issue or PR), not by the trigger
+        type — so if DEILE is both assigned AND mentioned on the same issue, they
+        share a dedup key and are handled together in a single dispatch.
+        """
+        return f"{self.target_kind}:{self.target_number}"
+
+
 def compute_batch_id_for_number(kind: str, number: int) -> str:
     """SHA-8 of ``<kind>:<number>`` — collision-free unique batch lock id.
 
@@ -440,6 +495,130 @@ class GitHubClient:
             return 0
         m = re.search(r"/issues/(\d+)", out)
         return int(m.group(1)) if m else 0
+
+    # -- mention/assignment queries (issue #253) -------------------------
+
+    async def list_issues_assigned_to(self, login: str, *, limit: int = 100) -> List["IssueRef"]:
+        """Return open issues assigned to *login*."""
+        try:
+            out = await self._run_checked(
+                "issue", "list",
+                "--repo", self.repo,
+                "--state", "open",
+                "--assignee", login,
+                "--limit", str(limit),
+                "--json", "number,title,url,labels,body,state",
+            )
+        except GhCommandError as exc:
+            logger.warning("list_issues_assigned_to failed: %s", exc)
+            return []
+        data = json.loads(out or "[]")
+        return [IssueRef.from_gh_json(item) for item in data]
+
+    async def list_prs_assigned_to(self, login: str, *, limit: int = 100) -> List["PrRef"]:
+        """Return open, non-draft PRs assigned to *login*."""
+        try:
+            out = await self._run_checked(
+                "pr", "list",
+                "--repo", self.repo,
+                "--state", "open",
+                "--assignee", login,
+                "--limit", str(limit),
+                "--json", "number,title,url,labels,headRefName,baseRefName,state,isDraft",
+            )
+        except GhCommandError as exc:
+            logger.warning("list_prs_assigned_to failed: %s", exc)
+            return []
+        data = json.loads(out or "[]")
+        return [PrRef.from_gh_json(item) for item in data]
+
+    async def list_prs_with_review_requests(self, login: str) -> List["PrRef"]:
+        """Return open PRs where *login* is a requested reviewer.
+
+        Uses the REST API because ``gh pr list`` has no reviewer filter.
+        """
+        try:
+            out = await self._run_checked(
+                "api", f"repos/{self.repo}/pulls",
+                "--field", "state=open",
+                "--field", "per_page=100",
+                "--jq", (
+                    f'.[] | select(.requested_reviewers != null) | '
+                    f'select(any(.requested_reviewers[]; .login == "{login}")) | '
+                    f'{{number, title, url, labels, headRefName: .head.ref, '
+                    f'baseRefName: .base.ref, state, isDraft: .draft}}'
+                ),
+            )
+        except GhCommandError as exc:
+            logger.warning("list_prs_with_review_requests failed: %s", exc)
+            return []
+        data = json.loads(out or "[]")
+        # gh api --jq may return a single object when there is exactly 1 match.
+        if isinstance(data, dict):
+            data = [data]
+        result: List[PrRef] = []
+        for item in data:
+            try:
+                # Normalize labels to the [{name: ...}] format expected by PrRef.
+                labels_raw = item.get("labels", [])
+                if labels_raw and isinstance(labels_raw[0], str):
+                    labels_normalized = [{"name": lb} for lb in labels_raw]
+                else:
+                    labels_normalized = labels_raw
+                result.append(PrRef(
+                    number=int(item["number"]),
+                    title=str(item.get("title", "")),
+                    url=str(item.get("url", "")),
+                    labels=_labels_from_gh({"labels": labels_normalized}),
+                    head_ref=str(item.get("headRefName") or ""),
+                    base_ref=str(item.get("baseRefName") or "main"),
+                    state=str(item.get("state", "open")),
+                    is_draft=bool(item.get("isDraft", False)),
+                ))
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning("skipping malformed review-request PR: %s", exc)
+        return result
+
+    async def search_items_mentioning(
+        self, query: str, *, limit: int = 50
+    ) -> tuple:
+        """Return (issues, prs) where the body contains *query*.
+
+        Uses ``gh search issues`` which covers both issues and PRs.
+        """
+        issues: List[IssueRef] = []
+        prs: List[PrRef] = []
+        try:
+            out = await self._run_checked(
+                "search", "issues", query,
+                "--repo", self.repo,
+                "--state", "open",
+                "--limit", str(limit),
+                "--json", "number,title,url,labels,body,state",
+            )
+        except GhCommandError as exc:
+            logger.warning("search_items_mentioning failed: %s", exc)
+            return issues, prs
+        data = json.loads(out or "[]")
+        for item in data:
+            try:
+                url = str(item.get("url", ""))
+                if "/pull/" in url or "/pulls/" in url:
+                    prs.append(PrRef(
+                        number=int(item["number"]),
+                        title=str(item.get("title", "")),
+                        url=url,
+                        labels=_labels_from_gh(item),
+                        head_ref="",
+                        base_ref="main",
+                        state=str(item.get("state", "open")),
+                        is_draft=False,
+                    ))
+                else:
+                    issues.append(IssueRef.from_gh_json(item))
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning("skipping malformed search result: %s", exc)
+        return issues, prs
 
     async def list_unclassified_issues(self, *, limit: int = 100) -> List[IssueRef]:
         """Return open issues that have no pipeline labels (no ``~workflow:*``, ``~batch:*``, ``~review:*``).
