@@ -309,7 +309,11 @@ def _print_version() -> None:
         sys.exit(1)
 
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    try:
+        spec.loader.exec_module(mod)
+    except Exception as exc:
+        print(f"DEILE (version unknown: {exc})", file=sys.stderr)
+        sys.exit(1)
 
     version = getattr(mod, "__version__", "unknown")
     build = getattr(mod, "__build_number__", "unknown")

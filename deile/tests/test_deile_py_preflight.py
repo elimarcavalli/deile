@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from subprocess import TimeoutExpired
 
 
 _PROJECT_ROOT = Path(__file__).parents[2]  # repo/
@@ -229,14 +230,27 @@ class TestPreflightPriority:
     def test_no_arg_still_reaches_bootstrap_path(self):
         """Running with no args should NOT exit 0 via preflight (should
         attempt bootstrap or venv redirect). This test verifies preflight
-        doesn't intercept normal operation."""
-        result = _run_deile_py(timeout=10)
-        # Without flags, it should NOT match preflight.
-        # The script should NOT print the version banner (that's bootstrap).
-        assert "DEILE v" not in result.stdout.split("\n")[0:3], (
-            "No-arg run should not trigger version output"
+        doesn't intercept normal operation.
+
+        The timeout is EXPECTED: without flags, the script enters
+        bootstrap (venv creation / pip install / interactive prompt)
+        or re-execs into the venv and starts the agent — all of which
+        take time or block without a TTY. The timeout IS the proof
+        that preflight did NOT intercept and exit(0) quickly."""
+        try:
+            result = _run_deile_py(timeout=10)
+        except TimeoutExpired:
+            # Timeout proves the script entered bootstrap / venv redirect
+            # and did NOT exit quickly via preflight. This is the
+            # expected success case.
+            return
+        # If it did return (very fast env or pre-existing venv that fails
+        # quickly), ensure it didn't exit via preflight.
+        first_lines = result.stdout.split("\n")[0:3]
+        assert "DEILE v" not in first_lines, (
+            f"No-arg run should not trigger version output. "
+            f"stdout[0:3]={first_lines}"
         )
-        # It should NOT exit 0 from preflight (it'll fail somewhere in
-        # bootstrap due to missing API keys, or redirect to venv).
-        # Either way, the important assertion: stdout doesn't match
-        # the preflight version output.
+        # It should NOT exit 0 from preflight (exit 0 would mean
+        # preflight handled it, which is wrong for no-arg runs).
+        # If it exits non-zero, that's bootstrap failing — also fine.
