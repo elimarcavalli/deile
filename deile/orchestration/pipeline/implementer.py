@@ -35,8 +35,7 @@ from deile.orchestration.pipeline.claude_dispatcher import (
 from deile.orchestration.pipeline.constants import ISSUE_BODY_MAX_CHARS
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from deile.orchestration.pipeline.github_client import (CommentRef,
-                                                            IssueRef,
+    from deile.orchestration.pipeline.github_client import (IssueRef,
                                                             MentionTrigger,
                                                             PrRef)
     from deile.orchestration.pipeline.monitor import PipelineMonitor

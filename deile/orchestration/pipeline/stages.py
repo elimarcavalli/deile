@@ -27,9 +27,7 @@ from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
 from deile.orchestration.pipeline.follow_up_detector import detect_follow_ups
 from deile.orchestration.pipeline.github_client import (CommentRef,
                                                         GhCommandError,
-                                                        IssueRef,
-                                                        MentionTrigger,
-                                                        PrRef)
+                                                        MentionTrigger)
 from deile.orchestration.pipeline.labels import (MENTION_DONE,
                                                  REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
