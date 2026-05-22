@@ -15,8 +15,6 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch
-
 import pytest
 
 from deile.commands.builtin.version_command import VersionCommand
@@ -274,3 +272,123 @@ class TestSubprocessSmoke:
         elapsed = time.monotonic() - t0
         assert result.returncode == 0
         assert elapsed < 0.5, f"Fast-path demorou {elapsed:.2f}s (limite 0.5s)"
+
+
+# ---------------------------------------------------------------------------
+# TTY interativo (mock) — prompt painel completo
+# ---------------------------------------------------------------------------
+
+
+def _load_deile_script():
+    """Carrega o script deile.py como módulo para permitir mocking.
+
+    O pacote ``deile`` (deile/__init__.py) sombreia o script ``deile.py``,
+    portanto usamos importlib para carregar o script com um nome distinto.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "_deile_script", str(REPO_ROOT / "deile.py")
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestInteractiveTTYPrompt:
+    """Cobre o prompt interativo quando TTY está ativo e .venv não existe.
+
+    Usa mocking de sys.stdout.isatty antes do import do script deile.py
+    para simular ambiente interativo sem venv. O ``_venv_python`` do módulo
+    é patchado diretamente para evitar interferência com outras operações
+    de Path no carregamento.
+    """
+
+    def test_tty_prompt_shows_when_no_venv(self):
+        """Em TTY sem venv, o prompt para painel completo deve aparecer."""
+        from unittest.mock import patch, MagicMock
+
+        fake_venv = MagicMock()
+        fake_venv.exists.return_value = False
+        with patch("sys.stdout.isatty", return_value=True), \
+             patch("builtins.input", return_value="n"):
+            mod = _load_deile_script()
+            with patch.object(mod, "_venv_python", return_value=fake_venv):
+                with pytest.raises(SystemExit) as exc_info:
+                    mod._fast_version()
+                assert exc_info.value.code == 0
+
+    def test_tty_prompt_no_shows_short_line(self):
+        """TTY com resposta 'não' → sai com linha curta e exit 0."""
+        from unittest.mock import patch, MagicMock
+        from io import StringIO
+
+        fake_stdout = StringIO()
+        fake_venv = MagicMock()
+        fake_venv.exists.return_value = False
+        with patch("sys.stdout.isatty", return_value=True), \
+             patch("builtins.input", return_value="n"):
+            mod = _load_deile_script()
+            with patch.object(mod, "_venv_python", return_value=fake_venv), \
+                 patch.object(mod.sys, "stdout", fake_stdout):
+                with pytest.raises(SystemExit) as exc_info:
+                    mod._fast_version()
+                assert exc_info.value.code == 0
+                output = fake_stdout.getvalue()
+                assert "DEILE v" in output
+                assert "painel completo" in output
+
+    def test_tty_prompt_yes_triggers_bootstrap_path(self):
+        """TTY com resposta 'sim' → chama bootstrap leve (_create_venv, _install_deps)."""
+        from unittest.mock import patch, MagicMock
+
+        fake_venv = MagicMock()
+        fake_venv.exists.return_value = False
+        with patch("sys.stdout.isatty", return_value=True), \
+             patch("builtins.input", return_value="y"):
+            mod = _load_deile_script()
+            with patch.object(mod, "_venv_python", return_value=fake_venv), \
+                 patch.object(mod, "_check_python_version") as mock_check, \
+                 patch.object(mod, "_create_venv") as mock_venv, \
+                 patch.object(mod, "_install_deps") as mock_deps, \
+                 patch.object(mod, "_exec_in_venv") as mock_exec:
+                with pytest.raises(SystemExit) as exc_info:
+                    mod._fast_version()
+                assert exc_info.value.code == 0
+                mock_check.assert_called_once()
+                mock_venv.assert_called_once()
+                mock_deps.assert_called_once()
+                mock_exec.assert_called_once()
+
+    def test_tty_prompt_yes_does_not_call_ensure_env(self):
+        """Bootstrap leve NÃO deve chamar _ensure_env_file (sem wizard de API key)."""
+        from unittest.mock import patch, MagicMock
+
+        fake_venv = MagicMock()
+        fake_venv.exists.return_value = False
+        with patch("sys.stdout.isatty", return_value=True), \
+             patch("builtins.input", return_value="y"):
+            mod = _load_deile_script()
+            with patch.object(mod, "_venv_python", return_value=fake_venv), \
+                 patch.object(mod, "_check_python_version"), \
+                 patch.object(mod, "_create_venv"), \
+                 patch.object(mod, "_install_deps"), \
+                 patch.object(mod, "_exec_in_venv"), \
+                 patch.object(mod, "_ensure_env_file") as mock_env:
+                with pytest.raises(SystemExit) as exc_info:
+                    mod._fast_version()
+                assert exc_info.value.code == 0
+                mock_env.assert_not_called()
+
+    def test_tty_prompt_eof_treated_as_no(self):
+        """EOFError/KeyboardInterrupt no input → tratado como 'não'."""
+        from unittest.mock import patch, MagicMock
+
+        fake_venv = MagicMock()
+        fake_venv.exists.return_value = False
+        with patch("sys.stdout.isatty", return_value=True), \
+             patch("builtins.input", side_effect=EOFError):
+            mod = _load_deile_script()
+            with patch.object(mod, "_venv_python", return_value=fake_venv):
+                with pytest.raises(SystemExit) as exc_info:
+                    mod._fast_version()
+                assert exc_info.value.code == 0
