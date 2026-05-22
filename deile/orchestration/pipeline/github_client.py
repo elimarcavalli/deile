@@ -27,7 +27,8 @@ from deile.orchestration.pipeline._time_utils import format_iso_utc
 from deile.orchestration.pipeline.labels import (BATCH_LABEL_PREFIX,
                                                  LABEL_COLORS,
                                                  LABEL_DESCRIPTIONS,
-                                                 MENTION_LABELS, REVIEW_LABELS,
+                                                 MENTION_LABELS, REFINE_LABELS,
+                                                 REVIEW_LABELS,
                                                  WORKFLOW_LABELS,
                                                  batch_id_from_label,
                                                  is_batch_label,
@@ -68,6 +69,7 @@ class IssueRef:
     labels: Tuple[str, ...]
     body: str = ""
     state: str = "open"
+    author: str = ""
 
     @property
     def batch_id(self) -> Optional[str]:
@@ -78,6 +80,7 @@ class IssueRef:
 
     @classmethod
     def from_gh_json(cls, item: dict) -> "IssueRef":
+        author = item.get("author") or {}
         return cls(
             number=int(item["number"]),
             title=str(item.get("title", "")),
@@ -85,6 +88,7 @@ class IssueRef:
             labels=_labels_from_gh(item),
             body=str(item.get("body") or ""),
             state=str(item.get("state", "open")),
+            author=str(author.get("login", "")) if isinstance(author, dict) else "",
         )
 
 
@@ -272,7 +276,7 @@ class GitHubClient:
             "--state", "open",
             "--label", label,
             "--limit", str(limit),
-            "--json", "number,title,url,labels,body,state",
+            "--json", "number,title,url,labels,body,state,author",
             factory=IssueRef.from_gh_json,
         )
 
@@ -280,7 +284,7 @@ class GitHubClient:
         out = await self._run_checked(
             "issue", "view", str(number),
             "--repo", self.repo,
-            "--json", "number,title,url,labels,body,state",
+            "--json", "number,title,url,labels,body,state,author",
         )
         return IssueRef.from_gh_json(json.loads(out))
 
@@ -300,6 +304,37 @@ class GitHubClient:
         return PrRef.from_gh_json(item)
 
     # -- pull requests ------------------------------------------------
+
+    async def has_open_pr_for_issue(self, number: int) -> bool:
+        """True if an OPEN PR already targets/closes issue ``number`` (dedup guard).
+
+        Issue #257: the implement stage must not open a SECOND PR for an issue that
+        was already implemented through another path (e.g. a ``@deile-one`` comment
+        mention firing the one-shot handler while the issue is still flowing through
+        the refinement gate). Matches a PR whose body uses a closing keyword for the
+        issue OR whose head branch references it — covering both the pipeline's
+        ``auto/issue-N`` branches and ad-hoc branches opened via the mention path.
+        Best-effort: a query failure returns False (never block work on a hiccup).
+        """
+        try:
+            out = await self._run_checked(
+                "pr", "list", "--repo", self.repo, "--state", "open",
+                "--search", str(number), "--limit", "30",
+                "--json", "number,body,headRefName",
+            )
+            prs = json.loads(out)
+        except (GhCommandError, json.JSONDecodeError) as exc:
+            logger.warning("has_open_pr_for_issue #%d failed: %s", number, exc)
+            return False
+        closes = re.compile(rf"\b(?:clos\w*|fix\w*|resolv\w*)\s+#{number}\b", re.IGNORECASE)
+        needle = f"issue-{number}"
+        for pr in prs:
+            head = (pr.get("headRefName") or "")
+            if needle in head or head.endswith(f"-{number}"):
+                return True
+            if closes.search(pr.get("body") or ""):
+                return True
+        return False
 
     async def list_open_prs(self, *, limit: int = 50) -> List[PrRef]:
         return await self._list_refs(
@@ -346,6 +381,24 @@ class GitHubClient:
                     logger.debug("remove_labels: %r absent on #%d (ignored)", lb, number)
                     continue
                 raise GhCommandError(("api", "-X", "DELETE", path), rc, out, err)
+
+    async def assign_issue(self, number: int, login: str) -> None:
+        """Assign *login* to an issue via the REST endpoint.
+
+        Uses ``POST repos/{repo}/issues/{n}/assignees`` (needs only ``repo``
+        scope) instead of ``gh issue edit --add-assignee`` — same rationale as
+        :meth:`add_labels`: the ``gh`` edit path runs a GraphQL ``login`` query
+        that demands ``read:org``, which the pipeline token lacks. Best-effort:
+        a failure is logged, never raised (assignment is a courtesy signal).
+        """
+        if not login:
+            return
+        rc, out, err = await self._run(
+            "api", "-X", "POST", f"repos/{self.repo}/issues/{number}/assignees",
+            "-f", f"assignees[]={login}",
+        )
+        if rc != 0:
+            logger.warning("assign_issue #%d -> %s failed: %s", number, login, err.strip()[:200])
 
     async def _transition(
         self, kind: str, number: int, *, from_label: Optional[str], to_label: str,
@@ -454,7 +507,10 @@ class GitHubClient:
             if rc != 0:
                 logger.debug("label %s already exists or could not be created", label)
 
-        await asyncio.gather(*[_create_one(label) for label in (*WORKFLOW_LABELS, *REVIEW_LABELS, *MENTION_LABELS)])
+        await asyncio.gather(*[
+            _create_one(label)
+            for label in (*WORKFLOW_LABELS, *REVIEW_LABELS, *MENTION_LABELS, *REFINE_LABELS)
+        ])
 
     async def comment_on_issue(self, number: int, text: str) -> None:
         await self._run_checked(
@@ -531,7 +587,7 @@ class GitHubClient:
             "--state", "open",
             "--assignee", login,
             "--limit", str(limit),
-            "--json", "number,title,url,labels,body,state",
+            "--json", "number,title,url,labels,body,state,author",
             factory=IssueRef.from_gh_json,
             log_label="list_issues_assigned_to",
         )
@@ -601,7 +657,7 @@ class GitHubClient:
                 "--repo", self.repo,
                 "--state", "open",
                 "--limit", str(limit),
-                "--json", "number,title,url,labels,body,state",
+                "--json", "number,title,url,labels,body,state,author",
             )
         except GhCommandError as exc:
             logger.warning("search_items_mentioning failed: %s", exc)
@@ -638,7 +694,7 @@ class GitHubClient:
                 "--repo", self.repo,
                 "--state", "open",
                 "--limit", str(batch_limit),
-                "--json", "number,title,url,labels,body,state",
+                "--json", "number,title,url,labels,body,state,author",
             )
             data = json.loads(out or "[]")
             new_items = 0

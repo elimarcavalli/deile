@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from deile.orchestration.pipeline.constants import ISSUE_BODY_MAX_CHARS
+from deile.orchestration.pipeline.labels import title_prefix_for_type
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from deile.orchestration.pipeline.github_client import MentionTrigger
@@ -31,7 +32,7 @@ Passo a passo:
 1. Trabalhe na subpasta ./repo do seu diretório atual. Se ./repo não existir, rode: gh repo clone {repo} repo
    Se já existir, entre nela e rode: git fetch origin && git checkout {main} && git reset --hard origin/{main}
 2. Dentro de ./repo, crie e dê checkout no branch {branch} a partir de {main}.
-3. Implemente a feature descrita na issue abaixo. Crie/edite os arquivos necessários e ADICIONE testes cobrindo todos os casos.
+3. ANTES de codar, leia os comentários da issue: gh issue view {number} --repo {repo} --comments — decisões e esclarecimentos do stakeholder ali FAZEM PARTE do escopo (o corpo pode não conter tudo). Implemente a feature descrita na issue abaixo E o que os comentários decidiram. Crie/edite os arquivos necessários e ADICIONE testes cobrindo todos os casos.
 4. Rode os testes e garanta 100% de aprovação. As dependências (incl. pytest) JÁ estão instaladas no ambiente — NÃO rode `pip install` (o filesystem é read-only). Para rodar só os testes novos sem esbarrar no gate global de cobertura: python3 -m pytest <arquivos_de_teste_novos> -p no:cov -q
 5. Faça commit atômico e `git push -u origin {branch}`.
 6. ABRA A PR (passo OBRIGATÓRIO — sem PR a tarefa NÃO está concluída):
@@ -53,6 +54,7 @@ Você é o QUALITY GATE final da Pull Request #{number} do repositório {repo}. 
 
 1. Garanta um clone atualizado de {repo} em ./repo (gh repo clone {repo} repo se não existir; senão git fetch origin). Dentro de ./repo: gh pr checkout {number}
 2. LEIA O DIFF INTEIRO e entenda a intenção da mudança: git diff {main}...HEAD ; git diff HEAD. Liste os arquivos tocados e leia cada um por completo.
+2b. CONFRONTE A ENTREGA CONTRA O QUE FOI PEDIDO (passo OBRIGATÓRIO): descubra a issue que esta PR fecha (procure `Closes #N`/`Fixes #N` no corpo: gh pr view {number} --repo {repo} --json body,closingIssuesReferences). Leia a issue E TODOS os comentários dela: gh issue view <N> --repo {repo} --comments. Liste, item a item, TUDO o que foi pedido — no corpo E nos comentários (decisões do stakeholder fazem parte do escopo) — e verifique se a PR entrega CADA item. Se faltou qualquer requisito, ou o autor declarou "concluído" sem cumprir, isso É IMPEDIMENTO (veja o veredito).
 3. AVALIE contra o checklist do revisor e anote cada achado (arquivo:linha + problema):
    - Corretude e IDEMPOTÊNCIA: a lógica re-executa sem efeito duplicado? Algo em loop/por tick/agendado re-dispara a cada execução sem claim/dedup/cursor? (storms de processamento duplicado são a classe de bug nº 1 deste projeto)
    - SOLID / SRP / DRY / KISS: responsabilidade única; sem duplicação real nem abstração prematura.
@@ -66,7 +68,8 @@ Você é o QUALITY GATE final da Pull Request #{number} do repositório {repo}. 
 5b. THREADS/NOTAS de review pendentes: liste os comentários de review (gh api repos/{repo}/pulls/{number}/comments). Para CADA thread/nota, JULGUE criticamente se o que foi pedido está realmente correto — NÃO obedeça cegamente. Se procede, RESOLVA (faça a mudança + responda a thread citando o commit). Se NÃO procede, responda a thread com uma JUSTIFICATIVA concreta de por que não fazer. Não deixe thread pendente sem ação ou justificativa.
 6. DOCUMENTE as evidências como comentário na PR (gh pr comment {number} --repo {repo} --body "..."): o que revisou, os achados, as correções, como tratou cada thread, e a saída REAL dos testes.
 7. VEREDITO:
-   - Checklist OK E testes verdes → MERGEIE. Você é o autor da PR; NÃO use `gh pr review --approve` (o GitHub recusa auto-aprovação). Mergeie via REST (evita o escopo read:org): gh api -X PUT repos/{repo}/pulls/{number}/merge -f merge_method=merge (fallback: gh pr merge {number} --repo {repo} --merge). Confirme: gh pr view {number} --repo {repo} --json merged -q .merged (deve ser true).
+   - A entrega cumpre TUDO o que a issue + comentários pediram (passo 2b) E o checklist passou E os testes estão verdes → MERGEIE. Você é o autor da PR; NÃO use `gh pr review --approve` (o GitHub recusa auto-aprovação). Mergeie via REST (evita o escopo read:org): gh api -X PUT repos/{repo}/pulls/{number}/merge -f merge_method=merge (fallback: gh pr merge {number} --repo {repo} --merge). Confirme: gh pr view {number} --repo {repo} --json merged -q .merged (deve ser true).
+   - A entrega NÃO cumpre tudo o que foi pedido (faltou requisito do corpo ou de um comentário; o autor disse "concluído" sem terminar) → IMPEDIMENTO: NÃO mergeie. Testes verdes NÃO suprem requisito faltante. Comente o que falta vs. o pedido e escreva `BLOQUEADO: <o que falta>` — devolve ao autor.
    - Impedimento REAL que você não pode resolver com segurança (decisão de produto pendente, falta credencial/segredo, mudança quebraria contrato sem migração) → NÃO mergeie; comente o motivo na PR e escreva numa linha começando com `BLOQUEADO: <motivo concreto>`.
 8. Na ÚLTIMA LINHA: a URL da PR seguida de MERGED (ex.: https://github.com/{repo}/pull/{number} MERGED) se mergeou; OU a linha `BLOQUEADO: <motivo>`. NUNCA escreva MERGED sem ter mergeado de fato; NUNCA invente resultado.
 """
@@ -114,6 +117,7 @@ RETOMADA do QUALITY GATE da Pull Request #{number} do repositório {repo} — um
 {progress_block}
    git diff {main}...HEAD ; git status --porcelain (leia cada arquivo modificado/untracked listado).
 3. AVALIE com RIGOR contra o checklist do revisor (corretude/IDEMPOTÊNCIA — re-dispara a cada tick sem claim/dedup?; SOLID/SRP/DRY/KISS; arquitetura hexagonal; SEGURANÇA — injeção em jq/shell/SQL, segredo em log; error handling tipado; testes de borda + a regressão alegada; packaging — arquivo novo no COPY do Dockerfile e no allowlist do .dockerignore). Anote cada achado (arquivo:linha + problema).
+3b. CONFRONTE a entrega contra o PEDIDO: descubra a issue (Closes #N no corpo da PR), leia-a com TODOS os comentários (gh issue view <N> --repo {repo} --comments) e verifique item a item se a PR entrega tudo (corpo + decisões do stakeholder). Faltou requisito ou "concluído" sem cumprir → IMPEDIMENTO, NÃO mergeie (testes verdes não suprem), `BLOQUEADO: <o que falta>`.
 4. CORRIJA os achados com commits normais (SEM force-push) e dê push. Adicione os testes que faltarem.
 5. Rode os testes e garanta 100% de aprovação. Dependências JÁ instaladas — NÃO rode `pip install`. Testes do PR sem o gate global: python3 -m pytest <arquivos> -p no:cov -q.
 6. DOCUMENTE as evidências como comentário na PR (gh pr comment {number} --repo {repo} --body "...").
@@ -318,6 +322,110 @@ def _render_worker_review_resume_brief(
 ) -> str:
     return _WORKER_REVIEW_RESUME_BRIEF.format(
         repo=repo, main=main, number=number, progress_block=_PROGRESS_BLOCK
+    )
+
+
+# --- Refinement gate briefs (issue #257) --------------------------------------
+# Three new briefs that run BEFORE any implementation: CRITIQUE (judge scope),
+# REFINE (rewrite the body toward the template, possibly pausing for the
+# stakeholder) and DECOMPOSE (an architect splits a clear intent into independent
+# derived issues). The persona is chosen by issue type at dispatch time (analyst
+# for intent, architect for feature/refactor, debugger for bug) — so the brief
+# stays generic and the type-specific JUDGMENT lives in the persona instruction.
+# Each brief ends with a strict last-line VERDICT the pipeline parses.
+
+_WORKER_CRITIQUE_BRIEF = """\
+Você é o GATE DE CRÍTICA DE ESCOPO da issue #{number} (tipo: {type}) do repositório {repo}. NÃO implemente nem refine nada — apenas JULGUE, conforme a sua persona, se o escopo está claro o suficiente para avançar.
+
+1. Leia a issue (abaixo) e o template oficial do tipo:
+   gh api repos/{repo}/contents/.github/ISSUE_TEMPLATE/{template} --jq .content | base64 --decode
+   (Para feature/bug/refactor, consulte a arquitetura real — docs/system_design/ e o código; clone com `gh repo clone {repo} repo` se ainda não houver ./repo. Para bug, verifique se dá pra localizar a origem no código.)
+2. Julgue com RIGOR: a issue está CLARA e bem-escopada (segue o template, tem substância para a PRÓXIMA etapa sem ambiguidade) ou POBRE (vazia, template em branco/incompleto, genérica demais, sem alvo/critério)?
+3. Seja honesto e específico — se POBRE, aponte exatamente o que falta.
+
+VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE uma destas, nada depois dela:
+  VEREDITO: CLARO
+  VEREDITO: POBRE: <o que falta, em uma frase concreta>
+
+=== Issue #{number} (tipo: {type}): {title} ===
+{body}
+"""
+
+_WORKER_REFINE_BRIEF = """\
+Você vai REFINAR a issue #{number} (tipo: {type}) do repositório {repo} — corrigir o TÍTULO e reescrever o CORPO para ficar claro, substancial e dentro do template oficial. NÃO implemente código de feature/fix; o objetivo é deixar o ESCOPO pronto para a próxima etapa.
+
+1. Leia a issue atual (abaixo), o template oficial E OS COMENTÁRIOS da issue:
+   gh api repos/{repo}/contents/.github/ISSUE_TEMPLATE/{template} --jq .content | base64 --decode
+   gh issue view {number} --repo {repo} --comments
+   Os comentários — em especial DECISÕES e esclarecimentos do stakeholder — FAZEM PARTE do escopo e DEVEM ser incorporados no corpo. NUNCA ignore o que foi pedido em comentário.
+   (feature/refactor: consulte docs/system_design/ e o código real, clone com `gh repo clone {repo} repo` se preciso. bug: investigue o código e localize a origem provável arquivo:linha. NUNCA invente.)
+2. CORRIJA O TÍTULO para seguir o padrão do template: ele DEVE começar com o prefixo `{title_prefix}`. Aplique:
+   gh issue edit {number} --repo {repo} --title "{title_prefix} <título claro e específico>"
+3. REESCREVA o corpo conforme a estrutura do template, preenchendo CADA seção com substância REAL (do título, do contexto, do código E das decisões registradas nos comentários). Aplique:
+   gh issue edit {number} --repo {repo} --body "<novo corpo completo>"
+4. LACUNA DO STAKEHOLDER: se houver decisão de escopo/lacuna IMPORTANTE que você NÃO pode decidir sozinho com segurança (alto impacto, ou que derivaria uma feature grande adicional), NÃO decida. Em vez disso:
+   a) Comente na issue (gh issue comment {number} --repo {repo} --body "...") descrevendo a lacuna E **2 a 3 sugestões bem pensadas** para o stakeholder escolher.
+   b) Atribua ao autor (stakeholder): descubra com `gh issue view {number} --repo {repo} --json author -q .author.login` e atribua via REST: gh api -X POST repos/{repo}/issues/{number}/assignees -f 'assignees[]=<login>'
+   c) Reporte AGUARDA_STAKEHOLDER (veredito abaixo) — o pipeline pausa o refino até o stakeholder decidir.
+5. Honestidade: marque suposições como suposições no corpo; nunca invente fato, dado ou causa-raiz.
+
+VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE uma destas, nada depois dela:
+  REFINO: OK
+  REFINO: AGUARDA_STAKEHOLDER
+
+=== Issue #{number} (tipo: {type}): {title} ===
+{body}
+"""
+
+_WORKER_DECOMPOSE_BRIEF = """\
+Você é o ARQUITETO. A intent #{number} do repositório {repo} está CLARA e aprovada. DECOMPONHA-A em uma ou mais issues derivadas INDEPENDENTES (feature/bug/refactor) que possam ser implementadas em branches PARALELOS.
+
+1. Consulte a arquitetura real ANTES de decidir: docs/system_design/ (clone com `gh repo clone {repo} repo` se preciso) e o código relevante.
+2. Identifique as frentes GENUINAMENTE INDEPENDENTES (sem dependência sequencial entre si). Se a intenção é coesa e indivisível, UMA derivada é a resposta certa; se é multi-frente, várias. NÃO force a divisão — partes acopladas ficam na MESMA issue (fatiar trabalho dependente gera conflito, não paralelismo).
+3. Para CADA frente, crie uma issue derivada com escopo JÁ CLARO:
+   - título específico; corpo seguindo o template do tipo (.github/ISSUE_TEMPLATE/feature_request.md | bug_report.md | refactor_proposal.md) com alvo técnico, contrato, critérios de aceite e plano de teste;
+   - inclua a linha: `Originada de #{number}`.
+   - crie com: gh issue create --repo {repo} --title "..." --body "..." --label "<feature|bug|refactor>"
+     (se o --label falhar, crie sem e adicione via REST: gh api -X POST repos/{repo}/issues/<novo>/labels -f 'labels[]=<tipo>')
+4. Comente na intent #{number} (gh issue comment) listando as derivadas criadas com links — ela permanece ABERTA como épico.
+5. Honestidade: só liste issues que você REALMENTE criou (confirme com `gh issue view`).
+
+VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE (com os números reais das issues criadas):
+  DECOMPOSTO: #<n1> #<n2> ...
+
+=== Intent #{number}: {title} ===
+{body}
+"""
+
+
+def _refine_body(body: str) -> str:
+    return (body or "").strip()[:ISSUE_BODY_MAX_CHARS] or "(sem corpo — avalie a partir do título)"
+
+
+def _render_worker_critique_brief(
+    repo: str, number: int, title: str, body: str, *, issue_type: str, template: str
+) -> str:
+    return _WORKER_CRITIQUE_BRIEF.format(
+        repo=repo, number=number, title=title, body=_refine_body(body),
+        type=issue_type, template=template,
+    )
+
+
+def _render_worker_refine_brief(
+    repo: str, number: int, title: str, body: str, *, issue_type: str, template: str
+) -> str:
+    return _WORKER_REFINE_BRIEF.format(
+        repo=repo, number=number, title=title, body=_refine_body(body),
+        type=issue_type, template=template,
+        title_prefix=title_prefix_for_type(issue_type) or "[FEATURE]",
+    )
+
+
+def _render_worker_decompose_brief(
+    repo: str, number: int, title: str, body: str
+) -> str:
+    return _WORKER_DECOMPOSE_BRIEF.format(
+        repo=repo, number=number, title=title, body=_refine_body(body),
     )
 
 

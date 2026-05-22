@@ -26,17 +26,23 @@ themselves.
 from __future__ import annotations
 
 import logging
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from deile.orchestration.pipeline.briefs import (
-    _render_claude_mention_prompt, _render_worker_implement_brief,
+    _render_claude_mention_prompt, _render_worker_critique_brief,
+    _render_worker_decompose_brief, _render_worker_implement_brief,
     _render_worker_implement_resume_brief, _render_worker_mention_brief,
-    _render_worker_pr_address_brief, _render_worker_review_brief,
-    _render_worker_review_only_brief, _render_worker_review_resume_brief)
+    _render_worker_pr_address_brief, _render_worker_refine_brief,
+    _render_worker_review_brief, _render_worker_review_only_brief,
+    _render_worker_review_resume_brief)
 from deile.orchestration.pipeline.claude_dispatcher import (
     render_implement_prompt, render_review_prompt)
+from deile.orchestration.pipeline.labels import (issue_type_from_labels,
+                                                 persona_for_type,
+                                                 template_for_type)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from deile.orchestration.pipeline.github_client import (IssueRef,
@@ -82,10 +88,64 @@ class WorkOutcome:
     budget_acumulado_s: float = 0.0
 
 
+# --- Refinement-gate verdict parsers (issue #257) ----------------------------
+# The critique/refine/decompose briefs end with a strict last-line verdict; these
+# parse the LAST matching line from the agent's final text (``WorkOutcome.text``).
+# Defaults err on the SAFE side: a missing critique verdict reads as POOR (do not
+# advance an unjudged issue); a missing refine verdict reads as ``unknown`` (retry).
+_CRITIQUE_RE = re.compile(r"^\s*VEREDITO:\s*(CLARO|POBRE)\b\s*:?\s*(.*)$", re.IGNORECASE | re.MULTILINE)
+_REFINE_RE = re.compile(r"^\s*REFINO:\s*(OK|AGUARDA_STAKEHOLDER)\b", re.IGNORECASE | re.MULTILINE)
+_DECOMPOSE_RE = re.compile(r"^\s*DECOMPOSTO:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+
+
+def parse_critique_verdict(text: str) -> Tuple[bool, str]:
+    """Return ``(is_clear, reason)`` from a critique outcome. Missing → POOR."""
+    matches = list(_CRITIQUE_RE.finditer(text or ""))
+    if not matches:
+        return False, "veredito de crítica ausente"
+    m = matches[-1]
+    is_clear = m.group(1).upper() == "CLARO"
+    return is_clear, (m.group(2) or "").strip()
+
+
+def parse_refine_verdict(text: str) -> str:
+    """Return ``"ok"`` | ``"waiting"`` | ``"unknown"`` from a refine outcome."""
+    matches = list(_REFINE_RE.finditer(text or ""))
+    if not matches:
+        return "unknown"
+    return "waiting" if matches[-1].group(1).upper() == "AGUARDA_STAKEHOLDER" else "ok"
+
+
+def parse_decompose_result(text: str) -> List[int]:
+    """Return the derived issue numbers reported by a decompose outcome."""
+    matches = list(_DECOMPOSE_RE.finditer(text or ""))
+    if not matches:
+        return []
+    return [int(n) for n in re.findall(r"#(\d+)", matches[-1].group(1))]
+
+
 class PipelineImplementer(ABC):
     """Strategy that performs the implement / review / mention work."""
 
     name: str = "base"
+
+    # Refinement-gate steps (issue #257) — default to "not supported" so the
+    # legacy Claude path inherits a graceful no-op; the worker path overrides
+    # them. They are NOT abstract on purpose (only the worker implements them).
+    async def critique(
+        self, monitor: "PipelineMonitor", issue: "IssueRef"
+    ) -> WorkOutcome:
+        return WorkOutcome(ok=False, text="", error="critique não suportado nesta estratégia")
+
+    async def refine(
+        self, monitor: "PipelineMonitor", issue: "IssueRef"
+    ) -> WorkOutcome:
+        return WorkOutcome(ok=False, text="", error="refine não suportado nesta estratégia")
+
+    async def decompose(
+        self, monitor: "PipelineMonitor", issue: "IssueRef"
+    ) -> WorkOutcome:
+        return WorkOutcome(ok=False, text="", error="decompose não suportado nesta estratégia")
 
     @abstractmethod
     async def implement(
@@ -275,6 +335,12 @@ class WorkerImplementer(PipelineImplementer):
         from deile.infrastructure.deile_worker_client import (
             WorkerDispatchError, build_dispatch_payload)
 
+        # Defensive clamp under the 8000-char dispatch cap (issue #257): every
+        # body-embedding brief puts the issue/PR body LAST (after the VEREDITO
+        # rules), so truncating the tail only trims body context — never the
+        # instructions. Guarantees the payload never hard-fails on size.
+        if len(brief) > 7950:
+            brief = brief[:7950] + "\n…(brief truncado por tamanho)"
         payload = build_dispatch_payload(
             brief=brief, channel_id=channel_id, persona=persona, wait=True
         )
@@ -312,6 +378,48 @@ class WorkerImplementer(PipelineImplementer):
         )
         return await self._dispatch(
             brief, channel_id=f"pipeline-issue-{issue.number}", resume_block=resume_block
+        )
+
+    # --- Refinement gate (issue #257) -------------------------------------
+    # critique/refine route to the persona that owns the issue type (analyst for
+    # intent, architect for feature/refactor, debugger for bug); decompose is
+    # always the architect. No resume_block: these steps open no PR, so the
+    # worker returns a plain ok+summary and the verdict lives in its last line.
+
+    async def critique(
+        self, monitor: "PipelineMonitor", issue: "IssueRef"
+    ) -> WorkOutcome:
+        issue_type = issue_type_from_labels(issue.labels)
+        brief = _render_worker_critique_brief(
+            monitor.config.repo, issue.number, issue.title, issue.body,
+            issue_type=issue_type or "", template=template_for_type(issue_type) or "intent.md",
+        )
+        return await self._dispatch(
+            brief, channel_id=f"pipeline-issue-{issue.number}",
+            persona=persona_for_type(issue_type),
+        )
+
+    async def refine(
+        self, monitor: "PipelineMonitor", issue: "IssueRef"
+    ) -> WorkOutcome:
+        issue_type = issue_type_from_labels(issue.labels)
+        brief = _render_worker_refine_brief(
+            monitor.config.repo, issue.number, issue.title, issue.body,
+            issue_type=issue_type or "", template=template_for_type(issue_type) or "intent.md",
+        )
+        return await self._dispatch(
+            brief, channel_id=f"pipeline-issue-{issue.number}",
+            persona=persona_for_type(issue_type),
+        )
+
+    async def decompose(
+        self, monitor: "PipelineMonitor", issue: "IssueRef"
+    ) -> WorkOutcome:
+        brief = _render_worker_decompose_brief(
+            monitor.config.repo, issue.number, issue.title, issue.body,
+        )
+        return await self._dispatch(
+            brief, channel_id=f"pipeline-issue-{issue.number}", persona="architect",
         )
 
     async def review(

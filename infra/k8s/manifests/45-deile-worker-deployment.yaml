@@ -20,7 +20,12 @@ metadata:
     role: deile        # so existing NetworkPolicies (deile-egress-to-bot,
                        # deile-egress-https-llm) cover this pod too
 spec:
-  replicas: 1
+  # 2 replicas for real parallelism (issue #257): the pipeline implements up to
+  # ``max_parallel`` reviewed issues concurrently (asyncio.gather) and the Service
+  # spreads the dispatches across pods. Each task runs in its own per-channel
+  # workspace subdir on the shared RWO PVC; on single-node k3s both pods land on
+  # the same node and share the local-path volume (RWO is node-scoped).
+  replicas: 2
   strategy: { type: Recreate }
   selector:
     matchLabels:

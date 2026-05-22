@@ -181,6 +181,9 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     "pipeline.resume_interval": ("pipeline_resume_interval", _to_nonneg_int),
     "pipeline.resume_max_attempts": ("pipeline_resume_max_attempts", _to_pos_int),
     "pipeline.resume_budget": ("pipeline_resume_budget", _to_nonneg_int),
+    # Refinement gate + parallel decomposition (issue #257)
+    "pipeline.refine_max_attempts": ("pipeline_refine_max_attempts", _to_pos_int),
+    "pipeline.max_parallel": ("pipeline_max_parallel", _to_pos_int),
     # Trust boundary (issue #125): allowlist of directories whose
     # ``./.deile/settings.json`` is honored as the project layer.
     "trust.project_layer_dirs": ("trust_project_layer_dirs", _to_str_list),
@@ -334,6 +337,8 @@ class Settings:
     pipeline_resume_interval: int = 0
     pipeline_resume_max_attempts: int = 10
     pipeline_resume_budget: int = 0
+    pipeline_refine_max_attempts: int = 5
+    pipeline_max_parallel: int = 2
 
     # Cron
     cron_db_path: Optional[Path] = None

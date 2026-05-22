@@ -97,3 +97,26 @@ personas:
         - bash_tool
         avoid_tools: []
         tool_timeout: 60
+    analyst:
+      capabilities:
+      - requirements_analysis
+      - product_discovery
+      - documentation
+      - architecture_analysis
+      communication_style: analytical
+      model_preferences:
+        temperature: 0.2
+        max_tokens: 8000
+        top_p: 0.9
+      behavior_settings:
+        verbosity_level: comprehensive
+        focus_on_patterns: true
+        include_trade_offs: true
+        suggest_improvements: true
+      tool_preferences:
+        preferred_tools:
+        - search_tool
+        - file_tools
+        - bash_tool
+        avoid_tools: []
+        tool_timeout: 60
