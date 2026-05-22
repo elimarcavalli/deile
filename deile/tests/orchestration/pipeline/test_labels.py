@@ -8,6 +8,7 @@ from deile.orchestration.pipeline.labels import (BATCH_LABEL_PREFIX,
                                                  LABEL_COLORS,
                                                  LABEL_DESCRIPTIONS,
                                                  REVIEW_LABELS, REVIEW_PENDING,
+                                                 WORKFLOW_BLOCKED,
                                                  WORKFLOW_LABELS, WORKFLOW_NEW,
                                                  batch_id_from_label,
                                                  is_batch_label,
@@ -33,6 +34,14 @@ class TestLabelConstants:
             # Colors are 6-digit hex (no #).
             assert len(LABEL_COLORS[label]) == 6
             int(LABEL_COLORS[label], 16)
+
+    def test_blocked_label_present(self):
+        # Resume feature (issue #254): the block label must be a workflow label
+        # so ensure_pipeline_labels creates it, with color + description.
+        assert WORKFLOW_BLOCKED == "~workflow:bloqueada"
+        assert WORKFLOW_BLOCKED in WORKFLOW_LABELS
+        assert WORKFLOW_BLOCKED in LABEL_COLORS
+        assert WORKFLOW_BLOCKED in LABEL_DESCRIPTIONS
 
 
 class TestBatchHelpers:

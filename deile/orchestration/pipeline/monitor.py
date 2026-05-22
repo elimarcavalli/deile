@@ -40,6 +40,7 @@ from deile.orchestration.pipeline.lockfile import LockHeldError
 from deile.orchestration.pipeline.lockfile import acquire as acquire_lock
 from deile.orchestration.pipeline.lockfile import release as release_lock
 from deile.orchestration.pipeline.notifier import DiscordNotifier
+from deile.orchestration.pipeline.resume_state import ResumeTracker
 from deile.orchestration.pipeline.scheduler import PendingRun, ScheduleStore
 from deile.orchestration.pipeline.stages import (_extract_pr_url,
                                                  _render_follow_up_report)
@@ -107,6 +108,20 @@ class PipelineConfig:
     # ``build_default_pipeline_config`` — every real entry point (CLI autostart,
     # /pipeline tool/command, the deile-pipeline deployment) uses the worker.
     dispatch_mode: str = "claude"
+    # Resume of partial work (issue #254). When ``enable_resume`` is True, the
+    # monitor re-dispatches issues parked in ``~workflow:em_implementacao``
+    # (continuable, NOT ``~workflow:bloqueada``) in RESUME mode instead of
+    # leaving them parked forever. The three knobs mirror the settings:
+    #   resume_interval     — min seconds between resume attempts (0 = immediate).
+    #   resume_max_attempts — attempt ceiling per issue before the block flow.
+    #   resume_budget       — accumulated-seconds ceiling (0 = no time ceiling).
+    # The dataclass default is False so hand-built unit-test configs keep the
+    # legacy "park forever" behaviour unless they opt in; the product default is
+    # resolved from settings in ``build_default_pipeline_config``.
+    enable_resume: bool = False
+    resume_interval: int = 0
+    resume_max_attempts: int = 10
+    resume_budget: int = 0
 
 
 def build_default_pipeline_config(*, use_pid_lock: bool = True) -> PipelineConfig:
@@ -134,6 +149,17 @@ def build_default_pipeline_config(*, use_pid_lock: bool = True) -> PipelineConfi
         # pipeline process has no local clone, so the on-startup worktree
         # cleanup would only emit warnings. Keep it for the claude path.
         enable_worktree_cleanup=dispatch_mode in ("claude", "claude_code", "claude-code"),
+        # Resume of partial work (issue #254) — only meaningful on the worker
+        # path (the structured ground-truth contract lives there). Resolve all
+        # four knobs from settings so the product default mirrors the operator's
+        # ``pipeline_resume_*`` configuration.
+        enable_resume=(
+            bool(settings.pipeline_resume_enabled)
+            and dispatch_mode not in ("claude", "claude_code", "claude-code")
+        ),
+        resume_interval=int(settings.pipeline_resume_interval),
+        resume_max_attempts=int(settings.pipeline_resume_max_attempts),
+        resume_budget=int(settings.pipeline_resume_budget),
     )
 
 
@@ -156,6 +182,10 @@ class _Stats:
     skipped_runs: int = 0
     prs_classified: int = 0
     mentions_processed: int = 0
+    # Issues moved to ~workflow:bloqueada by the block flow (issue #254).
+    issues_blocked: int = 0
+    # Resume dispatches re-sent for parked, continuable implementations.
+    resume_dispatches: int = 0
 
 
 class PipelineMonitor:
@@ -210,6 +240,11 @@ class PipelineMonitor:
         self._post_merge_cb = post_merge_callback
         self._mention_cursor_path = Path(config.base_repo_path) / "data" / "mention_cursor.txt"
         self._mention_cursor: Optional[datetime] = None
+        # Pipeline-side resume bookkeeping (issue #254): cadence timestamps,
+        # last substantive fingerprint (progress guard) and attempt/budget as
+        # reported by the worker. Instance state (like ``_mention_cursor``),
+        # not agent memory — see ``resume_state.py``.
+        self._resume_tracker = ResumeTracker()
         # Schedule store — when present, schedule entries drive when each
         # action fires (instead of the fixed poll interval). On startup the
         # monitor first drains any catch-up queue (entries whose run time
@@ -465,6 +500,11 @@ class PipelineMonitor:
                 if self.config.enable_implement and "implement" not in scheduled_actions:
                     logger.debug("implement not in schedule; running legacy fallback")
                     await self._implement_one_reviewed_issue()
+                # Resume runs alongside implement (issue #254): re-dispatch
+                # parked, continuable work. Gated by enable_resume; never on the
+                # schedule (it is a per-tick sweep, not a cron action).
+                if self.config.enable_resume:
+                    await self._resume_in_progress_issues()
                 if self.config.enable_pr_review and "pr_review" not in scheduled_actions:
                     logger.debug("pr_review not in schedule; running legacy fallback")
                     await self._review_one_open_pr()
@@ -480,6 +520,8 @@ class PipelineMonitor:
             await self._review_one_new_issue()
         if self.config.enable_implement:
             await self._implement_one_reviewed_issue()
+        if self.config.enable_resume:
+            await self._resume_in_progress_issues()
         if self.config.enable_pr_review:
             await self._review_one_open_pr()
         if self.config.enable_pr_triage:
@@ -510,6 +552,9 @@ class PipelineMonitor:
 
     async def _implement_one_reviewed_issue(self) -> None:
         return await stages.implement_one_reviewed_issue(self)
+
+    async def _resume_in_progress_issues(self) -> None:
+        return await stages.resume_in_progress_issues(self)
 
     async def _review_one_open_pr(self) -> None:
         return await stages.review_one_open_pr(self)

@@ -29,6 +29,14 @@ WORKFLOW_REVIEWING = "~workflow:em_revisao"
 WORKFLOW_REVIEWED = "~workflow:revisada"
 WORKFLOW_IMPLEMENTING = "~workflow:em_implementacao"
 WORKFLOW_PR = "~workflow:em_pr"
+# Resume feature (issue #254): a serious, non-continuable block. The agent
+# declared ``BLOQUEADO: <motivo>``, the progress guard saw 0 substantive
+# progress between attempts, or the attempt/budget ceiling was hit. The issue
+# KEEPS ``WORKFLOW_IMPLEMENTING`` so it never re-enters the implement queue, and
+# the extra ``WORKFLOW_BLOCKED`` excludes it from the auto-resume selection too.
+# A human removes this label to unblock (which lets auto-resume pick it up
+# again on the next free tick).
+WORKFLOW_BLOCKED = "~workflow:bloqueada"
 
 # PR workflow -------------------------------------------------------------
 REVIEW_PENDING = "~review:pendente"
@@ -44,6 +52,7 @@ WORKFLOW_LABELS = (
     WORKFLOW_REVIEWED,
     WORKFLOW_IMPLEMENTING,
     WORKFLOW_PR,
+    WORKFLOW_BLOCKED,
 )
 
 REVIEW_LABELS = (REVIEW_PENDING, REVIEW_IN_PROGRESS, REVIEW_CONCLUDED)
@@ -54,6 +63,7 @@ LABEL_COLORS = {
     WORKFLOW_REVIEWED: "5319e7",
     WORKFLOW_IMPLEMENTING: "fbca04",
     WORKFLOW_PR: "0052cc",
+    WORKFLOW_BLOCKED: "b60205",
     REVIEW_PENDING: "0e8a16",
     REVIEW_IN_PROGRESS: "fbca04",
     REVIEW_CONCLUDED: "0e8a16",
@@ -65,6 +75,7 @@ LABEL_DESCRIPTIONS = {
     WORKFLOW_REVIEWED: "Pipeline: revisada, pronta para implementação",
     WORKFLOW_IMPLEMENTING: "Pipeline: DEILE implementando (lock)",
     WORKFLOW_PR: "Pipeline: PR aberta",
+    WORKFLOW_BLOCKED: "Pipeline: bloqueada (sem progresso / impedimento / teto) — humano remove para desbloquear",
     REVIEW_PENDING: "Pipeline: PR aguardando revisão",
     REVIEW_IN_PROGRESS: "Pipeline: PR em revisão (lock)",
     REVIEW_CONCLUDED: "Pipeline: PR revisada/mergeada",

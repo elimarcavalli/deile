@@ -48,7 +48,10 @@ def _issue(number=242, title="t", body="b"):
 
 
 def _pr(number=7, title="t", head_ref="auto/issue-242"):
-    return SimpleNamespace(number=number, title=title, head_ref=head_ref)
+    return SimpleNamespace(
+        number=number, title=title, head_ref=head_ref,
+        url=f"https://github.com/owner/name/pull/{number}",
+    )
 
 
 def _comment():

@@ -49,11 +49,32 @@ class WorkOutcome:
     ``text`` is the agent's stdout (Claude) or final summary (worker); the
     stage handler scans it for a PR URL / the word ``merged``. ``error``
     carries a short diagnostic when ``ok`` is False (surfaced to Discord).
+
+    Resume fields (issue #254) are populated only on the deile-worker path
+    when a ``resume`` context was sent; they carry the worker's GROUND-TRUTH
+    structured result so the stage handler can decide concluido/incompleto/
+    bloqueado without trusting the model's output format:
+
+    - ``ended`` — ``"concluido"`` | ``"incompleto"`` | ``"bloqueado"`` | ``""``
+      (empty when the worker returned no structured block, e.g. Claude path).
+    - ``pr_url`` — confirmed PR URL the worker saw (may be empty).
+    - ``motivo_bloqueio`` — agent-declared ``BLOQUEADO:`` reason (when blocked).
+    - ``motivo_fim_loop`` — how the tool-loop ended (timeout/cap/natural/erro).
+    - ``fingerprint`` — substantive-change hash for the progress guard.
+    - ``tentativa`` — 1-based attempt counter persisted in the workspace.
+    - ``budget_acumulado_s`` — accumulated wall-clock across attempts (ceiling).
     """
 
     ok: bool
     text: str
     error: str = ""
+    ended: str = ""
+    pr_url: str = ""
+    motivo_bloqueio: str = ""
+    motivo_fim_loop: str = ""
+    fingerprint: str = ""
+    tentativa: int = 0
+    budget_acumulado_s: float = 0.0
 
 
 class PipelineImplementer(ABC):
@@ -62,11 +83,15 @@ class PipelineImplementer(ABC):
     name: str = "base"
 
     @abstractmethod
-    async def implement(self, monitor: "PipelineMonitor", issue: "IssueRef") -> WorkOutcome:
+    async def implement(
+        self, monitor: "PipelineMonitor", issue: "IssueRef", *, resume: bool = False
+    ) -> WorkOutcome:
         ...
 
     @abstractmethod
-    async def review(self, monitor: "PipelineMonitor", pr: "PrRef") -> WorkOutcome:
+    async def review(
+        self, monitor: "PipelineMonitor", pr: "PrRef", *, resume: bool = False
+    ) -> WorkOutcome:
         ...
 
     @abstractmethod
@@ -89,10 +114,15 @@ class ClaudeImplementer(PipelineImplementer):
 
     name = "claude"
 
-    async def implement(self, monitor: "PipelineMonitor", issue: "IssueRef") -> WorkOutcome:
+    async def implement(
+        self, monitor: "PipelineMonitor", issue: "IssueRef", *, resume: bool = False
+    ) -> WorkOutcome:
+        # ``resume`` is accepted for interface parity. The Claude path already
+        # reuses an existing worktree (``force_recreate=False``) so partial work
+        # in the worktree survives between attempts; it has no structured
+        # ground-truth contract (that lives in the deile-worker path), so the
+        # flag does not change behaviour here beyond the existing reuse.
         branch = monitor.branch_for_issue(issue.number)
-        # Re-use an existing worktree when present; force_recreate would delete
-        # and re-clone on every attempt (expensive) — reserve for /pipeline reset.
         try:
             worktree = await monitor.worktrees.create_branch_worktree(
                 branch, force_recreate=False
@@ -106,7 +136,9 @@ class ClaudeImplementer(PipelineImplementer):
         result = await monitor.claude.run(prompt, cwd=worktree.path)
         return WorkOutcome(ok=result.ok, text=result.stdout, error=result.stderr.strip())
 
-    async def review(self, monitor: "PipelineMonitor", pr: "PrRef") -> WorkOutcome:
+    async def review(
+        self, monitor: "PipelineMonitor", pr: "PrRef", *, resume: bool = False
+    ) -> WorkOutcome:
         worktree_branch = pr.head_ref or f"pr/{pr.number}"
         try:
             wt = await monitor.worktrees.create_branch_worktree(worktree_branch)
@@ -172,6 +204,55 @@ Revise, corrija e mergeie a Pull Request #{number} do repositório {repo} — ex
    Se NÃO conseguir mergear, escreva a URL e o motivo real — NUNCA escreva MERGED sem ter mergeado de fato.
 """
 
+# --- Resume briefs (issue #254) -----------------------------------------------
+# The fundamental difference from the fresh briefs: NO ``git reset --hard``. The
+# branch and the untracked files in the persistent per-channel workspace are the
+# partial work from a previous attempt and MUST be preserved. The brief injects
+# the journal (.deile-progress.md), the current diff and tells the agent to read
+# every untracked file so it continues with the SAME context, then write an
+# updated journal before it stops.
+
+_WORKER_IMPLEMENT_RESUME_BRIEF = """\
+RETOMADA da issue #{number} do repositório {repo} — uma tentativa ANTERIOR já começou este trabalho. NÃO recomece do zero, NÃO descarte nada.
+
+Passo a passo:
+1. Trabalhe na subpasta ./repo do seu diretório atual (ela JÁ existe com o trabalho parcial). NÃO rode `git reset --hard`, NÃO recrie a branch, NÃO apague arquivos não rastreados — eles são o progresso da tentativa anterior.
+2. Faça checkout no branch {branch} se ainda não estiver nele (ele já existe localmente): git checkout {branch}
+3. RECONSTRUA O CONTEXTO antes de qualquer edição:
+   a) Leia o journal de progresso da tentativa anterior (o que já fiz / o que falta / decisões / bloqueios):
+{progress_block}
+   b) Veja o diff acumulado em relação a {main}: git diff {main}...HEAD ; e também: git diff HEAD
+   c) LEIA TODOS os arquivos não rastreados (untracked) e os modificados — eles contêm o trabalho parcial: git status --porcelain ; depois leia cada arquivo listado.
+4. CONTINUE a implementação de onde parou. Crie/edite o que falta e garanta testes cobrindo todos os casos.
+5. Rode os testes e garanta 100% de aprovação. As dependências (incl. pytest) JÁ estão no ambiente — NÃO rode `pip install` (filesystem read-only). Para rodar só os testes novos sem o gate global de cobertura: python3 -m pytest <arquivos_de_teste_novos> -p no:cov -q
+6. Faça commit normal (SEM force-push) e `git push -u origin {branch}`.
+7. ABRA A PR (OBRIGATÓRIO — sem PR a tarefa NÃO está concluída):
+   gh pr create --repo {repo} --base {main} --head {branch} --title "<título coerente>" --body "<resumo>. Closes #{number}."
+   (Se já existe uma PR para {branch}, apenas confirme-a: gh pr view {branch} --repo {repo} --json url -q .url)
+8. ANTES DE PARAR (concluindo OU pausando de novo), ATUALIZE o journal `.deile-progress.md` no diretório de trabalho (NÃO dentro de ./repo, e NÃO commite): registre o que fez, o que falta, decisões-chave e qualquer bloqueio.
+9. Se um IMPEDIMENTO REAL impedir continuar (falta credencial/segredo, dependência impossível, decisão de produto pendente), escreva numa linha começando com `BLOQUEADO: <motivo concreto>` — só você sabe disso; o pipeline respeita isso e para de retomar.
+10. Na ÚLTIMA LINHA: a URL da PR confirmada (ex.: https://github.com/{repo}/pull/NN), ou, se bloqueado, a linha `BLOQUEADO: <motivo>`. Nada depois dela.
+
+DEFINITION OF DONE: existe uma PR aberta cuja URL você confirmou via gh. NUNCA invente URL nem diga "concluído" sem a PR existir.
+
+=== Issue #{number}: {title} ===
+{body}
+"""
+
+_WORKER_REVIEW_RESUME_BRIEF = """\
+RETOMADA da revisão/merge da Pull Request #{number} do repositório {repo} — uma tentativa anterior já começou. NÃO descarte o trabalho parcial.
+
+1. Use o clone existente em ./repo (NÃO rode `git reset --hard`, NÃO apague untracked). Garanta o checkout da PR: gh pr checkout {number}
+2. RECONSTRUA O CONTEXTO: leia o journal da tentativa anterior e o diff/untracked atuais:
+{progress_block}
+   git diff {main}...HEAD ; git status --porcelain (leia cada arquivo modificado/untracked listado).
+3. Rode os testes. Dependências JÁ instaladas — NÃO rode `pip install`. Para os testes do PR sem o gate global: python3 -m pytest <arquivos> -p no:cov -q. Corrija o que falta com commits normais (SEM force-push) e dê push.
+4. Quando 100% dos testes passarem, MERGEIE via REST: gh api -X PUT repos/{repo}/pulls/{number}/merge -f merge_method=merge (fallback: gh pr merge {number} --repo {repo} --merge).
+5. Confirme: gh pr view {number} --repo {repo} --json merged -q .merged (deve ser true).
+6. ANTES DE PARAR, atualize `.deile-progress.md` no diretório de trabalho (fora de ./repo, sem commitar).
+7. Se um impedimento real impedir o merge, escreva `BLOQUEADO: <motivo>`. Caso contrário, na ÚLTIMA LINHA escreva a URL da PR seguida de MERGED. NUNCA escreva MERGED sem ter mergeado.
+"""
+
 _WORKER_MENTION_BRIEF = """\
 Você foi mencionado por @{author} em {context_url} (repositório {repo}).
 
@@ -200,10 +281,102 @@ def _render_worker_review_brief(repo: str, main: str, number: int, title: str) -
     return _WORKER_REVIEW_BRIEF.format(repo=repo, main=main, number=number, title=title)
 
 
+# The journal lives in the worker's per-channel PVC workspace (one level above
+# ./repo), written by a previous attempt — the PIPELINE cannot inject its
+# content (it has no access to the worker filesystem), so the brief instructs
+# the worker to read its OWN local copy. This is the ``{progress_block}`` text.
+_PROGRESS_BLOCK = (
+    "      Leia o arquivo `.deile-progress.md` no SEU diretório de trabalho "
+    "(um nível acima de ./repo). Ele foi escrito pela tentativa anterior — é o "
+    "ponto de partida. Se não existir, reconstrua o contexto pelo diff e pelos "
+    "arquivos untracked nos passos abaixo."
+)
+
+
+def _render_worker_implement_resume_brief(
+    repo: str, main: str, branch: str, number: int, title: str, body: str
+) -> str:
+    return _WORKER_IMPLEMENT_RESUME_BRIEF.format(
+        repo=repo,
+        main=main,
+        branch=branch,
+        number=number,
+        title=title,
+        body=(body or "").strip()[:ISSUE_BODY_MAX_CHARS] or "(sem corpo — continue a partir do título e do trabalho parcial)",
+        progress_block=_PROGRESS_BLOCK,
+    )
+
+
+def _render_worker_review_resume_brief(
+    repo: str, main: str, number: int, title: str
+) -> str:
+    return _WORKER_REVIEW_RESUME_BRIEF.format(
+        repo=repo, main=main, number=number, title=title, progress_block=_PROGRESS_BLOCK
+    )
+
+
 def _render_worker_mention_brief(repo: str, context_url: str, body: str, author: str) -> str:
     return _WORKER_MENTION_BRIEF.format(
         repo=repo, context_url=context_url, body=(body or "").strip()[:2000], author=author
     )
+
+
+def _build_resume_block(
+    repo: str,
+    main: str,
+    branch: str,
+    *,
+    resume: bool,
+    expect_merge: bool,
+    pr_url_hint: str = "",
+) -> dict:
+    """Assemble the ``resume`` wire block sent to the worker (issue #254).
+
+    Sent on EVERY pipeline dispatch (fresh and resume) so the worker always
+    returns a structured ground-truth result and seeds ``.deile-progress.json``
+    — ``mode`` tells the worker whether this was a fresh start or a resume, but
+    the brief (not this block) decides reset-vs-keep. ``expect_merge`` is True
+    for the review/merge stage so "done" requires a confirmed merge, not just a
+    PR URL.
+    """
+    return {
+        "mode": "resume" if resume else "fresh",
+        "repo": repo,
+        "branch": branch,
+        "main_branch": main,
+        "expect_merge": expect_merge,
+        "pr_url_hint": pr_url_hint,
+    }
+
+
+def _outcome_from_worker_response(data: object) -> WorkOutcome:
+    """Map a worker dispatch response dict to a :class:`WorkOutcome`.
+
+    Reads the legacy ``ok``/``summary``/``error`` fields AND the structured
+    ``resume`` block (issue #254) when present, so the stage handler gets the
+    ground-truth ``ended``/``pr_url``/``motivo_bloqueio``/``fingerprint``/
+    ``tentativa`` without re-parsing the worker's free-text summary.
+    """
+    if not isinstance(data, dict):
+        return WorkOutcome(ok=False, text="", error="worker returned non-dict response")
+    ok = bool(data.get("ok"))
+    text = str(data.get("summary") or "")
+    resume_block = data.get("resume")
+    fields: dict = {}
+    if isinstance(resume_block, dict):
+        fields = {
+            "ended": str(resume_block.get("ended") or ""),
+            "pr_url": str(resume_block.get("pr_url") or ""),
+            "motivo_bloqueio": str(resume_block.get("motivo_bloqueio") or ""),
+            "motivo_fim_loop": str(resume_block.get("motivo_fim_loop") or ""),
+            "fingerprint": str(resume_block.get("fingerprint") or ""),
+            "tentativa": int(resume_block.get("tentativa") or 0),
+            "budget_acumulado_s": float(resume_block.get("budget_acumulado_s") or 0.0),
+        }
+    if ok:
+        return WorkOutcome(ok=True, text=text, error="", **fields)
+    err = str(data.get("error") or data.get("summary") or "worker reported failure")
+    return WorkOutcome(ok=False, text=text, error=err[:500], **fields)
 
 
 class WorkerImplementer(PipelineImplementer):
@@ -225,13 +398,24 @@ class WorkerImplementer(PipelineImplementer):
             client = DeileWorkerClient()
         self._client = client
 
-    async def _dispatch(self, brief: str, *, channel_id: str) -> WorkOutcome:
+    async def _dispatch(
+        self,
+        brief: str,
+        *,
+        channel_id: str,
+        resume_block: Optional[dict] = None,
+    ) -> WorkOutcome:
         from deile.infrastructure.deile_worker_client import (
             WorkerDispatchError, build_dispatch_payload)
 
         payload = build_dispatch_payload(
             brief=brief, channel_id=channel_id, persona="developer", wait=True
         )
+        # The resume context (issue #254) is an additive wire field consumed by
+        # the worker; ``build_dispatch_payload`` validates the core fields, so
+        # we attach ``resume`` after building to keep that contract untouched.
+        if resume_block:
+            payload["resume"] = resume_block
         try:
             data = await self._client.dispatch(payload, wait=True)
         except WorkerDispatchError as exc:
@@ -239,28 +423,49 @@ class WorkerImplementer(PipelineImplementer):
         except Exception as exc:  # noqa: BLE001 — never crash the tick
             logger.exception("worker dispatch raised")
             return WorkOutcome(ok=False, text="", error=f"{type(exc).__name__}: {exc}"[:500])
-        ok = bool(data.get("ok")) if isinstance(data, dict) else False
-        text = str(data.get("summary") or "") if isinstance(data, dict) else ""
-        if ok:
-            return WorkOutcome(ok=True, text=text, error="")
-        err = ""
-        if isinstance(data, dict):
-            err = str(data.get("error") or data.get("summary") or "worker reported failure")
-        return WorkOutcome(ok=False, text=text, error=err[:500])
+        return _outcome_from_worker_response(data)
 
-    async def implement(self, monitor: "PipelineMonitor", issue: "IssueRef") -> WorkOutcome:
+    async def implement(
+        self, monitor: "PipelineMonitor", issue: "IssueRef", *, resume: bool = False
+    ) -> WorkOutcome:
         branch = monitor.branch_for_issue(issue.number)
-        brief = _render_worker_implement_brief(
+        if resume:
+            brief = _render_worker_implement_resume_brief(
+                monitor.config.repo, monitor.config.main_branch, branch,
+                issue.number, issue.title, issue.body,
+            )
+        else:
+            brief = _render_worker_implement_brief(
+                monitor.config.repo, monitor.config.main_branch, branch,
+                issue.number, issue.title, issue.body,
+            )
+        resume_block = _build_resume_block(
             monitor.config.repo, monitor.config.main_branch, branch,
-            issue.number, issue.title, issue.body,
+            resume=resume, expect_merge=False,
         )
-        return await self._dispatch(brief, channel_id=f"pipeline-issue-{issue.number}")
+        return await self._dispatch(
+            brief, channel_id=f"pipeline-issue-{issue.number}", resume_block=resume_block
+        )
 
-    async def review(self, monitor: "PipelineMonitor", pr: "PrRef") -> WorkOutcome:
-        brief = _render_worker_review_brief(
-            monitor.config.repo, monitor.config.main_branch, pr.number, pr.title
+    async def review(
+        self, monitor: "PipelineMonitor", pr: "PrRef", *, resume: bool = False
+    ) -> WorkOutcome:
+        if resume:
+            brief = _render_worker_review_resume_brief(
+                monitor.config.repo, monitor.config.main_branch, pr.number, pr.title
+            )
+        else:
+            brief = _render_worker_review_brief(
+                monitor.config.repo, monitor.config.main_branch, pr.number, pr.title
+            )
+        resume_block = _build_resume_block(
+            monitor.config.repo, monitor.config.main_branch,
+            pr.head_ref or f"pr/{pr.number}", resume=resume, expect_merge=True,
+            pr_url_hint=pr.url,
         )
-        return await self._dispatch(brief, channel_id=f"pipeline-pr-{pr.number}")
+        return await self._dispatch(
+            brief, channel_id=f"pipeline-pr-{pr.number}", resume_block=resume_block
+        )
 
     async def mention(self, monitor: "PipelineMonitor", ref: "CommentRef") -> WorkOutcome:
         brief = _render_worker_mention_brief(
