@@ -160,7 +160,6 @@ class MentionTrigger:
             return self.pr.number
         if self.comment is not None:
             # Extract number from the comment's html_url or issue_url
-            import re
             m = re.search(r"/(\d+)(?:#|$)", self.comment.html_url)
             if m:
                 return int(m.group(1))
