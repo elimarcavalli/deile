@@ -497,14 +497,18 @@ class PipelineMonitor:
                 if self.config.enable_review and "review" not in scheduled_actions:
                     logger.debug("review not in schedule; running legacy fallback")
                     await self._review_one_new_issue()
+                # Resume parked, continuable work BEFORE claiming new issues
+                # (issue #254). Running it first is what stops a freshly-claimed
+                # issue (revisada → em_implementacao THIS tick) from being
+                # re-dispatched again in the SAME tick: its first resume happens
+                # on the NEXT tick — exactly the "immediate = next free tick"
+                # cadence. Gated by enable_resume; never on the schedule (it is a
+                # per-tick sweep, not a cron action).
+                if self.config.enable_resume:
+                    await self._resume_in_progress_issues()
                 if self.config.enable_implement and "implement" not in scheduled_actions:
                     logger.debug("implement not in schedule; running legacy fallback")
                     await self._implement_one_reviewed_issue()
-                # Resume runs alongside implement (issue #254): re-dispatch
-                # parked, continuable work. Gated by enable_resume; never on the
-                # schedule (it is a per-tick sweep, not a cron action).
-                if self.config.enable_resume:
-                    await self._resume_in_progress_issues()
                 if self.config.enable_pr_review and "pr_review" not in scheduled_actions:
                     logger.debug("pr_review not in schedule; running legacy fallback")
                     await self._review_one_open_pr()
@@ -518,10 +522,13 @@ class PipelineMonitor:
             await self._classify_new_issues()
         if self.config.enable_review:
             await self._review_one_new_issue()
-        if self.config.enable_implement:
-            await self._implement_one_reviewed_issue()
+        # Resume parked work BEFORE claiming new issues (issue #254) so a
+        # freshly-claimed issue is not re-dispatched again in the same tick;
+        # its first resume lands on the next tick.
         if self.config.enable_resume:
             await self._resume_in_progress_issues()
+        if self.config.enable_implement:
+            await self._implement_one_reviewed_issue()
         if self.config.enable_pr_review:
             await self._review_one_open_pr()
         if self.config.enable_pr_triage:

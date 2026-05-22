@@ -121,6 +121,22 @@ def _to_nonneg_int(value: Any) -> int:
     return iv
 
 
+def _to_pos_int(value: Any) -> int:
+    """Coerce to a positive int (>= 1; rejects 0/negatives and bools).
+
+    Used by ``resume_max_attempts``: a 0 or negative ceiling would make
+    ``attempt >= max_attempts`` true on the first check and block every resume
+    instantly. A rejected value is caught by ``apply_overrides`` and leaves the
+    default (10) in place.
+    """
+    if isinstance(value, bool):
+        raise TypeError("expected int, got bool")
+    iv = int(value)
+    if iv < 1:
+        raise ValueError(f"value must be >= 1, got {iv}")
+    return iv
+
+
 # Map of nested JSON paths in ``.deile/settings.json`` to ``Settings`` flat
 # fields, with a converter for each. Unknown keys are silently ignored —
 # that's how future-compatible forward-compat works.
@@ -163,7 +179,7 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     # Pipeline resume knobs (issue #254)
     "pipeline.resume_enabled": ("pipeline_resume_enabled", _to_bool),
     "pipeline.resume_interval": ("pipeline_resume_interval", _to_nonneg_int),
-    "pipeline.resume_max_attempts": ("pipeline_resume_max_attempts", int),
+    "pipeline.resume_max_attempts": ("pipeline_resume_max_attempts", _to_pos_int),
     "pipeline.resume_budget": ("pipeline_resume_budget", _to_nonneg_int),
     # Trust boundary (issue #125): allowlist of directories whose
     # ``./.deile/settings.json`` is honored as the project layer.
