@@ -304,6 +304,85 @@ IMPORTANTE:
 - Na ÚLTIMA LINHA, escreva a URL relevante (PR, issue, etc).
 """
 
+# Shared mention-rendering helpers (issue #253). The worker brief and the Claude
+# prompt describe the same triggers and pick the same action by role; they differ
+# only in surface formatting (markdown vs prose) and wording. Centralizing the
+# trigger-type labels, the trigger-detail iteration and the action classification
+# keeps the two renderers from drifting apart.
+_MENTION_TYPE_LABELS = {
+    "assignee": "assignee (atribuído a você)",
+    "reviewer": "reviewer (solicitado como revisor)",
+    "comment": "menção em comentário (@deile-one)",
+    "body": "menção no corpo (@deile-one)",
+}
+
+
+def _summarize_trigger_types(trigger_types: list[str]) -> str:
+    return " + ".join(_MENTION_TYPE_LABELS.get(t, t) for t in trigger_types)
+
+
+def _render_trigger_details(all_triggers: list[MentionTrigger], *, rich: bool) -> str:
+    """Render one bullet per trigger. ``rich=True`` emits markdown (bold labels,
+    ``[title](url)`` links, fenced comment bodies); ``rich=False`` emits plain prose."""
+
+    def label(text: str) -> str:
+        return f"**{text}**" if rich else text
+
+    def link(title: str, url: str) -> str:
+        return f"[{title}]({url})" if rich else f"{title} ({url})"
+
+    parts: list[str] = []
+    for t in all_triggers:
+        if t.trigger_type == "comment" and t.comment is not None:
+            body = t.comment.body[:500]
+            body_block = f"\n  ```\n  {body}\n  ```" if rich else f"\n  {body}"
+            parts.append(
+                f"- {label('Comentário')} de @{t.comment.author} em {t.comment.html_url}:{body_block}"
+            )
+        elif t.trigger_type == "assignee" and t.issue is not None:
+            parts.append(
+                f"- {label('Assignado')} na issue #{t.issue.number}: {link(t.issue.title, t.issue.url)}"
+            )
+        elif t.trigger_type == "assignee" and t.pr is not None:
+            parts.append(
+                f"- {label('Assignado')} na PR #{t.pr.number}: {link(t.pr.title, t.pr.url)}"
+            )
+        elif t.trigger_type == "reviewer" and t.pr is not None:
+            parts.append(
+                f"- {label('Solicitado como reviewer')} na PR #{t.pr.number}: {link(t.pr.title, t.pr.url)}"
+            )
+        elif t.trigger_type == "body":
+            if t.issue is not None:
+                parts.append(
+                    f"- {label('Menção no corpo')} da issue #{t.issue.number}: {link(t.issue.title, t.issue.url)}"
+                )
+            elif t.pr is not None:
+                parts.append(
+                    f"- {label('Menção no corpo')} da PR #{t.pr.number}: {link(t.pr.title, t.pr.url)}"
+                )
+    return "\n".join(parts)
+
+
+def _classify_mention_action(ref: MentionTrigger, trigger_types: list[str]) -> str:
+    """Map the trigger set + target kind to a canonical action key. Both renderers
+    branch on this key for their own wording."""
+    target_kind = ref.target_kind
+    has_assignee = "assignee" in trigger_types
+    has_reviewer = "reviewer" in trigger_types
+    has_comment = "comment" in trigger_types
+    has_body = "body" in trigger_types
+
+    if has_reviewer and target_kind == "pr":
+        return "review_request"
+    if has_assignee and target_kind == "issue":
+        return "assigned_issue"
+    if has_assignee and target_kind == "pr":
+        return "assigned_pr"
+    if has_comment or has_body:
+        return "mention_pr" if target_kind == "pr" else "mention_issue"
+    return "default"
+
+
 # Context-aware worker mention brief builder (issue #253)
 def _render_worker_mention_brief(
     repo: str,
@@ -312,87 +391,40 @@ def _render_worker_mention_brief(
     all_triggers: list["MentionTrigger"],
 ) -> str:
     """Build a context-rich mention brief from all trigger types."""
-    # Summarize trigger types
-    type_labels = {
-        "assignee": "assignee (atribuído a você)",
-        "reviewer": "reviewer (solicitado como revisor)",
-        "comment": "menção em comentário (@deile-one)",
-        "body": "menção no corpo (@deile-one)",
-    }
-    trigger_summary = " + ".join(type_labels.get(t, t) for t in trigger_types)
+    trigger_summary = _summarize_trigger_types(trigger_types)
+    trigger_details = _render_trigger_details(all_triggers, rich=True)
 
-    # Detailed trigger info
-    details_parts: list[str] = []
-    for t in all_triggers:
-        if t.trigger_type == "comment" and t.comment is not None:
-            details_parts.append(
-                f"- **Comentário** de @{t.comment.author} em {t.comment.html_url}:\n"
-                f"  ```\n  {t.comment.body[:500]}\n  ```"
-            )
-        elif t.trigger_type == "assignee" and t.issue is not None:
-            details_parts.append(
-                f"- **Assignado** na issue #{t.issue.number}: [{t.issue.title}]({t.issue.url})"
-            )
-        elif t.trigger_type == "assignee" and t.pr is not None:
-            details_parts.append(
-                f"- **Assignado** na PR #{t.pr.number}: [{t.pr.title}]({t.pr.url})"
-            )
-        elif t.trigger_type == "reviewer" and t.pr is not None:
-            details_parts.append(
-                f"- **Solicitado como reviewer** na PR #{t.pr.number}: [{t.pr.title}]({t.pr.url})"
-            )
-        elif t.trigger_type == "body":
-            if t.issue is not None:
-                details_parts.append(
-                    f"- **Menção no corpo** da issue #{t.issue.number}: [{t.issue.title}]({t.issue.url})"
-                )
-            elif t.pr is not None:
-                details_parts.append(
-                    f"- **Menção no corpo** da PR #{t.pr.number}: [{t.pr.title}]({t.pr.url})"
-                )
-    trigger_details = "\n".join(details_parts)
-
-    # Determine expected action
-    target_kind = ref.target_kind
-    has_assignee = "assignee" in trigger_types
-    has_reviewer = "reviewer" in trigger_types
-    has_comment = "comment" in trigger_types
-    has_body = "body" in trigger_types
-
-    if has_reviewer and target_kind == "pr":
-        expected_action = (
-            f"**REVIEW REQUEST**: Você foi solicitado como revisor da PR #{ref.target_number}. "
+    n = ref.target_number
+    actions = {
+        "review_request": (
+            f"**REVIEW REQUEST**: Você foi solicitado como revisor da PR #{n}. "
             f"Faça uma revisão completa (arquitetura, DRY, KISS, SOLID, clean code), "
             f"rode os testes, corrija problemas, faça commit + push, poste evidências como "
             f"comentário na PR e faça o merge."
-        )
-    elif has_assignee and target_kind == "issue":
-        expected_action = (
-            f"**ASSIGNED**: Você foi atribuído à issue #{ref.target_number}. "
+        ),
+        "assigned_issue": (
+            f"**ASSIGNED**: Você foi atribuído à issue #{n}. "
             f"Implemente a feature completa, crie testes, abra uma PR. "
             f"Se já existir uma PR para esta issue, verifique se cobre tudo e "
             f"continue a implementação no branch existente."
-        )
-    elif has_assignee and target_kind == "pr":
-        expected_action = (
-            f"**ASSIGNED TO PR**: Você foi atribuído à PR #{ref.target_number}. "
+        ),
+        "assigned_pr": (
+            f"**ASSIGNED TO PR**: Você foi atribuído à PR #{n}. "
             f"Revise, corrija, teste, faça commit + push e mergeie se estiver pronto."
-        )
-    elif has_comment or has_body:
-        if target_kind == "pr":
-            expected_action = (
-                f"**MENTION ON PR**: Você foi mencionado na PR #{ref.target_number}. "
-                f"Atenda ao que foi pedido no comentário/corpo, trabalhe no branch da PR, "
-                f"teste, faça commit + push e poste a resposta como comentário na PR."
-            )
-        else:
-            expected_action = (
-                f"**MENTION ON ISSUE**: Você foi mencionado na issue #{ref.target_number}. "
-                f"Atenda ao que foi pedido no comentário/corpo. "
-                f"Se a issue já tem PR aberta, trabalhe no branch da PR."
-            )
-    else:
-        expected_action = "Atenda ao contexto acima da forma mais apropriada."
+        ),
+        "mention_pr": (
+            f"**MENTION ON PR**: Você foi mencionado na PR #{n}. "
+            f"Atenda ao que foi pedido no comentário/corpo, trabalhe no branch da PR, "
+            f"teste, faça commit + push e poste a resposta como comentário na PR."
+        ),
+        "mention_issue": (
+            f"**MENTION ON ISSUE**: Você foi mencionado na issue #{n}. "
+            f"Atenda ao que foi pedido no comentário/corpo. "
+            f"Se a issue já tem PR aberta, trabalhe no branch da PR."
+        ),
+        "default": "Atenda ao contexto acima da forma mais apropriada.",
+    }
+    expected_action = actions[_classify_mention_action(ref, trigger_types)]
 
     return _WORKER_MENTION_BRIEF.format(
         repo=repo,
@@ -732,79 +764,35 @@ def _render_claude_mention_prompt(
     all_triggers: list["MentionTrigger"],
 ) -> str:
     """Build a context-rich mention prompt for the Claude path."""
-    type_labels = {
-        "assignee": "assignee (atribuído a você)",
-        "reviewer": "reviewer (solicitado como revisor)",
-        "comment": "menção em comentário (@deile-one)",
-        "body": "menção no corpo (@deile-one)",
-    }
-    trigger_summary = " + ".join(type_labels.get(t, t) for t in trigger_types)
+    trigger_summary = _summarize_trigger_types(trigger_types)
+    trigger_details = _render_trigger_details(all_triggers, rich=False)
 
-    details_parts: list[str] = []
-    for t in all_triggers:
-        if t.trigger_type == "comment" and t.comment is not None:
-            details_parts.append(
-                f"- Comentário de @{t.comment.author} em {t.comment.html_url}:\n"
-                f"  {t.comment.body[:500]}"
-            )
-        elif t.trigger_type == "assignee" and t.issue is not None:
-            details_parts.append(
-                f"- Assignado na issue #{t.issue.number}: {t.issue.title} ({t.issue.url})"
-            )
-        elif t.trigger_type == "assignee" and t.pr is not None:
-            details_parts.append(
-                f"- Assignado na PR #{t.pr.number}: {t.pr.title} ({t.pr.url})"
-            )
-        elif t.trigger_type == "reviewer" and t.pr is not None:
-            details_parts.append(
-                f"- Solicitado como reviewer na PR #{t.pr.number}: {t.pr.title} ({t.pr.url})"
-            )
-        elif t.trigger_type == "body":
-            if t.issue is not None:
-                details_parts.append(
-                    f"- Menção no corpo da issue #{t.issue.number}: {t.issue.title} ({t.issue.url})"
-                )
-            elif t.pr is not None:
-                details_parts.append(
-                    f"- Menção no corpo da PR #{t.pr.number}: {t.pr.title} ({t.pr.url})"
-                )
-    trigger_details = "\n".join(details_parts)
-
-    target_kind = ref.target_kind
-    has_assignee = "assignee" in trigger_types
-    has_reviewer = "reviewer" in trigger_types
-    has_comment = "comment" in trigger_types
-    has_body = "body" in trigger_types
-
-    if has_reviewer and target_kind == "pr":
-        action = (
-            f"REVIEW REQUEST: Revise a PR #{ref.target_number} completamente "
+    n = ref.target_number
+    actions = {
+        "review_request": (
+            f"REVIEW REQUEST: Revise a PR #{n} completamente "
             f"(arquitetura, DRY, KISS, SOLID, clean code), rode testes, corrija, "
             f"commit + push, comente evidências e faça merge."
-        )
-    elif has_assignee and target_kind == "issue":
-        action = (
-            f"ASSIGNED: Implemente a issue #{ref.target_number} completa. "
+        ),
+        "assigned_issue": (
+            f"ASSIGNED: Implemente a issue #{n} completa. "
             f"Crie testes, abra PR. Se já existir PR, continue no branch existente."
-        )
-    elif has_assignee and target_kind == "pr":
-        action = (
-            f"ASSIGNED TO PR: Revise/corrija a PR #{ref.target_number}, "
+        ),
+        "assigned_pr": (
+            f"ASSIGNED TO PR: Revise/corrija a PR #{n}, "
             f"teste, commit + push e mergeie."
-        )
-    elif has_comment or has_body:
-        if target_kind == "pr":
-            action = (
-                f"MENTION ON PR: Atenda ao pedido na PR #{ref.target_number}, "
-                f"trabalhe no branch da PR, teste, commit + push, comente resposta."
-            )
-        else:
-            action = (
-                f"MENTION ON ISSUE: Atenda ao pedido na issue #{ref.target_number}. "
-                f"Se a issue já tem PR aberta, trabalhe no branch da PR."
-            )
-    else:
-        action = "Atenda ao contexto acima da forma mais apropriada."
+        ),
+        "mention_pr": (
+            f"MENTION ON PR: Atenda ao pedido na PR #{n}, "
+            f"trabalhe no branch da PR, teste, commit + push, comente resposta."
+        ),
+        "mention_issue": (
+            f"MENTION ON ISSUE: Atenda ao pedido na issue #{n}. "
+            f"Se a issue já tem PR aberta, trabalhe no branch da PR."
+        ),
+        "default": "Atenda ao contexto acima da forma mais apropriada.",
+    }
+    action = actions[_classify_mention_action(ref, trigger_types)]
 
     return (
         f"Você foi acionado por {trigger_summary} no repositório {repo}.\n\n"
