@@ -23,11 +23,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from deile.orchestration.pipeline import stages
+from deile.orchestration.pipeline._time_utils import now_utc, parse_iso_utc
 from deile.orchestration.pipeline.actions import ACTIONS_BY_NAME
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeDispatcher
 from deile.orchestration.pipeline.constants import (
@@ -580,10 +581,10 @@ class PipelineMonitor:
                 return self._mention_cursor
             if self._mention_cursor_path.exists():
                 raw = self._mention_cursor_path.read_text().strip()
-                return datetime.fromisoformat(raw).astimezone(timezone.utc)
+                return parse_iso_utc(raw)
         except Exception as exc:  # noqa: BLE001
             logger.warning("mention cursor load failed; using 30-min lookback: %s", exc)
-        return datetime.now(tz=timezone.utc).replace(second=0, microsecond=0) - timedelta(minutes=30)
+        return now_utc().replace(second=0, microsecond=0) - timedelta(minutes=30)
 
     def _save_mention_cursor(self, ts: datetime) -> None:
         try:

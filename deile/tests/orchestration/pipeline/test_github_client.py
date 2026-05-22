@@ -125,7 +125,7 @@ class TestClaimWithBatch:
         with patch.object(client, "get_issue", new=AsyncMock(return_value=unclaimed)), \
              patch.object(client, "_run", new=AsyncMock(return_value=(0, "", ""))), \
              patch.object(client, "_run_checked", new=AsyncMock(return_value="")):
-            bid = await client.claim_with_batch("issue", 5, "claim me")
+            bid = await client.claim_with_batch("issue", 5)
         assert bid == compute_batch_id_for_number("issue", 5)
 
     async def test_claim_returns_none_when_already_claimed(self):
@@ -137,7 +137,7 @@ class TestClaimWithBatch:
             labels=(WORKFLOW_NEW, "~batch:dead0000"),
         )
         with patch.object(client, "get_issue", new=AsyncMock(return_value=claimed)):
-            bid = await client.claim_with_batch("issue", 5, "claim me")
+            bid = await client.claim_with_batch("issue", 5)
         assert bid is None
 
     async def test_claim_pr_uses_pr_view(self):
@@ -146,13 +146,13 @@ class TestClaimWithBatch:
         with patch.object(client, "get_pr", new=AsyncMock(return_value=pr)), \
              patch.object(client, "_run", new=AsyncMock(return_value=(0, "", ""))), \
              patch.object(client, "_run_checked", new=AsyncMock(return_value="")):
-            bid = await client.claim_with_batch("pr", 7, "t")
+            bid = await client.claim_with_batch("pr", 7)
         assert bid is not None
 
     async def test_claim_rejects_invalid_kind(self):
         client = GitHubClient("owner/name")
         with pytest.raises(ValueError):
-            await client.claim_with_batch("comment", 1, "x")
+            await client.claim_with_batch("comment", 1)
 
 
 class TestEnsureLabels:
@@ -210,7 +210,7 @@ class TestEnsureLabelOnClaim:
         with patch.object(client, "get_issue", new=AsyncMock(return_value=unclaimed)), \
              patch.object(client, "_run", side_effect=fake_run), \
              patch.object(client, "_run_checked", side_effect=fake_run_checked):
-            bid = await client.claim_with_batch("issue", 42, "brand new")
+            bid = await client.claim_with_batch("issue", 42)
 
         assert bid is not None
         # The first call must be `label create ~batch:<bid>` via _run
@@ -239,7 +239,7 @@ class TestEnsureLabelOnClaim:
         with patch.object(client, "get_pr", new=AsyncMock(return_value=unclaimed_pr)), \
              patch.object(client, "_run", side_effect=fake_run), \
              patch.object(client, "_run_checked", side_effect=fake_run_checked):
-            bid = await client.claim_with_batch("pr", 11, "pr title")
+            bid = await client.claim_with_batch("pr", 11)
 
         assert bid is not None
 

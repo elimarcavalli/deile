@@ -100,7 +100,7 @@ class TestClassifyNewPrs:
         pr1 = _pr(45)
         pr2 = _pr(46)
 
-        async def _claim(kind, number, title):
+        async def _claim(kind, number):
             if number == 45:
                 raise GhCommandError(["gh"], 1, "", "network")
             return "abc"

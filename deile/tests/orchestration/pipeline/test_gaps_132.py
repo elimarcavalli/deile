@@ -47,7 +47,7 @@ class TestClaimWithBatchTOCTOU:
         with patch.object(client, "get_issue", new=AsyncMock(side_effect=[unclaimed, after_add])), \
              patch.object(client, "_run", new=AsyncMock(return_value=(0, "", ""))), \
              patch.object(client, "_run_checked", new=AsyncMock(return_value="")):
-            result = await client.claim_with_batch("issue", 1, "t")
+            result = await client.claim_with_batch("issue", 1)
         assert result is None
 
     async def test_succeeds_when_only_our_batch_label_present_after_add(self):
@@ -63,7 +63,7 @@ class TestClaimWithBatchTOCTOU:
         with patch.object(client, "get_issue", new=AsyncMock(side_effect=[unclaimed, after_add])), \
              patch.object(client, "_run", new=AsyncMock(return_value=(0, "", ""))), \
              patch.object(client, "_run_checked", new=AsyncMock(return_value="")):
-            result = await client.claim_with_batch("issue", 5, "x")
+            result = await client.claim_with_batch("issue", 5)
         assert result == our_batch
 
     async def test_returns_none_when_after_fetch_returns_none(self):
@@ -73,7 +73,7 @@ class TestClaimWithBatchTOCTOU:
         with patch.object(client, "get_pr", new=AsyncMock(side_effect=[pr, None])), \
              patch.object(client, "_run", new=AsyncMock(return_value=(0, "", ""))), \
              patch.object(client, "_run_checked", new=AsyncMock(return_value="")):
-            result = await client.claim_with_batch("pr", 3, "p")
+            result = await client.claim_with_batch("pr", 3)
         assert result is None
 
     async def test_race_removal_gh_error_logged_not_raised(self):
@@ -95,7 +95,7 @@ class TestClaimWithBatchTOCTOU:
              patch.object(client, "_run", new=AsyncMock(return_value=(0, "", ""))), \
              patch.object(client, "_run_checked", new=AsyncMock(return_value="")), \
              patch.object(client, "remove_labels", side_effect=fake_remove):
-            result = await client.claim_with_batch("issue", 7, "t2")
+            result = await client.claim_with_batch("issue", 7)
         assert result is None
         assert remove_calls  # remove was attempted
 
@@ -1031,7 +1031,7 @@ class TestClaimWithBatchLabelOrdering:
             patch.object(client, "_ensure_label", side_effect=fake_ensure_label),
             patch.object(client, "add_labels", side_effect=fake_add_labels),
         ):
-            result = await client.claim_with_batch("issue", 10, "t")
+            result = await client.claim_with_batch("issue", 10)
 
         assert result == our_batch
         assert "ensure_label" in call_order

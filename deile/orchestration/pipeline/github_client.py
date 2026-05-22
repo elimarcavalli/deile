@@ -19,7 +19,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import quote
 
 from deile.core.exceptions import DEILEError
@@ -243,20 +243,38 @@ class GitHubClient:
             raise GhCommandError(args, rc, out, err)
         return out
 
+    async def _list_refs(
+        self, *args: str, factory: Callable[[dict], Any], log_label: Optional[str] = None
+    ) -> list:
+        """Run a ``gh ... list``/``api`` command and map each JSON item via ``factory``.
+
+        Centralizes the run-checked → ``json.loads(out or "[]")`` → comprehension
+        pattern shared by the list endpoints. When ``log_label`` is given a
+        :class:`GhCommandError` is logged at WARNING and an empty list returned;
+        otherwise it propagates (the claim/triage stages rely on that).
+        """
+        try:
+            out = await self._run_checked(*args)
+        except GhCommandError as exc:
+            if log_label is None:
+                raise
+            logger.warning("%s failed: %s", log_label, exc)
+            return []
+        return [factory(item) for item in json.loads(out or "[]")]
+
     # -- issues -------------------------------------------------------
 
     async def list_issues_with_label(self, label: str, *, limit: int = 50) -> List[IssueRef]:
         """Return open issues having ``label`` (and not having any later-stage workflow label)."""
-        out = await self._run_checked(
+        return await self._list_refs(
             "issue", "list",
             "--repo", self.repo,
             "--state", "open",
             "--label", label,
             "--limit", str(limit),
             "--json", "number,title,url,labels,body,state",
+            factory=IssueRef.from_gh_json,
         )
-        data = json.loads(out or "[]")
-        return [IssueRef.from_gh_json(item) for item in data]
 
     async def get_issue(self, number: int) -> IssueRef:
         out = await self._run_checked(
@@ -277,22 +295,21 @@ class GitHubClient:
         except GhCommandError:
             return None
         item = json.loads(out)
-        if item.get("state", "open").lower() not in ("open",):
+        if item.get("state", "open").lower() != "open":
             return None
         return PrRef.from_gh_json(item)
 
     # -- pull requests ------------------------------------------------
 
     async def list_open_prs(self, *, limit: int = 50) -> List[PrRef]:
-        out = await self._run_checked(
+        return await self._list_refs(
             "pr", "list",
             "--repo", self.repo,
             "--state", "open",
             "--limit", str(limit),
             "--json", "number,title,url,labels,headRefName,baseRefName,state,isDraft",
+            factory=PrRef.from_gh_json,
         )
-        data = json.loads(out or "[]")
-        return [PrRef.from_gh_json(item) for item in data]
 
     # -- labels -------------------------------------------------------
 
@@ -330,27 +347,29 @@ class GitHubClient:
                     continue
                 raise GhCommandError(("api", "-X", "DELETE", path), rc, out, err)
 
+    async def _transition(
+        self, kind: str, number: int, *, from_label: Optional[str], to_label: str,
+    ) -> None:
+        if from_label is not None:
+            await self.remove_labels(kind, number, [from_label])
+        await self.add_labels(kind, number, [to_label])
+
     async def transition_issue(
         self, number: int, *, from_label: Optional[str], to_label: str,
     ) -> None:
         """Swap a workflow label on an issue (remove from_label, add to_label)."""
-        if from_label is not None:
-            await self.remove_labels("issue", number, [from_label])
-        await self.add_labels("issue", number, [to_label])
+        await self._transition("issue", number, from_label=from_label, to_label=to_label)
 
     async def transition_pr(
         self, number: int, *, from_label: Optional[str], to_label: str,
     ) -> None:
         """Swap a workflow label on a PR (remove from_label, add to_label)."""
-        if from_label is not None:
-            await self.remove_labels("pr", number, [from_label])
-        await self.add_labels("pr", number, [to_label])
+        await self._transition("pr", number, from_label=from_label, to_label=to_label)
 
     async def claim_with_batch(
         self,
         kind: str,
         number: int,
-        title: str,
     ) -> Optional[str]:
         """Try to claim an issue/PR by attaching a batch lock label.
 
@@ -506,37 +525,29 @@ class GitHubClient:
 
     async def list_issues_assigned_to(self, login: str, *, limit: int = 100) -> List["IssueRef"]:
         """Return open issues assigned to *login*."""
-        try:
-            out = await self._run_checked(
-                "issue", "list",
-                "--repo", self.repo,
-                "--state", "open",
-                "--assignee", login,
-                "--limit", str(limit),
-                "--json", "number,title,url,labels,body,state",
-            )
-        except GhCommandError as exc:
-            logger.warning("list_issues_assigned_to failed: %s", exc)
-            return []
-        data = json.loads(out or "[]")
-        return [IssueRef.from_gh_json(item) for item in data]
+        return await self._list_refs(
+            "issue", "list",
+            "--repo", self.repo,
+            "--state", "open",
+            "--assignee", login,
+            "--limit", str(limit),
+            "--json", "number,title,url,labels,body,state",
+            factory=IssueRef.from_gh_json,
+            log_label="list_issues_assigned_to",
+        )
 
     async def list_prs_assigned_to(self, login: str, *, limit: int = 100) -> List["PrRef"]:
         """Return open, non-draft PRs assigned to *login*."""
-        try:
-            out = await self._run_checked(
-                "pr", "list",
-                "--repo", self.repo,
-                "--state", "open",
-                "--assignee", login,
-                "--limit", str(limit),
-                "--json", "number,title,url,labels,headRefName,baseRefName,state,isDraft",
-            )
-        except GhCommandError as exc:
-            logger.warning("list_prs_assigned_to failed: %s", exc)
-            return []
-        data = json.loads(out or "[]")
-        return [PrRef.from_gh_json(item) for item in data]
+        return await self._list_refs(
+            "pr", "list",
+            "--repo", self.repo,
+            "--state", "open",
+            "--assignee", login,
+            "--limit", str(limit),
+            "--json", "number,title,url,labels,headRefName,baseRefName,state,isDraft",
+            factory=PrRef.from_gh_json,
+            log_label="list_prs_assigned_to",
+        )
 
     async def list_prs_with_review_requests(self, login: str) -> List["PrRef"]:
         """Return open PRs where *login* is a requested reviewer.
@@ -622,16 +633,13 @@ class GitHubClient:
         offset = 0
         while True:
             batch_limit = page_size + offset
-            try:
-                out = await self._run_checked(
-                    "issue", "list",
-                    "--repo", self.repo,
-                    "--state", "open",
-                    "--limit", str(batch_limit),
-                    "--json", "number,title,url,labels,body,state",
-                )
-            except GhCommandError:
-                raise
+            out = await self._run_checked(
+                "issue", "list",
+                "--repo", self.repo,
+                "--state", "open",
+                "--limit", str(batch_limit),
+                "--json", "number,title,url,labels,body,state",
+            )
             data = json.loads(out or "[]")
             new_items = 0
             for item in data:
@@ -664,29 +672,22 @@ class GitHubClient:
         Used by standalone stage 4 to find PRs that need follow-up processing.
         Returns an empty list on ``gh`` error (logged at WARNING).
         """
-        try:
-            out = await self._run_checked(
-                "pr", "list",
-                "--repo", self.repo,
-                "--state", "merged",
-                "--limit", str(limit),
-                "--json", "number,title,url,labels,headRefName,baseRefName,state,isDraft",
-            )
-        except GhCommandError as exc:
-            logger.warning("list_recently_merged_prs failed: %s", exc)
-            return []
-        data = json.loads(out or "[]")
-        return [PrRef.from_gh_json(item, default_state="merged") for item in data]
+        return await self._list_refs(
+            "pr", "list",
+            "--repo", self.repo,
+            "--state", "merged",
+            "--limit", str(limit),
+            "--json", "number,title,url,labels,headRefName,baseRefName,state,isDraft",
+            factory=lambda item: PrRef.from_gh_json(item, default_state="merged"),
+            log_label="list_recently_merged_prs",
+        )
 
     async def list_unclassified_prs(self) -> List[PrRef]:
         """Return open, non-draft PRs with no pipeline labels (no ``~*``).
 
         Candidates for automatic PR triage (Stage 0 for PRs).
         """
-        try:
-            prs = await self.list_open_prs()
-        except GhCommandError:
-            raise
+        prs = await self.list_open_prs()
         return [
             pr for pr in prs
             if not pr.is_draft
