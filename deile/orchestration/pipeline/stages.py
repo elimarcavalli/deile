@@ -92,6 +92,57 @@ async def _record_gh_error(
         await monitor.notifier.error(notifier_label, str(exc))
 
 
+async def _claim_for_classify(
+    monitor: "PipelineMonitor",
+    kind: str,
+    number: int,
+    *,
+    error_context: str,
+    notifier_label: Optional[str] = None,
+) -> bool:
+    """Claim the ``~batch:`` lock before classifying ``kind`` #``number``.
+
+    The claim only matters with parallel monitors; a single monitor would
+    add+remove the lock label in the same pass (timeline noise) — and the
+    items are already shard-filtered by the callers — so single-monitor
+    deployments skip the claim entirely and always return ``True``.
+
+    Returns ``True`` when the caller may proceed to label the item, ``False``
+    when it must skip it (already claimed by another monitor, or a gh error was
+    recorded). On ``GhCommandError`` the error is recorded via
+    :func:`_record_gh_error` (using ``error_context`` as the log prefix and the
+    optional ``notifier_label`` for the Discord notification).
+    """
+    if monitor.identity.shard_count <= 1:
+        return True
+    try:
+        batch = await monitor.github.claim_with_batch(kind, number)
+    except GhCommandError as exc:
+        await _record_gh_error(
+            monitor, f"{error_context} #{number} failed", exc,
+            notifier_label=notifier_label,
+        )
+        return False
+    if batch is None:
+        logger.debug("%s #%s already claimed by another monitor; skipping", kind, number)
+        return False
+    return True
+
+
+async def _release_classify_claim(monitor: "PipelineMonitor", kind: str, number: int) -> None:
+    """Release the ``~batch:`` lock so the next stage can re-claim the item.
+
+    Best-effort: the workflow label is already applied, so a clear failure must
+    not abort the loop. No-op for single-monitor deployments (they never claim).
+    """
+    if monitor.identity.shard_count <= 1:
+        return
+    try:
+        await monitor.github.clear_batch_label(kind, number)
+    except Exception as exc:  # noqa: BLE001 — label applied; clear is best-effort
+        logger.warning("%s: could not clear batch on #%s: %s", kind, number, exc)
+
+
 _CLASSIFY_COMMENT = (
     f"🤖 **DEILE auto-classificação** — esta issue foi adicionada à fila do pipeline "
     f"autônomo (`{WORKFLOW_NEW}`).\n\n"
@@ -127,10 +178,6 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
         logger.error("could not list unclassified issues: %s", exc)
         return
 
-    # The ~batch: claim only matters with parallel monitors; a single monitor
-    # would add+remove the lock label in the same pass (timeline noise). Issues
-    # are already shard-filtered below, so the claim is doubly redundant here.
-    multi_monitor = monitor.identity.shard_count > 1
     for issue in issues:
         # Defense-in-depth: never touch an issue that already has a pipeline label.
         if any(lb.startswith("~") for lb in issue.labels):
@@ -148,19 +195,13 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
                 issue.number,
             )
         # Claim before labelling to reduce the TOCTOU window with parallel
-        # monitors (skipped for a single monitor — see multi_monitor above).
-        if multi_monitor:
-            try:
-                batch = await monitor.github.claim_with_batch("issue", issue.number)
-            except GhCommandError as exc:
-                await _record_gh_error(
-                    monitor, f"auto-classify claim #{issue.number} failed", exc,
-                    notifier_label=f"auto-classify claim #{issue.number}",
-                )
-                continue
-            if batch is None:
-                logger.debug("issue #%s already claimed by another monitor; skipping", issue.number)
-                continue
+        # monitors (no-op for a single monitor — see _claim_for_classify).
+        if not await _claim_for_classify(
+            monitor, "issue", issue.number,
+            error_context="auto-classify claim",
+            notifier_label=f"auto-classify claim #{issue.number}",
+        ):
+            continue
         try:
             await monitor.github.add_labels("issue", issue.number, [WORKFLOW_NEW])
         except GhCommandError as exc:
@@ -176,15 +217,9 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
             continue
         # Release the classify claim so Stage 1 (review) can pick the issue up
         # via its own claim — review_one_new_issue only considers issues with
-        # ``batch_id is None``. Mirrors classify_new_prs; without this the
-        # auto-classify → review handoff deadlocks (the issue stays ~nova
-        # forever, batch-locked). Best-effort: the ~workflow:nova label is
-        # already applied, so a clear failure must not abort the loop.
-        if multi_monitor:
-            try:
-                await monitor.github.clear_batch_label("issue", issue.number)
-            except Exception as exc:  # noqa: BLE001 — label applied; clear is best-effort
-                logger.warning("auto-classify: could not clear batch on #%s: %s", issue.number, exc)
+        # ``batch_id is None``. Without this the auto-classify → review handoff
+        # deadlocks (the issue stays ~nova forever, batch-locked).
+        await _release_classify_claim(monitor, "issue", issue.number)
         monitor._stats.issues_classified += 1
         logger.info("auto-classified issue #%s as %s", issue.number, WORKFLOW_NEW)
         await monitor.notifier.issue_auto_classified(issue.number, issue.title, issue.url)
@@ -223,10 +258,6 @@ async def classify_new_prs(monitor: "PipelineMonitor") -> None:
         logger.error("could not list unclassified PRs: %s", exc)
         return
 
-    # Claiming a ~batch: lock only matters with parallel monitors; with a single
-    # monitor it would just add+remove the lock label in the same pass (timeline
-    # noise). Gate it on the shard count.
-    multi_monitor = monitor.identity.shard_count > 1
     for pr in prs:
         if any(lb.startswith("~") for lb in pr.labels):
             continue
@@ -237,17 +268,8 @@ async def classify_new_prs(monitor: "PipelineMonitor") -> None:
         # branches), leaving them stuck "pendente" forever.
         if not monitor._owns_pr_branch(pr.head_ref, pr_number=pr.number):
             continue
-        if multi_monitor:
-            try:
-                batch = await monitor.github.claim_with_batch("pr", pr.number)
-            except GhCommandError as exc:
-                await _record_gh_error(
-                    monitor, f"pr_triage claim #{pr.number} failed", exc,
-                )
-                continue
-            if batch is None:
-                logger.debug("PR #%s already claimed; skipping pr_triage", pr.number)
-                continue
+        if not await _claim_for_classify(monitor, "pr", pr.number, error_context="pr_triage claim"):
+            continue
         try:
             await monitor.github.add_labels("pr", pr.number, [REVIEW_PENDING])
         except GhCommandError as exc:
@@ -256,9 +278,8 @@ async def classify_new_prs(monitor: "PipelineMonitor") -> None:
                 notifier_label=f"pr_triage #{pr.number}",
             )
             continue
-        if multi_monitor:
-            # Release the batch claim so Stage 3 can pick this PR up via its own claim.
-            await monitor.github.clear_batch_label("pr", pr.number)
+        # Release the batch claim so Stage 3 can pick this PR up via its own claim.
+        await _release_classify_claim(monitor, "pr", pr.number)
         monitor._stats.prs_classified += 1
         logger.info("pr_triage: classified PR #%s with %s", pr.number, REVIEW_PENDING)
         await monitor.notifier.pr_auto_classified(pr.number, pr.title, pr.url)
