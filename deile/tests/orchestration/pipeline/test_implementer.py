@@ -14,8 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
-from deile.orchestration.pipeline.github_client import (CommentRef,
-                                                        IssueRef,
+from deile.orchestration.pipeline.github_client import (CommentRef, IssueRef,
                                                         MentionTrigger)
 from deile.orchestration.pipeline.implementer import (ClaudeImplementer,
                                                       WorkerImplementer,

@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from deile.orchestration.pipeline.github_client import (
-    CommentRef, GhCommandError, GitHubClient, IssueRef, MentionTrigger,
-    PrRef, compute_batch_id_for_number)
+    CommentRef, GhCommandError, GitHubClient, IssueRef, MentionTrigger, PrRef,
+    compute_batch_id_for_number)
 from deile.orchestration.pipeline.labels import (REVIEW_PENDING, WORKFLOW_NEW,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING)
