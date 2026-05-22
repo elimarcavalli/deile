@@ -69,6 +69,31 @@ class PipelineTool(Tool):
             )
 
         agent = context.session_data.get("agent") or context.extra.get("agent")
+
+        # ``status`` must be HONEST about the process boundary. Building a
+        # throwaway monitor here (as start/stop/tick/reset need) would report a
+        # never-started monitor as "parado" — which is exactly what misled the
+        # operator: in the deile-worker (which never runs a monitor) /pipeline
+        # status said "stopped" while the real autonomous pipeline — the
+        # separate ``deile-pipeline`` deployment — was running fine.
+        if action == "status":
+            monitor = self._existing_monitor(agent)
+            if monitor is None or not self._is_running(monitor):
+                return ToolResult.success_result(
+                    data={"running": False, "monitor_in_process": monitor is not None},
+                    message=(
+                        "Nenhum monitor de pipeline rodando NESTE processo. O "
+                        "pipeline autônomo roda como a deployment separada "
+                        "`deile-pipeline` — verifique com `kubectl -n deile get "
+                        "deploy deile-pipeline` e `kubectl -n deile logs "
+                        "deploy/deile-pipeline`. (Para um monitor local: /pipeline start.)"
+                    ),
+                )
+            return ToolResult.success_result(
+                data={"running": True, **self._stats_dict(monitor)},
+                message=f"pipeline rodando neste processo | repo={monitor.config.repo}",
+            )
+
         monitor = self._get_or_create_monitor(agent)
 
         try:
@@ -117,14 +142,9 @@ class PipelineTool(Tool):
                 if not ok:
                     return ToolResult.error_result(message=msg, error_code="RESET_FAILED")
                 return ToolResult.success_result(data={"issue": issue_number}, message=msg)
-            # status (default)
-            running = self._is_running(monitor)
-            return ToolResult.success_result(
-                data={"running": running, **self._stats_dict(monitor)},
-                message=(
-                    f"pipeline {'rodando' if running else 'parado'} | "
-                    f"repo={monitor.config.repo}"
-                ),
+            # ``status`` is handled before _get_or_create_monitor (above).
+            return ToolResult.error_result(
+                message=f"unhandled action {action!r}", error_code="INVALID_ACTION"
             )
         except Exception as exc:  # noqa: BLE001 — surface any failure to the LLM
             return ToolResult.error_result(
@@ -136,6 +156,19 @@ class PipelineTool(Tool):
     # ------------------------------------------------------------------
     # helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _existing_monitor(agent: Optional[Any]) -> Optional[PipelineMonitor]:
+        """Return a monitor already attached to THIS process's agent, or None.
+
+        Unlike :meth:`_get_or_create_monitor`, this never fabricates a monitor,
+        so ``status`` cannot misreport a freshly-built, never-started monitor as
+        "parado". In the deile-worker (which never runs a monitor) it returns
+        None and status tells the truth.
+        """
+        if agent is not None:
+            return getattr(agent, "pipeline_monitor", None)
+        return None
 
     @staticmethod
     def _get_or_create_monitor(agent: Optional[Any]) -> PipelineMonitor:

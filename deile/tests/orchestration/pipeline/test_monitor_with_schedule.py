@@ -94,6 +94,7 @@ def _make_monitor_sched(
         "issue_reviewed",
         "implementation_started",
         "implementation_finished",
+        "implementation_parked",
         "pr_picked_up",
         "pr_reviewed",
         "issue_auto_classified",

@@ -52,38 +52,63 @@ def test_set_color_toggles_state():
 
 # ===== deploy.py — parse_args ================================================
 
-def test_parse_args_empty_is_help():
-    assert deploy.parse_args([])["command"] == "help"
+def test_parse_args_empty_has_no_positionals():
+    # Sem argumentos → o dispatch abre o menu; parse_args não decide "command".
+    assert deploy.parse_args([])["positionals"] == []
 
 
-def test_parse_args_simple_command():
-    args = deploy.parse_args(["up"])
-    assert args["command"] == "up"
-    assert args["extra"] == []
+def test_parse_args_namespaced_command():
+    args = deploy.parse_args(["k8s", "up"])
+    assert args["positionals"] == ["k8s", "up"]
 
 
-def test_parse_args_positional_extra():
-    args = deploy.parse_args(["clone", "elimarcavalli/deile"])
-    assert args["command"] == "clone"
-    assert args["extra"] == ["elimarcavalli/deile"]
+def test_parse_args_clone_keeps_all_positionals():
+    args = deploy.parse_args(["k8s", "clone", "elimarcavalli/deile"])
+    assert args["positionals"] == ["k8s", "clone", "elimarcavalli/deile"]
 
 
-def test_parse_args_target_flag():
+def test_parse_args_target_flag_for_legacy_compat():
     args = deploy.parse_args(["status", "--target", "local"])
-    assert args["command"] == "status"
+    assert args["positionals"] == ["status"]
     assert args["target"] == "local"
 
 
 def test_parse_args_boolean_flags():
-    args = deploy.parse_args(["reset", "--yes", "--rebuild"])
-    assert args["command"] == "reset"
+    args = deploy.parse_args(["k8s", "build", "--yes", "--restart"])
+    assert args["positionals"] == ["k8s", "build"]
     assert args["yes"] is True
-    assert args["rebuild"] is True
+    assert args["restart"] is True
 
 
-def test_parse_args_help_flag():
-    assert deploy.parse_args(["--help"])["command"] == "help"
-    assert deploy.parse_args(["--no-color", "logs"])["no_color"] is True
+def test_parse_args_dry_run_flag():
+    args = deploy.parse_args(["--dry-run", "k8s", "up"])
+    assert args["dry_run"] is True
+    assert args["positionals"] == ["k8s", "up"]
+
+
+def test_parse_args_help_and_no_color_flags():
+    assert deploy.parse_args(["--help"])["positionals"] == ["help"]
+    assert deploy.parse_args(["--no-color", "local", "logs"])["no_color"] is True
+
+
+def test_command_tables_cover_expected_actions():
+    assert {"up", "down", "start", "stop", "restart", "status",
+            "logs", "build", "test", "clone"} <= set(deploy._K8S)
+    assert {"start", "stop", "restart", "status", "logs"} <= set(deploy._LOCAL)
+
+
+def test_announce_plan_dry_run_short_circuits():
+    # dry-run → False (chamador não executa); normal → True (segue).
+    assert deploy.announce_plan({"dry_run": True}, "t", "alvo", ["passo"]) is False
+    assert deploy.announce_plan({"dry_run": False}, "t", "alvo", ["passo"]) is True
+
+
+def test_legacy_command_classification():
+    # As tabelas de compat distinguem container-only de lifecycle; reset saiu.
+    assert "up" in deploy._OLD_CONTAINER
+    assert "start" in deploy._OLD_LIFECYCLE
+    assert "reset" not in deploy._OLD_CONTAINER
+    assert "reset" not in deploy._OLD_LIFECYCLE
 
 
 # ===== deploy.py — .env e deploy-state =======================================
@@ -192,65 +217,6 @@ def test_channel_workdir_sanitization():
     assert worker_server._channel_workdir(None) == "default"
     # Hífen e underscore são preservados.
     assert worker_server._channel_workdir("abc-DEF_12") == "abc-DEF_12"
-
-
-# ===== deploy.py — resolve_target (precedência) ==============================
-
-def test_resolve_target_explicit_wins(monkeypatch):
-    # --target explícito vence tudo, sem tocar deploy.json nem detectar nada.
-    monkeypatch.setattr(deploy, "read_deploy_target", lambda: "local")
-    monkeypatch.setattr(deploy, "namespace_exists", lambda: True)
-    assert deploy.resolve_target("container") == "container"
-    assert deploy.resolve_target("local") == "local"
-
-
-def test_resolve_target_ignores_invalid_request(monkeypatch):
-    # Valor inválido em --target é descartado; cai no deploy.json.
-    monkeypatch.setattr(deploy, "read_deploy_target", lambda: "container")
-    monkeypatch.setattr(deploy, "namespace_exists", lambda: False)
-    assert deploy.resolve_target("garbage") == "container"
-
-
-def test_resolve_target_saved_state(monkeypatch):
-    # Sem --target, o deploy.json vence a auto-detecção.
-    monkeypatch.setattr(deploy, "read_deploy_target", lambda: "local")
-    monkeypatch.setattr(deploy, "namespace_exists", lambda: True)
-    assert deploy.resolve_target(None) == "local"
-
-
-def test_resolve_target_autodetect_container(monkeypatch):
-    # Sem --target e sem deploy.json: namespace presente → container.
-    monkeypatch.setattr(deploy, "read_deploy_target", lambda: None)
-    monkeypatch.setattr(deploy, "namespace_exists", lambda: True)
-    assert deploy.resolve_target(None) == "container"
-
-
-def _fake_local_service(running: bool, detail: str):
-    """Devolve um stub de LocalService cujo status() é fixo."""
-    class _FakeSvc:
-        def __init__(self, *_a, **_kw):
-            pass
-
-        def status(self):
-            return running, detail
-
-    return _FakeSvc
-
-
-def test_resolve_target_autodetect_local(monkeypatch):
-    # Sem namespace, mas serviço local rodando → local.
-    monkeypatch.setattr(deploy, "read_deploy_target", lambda: None)
-    monkeypatch.setattr(deploy, "namespace_exists", lambda: False)
-    monkeypatch.setattr(deploy, "LocalService", _fake_local_service(True, "rodando"))
-    assert deploy.resolve_target(None) == "local"
-
-
-def test_resolve_target_undetermined(monkeypatch):
-    # Nada configurado e nada rodando → None.
-    monkeypatch.setattr(deploy, "read_deploy_target", lambda: None)
-    monkeypatch.setattr(deploy, "namespace_exists", lambda: False)
-    monkeypatch.setattr(deploy, "LocalService", _fake_local_service(False, "parado"))
-    assert deploy.resolve_target(None) is None
 
 
 # ===== deploy.py — _image_build_cmd (seleção de runtime) =====================

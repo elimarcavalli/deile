@@ -98,6 +98,20 @@ class PipelineCommand(DirectCommand):
         agent = context.agent
         monitor: Optional[PipelineMonitor] = getattr(agent, "pipeline_monitor", None)
 
+        # ``status`` must be HONEST about the process boundary: never fabricate a
+        # throwaway monitor just to report it as "parado". That is what misled
+        # the operator — running /pipeline status inside the deile-worker (which
+        # has no monitor) said "stopped" while the real autonomous pipeline (the
+        # separate ``deile-pipeline`` deployment) was running fine.
+        if sub == "status" and monitor is None:
+            return CommandResult(success=True, content=(
+                "📊 Nenhum monitor de pipeline rodando NESTE processo.\n"
+                "O pipeline autônomo roda como a deployment separada "
+                "`deile-pipeline` — verifique com `kubectl -n deile get deploy "
+                "deile-pipeline` e `kubectl -n deile logs deploy/deile-pipeline`.\n"
+                "(Para iniciar um monitor local: /pipeline start.)"
+            ))
+
         if monitor is None:
             from deile.orchestration.pipeline.post_merge_callback import \
                 make_post_merge_callback

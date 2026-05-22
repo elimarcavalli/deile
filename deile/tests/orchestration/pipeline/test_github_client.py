@@ -93,16 +93,17 @@ class TestGetIssue:
 class TestTransitions:
     async def test_transition_issue_swaps_labels(self):
         client = GitHubClient("owner/name")
-        with patch.object(client, "_run_checked", new=AsyncMock(return_value="")) as run:
+        # Labels now go through the REST issues/labels endpoint: remove is a
+        # DELETE via _run (404-tolerant), add is a POST via _run_checked.
+        with patch.object(client, "_run", new=AsyncMock(return_value=(0, "", ""))) as run, \
+             patch.object(client, "_run_checked", new=AsyncMock(return_value="")) as run_checked:
             await client.transition_issue(7, from_label=WORKFLOW_NEW, to_label=WORKFLOW_REVIEWING)
-        # Two calls: remove + add
-        assert run.call_count == 2
         remove_call = run.call_args_list[0].args
-        add_call = run.call_args_list[1].args
-        assert "--remove-label" in remove_call
-        assert WORKFLOW_NEW in remove_call
-        assert "--add-label" in add_call
-        assert WORKFLOW_REVIEWING in add_call
+        assert "DELETE" in remove_call
+        assert any(isinstance(a, str) and "/labels/" in a for a in remove_call)
+        add_call = run_checked.call_args.args
+        assert "POST" in add_call
+        assert any(a == f"labels[]={WORKFLOW_REVIEWING}" for a in add_call)
 
     async def test_transition_skips_remove_when_from_label_none(self):
         client = GitHubClient("owner/name")
@@ -231,8 +232,14 @@ class TestEnsureLabelOnClaim:
             (i for i, c in enumerate(calls) if c[0] == "_run" and "label" in c and "create" in c),
             None,
         )
+        # add_labels now POSTs to the REST issues/labels endpoint (avoids the
+        # read:org scope that ``gh pr edit`` demands), so match the api call.
         add_idx = next(
-            (i for i, c in enumerate(calls) if c[0] == "_run_checked" and "edit" in c),
+            (
+                i for i, c in enumerate(calls)
+                if c[0] == "_run_checked" and "api" in c
+                and any(isinstance(x, str) and x.endswith("/labels") for x in c)
+            ),
             None,
         )
         assert ensure_idx is not None, f"_ensure_label not called; calls={calls}"

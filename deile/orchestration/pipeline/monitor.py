@@ -34,6 +34,8 @@ from deile.orchestration.pipeline.constants import (
     PIPELINE_POLL_INTERVAL_SECONDS, PIPELINE_STOP_TIMEOUT_SECONDS)
 from deile.orchestration.pipeline.github_client import GitHubClient, IssueRef
 from deile.orchestration.pipeline.identity import MonitorIdentity
+from deile.orchestration.pipeline.implementer import (PipelineImplementer,
+                                                      build_implementer)
 from deile.orchestration.pipeline.lockfile import LockHeldError
 from deile.orchestration.pipeline.lockfile import acquire as acquire_lock
 from deile.orchestration.pipeline.lockfile import release as release_lock
@@ -70,8 +72,18 @@ class PipelineConfig:
     enable_pr_review: bool = True
     enable_classify: bool = True
     enable_follow_ups: bool = True
+    # Labels que disparam a auto-classificação. Convenção do projeto: o label
+    # CANÔNICO é IDÊNTICO ao prefixo entre colchetes do título da issue
+    # (``[FEATURE]`` → ``feature``, ``[BUG]`` → ``bug``, ``[INTENT]`` →
+    # ``intent``, ``[REFACTOR]`` → ``refactor``), espelhando o ``labels:`` dos
+    # templates em ``.github/ISSUE_TEMPLATE/``. ``security`` é aceito sem
+    # template dedicado. ``enhancement`` entra como alias tolerado: é o label
+    # padrão do GitHub para features e o que o template antigo aplicava — sem
+    # ele, uma issue de feature criada com o label convencional ficava
+    # invisível ao pipeline (foi exatamente o que travou a demo: a #247 nasceu
+    # com ``enhancement`` e só andou quando virou ``intent``).
     classifiable_labels: frozenset = frozenset(
-        {"intent", "bug", "refactor", "feature_request", "security"}
+        {"intent", "bug", "refactor", "feature", "enhancement", "security"}
     )
     classify_skip_labels: frozenset = frozenset({"infra"})
     enable_pr_triage: bool = True
@@ -86,6 +98,15 @@ class PipelineConfig:
     bootstrap_replay_window_hours: Optional[int] = 1
     # When True, cleanup_merged_branches() runs once on startup.
     enable_worktree_cleanup: bool = True
+    # Which strategy implements/reviews the work (see ``implementer.py``):
+    #   "claude"       → run ``claude -p`` in a local git worktree (legacy);
+    #   "deile_worker" → dispatch to the deile-worker Pod over HTTP (DEILE-to-DEILE).
+    # The dataclass default stays "claude" so hand-built configs (unit tests
+    # that inject a mocked ``claude``) keep the legacy behaviour. The *product*
+    # default is "deile_worker", resolved from settings in
+    # ``build_default_pipeline_config`` — every real entry point (CLI autostart,
+    # /pipeline tool/command, the deile-pipeline deployment) uses the worker.
+    dispatch_mode: str = "claude"
 
 
 def build_default_pipeline_config(*, use_pid_lock: bool = True) -> PipelineConfig:
@@ -101,11 +122,18 @@ def build_default_pipeline_config(*, use_pid_lock: bool = True) -> PipelineConfi
     from deile.orchestration.pipeline.constants import resolve_pipeline_repo
     from deile.tools._pipeline_paths import resolve_base_path
 
+    settings = get_settings()
+    dispatch_mode = (settings.pipeline_dispatch_mode or "deile_worker").strip().lower()
     return PipelineConfig(
         repo=resolve_pipeline_repo(),
         base_repo_path=resolve_base_path(),
-        notify_user_id=get_settings().pipeline_notify_user_id,
+        notify_user_id=settings.pipeline_notify_user_id,
         use_pid_lock=use_pid_lock,
+        dispatch_mode=dispatch_mode,
+        # The deile_worker path implements/reviews inside the worker Pod; the
+        # pipeline process has no local clone, so the on-startup worktree
+        # cleanup would only emit warnings. Keep it for the claude path.
+        enable_worktree_cleanup=dispatch_mode in ("claude", "claude_code", "claude-code"),
     )
 
 
@@ -145,16 +173,34 @@ class PipelineMonitor:
         post_merge_callback: Optional[Callable[[int, str, str], Awaitable[None]]] = None,
         identity: Optional[MonitorIdentity] = None,
         schedule_store: Optional[ScheduleStore] = None,
+        implementer: Optional[PipelineImplementer] = None,
     ) -> None:
         self.config = config
         self.identity = identity or MonitorIdentity.from_env()
         self.github = github or GitHubClient(config.repo)
-        self.worktrees = worktrees or WorktreeManager(
-            config.base_repo_path,
-            main_branch=config.main_branch,
-            subdir=self.identity.worktree_subdir(),
-        )
+        # WorktreeManager validates that base_repo_path is a git repo at
+        # construction. The deile_worker strategy never creates local
+        # worktrees (the worker Pod owns its own clone) and runs where
+        # base_repo_path is typically NOT a git repo — so only build the
+        # manager for the claude strategy (or when one is injected).
+        if worktrees is not None:
+            self.worktrees = worktrees
+        elif (config.dispatch_mode or "claude").strip().lower() in (
+            "claude", "claude_code", "claude-code"
+        ):
+            self.worktrees = WorktreeManager(
+                config.base_repo_path,
+                main_branch=config.main_branch,
+                subdir=self.identity.worktree_subdir(),
+            )
+        else:
+            self.worktrees = None
         self.claude = claude or ClaudeDispatcher()
+        # Strategy that does the implement/review/mention work. When not
+        # injected it is selected from ``config.dispatch_mode``: "claude"
+        # uses ``self.claude`` + ``self.worktrees``; "deile_worker" dispatches
+        # to the worker Pod over HTTP. Stage handlers delegate to it.
+        self.implementer = implementer or build_implementer(config.dispatch_mode)
         self.notifier = notifier or DiscordNotifier(config.notify_user_id)
         self._review_cb = review_callback
         self._stats = _Stats()
@@ -259,7 +305,7 @@ class PipelineMonitor:
     async def _catch_up_pending(self) -> None:
         """On startup, drain any schedule entries whose time already passed."""
         # Opportunistic cleanup: remove on-disk worktrees for already-merged PRs.
-        if self.config.enable_worktree_cleanup:
+        if self.config.enable_worktree_cleanup and self.worktrees is not None:
             try:
                 merged_prs = await self.github.list_recently_merged_prs(limit=100)
                 merged_branches = [pr.head_ref for pr in merged_prs if pr.head_ref]

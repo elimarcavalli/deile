@@ -72,6 +72,21 @@ class TestNotifierEvents:
         assert "sem PR" in sent[0]
         assert "https://github.com/x/y/pull/1" in sent[1]
 
+    async def test_implementation_parked_is_actionable(self):
+        sent = []
+
+        async def fake_dm(uid, text):
+            sent.append(text)
+
+        n = DiscordNotifier(user_id="42", dm_fn=fake_dm)
+        await n.implementation_parked(7, "o agente finalizou sem abrir PR")
+        assert len(sent) == 1
+        # Mentions the issue, why it parked, where it parked, and how to retry.
+        assert "#7" in sent[0]
+        assert "sem abrir PR" in sent[0]
+        assert "~workflow:em_implementacao" in sent[0]
+        assert "~workflow:revisada" in sent[0]
+
     async def test_dm_failure_swallowed(self):
         async def failing_dm(uid, text):
             raise RuntimeError("network")

@@ -61,6 +61,44 @@ Entry point: `python3 deile.py` (CLI shell in `DeileAgentCLI`; all logic lives i
 | Imports | `isort --check-only deile/` |
 | Complexity | `radon cc deile/ -a` |
 
+## Kubernetes / cluster operations (deile-pipeline · deile-worker · deilebot · deile-shell)
+
+The cluster runs on **Rancher Desktop (k3s/containerd)**, namespace **`deile`**, single image **`deile-stack:local`** (`imagePullPolicy: Never`). All four pods share that image; `/app` is **baked at build time** (not mounted), so **code changes only go live after a rebuild + pod restart**. `kubectl` lives at `~/.rd/bin/kubectl` (may not be on `PATH`).
+
+Everything is driven by the orchestrator **`infra/k8s/deploy.py`** (run from repo root). It prints a plan before any mutating action; `--yes` skips the prompt, `--dry-run` shows the plan only.
+
+| Goal | Command |
+|---|---|
+| Interactive menu / list all verbs | `python3 infra/k8s/deploy.py` / `... help` |
+| **Rebuild image + restart pods** (deploy code changes) | `python3 infra/k8s/deploy.py k8s build --restart --yes` |
+| Provision / update the whole stack (idempotent) | `python3 infra/k8s/deploy.py k8s up` |
+| Rollout restart (no rebuild) | `python3 infra/k8s/deploy.py k8s restart` |
+| Pause / resume (scale 0 / 1; keeps data + Secrets) | `... k8s stop` / `... k8s start` |
+| Status (pods, deployments, services) | `python3 infra/k8s/deploy.py k8s status` |
+| Logs (bot + worker) | `python3 infra/k8s/deploy.py k8s logs [bot\|worker]` |
+| One-shot Job (fixed prompt) | `python3 infra/k8s/deploy.py k8s test` |
+| Clone a repo into `deile-shell` (allowlisted) | `python3 infra/k8s/deploy.py k8s clone <owner/repo>` |
+| **Teardown** (DELETES namespace + all data) | `python3 infra/k8s/deploy.py k8s down` |
+
+Direct `kubectl` (when you need a specific pod), `K=~/.rd/bin/kubectl`:
+
+```bash
+$K -n deile get pods,deployments,services
+$K -n deile logs deploy/deile-pipeline --tail=80          # or deploy/deile-worker, deploy/deilebot
+$K -n deile rollout status deployment/deile-pipeline --timeout=180s
+$K -n deile exec -it deploy/deile-shell -- python3 /app/wrapper.py deile   # interactive REPL in-cluster
+```
+
+Roles & control-plane ports: **deilebot** `:8765` (Discord I/O), **deile-worker** `:8766` (runs DEILE in-process for dispatch), **deile-pipeline** (the GitHub monitor — no Service, only "calls out"), **deile-shell** (`kubectl exec` only). Only `deile-pipeline` runs the autonomous monitor; the others never autostart it.
+
+**Pipeline label state machine** (issues): `~workflow:nova` → `~workflow:em_revisao` → `~workflow:revisada` → `~workflow:em_implementacao` → `~workflow:em_pr`. PRs: `~review:pendente` → `~review:em_andamento` → `~review:concluida`. Locks: `~batch:<sha8>` (claim), `~by:<id>` (owner). A failed/no-PR implementation **parks** in `~workflow:em_implementacao` (out of every stage's queue, no auto-retry) — **to requeue, move it back to `~workflow:revisada`**.
+
+> **Label edits must use the REST issues endpoint, NOT `gh issue/pr edit --add-label`** — the latter runs a GraphQL `login` query that demands the `read:org` scope (which the pipeline token lacks). The pipeline already does this in `github_client.py`; for manual ops:
+> ```bash
+> gh api -X POST   "repos/elimarcavalli/deile/issues/<N>/labels" -f 'labels[]=~workflow:revisada'
+> gh api -X DELETE "repos/elimarcavalli/deile/issues/<N>/labels/%7Eworkflow%3Arevisada"   # ~=%7E :=%3A
+> ```
+
 ## Gotchas (not in the system design)
 
 - **At least one provider API key is required at startup** — the agent exits if none are set. Configure any of: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, or `GOOGLE_API_KEY` in `.env` (loaded via `python-dotenv`). The `bootstrap_providers()` function in `deile/core/models/bootstrap.py` handles conditional registration.

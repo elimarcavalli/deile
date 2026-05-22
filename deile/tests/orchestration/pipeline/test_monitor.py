@@ -10,7 +10,9 @@ from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
 from deile.orchestration.pipeline.github_client import IssueRef, PrRef
 from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
-                                                 REVIEW_PENDING, WORKFLOW_NEW,
+                                                 REVIEW_PENDING,
+                                                 WORKFLOW_IMPLEMENTING,
+                                                 WORKFLOW_NEW, WORKFLOW_PR,
                                                  WORKFLOW_REVIEWED)
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor,
@@ -73,8 +75,8 @@ def _make_monitor(
     notifier = MagicMock()
     for attr in (
         "issue_picked_up", "issue_reviewed", "implementation_started",
-        "implementation_finished", "pr_picked_up", "pr_reviewed",
-        "issue_auto_classified", "follow_ups_processed", "error",
+        "implementation_finished", "implementation_parked", "pr_picked_up",
+        "pr_reviewed", "issue_auto_classified", "follow_ups_processed", "error",
         "pr_auto_classified", "mention_processed",
     ):
         setattr(notifier, attr, AsyncMock())
@@ -156,6 +158,32 @@ class TestStage2Implement:
         assert args[1] == "https://github.com/owner/name/pull/3"
         assert monitor.stats.issues_implemented == 1
 
+    async def test_claims_before_notifying_and_completes_to_em_pr(self):
+        # The claim (revisada → em_implementacao) MUST happen before the
+        # "started" notification, and a successful PR moves em_implementacao →
+        # em_pr. These two transitions are the lock + the completion marker.
+        rev = IssueRef(
+            number=2, title="impl me", url="u",
+            labels=(WORKFLOW_REVIEWED, "~batch:abc12345"),
+        )
+        monitor, notifier = _make_monitor(
+            issues_reviewed=[rev],
+            claude_stdout="Done. https://github.com/owner/name/pull/3",
+        )
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        await monitor.tick()
+        calls = monitor.github.transition_issue.call_args_list
+        # First transition is the atomic claim out of the candidate queue.
+        assert calls[0].kwargs == {
+            "from_label": WORKFLOW_REVIEWED, "to_label": WORKFLOW_IMPLEMENTING
+        }
+        # Last transition marks the PR as opened.
+        assert calls[-1].kwargs == {
+            "from_label": WORKFLOW_IMPLEMENTING, "to_label": WORKFLOW_PR
+        }
+        notifier.implementation_started.assert_called_once()
+
     async def test_skips_reviewed_without_batch(self):
         rev = IssueRef(
             number=2, title="t", url="u",
@@ -167,7 +195,46 @@ class TestStage2Implement:
         await monitor.tick()
         notifier.implementation_started.assert_not_called()
 
-    async def test_claude_failure_emits_error(self):
+    async def test_already_claimed_issue_is_not_picked_again(self):
+        # Regression for the duplicate-DM storm (#253): an issue already in
+        # ~workflow:em_implementacao must NOT be re-selected even if it still
+        # carries revisada-era labels. Without the claim guard the same issue
+        # was re-dispatched every tick.
+        claimed = IssueRef(
+            number=2, title="t", url="u",
+            labels=(WORKFLOW_REVIEWED, WORKFLOW_IMPLEMENTING, "~batch:abc12345"),
+        )
+        monitor, notifier = _make_monitor(issues_reviewed=[claimed])
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        await monitor.tick()
+        notifier.implementation_started.assert_not_called()
+        monitor.github.transition_issue.assert_not_called()
+
+    async def test_no_pr_url_parks_without_retry(self):
+        # ok=True but the agent opened no PR: park in em_implementacao + notify
+        # once. Crucially it does NOT advance to em_pr and does NOT count as an
+        # implemented issue — and is not re-tried (the issue left revisada).
+        rev = IssueRef(
+            number=2, title="vague meta issue", url="u",
+            labels=(WORKFLOW_REVIEWED, "~batch:abc12345"),
+        )
+        monitor, notifier = _make_monitor(
+            issues_reviewed=[rev],
+            claude_stdout="I thought about it but opened no PR.",
+        )
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        await monitor.tick()
+        notifier.implementation_started.assert_called_once()
+        notifier.implementation_parked.assert_called_once()
+        notifier.implementation_finished.assert_not_called()
+        assert monitor.stats.issues_implemented == 0
+        # Only the claim transition fired — never the em_pr completion.
+        for call in monitor.github.transition_issue.call_args_list:
+            assert call.kwargs.get("to_label") != WORKFLOW_PR
+
+    async def test_claude_failure_parks_issue(self):
         rev = IssueRef(
             number=2, title="t", url="u",
             labels=(WORKFLOW_REVIEWED, "~batch:abc12345"),
@@ -179,7 +246,8 @@ class TestStage2Implement:
         monitor.config.enable_review = False
         monitor.config.enable_pr_review = False
         await monitor.tick()
-        notifier.error.assert_called_once()
+        # A real failure parks the issue (one ping) instead of completing it.
+        notifier.implementation_parked.assert_called_once()
         notifier.implementation_finished.assert_not_called()
 
 

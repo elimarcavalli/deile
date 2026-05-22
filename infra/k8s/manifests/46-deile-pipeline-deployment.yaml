@@ -1,0 +1,87 @@
+# deile-pipeline — long-running pod that drives the autonomous
+# issue → review → implement → PR → review → merge loop (PipelineMonitor).
+#
+# It ORCHESTRATES only: it lists/labels issues + PRs via the `gh` CLI and
+# dispatches the heavy implement/review work to the deile-worker Pod over
+# HTTP (DEILE_PIPELINE_DISPATCH_MODE=deile_worker — "DEILE-to-DEILE"). It runs
+# NO LLM in-process, so it needs GITHUB_TOKEN (gh) and the worker bearer (to
+# dispatch), but no provider bootstrap and no embedded agent.
+#
+# Jail posture mirrors deile-worker: readOnlyRootFilesystem, drop ALL caps,
+# uid 10001, PSS restricted, secrets as files. NetworkPolicy: egress to the
+# worker:8766 (rule 6), to the bot:8765 (notifier, via role=deile) and 443
+# (gh → github, via role=deile). No ingress is opened — nothing calls it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deile-pipeline
+  namespace: deile
+  labels:
+    app: deile-pipeline
+    role: deile        # inherits deile-egress-to-bot (8765) + deile-egress-https-llm (443)
+spec:
+  replicas: 1
+  strategy: { type: Recreate }   # single monitor: never run two at once (PID lock + label races)
+  selector:
+    matchLabels:
+      app: deile-pipeline
+      role: deile
+  template:
+    metadata:
+      labels:
+        app: deile-pipeline
+        role: deile
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: pipeline
+          image: deile-stack:local
+          imagePullPolicy: Never
+          workingDir: /home/deile
+          args: ["python3", "/app/wrapper.py", "pipeline"]
+          env:
+            - { name: HOME,                          value: /home/deile }
+            - { name: PYTHONUNBUFFERED,              value: "1" }
+            - { name: PYTHONDONTWRITEBYTECODE,       value: "1" }
+            # Dispatch implement/review work to the worker (DEILE-to-DEILE).
+            - { name: DEILE_PIPELINE_DISPATCH_MODE,  value: "deile_worker" }
+            - { name: DEILE_WORKER_ENDPOINT,         value: "http://deile-worker.deile.svc.cluster.local:8766" }
+            - { name: DEILE_PIPELINE_REPO,           value: "elimarcavalli/deile" }
+            - { name: DEILE_PIPELINE_POLL_INTERVAL,  value: "60" }
+            # Notifier posts pipeline progress to Discord via the bot control
+            # plane. notify_user_id (DEILE_PIPELINE_NOTIFY_USER_ID) is left
+            # unset by default — set it to a Discord user id to receive DMs.
+            - { name: DEILE_BOT_ENDPOINT,            value: "http://deilebot.deile.svc.cluster.local:8765" }
+            - { name: DEILE_BOT_APPROVAL_AUTO,       value: "1" }
+          volumeMounts:
+            # GITHUB_TOKEN (gh) + DEILE_BOT_AUTH_TOKEN (notifier) + LLM keys
+            # (unused here, harmless) — same Secret as worker/shell.
+            - { name: deile-secrets,  mountPath: /run/secrets/deile,  readOnly: true }
+            # Worker bearer — needed to authenticate dispatches to the worker.
+            - { name: worker-bearer,  mountPath: /run/secrets/worker, readOnly: true }
+            - { name: home,           mountPath: /home/deile }
+            - { name: tmp,            mountPath: /tmp }
+          resources:
+            requests: { cpu: "50m", memory: "128Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
+      volumes:
+        - { name: deile-secrets, secret: { secretName: deile-secrets,  defaultMode: 288 } }
+        - { name: worker-bearer, secret: { secretName: worker-bearer,  defaultMode: 288 } }
+        - { name: home,          emptyDir: { sizeLimit: "256Mi" } }
+        - { name: tmp,           emptyDir: { medium: Memory, sizeLimit: "64Mi" } }

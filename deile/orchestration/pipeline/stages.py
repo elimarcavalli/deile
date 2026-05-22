@@ -22,16 +22,15 @@ import re
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
-from deile.orchestration.pipeline.claude_dispatcher import (
-    render_implement_prompt, render_mention_prompt, render_review_prompt)
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
 from deile.orchestration.pipeline.follow_up_detector import detect_follow_ups
 from deile.orchestration.pipeline.github_client import (CommentRef,
                                                         GhCommandError)
 from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
-                                                 REVIEW_PENDING, WORKFLOW_NEW,
-                                                 WORKFLOW_PR,
+                                                 REVIEW_PENDING,
+                                                 WORKFLOW_IMPLEMENTING,
+                                                 WORKFLOW_NEW, WORKFLOW_PR,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING)
 
@@ -146,6 +145,16 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
             logger.error("auto-classify label #%s failed: %s", issue.number, exc)
             await monitor.notifier.error(f"auto-classify #{issue.number}", f"{type(exc).__name__}: {exc}")
             continue
+        # Release the classify claim so Stage 1 (review) can pick the issue up
+        # via its own claim — review_one_new_issue only considers issues with
+        # ``batch_id is None``. Mirrors classify_new_prs; without this the
+        # auto-classify → review handoff deadlocks (the issue stays ~nova
+        # forever, batch-locked). Best-effort: the ~workflow:nova label is
+        # already applied, so a clear failure must not abort the loop.
+        try:
+            await monitor.github.clear_batch_label("issue", issue.number)
+        except Exception as exc:  # noqa: BLE001 — label applied; clear is best-effort
+            logger.warning("auto-classify: could not clear batch on #%s: %s", issue.number, exc)
         monitor._stats.issues_classified += 1
         logger.info("auto-classified issue #%s as %s", issue.number, WORKFLOW_NEW)
         await monitor.notifier.issue_auto_classified(issue.number, issue.title, issue.url)
@@ -229,19 +238,15 @@ async def process_mentions(monitor: "PipelineMonitor") -> None:
     for ref in all_comments:
         if handle not in ref.body.lower():
             continue
-        prompt = render_mention_prompt(
-            monitor.config.repo, ref.html_url, ref.body, ref.author
-        )
         try:
-            result = await monitor.claude.run(prompt, cwd=monitor.config.base_repo_path)
-            if not result.ok:
-                logger.warning(
-                    "mention dispatch failed (rc=%d) for %s",
-                    result.returncode, ref.html_url,
-                )
-                continue
+            outcome = await monitor.implementer.mention(monitor, ref)
         except Exception as exc:  # noqa: BLE001
             logger.warning("mention dispatch error for %s: %s", ref.html_url, exc)
+            continue
+        if not outcome.ok:
+            logger.warning(
+                "mention dispatch failed for %s: %s", ref.html_url, outcome.error
+            )
             continue
         monitor._stats.mentions_processed += 1
         logger.info("mention processed: %s by @%s", ref.html_url, ref.author)
@@ -337,6 +342,12 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
         (
             i for i in issues
             if WORKFLOW_PR not in i.labels
+            # Defense-in-depth: never re-pick an issue already claimed for
+            # implementation. The list query is scoped to WORKFLOW_REVIEWED so a
+            # cleanly-claimed issue already drops out, but this guards the edge
+            # case of an issue transiently carrying both labels (partial
+            # transition, operator mislabel) — the bug class behind #253.
+            and WORKFLOW_IMPLEMENTING not in i.labels
             and monitor._this_monitor_owns(i)
             and (i.batch_id is not None or ownership_label in i.labels)
         ),
@@ -344,37 +355,67 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
     )
     if target is None:
         return
-    branch = monitor.branch_for_issue(target.number)
-    await monitor.notifier.implementation_started(target.number, target.title, branch)
-    # Re-use an existing worktree when present; force_recreate=True would delete and
-    # re-clone on every attempt which is expensive — reserve for explicit /pipeline reset.
-    try:
-        worktree = await monitor.worktrees.create_branch_worktree(
-            branch, force_recreate=False
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("worktree setup for #%s failed", target.number)
-        await monitor.notifier.error(
-            f"worktree #{target.number}", f"{type(exc).__name__}: {exc}"
-        )
-        monitor._stats.errors += 1
-        return
-    prompt = render_implement_prompt(monitor.config.repo, target.number, target.title, target.body)
-    result = await monitor.claude.run(prompt, cwd=worktree.path)
-    pr_url = _extract_pr_url(result.stdout)
-    if not result.ok:
-        # ClaudeDispatcher already logs auth-specific warnings when prefer_subscription_auth=True.
-        monitor._stats.errors += 1
-        monitor._stats.claude_errors += 1
-        err_detail = result.stderr.strip()[:PIPELINE_MSG_TRUNCATE_CHARS] or "non-zero exit"
-        logger.error(
-            "implement #%d: claude returned rc=%d: %s", target.number, result.returncode, err_detail
-        )
-        await monitor.notifier.error(f"implement #{target.number}", err_detail)
-        return
+    # Atomic claim BEFORE any notification or work: move the issue out of
+    # ~workflow:revisada and into ~workflow:em_implementacao. This is the lock
+    # that stops the SAME issue from being picked up twice — the candidate
+    # query (list_issues_with_label) only returns ~workflow:revisada issues, so
+    # once claimed the issue drops out of the set for every later tick (and any
+    # second monitor). Without this claim, an issue that never produces a PR
+    # (e.g. a vague/meta issue the worker cannot implement) was re-selected and
+    # re-dispatched on every tick, flooding the operator with duplicate
+    # "Implementação iniciada" DMs.
     try:
         await monitor.github.transition_issue(
-            target.number, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_PR
+            target.number, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_IMPLEMENTING
+        )
+    except GhCommandError as exc:
+        await _record_gh_error(
+            monitor, f"could not claim issue #{target.number} for implementation", exc,
+            notifier_label=f"implement claim #{target.number}",
+        )
+        return
+    branch = monitor.branch_for_issue(target.number)
+    await monitor.notifier.implementation_started(target.number, target.title, branch)
+    # Delegate the actual implementation to the configured strategy
+    # (claude -p in a worktree, or a dispatch to the deile-worker). The
+    # strategy returns a uniform outcome; label orchestration stays here.
+    outcome = await monitor.implementer.implement(monitor, target)
+    pr_url = _extract_pr_url(outcome.text)
+    # A real failure (worker errored / unreachable): the issue is now parked in
+    # ~workflow:em_implementacao (NOT reverted to revisada), so it will not be
+    # re-picked. Ping the operator once; requeue is a deliberate human action
+    # (move the label back to ~workflow:revisada). Auto-retry-forever was what
+    # produced the duplicate-DM storm.
+    if not outcome.ok:
+        monitor._stats.errors += 1
+        monitor._stats.claude_errors += 1
+        err_detail = (outcome.error or "implementation failed")[:PIPELINE_MSG_TRUNCATE_CHARS]
+        logger.error(
+            "implement #%d failed: %s — parked in %s",
+            target.number, err_detail, WORKFLOW_IMPLEMENTING,
+        )
+        await monitor.notifier.implementation_parked(target.number, err_detail)
+        return
+    # ok=True but no PR URL: the agent finished its turn without actually
+    # opening a PR (common for vague/meta issues). Same treatment as a failure
+    # — park in ~workflow:em_implementacao and notify once, never silently
+    # retry (the silent retry kept the issue in revisada and re-fired the
+    # "Implementação iniciada" DM every tick).
+    if not pr_url:
+        monitor._stats.errors += 1
+        monitor._stats.claude_errors += 1
+        logger.warning(
+            "implement #%d: agent finished but produced no PR URL — parked in %s",
+            target.number, WORKFLOW_IMPLEMENTING,
+        )
+        await monitor.notifier.implementation_parked(
+            target.number, "o agente finalizou sem abrir PR"
+        )
+        return
+    # Success: a real PR exists. Move ~workflow:em_implementacao → ~workflow:em_pr.
+    try:
+        await monitor.github.transition_issue(
+            target.number, from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_PR
         )
     except GhCommandError as exc:
         await _record_gh_error(
@@ -426,27 +467,17 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     except GhCommandError:
         # ~review:pendente may not be set; that's ok.
         await monitor.github.add_labels("pr", target.number, [REVIEW_IN_PROGRESS])
-    # The PR was opened on a branch — for the worktree, we just need a
-    # checkout of that branch. Use the same naming convention if the branch
-    # follows it; otherwise fall back to ``main`` and let Claude `gh pr
-    # checkout`.
-    worktree_branch = target.head_ref or f"pr/{target.number}"
-    try:
-        wt = await monitor.worktrees.create_branch_worktree(worktree_branch)
-    except Exception as exc:  # noqa: BLE001
-        await monitor.notifier.error(
-            f"PR worktree #{target.number}", f"{type(exc).__name__}: {exc}"
-        )
-        monitor._stats.errors += 1
-        return
-    prompt = render_review_prompt(monitor.config.repo, target.number, target.title)
-    result = await monitor.claude.run(prompt, cwd=wt.path)
-    merged = result.ok and "merged" in result.stdout.lower()
-    if not result.ok:
+    # Delegate the review/merge work to the configured strategy. The Claude
+    # strategy checks out the branch in a worktree; the worker strategy clones
+    # and runs ``gh pr checkout`` inside its own sandbox.
+    outcome = await monitor.implementer.review(monitor, target)
+    merged = outcome.ok and "merged" in outcome.text.lower()
+    if not outcome.ok:
         monitor._stats.errors += 1
         monitor._stats.claude_errors += 1
         logger.error(
-            "pr_review #%d: claude returned rc=%d", target.number, result.returncode
+            "pr_review #%d failed: %s", target.number,
+            (outcome.error or "review failed")[:PIPELINE_MSG_TRUNCATE_CHARS],
         )
     try:
         await monitor.github.transition_pr(

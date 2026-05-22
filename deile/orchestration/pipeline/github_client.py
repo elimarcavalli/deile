@@ -20,6 +20,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable, List, Optional, Sequence, Tuple
+from urllib.parse import quote
 
 from deile.core.exceptions import DEILEError
 from deile.orchestration.pipeline._time_utils import format_iso_utc
@@ -238,21 +239,35 @@ class GitHubClient:
         labels_list = list(labels)
         if not labels_list:
             return
-        await self._run_checked(
-            kind, "edit", str(number),
-            "--repo", self.repo,
-            "--add-label", ",".join(labels_list),
-        )
+        # Use the REST issues endpoint (PRs ARE issues in REST) instead of
+        # ``gh {kind} edit --add-label``. For PRs, ``gh pr edit`` runs a
+        # GraphQL query that resolves the author ``login`` and demands the
+        # ``read:org`` token scope, which the pipeline token does not carry —
+        # so labeling a PR fails. The REST call needs only ``repo`` scope and
+        # behaves identically for issues and PRs.
+        args = ["api", "-X", "POST", f"repos/{self.repo}/issues/{number}/labels"]
+        for lb in labels_list:
+            args += ["-f", f"labels[]={lb}"]
+        await self._run_checked(*args)
 
     async def remove_labels(self, kind: str, number: int, labels: Iterable[str]) -> None:
         labels_list = list(labels)
         if not labels_list:
             return
-        await self._run_checked(
-            kind, "edit", str(number),
-            "--repo", self.repo,
-            "--remove-label", ",".join(labels_list),
-        )
+        # REST DELETE per label (see add_labels for why we avoid gh pr edit).
+        # The label name lives in the URL path, so it must be percent-encoded
+        # (``~`` and ``:`` in workflow/batch labels are reserved). A 404 means
+        # the label was not present — treat that as an idempotent no-op so a
+        # transition whose ``from_label`` is already absent doesn't error.
+        for lb in labels_list:
+            path = f"repos/{self.repo}/issues/{number}/labels/{quote(lb, safe='')}"
+            rc, out, err = await self._run("api", "-X", "DELETE", path)
+            if rc != 0:
+                low = err.lower()
+                if "404" in err or "not found" in low or "does not exist" in low:
+                    logger.debug("remove_labels: %r absent on #%d (ignored)", lb, number)
+                    continue
+                raise GhCommandError(("api", "-X", "DELETE", path), rc, out, err)
 
     async def transition_issue(
         self, number: int, *, from_label: Optional[str], to_label: str,

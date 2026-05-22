@@ -139,18 +139,20 @@ class TestPipelineToolMonitorReuse:
         # The same instance was reused — no new monitor was attached to the agent.
         assert agent.pipeline_monitor is existing
 
-    async def test_creates_monitor_when_agent_has_none(self, repo_git_tmp):
-        # The fresh-monitor path goes through WorktreeManager which validates
-        # that base_repo_path is a real git repo. repo_git_tmp provides one
-        # inside the git repo root (safe root) with DEILE_PIPELINE_BASE_PATH set.
+    async def test_status_does_not_fabricate_monitor_when_none(self):
+        # Honest status: with no monitor in THIS process, the tool must NOT
+        # build a throwaway monitor (doing so misreported "parado" and misled
+        # the operator during a live demo). It returns running=False and points
+        # at the separate deile-pipeline deployment.
         tool = PipelineTool()
         agent = MagicMock(spec=["pipeline_monitor"])
         agent.pipeline_monitor = None
         ctx = _make_context("status", agent=agent)
         result = await tool.execute(ctx)
         assert result.status == ToolStatus.SUCCESS
-        # The tool tried to attach a fresh monitor to the agent.
-        assert agent.pipeline_monitor is not None
+        assert result.data["running"] is False
+        assert agent.pipeline_monitor is None  # not fabricated
+        assert "deile-pipeline" in result.message
 
     async def test_works_without_agent(self, repo_git_tmp):
         tool = PipelineTool()

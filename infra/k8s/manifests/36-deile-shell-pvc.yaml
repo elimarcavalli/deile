@@ -15,7 +15,7 @@
 #
 # Note: Rancher Desktop / k3s uses a local-path provisioner that creates the
 # volume under the node's /var/lib/rancher/k3s/storage/. The data survives
-# pod restarts but NOT cluster wipes (deploy.py down; deploy.py up).
+# pod restarts but NOT cluster wipes (deploy.py k8s down; deploy.py k8s up).
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

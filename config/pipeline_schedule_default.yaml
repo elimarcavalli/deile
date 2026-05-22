@@ -3,24 +3,24 @@ recurring:
   action: classify
   cron: '*/2 * * * *'
   enabled: true
-  last_run_at: null
+  last_run_at: '2026-05-21T22:22:12Z'
   replay_all: false
 - id: review_loop
   action: review
   cron: '*/3 * * * *'
   enabled: true
-  last_run_at: null
+  last_run_at: '2026-05-21T22:22:12Z'
   replay_all: false
 - id: implement_loop
   action: implement
   cron: '*/5 * * * *'
   enabled: true
-  last_run_at: null
+  last_run_at: '2026-05-21T22:22:11Z'
   replay_all: false
 - id: pr_review_loop
   action: pr_review
   cron: '*/4 * * * *'
   enabled: true
-  last_run_at: null
+  last_run_at: '2026-05-21T22:22:11Z'
   replay_all: false
 oneshot: []

@@ -136,7 +136,10 @@ spec:
         - protocol: TCP
           port: 443
 ---
-# ---- 4. deile-worker ingress (only from bot) on :8766 ---------------
+# ---- 4. deile-worker ingress on :8766 — from bot AND pipeline -------
+# The deilebot Pod dispatches user-driven work; the deile-pipeline Pod
+# dispatches autonomous implement/review work. Both reach the worker on
+# 8766. The two podSelectors are OR'd within a single `from` list.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -153,6 +156,9 @@ spec:
         - podSelector:
             matchLabels:
               app: deilebot
+        - podSelector:
+            matchLabels:
+              app: deile-pipeline
       ports:
         - protocol: TCP
           port: 8766
@@ -167,6 +173,30 @@ spec:
   podSelector:
     matchLabels:
       app: deilebot
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: deile-worker
+      ports:
+        - protocol: TCP
+          port: 8766
+---
+# ---- 6. deile-pipeline egress to deile-worker:8766 ------------------
+# The autonomous loop dispatches implement/review briefs to the worker.
+# (443 for the gh CLI and 8765 for the bot notifier are already covered
+# by the role=deile egress policies above.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pipeline-egress-to-worker
+  namespace: deile
+spec:
+  podSelector:
+    matchLabels:
+      app: deile-pipeline
   policyTypes:
     - Egress
   egress:

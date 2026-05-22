@@ -16,7 +16,14 @@ from deile.core.models.tier import ModelTier
 logger = logging.getLogger(__name__)
 
 # Defaults shared by tool-loop-capable providers (anthropic, openai, gemini).
-DEFAULT_MAX_TOOL_ITERATIONS = 25
+# 100 (raised from 25): a real implementation turn — read several files, edit,
+# run tests, fix, commit, push, open the PR — routinely needs well over 25
+# tool-call rounds, so a low cap silently truncated the agent before it could
+# finish (e.g. before opening the PR). Configurable per-deployment via
+# DEILE_MAX_TOOL_ITERATIONS / settings.json `agent.max_tool_iterations`, which
+# ToolLoopExecutor (the streaming path) reads; this constant is the fallback
+# and the cap for the legacy provider tool-loops.
+DEFAULT_MAX_TOOL_ITERATIONS = 100
 DEFAULT_MAX_OUTPUT_TOKENS = 16384
 
 if TYPE_CHECKING:

@@ -2,7 +2,7 @@
 name: Solicitação de Funcionalidade
 about: Proponha uma nova capacidade ou melhoria voltada ao usuário no DEILE
 title: '[FEATURE] '
-labels: 'enhancement'
+labels: 'feature'
 assignees: ''
 ---
 

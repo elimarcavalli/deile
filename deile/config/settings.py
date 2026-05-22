@@ -35,6 +35,7 @@ _DEILE_DEPRECATED_ENV_VARS: Dict[str, str] = {
     "DEILE_PIPELINE_POLL_INTERVAL": "pipeline.poll_interval",
     "DEILE_PIPELINE_CLAUDE_TIMEOUT": "pipeline.claude_timeout",
     "DEILE_PIPELINE_AUTOSTART": "pipeline.autostart",
+    "DEILE_PIPELINE_DISPATCH_MODE": "pipeline.dispatch_mode",
     "DEILE_CRON_DB_PATH": "cron.db_path",
     "DEILE_CRON_POLL_INTERVAL": "cron.poll_interval",
     "DEILE_DEBUG": "debug.enabled",
@@ -273,10 +274,22 @@ class Settings:
     pipeline_poll_interval: int = 60
     pipeline_claude_timeout: int = 1800
     pipeline_autostart: bool = False  # gap #3: set True via DEILE_PIPELINE_AUTOSTART
+    # Implementation/review strategy: "deile_worker" (DEILE-to-DEILE via the
+    # worker Pod, the product default — Claude is optional) or "claude"
+    # (claude -p one-shot in a local worktree). Set via DEILE_PIPELINE_DISPATCH_MODE.
+    pipeline_dispatch_mode: str = "deile_worker"
 
     # Cron
     cron_db_path: Optional[Path] = None
     cron_poll_interval: int = 30
+
+    # Agent tool-loop
+    # Max function-calling rounds per turn before the loop is force-stopped. A
+    # real implementation (read files + edit + test + commit + push + open PR)
+    # easily exceeds a low cap, so the agent would stop before finishing.
+    # Override via DEILE_MAX_TOOL_ITERATIONS or settings.json
+    # `agent.max_tool_iterations`.
+    max_tool_iterations: int = 100
 
     # Perfil e skills (lidos via SettingsManager, mantidos aqui para conveniência)
     profile_name: str = "autonomous_agent"
@@ -615,8 +628,10 @@ _JSON_FIELD_MAP: Dict[str, str] = {
     "pipeline.claude_timeout": "pipeline_claude_timeout",
     "pipeline.notify_user_id": "pipeline_notify_user_id",
     "pipeline.autostart": "pipeline_autostart",
+    "pipeline.dispatch_mode": "pipeline_dispatch_mode",
     "cron.db_path": "cron_db_path",
     "cron.poll_interval": "cron_poll_interval",
+    "agent.max_tool_iterations": "max_tool_iterations",
     # Trust boundary (issue #125) — see ``_OVERRIDE_HANDLERS`` for the
     # strict converters; this map covers the layered-loading path.
     "trust.project_layer_dirs": "trust_project_layer_dirs",
@@ -809,6 +824,11 @@ def _apply_env_overrides(settings: "Settings") -> None:
     if raw:
         settings.pipeline_autostart = raw.lower().strip() in ("1", "true", "yes", "on")
 
+    raw = env("DEILE_PIPELINE_DISPATCH_MODE")
+    if raw:
+        _warn("DEILE_PIPELINE_DISPATCH_MODE", "pipeline.dispatch_mode")
+        settings.pipeline_dispatch_mode = raw.strip().lower()
+
     # cron
     raw = env("DEILE_CRON_DB_PATH")
     if raw:
@@ -820,6 +840,14 @@ def _apply_env_overrides(settings: "Settings") -> None:
         _warn("DEILE_CRON_POLL_INTERVAL", "cron.poll_interval")
         try:
             settings.cron_poll_interval = int(raw)
+        except ValueError:
+            pass
+
+    # Agent tool-loop cap — current knob (not deprecated), so no migration warning.
+    raw = env("DEILE_MAX_TOOL_ITERATIONS")
+    if raw:
+        try:
+            settings.max_tool_iterations = max(1, int(raw))
         except ValueError:
             pass
 

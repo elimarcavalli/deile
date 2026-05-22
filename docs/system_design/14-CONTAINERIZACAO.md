@@ -76,10 +76,10 @@ com o prompt **fixado no manifest** (ou parametrizado em build time).
 Kubernetes Events.
 
 ```bash
-python3 infra/k8s/deploy.py build   # uma vez, ou após mudar código
-python3 infra/k8s/deploy.py up      # namespace + NetworkPolicies + Secrets + bot
-python3 infra/k8s/deploy.py test    # cria o Job → executa o prompt → sai
-python3 infra/k8s/deploy.py down    # remove tudo (kubectl delete ns deile)
+python3 infra/k8s/deploy.py k8s build   # uma vez, ou após mudar código
+python3 infra/k8s/deploy.py k8s up      # namespace + NetworkPolicies + Secrets + bot
+python3 infra/k8s/deploy.py k8s test    # cria o Job → executa o prompt → sai
+python3 infra/k8s/deploy.py k8s down    # remove tudo (kubectl delete ns deile)
 ```
 
 Tool whitelist do Job: **só `messaging.*`** (decisão #28 — veja
@@ -147,11 +147,11 @@ vem do operador via `kubectl exec`, então não há risco de prompt-injection.
 | Allowlist | `wrapper.py` instala `~/bin/git` (guard Python) que lê `DEILE_GIT_CLONE_ALLOWLIST` (derivado de `git_integration.clonable_repos` em `bot-config` ConfigMap) e rejeita `git clone` para URLs fora da lista. O fluxo de clone é **fail-closed**: se o guard `~/bin/git` não estiver instalado, o clone é RECUSADO em vez de cair para `/usr/bin/git` — assim a allowlist é sempre garantida |
 | Isolamento de rede | NetworkPolicy já permite egress `0.0.0.0/0:443 except RFC1918` — github.com é alcançável; Mac/LAN não |
 
-### Fluxo completo (`deploy.py clone <owner/repo>`)
+### Fluxo completo (`deploy.py k8s clone <owner/repo>`)
 
 ```
 operador
-  → deploy.py clone elimarcavalli/deile
+  → deploy.py k8s clone elimarcavalli/deile
       → wira GITHUB_TOKEN em deile-secrets (kubectl apply --dry-run)
       → aguarda kubelet sincronizar arquivo no pod (max 90s)
       → kubectl exec deploy/deile-shell -- python3 -c "..."
