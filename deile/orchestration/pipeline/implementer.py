@@ -335,6 +335,12 @@ class WorkerImplementer(PipelineImplementer):
         from deile.infrastructure.deile_worker_client import (
             WorkerDispatchError, build_dispatch_payload)
 
+        # Defensive clamp under the 8000-char dispatch cap (issue #257): every
+        # body-embedding brief puts the issue/PR body LAST (after the VEREDITO
+        # rules), so truncating the tail only trims body context — never the
+        # instructions. Guarantees the payload never hard-fails on size.
+        if len(brief) > 7950:
+            brief = brief[:7950] + "\n…(brief truncado por tamanho)"
         payload = build_dispatch_payload(
             brief=brief, channel_id=channel_id, persona=persona, wait=True
         )

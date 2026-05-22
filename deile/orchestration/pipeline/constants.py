@@ -37,7 +37,11 @@ def resolve_pipeline_repo() -> str:
     return get_settings().pipeline_repo or PIPELINE_DEFAULT_REPO
 
 # ── Prompt / message truncation ───────────────────────────────────────────
-#: Max chars of issue body sent to the implement prompt.
-ISSUE_BODY_MAX_CHARS: int = 6000
+#: Max chars of issue body EMBEDDED in a worker brief. Kept well under the 8000
+#: dispatch-payload cap so the brief (template + body) never overflows — the
+#: worker reads the FULL live issue via ``gh issue view`` anyway, so the embedded
+#: copy is just initial context. (A refined feature_request body can be large;
+#: 6000 + the refine brief template overflowed 8000 — issue #257.)
+ISSUE_BODY_MAX_CHARS: int = 5000
 #: Max chars of stderr / error detail shown in Discord notifications.
 PIPELINE_MSG_TRUNCATE_CHARS: int = 1500

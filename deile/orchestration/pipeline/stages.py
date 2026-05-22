@@ -768,8 +768,14 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
 
     outcome = await monitor.implementer.refine(monitor, target)
     if not outcome.ok:
-        logger.warning("refine #%d failed: %s", number, (outcome.error or "")[:200])
-        return  # transient — retry next tick (no count bump)
+        # Count the failed attempt so a DETERMINISTIC failure (e.g. a payload the
+        # worker rejects) hits the ceiling → block, instead of looping forever.
+        monitor._resume_tracker.bump_refine(number)
+        logger.warning(
+            "refine #%d failed (passe %d): %s", number,
+            monitor._resume_tracker.refine_attempt(number), (outcome.error or "")[:200],
+        )
+        return
 
     verdict = parse_refine_verdict(outcome.text)
     if verdict == "waiting":

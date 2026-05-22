@@ -294,3 +294,18 @@ class TestParallelImplement:
         await monitor._implement_one_reviewed_issue()
         assert client.payloads == []  # no implementation dispatched
         assert (50, WORKFLOW_REVIEWED, WORKFLOW_PR) in _transitions(monitor.github)
+
+
+class TestBriefSizeClamp:
+    """Issue #257: a large (post-refine) body must never overflow the 8000-char
+    dispatch cap — the body sits last in the brief, so it is safely clamped."""
+
+    async def test_critique_brief_never_exceeds_8000(self):
+        huge = _issue(60, "feature", body="X" * 9000)  # nova: no batch (critique needs batch_id None)
+        monitor, _, client = _make_monitor(
+            label_map={WORKFLOW_NEW: [huge]},
+            worker_responses=[_resp("VEREDITO: CLARO")],
+        )
+        await monitor._review_one_new_issue()
+        assert client.payloads, "critique must have dispatched"
+        assert len(client.payloads[0]["brief"]) <= 8000
