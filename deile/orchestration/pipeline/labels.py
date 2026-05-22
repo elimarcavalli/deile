@@ -113,6 +113,14 @@ TYPE_TO_TEMPLATE = {
     TYPE_BUG: "bug_report.md",
     TYPE_REFACTOR: "refactor_proposal.md",
 }
+# Title prefix each template enforces (``title: '[FEATURE] '`` etc.) — the refiner
+# normalizes the issue title to start with this tag.
+TYPE_TO_TITLE_PREFIX = {
+    TYPE_INTENT: "[INTENT]",
+    TYPE_FEATURE: "[FEATURE]",
+    TYPE_BUG: "[BUG]",
+    TYPE_REFACTOR: "[REFACTOR]",
+}
 # ``enhancement`` is the GitHub-conventional feature label and is treated as an
 # alias of ``feature`` (it is already accepted by ``classifiable_labels``).
 _TYPE_ALIASES = {"enhancement": TYPE_FEATURE}
@@ -144,6 +152,11 @@ def persona_for_type(issue_type: Optional[str]) -> str:
 def template_for_type(issue_type: Optional[str]) -> Optional[str]:
     """Matching ``.github/ISSUE_TEMPLATE`` filename for *issue_type* (or None)."""
     return TYPE_TO_TEMPLATE.get(issue_type or "")
+
+
+def title_prefix_for_type(issue_type: Optional[str]) -> str:
+    """Title tag the template enforces (``[FEATURE]`` etc.); empty if unknown."""
+    return TYPE_TO_TITLE_PREFIX.get(issue_type or "", "")
 
 
 # Distributed lock --------------------------------------------------------
