@@ -1,4 +1,10 @@
-"""Tests for PR triage: _classify_new_prs() in PipelineMonitor."""
+"""Tests for PR triage: _classify_new_prs() in PipelineMonitor.
+
+Triage only labels PRs the pipeline would actually review (branch ownership —
+``auto/issue-*`` for default identity, or any branch when
+``enable_review_human_prs``), and only claims a ``~batch:`` lock when more than
+one monitor runs (single-monitor adds the label directly, no lock churn).
+"""
 
 from __future__ import annotations
 
@@ -7,22 +13,30 @@ from unittest.mock import AsyncMock, MagicMock
 
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
 from deile.orchestration.pipeline.github_client import GhCommandError, PrRef
+from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.labels import REVIEW_PENDING
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
 
 
-def _pr(number: int, labels: tuple = ()) -> PrRef:
+def _pr(number: int, labels: tuple = (), head_ref: str | None = None) -> PrRef:
     return PrRef(
         number=number,
         title=f"PR #{number}",
         url=f"https://github.com/o/r/pull/{number}",
         labels=labels,
-        head_ref=f"feat/pr-{number}",
+        # Default to an owned (auto/issue-*) branch so the default-identity
+        # monitor triages it; tests pass an explicit head_ref for foreign PRs.
+        head_ref=head_ref if head_ref is not None else f"auto/issue-{number}",
     )
 
 
-def _make_monitor(*, unclassified_prs: list | None = None) -> tuple[PipelineMonitor, MagicMock, MagicMock]:
+def _make_monitor(
+    *,
+    unclassified_prs: list | None = None,
+    shard_count: int = 1,
+    review_human_prs: bool = False,
+) -> tuple[PipelineMonitor, MagicMock, MagicMock]:
     cfg = PipelineConfig(
         repo="owner/name",
         base_repo_path=Path("/tmp/fake"),
@@ -59,6 +73,13 @@ def _make_monitor(*, unclassified_prs: list | None = None) -> tuple[PipelineMoni
     ))
 
     monitor = PipelineMonitor(cfg, github=github, worktrees=worktrees, claude=claude, notifier=notifier)
+    # Inject a multi-monitor identity when requested (so the ~batch: claim path
+    # runs); enable_review_human_prs decouples ownership from branch prefix so
+    # the claim tests don't depend on per-monitor branch naming.
+    monitor.identity = MonitorIdentity(
+        monitor_id="default", shard_index=0, shard_count=shard_count
+    )
+    monitor.config.enable_review_human_prs = review_human_prs
     return monitor, github, notifier
 
 
@@ -69,13 +90,36 @@ class TestClassifyNewPrs:
         github.add_labels.assert_not_called()
         notifier.pr_auto_classified.assert_not_called()
 
-    async def test_one_unclassified_pr_gets_label(self):
+    async def test_owned_pr_gets_label_single_monitor(self):
+        """An owned (auto/issue-*) PR is labelled; single monitor doesn't claim."""
         pr = _pr(42)
         monitor, github, notifier = _make_monitor(unclassified_prs=[pr])
         await monitor._classify_new_prs()
         github.add_labels.assert_called_once_with("pr", 42, [REVIEW_PENDING])
-        github.clear_batch_label.assert_called_once_with("pr", 42)
+        # Single monitor: NO ~batch: churn.
+        github.claim_with_batch.assert_not_called()
+        github.clear_batch_label.assert_not_called()
         notifier.pr_auto_classified.assert_called_once_with(42, pr.title, pr.url)
+        assert monitor.stats.prs_classified == 1
+
+    async def test_foreign_branch_pr_not_triaged(self):
+        """A PR on a non-auto branch (human/foreign) is NOT labelled — the
+        pipeline would never review it, so it must not get stuck ~review:pendente."""
+        pr = _pr(43, head_ref="feat/human-change")
+        monitor, github, notifier = _make_monitor(unclassified_prs=[pr])
+        await monitor._classify_new_prs()
+        github.add_labels.assert_not_called()
+        github.claim_with_batch.assert_not_called()
+        assert monitor.stats.prs_classified == 0
+
+    async def test_review_human_prs_triages_foreign_branch(self):
+        """With enable_review_human_prs, even a foreign branch is triaged."""
+        pr = _pr(43, head_ref="feat/human-change")
+        monitor, github, notifier = _make_monitor(
+            unclassified_prs=[pr], review_human_prs=True
+        )
+        await monitor._classify_new_prs()
+        github.add_labels.assert_called_once_with("pr", 43, [REVIEW_PENDING])
         assert monitor.stats.prs_classified == 1
 
     async def test_pr_with_tilde_label_skipped(self):
@@ -86,10 +130,25 @@ class TestClassifyNewPrs:
         github.add_labels.assert_not_called()
         assert monitor.stats.prs_classified == 0
 
+    async def test_multi_monitor_claims_and_clears(self):
+        """With >1 monitor, the ~batch: lock IS claimed and released.
+
+        Uses an ``auto/default/issue-*`` branch (the prefix a 2-shard identity
+        owns) so this exercises the REAL ownership path, not the
+        ``enable_review_human_prs`` bypass (review note #1 on PR #264)."""
+        pr = _pr(42, head_ref="auto/default/issue-42")
+        monitor, github, notifier = _make_monitor(unclassified_prs=[pr], shard_count=2)
+        await monitor._classify_new_prs()
+        github.claim_with_batch.assert_called_once_with("pr", 42)
+        github.add_labels.assert_called_once_with("pr", 42, [REVIEW_PENDING])
+        github.clear_batch_label.assert_called_once_with("pr", 42)
+        assert monitor.stats.prs_classified == 1
+
     async def test_claim_returns_none_skips_pr(self):
-        """When claim_with_batch returns None (already claimed), PR is skipped."""
-        pr = _pr(44)
-        monitor, github, notifier = _make_monitor(unclassified_prs=[pr])
+        """When claim_with_batch returns None (already claimed), PR is skipped
+        (multi-monitor only — single monitor never claims)."""
+        pr = _pr(44, head_ref="auto/default/issue-44")
+        monitor, github, notifier = _make_monitor(unclassified_prs=[pr], shard_count=2)
         github.claim_with_batch = AsyncMock(return_value=None)
         await monitor._classify_new_prs()
         github.add_labels.assert_not_called()
@@ -97,15 +156,15 @@ class TestClassifyNewPrs:
 
     async def test_claim_raises_gh_error_counts_error_and_continues(self):
         """GhCommandError during claim increments error counter and continues loop."""
-        pr1 = _pr(45)
-        pr2 = _pr(46)
+        pr1 = _pr(45, head_ref="auto/default/issue-45")
+        pr2 = _pr(46, head_ref="auto/default/issue-46")
 
         async def _claim(kind, number):
             if number == 45:
                 raise GhCommandError(["gh"], 1, "", "network")
             return "abc"
 
-        monitor, github, notifier = _make_monitor(unclassified_prs=[pr1, pr2])
+        monitor, github, notifier = _make_monitor(unclassified_prs=[pr1, pr2], shard_count=2)
         github.claim_with_batch = AsyncMock(side_effect=_claim)
         await monitor._classify_new_prs()
         assert monitor.stats.errors == 1

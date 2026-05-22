@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Optional, Tuple
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -255,9 +256,22 @@ class TestGap5EmptyBodyAccepted:
 # ---------------------------------------------------------------------------
 
 class TestGap6Stage0UsesClaim:
-    async def test_classify_claims_before_labelling(self):
+    """Gap #6: with PARALLEL monitors Stage 0 claims a ~batch: lock BEFORE
+    labelling (TOCTOU mitigation). A SINGLE monitor skips the claim entirely so
+    the lock label isn't added+removed in the same pass (timeline noise)."""
+
+    async def test_single_monitor_labels_without_claim(self):
+        issue = _issue(4, ("intent",), body="body")
+        monitor, github, _ = _make_monitor(unclassified=[issue])  # default = 1 monitor
+        await monitor._classify_new_issues()
+        github.claim_with_batch.assert_not_called()
+        github.add_labels.assert_called_once_with("issue", 4, [WORKFLOW_NEW])
+
+    async def test_multi_monitor_claims_before_labelling(self):
         issue = _issue(4, ("intent",), body="body")
         monitor, github, _ = _make_monitor(unclassified=[issue])
+        # Stub a 2-monitor identity that owns everything (decouple from title hash).
+        monitor.identity = SimpleNamespace(shard_count=2, owns=lambda key: True)
         call_order = []
         github.claim_with_batch.side_effect = lambda *a, **_: call_order.append("claim") or "abc"
         github.add_labels.side_effect = lambda *a, **_: call_order.append("label")
@@ -265,9 +279,10 @@ class TestGap6Stage0UsesClaim:
         assert "claim" in call_order
         assert call_order.index("claim") < call_order.index("label")
 
-    async def test_classify_skips_when_claim_returns_none(self):
+    async def test_multi_monitor_skips_when_claim_returns_none(self):
         issue = _issue(5, ("intent",), body="body")
         monitor, github, _ = _make_monitor(unclassified=[issue])
+        monitor.identity = SimpleNamespace(shard_count=2, owns=lambda key: True)
         github.claim_with_batch = AsyncMock(return_value=None)
         await monitor._classify_new_issues()
         github.add_labels.assert_not_called()

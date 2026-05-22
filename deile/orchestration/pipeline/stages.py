@@ -127,6 +127,10 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
         logger.error("could not list unclassified issues: %s", exc)
         return
 
+    # The ~batch: claim only matters with parallel monitors; a single monitor
+    # would add+remove the lock label in the same pass (timeline noise). Issues
+    # are already shard-filtered below, so the claim is doubly redundant here.
+    multi_monitor = monitor.identity.shard_count > 1
     for issue in issues:
         # Defense-in-depth: never touch an issue that already has a pipeline label.
         if any(lb.startswith("~") for lb in issue.labels):
@@ -143,18 +147,20 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
                 "issue #%s has empty body; auto-classifying and requesting template fill",
                 issue.number,
             )
-        # Claim before labelling to reduce the TOCTOU window with parallel monitors.
-        try:
-            batch = await monitor.github.claim_with_batch("issue", issue.number)
-        except GhCommandError as exc:
-            await _record_gh_error(
-                monitor, f"auto-classify claim #{issue.number} failed", exc,
-                notifier_label=f"auto-classify claim #{issue.number}",
-            )
-            continue
-        if batch is None:
-            logger.debug("issue #%s already claimed by another monitor; skipping", issue.number)
-            continue
+        # Claim before labelling to reduce the TOCTOU window with parallel
+        # monitors (skipped for a single monitor — see multi_monitor above).
+        if multi_monitor:
+            try:
+                batch = await monitor.github.claim_with_batch("issue", issue.number)
+            except GhCommandError as exc:
+                await _record_gh_error(
+                    monitor, f"auto-classify claim #{issue.number} failed", exc,
+                    notifier_label=f"auto-classify claim #{issue.number}",
+                )
+                continue
+            if batch is None:
+                logger.debug("issue #%s already claimed by another monitor; skipping", issue.number)
+                continue
         try:
             await monitor.github.add_labels("issue", issue.number, [WORKFLOW_NEW])
         except GhCommandError as exc:
@@ -174,10 +180,11 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
         # auto-classify → review handoff deadlocks (the issue stays ~nova
         # forever, batch-locked). Best-effort: the ~workflow:nova label is
         # already applied, so a clear failure must not abort the loop.
-        try:
-            await monitor.github.clear_batch_label("issue", issue.number)
-        except Exception as exc:  # noqa: BLE001 — label applied; clear is best-effort
-            logger.warning("auto-classify: could not clear batch on #%s: %s", issue.number, exc)
+        if multi_monitor:
+            try:
+                await monitor.github.clear_batch_label("issue", issue.number)
+            except Exception as exc:  # noqa: BLE001 — label applied; clear is best-effort
+                logger.warning("auto-classify: could not clear batch on #%s: %s", issue.number, exc)
         monitor._stats.issues_classified += 1
         logger.info("auto-classified issue #%s as %s", issue.number, WORKFLOW_NEW)
         await monitor.notifier.issue_auto_classified(issue.number, issue.title, issue.url)
@@ -216,19 +223,31 @@ async def classify_new_prs(monitor: "PipelineMonitor") -> None:
         logger.error("could not list unclassified PRs: %s", exc)
         return
 
+    # Claiming a ~batch: lock only matters with parallel monitors; with a single
+    # monitor it would just add+remove the lock label in the same pass (timeline
+    # noise). Gate it on the shard count.
+    multi_monitor = monitor.identity.shard_count > 1
     for pr in prs:
         if any(lb.startswith("~") for lb in pr.labels):
             continue
-        try:
-            batch = await monitor.github.claim_with_batch("pr", pr.number)
-        except GhCommandError as exc:
-            await _record_gh_error(
-                monitor, f"pr_triage claim #{pr.number} failed", exc,
-            )
+        # Only triage PRs this monitor would actually review (Stage 3 claims by
+        # branch ownership — ``auto/issue-*`` for default identity, or any branch
+        # when ``enable_review_human_prs``). Without this, ``~review:pendente``
+        # is applied to PRs the pipeline never reviews (e.g. human/foreign
+        # branches), leaving them stuck "pendente" forever.
+        if not monitor._owns_pr_branch(pr.head_ref, pr_number=pr.number):
             continue
-        if batch is None:
-            logger.debug("PR #%s already claimed; skipping pr_triage", pr.number)
-            continue
+        if multi_monitor:
+            try:
+                batch = await monitor.github.claim_with_batch("pr", pr.number)
+            except GhCommandError as exc:
+                await _record_gh_error(
+                    monitor, f"pr_triage claim #{pr.number} failed", exc,
+                )
+                continue
+            if batch is None:
+                logger.debug("PR #%s already claimed; skipping pr_triage", pr.number)
+                continue
         try:
             await monitor.github.add_labels("pr", pr.number, [REVIEW_PENDING])
         except GhCommandError as exc:
@@ -237,8 +256,9 @@ async def classify_new_prs(monitor: "PipelineMonitor") -> None:
                 notifier_label=f"pr_triage #{pr.number}",
             )
             continue
-        # Release the batch claim so Stage 3 can pick this PR up via its own claim.
-        await monitor.github.clear_batch_label("pr", pr.number)
+        if multi_monitor:
+            # Release the batch claim so Stage 3 can pick this PR up via its own claim.
+            await monitor.github.clear_batch_label("pr", pr.number)
         monitor._stats.prs_classified += 1
         logger.info("pr_triage: classified PR #%s with %s", pr.number, REVIEW_PENDING)
         await monitor.notifier.pr_auto_classified(pr.number, pr.title, pr.url)
