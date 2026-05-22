@@ -131,11 +131,13 @@ class TestClassifyNewPrs:
         assert monitor.stats.prs_classified == 0
 
     async def test_multi_monitor_claims_and_clears(self):
-        """With >1 monitor, the ~batch: lock IS claimed and released."""
-        pr = _pr(42)
-        monitor, github, notifier = _make_monitor(
-            unclassified_prs=[pr], shard_count=2, review_human_prs=True
-        )
+        """With >1 monitor, the ~batch: lock IS claimed and released.
+
+        Uses an ``auto/default/issue-*`` branch (the prefix a 2-shard identity
+        owns) so this exercises the REAL ownership path, not the
+        ``enable_review_human_prs`` bypass (review note #1 on PR #264)."""
+        pr = _pr(42, head_ref="auto/default/issue-42")
+        monitor, github, notifier = _make_monitor(unclassified_prs=[pr], shard_count=2)
         await monitor._classify_new_prs()
         github.claim_with_batch.assert_called_once_with("pr", 42)
         github.add_labels.assert_called_once_with("pr", 42, [REVIEW_PENDING])
@@ -145,10 +147,8 @@ class TestClassifyNewPrs:
     async def test_claim_returns_none_skips_pr(self):
         """When claim_with_batch returns None (already claimed), PR is skipped
         (multi-monitor only — single monitor never claims)."""
-        pr = _pr(44)
-        monitor, github, notifier = _make_monitor(
-            unclassified_prs=[pr], shard_count=2, review_human_prs=True
-        )
+        pr = _pr(44, head_ref="auto/default/issue-44")
+        monitor, github, notifier = _make_monitor(unclassified_prs=[pr], shard_count=2)
         github.claim_with_batch = AsyncMock(return_value=None)
         await monitor._classify_new_prs()
         github.add_labels.assert_not_called()
@@ -156,17 +156,15 @@ class TestClassifyNewPrs:
 
     async def test_claim_raises_gh_error_counts_error_and_continues(self):
         """GhCommandError during claim increments error counter and continues loop."""
-        pr1 = _pr(45)
-        pr2 = _pr(46)
+        pr1 = _pr(45, head_ref="auto/default/issue-45")
+        pr2 = _pr(46, head_ref="auto/default/issue-46")
 
         async def _claim(kind, number):
             if number == 45:
                 raise GhCommandError(["gh"], 1, "", "network")
             return "abc"
 
-        monitor, github, notifier = _make_monitor(
-            unclassified_prs=[pr1, pr2], shard_count=2, review_human_prs=True
-        )
+        monitor, github, notifier = _make_monitor(unclassified_prs=[pr1, pr2], shard_count=2)
         github.claim_with_batch = AsyncMock(side_effect=_claim)
         await monitor._classify_new_prs()
         assert monitor.stats.errors == 1
