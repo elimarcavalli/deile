@@ -18,7 +18,9 @@ import logging
 from typing import Awaitable, Callable, Optional
 
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
-from deile.orchestration.pipeline.labels import WORKFLOW_NEW
+from deile.orchestration.pipeline.labels import (WORKFLOW_IMPLEMENTING,
+                                                 WORKFLOW_NEW,
+                                                 WORKFLOW_REVIEWED)
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +116,22 @@ class DiscordNotifier:
             await self._send(
                 f"⚠️ **Implementação finalizada sem PR** para issue #{number}"
             )
+
+    async def implementation_parked(self, number: int, reason: str) -> None:
+        """Fired when an implementation attempt failed or opened no PR.
+
+        The issue is left parked in ``~workflow:em_implementacao`` (out of every
+        stage's candidate set) with NO automatic retry — so this DM is sent at
+        most once per attempt, never on a loop. The message is actionable: to
+        retry, the operator moves the label back to ``~workflow:revisada``.
+        """
+        await self._send(
+            f"⏸️ **Implementação pausada** — issue #{number}: "
+            f"{reason[:PIPELINE_MSG_TRUNCATE_CHARS]}\n"
+            f"A issue ficou em `{WORKFLOW_IMPLEMENTING}` (fora da fila, sem "
+            f"re-tentativa automática). Para tentar de novo, mova o label de "
+            f"volta para `{WORKFLOW_REVIEWED}`."
+        )
 
     async def pr_picked_up(self, number: int, title: str, url: str) -> None:
         await self._send(

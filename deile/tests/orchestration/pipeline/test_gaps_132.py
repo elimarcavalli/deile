@@ -697,19 +697,21 @@ class TestGetPrMethods:
         client = GitHubClient("owner/repo")
         issue = IssueRef(number=1, title="t", url="u",
                          labels=("~batch:abc12345", WORKFLOW_NEW))
+        # remove_labels now issues a REST DELETE via _run (not _run_checked).
         with patch.object(client, "get_issue", new=AsyncMock(return_value=issue)), \
-             patch.object(client, "_run_checked", new=AsyncMock(return_value="")) as run:
+             patch.object(client, "_run", new=AsyncMock(return_value=(0, "", ""))) as run:
             await client.clear_batch_label("issue", 1)
-        # Should have called remove_labels with the batch label.
+        # Should have called remove_labels (DELETE) with the batch label.
         assert run.called
+        assert any("DELETE" in c.args for c in run.call_args_list)
 
     async def test_clear_batch_label_noop_when_no_batch(self):
         client = GitHubClient("owner/repo")
         issue = IssueRef(number=1, title="t", url="u", labels=(WORKFLOW_NEW,))
         with patch.object(client, "get_issue", new=AsyncMock(return_value=issue)), \
-             patch.object(client, "_run_checked", new=AsyncMock(return_value="")) as run:
+             patch.object(client, "_run", new=AsyncMock(return_value=(0, "", ""))) as run:
             await client.clear_batch_label("issue", 1)
-        # No labels to remove, so run_checked should NOT be called.
+        # No batch labels to remove, so no DELETE should be issued.
         assert not run.called
 
     async def test_clear_batch_label_invalid_kind_raises(self):

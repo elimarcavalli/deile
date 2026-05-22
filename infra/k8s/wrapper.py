@@ -732,9 +732,58 @@ def _install_worker_negative_whitelist() -> None:
         agent_mod.DeileAgent.initialize = _harden
 
 
+def _run_pipeline(passthrough: List[str]) -> int:
+    """deile-pipeline mode: run the autonomous issue → PR → merge loop.
+
+    The pipeline Pod only ORCHESTRATES: it lists/labels issues+PRs via the
+    ``gh`` CLI and dispatches the heavy implement/review work to the
+    deile-worker Pod over HTTP (``DEILE_PIPELINE_DISPATCH_MODE=deile_worker``).
+    It therefore needs GITHUB_TOKEN (for gh) and the worker bearer (to
+    dispatch), but no LLM provider of its own — the worker carries the model.
+
+    Differences from ``_run_worker``:
+      - No provider bootstrap, no embedded agent, no tool whitelist (there is
+        no agent to constrain — the loop never runs an LLM in-process).
+      - No clone guard (the pipeline Pod never clones; the worker does).
+    """
+    _harden_runtime_dirs()
+    loaded = _load_secret_files(Path("/run/secrets/deile"))
+    # GITHUB_TOKEN is the only hard requirement: the loop cannot list/label
+    # issues or PRs without it. LLM keys are optional (work goes to the worker).
+    if "GITHUB_TOKEN" not in loaded and not os.environ.get("GITHUB_TOKEN"):
+        print(
+            "wrapper(pipeline): no GITHUB_TOKEN under /run/secrets/deile — "
+            "the pipeline cannot drive GitHub.",
+            file=sys.stderr,
+        )
+        return 78
+
+    _setup_gh_auth()
+    _setup_git_credentials()
+
+    # Worker bearer — needed to dispatch implement/review work to the worker.
+    bearer = Path("/run/secrets/worker/AUTH_TOKEN")
+    if bearer.is_file():
+        try:
+            os.environ["DEILE_WORKER_BEARER_TOKEN"] = bearer.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            print(f"wrapper(pipeline): cannot read worker bearer: {exc}", file=sys.stderr)
+            return 78
+    else:
+        print(
+            "wrapper(pipeline): worker bearer not mounted at "
+            "/run/secrets/worker/AUTH_TOKEN — dispatch_mode=deile_worker will fail.",
+            file=sys.stderr,
+        )
+
+    sys.path.insert(0, str(Path("/app")))
+    from deile.orchestration.pipeline.runner import main as pipeline_main
+    return pipeline_main()
+
+
 def main(argv: List[str]) -> int:
     if len(argv) < 2:
-        print("usage: wrapper.py {deile|bot|worker} <args ...>", file=sys.stderr)
+        print("usage: wrapper.py {deile|bot|worker|pipeline} <args ...>", file=sys.stderr)
         return 64  # EX_USAGE
     role, rest = argv[1], argv[2:]
     if role == "deile":
@@ -743,7 +792,13 @@ def main(argv: List[str]) -> int:
         return _run_bot(rest)
     if role == "worker":
         return _run_worker(rest)
-    print(f"wrapper: unknown role {role!r} (expected 'deile' | 'bot' | 'worker')", file=sys.stderr)
+    if role == "pipeline":
+        return _run_pipeline(rest)
+    print(
+        f"wrapper: unknown role {role!r} "
+        "(expected 'deile' | 'bot' | 'worker' | 'pipeline')",
+        file=sys.stderr,
+    )
     return 64
 
 

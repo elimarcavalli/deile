@@ -60,7 +60,7 @@ def _make_monitor(*, unclassified: list | None = None) -> tuple[PipelineMonitor,
     notifier = MagicMock()
     for attr in (
         "issue_picked_up", "issue_reviewed", "implementation_started",
-        "implementation_finished", "pr_picked_up", "pr_reviewed",
+        "implementation_finished", "implementation_parked", "pr_picked_up", "pr_reviewed",
         "issue_auto_classified", "error", "pr_auto_classified", "mention_processed",
     ):
         setattr(notifier, attr, AsyncMock())
@@ -334,7 +334,7 @@ class TestIssueAutoClassifiedNotification:
 # ---------------------------------------------------------------------------
 
 class TestClassifiableLabelCoverage:
-    @pytest.mark.parametrize("label", ["intent", "bug", "refactor", "feature_request"])
+    @pytest.mark.parametrize("label", ["intent", "bug", "refactor", "feature", "security"])
     async def test_classifies_each_classifiable_label(self, label):
         issue = _issue(99, (label,), body="some body")
         monitor, github, _ = _make_monitor(unclassified=[issue])
@@ -398,7 +398,7 @@ class TestSchedulerClassifyAction:
         notifier = MagicMock()
         for attr in (
             "issue_picked_up", "issue_reviewed", "implementation_started",
-            "implementation_finished", "pr_picked_up", "pr_reviewed",
+            "implementation_finished", "implementation_parked", "pr_picked_up", "pr_reviewed",
             "issue_auto_classified", "error", "pr_auto_classified", "mention_processed",
         ):
             setattr(notifier, attr, AsyncMock())

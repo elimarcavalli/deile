@@ -16,8 +16,9 @@ from deile.orchestration.pipeline.github_client import IssueRef, PrRef
 from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
-                                                 REVIEW_PENDING, WORKFLOW_NEW,
-                                                 WORKFLOW_PR,
+                                                 REVIEW_PENDING,
+                                                 WORKFLOW_IMPLEMENTING,
+                                                 WORKFLOW_NEW, WORKFLOW_PR,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING)
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
@@ -94,6 +95,7 @@ def _make_monitor_full(
         "issue_reviewed",
         "implementation_started",
         "implementation_finished",
+        "implementation_parked",
         "pr_picked_up",
         "pr_reviewed",
         "issue_auto_classified",
@@ -185,10 +187,11 @@ class TestStageIntegration:
         assert args[1] == _PR_URL
         assert monitor2.stats.issues_implemented == 1
 
-        # Transition: revisada → em_pr
-        github2.transition_issue.assert_called_once_with(
-            10, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_PR
-        )
+        # Transitions: revisada → em_implementacao (atomic claim) → em_pr (PR opened)
+        assert github2.transition_issue.call_args_list == [
+            call(10, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_IMPLEMENTING),
+            call(10, from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_PR),
+        ]
 
         # -- Tick 3: stage 3 only -----------------------------------------
         monitor3, github3, notifier3 = _make_monitor_full(

@@ -278,6 +278,24 @@ async def test_max_iterations_caps_loop(monkeypatch):
     assert sum(1 for e in events if e.type == StreamEventType.TOOL_RESULT) == 3
 
 
+def test_max_iterations_defaults_to_configured_setting(monkeypatch):
+    # No explicit cap → resolved from settings (DEILE_MAX_TOOL_ITERATIONS /
+    # agent.max_tool_iterations). Raised from 25 to 100 so a real implementation
+    # turn (read files + edit + test + commit + push + open PR) isn't truncated.
+    from deile.config.settings import get_settings
+    from deile.core.tool_loop_executor import _resolve_max_iterations
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "max_tool_iterations", 137, raising=False)
+    assert _resolve_max_iterations() == 137
+    assert ToolLoopExecutor(tool_registry=FakeRegistry())._max_iterations == 137
+    # An explicit value always wins over the configured setting.
+    assert (
+        ToolLoopExecutor(tool_registry=FakeRegistry(), max_iterations=5)._max_iterations
+        == 5
+    )
+
+
 @pytest.mark.asyncio
 async def test_iteration_field_is_set_on_events():
     provider = FakeProvider(

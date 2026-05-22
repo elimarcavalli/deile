@@ -113,7 +113,7 @@ def _make_monitor(
     notifier = MagicMock()
     for attr in (
         "issue_picked_up", "issue_reviewed", "implementation_started",
-        "implementation_finished", "pr_picked_up", "pr_reviewed",
+        "implementation_finished", "implementation_parked", "pr_picked_up", "pr_reviewed",
         "issue_auto_classified", "follow_ups_processed", "error",
     ):
         setattr(notifier, attr, AsyncMock())

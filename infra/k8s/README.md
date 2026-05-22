@@ -8,10 +8,11 @@
 
 > **Orquestrador:** o `run.sh` virou um shim — o orquestrador agora é o
 > `infra/k8s/deploy.py` (Python, colorido, com `help`). `bash run.sh X`
-> equivale a `python3 deploy.py X`. Comandos novos: `start`, `stop`,
-> `restart`, `status`, `reset`, `doctor` — veja `python3 deploy.py help`.
-> Para preparar uma máquina do zero (k3s/colima/dependências), use
-> `python3 infra/setup_environment.py`.
+> equivale a `python3 deploy.py X`. O alvo é explícito no verbo:
+> `deploy.py k8s <ação>` (stack no Kubernetes) ou `deploy.py local <ação>`
+> (bot como serviço no host); rodar `deploy.py` sem argumentos abre um
+> menu. Veja `python3 deploy.py help`. Para preparar uma máquina do zero
+> (k3s/colima/dependências), use `python3 infra/setup_environment.py`.
 
 ---
 
@@ -86,9 +87,9 @@ DEILE_BOT_DISCORD_TOKEN=MTQ5...  # do passo 1.2
 ## 2. Build e deploy — caminho feliz
 
 ```bash
-python3 infra/k8s/deploy.py build   # ~5–10 min na 1ª vez; cache nas próximas
-python3 infra/k8s/deploy.py up      # namespace + NPs + Secrets + bot + worker
-python3 infra/k8s/deploy.py test    # cria o Job de prova → DM no Discord
+python3 infra/k8s/deploy.py k8s build   # ~5–10 min na 1ª vez; cache nas próximas
+python3 infra/k8s/deploy.py k8s up      # namespace + NPs + Secrets + bot + worker
+python3 infra/k8s/deploy.py k8s test    # cria o Job de prova → DM no Discord
 ```
 
 Sucesso = DM aparece no Discord (no canal direto entre você e o bot)

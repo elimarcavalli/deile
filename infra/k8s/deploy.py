@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
 """Orquestrador do ciclo de vida do deilebot / DEILE.
 
-Substitui o antigo `run.sh`. Sobe, para, reinicia e inspeciona o bot —
-tanto no modo **container** (Kubernetes) quanto no modo **local** (o bot
-como serviço de segundo plano numa máquina sem k8s).
+Substitui o antigo `run.sh`. Dois alvos, **sempre explícitos no verbo**
+— nunca há adivinhação de qual será atingido:
 
-    python3 infra/k8s/deploy.py help          # lista todos os comandos
-    python3 infra/k8s/deploy.py doctor        # diagnostica os pré-requisitos
-    python3 infra/k8s/deploy.py up            # sobe a stack no Kubernetes
-    python3 infra/k8s/deploy.py stop          # fecha o bot
-    python3 infra/k8s/deploy.py reset         # reset completo
+    python3 infra/k8s/deploy.py                 # menu interativo (detecta o estado)
+    python3 infra/k8s/deploy.py k8s   <ação>    # stack no Kubernetes
+    python3 infra/k8s/deploy.py local <ação>    # bot como serviço no host (sem k8s)
+    python3 infra/k8s/deploy.py doctor          # checa os pré-requisitos
+    python3 infra/k8s/deploy.py help            # lista tudo
 
-O alvo (local/container) vem de `.deile/deploy.json` (gravado pelo
-`deilebot setup`); use `--target local|container` para forçar.
+Cada comando que ALTERA algo imprime um **plano** antes de executar; use
+`--dry-run` para só ver o plano sem rodar nada. Comandos de inspeção
+(`status`, `logs`) não têm plano — eles são a própria inspeção.
 
-Antes de qualquer operação de container, os pré-requisitos são checados;
-se faltar Kubernetes, o `setup_environment.py` é oferecido.
+`k8s` cobre a stack inteira (namespace, Secrets, Deployments, Job, shell).
+`local` roda só o bot como serviço de segundo plano (systemd/launchd/pidfile).
+Antes de qualquer operação de container os pré-requisitos são checados; se
+faltar Kubernetes, o `setup_environment.py` é oferecido.
+
+Compat: comandos antigos (`up`, `build`, `start`, ...) ainda funcionam, mas
+avisam a forma nova. `reset` foi removido (use `k8s down`+`k8s up` ou
+`local restart`).
 """
 
 from __future__ import annotations
@@ -46,7 +52,7 @@ SETUP_ENV = _INFRA / "setup_environment.py"
 NS = "deile"
 IMAGE = "deile-stack:local"
 LLM_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY")
-K8S_DEPLOYMENTS = ("deilebot", "deile-worker", "deile-shell")
+K8S_DEPLOYMENTS = ("deilebot", "deile-worker", "deile-shell", "deile-pipeline")
 
 
 # ===== helpers ===============================================================
@@ -102,7 +108,7 @@ def read_env() -> Dict[str, str]:
 
 
 def read_deploy_target() -> Optional[str]:
-    """Lê o alvo gravado pelo wizard em `.deile/deploy.json`."""
+    """Lê o alvo gravado pelo wizard em `.deile/deploy.json` (só informativo)."""
     try:
         data = json.loads(DEPLOY_STATE.read_text(encoding="utf-8"))
         target = data.get("target")
@@ -142,20 +148,24 @@ def namespace_exists() -> bool:
     ) == 0
 
 
-def resolve_target(requested: Optional[str]) -> Optional[str]:
-    """--target > .deile/deploy.json > auto-detecção."""
-    if requested in ("local", "container"):
-        return requested
-    saved = read_deploy_target()
-    if saved:
-        return saved
-    if namespace_exists():
-        return "container"
-    svc = LocalService(ROOT)
-    running, _ = svc.status()
-    if running:
-        return "local"
-    return None
+# ===== plano (prévia do que vai acontecer) ===================================
+
+def announce_plan(args: dict, title: str, target_desc: str, steps: List[str]) -> bool:
+    """Imprime o plano de uma ação que ALTERA estado, antes de executar.
+
+    Devolve ``True`` se a execução deve seguir, ``False`` quando ``--dry-run``
+    está ligado (o chamador deve então retornar 0 sem fazer nada). Comandos de
+    inspeção (status/logs) não chamam isto — eles são a própria inspeção.
+    """
+    ui.section(f"Plano: {title}")
+    ui.info(f"alvo: {target_desc}")
+    for i, msg in enumerate(steps, 1):
+        ui.step(i, len(steps), msg)
+    ui.plain()
+    if args.get("dry_run"):
+        ui.warn("--dry-run: nada foi executado.")
+        return False
+    return True
 
 
 # ===== pré-requisitos ========================================================
@@ -181,7 +191,7 @@ def ensure_container_prereqs(yes: bool) -> bool:
     return True
 
 
-# ===== comandos de container =================================================
+# ===== k8s: build ============================================================
 
 def _image_build_cmd() -> Optional[List[str]]:
     """Monta o comando de build conforme o runtime de container disponível."""
@@ -201,8 +211,28 @@ def _image_build_cmd() -> Optional[List[str]]:
     return None
 
 
-def cmd_build(args: dict) -> int:
-    ui.section("Build da imagem")
+def _rollout_restart_all() -> None:
+    """Reinicia os deployments existentes para pegarem a nova imagem."""
+    kubectl = _kubectl()
+    if kubectl is None:
+        return
+    for dep in K8S_DEPLOYMENTS:
+        if _run([kubectl, "-n", NS, "get", "deployment", dep],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
+            ui.info(f"reiniciando deployment/{dep} para pegar a nova imagem")
+            _run([kubectl, "-n", NS, "rollout", "restart", f"deployment/{dep}"],
+                 stdout=subprocess.DEVNULL)
+
+
+def k8s_build(args: dict) -> int:
+    restart = bool(args.get("restart"))
+    steps = [f"build da imagem {IMAGE} (nerdctl/colima/docker)"]
+    if restart:
+        steps.append("rollout restart dos deployments existentes")
+    else:
+        steps.append("NÃO reinicia os pods (use --restart, ou `k8s restart`)")
+    if not announce_plan(args, "k8s build", f"imagem {IMAGE}", steps):
+        return 0
     if not ensure_container_prereqs(args["yes"]):
         return 1
     build_cmd = _image_build_cmd()
@@ -216,16 +246,15 @@ def cmd_build(args: dict) -> int:
         return 1
     ui.ok("imagem construída.")
     # imagePullPolicy: Never → um rebuild só vale após reiniciar os pods.
-    kubectl = _kubectl()
-    for dep in K8S_DEPLOYMENTS:
-        if kubectl and _run([kubectl, "-n", NS, "get", "deployment", dep],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL) == 0:
-            ui.info(f"reiniciando deployment/{dep} para pegar a nova imagem")
-            _run([kubectl, "-n", NS, "rollout", "restart", f"deployment/{dep}"],
-                 stdout=subprocess.DEVNULL)
+    if restart:
+        _rollout_restart_all()
+    else:
+        ui.info("imagem pronta; rode `k8s restart` (ou `k8s build --restart`) "
+                "para os pods pegarem a nova imagem.")
     return 0
 
+
+# ===== k8s: up / down ========================================================
 
 def _apply_secret(kubectl: str, name: str, kv: Dict[str, str]) -> bool:
     """Cria/atualiza um Secret a partir de pares chave=valor.
@@ -261,8 +290,17 @@ def _apply_secret(kubectl: str, name: str, kv: Dict[str, str]) -> bool:
             pass
 
 
-def cmd_up(args: dict) -> int:
-    ui.section("Subir a stack (Kubernetes)")
+def k8s_up(args: dict) -> int:
+    if not announce_plan(
+        args, "k8s up", f"Kubernetes (namespace `{NS}`)",
+        [
+            "aplica namespace + network policies",
+            "cria/atualiza os Secrets (bot, deile, worker) — nada é impresso",
+            "aplica ConfigMap, PVCs, Deployments e Services",
+            "aguarda os pods ficarem prontos (até 180s cada)",
+        ],
+    ):
+        return 0
     if not ensure_container_prereqs(args["yes"]):
         return 1
     kubectl = _kubectl()
@@ -307,7 +345,8 @@ def cmd_up(args: dict) -> int:
     ui.info("aplicando ConfigMap, PVCs, Deployments e Services")
     for manifest in ("15-bot-config.yaml", "19-bot-data-pvc.yaml",
                      "20-bot-deployment.yaml", "35-deile-interactive.yaml",
-                     "41-worker-pvc.yaml", "45-deile-worker-deployment.yaml"):
+                     "41-worker-pvc.yaml", "45-deile-worker-deployment.yaml",
+                     "46-deile-pipeline-deployment.yaml"):
         _run([kubectl, "apply", "-f", str(MANIFESTS / manifest)])
 
     for dep in K8S_DEPLOYMENTS:
@@ -325,14 +364,18 @@ def cmd_up(args: dict) -> int:
     return 0
 
 
-def cmd_down(args: dict) -> int:
-    ui.section("Teardown completo (Kubernetes)")
+def k8s_down(args: dict) -> int:
     kubectl = _kubectl()
     if kubectl is None:
         ui.err("kubectl não encontrado.")
         return 1
-    ui.warn(f"isto APAGA o namespace `{NS}` inteiro: pods, Secrets, PVCs e os "
-            "dados persistidos (histórico, cron, sessões).")
+    if not announce_plan(
+        args, "k8s down", f"Kubernetes (namespace `{NS}`)",
+        [f"DELETA o namespace `{NS}` inteiro: pods, Secrets, PVCs e "
+         "TODOS os dados (histórico, cron, sessões)"],
+    ):
+        return 0
+    ui.warn("isto é destrutivo e NÃO tem volta.")
     if not args["yes"] and not ui.confirm("Confirmar o teardown?", default=False):
         ui.info("Cancelado.")
         return 1
@@ -342,12 +385,103 @@ def cmd_down(args: dict) -> int:
     return rc
 
 
-def cmd_test(args: dict) -> int:
-    ui.section("Job one-shot do DEILE")
+# ===== k8s: ciclo de vida (scale / rollout) ==================================
+
+def k8s_start(args: dict) -> int:
+    kubectl = _kubectl()
+    if kubectl is None or not namespace_exists():
+        ui.err(f"namespace `{NS}` ausente — rode `deploy.py k8s up` primeiro.")
+        return 1
+    if not announce_plan(
+        args, "k8s start", f"Kubernetes (namespace `{NS}`)",
+        ["religa os deployments (scale → 1): " + ", ".join(K8S_DEPLOYMENTS)],
+    ):
+        return 0
+    for dep in K8S_DEPLOYMENTS:
+        _run([kubectl, "-n", NS, "scale", f"deployment/{dep}", "--replicas=1"],
+             stdout=subprocess.DEVNULL)
+    ui.ok("deployments religados (scale → 1).")
+    return 0
+
+
+def k8s_stop(args: dict) -> int:
+    kubectl = _kubectl()
+    if kubectl is None or not namespace_exists():
+        ui.warn("nada para parar (namespace ausente).")
+        return 0
+    if not announce_plan(
+        args, "k8s stop", f"Kubernetes (namespace `{NS}`)",
+        ["escala os deployments para 0 (os dados e os Secrets ficam intactos)"],
+    ):
+        return 0
+    for dep in K8S_DEPLOYMENTS:
+        _run([kubectl, "-n", NS, "scale", f"deployment/{dep}", "--replicas=0"],
+             stdout=subprocess.DEVNULL)
+    ui.ok("bot parado (scale → 0).")
+    return 0
+
+
+def k8s_restart(args: dict) -> int:
+    kubectl = _kubectl()
+    if kubectl is None or not namespace_exists():
+        ui.err(f"namespace `{NS}` ausente — rode `deploy.py k8s up`.")
+        return 1
+    if not announce_plan(
+        args, "k8s restart", f"Kubernetes (namespace `{NS}`)",
+        ["rollout restart dos deployments: " + ", ".join(K8S_DEPLOYMENTS)],
+    ):
+        return 0
+    for dep in K8S_DEPLOYMENTS:
+        _run([kubectl, "-n", NS, "rollout", "restart", f"deployment/{dep}"],
+             stdout=subprocess.DEVNULL)
+    ui.ok("rollout restart disparado.")
+    return 0
+
+
+def k8s_status(args: dict) -> int:
+    ui.section("Status — Kubernetes")
+    kubectl = _kubectl()
+    if kubectl is None:
+        ui.err("kubectl não encontrado.")
+        return 1
+    if not namespace_exists():
+        ui.warn(f"namespace `{NS}` ausente — a stack não está no ar.")
+        ui.info("Rode `deploy.py k8s up` para subir.")
+        return 0
+    _run([kubectl, "-n", NS, "get", "pods,deployments,services"])
+    return 0
+
+
+def k8s_logs(args: dict) -> int:
+    ui.section("Logs — Kubernetes")
+    kubectl = _kubectl()
+    if kubectl is None or not namespace_exists():
+        ui.err(f"namespace `{NS}` ausente.")
+        return 1
+    alias = {"bot": "deilebot", "worker": "deile-worker", "shell": "deile-shell"}
+    which_pod = args["extra"][0] if args["extra"] else "all"
+    deps = ["deilebot", "deile-worker"] if which_pod == "all" \
+        else [alias.get(which_pod, which_pod)]
+    for dep in deps:
+        ui.info(f"logs de {dep} (tail 80):")
+        _run([kubectl, "-n", NS, "logs", f"deploy/{dep}", "--tail=80"])
+    return 0
+
+
+# ===== k8s: test (Job one-shot) ==============================================
+
+def k8s_test(args: dict) -> int:
     kubectl = _kubectl()
     if kubectl is None or not cluster_reachable():
         ui.err("cluster Kubernetes inacessível.")
         return 1
+    if not announce_plan(
+        args, "k8s test", f"Kubernetes (namespace `{NS}`)",
+        ["remove um Job deile-oneshot anterior (se houver)",
+         "aplica o manifest 30-deile-job.yaml (prompt fixo)",
+         "streama os logs do pod do Job"],
+    ):
+        return 0
     _run([kubectl, "-n", NS, "delete", "job", "deile-oneshot", "--ignore-not-found"],
          stdout=subprocess.DEVNULL)
     _run([kubectl, "apply", "-f", str(MANIFESTS / "30-deile-job.yaml")])
@@ -369,6 +503,8 @@ def cmd_test(args: dict) -> int:
     _run([kubectl, "-n", NS, "logs", "--pod-running-timeout=120s", "-f", pod])
     return 0
 
+
+# ===== k8s: clone ============================================================
 
 _CLONE_SNIPPET = r'''
 import os, subprocess, sys
@@ -409,16 +545,25 @@ sys.exit(result.returncode)
 '''
 
 
-def cmd_clone(args: dict) -> int:
-    ui.section("Clonar repositório no deile-shell")
+def k8s_clone(args: dict) -> int:
     if not args["extra"]:
-        ui.err("uso: deploy.py clone <owner/repo>")
+        ui.err("uso: deploy.py k8s clone <owner/repo>")
         return 1
     repo = args["extra"][0]
     kubectl = _kubectl()
     if kubectl is None or not namespace_exists():
-        ui.err("namespace não encontrado — rode `up` primeiro.")
+        ui.err("namespace não encontrado — rode `deploy.py k8s up` primeiro.")
         return 1
+    name = repo.rstrip("/").split("/")[-1]
+    clone_url = f"https://github.com/{repo}.git"
+    work_dir = f"/home/deile/work/{name}"
+    if not announce_plan(
+        args, "k8s clone", "Kubernetes (deile-shell)",
+        ["injeta o GITHUB_TOKEN no Secret deile-secrets",
+         "aguarda o kubelet sincronizar o token no pod (até 90s)",
+         f"clona {clone_url} → {work_dir} (via guard ~/bin/git, fail-closed)"],
+    ):
+        return 0
     env = read_env()
     github_token = env.get("GITHUB_TOKEN", "").strip()
     if not github_token:
@@ -427,7 +572,7 @@ def cmd_clone(args: dict) -> int:
     llm = {k: env[k] for k in LLM_KEYS if env.get(k, "").strip()}
     bearer = env.get("DEILE_BOT_AUTH_TOKEN", "").strip()
     if not bearer:
-        ui.err("DEILE_BOT_AUTH_TOKEN ausente — rode `up` primeiro.")
+        ui.err("DEILE_BOT_AUTH_TOKEN ausente — rode `deploy.py k8s up` primeiro.")
         return 1
 
     ui.info("injetando o GITHUB_TOKEN no Secret deile-secrets")
@@ -450,9 +595,6 @@ def cmd_clone(args: dict) -> int:
         ui.err("o token não sincronizou no pod em 90s.")
         return 1
 
-    name = repo.rstrip("/").split("/")[-1]
-    clone_url = f"https://github.com/{repo}.git"
-    work_dir = f"/home/deile/work/{name}"
     ui.info(f"clonando {clone_url} → {work_dir}")
     rc = _run([kubectl, "-n", NS, "exec", "deploy/deile-shell", "--",
                "python3", "-c", _CLONE_SNIPPET, clone_url, work_dir])
@@ -461,196 +603,220 @@ def cmd_clone(args: dict) -> int:
     return rc
 
 
-# ===== ciclo de vida (sensível ao modo) ======================================
+# ===== local: bot como serviço no host =======================================
 
-def cmd_start(args: dict) -> int:
-    target = resolve_target(args["target"])
-    ui.section("Iniciar")
-    if target == "local":
-        return 0 if LocalService(ROOT).start() else 1
-    if target == "container":
-        kubectl = _kubectl()
-        if kubectl and namespace_exists():
-            ui.info("religando os deployments (scale → 1)")
-            for dep in K8S_DEPLOYMENTS:
-                _run([kubectl, "-n", NS, "scale", f"deployment/{dep}",
-                      "--replicas=1"], stdout=subprocess.DEVNULL)
-            ui.ok("deployments religados.")
-            return 0
-        return cmd_up(args)
-    ui.err("alvo indefinido — rode `deilebot setup` ou use --target local|container.")
-    return 1
-
-
-def cmd_stop(args: dict) -> int:
-    target = resolve_target(args["target"])
-    ui.section("Parar (fechar o bot)")
-    if target == "local":
-        return 0 if LocalService(ROOT).stop() else 1
-    if target == "container":
-        kubectl = _kubectl()
-        if kubectl is None or not namespace_exists():
-            ui.warn("nada para parar (namespace ausente).")
-            return 0
-        ui.info("escalando os deployments para 0 (dados e Secrets ficam)")
-        for dep in K8S_DEPLOYMENTS:
-            _run([kubectl, "-n", NS, "scale", f"deployment/{dep}",
-                  "--replicas=0"], stdout=subprocess.DEVNULL)
-        ui.ok("bot parado.")
+def local_start(args: dict) -> int:
+    svc = LocalService(ROOT)
+    if not announce_plan(
+        args, "local start", f"host (serviço {svc.backend})",
+        [f"instala/atualiza a unidade de serviço ({svc.backend})",
+         "inicia o bot: python3 -m deilebot run --provider discord"],
+    ):
         return 0
-    ui.err("alvo indefinido — use --target local|container.")
-    return 1
+    return 0 if svc.start() else 1
 
 
-def cmd_restart(args: dict) -> int:
-    target = resolve_target(args["target"])
-    ui.section("Reiniciar")
-    if target == "local":
-        return 0 if LocalService(ROOT).restart() else 1
-    if target == "container":
-        kubectl = _kubectl()
-        if kubectl is None or not namespace_exists():
-            ui.err("namespace ausente — rode `up`.")
-            return 1
-        for dep in K8S_DEPLOYMENTS:
-            _run([kubectl, "-n", NS, "rollout", "restart", f"deployment/{dep}"],
-                 stdout=subprocess.DEVNULL)
-        ui.ok("rollout restart disparado.")
+def local_stop(args: dict) -> int:
+    svc = LocalService(ROOT)
+    if not announce_plan(
+        args, "local stop", f"host (serviço {svc.backend})",
+        ["para o bot e desabilita a unidade de serviço"],
+    ):
         return 0
-    ui.err("alvo indefinido — use --target local|container.")
-    return 1
+    return 0 if svc.stop() else 1
 
 
-def cmd_status(args: dict) -> int:
-    target = resolve_target(args["target"])
-    ui.section("Status")
-    if target == "local":
-        running, detail = LocalService(ROOT).status()
-        (ui.ok if running else ui.warn)(detail)
+def local_restart(args: dict) -> int:
+    svc = LocalService(ROOT)
+    if not announce_plan(
+        args, "local restart", f"host (serviço {svc.backend})",
+        ["para o bot (se rodando)", "sobe o bot de novo"],
+    ):
         return 0
-    if target == "container":
-        kubectl = _kubectl()
-        if kubectl is None:
-            ui.err("kubectl não encontrado.")
-            return 1
-        if not namespace_exists():
-            ui.warn("namespace ausente — a stack não está no ar.")
-            return 0
-        _run([kubectl, "-n", NS, "get", "pods,deployments,services"])
-        return 0
-    ui.warn("nenhum alvo detectado — nada parece estar configurado ainda.")
-    ui.info("Rode `deilebot setup` para configurar.")
+    return 0 if svc.restart() else 1
+
+
+def local_status(args: dict) -> int:
+    ui.section("Status — local (host)")
+    running, detail = LocalService(ROOT).status()
+    (ui.ok if running else ui.warn)(detail)
     return 0
 
 
-def cmd_logs(args: dict) -> int:
-    target = resolve_target(args["target"])
-    ui.section("Logs")
-    if target == "local":
-        if args["extra"]:
-            ui.warn(f"filtro `{args['extra'][0]}` ignorado — no modo local "
-                    "só existe o bot.")
-        LocalService(ROOT).logs()
-        return 0
-    if target == "container":
-        kubectl = _kubectl()
-        if kubectl is None or not namespace_exists():
-            ui.err("namespace ausente.")
-            return 1
-        alias = {"bot": "deilebot", "worker": "deile-worker",
-                 "shell": "deile-shell"}
-        which_pod = args["extra"][0] if args["extra"] else "all"
-        if which_pod == "all":
-            deps = ["deilebot", "deile-worker"]
-        else:
-            deps = [alias.get(which_pod, which_pod)]
-        for dep in deps:
-            ui.info(f"logs de {dep} (tail 80):")
-            _run([kubectl, "-n", NS, "logs", f"deploy/{dep}", "--tail=80"])
-        return 0
-    ui.err("alvo indefinido — use --target local|container.")
-    return 1
+def local_logs(args: dict) -> int:
+    ui.section("Logs — local (host)")
+    if args["extra"]:
+        ui.warn(f"filtro `{args['extra'][0]}` ignorado — no modo local só existe o bot.")
+    LocalService(ROOT).logs()
+    return 0
 
 
-def cmd_reset(args: dict) -> int:
-    target = resolve_target(args["target"])
-    ui.section("Reset completo")
-    if target == "local":
-        svc = LocalService(ROOT)
-        svc.stop()
-        return 0 if svc.start() else 1
-    if target == "container":
-        ui.warn("o reset apaga e recria a stack no Kubernetes.")
-        if not args["yes"] and not ui.confirm("Confirmar o reset?", default=False):
-            ui.info("Cancelado.")
-            return 1
-        if args["rebuild"]:
-            if cmd_build(args) != 0:
-                return 1
-        cmd_down({**args, "yes": True})
-        return cmd_up(args)
-    ui.err("alvo indefinido — use --target local|container.")
-    return 1
-
-
-# ===== doctor / help =========================================================
+# ===== doctor / help / menu ==================================================
 
 def cmd_doctor(args: dict) -> int:
     ui.section("Diagnóstico do ambiente")
     if not SETUP_ENV.is_file():
         ui.err(f"instalador de ambiente não encontrado em {SETUP_ENV}")
         return 1
-    target = resolve_target(args["target"]) or "local"
-    return _run([sys.executable, str(SETUP_ENV), "--check", "--mode", target])
+    # `doctor` (ou `k8s doctor`) checa container; `local doctor` checa o host.
+    mode = "local" if args.get("namespace") == "local" else "container"
+    ui.info(f"checando pré-requisitos do modo: {mode}")
+    return _run([sys.executable, str(SETUP_ENV), "--check", "--mode", mode])
+
+
+def _k8s_state_label() -> str:
+    """Rótulo curto do estado do k8s para o menu/diagnóstico."""
+    if _kubectl() is None:
+        return "kubectl não encontrado"
+    if not cluster_reachable():
+        return "cluster inacessível"
+    if not namespace_exists():
+        return "namespace ausente (não provisionado)"
+    pods = _capture([_kubectl(), "-n", NS, "get", "pods", "--no-headers"]) or ""
+    n = len([ln for ln in pods.splitlines() if ln.strip()])
+    return f"no ar ({n} pod(s))" if n else "provisionado, 0 pods (parado)"
+
+
+_K8S = {
+    "up": k8s_up, "down": k8s_down, "start": k8s_start, "stop": k8s_stop,
+    "restart": k8s_restart, "status": k8s_status, "logs": k8s_logs,
+    "build": k8s_build, "test": k8s_test, "clone": k8s_clone,
+    "doctor": cmd_doctor,
+}
+_LOCAL = {
+    "start": local_start, "stop": local_stop, "restart": local_restart,
+    "status": local_status, "logs": local_logs, "doctor": cmd_doctor,
+}
+
+# (ação, descrição) — usado no help E no menu interativo. `clone` fica fora do
+# menu por exigir um argumento <owner/repo>.
+_K8S_ACTIONS = [
+    ("status", "ver pods, deployments e services"),
+    ("up", "provisionar / atualizar a stack (idempotente)"),
+    ("build", "rebuildar a imagem (--restart religa os pods)"),
+    ("restart", "rollout restart dos deployments"),
+    ("start", "religar (scale → 1)"),
+    ("stop", "pausar (scale → 0; mantém dados e Secrets)"),
+    ("logs", "logs recentes (bot + worker)"),
+    ("test", "rodar o Job one-shot deile-oneshot"),
+    ("clone", "clone <owner/repo> — clona um repo no deile-shell"),
+    ("down", "APAGAR o namespace e TODOS os dados"),
+]
+_LOCAL_ACTIONS = [
+    ("status", "ver se o bot está rodando"),
+    ("start", "subir o bot como serviço (systemd/launchd/pidfile)"),
+    ("restart", "reiniciar o bot"),
+    ("stop", "parar o bot"),
+    ("logs", "logs recentes do bot"),
+]
 
 
 def cmd_help(_args: dict) -> int:
     ui.header("deploy.py — orquestrador do deilebot / DEILE")
-    ui.section("Ciclo de vida (modo local ou container)")
+    ui.section("Uso")
     ui.command_table([
-        ("start", "Sobe / religa o bot."),
-        ("stop", "Fecha o bot (mantém dados e configuração)."),
-        ("restart", "Reinicia o bot."),
-        ("status", "Mostra o estado atual."),
-        ("logs", "Mostra os logs recentes."),
-        ("reset", "Reset completo (--rebuild rebuilda a imagem)."),
+        ("deploy.py", "menu interativo (detecta o estado de cada alvo)"),
+        ("deploy.py k8s <ação>", "opera a stack no Kubernetes"),
+        ("deploy.py local <ação>", "opera o bot como serviço no host (sem k8s)"),
+        ("deploy.py doctor", "checa os pré-requisitos da máquina"),
+        ("deploy.py --dry-run k8s <ação>", "mostra o plano e sai, sem executar"),
     ])
-    ui.section("Modo container (Kubernetes)")
+    ui.section("k8s — stack no Kubernetes")
+    ui.command_table(_K8S_ACTIONS)
+    ui.section("local — bot como serviço no host (sem k8s)")
+    ui.command_table(_LOCAL_ACTIONS)
+    ui.section("Flags")
     ui.command_table([
-        ("build", "Builda a imagem deile-stack:local."),
-        ("up", "Sobe a stack do zero (namespace, Secrets, deployments)."),
-        ("down", "Teardown completo — apaga o namespace e os dados."),
-        ("test", "Roda o Job one-shot do DEILE."),
-        ("clone", "clone <owner/repo> — clona um repo no deile-shell."),
+        ("--dry-run", "mostra o plano e sai (só nos comandos que alteram algo)"),
+        ("--restart", "no `k8s build`, religa os deployments após o build"),
+        ("--yes / -y", "não pergunta nada (não-interativo)"),
+        ("--no-color", "desliga as cores"),
     ])
-    ui.section("Ambiente e ajuda")
-    ui.command_table([
-        ("doctor", "Diagnostica os pré-requisitos da máquina."),
-        ("help", "Mostra esta ajuda."),
-    ])
-    ui.section("Opções globais")
-    ui.command_table([
-        ("--target local|container", "Força o alvo (senão usa .deile/deploy.json)."),
-        ("--yes", "Não pergunta nada (não-interativo)."),
-        ("--rebuild", "No reset, rebuilda a imagem antes."),
-        ("--no-color", "Desliga as cores."),
-    ])
+    saved = read_deploy_target()
+    if saved:
+        ui.section("Setup")
+        nice = "k8s" if saved == "container" else "local"
+        ui.info(f"seu `deilebot setup` configurou o alvo: {nice}")
     ui.plain()
     return 0
 
 
-_COMMANDS = {
-    "help": cmd_help, "doctor": cmd_doctor,
-    "build": cmd_build, "up": cmd_up, "down": cmd_down,
-    "test": cmd_test, "clone": cmd_clone,
-    "start": cmd_start, "stop": cmd_stop, "restart": cmd_restart,
-    "status": cmd_status, "logs": cmd_logs, "reset": cmd_reset,
-}
+def _run_action(namespace: str, action: str, args: dict) -> int:
+    table = _K8S if namespace == "k8s" else _LOCAL
+    handler = table.get(action)
+    if handler is None:
+        ui.err(f"ação desconhecida para `{namespace}`: {action}")
+        ui.info(f"Ações de `{namespace}`: " + ", ".join(
+            a for a, _ in (_K8S_ACTIONS if namespace == "k8s" else _LOCAL_ACTIONS)))
+        return 64
+    args["namespace"] = namespace
+    return handler(args)
 
+
+def cmd_menu(args: dict, preset_ns: Optional[str] = None) -> int:
+    """Menu interativo: detecta o estado, pergunta o alvo e a ação."""
+    if not sys.stdin.isatty():
+        ui.warn("sem terminal interativo — mostrando a ajuda.")
+        return cmd_help(args)
+    ui.header("deploy.py — deilebot / DEILE")
+    k8s_label = _k8s_state_label()
+    _, local_detail = LocalService(ROOT).status()
+    ui.section("Estado atual")
+    ui.info(f"k8s:   {k8s_label}")
+    ui.info(f"local: {local_detail}")
+
+    namespace = preset_ns
+    if namespace is None:
+        namespace = ui.choose("Qual alvo?", [
+            ("k8s", k8s_label),
+            ("local", local_detail),
+        ])
+    actions = _K8S_ACTIONS if namespace == "k8s" else _LOCAL_ACTIONS
+    # `clone` precisa de argumento — fora do menu.
+    menu_actions = [(a, d) for a, d in actions if a != "clone"]
+    ui.section(f"Ações — {namespace}")
+    action = ui.choose("Qual ação?", menu_actions)
+    return _run_action(namespace, action, args)
+
+
+# ===== compat com a CLI antiga ===============================================
+
+_OLD_CONTAINER = {"up", "down", "build", "test", "clone"}   # eram sempre k8s
+_OLD_LIFECYCLE = {"start", "stop", "restart", "status", "logs"}  # exigiam alvo
+
+
+def _handle_legacy(args: dict, positionals: List[str]) -> int:
+    cmd = positionals[0]
+    args["extra"] = positionals[1:]
+    if cmd in _OLD_CONTAINER:
+        ui.warn(f"`deploy.py {cmd}` agora é `deploy.py k8s {cmd}` — rodando isso.")
+        return _run_action("k8s", cmd, args)
+    if cmd == "reset":
+        ui.err("`reset` foi removido (era ambíguo). Use:")
+        ui.info("  k8s:   `deploy.py k8s down` e depois `deploy.py k8s up`")
+        ui.info("  local: `deploy.py local restart`")
+        return 64
+    if cmd in _OLD_LIFECYCLE:
+        ns = {"local": "local", "container": "k8s"}.get(args.get("target") or "")
+        if ns:
+            ui.warn(f"`deploy.py {cmd} --target {args['target']}` agora é "
+                    f"`deploy.py {ns} {cmd}` — rodando isso.")
+            return _run_action(ns, cmd, args)
+        ui.err(f"`{cmd}` agora exige o alvo no verbo:")
+        ui.info(f"  `deploy.py k8s {cmd}`   (stack no Kubernetes)")
+        ui.info(f"  `deploy.py local {cmd}` (bot como serviço no host)")
+        return 64
+    ui.err(f"comando desconhecido: {cmd}")
+    ui.info("Rode `deploy.py help` para ver os comandos.")
+    return 64
+
+
+# ===== parsing / main ========================================================
 
 def parse_args(argv: List[str]) -> dict:
-    args = {"command": None, "target": None, "yes": False,
-            "no_color": False, "rebuild": False, "extra": []}
+    args = {"target": None, "yes": False, "no_color": False,
+            "dry_run": False, "restart": False, "extra": [],
+            "namespace": None, "positionals": []}
     positionals: List[str] = []
     i = 0
     while i < len(argv):
@@ -663,16 +829,18 @@ def parse_args(argv: List[str]) -> dict:
             args["yes"] = True
         elif a == "--no-color":
             args["no_color"] = True
-        elif a == "--rebuild":
-            args["rebuild"] = True
+        elif a == "--dry-run":
+            args["dry_run"] = True
+        elif a == "--restart":
+            args["restart"] = True
+        elif a == "--no-restart":
+            args["restart"] = False
         elif a in ("-h", "--help"):
-            args["command"] = "help"
+            positionals.append("help")
         else:
             positionals.append(a)
         i += 1
-    if args["command"] is None:
-        args["command"] = positionals[0] if positionals else "help"
-    args["extra"] = positionals[1:]
+    args["positionals"] = positionals
     return args
 
 
@@ -680,13 +848,22 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parse_args(list(argv if argv is not None else sys.argv[1:]))
     if args["no_color"]:
         ui.set_color(False)
-    handler = _COMMANDS.get(args["command"])
-    if handler is None:
-        ui.err(f"comando desconhecido: {args['command']}")
-        ui.info("Rode `deploy.py help` para ver os comandos.")
-        return 64
+    pos = args["positionals"]
     try:
-        return handler(args)
+        if not pos:
+            return cmd_menu(args)
+        head = pos[0]
+        if head == "help":
+            return cmd_help(args)
+        if head == "doctor":
+            return cmd_doctor(args)
+        if head in ("k8s", "local"):
+            if len(pos) < 2:
+                # `deploy.py k8s` sem ação → menu já filtrado nesse alvo.
+                return cmd_menu(args, preset_ns=head)
+            args["extra"] = pos[2:]
+            return _run_action(head, pos[1], args)
+        return _handle_legacy(args, pos)
     except KeyboardInterrupt:
         ui.plain()
         ui.warn("interrompido.")

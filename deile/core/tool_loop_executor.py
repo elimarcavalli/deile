@@ -35,6 +35,27 @@ logger = logging.getLogger(__name__)
 MAX_TOOL_ITERATIONS = DEFAULT_MAX_TOOL_ITERATIONS
 
 
+def _resolve_max_iterations() -> int:
+    """Configured tool-loop cap (settings/env), falling back to the constant.
+
+    Resolved at executor construction so ``DEILE_MAX_TOOL_ITERATIONS`` /
+    settings.json ``agent.max_tool_iterations`` take effect without a code
+    change. Config must never break the loop — any failure falls back to the
+    module constant.
+    """
+    try:
+        from deile.config.settings import get_settings
+        value = int(getattr(get_settings(), "max_tool_iterations", MAX_TOOL_ITERATIONS))
+        return value if value > 0 else MAX_TOOL_ITERATIONS
+    except Exception:  # noqa: BLE001 — config errors must not disable tool use
+        logger.debug(
+            "max_tool_iterations config unavailable; using default %d",
+            MAX_TOOL_ITERATIONS,
+            exc_info=True,
+        )
+        return MAX_TOOL_ITERATIONS
+
+
 class ToolLoopExecutor:
     """Run a multi-iteration tool-use loop against any provider.
 
@@ -52,12 +73,16 @@ class ToolLoopExecutor:
     def __init__(
         self,
         tool_registry: Optional[ToolRegistry] = None,
-        max_iterations: int = MAX_TOOL_ITERATIONS,
+        max_iterations: Optional[int] = None,
         event_publisher: Optional[Any] = None,
         loop_guard: Optional[ToolLoopGuard] = None,
     ) -> None:
         self._tool_registry = tool_registry or get_tool_registry()
-        self._max_iterations = max_iterations
+        # None → resolve from settings (DEILE_MAX_TOOL_ITERATIONS /
+        # agent.max_tool_iterations); an explicit value (e.g. from tests) wins.
+        self._max_iterations = (
+            max_iterations if max_iterations is not None else _resolve_max_iterations()
+        )
         self._event_publisher = event_publisher  # callable: (kind, name, **kw) -> awaitable
         # Each ``run()`` invocation builds its own guard (one per turn). The
         # constructor accepts an explicit guard only so tests can inject a

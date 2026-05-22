@@ -57,6 +57,19 @@ RUN python -m venv /venv \
     && /venv/bin/pip install . \
     && find /venv -type d -name __pycache__ -exec rm -rf {} +
 
+# Test toolchain — baked in so the deile-worker can run a cloned repo's
+# pytest suite at runtime WITHOUT `pip install` (the Pod rootfs is
+# read-only). Versions pinned to match the repo's dev-requirements.txt so
+# the worker's runs mirror CI. Kept to the pytest runner stack (no
+# black/isort/radon/safety/bandit) to limit image growth.
+RUN /venv/bin/pip install \
+        pytest==8.4.2 \
+        pytest-asyncio==1.2.0 \
+        pytest-mock==3.15.1 \
+        pytest-cov==6.3.0 \
+        pytest-xdist==3.8.0 \
+    && find /venv -type d -name __pycache__ -exec rm -rf {} +
+
 # Bug: neither pyproject declares `package-data`, so non-Python files
 # (.sql migrations, .md persona prompts, .yaml configs) get dropped on
 # wheel build. Without these the bot cannot init its sqlite schema and

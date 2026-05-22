@@ -15,13 +15,19 @@ from __future__ import annotations
 # Issue workflow ----------------------------------------------------------
 # Only the states actually transitioned by the pipeline live here.
 # Stage 0 sets ``WORKFLOW_NEW``, Stage 1 transitions to ``WORKFLOW_REVIEWING``
-# and then ``WORKFLOW_REVIEWED``, Stage 2 to ``WORKFLOW_PR``. There is
-# currently no handler that transitions through ``em_implementacao`` or
-# closes to ``concluida`` (the PR is the final state for the issue's
-# perspective), so those labels are intentionally absent.
+# and then ``WORKFLOW_REVIEWED``. Stage 2 *claims* the issue by transitioning
+# ``WORKFLOW_REVIEWED`` → ``WORKFLOW_IMPLEMENTING`` BEFORE doing any work — this
+# is the lock that stops the same issue from being picked up twice (the
+# candidate query only returns ``WORKFLOW_REVIEWED`` issues, so a claimed one
+# drops out of the set) — then moves it to ``WORKFLOW_PR`` on success. An
+# implementation that fails or opens no PR stays parked in
+# ``WORKFLOW_IMPLEMENTING`` (out of every stage's candidate set) until a human
+# moves it back to ``WORKFLOW_REVIEWED``. There is no ``concluida`` close state
+# — the PR is the final state from the issue's perspective — so it is absent.
 WORKFLOW_NEW = "~workflow:nova"
 WORKFLOW_REVIEWING = "~workflow:em_revisao"
 WORKFLOW_REVIEWED = "~workflow:revisada"
+WORKFLOW_IMPLEMENTING = "~workflow:em_implementacao"
 WORKFLOW_PR = "~workflow:em_pr"
 
 # PR workflow -------------------------------------------------------------
@@ -36,6 +42,7 @@ WORKFLOW_LABELS = (
     WORKFLOW_NEW,
     WORKFLOW_REVIEWING,
     WORKFLOW_REVIEWED,
+    WORKFLOW_IMPLEMENTING,
     WORKFLOW_PR,
 )
 
@@ -45,6 +52,7 @@ LABEL_COLORS = {
     WORKFLOW_NEW: "0e8a16",
     WORKFLOW_REVIEWING: "fbca04",
     WORKFLOW_REVIEWED: "5319e7",
+    WORKFLOW_IMPLEMENTING: "fbca04",
     WORKFLOW_PR: "0052cc",
     REVIEW_PENDING: "0e8a16",
     REVIEW_IN_PROGRESS: "fbca04",
@@ -55,6 +63,7 @@ LABEL_DESCRIPTIONS = {
     WORKFLOW_NEW: "Pipeline: issue nova, ainda não revisada",
     WORKFLOW_REVIEWING: "Pipeline: DEILE revisando (lock)",
     WORKFLOW_REVIEWED: "Pipeline: revisada, pronta para implementação",
+    WORKFLOW_IMPLEMENTING: "Pipeline: DEILE implementando (lock)",
     WORKFLOW_PR: "Pipeline: PR aberta",
     REVIEW_PENDING: "Pipeline: PR aguardando revisão",
     REVIEW_IN_PROGRESS: "Pipeline: PR em revisão (lock)",

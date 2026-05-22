@@ -618,28 +618,15 @@ async def _autostart_pipeline(agent) -> None:  # type: ignore[type-arg]
     import logging as _logging
     _log = _logging.getLogger(__name__)
     try:
-        from deile.config.settings import get_settings
-        from deile.orchestration.pipeline.constants import \
-            PIPELINE_DEFAULT_REPO
-        from deile.orchestration.pipeline.monitor import (PipelineConfig,
-                                                          PipelineMonitor)
+        from deile.orchestration.pipeline.monitor import (
+            PipelineMonitor, build_default_pipeline_config)
         from deile.orchestration.pipeline.review_callback import \
             make_review_callback
-        s = get_settings()
-        repo = s.pipeline_repo or PIPELINE_DEFAULT_REPO
-        base_path = s.pipeline_base_path
-        if base_path is None:
-            from pathlib import Path
-            base_path = Path.cwd()
-        cfg = PipelineConfig(
-            repo=repo,
-            base_repo_path=base_path.resolve(),
-            notify_user_id=s.pipeline_notify_user_id,
-        )
+        cfg = build_default_pipeline_config()
         monitor = PipelineMonitor(cfg, review_callback=make_review_callback(agent))
         agent.pipeline_monitor = monitor  # type: ignore[attr-defined]
         await monitor.start()
-        _log.info("pipeline autostarted (repo=%s)", repo)
+        _log.info("pipeline autostarted (repo=%s, dispatch=%s)", cfg.repo, cfg.dispatch_mode)
     except Exception as exc:  # noqa: BLE001 — autostart is best-effort; never abort CLI
         _log.warning("pipeline autostart failed: %s", exc)
 
