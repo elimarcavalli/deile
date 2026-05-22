@@ -59,6 +59,7 @@ class VersionCommand(DirectCommand):
     """``/version`` — exibe versão, build, métricas e ambiente do DEILE."""
 
     cli_flag = "--version"
+    cli_flag_aliases = ["-v"]
     cli_help = "Exibe a versão do DEILE e sai."
     cli_requires_provider = False
 
