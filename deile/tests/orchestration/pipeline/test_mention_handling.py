@@ -6,7 +6,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
-from deile.orchestration.pipeline.github_client import (CommentRef, IssueRef, PrRef)
+from deile.orchestration.pipeline.github_client import (CommentRef, IssueRef,
+                                                        PrRef)
 from deile.orchestration.pipeline.implementer import WorkOutcome
 from deile.orchestration.pipeline.labels import MENTION_DONE, WORKFLOW_NEW
 from deile.orchestration.pipeline.monitor import (PipelineConfig,

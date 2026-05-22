@@ -27,9 +27,7 @@ from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
 from deile.orchestration.pipeline.follow_up_detector import detect_follow_ups
 from deile.orchestration.pipeline.github_client import (CommentRef,
                                                         GhCommandError,
-                                                        IssueRef,
-                                                        MentionTrigger,
-                                                        PrRef)
+                                                        MentionTrigger)
 from deile.orchestration.pipeline.labels import (MENTION_DONE,
                                                  REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
@@ -275,9 +273,39 @@ async def process_mentions(monitor: "PipelineMonitor") -> None:
     """
     handle = monitor.config.mention_handle.lower()
     gh_login = handle.lstrip("@")  # "deile-one"
+
+    triggers = await _collect_mention_triggers(monitor, handle, gh_login)
+    if not triggers:
+        monitor._save_mention_cursor(datetime.now(tz=timezone.utc))
+        return
+
+    # ---- Deduplicate by target ------------------------------------------
+    groups: dict[str, list[MentionTrigger]] = {}
+    for t in triggers:
+        groups.setdefault(t.dedup_key, []).append(t)
+
+    now = datetime.now(tz=timezone.utc)
+    mono = _monotonic()
+    for dedup_key, group in groups.items():
+        await _dispatch_mention_group(monitor, dedup_key, group, gh_login, mono)
+
+    monitor._save_mention_cursor(now)
+
+
+async def _collect_mention_triggers(
+    monitor: "PipelineMonitor", handle: str, gh_login: str
+) -> list["MentionTrigger"]:
+    """Poll all four mention sources and return the raw trigger list.
+
+    Comment mentions are cursor-bounded (only comments newer than the saved
+    cursor fire). The sticky sources (assignee / reviewer / body) carry the
+    target's labels with no timestamp, so any target already marked
+    ``~mention:processado`` is filtered out here — see :func:`process_mentions`
+    for the cross-tick dedup rationale.
+    """
     triggers: list[MentionTrigger] = []
 
-    # ---- 1. Comment mentions (existing cursor-based polling) ------------
+    # ---- 1. Comment mentions (cursor-based polling) ---------------------
     since = monitor._load_mention_cursor()
     try:
         issue_comments = await monitor.github.list_issue_comments_since(since)
@@ -288,57 +316,27 @@ async def process_mentions(monitor: "PipelineMonitor") -> None:
         pr_comments = []
     all_comments: list[CommentRef] = list(issue_comments) + list(pr_comments)
     for ref in all_comments:
-        if handle not in ref.body.lower():
-            continue
-        triggers.append(MentionTrigger(
-            trigger_type="comment",
-            comment=ref,
-        ))
+        if handle in ref.body.lower():
+            triggers.append(MentionTrigger(trigger_type="comment", comment=ref))
 
-    # Sticky triggers below carry the target's labels; skip any already marked
-    # ~mention:processado so a single assignment / review-request / body-mention
-    # is handled once, not re-dispatched on every tick (issue #253 storm).
-    # ---- 2. Assignee triggers -------------------------------------------
-    try:
-        assigned_issues = await monitor.github.list_issues_assigned_to(gh_login)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("mention poll (assigned issues) failed: %s", exc)
-        assigned_issues = []
-    for issue in assigned_issues:
-        if MENTION_DONE in issue.labels:
-            continue
-        triggers.append(MentionTrigger(
-            trigger_type="assignee",
-            issue=issue,
-        ))
-    try:
-        assigned_prs = await monitor.github.list_prs_assigned_to(gh_login)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("mention poll (assigned PRs) failed: %s", exc)
-        assigned_prs = []
-    for pr in assigned_prs:
-        if MENTION_DONE in pr.labels:
-            continue
-        triggers.append(MentionTrigger(
-            trigger_type="assignee",
-            pr=pr,
-        ))
+    # ---- 2-4. Sticky triggers (assignee / reviewer / body) --------------
+    async def _poll(label: str, coro) -> list:
+        try:
+            return list(await coro)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("mention poll (%s) failed: %s", label, exc)
+            return []
 
-    # ---- 3. Review request triggers -------------------------------------
-    try:
-        review_prs = await monitor.github.list_prs_with_review_requests(gh_login)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("mention poll (review requests) failed: %s", exc)
-        review_prs = []
-    for pr in review_prs:
-        if MENTION_DONE in pr.labels:
-            continue
-        triggers.append(MentionTrigger(
-            trigger_type="reviewer",
-            pr=pr,
-        ))
+    for issue in await _poll("assigned issues", monitor.github.list_issues_assigned_to(gh_login)):
+        if MENTION_DONE not in issue.labels:
+            triggers.append(MentionTrigger(trigger_type="assignee", issue=issue))
+    for pr in await _poll("assigned PRs", monitor.github.list_prs_assigned_to(gh_login)):
+        if MENTION_DONE not in pr.labels:
+            triggers.append(MentionTrigger(trigger_type="assignee", pr=pr))
+    for pr in await _poll("review requests", monitor.github.list_prs_with_review_requests(gh_login)):
+        if MENTION_DONE not in pr.labels:
+            triggers.append(MentionTrigger(trigger_type="reviewer", pr=pr))
 
-    # ---- 4. Body mentions -----------------------------------------------
     try:
         body_issues, body_prs = await monitor.github.search_items_mentioning(handle)
     except Exception as exc:  # noqa: BLE001
@@ -346,125 +344,107 @@ async def process_mentions(monitor: "PipelineMonitor") -> None:
         body_issues = []
         body_prs = []
     for issue in body_issues:
-        if MENTION_DONE in issue.labels:
-            continue
-        triggers.append(MentionTrigger(
-            trigger_type="body",
-            issue=issue,
-        ))
+        if MENTION_DONE not in issue.labels:
+            triggers.append(MentionTrigger(trigger_type="body", issue=issue))
     for pr in body_prs:
-        if MENTION_DONE in pr.labels:
-            continue
-        triggers.append(MentionTrigger(
-            trigger_type="body",
-            pr=pr,
-        ))
+        if MENTION_DONE not in pr.labels:
+            triggers.append(MentionTrigger(trigger_type="body", pr=pr))
 
-    if not triggers:
-        monitor._save_mention_cursor(datetime.now(tz=timezone.utc))
+    return triggers
+
+
+async def _dispatch_mention_group(
+    monitor: "PipelineMonitor", dedup_key: str, group: list["MentionTrigger"],
+    gh_login: str, mono: float,
+) -> None:
+    """Route + dispatch one deduplicated mention group.
+
+    The handler is a ROUTER, not a one-shot dispatcher:
+      - issue + assignee/body → inject ~workflow:nova so the normal pipeline
+        takes over (review → implement WITH resume #254 on an auto/issue-N
+        branch → PR → review by the reviewer persona).
+      - PR + assignee → work_merge (quality-gate review + resolve threads +
+        fix + merge).
+      - PR + reviewer (only) → review_only (review + assign author back, NO
+        merge), per operator policy.
+      - PR + comment/body → address (do what was asked + resolve threads).
+      - issue + comment → do what the comment says (one-shot).
+    """
+    trigger_types = sorted(set(t.trigger_type for t in group))
+    primary = group[0]
+    kind = primary.target_kind
+    number = primary.target_number
+    has = set(trigger_types)
+    sticky = bool(has & _STICKY_TRIGGER_TYPES)
+    logger.info("mention group %s: triggers=%s", dedup_key, trigger_types)
+
+    # Issue work → inject into the pipeline (handles its own dispatch).
+    if kind == "issue" and ("assignee" in has or "body" in has):
+        await _route_issue_to_pipeline(monitor, group, number, dedup_key, gh_login)
         return
 
-    # ---- Deduplicate by target ------------------------------------------
-    groups: dict[str, list[MentionTrigger]] = {}
-    for t in triggers:
-        key = t.dedup_key
-        if key not in groups:
-            groups[key] = []
-        groups[key].append(t)
+    # Decide the dispatch mode from the role.
+    if kind == "pr" and "assignee" in has:
+        mode = "work_merge"
+    elif kind == "pr" and "reviewer" in has:
+        mode = "review_only"
+    elif kind == "pr":
+        mode = "address"
+    else:
+        mode = "comment"  # comment mention on an issue
 
-    # ---- Route each group by ROLE (issue #253 follow-up) ----------------
-    # The handler is a ROUTER, not a one-shot dispatcher:
-    #   - issue + assignee/body → inject ~workflow:nova so the normal pipeline
-    #     takes over (review → implement WITH resume #254 on an auto/issue-N
-    #     branch → PR → review by the reviewer persona). Resume+branch+review
-    #     come for free; no parallel resume machine.
-    #   - PR + assignee → work_merge (quality-gate review + resolve threads +
-    #     fix + merge).
-    #   - PR + reviewer (only) → review_only (review + assign author back, NO
-    #     merge), per operator policy.
-    #   - PR + comment/body → address (do what was asked + resolve threads, no
-    #     merge).
-    #   - issue + comment → do what the comment says (one-shot).
-    now = datetime.now(tz=timezone.utc)
-    mono = _monotonic()
-    for dedup_key, group in groups.items():
-        trigger_types = sorted(set(t.trigger_type for t in group))
-        primary = group[0]
-        kind = primary.target_kind
-        number = primary.target_number
-        has = set(trigger_types)
-        sticky = bool(has & _STICKY_TRIGGER_TYPES)
-        logger.info("mention group %s: triggers=%s", dedup_key, trigger_types)
-
-        # Issue work → inject into the pipeline (handles its own dispatch).
-        if kind == "issue" and ("assignee" in has or "body" in has):
-            await _route_issue_to_pipeline(monitor, group, number, dedup_key, gh_login)
-            continue
-
-        # Decide the dispatch mode from the role.
-        if kind == "pr" and "assignee" in has:
-            mode = "work_merge"
-        elif kind == "pr" and "reviewer" in has:
-            mode = "review_only"
-        elif kind == "pr":
-            mode = "address"
-        else:
-            mode = "comment"  # comment mention on an issue
-
-        # Resume + attempt ceiling for STICKY PR work (mirrors implement stage).
-        resume = False
-        if sticky:
-            st = monitor._resume_tracker.get(number)
-            if st.attempt >= monitor.config.resume_max_attempts:
-                logger.warning(
-                    "mention %s: attempt ceiling (%d) reached — marking done",
-                    dedup_key, st.attempt,
-                )
-                await _comment_mention_gave_up(monitor, kind, number, st.attempt)
-                await _mark_mention_done(monitor, kind, number)
-                monitor._resume_tracker.clear(number)
-                continue
-            resume = st.attempt > 0
-            monitor._resume_tracker.record_dispatch(number, mono)
-
-        try:
-            outcome = await monitor.implementer.mention(
-                monitor, primary,
-                trigger_types=trigger_types, all_triggers=group,
-                mode=mode, resume=resume,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("mention dispatch error for %s: %s", dedup_key, exc)
-            continue
-
-        if sticky:
-            # Absorb the worker's ground-truth bookkeeping (attempt/fingerprint)
-            # so the ceiling advances and a stuck loop is bounded.
-            monitor._resume_tracker.update_from_worker(
-                number, fingerprint=outcome.fingerprint,
-                attempt=outcome.tentativa, budget_s=outcome.budget_acumulado_s,
-            )
-
-        if not outcome.ok:
-            # No ~mention:processado → the sticky trigger retries next tick (in
-            # RESUME mode, bounded by the ceiling above). Comment-driven work is
-            # cursor-bounded, so it does not retry.
+    # Resume + attempt ceiling for STICKY PR work (mirrors implement stage).
+    resume = False
+    if sticky:
+        st = monitor._resume_tracker.get(number)
+        if st.attempt >= monitor.config.resume_max_attempts:
             logger.warning(
-                "mention dispatch failed for %s: %s", dedup_key, outcome.error
+                "mention %s: attempt ceiling (%d) reached — marking done",
+                dedup_key, st.attempt,
             )
-            continue
-
-        monitor._stats.mentions_processed += 1
-        if sticky:
+            await _comment_mention_gave_up(monitor, kind, number, st.attempt)
             await _mark_mention_done(monitor, kind, number)
             monitor._resume_tracker.clear(number)
-        author = next((t.comment.author for t in group if t.comment is not None), "")
-        await monitor.notifier.mention_processed(
-            primary.comment.html_url if primary.comment else dedup_key,
-            author or gh_login,
+            return
+        resume = st.attempt > 0
+        monitor._resume_tracker.record_dispatch(number, mono)
+
+    try:
+        outcome = await monitor.implementer.mention(
+            monitor, primary,
+            trigger_types=trigger_types, all_triggers=group,
+            mode=mode, resume=resume,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("mention dispatch error for %s: %s", dedup_key, exc)
+        return
+
+    if sticky:
+        # Absorb the worker's ground-truth bookkeeping (attempt/fingerprint)
+        # so the ceiling advances and a stuck loop is bounded.
+        monitor._resume_tracker.update_from_worker(
+            number, fingerprint=outcome.fingerprint,
+            attempt=outcome.tentativa, budget_s=outcome.budget_acumulado_s,
         )
 
-    monitor._save_mention_cursor(now)
+    if not outcome.ok:
+        # No ~mention:processado → the sticky trigger retries next tick (in
+        # RESUME mode, bounded by the ceiling above). Comment-driven work is
+        # cursor-bounded, so it does not retry.
+        logger.warning(
+            "mention dispatch failed for %s: %s", dedup_key, outcome.error
+        )
+        return
+
+    monitor._stats.mentions_processed += 1
+    if sticky:
+        await _mark_mention_done(monitor, kind, number)
+        monitor._resume_tracker.clear(number)
+    author = next((t.comment.author for t in group if t.comment is not None), "")
+    await monitor.notifier.mention_processed(
+        primary.comment.html_url if primary.comment else dedup_key,
+        author or gh_login,
+    )
 
 
 async def _mark_mention_done(monitor: "PipelineMonitor", kind: str, number: int) -> None:
@@ -829,14 +809,38 @@ async def _park_or_keep(
     await monitor.notifier.implementation_parked(number, reason)
 
 
-async def _block_issue(monitor: "PipelineMonitor", number: int, reason: str) -> None:
-    """Block flow (item 7): comment the real impediment + label + DM.
-
-    The issue KEEPS ``~workflow:em_implementacao`` and gains
-    ``~workflow:bloqueada`` so it leaves BOTH the implement queue and the
-    auto-resume. The real impediment is commented on the issue and a Discord DM
-    is sent. A human removes ``~workflow:bloqueada`` to unblock.
+async def _block(
+    monitor: "PipelineMonitor", kind: str, number: int, short: str, *, comment: str
+) -> None:
+    """Shared block flow (item 7): comment the real impediment, add
+    ``~workflow:bloqueada``, clear the resume tracker, bump the blocked stat and
+    DM. ``kind`` (``"issue"``/``"pr"``) selects the GitHub comment/label surface;
+    the caller supplies the already-truncated ``short`` reason and the wording.
+    The target keeps its stage label so it leaves the active queue (and the
+    auto-resume) without re-entering it; a human removes the label to unblock.
     """
+    commenter = (
+        monitor.github.comment_on_issue if kind == "issue"
+        else monitor.github.comment_on_pr
+    )
+    try:
+        await commenter(number, comment)
+    except Exception as exc:  # noqa: BLE001 — comment is best-effort; label still applied
+        logger.warning("block %s: could not comment on #%d: %s", kind, number, exc)
+    try:
+        await monitor.github.add_labels(kind, number, [WORKFLOW_BLOCKED])
+    except GhCommandError as exc:
+        await _record_gh_error(
+            monitor, f"could not apply {WORKFLOW_BLOCKED} to {kind} #{number}", exc,
+        )
+    monitor._resume_tracker.clear(number)
+    monitor._stats.issues_blocked += 1
+    logger.warning("%s #%d BLOCKED: %s", kind, number, short)
+    await monitor.notifier.implementation_blocked(number, short)
+
+
+async def _block_issue(monitor: "PipelineMonitor", number: int, reason: str) -> None:
+    """Block an issue in the implement/resume stage (keeps em_implementacao)."""
     short = reason[:PIPELINE_MSG_TRUNCATE_CHARS]
     comment = (
         f"⛔ **Pipeline bloqueou esta issue** (`{WORKFLOW_BLOCKED}`).\n\n"
@@ -845,20 +849,7 @@ async def _block_issue(monitor: "PipelineMonitor", number: int, reason: str) -> 
         f"label `{WORKFLOW_BLOCKED}` — o pipeline volta a retomar a implementação "
         f"de onde parou."
     )
-    try:
-        await monitor.github.comment_on_issue(number, comment)
-    except Exception as exc:  # noqa: BLE001 — comment is best-effort; label still applied
-        logger.warning("block: could not comment on #%d: %s", number, exc)
-    try:
-        await monitor.github.add_labels("issue", number, [WORKFLOW_BLOCKED])
-    except GhCommandError as exc:
-        await _record_gh_error(
-            monitor, f"could not apply {WORKFLOW_BLOCKED} to #{number}", exc,
-        )
-    monitor._resume_tracker.clear(number)
-    monitor._stats.issues_blocked += 1
-    logger.warning("issue #%d BLOCKED: %s", number, short)
-    await monitor.notifier.implementation_blocked(number, short)
+    await _block(monitor, "issue", number, short, comment=comment)
 
 
 # ----- stage 3: review PR ------------------------------------------------
@@ -1029,11 +1020,10 @@ async def _post_merge_follow_ups(monitor: "PipelineMonitor", target) -> None:
 async def _block_pr(
     monitor: "PipelineMonitor", number: int, title: str, url: str, reason: str
 ) -> None:
-    """Block flow for a PR review/merge (item 7): comment + label + DM.
+    """Block a PR in the review/merge stage (keeps ~review:em_andamento).
 
-    Mirrors :func:`_block_issue` but for the review/merge stage: the PR keeps
-    ~review:em_andamento and gains ~workflow:bloqueada, excluding it from the
-    resume sweep until a human removes the label.
+    Mirrors :func:`_block_issue`; ``title``/``url`` are accepted for call-site
+    symmetry but not used in the comment.
     """
     short = reason[:PIPELINE_MSG_TRUNCATE_CHARS]
     comment = (
@@ -1041,20 +1031,7 @@ async def _block_pr(
         f"**Motivo:** {short}\n\n"
         f"Para retomar, remova o label `{WORKFLOW_BLOCKED}`."
     )
-    try:
-        await monitor.github.comment_on_pr(number, comment)
-    except Exception as exc:  # noqa: BLE001 — best-effort
-        logger.warning("block PR: could not comment on #%d: %s", number, exc)
-    try:
-        await monitor.github.add_labels("pr", number, [WORKFLOW_BLOCKED])
-    except GhCommandError as exc:
-        await _record_gh_error(
-            monitor, f"could not apply {WORKFLOW_BLOCKED} to PR #{number}", exc,
-        )
-    monitor._resume_tracker.clear(number)
-    monitor._stats.issues_blocked += 1
-    logger.warning("PR #%d BLOCKED: %s", number, short)
-    await monitor.notifier.implementation_blocked(number, short)
+    await _block(monitor, "pr", number, short, comment=comment)
 
 
 # ----- stage 4: follow-up issues from merged PR --------------------------
