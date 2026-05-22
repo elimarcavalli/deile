@@ -17,6 +17,7 @@ parameter and only type-hinted under ``TYPE_CHECKING``.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -28,15 +29,23 @@ from deile.orchestration.pipeline.follow_up_detector import detect_follow_ups
 from deile.orchestration.pipeline.github_client import (CommentRef,
                                                         GhCommandError,
                                                         MentionTrigger)
-from deile.orchestration.pipeline.labels import (MENTION_DONE,
+from deile.orchestration.pipeline.implementer import (parse_critique_verdict,
+                                                      parse_decompose_result,
+                                                      parse_refine_verdict)
+from deile.orchestration.pipeline.labels import (MENTION_DONE, REFINAR,
+                                                 REFINE_WORKFLOW_STATES,
                                                  REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
-                                                 REVIEW_PENDING,
+                                                 REVIEW_PENDING, TYPE_INTENT,
                                                  WORKFLOW_BLOCKED,
+                                                 WORKFLOW_DECOMPOSED,
                                                  WORKFLOW_IMPLEMENTING,
                                                  WORKFLOW_NEW, WORKFLOW_PR,
                                                  WORKFLOW_REVIEWED,
-                                                 WORKFLOW_REVIEWING)
+                                                 WORKFLOW_REVIEWING,
+                                                 WORKFLOW_WAITING,
+                                                 issue_type_from_labels,
+                                                 refine_workflow_state)
 
 # Mention triggers that describe a STICKY state (they re-appear on every poll
 # until the underlying GitHub state changes), as opposed to "comment", which is
@@ -534,6 +543,11 @@ async def _route_issue_to_pipeline(
 # ----- stage 1: review ---------------------------------------------------
 
 async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
+    """Stage 1. With the refinement gate ON (issue #257) this is the CRITIQUE of
+    scope: dispatch the type's persona to judge CLARO/POBRE; clear → revisada,
+    poor → refinar + the type's refine state (analyst→em_refinamento, others→
+    em_arquitetura), with a block-to-author after ``refine_max_attempts`` passes.
+    With the gate OFF it keeps the legacy no-op transition (nova→revisada)."""
     try:
         issues = await monitor.github.list_issues_with_label(WORKFLOW_NEW, limit=50)
     except GhCommandError as exc:
@@ -549,6 +563,12 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
     )
     if target is None:
         return
+
+    if monitor.config.enable_refinement_gate:
+        await _critique_one_issue(monitor, target)
+        return
+
+    # ---- Legacy path (Claude/no-gate): no-op transition through review --------
     batch = await monitor.github.claim_with_batch("issue", target.number)
     if batch is None:
         return
@@ -601,9 +621,247 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
     await monitor.notifier.issue_reviewed(target.number, target.title, target.url)
 
 
+async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
+    """Critique gate (issue #257): judge scope, route to revisada or refinement."""
+    number = target.number
+    # Single-monitor production needs no batch lock (the nova→em_revisao flip is
+    # the lock, and a lingering ~batch: would break the re-critique loop); a
+    # sharded deployment claims to close the TOCTOU window and clears it after.
+    multi = monitor.identity.shard_count > 1
+    if multi:
+        if await monitor.github.claim_with_batch("issue", number) is None:
+            return
+    # Ownership tag lets the implement stage accept this issue without a batch.
+    await monitor.github.add_labels("issue", number, [monitor.identity.ownership_label()])
+    await monitor.notifier.issue_picked_up(number, target.title, target.url)
+    try:
+        await monitor.github.transition_issue(
+            number, from_label=WORKFLOW_NEW, to_label=WORKFLOW_REVIEWING
+        )
+    except GhCommandError as exc:
+        await _record_gh_error(monitor, f"could not claim issue #{number} for critique", exc)
+        return
+
+    outcome = await monitor.implementer.critique(monitor, target)
+    if multi:
+        await monitor.github.clear_batch_label("issue", number)
+    if not outcome.ok:
+        # Critique dispatch failed → revert to nova so a later tick retries.
+        try:
+            await monitor.github.transition_issue(
+                number, from_label=WORKFLOW_REVIEWING, to_label=WORKFLOW_NEW
+            )
+        except Exception:  # noqa: BLE001 — rollback is best-effort
+            logger.warning("could not revert #%d to nova after critique failure", number)
+        logger.warning("critique #%d failed: %s", number, (outcome.error or "")[:200])
+        return
+
+    is_clear, reason = parse_critique_verdict(outcome.text)
+    issue_type = issue_type_from_labels(target.labels)
+    if is_clear:
+        await monitor.github.transition_issue(
+            number, from_label=WORKFLOW_REVIEWING, to_label=WORKFLOW_REVIEWED
+        )
+        # The refinement marker (if any) is done now that scope is clear.
+        await monitor.github.remove_labels("issue", number, [REFINAR])
+        monitor._stats.issues_reviewed += 1
+        await monitor.notifier.issue_reviewed(number, target.title, target.url)
+        return
+
+    # POOR — block to the author once the refinement budget is exhausted.
+    if monitor._resume_tracker.refine_attempt(number) >= monitor.config.refine_max_attempts:
+        await _block_refinement(monitor, target, reason)
+        return
+    # Send to the type-specific refinement state and mark it for the refine stage.
+    refine_state = refine_workflow_state(issue_type)
+    await monitor.github.add_labels("issue", number, [REFINAR])
+    try:
+        await monitor.github.transition_issue(
+            number, from_label=WORKFLOW_REVIEWING, to_label=refine_state
+        )
+    except GhCommandError as exc:
+        await _record_gh_error(monitor, f"could not move #{number} to {refine_state}", exc)
+        return
+    logger.info("critique #%d POBRE → %s (%s)", number, refine_state, reason[:120])
+
+
+async def refine_one_issue(monitor: "PipelineMonitor") -> None:
+    """Stage 1b (issue #257): refine ONE issue carrying ``refinar``.
+
+    Candidate = any open issue with ``refinar`` that this monitor owns and is NOT
+    paused (``aguardando_stakeholder``), blocked, or already past refinement. An
+    issue not yet in a refine state (a human applied ``refinar`` by hand) is
+    rehydrated into its type's refine state. Otherwise the type's persona rewrites
+    the body: ``REFINO: OK`` → back to ``nova`` for re-critique (counts toward the
+    ceiling); ``AGUARDA_STAKEHOLDER`` → pause via the waiting overlay.
+    """
+    if not monitor.config.enable_refinement_gate:
+        return
+    try:
+        issues = await monitor.github.list_issues_with_label(REFINAR, limit=50)
+    except GhCommandError as exc:
+        await _record_gh_error(
+            monitor, "could not list issues to refine (gh error)", exc,
+            notifier_label="refine/list",
+        )
+        return
+    _excluded = (WORKFLOW_WAITING, WORKFLOW_BLOCKED, WORKFLOW_IMPLEMENTING,
+                 WORKFLOW_PR, WORKFLOW_DECOMPOSED)
+    target = next(
+        (i for i in issues
+         if not any(lb in i.labels for lb in _excluded)
+         and monitor.identity.owns(i.title)),
+        None,
+    )
+    if target is None:
+        return
+    number = target.number
+    issue_type = issue_type_from_labels(target.labels)
+
+    # Rehydrate a hand-applied ``refinar`` (issue not yet in a refine state).
+    if not any(s in target.labels for s in REFINE_WORKFLOW_STATES):
+        refine_state = refine_workflow_state(issue_type)
+        cur = next(
+            (s for s in (WORKFLOW_NEW, WORKFLOW_REVIEWING, WORKFLOW_REVIEWED) if s in target.labels),
+            None,
+        )
+        try:
+            if cur:
+                await monitor.github.transition_issue(number, from_label=cur, to_label=refine_state)
+            else:
+                await monitor.github.add_labels("issue", number, [refine_state])
+        except GhCommandError as exc:
+            await _record_gh_error(monitor, f"could not rehydrate #{number} into {refine_state}", exc)
+        return  # refined on the next tick
+
+    # Ceiling guard (belt-and-suspenders with the critique-side check).
+    if monitor._resume_tracker.refine_attempt(number) >= monitor.config.refine_max_attempts:
+        await _block_refinement(monitor, target, "teto de refinamentos atingido")
+        return
+
+    outcome = await monitor.implementer.refine(monitor, target)
+    if not outcome.ok:
+        logger.warning("refine #%d failed: %s", number, (outcome.error or "")[:200])
+        return  # transient — retry next tick (no count bump)
+
+    verdict = parse_refine_verdict(outcome.text)
+    if verdict == "waiting":
+        # The worker posted 2-3 suggestions and assigned the author; pause refino.
+        await monitor.github.add_labels("issue", number, [WORKFLOW_WAITING])
+        logger.info("refine #%d → aguardando stakeholder", number)
+        return
+    # OK / unknown → count it and send back for re-critique (the safety net).
+    monitor._resume_tracker.bump_refine(number)
+    refine_state = next(
+        (s for s in REFINE_WORKFLOW_STATES if s in target.labels),
+        refine_workflow_state(issue_type),
+    )
+    try:
+        await monitor.github.transition_issue(number, from_label=refine_state, to_label=WORKFLOW_NEW)
+    except GhCommandError as exc:
+        await _record_gh_error(monitor, f"could not return #{number} to nova after refine", exc)
+        return
+    logger.info("refine #%d OK (passe %d) → nova (re-crítica)", number,
+                monitor._resume_tracker.refine_attempt(number))
+
+
+async def _block_refinement(monitor: "PipelineMonitor", issue, reason: str) -> None:
+    """Block a poor-scoped issue back to its author after the refine ceiling.
+
+    Rests the issue in its type's refine state (so removing ``bloqueada`` resumes
+    refinement with a fresh count — :func:`_block` clears the tracker), keeps
+    ``refinar``, and assigns the author so the stakeholder is pinged to refine it
+    by hand. No ``@``-mention in the comment (that would re-trigger mention
+    handling when the author is DEILE itself)."""
+    number = issue.number
+    issue_type = issue_type_from_labels(issue.labels)
+    refine_state = refine_workflow_state(issue_type)
+    if refine_state not in issue.labels:
+        cur = next(
+            (s for s in (WORKFLOW_REVIEWING, WORKFLOW_NEW, *REFINE_WORKFLOW_STATES)
+             if s in issue.labels and s != refine_state),
+            None,
+        )
+        try:
+            if cur:
+                await monitor.github.transition_issue(number, from_label=cur, to_label=refine_state)
+            else:
+                await monitor.github.add_labels("issue", number, [refine_state])
+        except GhCommandError as exc:
+            await _record_gh_error(monitor, f"could not rest #{number} in {refine_state}", exc)
+    await monitor.github.add_labels("issue", number, [REFINAR])
+    if getattr(issue, "author", ""):
+        await monitor.github.assign_issue(number, issue.author)
+    short = reason[:PIPELINE_MSG_TRUNCATE_CHARS]
+    comment = (
+        f"⛔ **Refino atingiu o teto de {monitor.config.refine_max_attempts} tentativas** "
+        f"e o escopo ainda está pobre.\n\n"
+        f"**Falta:** {short}\n\n"
+        f"Autor: por favor refine esta issue manualmente (preencha o template) e remova o "
+        f"label `{WORKFLOW_BLOCKED}` para o pipeline retomar o refinamento."
+    )
+    await _block(monitor, "issue", number, short, comment=comment)
+
+
+async def decompose_one_reviewed_intent(monitor: "PipelineMonitor") -> None:
+    """Stage 2 (intent path, issue #257): an architect decomposes a CLEAR intent
+    into independent derived issues, then the intent stays OPEN as a decomposed
+    epic (``~workflow:decomposta``)."""
+    if not monitor.config.enable_refinement_gate:
+        return
+    try:
+        issues = await monitor.github.list_issues_with_label(WORKFLOW_REVIEWED, limit=50)
+    except GhCommandError as exc:
+        await _record_gh_error(
+            monitor, "could not list reviewed intents (gh error)", exc,
+            notifier_label="decompose/list",
+        )
+        return
+    ownership_label = monitor.identity.ownership_label()
+    target = next(
+        (i for i in issues
+         if issue_type_from_labels(i.labels) == TYPE_INTENT
+         and WORKFLOW_DECOMPOSED not in i.labels
+         and WORKFLOW_BLOCKED not in i.labels
+         and monitor._this_monitor_owns(i)
+         and (i.batch_id is not None or ownership_label in i.labels)),
+        None,
+    )
+    if target is None:
+        return
+    # The decompose dispatch is wait=True, so it blocks this (sequential) tick —
+    # no concurrent re-pick. On success the intent leaves the revisada queue.
+    outcome = await monitor.implementer.decompose(monitor, target)
+    derived = parse_decompose_result(outcome.text)
+    if not outcome.ok and not derived:
+        logger.warning("decompose #%d failed: %s", target.number, (outcome.error or "")[:200])
+        return  # stays revisada — retry next tick
+    # Mark decomposed when derived issues were created (even if the ok flag is
+    # noisy) so we never re-decompose and duplicate the derived issues.
+    try:
+        await monitor.github.transition_issue(
+            target.number, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_DECOMPOSED
+        )
+    except GhCommandError as exc:
+        await _record_gh_error(monitor, f"could not mark #{target.number} decomposed", exc)
+    logger.info("decompose #%d → derivadas %s", target.number, derived)
+    await monitor.notifier.issue_reviewed(
+        target.number, f"{target.title} (decomposta em {len(derived)})", target.url
+    )
+
+
 # ----- stage 2: implement ------------------------------------------------
 
 async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
+    """Stage 2 (code path). Claim up to ``max_parallel`` reviewed feature/bug/
+    refactor issues and dispatch their implementations CONCURRENTLY (issue #257):
+    ``asyncio.gather`` of independent worker dispatches that the k8s Service
+    spreads across the worker replicas. Each opens its own branch + PR, so the
+    only contention surfaces at merge time. ``intent`` issues are excluded — they
+    go to :func:`decompose_one_reviewed_intent`. The tick blocks for the duration
+    of the SLOWEST dispatch in the batch (not the sum). Per-issue finalization
+    reuses :func:`_finalize_implement_outcome` unchanged.
+    """
     try:
         issues = await monitor.github.list_issues_with_label(WORKFLOW_REVIEWED, limit=50)
     except GhCommandError as exc:
@@ -615,59 +873,62 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
     # Accept issues without ~batch: when the ownership label proves this monitor did the
     # review (e.g. operator manually promoted to ~workflow:revisada or batch label removed).
     ownership_label = monitor.identity.ownership_label()
-    target = next(
-        (
-            i for i in issues
-            if WORKFLOW_PR not in i.labels
-            # Defense-in-depth: never re-pick an issue already claimed for
-            # implementation. The list query is scoped to WORKFLOW_REVIEWED so a
-            # cleanly-claimed issue already drops out, but this guards the edge
-            # case of an issue transiently carrying both labels (partial
-            # transition, operator mislabel) — the bug class behind #253.
-            and WORKFLOW_IMPLEMENTING not in i.labels
-            # A blocked issue must never re-enter the implement queue (issue
-            # #254). It keeps em_implementacao + bloqueada until a human removes
-            # bloqueada, so this guard is belt-and-suspenders with the query.
-            and WORKFLOW_BLOCKED not in i.labels
-            and monitor._this_monitor_owns(i)
-            and (i.batch_id is not None or ownership_label in i.labels)
-        ),
-        None,
+    candidates = [
+        i for i in issues
+        # intent decomposes (separate stage), it does not implement code.
+        if issue_type_from_labels(i.labels) != TYPE_INTENT
+        # Defense-in-depth: never re-pick an issue already claimed for
+        # implementation, or one parked/blocked (the bug class behind #253/#254).
+        and WORKFLOW_PR not in i.labels
+        and WORKFLOW_IMPLEMENTING not in i.labels
+        and WORKFLOW_BLOCKED not in i.labels
+        and monitor._this_monitor_owns(i)
+        and (i.batch_id is not None or ownership_label in i.labels)
+    ]
+    # Cap concurrency at ``max_parallel`` (>=1). Each claimed issue leaves the
+    # revisada set on its transition, so later ticks won't re-pick it.
+    batch = candidates[: max(1, monitor.config.max_parallel)]
+    if not batch:
+        return
+
+    claimed = []
+    for target in batch:
+        # Best-effort claim (sequential-tick lock): revisada → em_implementacao.
+        # transition_issue is remove-then-add (not atomic); multi-monitor safety
+        # relies on the PID lock + single-replica Recreate + hash sharding.
+        try:
+            await monitor.github.transition_issue(
+                target.number, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_IMPLEMENTING
+            )
+        except GhCommandError as exc:
+            await _record_gh_error(
+                monitor, f"could not claim issue #{target.number} for implementation", exc,
+                notifier_label=f"implement claim #{target.number}",
+            )
+            continue
+        await monitor.notifier.implementation_started(
+            target.number, target.title, monitor.branch_for_issue(target.number)
+        )
+        monitor._resume_tracker.record_dispatch(target.number, _monotonic())
+        claimed.append(target)
+    if not claimed:
+        return
+
+    # Dispatch all claimed implementations concurrently; the worker Service load-
+    # balances them across replicas. ``return_exceptions`` so one failure does not
+    # cancel its siblings — each is finalized independently from ground truth.
+    outcomes = await asyncio.gather(
+        *[monitor.implementer.implement(monitor, t, resume=False) for t in claimed],
+        return_exceptions=True,
     )
-    if target is None:
-        return
-    # Best-effort claim (sequential-tick lock) BEFORE any notification or work:
-    # move the issue out of ~workflow:revisada and into ~workflow:em_implementacao.
-    # The candidate query (list_issues_with_label) only returns
-    # ~workflow:revisada issues, so once claimed the issue drops out of the set
-    # for every LATER tick — which is what stops the SAME issue from being
-    # re-picked across sequential ticks. NOTE: transition_issue is remove-then-add
-    # over two REST calls (not a single atomic op), so two genuinely concurrent
-    # monitors could still both observe ~workflow:revisada and double-claim;
-    # multi-monitor safety relies on the PID lock + single-replica Recreate +
-    # hash sharding of the shipped deile-pipeline deployment, not on this label
-    # flip. Without this claim, an issue that never produces a PR (e.g. a
-    # vague/meta issue the worker cannot implement) was re-selected and
-    # re-dispatched on every tick, flooding the operator with duplicate
-    # "Implementação iniciada" DMs.
-    try:
-        await monitor.github.transition_issue(
-            target.number, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_IMPLEMENTING
-        )
-    except GhCommandError as exc:
-        await _record_gh_error(
-            monitor, f"could not claim issue #{target.number} for implementation", exc,
-            notifier_label=f"implement claim #{target.number}",
-        )
-        return
-    branch = monitor.branch_for_issue(target.number)
-    await monitor.notifier.implementation_started(target.number, target.title, branch)
-    monitor._resume_tracker.record_dispatch(target.number, _monotonic())
-    # Delegate the actual implementation to the configured strategy
-    # (claude -p in a worktree, or a dispatch to the deile-worker). The
-    # strategy returns a uniform outcome; label orchestration stays here.
-    outcome = await monitor.implementer.implement(monitor, target, resume=False)
-    await _finalize_implement_outcome(monitor, target.number, outcome, resume=False)
+    for target, outcome in zip(claimed, outcomes):
+        if isinstance(outcome, BaseException):
+            logger.exception("implement dispatch for #%d raised", target.number, exc_info=outcome)
+            from deile.orchestration.pipeline.implementer import WorkOutcome
+            outcome = WorkOutcome(
+                ok=False, text="", error=f"{type(outcome).__name__}: {outcome}"[:500]
+            )
+        await _finalize_implement_outcome(monitor, target.number, outcome, resume=False)
 
 
 # ----- stage 2b: resume parked, continuable implementations (issue #254) -----

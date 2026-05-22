@@ -38,6 +38,10 @@ class IssueResumeState:
     attempt: int = 0
     #: Accumulated wall-clock budget (seconds) reported by the worker.
     budget_s: float = 0.0
+    #: Refinement passes already applied to this issue (refinement gate). Unlike
+    #: ``attempt`` this has no durable PVC source — it is reset on monitor restart
+    #: (a safety ceiling, not a hard guarantee). Bounded by ``refine_max_attempts``.
+    refine_attempt: int = 0
 
 
 @dataclass
@@ -82,6 +86,17 @@ class ResumeTracker:
             state.attempt = attempt
         if budget_s:
             state.budget_s = budget_s
+
+    def bump_refine(self, number: int) -> int:
+        """Increment and return the refinement-pass counter for *number*."""
+        state = self.get(number)
+        state.refine_attempt += 1
+        return state.refine_attempt
+
+    def refine_attempt(self, number: int) -> int:
+        """Return the refinement passes applied so far for *number* (0 if none)."""
+        state = self.peek(number)
+        return state.refine_attempt if state is not None else 0
 
     def clear(self, number: int) -> None:
         """Drop tracked state for *number* (e.g. once it reaches em_pr/blocked)."""

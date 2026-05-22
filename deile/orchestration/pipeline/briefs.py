@@ -321,6 +321,105 @@ def _render_worker_review_resume_brief(
     )
 
 
+# --- Refinement gate briefs (issue #257) --------------------------------------
+# Three new briefs that run BEFORE any implementation: CRITIQUE (judge scope),
+# REFINE (rewrite the body toward the template, possibly pausing for the
+# stakeholder) and DECOMPOSE (an architect splits a clear intent into independent
+# derived issues). The persona is chosen by issue type at dispatch time (analyst
+# for intent, architect for feature/refactor, debugger for bug) — so the brief
+# stays generic and the type-specific JUDGMENT lives in the persona instruction.
+# Each brief ends with a strict last-line VERDICT the pipeline parses.
+
+_WORKER_CRITIQUE_BRIEF = """\
+Você é o GATE DE CRÍTICA DE ESCOPO da issue #{number} (tipo: {type}) do repositório {repo}. NÃO implemente nem refine nada — apenas JULGUE, conforme a sua persona, se o escopo está claro o suficiente para avançar.
+
+1. Leia a issue (abaixo) e o template oficial do tipo:
+   gh api repos/{repo}/contents/.github/ISSUE_TEMPLATE/{template} --jq .content | base64 --decode
+   (Para feature/bug/refactor, consulte a arquitetura real — docs/system_design/ e o código; clone com `gh repo clone {repo} repo` se ainda não houver ./repo. Para bug, verifique se dá pra localizar a origem no código.)
+2. Julgue com RIGOR: a issue está CLARA e bem-escopada (segue o template, tem substância para a PRÓXIMA etapa sem ambiguidade) ou POBRE (vazia, template em branco/incompleto, genérica demais, sem alvo/critério)?
+3. Seja honesto e específico — se POBRE, aponte exatamente o que falta.
+
+VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE uma destas, nada depois dela:
+  VEREDITO: CLARO
+  VEREDITO: POBRE: <o que falta, em uma frase concreta>
+
+=== Issue #{number} (tipo: {type}): {title} ===
+{body}
+"""
+
+_WORKER_REFINE_BRIEF = """\
+Você vai REFINAR a issue #{number} (tipo: {type}) do repositório {repo} — reescrever o CORPO para ficar claro, substancial e dentro do template oficial. NÃO implemente código de feature/fix; o objetivo é deixar o ESCOPO pronto para a próxima etapa.
+
+1. Leia a issue atual (abaixo) e o template oficial:
+   gh api repos/{repo}/contents/.github/ISSUE_TEMPLATE/{template} --jq .content | base64 --decode
+   (feature/refactor: consulte docs/system_design/ e o código real, clone com `gh repo clone {repo} repo` se preciso. bug: investigue o código e localize a origem provável arquivo:linha. NUNCA invente.)
+2. REESCREVA o corpo conforme a estrutura do template, preenchendo CADA seção com substância REAL (extraída do título, contexto e código). Aplique:
+   gh issue edit {number} --repo {repo} --body "<novo corpo completo>"
+3. LACUNA DO STAKEHOLDER: se houver decisão de escopo/lacuna IMPORTANTE que você NÃO pode decidir sozinho com segurança (alto impacto, ou que derivaria uma feature grande adicional), NÃO decida. Em vez disso:
+   a) Comente na issue (gh issue comment {number} --repo {repo} --body "...") descrevendo a lacuna E **2 a 3 sugestões bem pensadas** para o stakeholder escolher.
+   b) Atribua ao autor (stakeholder): descubra com `gh issue view {number} --repo {repo} --json author -q .author.login` e atribua via REST: gh api -X POST repos/{repo}/issues/{number}/assignees -f 'assignees[]=<login>'
+   c) Reporte AGUARDA_STAKEHOLDER (veredito abaixo) — o pipeline pausa o refino até o stakeholder decidir.
+4. Honestidade: marque suposições como suposições no corpo; nunca invente fato, dado ou causa-raiz.
+
+VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE uma destas, nada depois dela:
+  REFINO: OK
+  REFINO: AGUARDA_STAKEHOLDER
+
+=== Issue #{number} (tipo: {type}): {title} ===
+{body}
+"""
+
+_WORKER_DECOMPOSE_BRIEF = """\
+Você é o ARQUITETO. A intent #{number} do repositório {repo} está CLARA e aprovada. DECOMPONHA-A em uma ou mais issues derivadas INDEPENDENTES (feature/bug/refactor) que possam ser implementadas em branches PARALELOS.
+
+1. Consulte a arquitetura real ANTES de decidir: docs/system_design/ (clone com `gh repo clone {repo} repo` se preciso) e o código relevante.
+2. Identifique as frentes GENUINAMENTE INDEPENDENTES (sem dependência sequencial entre si). Se a intenção é coesa e indivisível, UMA derivada é a resposta certa; se é multi-frente, várias. NÃO force a divisão — partes acopladas ficam na MESMA issue (fatiar trabalho dependente gera conflito, não paralelismo).
+3. Para CADA frente, crie uma issue derivada com escopo JÁ CLARO:
+   - título específico; corpo seguindo o template do tipo (.github/ISSUE_TEMPLATE/feature_request.md | bug_report.md | refactor_proposal.md) com alvo técnico, contrato, critérios de aceite e plano de teste;
+   - inclua a linha: `Originada de #{number}`.
+   - crie com: gh issue create --repo {repo} --title "..." --body "..." --label "<feature|bug|refactor>"
+     (se o --label falhar, crie sem e adicione via REST: gh api -X POST repos/{repo}/issues/<novo>/labels -f 'labels[]=<tipo>')
+4. Comente na intent #{number} (gh issue comment) listando as derivadas criadas com links — ela permanece ABERTA como épico.
+5. Honestidade: só liste issues que você REALMENTE criou (confirme com `gh issue view`).
+
+VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE (com os números reais das issues criadas):
+  DECOMPOSTO: #<n1> #<n2> ...
+
+=== Intent #{number}: {title} ===
+{body}
+"""
+
+
+def _refine_body(body: str) -> str:
+    return (body or "").strip()[:ISSUE_BODY_MAX_CHARS] or "(sem corpo — avalie a partir do título)"
+
+
+def _render_worker_critique_brief(
+    repo: str, number: int, title: str, body: str, *, issue_type: str, template: str
+) -> str:
+    return _WORKER_CRITIQUE_BRIEF.format(
+        repo=repo, number=number, title=title, body=_refine_body(body),
+        type=issue_type, template=template,
+    )
+
+
+def _render_worker_refine_brief(
+    repo: str, number: int, title: str, body: str, *, issue_type: str, template: str
+) -> str:
+    return _WORKER_REFINE_BRIEF.format(
+        repo=repo, number=number, title=title, body=_refine_body(body),
+        type=issue_type, template=template,
+    )
+
+
+def _render_worker_decompose_brief(
+    repo: str, number: int, title: str, body: str
+) -> str:
+    return _WORKER_DECOMPOSE_BRIEF.format(
+        repo=repo, number=number, title=title, body=_refine_body(body),
+    )
+
+
 # --- Reviewer-only brief (issue #253 follow-up) -------------------------------
 # When DEILE is requested ONLY as a reviewer (not assignee/owner), the operator
 # policy is: REVIEW and hand the PR back to its author — never fix, never merge.

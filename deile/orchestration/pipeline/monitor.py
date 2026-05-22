@@ -123,6 +123,19 @@ class PipelineConfig:
     resume_interval: int = 0
     resume_max_attempts: int = 10
     resume_budget: int = 0
+    # Refinement gate + parallel decomposition (issue #257). ``refine_max_attempts``
+    # caps how many refinement passes a poor-scoped issue gets before it is blocked
+    # and returned to its author. ``max_parallel`` caps how many implementations the
+    # implement stage dispatches CONCURRENTLY per tick (asyncio.gather to the
+    # deile-worker Service; needs >=2 worker replicas to actually run in parallel).
+    refine_max_attempts: int = 5
+    max_parallel: int = 2
+    # The refinement gate (critique → refine loop → decompose) is worker-only:
+    # it dispatches type-specific personas (analyst/architect/debugger) to the
+    # deile-worker. On the legacy Claude path it is OFF, so ``review`` keeps its
+    # old no-op transition and refine/decompose no-op. Resolved from dispatch_mode
+    # in ``build_default_pipeline_config`` (mirrors ``enable_resume``).
+    enable_refinement_gate: bool = False
 
 
 def build_default_pipeline_config(*, use_pid_lock: bool = True) -> PipelineConfig:
@@ -161,6 +174,9 @@ def build_default_pipeline_config(*, use_pid_lock: bool = True) -> PipelineConfi
         resume_interval=int(settings.pipeline_resume_interval),
         resume_max_attempts=int(settings.pipeline_resume_max_attempts),
         resume_budget=int(settings.pipeline_resume_budget),
+        refine_max_attempts=int(settings.pipeline_refine_max_attempts),
+        max_parallel=int(settings.pipeline_max_parallel),
+        enable_refinement_gate=(dispatch_mode not in ("claude", "claude_code", "claude-code")),
     )
 
 
@@ -498,6 +514,11 @@ class PipelineMonitor:
                 if self.config.enable_review and "review" not in scheduled_actions:
                     logger.debug("review not in schedule; running legacy fallback")
                     await self._review_one_new_issue()
+                # Refinement loop (issue #257): a per-tick sweep like resume, not
+                # a cron action — runs after critique so an issue judged POOR is
+                # refined on the NEXT tick, then re-critiqued.
+                if self.config.enable_refinement_gate:
+                    await self._refine_one_issue()
                 # Resume parked, continuable work BEFORE claiming new issues
                 # (issue #254). Running it first is what stops a freshly-claimed
                 # issue (revisada → em_implementacao THIS tick) from being
@@ -510,6 +531,9 @@ class PipelineMonitor:
                 if self.config.enable_implement and "implement" not in scheduled_actions:
                     logger.debug("implement not in schedule; running legacy fallback")
                     await self._implement_one_reviewed_issue()
+                # Decompose CLEAR intents into derived issues (issue #257).
+                if self.config.enable_refinement_gate:
+                    await self._decompose_one_reviewed_intent()
                 if self.config.enable_pr_review and "pr_review" not in scheduled_actions:
                     logger.debug("pr_review not in schedule; running legacy fallback")
                     await self._review_one_open_pr()
@@ -523,6 +547,8 @@ class PipelineMonitor:
             await self._classify_new_issues()
         if self.config.enable_review:
             await self._review_one_new_issue()
+        if self.config.enable_refinement_gate:
+            await self._refine_one_issue()
         # Resume parked work BEFORE claiming new issues (issue #254) so a
         # freshly-claimed issue is not re-dispatched again in the same tick;
         # its first resume lands on the next tick.
@@ -530,6 +556,8 @@ class PipelineMonitor:
             await self._resume_in_progress_issues()
         if self.config.enable_implement:
             await self._implement_one_reviewed_issue()
+        if self.config.enable_refinement_gate:
+            await self._decompose_one_reviewed_intent()
         if self.config.enable_pr_review:
             await self._review_one_open_pr()
         if self.config.enable_pr_triage:
@@ -557,6 +585,12 @@ class PipelineMonitor:
 
     async def _review_one_new_issue(self) -> None:
         return await stages.review_one_new_issue(self)
+
+    async def _refine_one_issue(self) -> None:
+        return await stages.refine_one_issue(self)
+
+    async def _decompose_one_reviewed_intent(self) -> None:
+        return await stages.decompose_one_reviewed_intent(self)
 
     async def _implement_one_reviewed_issue(self) -> None:
         return await stages.implement_one_reviewed_issue(self)
