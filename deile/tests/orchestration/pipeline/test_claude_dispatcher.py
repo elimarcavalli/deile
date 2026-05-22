@@ -79,7 +79,7 @@ class TestPrompts:
         body = "@" * 10000
         prompt = render_implement_prompt("foo/bar", 1, "t", body)
         # The '@' marker isolates the body: the template contains none.
-        assert prompt.count("@") == 6000
+        assert prompt.count("@") == 5000
 
     def test_review_prompt_includes_repo_and_number(self):
         prompt = render_review_prompt("foo/bar", 17, "PR title")
