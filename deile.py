@@ -71,6 +71,54 @@ def _banner() -> None:
 
 
 # -----------------------------------------------------------------------------
+# Versão lite (pré-bootstrap, zero dependências)
+# -----------------------------------------------------------------------------
+
+def _parse_version_text() -> tuple[str, str]:
+    """Extrai __version__ e __build_number__ de deile/__version__.py via parsing textual.
+
+    Zero dependências externas — usa apenas str.split(). Importar o módulo
+    não funcionaria porque deile/__init__.py pode puxar imports que dependem
+    do venv.
+    """
+    version_file = PROJECT_ROOT / "deile" / "__version__.py"
+    try:
+        text = version_file.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return "unknown", "unknown"
+    version = "unknown"
+    build = "unknown"
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("__version__") and "=" in stripped:
+            version = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+        elif stripped.startswith("__build_number__") and "=" in stripped:
+            build = stripped.split("=", 1)[1].strip().strip('"').strip("'")
+    return version, build
+
+
+def _print_lite_version() -> None:
+    """Imprime versão minimalista — uma linha, zero deps."""
+    version, build = _parse_version_text()
+    print(f"DEILE v{version} (build {build})")
+
+
+def _print_pre_bootstrap_help() -> None:
+    """Imprime ajuda pré-bootstrap (sem venv)."""
+    print("DEILE — Development Environment Intelligence & Learning Engine")
+    print()
+    print("Usage:")
+    print("  python3 deile.py                   # interactive mode")
+    print("  python3 deile.py \"your message\"    # one-shot mode")
+    print("  python3 deile.py --version, -v      # show version")
+    print("  python3 deile.py --help, -h         # show this help")
+    print("  python3 deile.py --install          # install DEILE globally")
+    print()
+    print("Tip: run `python3 deile.py --version` to check the installed version.")
+    print("     Use `deile --help` for the full command catalog (requires venv).")
+
+
+# -----------------------------------------------------------------------------
 # Detecção de venv
 # -----------------------------------------------------------------------------
 
@@ -237,6 +285,23 @@ def _bootstrap_first_run() -> None:
     _exec_in_venv()
 
 
+def _lite_bootstrap() -> None:
+    """Bootstrap leve: venv + deps (sem wizard de API keys). Re-executa no venv.
+
+    Usado pelo caminho --version quando o usuário pede a versão full.
+    Como --version não precisa de provider, não faz sentido pedir chaves.
+    """
+    _step("Instalando dependências para versão completa...")
+    print()
+    _check_python_version()
+    _create_venv()
+    _install_deps()
+    print()
+    _ok("Dependências instaladas. Obtendo versão completa...")
+    print()
+    _exec_in_venv()
+
+
 # -----------------------------------------------------------------------------
 # Startup do agente (só roda dentro do venv)
 # -----------------------------------------------------------------------------
@@ -278,9 +343,40 @@ def _start_deile() -> None:
 # -----------------------------------------------------------------------------
 
 def main() -> None:
+    # ── Pre-bootstrap flags: --version / --help (no venv needed) ──
+    # Issue #270: these must work even on a fresh clone with no .venv/.
+    args = sys.argv[1:]
+
+    if "--version" in args or "-v" in args:
+        _print_lite_version()
+        if not _venv_python().exists() or not DEPS_MARKER.exists():
+            # No venv yet (or venv exists but deps were never installed) —
+            # offer full version (requires bootstrap).
+            if sys.stdin.isatty():
+                print()
+                print(f"  {_DIM}A versão completa (com métricas e ambiente) requer")
+                print(f"  a instalação das dependências (~1 min na primeira vez).{_RESET}")
+                print()
+                try:
+                    ans = input("  Mostrar versão completa? [y/N]: ").strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    ans = "n"
+                print()
+                if ans in ("y", "yes"):
+                    _lite_bootstrap()
+            # Non-TTY or user declined: just print lite version and exit.
+        else:
+            # Venv exists with deps — re-execute to get the Rich panel via VersionCommand.
+            _exec_in_venv()
+        sys.exit(0)
+
+    if "--help" in args or "-h" in args:
+        _print_pre_bootstrap_help()
+        sys.exit(0)
+
     # --install must run in the current interpreter (no venv redirect),
     # so the installation target matches what the user invoked.
-    if "--install" in sys.argv[1:]:
+    if "--install" in args:
         _start_deile()
         return
 
