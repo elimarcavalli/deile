@@ -347,21 +347,24 @@ class GitHubClient:
                     continue
                 raise GhCommandError(("api", "-X", "DELETE", path), rc, out, err)
 
+    async def _transition(
+        self, kind: str, number: int, *, from_label: Optional[str], to_label: str,
+    ) -> None:
+        if from_label is not None:
+            await self.remove_labels(kind, number, [from_label])
+        await self.add_labels(kind, number, [to_label])
+
     async def transition_issue(
         self, number: int, *, from_label: Optional[str], to_label: str,
     ) -> None:
         """Swap a workflow label on an issue (remove from_label, add to_label)."""
-        if from_label is not None:
-            await self.remove_labels("issue", number, [from_label])
-        await self.add_labels("issue", number, [to_label])
+        await self._transition("issue", number, from_label=from_label, to_label=to_label)
 
     async def transition_pr(
         self, number: int, *, from_label: Optional[str], to_label: str,
     ) -> None:
         """Swap a workflow label on a PR (remove from_label, add to_label)."""
-        if from_label is not None:
-            await self.remove_labels("pr", number, [from_label])
-        await self.add_labels("pr", number, [to_label])
+        await self._transition("pr", number, from_label=from_label, to_label=to_label)
 
     async def claim_with_batch(
         self,
