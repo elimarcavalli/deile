@@ -277,7 +277,71 @@ def _start_deile() -> None:
 # Entry point
 # -----------------------------------------------------------------------------
 
+def _handle_preflight_flag() -> bool:
+    """Handle --version / --help BEFORE any venv/bootstrap.
+
+    Returns True if a preflight flag was handled (caller should exit),
+    False otherwise (proceed with normal startup).
+    """
+    argv = sys.argv[1:]
+
+    if "--version" in argv:
+        _print_version()
+        return True
+
+    if "--help" in argv or "-h" in argv:
+        _print_help()
+        return True
+
+    return False
+
+
+def _print_version() -> None:
+    """Print DEILE version from deile/__version__.py (zero external deps)."""
+    import importlib.util
+
+    version_path = PROJECT_ROOT / "deile" / "__version__.py"
+    spec = importlib.util.spec_from_file_location(
+        "_deile_version", str(version_path)
+    )
+    if spec is None or spec.loader is None:
+        print("DEILE (version unknown)", file=sys.stderr)
+        sys.exit(1)
+
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    version = getattr(mod, "__version__", "unknown")
+    build = getattr(mod, "__build_number__", "unknown")
+    print(f"DEILE v{version} (build {build})")
+
+
+def _print_help() -> None:
+    """Print basic usage help (zero external deps)."""
+    print(
+        f"{_BOLD}DEILE{_RESET} \u2014 Development Environment Intelligence & Learning Engine\n"
+        f"\n"
+        f"Uso:\n"
+        f"  python3 deile.py                  # modo interativo\n"
+        f"  python3 deile.py \"mensagem\"       # modo one-shot\n"
+        f"  python3 deile.py --version         # exibe a vers\u00e3o\n"
+        f"  python3 deile.py --help            # esta ajuda\n"
+        f"  python3 deile.py --install         # instala globalmente (user)\n"
+        f"  python3 deile.py --model PROVIDER:ID \"msg\"\n"
+        f"\n"
+        f"Reposit\u00f3rio: https://github.com/elimarcavalli/deile\n"
+    )
+
+
+# -----------------------------------------------------------------------------
+# Entry point
+# -----------------------------------------------------------------------------
+
 def main() -> None:
+    # Preflight flags that need NO venv, NO provider, NO bootstrap.
+    if _handle_preflight_flag():
+        sys.exit(0)
+
     # --install must run in the current interpreter (no venv redirect),
     # so the installation target matches what the user invoked.
     if "--install" in sys.argv[1:]:
