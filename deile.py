@@ -274,10 +274,62 @@ def _start_deile() -> None:
     _sys.exit(_cli_main())
 
 
+# -----------------------------------------------------------------------------
+# Fast-path: --version / -v (zero bootstrap, zero side-effects)
+# -----------------------------------------------------------------------------
+
+def _fast_version() -> None:
+    """Print DEILE version and exit. No venv, no heavy imports, no side-effects.
+
+    Reads ``deile/__version__.py`` directly via ``exec()`` — avoids importing
+    the ``deile`` package (which pulls in heavy deps). In interactive TTY
+    environments where the venv is absent, offers a light bootstrap (no API
+    key wizard) to show the full Rich panel.
+    """
+    version_file = PROJECT_ROOT / "deile" / "__version__.py"
+    namespace: dict = {}
+    try:
+        exec(version_file.read_text(encoding="utf-8"), namespace)
+    except (FileNotFoundError, SyntaxError, OSError):
+        print("DEILE vunknown (build unknown)")
+        sys.exit(1)
+
+    version = namespace.get("__version__", "unknown")
+    build = namespace.get("__build_number__", "unknown")
+    print(f"DEILE v{version} (build {build})")
+
+    # Interactive TTY without venv: offer full Rich panel via light bootstrap
+    if _TTY and not _venv_python().exists():
+        print()
+        print(
+            f"  {_DIM}O painel completo (Rich) requer a instalação das"
+            f" dependências.{_RESET}"
+        )
+        try:
+            ans = input(
+                f"  Instalar dependências e mostrar painel completo? [y/N]: "
+            ).strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            ans = "n"
+        if ans in ("y", "yes"):
+            _check_python_version()
+            _create_venv()
+            _install_deps()
+            # Re-exec inside venv — cli.py dispatches --version → VersionCommand
+            _exec_in_venv()
+
+    sys.exit(0)
+
+
 # Entry point
 # -----------------------------------------------------------------------------
 
 def main() -> None:
+    # Fast-path: --version / -v — zero bootstrap, zero side-effects (issue #273)
+    if any(a in ("--version", "-v") for a in sys.argv[1:]):
+        _fast_version()
+        return
+
     # --install must run in the current interpreter (no venv redirect),
     # so the installation target matches what the user invoked.
     if "--install" in sys.argv[1:]:
