@@ -48,6 +48,11 @@ def _resolve_max_iterations() -> int:
         value = int(getattr(get_settings(), "max_tool_iterations", MAX_TOOL_ITERATIONS))
         return value if value > 0 else MAX_TOOL_ITERATIONS
     except Exception:  # noqa: BLE001 — config errors must not disable tool use
+        logger.debug(
+            "max_tool_iterations config unavailable; using default %d",
+            MAX_TOOL_ITERATIONS,
+            exc_info=True,
+        )
         return MAX_TOOL_ITERATIONS
 
 

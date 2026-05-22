@@ -79,13 +79,18 @@ class PipelineTool(Tool):
         if action == "status":
             monitor = self._existing_monitor(agent)
             if monitor is None or not self._is_running(monitor):
+                attached = monitor is not None
+                state = (
+                    "Há um monitor anexado a ESTE processo, mas ele está parado"
+                    if attached
+                    else "Nenhum monitor de pipeline anexado a ESTE processo"
+                )
                 return ToolResult.success_result(
-                    data={"running": False, "monitor_in_process": monitor is not None},
+                    data={"running": False, "monitor_in_process": attached},
                     message=(
-                        "Nenhum monitor de pipeline rodando NESTE processo. O "
-                        "pipeline autônomo roda como a deployment separada "
-                        "`deile-pipeline` — verifique com `kubectl -n deile get "
-                        "deploy deile-pipeline` e `kubectl -n deile logs "
+                        f"{state}. O pipeline autônomo roda como a deployment "
+                        "separada `deile-pipeline` — verifique com `kubectl -n "
+                        "deile get deploy deile-pipeline` e `kubectl -n deile logs "
                         "deploy/deile-pipeline`. (Para um monitor local: /pipeline start.)"
                     ),
                 )

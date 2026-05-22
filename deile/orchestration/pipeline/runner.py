@@ -10,6 +10,13 @@ needs no local LLM provider: it orchestrates via the ``gh`` CLI and dispatches
 the heavy implement/review work to the ``deile-worker`` Pod over HTTP. That is
 why this runner does **not** call ``bootstrap_providers`` or construct a
 ``DeileAgent`` — keeping the pipeline Pod lean.
+
+Throughput tradeoff: ``tick()`` runs sequentially in a single loop, and in
+``deile_worker`` mode implement/review delegate to a blocking (``wait=True``)
+worker dispatch. A single long implementation therefore stalls the whole tick
+— PR review, mention handling, every other issue — until it returns. This is
+intentional for now (one worker does one thing at a time); interleaving long
+work as a background task is tracked separately (see issue #254).
 """
 
 from __future__ import annotations

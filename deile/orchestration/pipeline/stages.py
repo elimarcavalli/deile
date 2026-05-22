@@ -355,13 +355,18 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
     )
     if target is None:
         return
-    # Atomic claim BEFORE any notification or work: move the issue out of
-    # ~workflow:revisada and into ~workflow:em_implementacao. This is the lock
-    # that stops the SAME issue from being picked up twice — the candidate
-    # query (list_issues_with_label) only returns ~workflow:revisada issues, so
-    # once claimed the issue drops out of the set for every later tick (and any
-    # second monitor). Without this claim, an issue that never produces a PR
-    # (e.g. a vague/meta issue the worker cannot implement) was re-selected and
+    # Best-effort claim (sequential-tick lock) BEFORE any notification or work:
+    # move the issue out of ~workflow:revisada and into ~workflow:em_implementacao.
+    # The candidate query (list_issues_with_label) only returns
+    # ~workflow:revisada issues, so once claimed the issue drops out of the set
+    # for every LATER tick — which is what stops the SAME issue from being
+    # re-picked across sequential ticks. NOTE: transition_issue is remove-then-add
+    # over two REST calls (not a single atomic op), so two genuinely concurrent
+    # monitors could still both observe ~workflow:revisada and double-claim;
+    # multi-monitor safety relies on the PID lock + single-replica Recreate +
+    # hash sharding of the shipped deile-pipeline deployment, not on this label
+    # flip. Without this claim, an issue that never produces a PR (e.g. a
+    # vague/meta issue the worker cannot implement) was re-selected and
     # re-dispatched on every tick, flooding the operator with duplicate
     # "Implementação iniciada" DMs.
     try:

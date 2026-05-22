@@ -725,6 +725,12 @@ def _set_typed(settings: "Settings", attr: str, value: Any) -> None:
                 return
         elif isinstance(current, int) and not isinstance(value, bool):
             value = int(value)
+            # Symmetry with the DEILE_MAX_TOOL_ITERATIONS env path
+            # (``max(1, int(raw))``): a non-positive cap would disable tool use,
+            # so clamp the settings.json path too instead of relying on a
+            # downstream consumer to neutralise it.
+            if attr == "max_tool_iterations":
+                value = max(1, value)
         elif isinstance(current, Path) or (current is None and attr in (
             "pipeline_base_path", "cron_db_path", "deile_md_user_path"
         )):
