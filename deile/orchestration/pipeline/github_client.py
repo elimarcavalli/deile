@@ -49,9 +49,16 @@ class GhCommandError(DEILEError):
 
 
 def _labels_from_gh(item: dict) -> Tuple[str, ...]:
-    return tuple(
-        lab["name"] for lab in item.get("labels", []) if isinstance(lab, dict)
-    )
+    """Extract label names from a gh JSON item. Tolerates both the object form
+    (``[{"name": ...}]``, from ``gh ... --json labels``) and the bare-string form
+    (``["bug", ...]``, from some ``gh api --jq`` shapes)."""
+    out: List[str] = []
+    for lab in item.get("labels", []):
+        if isinstance(lab, dict):
+            out.append(lab["name"])
+        elif isinstance(lab, str):
+            out.append(lab)
+    return tuple(out)
 
 
 @dataclass(frozen=True)
@@ -565,22 +572,7 @@ class GitHubClient:
         result: List[PrRef] = []
         for item in data:
             try:
-                # Normalize labels to the [{name: ...}] format expected by PrRef.
-                labels_raw = item.get("labels", [])
-                if labels_raw and isinstance(labels_raw[0], str):
-                    labels_normalized = [{"name": lb} for lb in labels_raw]
-                else:
-                    labels_normalized = labels_raw
-                result.append(PrRef(
-                    number=int(item["number"]),
-                    title=str(item.get("title", "")),
-                    url=str(item.get("url", "")),
-                    labels=_labels_from_gh({"labels": labels_normalized}),
-                    head_ref=str(item.get("headRefName") or ""),
-                    base_ref=str(item.get("baseRefName") or "main"),
-                    state=str(item.get("state", "open")),
-                    is_draft=bool(item.get("isDraft", False)),
-                ))
+                result.append(PrRef.from_gh_json(item))
             except (KeyError, TypeError, ValueError) as exc:
                 logger.warning("skipping malformed review-request PR: %s", exc)
         return result
@@ -610,16 +602,7 @@ class GitHubClient:
             try:
                 url = str(item.get("url", ""))
                 if "/pull/" in url or "/pulls/" in url:
-                    prs.append(PrRef(
-                        number=int(item["number"]),
-                        title=str(item.get("title", "")),
-                        url=url,
-                        labels=_labels_from_gh(item),
-                        head_ref="",
-                        base_ref="main",
-                        state=str(item.get("state", "open")),
-                        is_draft=False,
-                    ))
+                    prs.append(PrRef.from_gh_json(item))
                 else:
                     issues.append(IssueRef.from_gh_json(item))
             except (KeyError, TypeError, ValueError) as exc:
