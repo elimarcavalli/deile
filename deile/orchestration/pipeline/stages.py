@@ -145,7 +145,7 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
             )
         # Claim before labelling to reduce the TOCTOU window with parallel monitors.
         try:
-            batch = await monitor.github.claim_with_batch("issue", issue.number, issue.title)
+            batch = await monitor.github.claim_with_batch("issue", issue.number)
         except GhCommandError as exc:
             await _record_gh_error(
                 monitor, f"auto-classify claim #{issue.number} failed", exc,
@@ -220,7 +220,7 @@ async def classify_new_prs(monitor: "PipelineMonitor") -> None:
         if any(lb.startswith("~") for lb in pr.labels):
             continue
         try:
-            batch = await monitor.github.claim_with_batch("pr", pr.number, pr.title)
+            batch = await monitor.github.claim_with_batch("pr", pr.number)
         except GhCommandError as exc:
             await _record_gh_error(
                 monitor, f"pr_triage claim #{pr.number} failed", exc,
@@ -521,7 +521,7 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
     )
     if target is None:
         return
-    batch = await monitor.github.claim_with_batch("issue", target.number, target.title)
+    batch = await monitor.github.claim_with_batch("issue", target.number)
     if batch is None:
         return
     # Tag ownership so other monitors can identify who claimed this.
@@ -897,7 +897,7 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     if target is None:
         return
     is_resume = REVIEW_IN_PROGRESS in target.labels
-    batch = await monitor.github.claim_with_batch("pr", target.number, target.title)
+    batch = await monitor.github.claim_with_batch("pr", target.number)
     if batch is None:
         return
     # Tag ownership so other monitors can identify who claimed this PR —

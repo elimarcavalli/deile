@@ -350,7 +350,6 @@ class GitHubClient:
         self,
         kind: str,
         number: int,
-        title: str,
     ) -> Optional[str]:
         """Try to claim an issue/PR by attaching a batch lock label.
 
