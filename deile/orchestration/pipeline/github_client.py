@@ -295,7 +295,7 @@ class GitHubClient:
         except GhCommandError:
             return None
         item = json.loads(out)
-        if item.get("state", "open").lower() not in ("open",):
+        if item.get("state", "open").lower() != "open":
             return None
         return PrRef.from_gh_json(item)
 
