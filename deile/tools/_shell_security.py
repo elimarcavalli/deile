@@ -36,7 +36,7 @@ DANGEROUS_PATTERNS: Tuple[str, ...] = (
     r'wget.*\|\s*sh',           # wget-piped shell
     r'chmod\s+777\s+/',         # world-writable root
     r'chown\s+.*\s+/',          # chown root
-    r'>\s*/dev/.*',             # redirect to device
+    r'>\s*/dev/(sd[a-z]|nvme|hd[a-z]|disk|mapper|dm-?\d|md\d|loop\d|xvd|vd|mmcblk)',  # redirect to block device
 )
 
 # Patterns whose match emits a warning but does NOT block.
