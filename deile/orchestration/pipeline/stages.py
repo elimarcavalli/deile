@@ -710,6 +710,27 @@ async def resume_in_progress_issues(monitor: "PipelineMonitor") -> None:
     await _finalize_implement_outcome(monitor, target.number, outcome, resume=True)
 
 
+def _absorb_progress(
+    monitor: "PipelineMonitor", number: int, outcome: "WorkOutcome"
+) -> bool:
+    """Run the progress guard then absorb the worker's bookkeeping.
+
+    Returns ``zero_progress`` computed against the PREVIOUS fingerprint BEFORE
+    absorbing this attempt's fingerprint/attempt/budget — that order is
+    load-bearing (comparing the new fingerprint against itself would always
+    read as zero progress) and must stay identical across the implement and
+    review stages.
+    """
+    zero_progress = monitor._resume_tracker.is_zero_progress(number, outcome.fingerprint)
+    monitor._resume_tracker.update_from_worker(
+        number,
+        fingerprint=outcome.fingerprint,
+        attempt=outcome.tentativa,
+        budget_s=outcome.budget_acumulado_s,
+    )
+    return zero_progress
+
+
 async def _finalize_implement_outcome(
     monitor: "PipelineMonitor",
     number: int,
@@ -728,16 +749,7 @@ async def _finalize_implement_outcome(
     pr_url = outcome.pr_url or _extract_pr_url(outcome.text)
     ended = outcome.ended  # "" on the Claude path; ground-truth on the worker path
 
-    # Progress guard verdict computed against the PREVIOUS fingerprint, BEFORE
-    # absorbing this attempt's fingerprint (otherwise the comparison would be
-    # against itself and always read as zero progress).
-    zero_progress = monitor._resume_tracker.is_zero_progress(number, outcome.fingerprint)
-    monitor._resume_tracker.update_from_worker(
-        number,
-        fingerprint=outcome.fingerprint,
-        attempt=outcome.tentativa,
-        budget_s=outcome.budget_acumulado_s,
-    )
+    zero_progress = _absorb_progress(monitor, number, outcome)
 
     # 1. BLOQUEADO — the agent declared a hard impediment.
     if ended == _ENDED_BLOQUEADO:
@@ -930,15 +942,7 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     # strategy checks out the branch in a worktree; the worker strategy clones
     # and runs ``gh pr checkout`` inside its own sandbox.
     outcome = await monitor.implementer.review(monitor, target, resume=is_resume)
-    # Progress guard verdict BEFORE absorbing the new fingerprint (see the
-    # implement stage for why the order matters).
-    zero_progress = monitor._resume_tracker.is_zero_progress(
-        target.number, outcome.fingerprint
-    )
-    monitor._resume_tracker.update_from_worker(
-        target.number, fingerprint=outcome.fingerprint, attempt=outcome.tentativa,
-        budget_s=outcome.budget_acumulado_s,
-    )
+    zero_progress = _absorb_progress(monitor, target.number, outcome)
     # Ground-truth merge detection: the worker's structured ``ended`` is
     # authoritative; fall back to scanning the text for the MERGED marker.
     merged = outcome.ended == _ENDED_CONCLUIDO or (
