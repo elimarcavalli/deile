@@ -333,7 +333,10 @@ Você foi solicitado APENAS como REVISOR da Pull Request #{number} do repositór
 1. Garanta um clone atualizado de {repo} em ./repo (gh repo clone {repo} repo se não existir; senão git fetch origin). Dentro de ./repo: gh pr checkout {number}.
 2. LEIA O DIFF INTEIRO e entenda a intenção: git diff {main}...HEAD. Leia cada arquivo tocado.
 3. AVALIE com RIGOR contra o checklist do revisor (corretude/IDEMPOTÊNCIA — re-dispara a cada tick sem claim/dedup?; SOLID/SRP/DRY/KISS; arquitetura hexagonal; SEGURANÇA — injeção em jq/shell/SQL, segredo em log; error handling tipado; testes de borda; packaging — arquivo novo no COPY do Dockerfile e no allowlist). Anote cada achado com arquivo:linha.
-4. POSTE a review via REST (você pode NÃO ser o autor; mesmo assim use REST para evitar escopos extras): gh api -X POST repos/{repo}/pulls/{number}/reviews -f event=COMMENT -f body="<resumo dos achados, arquivo:linha, e o que precisa mudar>". Use event=REQUEST_CHANGES se houver bloqueio; COMMENT se forem sugestões. NÃO use APPROVE (a decisão de merge é do autor/assignee).
+4. POSTE a review via REST com o VEREDITO explícito: gh api -X POST repos/{repo}/pulls/{number}/reviews -f event=<EVENT> -f body="<resumo dos achados, arquivo:linha>". Escolha o EVENT:
+   - **APPROVE** — se NÃO houver nada bloqueante (a PR está pronta para merge). EXCEÇÃO: se VOCÊ for o autor da PR (`gh pr view {number} --json author -q .author.login` == você), o GitHub recusa self-approve — nesse caso use `COMMENT` (o assignee-autor finalizará o merge no próximo tick).
+   - **REQUEST_CHANGES** — se houver QUALQUER problema bloqueante que precise ser corrigido antes do merge.
+   Você ainda NÃO mergeia — quem mergeia é o autor/assignee (Decisão #32).
 5. DEVOLVA ao autor: descubra o autor (AUTOR=$(gh pr view {number} --repo {repo} --json author -q .author.login)) e marque-o como ASSIGNEE: gh api -X POST repos/{repo}/issues/{number}/assignees -f "assignees[]=$AUTOR". (Mesmo que o autor seja você — é o sinal de "bola de volta pro autor".)
 6. NÃO mergeie, NÃO faça commits de correção. Seu trabalho termina ao postar a review e devolver ao autor.
 7. Na ÚLTIMA LINHA escreva a URL da PR (https://github.com/{repo}/pull/{number}). Se algo REAL impediu a review, escreva `BLOQUEADO: <motivo concreto>`. NUNCA invente um resultado.

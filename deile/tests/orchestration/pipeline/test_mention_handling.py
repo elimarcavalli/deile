@@ -469,3 +469,23 @@ class TestProcessMentionsModeRouting:
         await monitor._process_mentions()
         monitor.implementer.mention.assert_not_called()
         github.add_labels.assert_any_call("issue", 42, [WORKFLOW_NEW])
+
+    async def test_review_only_does_not_mark_processed(self):
+        """review_only must NOT apply ~mention:processado: GitHub removes the
+        requested-reviewer once the review is submitted, and leaving the marker
+        OFF lets the assignee trigger (author assigned back) fire next tick so a
+        DEILE-authored PR self-completes (Decisão #32)."""
+        monitor, github, notifier = self._spy_monitor()
+        github.list_prs_with_review_requests = AsyncMock(return_value=[_pr_ref(88)])
+        await monitor._process_mentions()
+        assert monitor.implementer.mention.call_args.kwargs["mode"] == "review_only"
+        assert monitor.stats.mentions_processed == 1
+        github.add_labels.assert_not_called()  # no ~mention:processado on review_only
+
+    async def test_work_merge_marks_processed(self):
+        """Contrast with review_only: assignee (work_merge) DOES mark processed."""
+        monitor, github, notifier = self._spy_monitor()
+        github.list_prs_assigned_to = AsyncMock(return_value=[_pr_ref(77)])
+        await monitor._process_mentions()
+        assert monitor.implementer.mention.call_args.kwargs["mode"] == "work_merge"
+        github.add_labels.assert_called_once_with("pr", 77, [MENTION_DONE])
