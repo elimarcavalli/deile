@@ -8,15 +8,141 @@
 
 ---
 
-> ## ⚠️ Atualização (2026-05-22) — leia antes do corpo abaixo
+> ## 🚦 Estado atual (atualização 2026-05-22 22:00 — supera o sync das 11:37)
 >
-> Este documento descreve o **design inicial (V1, 2026-05-06)**. Desde então o pipeline evoluiu bastante; o corpo abaixo (seções 1–11) descreve o estado original, com estes **deltas** sobre a realidade atual (fonte autoritativa: `docs/system_design/DECISOES.md` #30–#33):
+> O corpo abaixo (seções 1–11) descreve o **design original V1 (2026-05-06)**. Desde então o pipeline ganhou **portão de refinamento**, **decomposição/paralelismo**, **quality-gate real** e várias correções. Esta seção é a **fonte autoritativa do comportamento atual** — leia primeiro.
 >
-> 1. **Execução não é mais só `claude -p`.** Há uma estratégia plugável `PipelineImplementer` (`dispatch_mode`): `ClaudeImplementer` (legado) **ou** `WorkerImplementer`, que despacha ao Pod `deile-worker` por HTTP — o loop pode ser 100% DEILE-a-DEILE (Decisão #31). O cluster roda em `deile_worker`.
-> 2. **Resume (#30):** uma implementação/review que para no meio fica em `~workflow:em_implementacao` (ou PR em `~review:em_andamento`) e é **auto-retomada** no próximo tick (reusa o PVC, sem `reset --hard`), com teto de tentativas/orçamento. `~workflow:bloqueada` exclui do auto-resume (humano remove p/ desbloquear).
-> 3. **Menção/atribuição (#32):** `process_mentions` roteia por papel — issue+assignee/body → injeta `~workflow:nova`; PR+assignee → revisa+resolve threads+mergeia; PR+reviewer-só → **revisa e devolve ao autor, sem mergear**; comment → atende ao pedido. Idempotência por `~mention:processado`. A review/merge de PR roda sob a persona **`reviewer`** (quality-gate SOLID/SRP/segurança, não só testes verdes).
-> 4. **Triagem (#33):** `~review:pendente` só é aplicado a PR de branch que o monitor revisaria (`auto/issue-*`); o lock `~batch:` na classificação só é reivindicado com `shard_count>1`.
-> 5. **Labels atuais** incluem `~workflow:bloqueada` e `~mention:processado` além dos listados abaixo.
+> ### 🎯 Máquina de estados — issue (com portão de refinamento)
+>
+> ```
+>                  🆕 ~workflow:nova
+>                          │
+>                          ▼
+>            🔍 ~workflow:em_revisao
+>            (crítica de escopo, persona por tipo)
+>                          │
+>          ┌───────────────┴───────────────┐
+>        CLARO                           POBRE
+>          │                               │
+>          ▼                               ▼
+>   ✅ ~workflow:               🏷️ refinar +
+>      revisada                 🧠 em_refinamento   (intent → analyst)
+>          │                            ─ ou ─
+>          │                    🏛️ em_arquitetura   (feature/bug/refactor → architect/debugger)
+>          │                               │
+>          │           ⏸️ aguardando_stakeholder ⇄ comentário do humano
+>          │                               │   (remover label lifta a pausa)
+>          │                               ▼
+>          │                      refina: lê comentários,
+>          │                      reescreve corpo, corrige
+>          │                      título p/ [TIPO] → ~nova
+>          │                               │
+>          │                          teto 5 voltas
+>          │                               ▼
+>          │                       ⛔ ~workflow:bloqueada
+>          │                       (devolve ao autor; humano destrava)
+>          ▼
+>   ┌──────────────────────────────────────────┐
+>   │  Tipo da issue?                          │
+>   ├──────────────────┬───────────────────────┤
+>   │     INTENT       │  FEATURE / BUG /      │
+>   │                  │  REFACTOR             │
+>   │       ▼          │        ▼              │
+>   │ 🧩 decompõe em N │ 🚀 implementa em      │
+>   │   issues deri-   │   paralelo (asyncio.  │
+>   │   vadas (arch.)  │   gather, max_par=2,  │
+>   │       ▼          │   2 réplicas)         │
+>   │ ✨ ~workflow:    │        ▼              │
+>   │   decomposta     │ ~workflow:            │
+>   │   (vira épico)   │   em_implementacao    │
+>   │                  │   (resume se parar)   │
+>   │                  │        ▼              │
+>   │                  │ 📬 ~workflow:em_pr    │
+>   │                  │   (PR aberta)         │
+>   └──────────────────┴───────────────────────┘
+> ```
+>
+> ### 🔍 Crítica de escopo — quem revisa o quê
+>
+> | Tipo da issue | Persona crítica/refina | Label de refino             | Template fonte                       |
+> |---------------|------------------------|------------------------------|---------------------------------------|
+> | `intent`      | 🧠 **analyst**         | `~workflow:em_refinamento`   | `.github/ISSUE_TEMPLATE/intent.md`    |
+> | `feature`     | 🏛️ **architect**       | `~workflow:em_arquitetura`   | `feature_request.md`                  |
+> | `bug`         | 🪲 **debugger**        | `~workflow:em_arquitetura`   | `bug_report.md`                       |
+> | `refactor`    | 🏛️ **architect**       | `~workflow:em_arquitetura`   | `refactor_proposal.md`                |
+>
+> **CLARO** → vai pra `revisada`. **POBRE** → entra no refino (até **5 voltas**); se a decisão de alto impacto precisa do humano, o refinador **pausa em `~workflow:aguardando_stakeholder`** com 2-3 sugestões já comentadas; o humano resolve no comentário, remove a pausa, o ciclo retoma. Teto estourado → `~workflow:bloqueada` + assignee do autor.
+>
+> ### 🚀 Decomposição vs implementação paralela
+>
+> - **Intent claro** → **NÃO vira código**. O `decompose_one_reviewed_intent` chama a persona **architect** para abrir N issues derivadas (cada uma já com tipo, label, template, critérios e plano de teste). A intent recebe `~workflow:decomposta` e fica como épico.
+> - **Feature / Bug / Refactor claro** → vai pra `em_implementacao`; o stage roda **até `max_parallel=2` issues em paralelo** (`asyncio.gather`). O **worker** está em **2 réplicas** no cluster, o Service balanceia, cada tarefa tem workspace próprio na PVC.
+>
+> ### ✅ Quality-gate de PR (review/merge) — não é mais test-only nem subset
+>
+> | # | Passo | Falha = |
+> |---|-------|---------|
+> | 1 | `gh pr checkout {N}` + lê o diff inteiro | — |
+> | 2b ⭐ | **Confronta entrega vs pedido**: lê a issue + TODOS os comentários, checa item a item | ❌ IMPEDIMENTO — devolve ao autor |
+> | 3 | Checklist: corretude/idempotência, SOLID/SRP/DRY/KISS, hexagonal, segurança, error handling, packaging | ❌ REQUEST_CHANGES |
+> | 4 | Corrige achados (commit normal, sem force-push) + push | — |
+> | 5 🧪 | **GATE: SUÍTE COMPLETA** `pytest deile/tests/ -q` (com cobertura — o portão real de CI) | ❌ IMPEDIMENTO — subset **não** basta |
+> | 5b | Resolve threads (faz ou justifica criticamente) | — |
+> | 6 | Documenta evidências em comentário na PR | — |
+> | 7 | **VEREDITO** — só mergeia se 2b + 3 + 5 OK | — |
+>
+> ### 🧭 Roteador de menção/atribuição — precedência `assignee > reviewer > comment/body`
+>
+> | Gatilho                                  | Modo do worker     | Mergeia? | Persona     |
+> |------------------------------------------|--------------------|----------|-------------|
+> | Issue + assignee / body-mention          | injeta `~workflow:nova` | — (pipeline assume) | por tipo |
+> | PR + **assignee** (+/– reviewer)         | `work_merge`       | ✅ sim   | `reviewer`  |
+> | PR + **reviewer só**                     | `review_only`      | ❌ devolve ao autor | `reviewer` |
+> | PR + comment/body dirigida               | `pr_address`       | ❌ (autor mergeia) | escolhida |
+> | Issue + comment dirigida                 | `one-shot`         | n/a      | escolhida   |
+>
+> **Idempotência cross-tick**: gatilhos sticky marcam `~mention:processado` (humano remove p/ re-disparar). Comentário em issue já no gate (`~workflow:em_*`) **não tira a issue do gate** — é ignorado pelo roteador, **mas** remove a pausa `aguardando_stakeholder` se houver.
+>
+> ### 🏷️ Catálogo atual de labels
+>
+> | Cat. | Label | Significado |
+> |---|---|---|
+> | 🆕 issue | `~workflow:nova` | Entrou; aguarda crítica de escopo |
+> | 🔍 issue | `~workflow:em_revisao` | Crítica em andamento |
+> | ✅ issue | `~workflow:revisada` | Escopo CLARO; vai pro próximo estágio |
+> | 🏷️ refino | `refinar` | Marcador "esta issue está no portão de refinamento" |
+> | 🧠 refino | `~workflow:em_refinamento` | Refino de **intent** (analyst) |
+> | 🏛️ refino | `~workflow:em_arquitetura` | Refino de **feature/bug/refactor** (architect/debugger) |
+> | ⏸️ refino | `~workflow:aguardando_stakeholder` | Pausado p/ resposta do humano |
+> | 🧩 intent | `~workflow:decomposta` | Intent decomposta em derivadas; vira épico |
+> | 🚀 code | `~workflow:em_implementacao` | Worker(s) implementando (paralelo até `max_parallel`) |
+> | 📬 code | `~workflow:em_pr` | PR aberta |
+> | ⛔ universal | `~workflow:bloqueada` | Impedimento real; exclui auto-resume |
+> | 🔁 PR | `~review:pendente` / `em_andamento` / `concluida` | Estágios da review (só `auto/issue-*` ou opt-in) |
+> | 🔒 lock | `~batch:<sha8>` | Lock multi-monitor (só quando `shard_count>1`) |
+> | 👤 lock | `~by:<id>` | Dono do trabalho |
+> | ✔️ marker | `~mention:processado` | Gatilho sticky já tratado |
+>
+> ### 📜 Histórico recente
+>
+> | Data            | PR / Commit | O que mudou |
+> |-----------------|-------------|-------------|
+> | 2026-05-22 11:37 | `fbddc25`   | Sync anterior (deltas #30–#33) |
+> | 2026-05-22 12:10 | **PR #266** | Reviewer verdict APPROVE/REQUEST_CHANGES explícito + DEILE-autor self-completes |
+> | 2026-05-22 18:25 | **PR #269** | Refatoração: shared batch-claim flow + collapse de personas no router |
+> | 2026-05-22 19:04 | **PR #275** | 🧩 **Portão de refinamento + decomposição paralela** (intent vs code-types; analyst/architect/debugger; `asyncio.gather`; 2 réplicas de worker) |
+> | 2026-05-22 19:46 | **PR #276** | 🧪 **Gate exige suíte COMPLETA verde** nos 5 briefs-portão (`review_only` antes não rodava teste algum) + confronto-vs-pedido no `review_only` |
+>
+> ### 🗂️ Onde mexer (mapa rápido)
+>
+> | Comportamento | Arquivo |
+> |---|---|
+> | Briefs (prompts) de review/implement/refine/critique/decompose | `deile/orchestration/pipeline/briefs.py` |
+> | Stages (orquestração dos handlers) | `deile/orchestration/pipeline/stages.py` |
+> | Labels (definições + helpers de tipo→persona) | `deile/orchestration/pipeline/labels.py` |
+> | Estratégia de execução (Claude vs Worker) | `deile/orchestration/pipeline/implementer.py` |
+> | Personas (instruções) | `deile/personas/instructions/{analyst,architect,debugger,reviewer,developer}.md` |
+> | Roteador de menção/atribuição | `process_mentions` em `stages.py` |
 
 ---
 
