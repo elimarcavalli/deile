@@ -12,7 +12,6 @@ import pytest
 from deile.tools._shell_security import assess_risk, is_blocked
 from deile.tools.base import SecurityLevel
 
-
 # ── Comandos inofensivos que NÃO devem ser bloqueados ──────────────────
 
 SAFE_REDIRECT_COMMANDS = [
