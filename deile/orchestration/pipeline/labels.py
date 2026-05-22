@@ -43,6 +43,18 @@ REVIEW_PENDING = "~review:pendente"
 REVIEW_IN_PROGRESS = "~review:em_andamento"
 REVIEW_CONCLUDED = "~review:concluida"
 
+# Mention handling --------------------------------------------------------
+# Sticky "already handled" marker for the mention stage (issue #253 follow-up).
+# Comment mentions are deduplicated by the timestamp cursor, but the STICKY
+# triggers (assignee / requested-reviewer / body-mention) describe a state that
+# does not change tick-to-tick — so without a marker they re-fire on EVERY tick,
+# re-dispatching the same implement/review forever (the duplicate-DM storm bug
+# class). After a successful mention dispatch whose group carried a sticky
+# trigger, the target gets this label and is excluded from subsequent sticky
+# polls. A NEW comment still re-triggers (comments ignore this label and are
+# governed by the cursor). A human removes it to force a re-handle.
+MENTION_DONE = "~mention:processado"
+
 # Distributed lock --------------------------------------------------------
 BATCH_LABEL_PREFIX = "~batch:"
 
@@ -57,6 +69,8 @@ WORKFLOW_LABELS = (
 
 REVIEW_LABELS = (REVIEW_PENDING, REVIEW_IN_PROGRESS, REVIEW_CONCLUDED)
 
+MENTION_LABELS = (MENTION_DONE,)
+
 LABEL_COLORS = {
     WORKFLOW_NEW: "0e8a16",
     WORKFLOW_REVIEWING: "fbca04",
@@ -67,6 +81,7 @@ LABEL_COLORS = {
     REVIEW_PENDING: "0e8a16",
     REVIEW_IN_PROGRESS: "fbca04",
     REVIEW_CONCLUDED: "0e8a16",
+    MENTION_DONE: "c5def5",
 }
 
 LABEL_DESCRIPTIONS = {
@@ -79,6 +94,7 @@ LABEL_DESCRIPTIONS = {
     REVIEW_PENDING: "Pipeline: PR aguardando revisão",
     REVIEW_IN_PROGRESS: "Pipeline: PR em revisão (lock)",
     REVIEW_CONCLUDED: "Pipeline: PR revisada/mergeada",
+    MENTION_DONE: "Pipeline: menção/atribuição já processada — humano remove para reprocessar",
 }
 
 

@@ -104,6 +104,8 @@ class PipelineImplementer(ABC):
         *,
         trigger_types: list[str] | None = None,
         all_triggers: list["MentionTrigger"] | None = None,
+        mode: str = "comment",
+        resume: bool = False,
     ) -> WorkOutcome:
         ...
 
@@ -165,8 +167,11 @@ class ClaudeImplementer(PipelineImplementer):
         *,
         trigger_types: list[str] | None = None,
         all_triggers: list["MentionTrigger"] | None = None,
+        mode: str = "comment",
+        resume: bool = False,
     ) -> WorkOutcome:
-        # Build context-aware prompt from all trigger types
+        # ``mode``/``resume`` are accepted for interface parity with the worker
+        # path; the legacy Claude path keeps its single context-aware prompt.
         prompt = _render_claude_mention_prompt(
             monitor.config.repo, ref, trigger_types or [], all_triggers or []
         )
@@ -208,17 +213,26 @@ DEFINITION OF DONE: existe uma PR aberta cuja URL você confirmou via gh. Se pus
 """
 
 _WORKER_REVIEW_BRIEF = """\
-Revise, corrija e mergeie a Pull Request #{number} do repositório {repo} — execute de verdade.
+Você é o QUALITY GATE final da Pull Request #{number} do repositório {repo}. Revise com RIGOR, corrija e — só se passar no portão — mergeie. Execute de verdade: testes verdes NÃO bastam.
 
-1. Garanta um clone atualizado de {repo} em ./repo (gh repo clone {repo} repo se não existir; senão git fetch origin).
-2. Dentro de ./repo rode: gh pr checkout {number}
-3. Rode os testes. As dependências (incl. pytest) JÁ estão no ambiente — NÃO rode `pip install` (filesystem read-only). Para os testes do PR sem o gate global de cobertura: python3 -m pytest <arquivos> -p no:cov -q. Corrija o que falhar com commits normais (SEM force-push) e dê push.
-4. Quando 100% dos testes passarem, MERGEIE. NÃO tente `gh pr review --approve` (você é o autor da PR; o GitHub recusa auto-aprovação, e não há branch protection exigindo review). Mergeie via REST (evita o escopo read:org que o `gh pr merge` às vezes exige):
-   gh api -X PUT repos/{repo}/pulls/{number}/merge -f merge_method=merge
-   Se a REST falhar, tente: gh pr merge {number} --repo {repo} --merge
-5. Confirme o merge: gh pr view {number} --repo {repo} --json state,merged -q .merged  (deve ser true).
-6. Na ÚLTIMA LINHA escreva a URL da PR seguida da palavra MERGED, ex.: https://github.com/{repo}/pull/{number} MERGED
-   Se NÃO conseguir mergear, escreva a URL e o motivo real — NUNCA escreva MERGED sem ter mergeado de fato.
+1. Garanta um clone atualizado de {repo} em ./repo (gh repo clone {repo} repo se não existir; senão git fetch origin). Dentro de ./repo: gh pr checkout {number}
+2. LEIA O DIFF INTEIRO e entenda a intenção da mudança: git diff {main}...HEAD ; git diff HEAD. Liste os arquivos tocados e leia cada um por completo.
+3. AVALIE contra o checklist do revisor e anote cada achado (arquivo:linha + problema):
+   - Corretude e IDEMPOTÊNCIA: a lógica re-executa sem efeito duplicado? Algo em loop/por tick/agendado re-dispara a cada execução sem claim/dedup/cursor? (storms de processamento duplicado são a classe de bug nº 1 deste projeto)
+   - SOLID / SRP / DRY / KISS: responsabilidade única; sem duplicação real nem abstração prematura.
+   - Arquitetura hexagonal: núcleo sem SDK externo; componentes via registry; Tool retorna ToolResult; I/O async.
+   - SEGURANÇA: input sanitizado antes de shell/SQL/fs; sem segredo em log; sem injeção (nada de f-string em filtro jq/shell/SQL — use --arg/binding).
+   - Error handling: sem bare except; exceções tipadas (DEILEError); CancelledError re-raised; nenhum awaitable sem await.
+   - Testes cobrem casos de BORDA e a regressão que a PR alega corrigir.
+   - Packaging/deploy: arquivo novo importado em runtime está no COPY do Dockerfile E no allowlist do .dockerignore?
+4. CORRIJA os achados com commits normais (SEM force-push) e dê push. Adicione os testes que faltarem.
+5. Rode os testes e garanta 100% de aprovação. Dependências (incl. pytest) JÁ instaladas — NÃO rode `pip install` (filesystem read-only). Testes do PR sem o gate global de cobertura: python3 -m pytest <arquivos> -p no:cov -q
+5b. THREADS/NOTAS de review pendentes: liste os comentários de review (gh api repos/{repo}/pulls/{number}/comments). Para CADA thread/nota, JULGUE criticamente se o que foi pedido está realmente correto — NÃO obedeça cegamente. Se procede, RESOLVA (faça a mudança + responda a thread citando o commit). Se NÃO procede, responda a thread com uma JUSTIFICATIVA concreta de por que não fazer. Não deixe thread pendente sem ação ou justificativa.
+6. DOCUMENTE as evidências como comentário na PR (gh pr comment {number} --repo {repo} --body "..."): o que revisou, os achados, as correções, como tratou cada thread, e a saída REAL dos testes.
+7. VEREDITO:
+   - Checklist OK E testes verdes → MERGEIE. Você é o autor da PR; NÃO use `gh pr review --approve` (o GitHub recusa auto-aprovação). Mergeie via REST (evita o escopo read:org): gh api -X PUT repos/{repo}/pulls/{number}/merge -f merge_method=merge (fallback: gh pr merge {number} --repo {repo} --merge). Confirme: gh pr view {number} --repo {repo} --json merged -q .merged (deve ser true).
+   - Impedimento REAL que você não pode resolver com segurança (decisão de produto pendente, falta credencial/segredo, mudança quebraria contrato sem migração) → NÃO mergeie; comente o motivo na PR e escreva numa linha começando com `BLOQUEADO: <motivo concreto>`.
+8. Na ÚLTIMA LINHA: a URL da PR seguida de MERGED (ex.: https://github.com/{repo}/pull/{number} MERGED) se mergeou; OU a linha `BLOQUEADO: <motivo>`. NUNCA escreva MERGED sem ter mergeado de fato; NUNCA invente resultado.
 """
 
 # --- Resume briefs (issue #254) -----------------------------------------------
@@ -257,17 +271,19 @@ DEFINITION OF DONE: existe uma PR aberta cuja URL você confirmou via gh. NUNCA 
 """
 
 _WORKER_REVIEW_RESUME_BRIEF = """\
-RETOMADA da revisão/merge da Pull Request #{number} do repositório {repo} — uma tentativa anterior já começou. NÃO descarte o trabalho parcial.
+RETOMADA do QUALITY GATE da Pull Request #{number} do repositório {repo} — uma tentativa anterior já começou. NÃO descarte o trabalho parcial. Testes verdes NÃO bastam.
 
 1. Use o clone existente em ./repo (NÃO rode `git reset --hard`, NÃO apague untracked). Garanta o checkout da PR: gh pr checkout {number}
 2. RECONSTRUA O CONTEXTO: leia o journal da tentativa anterior e o diff/untracked atuais:
 {progress_block}
    git diff {main}...HEAD ; git status --porcelain (leia cada arquivo modificado/untracked listado).
-3. Rode os testes. Dependências JÁ instaladas — NÃO rode `pip install`. Para os testes do PR sem o gate global: python3 -m pytest <arquivos> -p no:cov -q. Corrija o que falta com commits normais (SEM force-push) e dê push.
-4. Quando 100% dos testes passarem, MERGEIE via REST: gh api -X PUT repos/{repo}/pulls/{number}/merge -f merge_method=merge (fallback: gh pr merge {number} --repo {repo} --merge).
-5. Confirme: gh pr view {number} --repo {repo} --json merged -q .merged (deve ser true).
-6. ANTES DE PARAR, atualize `.deile-progress.md` no diretório de trabalho (fora de ./repo, sem commitar).
-7. Se um impedimento real impedir o merge, escreva `BLOQUEADO: <motivo>`. Caso contrário, na ÚLTIMA LINHA escreva a URL da PR seguida de MERGED. NUNCA escreva MERGED sem ter mergeado.
+3. AVALIE com RIGOR contra o checklist do revisor (corretude/IDEMPOTÊNCIA — re-dispara a cada tick sem claim/dedup?; SOLID/SRP/DRY/KISS; arquitetura hexagonal; SEGURANÇA — injeção em jq/shell/SQL, segredo em log; error handling tipado; testes de borda + a regressão alegada; packaging — arquivo novo no COPY do Dockerfile e no allowlist do .dockerignore). Anote cada achado (arquivo:linha + problema).
+4. CORRIJA os achados com commits normais (SEM force-push) e dê push. Adicione os testes que faltarem.
+5. Rode os testes e garanta 100% de aprovação. Dependências JÁ instaladas — NÃO rode `pip install`. Testes do PR sem o gate global: python3 -m pytest <arquivos> -p no:cov -q.
+6. DOCUMENTE as evidências como comentário na PR (gh pr comment {number} --repo {repo} --body "...").
+7. VEREDITO — só mergeie se o checklist passou E os testes estão verdes: gh api -X PUT repos/{repo}/pulls/{number}/merge -f merge_method=merge (fallback: gh pr merge {number} --repo {repo} --merge). Confirme: gh pr view {number} --repo {repo} --json merged -q .merged (deve ser true).
+8. ANTES DE PARAR, atualize `.deile-progress.md` no diretório de trabalho (fora de ./repo, sem commitar): o que revisou, achados, correções e o que falta.
+9. Se um impedimento real impedir o merge com qualidade, escreva `BLOQUEADO: <motivo concreto>`. Caso contrário, na ÚLTIMA LINHA escreva a URL da PR seguida de MERGED. NUNCA escreva MERGED sem ter mergeado de fato; NUNCA invente resultado.
 """
 
 _WORKER_MENTION_BRIEF = """\
@@ -399,8 +415,8 @@ def _render_worker_implement_brief(
     )
 
 
-def _render_worker_review_brief(repo: str, main: str, number: int, title: str) -> str:
-    return _WORKER_REVIEW_BRIEF.format(repo=repo, main=main, number=number, title=title)
+def _render_worker_review_brief(repo: str, main: str, number: int) -> str:
+    return _WORKER_REVIEW_BRIEF.format(repo=repo, main=main, number=number)
 
 
 # The journal lives in the worker's per-channel PVC workspace (one level above
@@ -430,11 +446,54 @@ def _render_worker_implement_resume_brief(
 
 
 def _render_worker_review_resume_brief(
-    repo: str, main: str, number: int, title: str
+    repo: str, main: str, number: int
 ) -> str:
     return _WORKER_REVIEW_RESUME_BRIEF.format(
-        repo=repo, main=main, number=number, title=title, progress_block=_PROGRESS_BLOCK
+        repo=repo, main=main, number=number, progress_block=_PROGRESS_BLOCK
     )
+
+
+# --- Reviewer-only brief (issue #253 follow-up) -------------------------------
+# When DEILE is requested ONLY as a reviewer (not assignee/owner), the operator
+# policy is: REVIEW and hand the PR back to its author — never fix, never merge.
+# DEILE submits a review via REST and sets the PR author as assignee (even when
+# the author is DEILE itself). GitHub removes a requested reviewer from the
+# "requested" set once they submit a review, so this is naturally idempotent.
+_WORKER_REVIEW_ONLY_BRIEF = """\
+Você foi solicitado APENAS como REVISOR da Pull Request #{number} do repositório {repo}. Seu papel é SÓ revisar e DEVOLVER ao autor — NÃO corrija o código, NÃO faça commits, NÃO mergeie. Execute de verdade.
+
+1. Garanta um clone atualizado de {repo} em ./repo (gh repo clone {repo} repo se não existir; senão git fetch origin). Dentro de ./repo: gh pr checkout {number}.
+2. LEIA O DIFF INTEIRO e entenda a intenção: git diff {main}...HEAD. Leia cada arquivo tocado.
+3. AVALIE com RIGOR contra o checklist do revisor (corretude/IDEMPOTÊNCIA — re-dispara a cada tick sem claim/dedup?; SOLID/SRP/DRY/KISS; arquitetura hexagonal; SEGURANÇA — injeção em jq/shell/SQL, segredo em log; error handling tipado; testes de borda; packaging — arquivo novo no COPY do Dockerfile e no allowlist). Anote cada achado com arquivo:linha.
+4. POSTE a review via REST (você pode NÃO ser o autor; mesmo assim use REST para evitar escopos extras): gh api -X POST repos/{repo}/pulls/{number}/reviews -f event=COMMENT -f body="<resumo dos achados, arquivo:linha, e o que precisa mudar>". Use event=REQUEST_CHANGES se houver bloqueio; COMMENT se forem sugestões. NÃO use APPROVE (a decisão de merge é do autor/assignee).
+5. DEVOLVA ao autor: descubra o autor (AUTOR=$(gh pr view {number} --repo {repo} --json author -q .author.login)) e marque-o como ASSIGNEE: gh api -X POST repos/{repo}/issues/{number}/assignees -f "assignees[]=$AUTOR". (Mesmo que o autor seja você — é o sinal de "bola de volta pro autor".)
+6. NÃO mergeie, NÃO faça commits de correção. Seu trabalho termina ao postar a review e devolver ao autor.
+7. Na ÚLTIMA LINHA escreva a URL da PR (https://github.com/{repo}/pull/{number}). Se algo REAL impediu a review, escreva `BLOQUEADO: <motivo concreto>`. NUNCA invente um resultado.
+"""
+
+
+# --- Address-PR brief: comment/body mention on a PR (no merge) ----------------
+# A @mention in a PR comment or body asks DEILE to DO what was requested on that
+# PR. It may fix code, but it must NOT merge (only the assignee finalizes a PR).
+# It also resolves any pending review threads with critical judgement.
+_WORKER_PR_ADDRESS_BRIEF = """\
+Você foi MENCIONADO na Pull Request #{number} do repositório {repo} (em comentário ou no corpo). Atenda ao que foi pedido — execute de verdade. NÃO mergeie (o merge é do autor/assignee).
+
+1. Garanta um clone atualizado de {repo} em ./repo; dentro dela: gh pr checkout {number}.
+2. Leia o contexto do que foi pedido (o comentário/corpo que te mencionou) e o diff atual (git diff {main}...HEAD).
+3. THREADS/NOTAS pendentes (gh api repos/{repo}/pulls/{number}/comments): para CADA uma, JULGUE criticamente se o que foi pedido está realmente correto. Se procede, FAÇA a mudança e responda a thread citando o commit. Se NÃO procede, responda com JUSTIFICATIVA concreta. Não deixe thread sem ação ou justificativa.
+4. Se a tarefa envolve código, edite, rode os testes (NÃO rode pip install — deps já instaladas; python3 -m pytest <arquivos> -p no:cov -q), faça commit normal (SEM force-push) e push.
+5. COMENTE o resultado na PR (gh pr comment {number} --repo {repo} --body "..."): o que fez, como tratou cada thread, e a saída real dos testes.
+6. NÃO mergeie. Na ÚLTIMA LINHA escreva a URL da PR. Se um impedimento real surgir, escreva `BLOQUEADO: <motivo concreto>`. NUNCA invente resultado.
+"""
+
+
+def _render_worker_review_only_brief(repo: str, main: str, number: int) -> str:
+    return _WORKER_REVIEW_ONLY_BRIEF.format(repo=repo, main=main, number=number)
+
+
+def _render_worker_pr_address_brief(repo: str, main: str, number: int) -> str:
+    return _WORKER_PR_ADDRESS_BRIEF.format(repo=repo, main=main, number=number)
 
 
 # (removed duplicate _render_worker_mention_brief — the context-aware version above is authoritative)
@@ -522,13 +581,14 @@ class WorkerImplementer(PipelineImplementer):
         brief: str,
         *,
         channel_id: str,
+        persona: str = "developer",
         resume_block: Optional[dict] = None,
     ) -> WorkOutcome:
         from deile.infrastructure.deile_worker_client import (
             WorkerDispatchError, build_dispatch_payload)
 
         payload = build_dispatch_payload(
-            brief=brief, channel_id=channel_id, persona="developer", wait=True
+            brief=brief, channel_id=channel_id, persona=persona, wait=True
         )
         # The resume context (issue #254) is an additive wire field consumed by
         # the worker; ``build_dispatch_payload`` validates the core fields, so
@@ -571,19 +631,24 @@ class WorkerImplementer(PipelineImplementer):
     ) -> WorkOutcome:
         if resume:
             brief = _render_worker_review_resume_brief(
-                monitor.config.repo, monitor.config.main_branch, pr.number, pr.title
+                monitor.config.repo, monitor.config.main_branch, pr.number
             )
         else:
             brief = _render_worker_review_brief(
-                monitor.config.repo, monitor.config.main_branch, pr.number, pr.title
+                monitor.config.repo, monitor.config.main_branch, pr.number
             )
         resume_block = _build_resume_block(
             monitor.config.repo, monitor.config.main_branch,
             pr.head_ref or f"pr/{pr.number}", resume=resume, expect_merge=True,
             pr_url_hint=pr.url,
         )
+        # The review/merge stage is the final quality gate: dispatch under the
+        # ``reviewer`` persona (instructions in personas/instructions/reviewer.md)
+        # so the worker evaluates SOLID/SRP/DRY/KISS/security/idempotency, not
+        # just whether the suite is green. implement/mention keep ``developer``.
         return await self._dispatch(
-            brief, channel_id=f"pipeline-pr-{pr.number}", resume_block=resume_block
+            brief, channel_id=f"pipeline-pr-{pr.number}",
+            persona="reviewer", resume_block=resume_block,
         )
 
     async def mention(
@@ -593,14 +658,67 @@ class WorkerImplementer(PipelineImplementer):
         *,
         trigger_types: list[str] | None = None,
         all_triggers: list["MentionTrigger"] | None = None,
+        mode: str = "comment",
+        resume: bool = False,
     ) -> WorkOutcome:
-        brief = _render_worker_mention_brief(
-            monitor.config.repo, ref,
-            trigger_types or [],
-            all_triggers or [],
+        """Dispatch a mention/assignment by ROLE (issue #253 follow-up).
+
+        ``mode`` (decided by the stage router) selects the brief + persona:
+
+        - ``review_only`` — requested reviewer: review + assign author back, NO
+          fix/merge (reviewer persona).
+        - ``work_merge`` — assignee on a PR: quality-gate review + resolve
+          threads + fix + MERGE (reviewer persona, resume-aware).
+        - ``address`` — comment/body mention on a PR: do what was asked +
+          resolve threads + push, NO merge (reviewer persona).
+        - ``comment`` — comment mention on an issue: do what the comment says
+          (developer persona, context-rich brief). Default.
+        """
+        repo = monitor.config.repo
+        main = monitor.config.main_branch
+        number = ref.target_number
+        channel_id = f"pipeline-mention-{ref.target_kind}-{number}"
+        pr_ref = next(
+            (t.pr for t in (all_triggers or [ref]) if t.pr is not None), None
         )
-        channel_id = f"pipeline-mention-{ref.target_kind}-{ref.target_number}"
-        return await self._dispatch(brief, channel_id=channel_id)
+        head = (pr_ref.head_ref if pr_ref else "") or f"pr/{number}"
+        pr_url_hint = pr_ref.url if pr_ref else ""
+
+        if mode == "review_only":
+            brief = _render_worker_review_only_brief(repo, main, number)
+            return await self._dispatch(
+                brief, channel_id=channel_id, persona="reviewer",
+                resume_block=_build_resume_block(
+                    repo, main, head, resume=resume, expect_merge=False,
+                    pr_url_hint=pr_url_hint,
+                ),
+            )
+        if mode == "work_merge":
+            brief = (
+                _render_worker_review_resume_brief(repo, main, number)
+                if resume else _render_worker_review_brief(repo, main, number)
+            )
+            return await self._dispatch(
+                brief, channel_id=channel_id, persona="reviewer",
+                resume_block=_build_resume_block(
+                    repo, main, head, resume=resume, expect_merge=True,
+                    pr_url_hint=pr_url_hint,
+                ),
+            )
+        if mode == "address":
+            brief = _render_worker_pr_address_brief(repo, main, number)
+            return await self._dispatch(
+                brief, channel_id=channel_id, persona="reviewer",
+                resume_block=_build_resume_block(
+                    repo, main, head, resume=resume, expect_merge=False,
+                    pr_url_hint=pr_url_hint,
+                ),
+            )
+        # Default: comment mention on an issue → do what the comment says.
+        brief = _render_worker_mention_brief(
+            repo, ref, trigger_types or [], all_triggers or [],
+        )
+        return await self._dispatch(brief, channel_id=channel_id, persona="developer")
 
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ import pytest
 from deile.orchestration.pipeline.labels import (BATCH_LABEL_PREFIX,
                                                  LABEL_COLORS,
                                                  LABEL_DESCRIPTIONS,
+                                                 MENTION_DONE, MENTION_LABELS,
                                                  REVIEW_LABELS, REVIEW_PENDING,
                                                  WORKFLOW_BLOCKED,
                                                  WORKFLOW_LABELS, WORKFLOW_NEW,
@@ -28,12 +29,21 @@ class TestLabelConstants:
         assert BATCH_LABEL_PREFIX == "~batch:"
 
     def test_every_label_has_color_and_description(self):
-        for label in (*WORKFLOW_LABELS, *REVIEW_LABELS):
+        for label in (*WORKFLOW_LABELS, *REVIEW_LABELS, *MENTION_LABELS):
             assert label in LABEL_COLORS
             assert label in LABEL_DESCRIPTIONS
             # Colors are 6-digit hex (no #).
             assert len(LABEL_COLORS[label]) == 6
             int(LABEL_COLORS[label], 16)
+
+    def test_mention_done_label_present(self):
+        # Cross-tick dedup of sticky mention triggers (issue #253 storm fix):
+        # the marker must be a mention label so ensure_pipeline_labels creates
+        # it, with color + description.
+        assert MENTION_DONE == "~mention:processado"
+        assert MENTION_DONE in MENTION_LABELS
+        assert MENTION_DONE in LABEL_COLORS
+        assert MENTION_DONE in LABEL_DESCRIPTIONS
 
     def test_blocked_label_present(self):
         # Resume feature (issue #254): the block label must be a workflow label

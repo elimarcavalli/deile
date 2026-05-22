@@ -109,6 +109,15 @@ def test_payload_rejects_unknown_persona():
         )
 
 
+def test_payload_accepts_reviewer_persona():
+    # The PR-review quality gate dispatches under the ``reviewer`` persona;
+    # the wire contract must accept it (see implementer.WorkerImplementer.review).
+    p = DispatchPayload.model_validate(
+        {"brief": "b", "channel_id": "c", "persona": "reviewer"}
+    )
+    assert p.persona == "reviewer"
+
+
 def test_payload_strips_brief_whitespace():
     p = DispatchPayload.model_validate(
         {"brief": "  do stuff  ", "channel_id": "c"}

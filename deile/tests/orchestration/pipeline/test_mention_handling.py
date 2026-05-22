@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
 from deile.orchestration.pipeline.github_client import (CommentRef, IssueRef, PrRef)
+from deile.orchestration.pipeline.implementer import WorkOutcome
+from deile.orchestration.pipeline.labels import MENTION_DONE, WORKFLOW_NEW
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
 
@@ -52,6 +54,9 @@ def _make_monitor(
     github.list_prs_assigned_to = AsyncMock(return_value=[])
     github.list_prs_with_review_requests = AsyncMock(return_value=[])
     github.search_items_mentioning = AsyncMock(return_value=([], []))
+    # The mention stage marks sticky triggers ~mention:processado after a
+    # successful dispatch (issue #253 cross-tick dedup fix).
+    github.add_labels = AsyncMock()
 
     notifier = MagicMock()
     for attr in (
@@ -171,17 +176,17 @@ class TestProcessMentions:
 
 # ----- Multi-trigger mention handling (issue #253) ------------------------
 
-def _issue_ref(number=100):
+def _issue_ref(number=100, labels=()):
     return IssueRef(
         number=number, title="test", url=f"https://github.com/o/r/issues/{number}",
-        labels=(),
+        labels=tuple(labels),
     )
 
 
-def _pr_ref(number=200):
+def _pr_ref(number=200, labels=()):
     return PrRef(
         number=number, title="pr", url=f"https://github.com/o/r/pull/{number}",
-        labels=(), head_ref=f"auto/issue-{number}",
+        labels=tuple(labels), head_ref=f"auto/issue-{number}",
     )
 
 
@@ -309,3 +314,157 @@ class TestProcessMentionsMultiTrigger:
         monitor = PipelineMonitor(cfg, github=github, worktrees=MagicMock(), claude=claude, notifier=notifier)
         await monitor._process_mentions()
         assert monitor._mention_cursor_path.exists()
+
+
+# ----- Cross-tick deduplication of sticky triggers (issue #253 storm fix) ----
+
+class TestProcessMentionsCrossTickDedup:
+    """The duplicate-DM storm: assignee/reviewer/body triggers re-appear on every
+    poll, so without a marker they re-dispatch the same work every tick. The fix
+    skips targets carrying ~mention:processado and applies it after a successful
+    sticky dispatch. Comments stay governed by the timestamp cursor and ignore
+    the label."""
+
+    async def test_assignee_issue_already_processed_is_skipped(self):
+        monitor, github, notifier = _make_monitor()
+        github.list_issues_assigned_to = AsyncMock(
+            return_value=[_issue_ref(42, labels=(MENTION_DONE,))]
+        )
+        await monitor._process_mentions()
+        notifier.mention_processed.assert_not_called()
+        assert monitor.stats.mentions_processed == 0
+        github.add_labels.assert_not_called()
+
+    async def test_assignee_issue_routes_into_pipeline(self):
+        """Assignee on an issue is INJECTED into the pipeline (~workflow:nova),
+        not one-shot dispatched — so it gets resume + auto/issue branch + review."""
+        monitor, github, notifier = _make_monitor()
+        github.list_issues_assigned_to = AsyncMock(return_value=[_issue_ref(42)])
+        await monitor._process_mentions()
+        assert monitor.stats.mentions_processed == 1
+        github.add_labels.assert_any_call("issue", 42, [WORKFLOW_NEW])
+        github.add_labels.assert_any_call("issue", 42, [MENTION_DONE])
+
+    async def test_assignee_issue_already_in_pipeline_not_reclassified(self):
+        """If the issue already carries a ~workflow:* label, don't re-add nova —
+        just mark processed."""
+        monitor, github, notifier = _make_monitor()
+        github.list_issues_assigned_to = AsyncMock(
+            return_value=[_issue_ref(42, labels=("~workflow:em_revisao",))]
+        )
+        await monitor._process_mentions()
+        # only the MENTION_DONE marker, never WORKFLOW_NEW
+        github.add_labels.assert_called_once_with("issue", 42, [MENTION_DONE])
+
+    async def test_assignee_pr_dispatch_marks_processed_with_pr_kind(self):
+        monitor, github, notifier = _make_monitor()
+        github.list_prs_assigned_to = AsyncMock(return_value=[_pr_ref(77)])
+        await monitor._process_mentions()
+        assert monitor.stats.mentions_processed == 1
+        github.add_labels.assert_called_once_with("pr", 77, [MENTION_DONE])
+
+    async def test_reviewer_already_processed_is_skipped(self):
+        monitor, github, notifier = _make_monitor()
+        github.list_prs_with_review_requests = AsyncMock(
+            return_value=[_pr_ref(88, labels=(MENTION_DONE,))]
+        )
+        await monitor._process_mentions()
+        assert monitor.stats.mentions_processed == 0
+        github.add_labels.assert_not_called()
+
+    async def test_body_mention_already_processed_is_skipped(self):
+        monitor, github, notifier = _make_monitor()
+        github.search_items_mentioning = AsyncMock(
+            return_value=([_issue_ref(55, labels=(MENTION_DONE,))], [])
+        )
+        await monitor._process_mentions()
+        assert monitor.stats.mentions_processed == 0
+        github.add_labels.assert_not_called()
+
+    async def test_comment_only_does_not_mark_processed(self):
+        """A comment-only group must NOT get the label — the cursor dedups it,
+        and marking would wrongly suppress a future assignment on the same item."""
+        comment = _comment(1, "@deile-one help")
+        monitor, github, notifier = _make_monitor(issue_comments=[comment])
+        await monitor._process_mentions()
+        assert monitor.stats.mentions_processed == 1
+        github.add_labels.assert_not_called()
+
+    async def test_comment_plus_assignee_same_issue_routes(self):
+        """A mixed group (comment + assignee) on an issue routes into the
+        pipeline once (assignee dominates → ~workflow:nova + marked done)."""
+        comment = _comment(50, "@deile-one fix this")  # targets issue #1
+        monitor, github, notifier = _make_monitor(issue_comments=[comment])
+        github.list_issues_assigned_to = AsyncMock(return_value=[_issue_ref(1)])
+        await monitor._process_mentions()
+        assert monitor.stats.mentions_processed == 1
+        github.add_labels.assert_any_call("issue", 1, [WORKFLOW_NEW])
+        github.add_labels.assert_any_call("issue", 1, [MENTION_DONE])
+
+    async def test_failed_pr_dispatch_does_not_mark_processed(self):
+        """A sticky PR trigger whose dispatch FAILS must NOT be marked — it is
+        retried next tick (only successful work is marked done)."""
+        monitor, github, notifier = _make_monitor(claude_ok=False)
+        github.list_prs_assigned_to = AsyncMock(return_value=[_pr_ref(77)])
+        await monitor._process_mentions()
+        assert monitor.stats.mentions_processed == 0
+        github.add_labels.assert_not_called()
+
+    async def test_mark_failure_does_not_crash_loop(self):
+        """If marking ~mention:processado fails after a successful PR dispatch,
+        the work still counts and the loop continues."""
+        monitor, github, notifier = _make_monitor()
+        github.list_prs_assigned_to = AsyncMock(return_value=[_pr_ref(77)])
+        github.add_labels = AsyncMock(side_effect=RuntimeError("label boom"))
+        await monitor._process_mentions()
+        assert monitor.stats.mentions_processed == 1
+        notifier.mention_processed.assert_called_once()
+
+
+# ----- Role → dispatch mode routing (issue #253 follow-up) -------------------
+
+class TestProcessMentionsModeRouting:
+    """The router selects the worker dispatch mode by ROLE for PR triggers:
+    reviewer→review_only (no merge), assignee→work_merge, comment/body→address."""
+
+    def _spy_monitor(self, **kw):
+        monitor, github, notifier = _make_monitor(**kw)
+        monitor.implementer = MagicMock()
+        monitor.implementer.mention = AsyncMock(
+            return_value=WorkOutcome(ok=True, text="done")
+        )
+        return monitor, github, notifier
+
+    async def test_pr_reviewer_uses_review_only(self):
+        monitor, github, notifier = self._spy_monitor()
+        github.list_prs_with_review_requests = AsyncMock(return_value=[_pr_ref(88)])
+        await monitor._process_mentions()
+        assert monitor.implementer.mention.call_args.kwargs["mode"] == "review_only"
+
+    async def test_pr_assignee_uses_work_merge(self):
+        monitor, github, notifier = self._spy_monitor()
+        github.list_prs_assigned_to = AsyncMock(return_value=[_pr_ref(77)])
+        await monitor._process_mentions()
+        assert monitor.implementer.mention.call_args.kwargs["mode"] == "work_merge"
+
+    async def test_pr_comment_uses_address(self):
+        pr_comment = _comment(9, "@deile-one tweak X", kind="pr_review")
+        monitor, github, notifier = self._spy_monitor(pr_comments=[pr_comment])
+        await monitor._process_mentions()
+        assert monitor.implementer.mention.call_args.kwargs["mode"] == "address"
+
+    async def test_pr_assignee_plus_reviewer_prefers_work_merge(self):
+        """Assignee dominates: an owner who can merge outranks a review request."""
+        monitor, github, notifier = self._spy_monitor()
+        github.list_prs_assigned_to = AsyncMock(return_value=[_pr_ref(77)])
+        github.list_prs_with_review_requests = AsyncMock(return_value=[_pr_ref(77)])
+        await monitor._process_mentions()
+        assert monitor.implementer.mention.call_args.kwargs["mode"] == "work_merge"
+
+    async def test_issue_assignee_does_not_dispatch(self):
+        """Issue assignee ROUTES (no implementer.mention call) — pipeline takes over."""
+        monitor, github, notifier = self._spy_monitor()
+        github.list_issues_assigned_to = AsyncMock(return_value=[_issue_ref(42)])
+        await monitor._process_mentions()
+        monitor.implementer.mention.assert_not_called()
+        github.add_labels.assert_any_call("issue", 42, [WORKFLOW_NEW])

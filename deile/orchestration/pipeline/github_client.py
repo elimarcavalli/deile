@@ -27,6 +27,7 @@ from deile.orchestration.pipeline._time_utils import format_iso_utc
 from deile.orchestration.pipeline.labels import (BATCH_LABEL_PREFIX,
                                                  LABEL_COLORS,
                                                  LABEL_DESCRIPTIONS,
+                                                 MENTION_LABELS,
                                                  REVIEW_LABELS,
                                                  WORKFLOW_LABELS,
                                                  batch_id_from_label,
@@ -429,7 +430,7 @@ class GitHubClient:
             if rc != 0:
                 logger.debug("label %s already exists or could not be created", label)
 
-        await asyncio.gather(*[_create_one(label) for label in (*WORKFLOW_LABELS, *REVIEW_LABELS)])
+        await asyncio.gather(*[_create_one(label) for label in (*WORKFLOW_LABELS, *REVIEW_LABELS, *MENTION_LABELS)])
 
     async def comment_on_issue(self, number: int, text: str) -> None:
         await self._run_checked(
@@ -538,8 +539,13 @@ class GitHubClient:
         Uses the REST API because ``gh pr list`` has no reviewer filter.
         """
         try:
+            # ``-X GET`` is REQUIRED: ``gh api`` defaults to POST as soon as any
+            # ``--field`` is present, so without it this POSTs to the pulls
+            # endpoint — i.e. tries to CREATE a PR — and fails with HTTP 422
+            # ("base"/"head" weren't supplied). Under GET the fields are query
+            # params, which is what listing open PRs needs.
             out = await self._run_checked(
-                "api", f"repos/{self.repo}/pulls",
+                "api", "-X", "GET", f"repos/{self.repo}/pulls",
                 "--field", "state=open",
                 "--field", "per_page=100",
                 "--jq", (
@@ -726,8 +732,12 @@ class GitHubClient:
             )
         since_iso = format_iso_utc(since)
         try:
+            # ``-X GET`` is REQUIRED: ``gh api`` defaults to POST as soon as any
+            # ``--field`` is present, so without it this POSTs to a read-only
+            # comments endpoint and fails with 404. The fields become query
+            # params under GET.
             out = await self._run_checked(
-                "api", endpoint,
+                "api", "-X", "GET", endpoint,
                 "--field", f"since={since_iso}",
                 "--field", "per_page=100",
             )
