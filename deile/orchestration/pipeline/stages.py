@@ -829,14 +829,38 @@ async def _park_or_keep(
     await monitor.notifier.implementation_parked(number, reason)
 
 
-async def _block_issue(monitor: "PipelineMonitor", number: int, reason: str) -> None:
-    """Block flow (item 7): comment the real impediment + label + DM.
-
-    The issue KEEPS ``~workflow:em_implementacao`` and gains
-    ``~workflow:bloqueada`` so it leaves BOTH the implement queue and the
-    auto-resume. The real impediment is commented on the issue and a Discord DM
-    is sent. A human removes ``~workflow:bloqueada`` to unblock.
+async def _block(
+    monitor: "PipelineMonitor", kind: str, number: int, short: str, *, comment: str
+) -> None:
+    """Shared block flow (item 7): comment the real impediment, add
+    ``~workflow:bloqueada``, clear the resume tracker, bump the blocked stat and
+    DM. ``kind`` (``"issue"``/``"pr"``) selects the GitHub comment/label surface;
+    the caller supplies the already-truncated ``short`` reason and the wording.
+    The target keeps its stage label so it leaves the active queue (and the
+    auto-resume) without re-entering it; a human removes the label to unblock.
     """
+    commenter = (
+        monitor.github.comment_on_issue if kind == "issue"
+        else monitor.github.comment_on_pr
+    )
+    try:
+        await commenter(number, comment)
+    except Exception as exc:  # noqa: BLE001 — comment is best-effort; label still applied
+        logger.warning("block %s: could not comment on #%d: %s", kind, number, exc)
+    try:
+        await monitor.github.add_labels(kind, number, [WORKFLOW_BLOCKED])
+    except GhCommandError as exc:
+        await _record_gh_error(
+            monitor, f"could not apply {WORKFLOW_BLOCKED} to {kind} #{number}", exc,
+        )
+    monitor._resume_tracker.clear(number)
+    monitor._stats.issues_blocked += 1
+    logger.warning("%s #%d BLOCKED: %s", kind, number, short)
+    await monitor.notifier.implementation_blocked(number, short)
+
+
+async def _block_issue(monitor: "PipelineMonitor", number: int, reason: str) -> None:
+    """Block an issue in the implement/resume stage (keeps em_implementacao)."""
     short = reason[:PIPELINE_MSG_TRUNCATE_CHARS]
     comment = (
         f"⛔ **Pipeline bloqueou esta issue** (`{WORKFLOW_BLOCKED}`).\n\n"
@@ -845,20 +869,7 @@ async def _block_issue(monitor: "PipelineMonitor", number: int, reason: str) -> 
         f"label `{WORKFLOW_BLOCKED}` — o pipeline volta a retomar a implementação "
         f"de onde parou."
     )
-    try:
-        await monitor.github.comment_on_issue(number, comment)
-    except Exception as exc:  # noqa: BLE001 — comment is best-effort; label still applied
-        logger.warning("block: could not comment on #%d: %s", number, exc)
-    try:
-        await monitor.github.add_labels("issue", number, [WORKFLOW_BLOCKED])
-    except GhCommandError as exc:
-        await _record_gh_error(
-            monitor, f"could not apply {WORKFLOW_BLOCKED} to #{number}", exc,
-        )
-    monitor._resume_tracker.clear(number)
-    monitor._stats.issues_blocked += 1
-    logger.warning("issue #%d BLOCKED: %s", number, short)
-    await monitor.notifier.implementation_blocked(number, short)
+    await _block(monitor, "issue", number, short, comment=comment)
 
 
 # ----- stage 3: review PR ------------------------------------------------
@@ -1029,11 +1040,10 @@ async def _post_merge_follow_ups(monitor: "PipelineMonitor", target) -> None:
 async def _block_pr(
     monitor: "PipelineMonitor", number: int, title: str, url: str, reason: str
 ) -> None:
-    """Block flow for a PR review/merge (item 7): comment + label + DM.
+    """Block a PR in the review/merge stage (keeps ~review:em_andamento).
 
-    Mirrors :func:`_block_issue` but for the review/merge stage: the PR keeps
-    ~review:em_andamento and gains ~workflow:bloqueada, excluding it from the
-    resume sweep until a human removes the label.
+    Mirrors :func:`_block_issue`; ``title``/``url`` are accepted for call-site
+    symmetry but not used in the comment.
     """
     short = reason[:PIPELINE_MSG_TRUNCATE_CHARS]
     comment = (
@@ -1041,20 +1051,7 @@ async def _block_pr(
         f"**Motivo:** {short}\n\n"
         f"Para retomar, remova o label `{WORKFLOW_BLOCKED}`."
     )
-    try:
-        await monitor.github.comment_on_pr(number, comment)
-    except Exception as exc:  # noqa: BLE001 — best-effort
-        logger.warning("block PR: could not comment on #%d: %s", number, exc)
-    try:
-        await monitor.github.add_labels("pr", number, [WORKFLOW_BLOCKED])
-    except GhCommandError as exc:
-        await _record_gh_error(
-            monitor, f"could not apply {WORKFLOW_BLOCKED} to PR #{number}", exc,
-        )
-    monitor._resume_tracker.clear(number)
-    monitor._stats.issues_blocked += 1
-    logger.warning("PR #%d BLOCKED: %s", number, short)
-    await monitor.notifier.implementation_blocked(number, short)
+    await _block(monitor, "pr", number, short, comment=comment)
 
 
 # ----- stage 4: follow-up issues from merged PR --------------------------
