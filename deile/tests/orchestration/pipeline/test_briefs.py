@@ -1,0 +1,196 @@
+"""Focused unit tests for the pipeline brief renderers (briefs.py).
+
+Each public renderer is exercised directly to lock in placeholder substitution
+and the rich-vs-prose divergence of the two mention renderers, hardening the
+module against future drift after the SRP extraction out of implementer.py.
+"""
+
+from __future__ import annotations
+
+from deile.orchestration.pipeline.briefs import (
+    _classify_mention_action, _render_claude_mention_prompt,
+    _render_trigger_details, _render_worker_implement_brief,
+    _render_worker_implement_resume_brief, _render_worker_mention_brief,
+    _render_worker_pr_address_brief, _render_worker_review_brief,
+    _render_worker_review_only_brief, _render_worker_review_resume_brief,
+    _summarize_trigger_types)
+from deile.orchestration.pipeline.constants import ISSUE_BODY_MAX_CHARS
+from deile.orchestration.pipeline.github_client import (CommentRef, IssueRef,
+                                                        MentionTrigger, PrRef)
+
+
+def _issue(number: int = 7) -> IssueRef:
+    return IssueRef(
+        number=number,
+        title=f"Issue {number}",
+        url=f"https://github.com/o/r/issues/{number}",
+        labels=(),
+    )
+
+
+def _pr(number: int = 9) -> PrRef:
+    return PrRef(
+        number=number,
+        title=f"PR {number}",
+        url=f"https://github.com/o/r/pull/{number}",
+        labels=(),
+    )
+
+
+def _comment(number: int = 5, kind: str = "issue") -> CommentRef:
+    return CommentRef(
+        comment_id=1,
+        body="please @deile-one take a look",
+        html_url=f"https://github.com/o/r/issues/{number}#issuecomment-1",
+        issue_url=f"https://github.com/o/r/issues/{number}",
+        author="alice",
+        kind=kind,
+    )
+
+
+class TestWorkerImplementBrief:
+    def test_substitutes_all_placeholders(self):
+        out = _render_worker_implement_brief(
+            "o/r", "main", "feat/x", 42, "Add widget", "do the thing"
+        )
+        assert "#42" in out
+        assert "o/r" in out
+        assert "Add widget" in out
+        assert "do the thing" in out
+        assert "feat/x" in out
+        # no unrendered placeholders remain
+        assert "{" not in out and "}" not in out
+
+    def test_empty_body_uses_fallback(self):
+        out = _render_worker_implement_brief("o/r", "main", "b", 1, "T", "")
+        assert "(sem corpo" in out
+
+    def test_long_body_is_truncated(self):
+        body = "x" * (ISSUE_BODY_MAX_CHARS + 500)
+        out = _render_worker_implement_brief("o/r", "main", "b", 1, "T", body)
+        assert "x" * ISSUE_BODY_MAX_CHARS in out
+        assert "x" * (ISSUE_BODY_MAX_CHARS + 1) not in out
+
+
+class TestSimpleReviewBriefs:
+    def test_review_brief(self):
+        out = _render_worker_review_brief("o/r", "main", 11)
+        assert "#11" in out and "o/r" in out
+        assert "{" not in out and "}" not in out
+
+    def test_review_only_brief_forbids_merge(self):
+        out = _render_worker_review_only_brief("o/r", "main", 11)
+        assert "#11" in out
+        assert "NÃO mergeie" in out
+
+    def test_pr_address_brief_forbids_merge(self):
+        out = _render_worker_pr_address_brief("o/r", "main", 12)
+        assert "#12" in out
+        assert "NÃO mergeie" in out
+
+
+class TestResumeBriefs:
+    def test_implement_resume_injects_progress_block(self):
+        out = _render_worker_implement_resume_brief(
+            "o/r", "main", "b", 3, "T", "body"
+        )
+        assert "#3" in out
+        assert ".deile-progress.md" in out
+        assert "{" not in out and "}" not in out
+
+    def test_review_resume_injects_progress_block(self):
+        out = _render_worker_review_resume_brief("o/r", "main", 4)
+        assert "#4" in out
+        assert ".deile-progress.md" in out
+        assert "{" not in out and "}" not in out
+
+
+class TestSummarizeTriggerTypes:
+    def test_known_labels_are_humanized(self):
+        out = _summarize_trigger_types(["assignee", "reviewer"])
+        assert "assignee (atribuído a você)" in out
+        assert "reviewer (solicitado como revisor)" in out
+        assert " + " in out
+
+    def test_unknown_label_passes_through(self):
+        assert _summarize_trigger_types(["mystery"]) == "mystery"
+
+
+class TestClassifyMentionAction:
+    def test_reviewer_on_pr(self):
+        t = MentionTrigger(trigger_type="reviewer", pr=_pr())
+        assert _classify_mention_action(t, ["reviewer"]) == "review_request"
+
+    def test_assignee_on_issue(self):
+        t = MentionTrigger(trigger_type="assignee", issue=_issue())
+        assert _classify_mention_action(t, ["assignee"]) == "assigned_issue"
+
+    def test_assignee_on_pr(self):
+        t = MentionTrigger(trigger_type="assignee", pr=_pr())
+        assert _classify_mention_action(t, ["assignee"]) == "assigned_pr"
+
+    def test_comment_on_pr(self):
+        t = MentionTrigger(trigger_type="comment", pr=_pr())
+        assert _classify_mention_action(t, ["comment"]) == "mention_pr"
+
+    def test_comment_on_issue(self):
+        t = MentionTrigger(trigger_type="comment", issue=_issue())
+        assert _classify_mention_action(t, ["comment"]) == "mention_issue"
+
+    def test_reviewer_takes_priority_over_assignee(self):
+        t = MentionTrigger(trigger_type="reviewer", pr=_pr())
+        assert (
+            _classify_mention_action(t, ["assignee", "reviewer"]) == "review_request"
+        )
+
+    def test_no_match_returns_default(self):
+        t = MentionTrigger(trigger_type="comment", comment=_comment(kind="x"))
+        # target_kind == "issue" (comment, non-pr_review) but no trigger types match
+        assert _classify_mention_action(t, []) == "default"
+
+
+class TestRenderTriggerDetails:
+    def test_rich_emits_markdown(self):
+        t = MentionTrigger(trigger_type="assignee", issue=_issue(7))
+        out = _render_trigger_details([t], rich=True)
+        assert "**Assignado**" in out
+        assert "[Issue 7](https://github.com/o/r/issues/7)" in out
+
+    def test_prose_has_no_markdown(self):
+        t = MentionTrigger(trigger_type="assignee", issue=_issue(7))
+        out = _render_trigger_details([t], rich=False)
+        assert "**" not in out
+        assert "[" not in out
+        assert "Issue 7 (https://github.com/o/r/issues/7)" in out
+
+    def test_comment_body_is_fenced_in_rich(self):
+        t = MentionTrigger(trigger_type="comment", comment=_comment())
+        rich = _render_trigger_details([t], rich=True)
+        prose = _render_trigger_details([t], rich=False)
+        assert "```" in rich
+        assert "```" not in prose
+
+
+class TestMentionRenderers:
+    def test_worker_mention_brief_is_markdown(self):
+        t = MentionTrigger(trigger_type="reviewer", pr=_pr(9))
+        out = _render_worker_mention_brief("o/r", t, ["reviewer"], [t])
+        assert "o/r" in out
+        assert "REVIEW REQUEST" in out
+        assert "#9" in out
+        assert "{" not in out and "}" not in out
+
+    def test_claude_mention_prompt_is_prose(self):
+        t = MentionTrigger(trigger_type="assignee", issue=_issue(7))
+        out = _render_claude_mention_prompt("o/r", t, ["assignee"], [t])
+        assert "ASSIGNED" in out
+        assert "#7" in out
+        # prose renderer must not emit markdown bold
+        assert "**" not in out
+
+    def test_both_renderers_pick_same_action_key(self):
+        t = MentionTrigger(trigger_type="assignee", pr=_pr(9))
+        worker = _render_worker_mention_brief("o/r", t, ["assignee"], [t])
+        claude = _render_claude_mention_prompt("o/r", t, ["assignee"], [t])
+        assert "ASSIGNED TO PR" in worker
+        assert "ASSIGNED TO PR" in claude

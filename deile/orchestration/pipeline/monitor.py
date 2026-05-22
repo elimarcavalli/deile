@@ -581,9 +581,7 @@ class PipelineMonitor:
                 return self._mention_cursor
             if self._mention_cursor_path.exists():
                 raw = self._mention_cursor_path.read_text().strip()
-                parsed = parse_iso_utc(raw)
-                if parsed is not None:
-                    return parsed
+                return parse_iso_utc(raw)
         except Exception as exc:  # noqa: BLE001
             logger.warning("mention cursor load failed; using 30-min lookback: %s", exc)
         return now_utc().replace(second=0, microsecond=0) - timedelta(minutes=30)
