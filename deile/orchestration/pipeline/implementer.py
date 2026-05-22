@@ -372,33 +372,27 @@ class WorkerImplementer(PipelineImplementer):
         head = (pr_ref.head_ref if pr_ref else "") or f"pr/{number}"
         pr_url_hint = pr_ref.url if pr_ref else ""
 
+        # review_only / work_merge / address all dispatch under the reviewer
+        # persona with a PR-scoped resume block; they differ only in the brief
+        # renderer and whether a merge is expected (work_merge is the only one
+        # that merges, and the only resume-aware brief).
+        reviewer_brief: Optional[str] = None
+        expect_merge = False
         if mode == "review_only":
-            brief = _render_worker_review_only_brief(repo, main, number)
-            return await self._dispatch(
-                brief, channel_id=channel_id, persona="reviewer",
-                resume_block=_build_resume_block(
-                    repo, main, head, resume=resume, expect_merge=False,
-                    pr_url_hint=pr_url_hint,
-                ),
-            )
-        if mode == "work_merge":
-            brief = (
+            reviewer_brief = _render_worker_review_only_brief(repo, main, number)
+        elif mode == "work_merge":
+            reviewer_brief = (
                 _render_worker_review_resume_brief(repo, main, number)
                 if resume else _render_worker_review_brief(repo, main, number)
             )
+            expect_merge = True
+        elif mode == "address":
+            reviewer_brief = _render_worker_pr_address_brief(repo, main, number)
+        if reviewer_brief is not None:
             return await self._dispatch(
-                brief, channel_id=channel_id, persona="reviewer",
+                reviewer_brief, channel_id=channel_id, persona="reviewer",
                 resume_block=_build_resume_block(
-                    repo, main, head, resume=resume, expect_merge=True,
-                    pr_url_hint=pr_url_hint,
-                ),
-            )
-        if mode == "address":
-            brief = _render_worker_pr_address_brief(repo, main, number)
-            return await self._dispatch(
-                brief, channel_id=channel_id, persona="reviewer",
-                resume_block=_build_resume_block(
-                    repo, main, head, resume=resume, expect_merge=False,
+                    repo, main, head, resume=resume, expect_merge=expect_merge,
                     pr_url_hint=pr_url_hint,
                 ),
             )
