@@ -68,6 +68,19 @@ DEILE pode **falar ativamente** em canais de mensageria através do daemon `deil
 | Audit obrigatório | Cada chamada emite `AuditEvent(TOOL_EXECUTION)`; texto cru nunca é logado (apenas hash SHA8) |
 | Categoria | `ToolCategory.MESSAGING` |
 
+### Pipeline autônomo de issues/PRs/menções
+
+> Detalhe em [`docs/2026-05-06_PIPELINE-AUTONOMO.md`](../2026-05-06_PIPELINE-AUTONOMO.md) e Decisões #18–#20, #30–#33 em [`DECISOES.md`](DECISOES.md).
+
+| Capacidade | Detalhamento |
+|---|---|
+| Loop autônomo sobre o GitHub | `PipelineMonitor` (`deile/orchestration/pipeline/`) faz polling e dirige os estágios `classify` → `review` → `implement` (+`resume`) → `pr_review` → `follow_ups` por labels (`~workflow:*`, `~review:*`) |
+| Execução plugável (Claude **ou** DEILE-worker) | `PipelineImplementer` selecionado por `dispatch_mode`: `claude -p` em worktree, ou despacho HTTP ao Pod `deile-worker` (loop 100% DEILE-a-DEILE) — Decisão #31 |
+| Resume de trabalho parcial | Trabalho que para no meio é retomado sem `reset --hard`, com teto de tentativas/orçamento; `~workflow:bloqueada` exclui do auto-resume — Decisão #30 |
+| Roteamento de menção/atribuição por papel | `process_mentions`: assignee/body em issue → entra no pipeline; assignee em PR → revisa+mergeia; reviewer-só → revisa e devolve ao autor (não mergeia); comment → atende ao pedido. Idempotência por `~mention:processado` — Decisão #32 |
+| Quality-gate de PR | Review/merge sob a persona `reviewer` (`personas/instructions/reviewer.md`): avalia SOLID/SRP/DRY/KISS/segurança/idempotência/packaging + resolve threads, não só "testes verdes" — Decisão #32 |
+| Cron genérico de prompts | `CronStore`/`CronRunner` (SQLite) dispara prompts naturais agendados como novos turns — intent #86 |
+
 ### Observabilidade
 
 | Capacidade | Componente |

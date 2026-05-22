@@ -373,7 +373,44 @@
 | Evidência | `deile/orchestration/pipeline/implementer.py` (briefs de resume, `_build_resume_block`, `_outcome_from_worker_response`, campos de resume em `WorkOutcome`); `infra/k8s/_worker_resume.py` (fingerprint, journal, `detect_end_state`, gitignore); `infra/k8s/worker_server.py` (`_compute_resume_result`, `_parse_resume_ctx`); `deile/orchestration/pipeline/stages.py` (`resume_in_progress_issues`, `_finalize_implement_outcome`, `_block_issue`, `_block_pr`); `deile/orchestration/pipeline/resume_state.py` (`ResumeTracker`); `deile/orchestration/pipeline/labels.py` (`WORKFLOW_BLOCKED`); `deile/orchestration/pipeline/notifier.py` (`implementation_resumed`, `implementation_blocked`); `deile/config/settings.py` (`pipeline_resume_*`) |
 | Motivação | (1) **Tarefas grandes nunca concluíam**: cada tentativa recomeçava do zero (`reset --hard`), descartando trabalho parcial não commitado — tarefas que excedem um turno ficavam presas para sempre (evidência: issue #253, 42 rounds gastos sem implementar/commitar). (2) **Ground-truth-first** porque o modelo nem sempre obedece formato e pode crashar — decidir pelo estado git/PR real funciona até em crash; o único sinal vindo do agente é `BLOQUEADO:` (só ele sabe de impedimento). (3) **Guarda de progresso + teto** (tentativas + orçamento) evitam loop infinito gastando tokens quando o agente não avança. (4) **Bloqueio explícito** (label + comentário + DM) dá controle ao humano sem auto-retry-forever (que produziria storm de DMs — a regressão de #253). (5) **PVC-only** (sem backup remoto): se o PVC for destruído perde-se o parcial — trade-off aceito pelo operador. |
 | Configuração | `pipeline_resume_enabled` (default `true`), `pipeline_resume_interval` (s, default `0` = imediato), `pipeline_resume_max_attempts` (default `10`), `pipeline_resume_budget` (s, default `0` = sem teto de tempo). Resolvidos em `build_default_pipeline_config`; resume só ativa no caminho `deile_worker` (o contrato estruturado vive lá). |
-| Fora do escopo | Tratamento de **menções** (só implement + review/merge); backup remoto do parcial (PVC-only); troca do modelo do worker. |
+| Fora do escopo | Tratamento de **menções** (coberto depois pela Decisão #32); backup remoto do parcial (PVC-only); troca do modelo do worker. |
+
+---
+
+## Decisão #31 — `PipelineImplementer` como estratégia plugável (Claude `-p` vs deile-worker HTTP)
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 |
+| Pilar dono | 02-Arquitetura, 04-Componentes |
+| Decisão | O trabalho pesado dos estágios `implement`/`review`/`mention` é delegado a uma **estratégia** `PipelineImplementer`, não mais hardcoded em `claude -p`. Duas implementações: `ClaudeImplementer` (cria worktree local e roda `claude -p` — comportamento legado, preservado verbatim) e `WorkerImplementer` (POSTa um brief ao control-plane do `deile-worker` por HTTP; o worker clona, branca, implementa/revisa, testa e abre/mergeia a PR no seu próprio workspace isolado). A seleção é por `PipelineConfig.dispatch_mode` (`claude` \| `deile_worker`, com aliases); valor desconhecido cai em Claude com warning. Assim **o Claude vira uma opção, não dependência** — o loop autônomo pode rodar inteiramente DEILE-a-DEILE (deepseek/etc no worker). |
+| Evidência | `deile/orchestration/pipeline/implementer.py` (`PipelineImplementer` ABC, `ClaudeImplementer`, `WorkerImplementer`, `build_implementer`); `deile/infrastructure/deile_worker_client.py` (`DeileWorkerClient`, `build_dispatch_payload`); `infra/k8s/worker_server.py` (control-plane do worker) — issue #255 |
+| Motivação | (1) Não acoplar o pipeline autônomo à assinatura/CLI do Claude Code; (2) permitir um loop 100% DEILE (o worker roda outro DEILE com o modelo configurado); (3) isolar a execução pesada no Pod `deile-worker` (sandbox K8s) em vez de no host do monitor. |
+
+---
+
+## Decisão #32 — Roteamento de menção/atribuição por papel + persona `reviewer` como quality-gate
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 |
+| Pilar dono | 05-Fluxo, 04-Componentes, 08-Segurança |
+| Decisão | `process_mentions` deixou de ser um despachante one-shot e virou um **roteador por papel**, injetando o trabalho nas esteiras existentes (ganhando idempotência, resume e convenção de branch sem máquina de estado paralela): **issue + assignee/menção-no-corpo** → aplica `~workflow:nova` (a esteira normal assume: review → implement com resume → PR em branch `auto/issue-N` → review pela persona reviewer); **PR + assignee** → `work_merge` (revisa, resolve threads criticamente, corrige e mergeia); **PR + reviewer-só** → `review_only` (revisa, posta review via REST, marca o **autor como assignee** e **NUNCA mergeia** — o merge é do dono); **PR + comment/body** → `address` (atende ao pedido + resolve threads, sem mergear); **comment em issue** → faz o que o comentário pede. Idempotência cross-tick por label sticky **`~mention:processado`** (gatilhos assignee/reviewer/body não re-disparam a cada tick; comment é regido por cursor). A review/merge de PR roda sob a persona **`reviewer`** (`personas/instructions/reviewer.md` + `library/reviewer.yaml` + `persona_config.yaml`; `"reviewer"` no `WorkerPersona`), um quality-gate de arquitetura (SOLID/SRP/DRY/KISS/segurança/idempotência/packaging), não só "testes verdes". Resume e teto de tentativas reaproveitam o `ResumeTracker`. |
+| Evidência | `deile/orchestration/pipeline/stages.py` (`process_mentions`, `_route_issue_to_pipeline`, `_mark_mention_done`, `_STICKY_TRIGGER_TYPES`); `deile/orchestration/pipeline/implementer.py` (`mention(mode=...)`); `deile/orchestration/pipeline/briefs.py` (`_WORKER_REVIEW_ONLY_BRIEF`, `_WORKER_PR_ADDRESS_BRIEF`, review brief com resolução de threads); `deile/orchestration/pipeline/labels.py` (`MENTION_DONE`); `deile/orchestration/pipeline/github_client.py` (`MentionTrigger`, `list_issues_assigned_to`/`list_prs_assigned_to`/`list_prs_with_review_requests`/`search_items_mentioning` — todas via `gh api -X GET`); `deile/personas/instructions/reviewer.md` — issues #253/#261 |
+| Motivação | (1) Atender as 4 formas de acionamento (assignee/reviewer/body/comment) de forma consistente; (2) eliminar o storm de DMs/dispatches duplicados (`~mention:processado` + dispatch síncrono que bloqueia o tick); (3) reviewer-só não deve mergear nem invadir — devolve ao autor; (4) o quality-gate precisa avaliar arquitetura, não só rodar testes; (5) as queries de menção falhavam em runtime (404/422) por usarem POST implícito do `gh api --field` — corrigidas com `-X GET`. |
+| Fora do escopo | Resume do caminho de **comment** (ad-hoc, cursor-bounded); lock `~batch:` no caminho de menção (gap multi-monitor conhecido — réplica única não sofre). |
+
+---
+
+## Decisão #33 — Triagem de PR escopada a branch própria + lock `~batch:` só em multi-monitor
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 patch |
+| Pilar dono | 02-Arquitetura, 03-Princípios |
+| Decisão | `classify_new_prs` só aplica `~review:pendente` a PRs que o monitor **de fato revisaria** (mesma regra de dono do estágio 3 — `_owns_pr_branch`: branch `auto/issue-*`, ou qualquer uma com `enable_review_human_prs`). Antes rotulava toda PR aberta, e a de branch alheio ficava presa em `~review:pendente` para sempre (o review nunca a reivindica). Além disso, o lock `~batch:<sha>` na **classificação** (issues e PRs) só é reivindicado/limpo quando há mais de um monitor (`shard_count > 1`); com monitor único — o caso do cluster — o claim apenas adicionava e removia o label na mesma passada (ruído de timeline), sem proteger contra nada. |
+| Evidência | `deile/orchestration/pipeline/stages.py` (`classify_new_prs` com guarda `_owns_pr_branch` + `multi_monitor`; `classify_new_issues` com `multi_monitor`); `deile/tests/orchestration/pipeline/test_pr_triage.py`, `test_gap_regressions.py` (`TestGap6Stage0UsesClaim`) — PR #264 |
+| Motivação | (1) Triagem e revisão precisam concordar sobre o que está na fila — senão PR alheia fica "pendente" eterna; (2) o lock só protege contra corrida entre monitores paralelos — com réplica única é puro churn cosmético na timeline da issue/PR. |
 
 ---
 

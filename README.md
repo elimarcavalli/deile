@@ -14,7 +14,7 @@
 
 ## 🤖 Pipeline autônomo
 
-O DEILE pode operar **autonomamente** sobre o repositório GitHub: quando uma issue recebe o label `~workflow:nova`, o pipeline a implementa e abre uma PR sem intervenção humana.
+O DEILE pode operar **autonomamente** sobre o repositório GitHub: quando uma issue recebe o label `~workflow:nova` (ou o `deile-one` é atribuído/mencionado), o pipeline a implementa e abre uma PR sem intervenção humana.
 
 ### Fluxo completo
 
@@ -22,11 +22,16 @@ O DEILE pode operar **autonomamente** sobre o repositório GitHub: quando uma is
 Discord: "/ideia implementar feature X"
   → DEILE cria issue com ~workflow:nova
   → PipelineMonitor tick
-    → Stage 1: DEILE revisa issue → ~workflow:revisada
-    → Stage 2: Claude Code implementa em worktree → PR aberta → ~workflow:em_pr
-    → Stage 3: Claude Code revisa PR → merge → ~review:concluida
+    → Stage 1: DEILE revisa a issue → ~workflow:revisada
+    → Stage 2: implementa (claude -p OU despacho ao deile-worker, conforme
+               dispatch_mode) na branch auto/issue-N → PR aberta → ~workflow:em_pr
+               (retoma sozinho se parar no meio — resume)
+    → Stage 3: revisa a PR sob a persona reviewer (quality-gate SOLID/SRP/
+               segurança) → merge → ~review:concluida
   → Discord: DM com URL da PR
 ```
+
+> **Atribuição/menção:** se você atribui o `deile-one` a uma issue, ela entra no fluxo acima; se o marca como **reviewer** de uma PR, ele **revisa e devolve ao autor sem mergear**; se o **menciona** num comentário, ele faz o que foi pedido. Ver `docs/system_design/DECISOES.md` #30–#33.
 
 ### Quick start do pipeline
 

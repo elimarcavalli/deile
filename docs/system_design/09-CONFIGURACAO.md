@@ -213,6 +213,14 @@ O daemon em si vive em `elimarcavalli/deilebot` e tem extras próprios (`discord
 | `DEILE_PIPELINE_AUTOSTART` | Se `1`, o daemon `deilebot` inicia o `PipelineMonitor` automaticamente no boot | não setado |
 | `DEILE_CRON_AUTOSTART` | Se `1`, o daemon `deilebot` inicia o `CronRunner` automaticamente no boot | não setado |
 | `DEILE_CRON_DB_PATH` | Caminho absoluto do SQLite do `CronStore` | `<DEILE_PIPELINE_BASE_PATH>/data/cron.db` ou `<cwd>/data/cron.db` |
+| `DEILE_PIPELINE_DISPATCH_MODE` | Estratégia de execução: `claude` (`claude -p` em worktree) ou `deile_worker` (despacha ao Pod `deile-worker` por HTTP) — Decisão #31 | `deile_worker` |
+| `DEILE_PIPELINE_RESUME_ENABLED` | Master switch do resume de trabalho parcial (Decisão #30); só ativa no caminho `deile_worker` | `true` |
+| `DEILE_PIPELINE_RESUME_INTERVAL` | Segundos mínimos entre tentativas de resume do mesmo item (`0` = imediato) | `0` |
+| `DEILE_PIPELINE_RESUME_MAX_ATTEMPTS` | Teto de tentativas por item antes do fluxo de bloqueio (`>= 1`) | `10` |
+| `DEILE_PIPELINE_RESUME_BUDGET` | Teto de wall-clock acumulado (s) entre tentativas (`0` = sem teto) | `0` |
+| `DEILE_PREFERRED_MODEL` | Modelo preferido (soft) — usado para fixar o worker num modelo (ex.: `deepseek:deepseek-v4-pro`) | nenhum |
+
+> Estas variáveis mapeiam para chaves em `~/.deile/settings.json` (`pipeline.dispatch_mode`, `pipeline.resume_*`, `model.preferred`); usar as env vars ainda funciona mas emite *deprecation warning* pedindo para mover ao `settings.json`. Defaults a nível de `PipelineConfig` (não env): `mention_handle` (`@deile-one`) e `enable_review_human_prs` (`false` — se `true`, triagem/review reivindicam PRs de branch alheio; ver Decisões #32/#33).
 
 > O `pipeline_tool.py` e o `pipeline_command.py` leem essas variáveis diretamente via `os.environ` (pois são componentes de borda — não domínio); isso está alinhado com a regra "adapters podem ler env, core não pode".
 
