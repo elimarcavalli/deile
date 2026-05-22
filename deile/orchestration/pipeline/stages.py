@@ -458,7 +458,15 @@ async def _dispatch_mention_group(
 
     monitor._stats.mentions_processed += 1
     if sticky:
-        await _mark_mention_done(monitor, kind, number)
+        # ``review_only`` is deliberately NOT marked ~mention:processado: once
+        # DEILE submits the review, GitHub removes it from requested_reviewers
+        # (natural idempotency for the reviewer trigger), and leaving the marker
+        # OFF lets the *assignee* trigger — the author DEILE just assigned back —
+        # fire on the next tick, so a DEILE-authored PR self-completes
+        # (assignee → work_merge → merge) without a human removing a label
+        # (Decisão #32). Other sticky modes still get the marker.
+        if mode != "review_only":
+            await _mark_mention_done(monitor, kind, number)
         monitor._resume_tracker.clear(number)
     author = next((t.comment.author for t in group if t.comment is not None), "")
     await monitor.notifier.mention_processed(
