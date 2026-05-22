@@ -4,17 +4,29 @@
 >
 > **Versão:** V1 — implementação inicial completa
 >
-> **Decisões arquiteturais relacionadas:** #18, #19, #20 — ver `docs/system_design/DECISOES.md`
+> **Decisões arquiteturais relacionadas:** #18, #19, #20 — e a evolução posterior em #30 (resume), #31 (estratégia Claude/worker), #32 (roteamento de menção + persona reviewer), #33 (triagem) — ver `docs/system_design/DECISOES.md`
+
+---
+
+> ## ⚠️ Atualização (2026-05-22) — leia antes do corpo abaixo
+>
+> Este documento descreve o **design inicial (V1, 2026-05-06)**. Desde então o pipeline evoluiu bastante; o corpo abaixo (seções 1–11) descreve o estado original, com estes **deltas** sobre a realidade atual (fonte autoritativa: `docs/system_design/DECISOES.md` #30–#33):
+>
+> 1. **Execução não é mais só `claude -p`.** Há uma estratégia plugável `PipelineImplementer` (`dispatch_mode`): `ClaudeImplementer` (legado) **ou** `WorkerImplementer`, que despacha ao Pod `deile-worker` por HTTP — o loop pode ser 100% DEILE-a-DEILE (Decisão #31). O cluster roda em `deile_worker`.
+> 2. **Resume (#30):** uma implementação/review que para no meio fica em `~workflow:em_implementacao` (ou PR em `~review:em_andamento`) e é **auto-retomada** no próximo tick (reusa o PVC, sem `reset --hard`), com teto de tentativas/orçamento. `~workflow:bloqueada` exclui do auto-resume (humano remove p/ desbloquear).
+> 3. **Menção/atribuição (#32):** `process_mentions` roteia por papel — issue+assignee/body → injeta `~workflow:nova`; PR+assignee → revisa+resolve threads+mergeia; PR+reviewer-só → **revisa e devolve ao autor, sem mergear**; comment → atende ao pedido. Idempotência por `~mention:processado`. A review/merge de PR roda sob a persona **`reviewer`** (quality-gate SOLID/SRP/segurança, não só testes verdes).
+> 4. **Triagem (#33):** `~review:pendente` só é aplicado a PR de branch que o monitor revisaria (`auto/issue-*`); o lock `~batch:` na classificação só é reivindicado com `shard_count>1`.
+> 5. **Labels atuais** incluem `~workflow:bloqueada` e `~mention:processado` além dos listados abaixo.
 
 ---
 
 ## 1. Overview
 
-O DEILE adquiriu a capacidade de **operar autonomamente sobre o repositório GitHub**, sem intervenção humana por mensagem. Quando um operador abre uma issue com o label `~workflow:nova`, o pipeline:
+O DEILE adquiriu a capacidade de **operar autonomamente sobre o repositório GitHub**, sem intervenção humana por mensagem. Quando um operador abre uma issue com o label `~workflow:nova` (ou atribui/menciona o `deile-one` — ver delta #3 acima), o pipeline:
 
 1. Revisa o corpo da issue com DEILE e a transita para `~workflow:revisada`.
-2. Cria um worktree isolado, invoca `claude -p <prompt>` (Claude Code one-shot) para implementar, e abre uma PR.
-3. Invoca Claude Code na PR para revisar, corrigir e dar merge.
+2. Implementa a feature e abre uma PR — via `claude -p` em worktree **ou** despachando ao `deile-worker` (ver delta #1), com **resume** se parar no meio (delta #2), na branch `auto/issue-N`.
+3. Revisa a PR sob a persona **`reviewer`** (quality-gate), corrige e dá merge.
 
 Complementarmente, o **cron genérico** (intent #86) permite que qualquer usuário (ex.: via Discord) agende prompts naturais — "rodar X toda segunda às 9h" ou "executar Y amanhã às 18h" — que o `CronRunner` dispara como novas turns do agente DEILE.
 
