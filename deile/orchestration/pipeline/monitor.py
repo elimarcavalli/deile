@@ -123,6 +123,12 @@ class PipelineConfig:
     resume_interval: int = 0
     resume_max_attempts: int = 10
     resume_budget: int = 0
+    #: Dedicated tighter ceiling (#10) for the "agent finished without opening a
+    #: PR" failure path — usually irrecoverable (LLM gave up on the task
+    #: structure), so re-trying 10x is pure waste. After this many "incompleto
+    #: sem PR" parks the issue is auto-blocked. #283 hit 50+ before the operator
+    #: intervened manually; default 3 catches it before $10 burns.
+    incomplete_no_pr_max: int = 3
     # Refinement gate + parallel decomposition (issue #257). ``refine_max_attempts``
     # caps how many refinement passes a poor-scoped issue gets before it is blocked
     # and returned to its author. ``max_parallel`` caps how many implementations the
