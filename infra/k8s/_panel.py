@@ -29,15 +29,25 @@ Hotkeys globais (qualquer view):
 
 from __future__ import annotations
 
+import atexit
+import json
+import logging
 import os
+import re
 import select
+import shutil
+import signal
+import subprocess
 import sys
+import threading
 import time
 from abc import ABC, abstractmethod
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Deque, Dict, List, Optional
 
 from rich import box
 from rich.align import Align
@@ -48,17 +58,31 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+# Imports `_panel_data` e `_panel_demo` são unqualified — dependem do
+# sys.path setup feito por `deploy.py` (que insere `infra/k8s/` no path
+# antes de importar `_panel`). Não trocar para `from infra.k8s. ...` sem
+# revisar como o orquestrador invoca o painel.
 from _panel_data import PanelData, _fmt_age, kubectl_bin  # noqa: F401
 from _panel_data import set_preferred_model as pd_set_preferred_model
-import _panel_demo as demo
-import collections
-import re
-import shutil
-import subprocess
-import threading
-from pathlib import Path
+import _panel_demo as demo  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 _HEALTH_LINE_RE = re.compile(r"GET /v1/health")
+
+# Mapa estável (módulo-level) para encurtar nomes de workflow no header —
+# montar a cada chamada em hot-path era desperdício.
+_SHORT_LABELS = {
+    "em_refinamento": "refine",
+    "em_arquitetura": "arq",
+    "em_implementacao": "impl",
+    "em_pr": "pr",
+    "aguardando_stakeholder": "aguard",
+}
+
+# Quantidade máxima de snapshots a manter em ~/.deile/snapshots/ — os
+# mais antigos são apagados para o diretório não crescer indefinidamente.
+_SNAPSHOT_RETAIN = 50
 
 
 # ===== key reader ===========================================================
@@ -106,23 +130,66 @@ else:
         Decodifica ESC sozinho (vs prefix CSI) com timeout de 50ms — o
         suficiente para distinguir num terminal local sem deixar o usuário
         sentir lag.
+
+        Restaura termios em qualquer caminho de saída (context-manager,
+        atexit, SIGTERM/SIGHUP/SIGQUIT) — sem isso, um kill -TERM no painel
+        deixa o shell do operador em cbreak mode.
         """
+
+        _SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
 
         def __init__(self):
             self._fd: Optional[int] = (
                 sys.stdin.fileno() if sys.stdin.isatty() else None
             )
             self._old = None
+            self._restored = False
+            self._prev_handlers: Dict[int, Any] = {}
 
         def __enter__(self):
             if self._fd is not None:
                 self._old = termios.tcgetattr(self._fd)
                 tty.setcbreak(self._fd)
+                self._restored = False
+                atexit.register(self._restore)
+                for sig in self._SIGNALS:
+                    try:
+                        self._prev_handlers[sig] = signal.signal(
+                            sig, self._signal_handler,
+                        )
+                    except (OSError, ValueError):
+                        # Em threads não-main signal.signal levanta; ignorar.
+                        pass
             return self
 
         def __exit__(self, *exc):
+            self._restore()
+
+        def _restore(self) -> None:
+            if self._restored:
+                return
+            self._restored = True
             if self._fd is not None and self._old is not None:
-                termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old)
+                try:
+                    termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old)
+                except (OSError, termios.error):
+                    pass
+            for sig, prev in self._prev_handlers.items():
+                try:
+                    signal.signal(sig, prev)
+                except (OSError, ValueError):
+                    pass
+            self._prev_handlers.clear()
+
+        def _signal_handler(self, signum, frame):
+            # Restaura o terminal e re-dispara o sinal com o handler default
+            # — o processo sai com o status canônico do sinal.
+            self._restore()
+            try:
+                signal.signal(signum, signal.SIG_DFL)
+            except (OSError, ValueError):
+                pass
+            os.kill(os.getpid(), signum)
 
         def read(self, timeout: float = 0.0) -> Optional[str]:
             if self._fd is None:
@@ -385,7 +452,16 @@ def _head_panel(view_title: str, app: "PanelApp") -> Panel:
         "image: deile-stack:local",
         style="dim",
     )
-    return Panel(Group(head, sub), border_style="cyan", box=box.HEAVY)
+    pieces: List[RenderableType] = [head, sub]
+    # Toasts efêmeros (snapshot salvo, etc) aparecem como linha extra
+    # discreta no head — não quebram o layout das views.
+    toasts = app.active_toasts()
+    if toasts:
+        toast_line = Text()
+        for icon, msg in toasts[-2:]:
+            toast_line.append(f"{icon} {msg}  ", style="bold yellow")
+        pieces.append(toast_line)
+    return Panel(Group(*pieces), border_style="cyan", box=box.HEAVY)
 
 
 def _footer_panel(hotkeys: str) -> Panel:
@@ -631,15 +707,11 @@ def _compact_state_counts(counts: Dict[str, int]) -> str:
     """Formata `{nova:2, em_impl:3}` em string compacta `nova:2  impl:3`."""
     if not counts:
         return "—"
-    # Aliases pra encurtar nomes longos no header.
-    short = {"em_refinamento": "refine", "em_arquitetura": "arq",
-             "em_implementacao": "impl", "em_pr": "pr",
-             "aguardando_stakeholder": "aguard"}
     bits = []
     for k, v in counts.items():
         if v == 0:
             continue
-        bits.append(f"{short.get(k, k)}:{v}")
+        bits.append(f"{_SHORT_LABELS.get(k, k)}:{v}")
     return "  ".join(bits) if bits else "—"
 
 
@@ -648,15 +720,16 @@ class _LogStreamer:
 
     Pensado para ser dono curto-prazo: criado pelo `PodWatchView.on_mount`
     e parado no `on_unmount`. O processo `kubectl` recebe SIGTERM; após
-    2s sem morrer, SIGKILL. A thread de leitura é daemon — segura contra
-    vazamento se o app fechar antes do `stop`.
+    500ms sem morrer, SIGKILL (também não-bloqueante). A thread de
+    leitura é daemon — segura contra vazamento se o app fechar antes do
+    `stop`.
     """
 
     def __init__(self, kubectl: str, ns: str, pod: str,
                  tail: int = 50, maxlen: int = 300):
         self._cmd = [kubectl, "-n", ns, "logs", pod, "-f",
                      f"--tail={tail}", "--timestamps"]
-        self.buf: "collections.deque[str]" = collections.deque(maxlen=maxlen)
+        self.buf: Deque[str] = deque(maxlen=maxlen)
         self._proc: Optional[subprocess.Popen] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -679,6 +752,8 @@ class _LogStreamer:
         if self._proc is None or self._proc.stdout is None:
             return
         for line in self._proc.stdout:
+            # Checa stop ANTES de processar — evita lag de 1 linha após
+            # stop() e diminui o tempo até o break em buffers cheios.
             if self._stop.is_set():
                 break
             self.buf.append(line.rstrip())
@@ -688,9 +763,13 @@ class _LogStreamer:
         if self._proc is not None:
             try:
                 self._proc.terminate()
-                self._proc.wait(timeout=2.0)
+                self._proc.wait(timeout=0.5)
             except subprocess.TimeoutExpired:
-                self._proc.kill()
+                try:
+                    self._proc.kill()
+                    self._proc.wait(timeout=0.5)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
             except OSError:
                 pass
             self._proc = None
@@ -795,6 +874,14 @@ class PodWatchView(View):
         self.hide_health: bool = True
 
     def on_mount(self, app: "PanelApp") -> None:
+        # PodWatchView é singleton no registry — re-mount com pod diferente
+        # precisa zerar TODO o estado, senão preferências (follow, hide_health)
+        # vazam entre pods, confundindo o operador.
+        self.following = True
+        self.hide_health = True
+        if self.streamer is not None:
+            self.streamer.stop()
+            self.streamer = None
         # Payload da navegação vem em `app.last_payload` (setado pelo PanelApp).
         payload = getattr(app, "last_payload", {}) or {}
         self.pod_name = payload.get("pod_name", "")
@@ -1062,7 +1149,27 @@ class IssuesPRsView(View):
         self.data = data
         self.filter: str = "all"
         self.cursor: int = 0
-        self.my_login: str = os.environ.get("GH_USER", "elimarcavalli")
+        # Sem nome hardcoded: tenta env GH_USER → `gh api user` → vazio.
+        self.my_login: str = self._resolve_login()
+
+    @staticmethod
+    def _resolve_login() -> str:
+        env = os.environ.get("GH_USER")
+        if env:
+            return env
+        gh = shutil.which("gh")
+        if gh is None:
+            return ""
+        try:
+            out = subprocess.run(
+                [gh, "api", "user", "-q", ".login"],
+                capture_output=True, text=True, timeout=3.0,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        if out.returncode == 0:
+            return out.stdout.strip()
+        return ""
 
     def _rows(self):
         if self.data is None:
@@ -1172,7 +1279,8 @@ class IssuesPRsView(View):
 def _copy_to_clipboard(text: str) -> bool:
     """Tenta colar `text` no clipboard via pbcopy/xclip/wl-copy.
 
-    Sem erro se nenhum bin disponível — é só um nice-to-have.
+    Sem erro fatal se nenhum bin disponível — é só um nice-to-have —
+    mas registra warning para o operador entender por que copy não fez nada.
     """
     for cmd in (["pbcopy"], ["xclip", "-selection", "clipboard"], ["wl-copy"]):
         if shutil.which(cmd[0]):
@@ -1181,6 +1289,9 @@ def _copy_to_clipboard(text: str) -> bool:
                 return True
             except (OSError, subprocess.SubprocessError):
                 continue
+    logger.warning(
+        "_copy_to_clipboard: nenhum bin (pbcopy/xclip/wl-copy) encontrado",
+    )
     return False
 
 
@@ -1279,8 +1390,10 @@ class TokensView(View):
 
 # ----- Notifier echo --------------------------------------------------------
 
-_AUDIT_LOG_RE = re.compile(r'\{"ts":\s*"[^"]+",\s*"level":\s*"\w+",'
-                           r'\s*"logger":\s*"deilebot\.audit"')
+# Fallback regex caso a linha não seja JSON pura — checagem barata
+# antes de tentar `json.loads`. JSON-first é mais robusto que regex
+# (cobre serializadores que reordenam chaves, espaços etc).
+_AUDIT_LOG_RE = re.compile(r'"logger":\s*"deilebot\.audit"')
 
 
 class NotifierEchoView(View):
@@ -1292,37 +1405,50 @@ class NotifierEchoView(View):
 
     HOTKEYS = "[r] força refresh   [esc] volta   [q] sai"
 
-    BOT_DEPLOY = "deilebot"
-    TAIL = 500
-
     def __init__(self, data: Optional[PanelData] = None):
         self.data = data
 
     def _fetch_lines(self) -> List[Dict[str, Any]]:
-        kubectl = kubectl_bin()
-        if kubectl is None:
+        # Lê do NotifierProvider (cache TTL 5s) — antes fazia kubectl direto
+        # por render, gerando 12 chamadas/min.
+        if self.data is None or self.data.notifier is None:
             return []
-        try:
-            out = subprocess.run(
-                [kubectl, "-n", "deile", "logs",
-                 f"deploy/{self.BOT_DEPLOY}", f"--tail={self.TAIL}"],
-                capture_output=True, text=True, timeout=5,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return []
-        if out.returncode != 0:
-            return []
+        raw_lines = self.data.notifier.get()
         events: List[Dict[str, Any]] = []
-        import json as _json
-        for line in out.stdout.splitlines():
-            if not _AUDIT_LOG_RE.search(line):
-                continue
-            try:
-                ev = _json.loads(line)
-            except _json.JSONDecodeError:
-                continue
-            events.append(ev)
+        for line in raw_lines:
+            ev = self._parse_line(line)
+            if ev is not None:
+                events.append(ev)
         return events
+
+    @staticmethod
+    def _parse_line(line: str) -> Optional[Dict[str, Any]]:
+        """Tenta JSON primeiro (estrutura do audit do bot); fallback ao regex.
+
+        Estruturas diferentes de log (com `{...}` wrappados em prefixos do
+        runtime do bot) caem no regex match + json no payload."""
+        line = line.strip()
+        if not line:
+            return None
+        # JSON puro
+        if line.startswith("{"):
+            try:
+                obj = json.loads(line)
+                if isinstance(obj, dict) and obj.get("logger") == "deilebot.audit":
+                    return obj
+            except json.JSONDecodeError:
+                pass
+        # Fallback: regex casa qualquer linha contendo logger=deilebot.audit
+        # e tenta extrair o último JSON da linha.
+        if not _AUDIT_LOG_RE.search(line):
+            return None
+        brace = line.find("{")
+        if brace < 0:
+            return None
+        try:
+            return json.loads(line[brace:])
+        except json.JSONDecodeError:
+            return None
 
     def render(self, app: "PanelApp") -> RenderableType:
         events = self._fetch_lines()
@@ -1369,6 +1495,46 @@ class _ActionSpec:
     label: str
     cmd: List[str]
     destructive: bool = False
+    # Verbo "mutador" = modifica estado do cluster (build/up/restart/stop/
+    # start/test/down). Read-only (`status`) tem mutates=False e roda sem
+    # confirmação. Todos os mutadores exigem [y/N] mesmo quando não
+    # destrutivos — README anuncia "não muta nada do estado existente".
+    mutates: bool = False
+
+
+def _audit_panel_action(spec: "_ActionSpec", *, result: str,
+                        detail: str = "") -> None:
+    """Emite AuditEvent(TOOL_EXECUTION) para uma ação do painel.
+
+    Falha silenciosa se o pacote `deile` não estiver importável (rodando
+    isolado) — mas registra warning no logger local."""
+    try:
+        from deile.security.audit_logger import (  # noqa: PLC0415
+            AuditEvent, AuditEventType, SeverityLevel, get_audit_logger,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("audit logger indisponível para ação do painel: %s", exc)
+        return
+    severity = (SeverityLevel.WARNING if spec.destructive
+                else SeverityLevel.INFO)
+    try:
+        get_audit_logger().log_event(
+            event_type=AuditEventType.TOOL_EXECUTION,
+            severity=severity,
+            actor="panel:actions",
+            resource=f"deploy.py:{spec.label}",
+            action="dispatch",
+            result=result,
+            details={
+                "label": spec.label,
+                "cmd": spec.cmd,
+                "destructive": spec.destructive,
+                "mutates": spec.mutates,
+                "detail": detail[:200],
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("falha emitindo AuditEvent para ação: %s", exc)
 
 
 class _ActionRunner:
@@ -1381,7 +1547,7 @@ class _ActionRunner:
 
     def __init__(self, cmd: List[str], maxlen: int = 500):
         self.cmd = cmd
-        self.buf: "collections.deque[str]" = collections.deque(maxlen=maxlen)
+        self.buf: Deque[str] = deque(maxlen=maxlen)
         self._proc: Optional[subprocess.Popen] = None
         self._thread: Optional[threading.Thread] = None
         self.returncode: Optional[int] = None
@@ -1404,6 +1570,8 @@ class _ActionRunner:
         if self._proc is None or self._proc.stdout is None:
             return
         for line in self._proc.stdout:
+            # Checa stop ANTES de processar cada linha — sem isso o stop
+            # só toma efeito após o próximo flush do stdout do subprocess.
             if self._stop.is_set():
                 break
             self.buf.append(line.rstrip())
@@ -1416,9 +1584,13 @@ class _ActionRunner:
         if self._proc is not None and self._proc.poll() is None:
             try:
                 self._proc.terminate()
-                self._proc.wait(timeout=2.0)
+                self._proc.wait(timeout=0.5)
             except subprocess.TimeoutExpired:
-                self._proc.kill()
+                try:
+                    self._proc.kill()
+                    self._proc.wait(timeout=0.5)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
             except OSError:
                 pass
 
@@ -1453,14 +1625,14 @@ class ActionsView(View):
         # é nossa, na view, antes de chamar.
         return [
             _ActionSpec("status",            [py, deploy, "k8s", "status"]),
-            _ActionSpec("restart",           [py, deploy, "k8s", "restart", "--yes"]),
-            _ActionSpec("build (no restart)",[py, deploy, "k8s", "build", "--yes"]),
-            _ActionSpec("build + restart",   [py, deploy, "k8s", "build", "--restart", "--yes"]),
-            _ActionSpec("up (provisiona)",   [py, deploy, "k8s", "up", "--yes"]),
-            _ActionSpec("stop (scale 0)",    [py, deploy, "k8s", "stop", "--yes"], destructive=False),
-            _ActionSpec("start (scale 1)",   [py, deploy, "k8s", "start", "--yes"]),
-            _ActionSpec("test (Job one-shot)",[py, deploy, "k8s", "test", "--yes"]),
-            _ActionSpec("DOWN (apaga ns)",   [py, deploy, "k8s", "down", "--yes"], destructive=True),
+            _ActionSpec("restart",           [py, deploy, "k8s", "restart", "--yes"], mutates=True),
+            _ActionSpec("build (no restart)",[py, deploy, "k8s", "build", "--yes"], mutates=True),
+            _ActionSpec("build + restart",   [py, deploy, "k8s", "build", "--restart", "--yes"], mutates=True),
+            _ActionSpec("up (provisiona)",   [py, deploy, "k8s", "up", "--yes"], mutates=True),
+            _ActionSpec("stop (scale 0)",    [py, deploy, "k8s", "stop", "--yes"], mutates=True),
+            _ActionSpec("start (scale 1)",   [py, deploy, "k8s", "start", "--yes"], mutates=True),
+            _ActionSpec("test (Job one-shot)",[py, deploy, "k8s", "test", "--yes"], mutates=True),
+            _ActionSpec("DOWN (apaga ns)",   [py, deploy, "k8s", "down", "--yes"], destructive=True, mutates=True),
         ]
 
     def render(self, app: "PanelApp") -> RenderableType:
@@ -1475,17 +1647,21 @@ class ActionsView(View):
             menu.add_row(str(i), label, " ".join(a.cmd[-3:]))
         # confirmação?
         if self.confirm_for is not None:
+            is_destructive = self.confirm_for.destructive
+            tag = "DESTRUTIVA" if is_destructive else "mutadora"
+            heading_style = "bold red" if is_destructive else "bold yellow"
+            border = "red" if is_destructive else "yellow"
             confirm_body = Group(
-                Text(f"Vai rodar a ação DESTRUTIVA: {self.confirm_for.label}",
-                     style="bold red"),
+                Text(f"Vai rodar a ação {tag}: {self.confirm_for.label}",
+                     style=heading_style),
                 Text(" ".join(self.confirm_for.cmd), style="dim"),
                 Text(),
-                Text("Aperte [y] para confirmar, [n] para cancelar.",
-                     style="bold yellow"),
+                Text("Confirma?  [y/N]", style="bold yellow"),
             )
             confirm_panel: Optional[RenderableType] = Panel(
-                confirm_body, title="[bold red]CONFIRMAÇÃO[/bold red]",
-                title_align="left", border_style="red",
+                confirm_body,
+                title=f"[{heading_style}]CONFIRMAÇÃO[/{heading_style}]",
+                title_align="left", border_style=border,
             )
         else:
             confirm_panel = None
@@ -1531,10 +1707,14 @@ class ActionsView(View):
                 self._dispatch(self.confirm_for)
                 self.confirm_for = None
                 return ActionResult.refresh()
-            if key == "n":
-                self.confirm_for = None
-                return ActionResult.refresh()
-            return ActionResult()
+            # Default-deny: qualquer tecla que não seja 'y' (incluindo
+            # 'n' e Enter) cancela. Mantém prompt no estilo `[y/N]`.
+            _audit_panel_action(
+                self.confirm_for, result="denied",
+                detail="operador cancelou na confirmação",
+            )
+            self.confirm_for = None
+            return ActionResult.refresh()
         if key == "c" and self.runner is not None and self.runner.running:
             self.runner.stop()
             return ActionResult.refresh()
@@ -1543,7 +1723,11 @@ class ActionsView(View):
             actions = self._actions()
             if 0 <= idx < len(actions):
                 spec = actions[idx]
-                if spec.destructive:
+                # Toda ação mutadora (mutates=True) — destrutiva ou não —
+                # precisa de confirmação explícita do operador. README anuncia
+                # "não muta nada do estado existente" sem opt-in; o gate é o
+                # `[y/N]`. `status` (não-mutador) roda direto.
+                if spec.mutates:
                     self.confirm_for = spec
                 else:
                     self._dispatch(spec)
@@ -1552,7 +1736,15 @@ class ActionsView(View):
 
     def _dispatch(self, spec: _ActionSpec) -> None:
         if self.runner is not None and self.runner.running:
+            _audit_panel_action(
+                spec, result="denied",
+                detail="já tem ação rodando — ignorado",
+            )
             return                # já tem ação rodando, ignora
+        # Audit ANTES de iniciar — registra a intenção mesmo que o
+        # subprocess falhe ao ligar.
+        _audit_panel_action(spec, result="allowed",
+                            detail="iniciando subprocess")
         self.runner = _ActionRunner(spec.cmd)
         self.last_action = spec.label
         self.runner.start()
@@ -1751,18 +1943,52 @@ class ModelSwitcherView(View):
         deployments = (("deile-worker",) if self.target == "worker"
                        else ("deile-pipeline",) if self.target == "pipeline"
                        else ("deile-worker", "deile-pipeline"))
-        results = []
+        # Para rollback em "both": captura o slug ATUAL de cada deployment
+        # ANTES de tentar trocar. Se o segundo falhar depois do primeiro
+        # ter sucesso, tentamos reverter o primeiro ao valor capturado.
+        prev_slugs: Dict[str, Optional[str]] = {}
+        if len(deployments) > 1:
+            try:
+                current_snap = self.data.current_model.get()
+            except Exception:  # noqa: BLE001
+                current_snap = {}
+            for dep in deployments:
+                prev_slugs[dep] = current_snap.get(dep)
+
+        results: List[tuple] = []
+        rolled_back: List[str] = []
         for dep in deployments:
             ok, msg = pd_set_preferred_model(dep, slug)
             results.append((dep, ok, msg))
-        all_ok = all(ok for _, ok, _ in results)
+            if not ok and len(deployments) > 1 and any(
+                ok_prev for _, ok_prev, _ in results[:-1]
+            ):
+                # Tenta reverter os deployments já alterados (best-effort).
+                for prev_dep, prev_ok, _ in results[:-1]:
+                    if not prev_ok:
+                        continue
+                    prev = prev_slugs.get(prev_dep)
+                    if not prev:
+                        # Sem slug anterior conhecido: não consegue reverter
+                        # (era default-do-settings). Registra no alerta final.
+                        rolled_back.append(f"{prev_dep}:sem-prev")
+                        continue
+                    rb_ok, _ = pd_set_preferred_model(prev_dep, prev)
+                    rolled_back.append(
+                        f"{prev_dep}:{'rb-ok' if rb_ok else 'rb-fail'}"
+                    )
+                break  # não tenta o resto da lista após falha+rollback
+        all_ok = all(ok for _, ok, _ in results) and len(results) == len(deployments)
         # Força provider a re-ler o valor atual no próximo render.
-        self.data.current_model._cache._fetched_at = 0.0  # noqa: SLF001
+        self.data.current_model._cache.invalidate()  # noqa: SLF001
         self.last_ok = all_ok
-        self.last_msg = " | ".join(
-            f"{dep}: {'OK' if ok else 'FAIL'} ({msg[:40]})"
-            for dep, ok, msg in results
+        msg = " | ".join(
+            f"{dep}: {'OK' if ok else 'FAIL'} ({m[:40]})"
+            for dep, ok, m in results
         )
+        if rolled_back:
+            msg += f"  | rollback: {', '.join(rolled_back)}"
+        self.last_msg = msg
 
 
 class StubView(View):
@@ -1840,6 +2066,10 @@ class _Settings:
     paused: bool = False
     refresh_mult: float = 1.0    # 0.25, 0.5, 1.0, 2.0, 4.0
     snapshots_dir: Optional[str] = None
+    # Fila simples de alertas para feedback do usuário (snapshot salvo,
+    # clipboard indisponível, etc). Cada item: (icon, msg, expires_at).
+    # Mostrado no header e expira após 5s. Não persiste entre runs.
+    toasts: List[tuple] = field(default_factory=list)
 
 
 class PanelApp:
@@ -1903,7 +2133,6 @@ class PanelApp:
     # --- snapshots ---
 
     def _snapshot(self) -> Optional[str]:
-        from pathlib import Path
         out_dir = Path(
             self.settings.snapshots_dir
             or os.path.expanduser("~/.deile/snapshots")
@@ -1913,7 +2142,39 @@ class PanelApp:
         capture = Console(record=True, width=self.console.size.width)
         capture.print(self.current_view.render(self))
         path.write_text(capture.export_text(), encoding="utf-8")
+        self._purge_old_snapshots(out_dir)
         return str(path)
+
+    @staticmethod
+    def _purge_old_snapshots(out_dir: Path) -> None:
+        """Mantém só os `_SNAPSHOT_RETAIN` mais recentes (por mtime).
+
+        Sem política, ~/.deile/snapshots/ cresce indefinidamente."""
+        try:
+            files = sorted(
+                (p for p in out_dir.glob("panel-*.txt") if p.is_file()),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            return
+        for old in files[_SNAPSHOT_RETAIN:]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
+    def push_toast(self, icon: str, msg: str, ttl_s: float = 5.0) -> None:
+        """Adiciona um toast efêmero (mostrado no header até expirar)."""
+        self.settings.toasts.append((icon, msg, time.monotonic() + ttl_s))
+
+    def active_toasts(self) -> List[tuple]:
+        """Retorna toasts não-expirados (ícone, mensagem). Limpa expirados."""
+        now = time.monotonic()
+        self.settings.toasts = [
+            t for t in self.settings.toasts if t[2] > now
+        ]
+        return [(i, m) for i, m, _ in self.settings.toasts]
 
     # --- key dispatch ---
 
@@ -1943,21 +2204,23 @@ class PanelApp:
                 self.data.force_refresh_all()
             return True
         if key == "s":
-            path = self._snapshot()
+            try:
+                path = self._snapshot()
+            except OSError as exc:
+                self.push_toast("⚠", f"snapshot falhou: {exc}", ttl_s=6.0)
+                return True
             if path:
-                # NOTE: não printa aqui (quebraria a TUI); a próxima
-                # render mostra no head. Fase 3 vai pôr um toast.
-                self.settings.snapshots_dir = self.settings.snapshots_dir
+                self.push_toast("💾", f"snapshot salvo: {path}", ttl_s=6.0)
             return True
         return False
 
     # --- main loop ---
 
     def run(self) -> int:
-        if not sys.stdin.isatty():
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
             self.console.print(
                 "[yellow]painel exige terminal interativo "
-                "(sem TTY).[/yellow]"
+                "(stdin e stdout precisam ser TTY).[/yellow]"
             )
             return 1
         with KeyReader() as keys, Live(
@@ -2042,7 +2305,13 @@ def run_panel() -> int:
         # Toque inicial pra detectar fonte morta cedo (sem custo perceptível —
         # o provider mais pesado é o gh, mas cai em fallback se falhar).
         data.pods.get()
-    except Exception:
+    except Exception:  # noqa: BLE001
+        # Sem log, falhas de bootstrap (kubectl absent, gh com auth ruim,
+        # PyYAML missing etc.) cairiam silenciosamente em modo demo,
+        # confundindo o operador que vê dados sintéticos sem saber por quê.
+        logger.warning(
+            "falha bootstrap providers, caindo em modo demo", exc_info=True,
+        )
         data = None
 
     app = PanelApp(_build_views(data), data=data)
