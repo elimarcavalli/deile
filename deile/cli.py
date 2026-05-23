@@ -322,6 +322,15 @@ class _DeileCLI:
                     working_directory=self.settings.working_directory,
                 )
 
+                # Issue #257 — surface o console da CLI ao agente para que
+                # tools que abrem renderers próprios (dispatch_parallel_
+                # subagents) possam usá-lo. No-op em ambiente sem UI Rich.
+                try:
+                    if hasattr(self.agent, "set_ui_console") and hasattr(self.ui, "console"):
+                        self.agent.set_ui_console(self.ui.console)
+                except Exception:
+                    pass
+
             self.ui.setup_hybrid_completion(
                 working_directory=str(self.settings.working_directory)
             )

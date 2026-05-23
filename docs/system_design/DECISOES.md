@@ -414,6 +414,19 @@
 
 ---
 
+## Decisão #34 — Sub-DEILEs paralelos em sessão CLI (decomposição autônoma)
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 |
+| Pilar dono | 02-Arquitetura, 04-Componentes, 05-Fluxo |
+| Decisão | Durante uma sessão interativa CLI, o DEILE pode decompor autonomamente uma solicitação em sub-tarefas independentes e substanciais e disparar **N sub-DEILEs em paralelo** (cada um com sessão limpa). A LLM chama a tool **`dispatch_parallel_subagents`** com uma lista de 2-5 `{description, prompt, persona?, model?}`. A tool delega ao **`SubAgentOrchestrator`** (asyncio.gather + return_exceptions=True, padrão do `pipeline/stages.py:1050`), que escolhe o runner por config (`subagent_runner`): **`LocalSubAgentRunner`** (default — in-process via `DeileAgent.process_input_stream` com `session_id` próprio por sub-tarefa) ou **`WorkerSubAgentRunner`** (delega ao `deile-worker` via `DeileWorkerClient.dispatch(wait=False)` + polling de `GET /v1/progress/{task_id}`, novo endpoint mid-flight). A UX é um painel Rich Live multipanel (~5 linhas/frente, refresh 6Hz) com **foco básico** (tecla numérica abre a ficha com `description`/`prompt`/`persona`/`model`/`task_id` + tail do stream; ESC volta). Falha de uma frente não cancela siblings. A consolidação final é responsabilidade da LLM principal (recebe o resumo agregado pelo tool). |
+| Evidência | `deile/orchestration/subagents/{__init__,orchestrator,runner,events}.py`; `deile/tools/dispatch_parallel_subagents.py`; `deile/ui/subagent_panel.py`; `deile/infrastructure/deile_worker_client.py` (`get_progress`/`get_result`); `infra/k8s/worker_server.py` (endpoint `GET /v1/progress/{task_id}` + progresso mid-flight no `_TASKS[id]`); `deile/personas/instructions/developer.md` (heurística "quando paralelizar"); testes em `deile/tests/orchestration/test_subagent_*`, `deile/tests/tools/test_dispatch_parallel_subagents.py`, `deile/tests/ui/test_subagent_panel.py`, `deile/tests/infra/test_worker_progress_endpoint.py` — issue #257 |
+| Motivação | (1) Tarefas decomponíveis (refator multi-módulo, geração de testes multi-arquivo, doc + impl separáveis) caem do tempo sequencial ao tempo da frente mais lenta; (2) infra de workers (`dispatch_deile_task` + `deile-worker`) subutilizada por depender de Discord — agora também serve a sessão CLI; (3) experiência: o usuário **vê** o DEILE em múltiplas frentes (bash/tool atual por painel, contador), o que dá percepção de potência e confiança; (4) runner pluggable atende dois ambientes (laptop local — runner local sem infra; pod no cluster — runner worker reusando o load-balancer multi-réplica). |
+| Fora do escopo | Decomposição recursiva (sub-DEILE que dispara outros — limitado a 1 nível); garantias transacionais entre sub-tarefas (workspace compartilhado no runner local — conflito de escrita é risco a tratar, não resolvido aqui); SSE real-time puro (polling de snapshot é aceitável conforme proposta de viabilidade da issue); paralelismo entre requisições de usuários distintos. |
+
+---
+
 ## Como adicionar uma nova decisão
 
 | # | Passo |

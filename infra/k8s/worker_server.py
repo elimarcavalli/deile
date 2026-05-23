@@ -458,11 +458,23 @@ async def _run_task(
     if user_message_id:
         await _react(channel_id, user_message_id, "🔧")
 
-    progress_lines: list[str] = []
+    # Issue #257: expor progresso mid-flight via _TASKS[task_id] para que
+    # ``GET /v1/progress/{task_id}`` retorne snapshot ao polling do
+    # WorkerSubAgentRunner. progress_lines vira referência ao mesmo objeto.
+    _tstate = _TASKS.setdefault(task_id, {})
+    _tstate.setdefault("task_id", task_id)
+    _tstate.setdefault("started_at", datetime.now(timezone.utc).isoformat())
+    _tstate.setdefault("brief", brief)
+    _tstate["_mono_start"] = start
+    _tstate["phase"] = "▶️  inicializando..."
+    _tstate["current_activity"] = ""
+    _tstate["progress_lines"] = []
+    progress_lines = _tstate["progress_lines"]
     last_edit_t = 0.0
 
     async def maybe_edit(force: bool = False, phase: str = "▶️  trabalhando..."):
         nonlocal last_edit_t
+        _tstate["phase"] = phase
         now = time.monotonic()
         if not status_msg_id:
             return
@@ -510,7 +522,11 @@ async def _run_task(
                             tn = payload.get("tool") or payload.get("tool_name")
                             if tn:
                                 label = f"{name}:{tn}"
-                        progress_lines.append(label[:120])
+                        short = label[:120]
+                        progress_lines.append(short)
+                        # Issue #257: expor "atividade atual" para o polling
+                        # do WorkerSubAgentRunner (GET /v1/progress/{id}).
+                        _tstate["current_activity"] = short
                     except Exception:  # noqa: BLE001 — never break the bus
                         pass
 
@@ -774,7 +790,58 @@ async def result_handler(request: web.Request) -> web.Response:
             {"error": {"code": "NOT_FOUND", "message": f"task {task_id} unknown"}},
             status=404,
         )
-    return web.json_response(state)
+    # Strip internal-only keys (_mono_start) before returning to the client.
+    payload = {k: v for k, v in state.items() if not k.startswith("_")}
+    return web.json_response(payload)
+
+
+async def progress_handler(request: web.Request) -> web.Response:
+    """``GET /v1/progress/{task_id}`` — snapshot mid-flight (issue #257).
+
+    Diferente do ``result_handler``, retorna apenas os campos relevantes para
+    polling de UI multipanel (last 30 ``progress_lines``, ``phase``,
+    ``current_activity``, ``elapsed_s`` corrente). Para tasks terminais
+    inclui ``ok`` e ``files`` — o caller pode então buscar o resultado
+    completo via ``/v1/result/{task_id}``.
+    """
+    task_id = request.match_info["task_id"]
+    state = _TASKS.get(task_id)
+    if state is None:
+        # Tarefa pode ter sido completada e despejada em disco no .results;
+        # carregamos o que estiver lá para refletir terminal.
+        f = WORK_ROOT / ".results" / f"{task_id}.json"
+        if f.is_file():
+            try:
+                state = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                state = None
+    if state is None:
+        return web.json_response(
+            {"error": {"code": "NOT_FOUND", "message": f"task {task_id} unknown"}},
+            status=404,
+        )
+
+    ok = state.get("ok")
+    # elapsed: usa _mono_start enquanto rodando; depois, elapsed_s gravado.
+    if ok is None and "_mono_start" in state:
+        elapsed = time.monotonic() - state["_mono_start"]
+    else:
+        elapsed = state.get("elapsed_s", 0.0)
+
+    lines = state.get("progress_lines") or []
+    if not isinstance(lines, list):
+        lines = []
+    return web.json_response({
+        "task_id": task_id,
+        "ok": ok,
+        "phase": state.get("phase"),
+        "current_activity": state.get("current_activity"),
+        "progress_lines": list(lines)[-30:],
+        "started_at": state.get("started_at"),
+        "elapsed_s": elapsed,
+        "files": state.get("files", []),
+        "error": state.get("error"),
+    })
 
 
 def build_app(auth_token: str) -> web.Application:
@@ -783,6 +850,8 @@ def build_app(auth_token: str) -> web.Application:
     app.router.add_get("/v1/health", health_handler)
     app.router.add_post("/v1/dispatch", dispatch_handler)
     app.router.add_get("/v1/result/{task_id}", result_handler)
+    # Issue #257 — snapshot mid-flight para polling do CLI multipanel.
+    app.router.add_get("/v1/progress/{task_id}", progress_handler)
     return app
 
 

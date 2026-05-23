@@ -47,6 +47,9 @@ MAX_DISPATCH_BUDGET_S: float = DEFAULT_TIMEOUT_S + 60.0
 _NOWAIT_TIMEOUT_S: float = 30.0
 
 _DISPATCH_PATH = "/v1/dispatch"
+_PROGRESS_PATH = "/v1/progress/{task_id}"
+_RESULT_PATH = "/v1/result/{task_id}"
+_POLL_TIMEOUT_S: float = 5.0
 _DEFAULT_ENDPOINT = "http://deile-worker.deile.svc.cluster.local:8766"
 _ENDPOINT_ENV = "DEILE_WORKER_ENDPOINT"
 _TOKEN_ENV = "DEILE_WORKER_BEARER_TOKEN"
@@ -399,4 +402,94 @@ class DeileWorkerClient:
                 "task_id": data.get("task_id") if isinstance(data, dict) else None,
             },
         )
+        return data
+
+    async def get_progress(self, task_id: str) -> Dict[str, Any]:
+        """``GET /v1/progress/{task_id}`` — snapshot mid-flight.
+
+        Usado pelo :class:`WorkerSubAgentRunner` (issue #257) para polling.
+        Retorna o snapshot do ``_TASKS[task_id]`` no worker, incluindo
+        ``progress_lines``, ``phase``, ``current_activity`` e ``ok`` (None
+        enquanto em execução).
+        """
+        return await self._get_json(_PROGRESS_PATH.format(task_id=task_id))
+
+    async def get_result(self, task_id: str) -> Dict[str, Any]:
+        """``GET /v1/result/{task_id}`` — resultado final (após término).
+
+        Distinto de :meth:`get_progress` em intenção: ``get_result`` é
+        chamado uma única vez após detectar o terminal via progress
+        polling, para capturar ``files`` e ``summary`` definitivos.
+        """
+        return await self._get_json(_RESULT_PATH.format(task_id=task_id))
+
+    async def _get_json(self, path: str) -> Dict[str, Any]:
+        """Helper compartilhado: GET autenticado + JSON parsing.
+
+        Reusa a resolução de endpoint/token de :meth:`dispatch`, mas com
+        timeout curto (polling, não dispatch). Erros mapeiam para os mesmos
+        :class:`WorkerDispatchError` codes; o caller decide se é fatal.
+        """
+        endpoint = _resolve_endpoint().rstrip("/") + path
+        token = await asyncio.to_thread(_read_token)
+        if not token:
+            raise WorkerDispatchError(
+                "WORKER_BEARER_TOKEN not configured in this Pod",
+                error_code="WORKER_AUTH_MISSING",
+            )
+        if not _validate_token_charset(token):
+            raise WorkerDispatchError(
+                "bearer token has invalid characters",
+                error_code="WORKER_AUTH_MALFORMED",
+            )
+        try:
+            import httpx
+        except ImportError as exc:
+            raise WorkerDispatchError(
+                "httpx is not installed in this image",
+                error_code="WORKER_TRANSPORT_MISSING",
+            ) from exc
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=_POLL_TIMEOUT_S) as cli:
+            try:
+                resp = await cli.get(endpoint, headers=headers)
+            except httpx.TimeoutException as exc:
+                raise WorkerDispatchError(
+                    f"worker poll timeout: {str(exc)[:200]}",
+                    error_code="WORKER_TIMEOUT",
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise WorkerDispatchError(
+                    f"worker unreachable: {type(exc).__name__}: {str(exc)[:200]}",
+                    error_code="WORKER_UNREACHABLE",
+                ) from exc
+
+        try:
+            data = resp.json()
+        except json.JSONDecodeError as exc:
+            raise WorkerDispatchError(
+                f"worker returned non-JSON (status={resp.status_code})",
+                error_code="WORKER_BAD_RESPONSE",
+            ) from exc
+
+        if resp.status_code == 404:
+            # Transient logo após dispatch: caller decide se retenta.
+            raise WorkerDispatchError(
+                f"task not found at {path}",
+                error_code="NOT_FOUND",
+            )
+        if resp.status_code >= 400:
+            err = (data.get("error") if isinstance(data, dict) else None) or {}
+            code = err.get("code") or "WORKER_ERROR"
+            msg = err.get("message") or f"HTTP {resp.status_code}"
+            raise WorkerDispatchError(msg, error_code=code)
+        if not isinstance(data, dict):
+            raise WorkerDispatchError(
+                "worker returned non-object body",
+                error_code="WORKER_BAD_RESPONSE",
+            )
         return data

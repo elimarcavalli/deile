@@ -340,6 +340,16 @@ class Settings:
     pipeline_refine_max_attempts: int = 5
     pipeline_max_parallel: int = 2
 
+    # Sub-DEILEs paralelos em sessão CLI (issue #257)
+    # `subagent_runner`        — "local" (default; in-process via asyncio.gather de
+    #                            DeileAgent.process_input_stream em sessões limpas)
+    #                            ou "worker" (delega ao deile-worker HTTP).
+    # `subagent_max_parallel`  — teto de concorrência por chamada da tool.
+    # `subagent_poll_interval_s` — período de polling do WorkerSubAgentRunner.
+    subagent_runner: str = "local"
+    subagent_max_parallel: int = 3
+    subagent_poll_interval_s: float = 0.8
+
     # Cron
     cron_db_path: Optional[Path] = None
     cron_poll_interval: int = 30
@@ -861,6 +871,10 @@ _ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any], bool], ...] = (
     ("DEILE_CRON_POLL_INTERVAL",             "cron_poll_interval",             int,               True),
     # Current knob (no deprecation): agent tool-loop cap.
     ("DEILE_MAX_TOOL_ITERATIONS",            "max_tool_iterations",            _int_floor(1),     False),
+    # Sub-DEILEs paralelos (issue #257) — current knobs, no deprecation.
+    ("DEILE_SUBAGENT_RUNNER",                "subagent_runner",                lambda s: s.strip().lower(), False),
+    ("DEILE_SUBAGENT_MAX_PARALLEL",          "subagent_max_parallel",          _int_floor(1),     False),
+    ("DEILE_SUBAGENT_POLL_INTERVAL_S",       "subagent_poll_interval_s",       float,             False),
 )
 
 

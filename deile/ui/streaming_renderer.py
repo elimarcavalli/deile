@@ -57,7 +57,16 @@ _VALIDATION_GATE_TITLE = (
 # Tools que escrevem direto no stdout durante a execução. Para elas,
 # o cabeçalho "● Bash(...)" precisa ir para a scrollback assim que
 # os args chegam, antes da execução, para evitar colisão com a Live region.
-_DIRECT_PRINT_TOOLS: frozenset = frozenset({"bash_execute"})
+#
+# ``dispatch_parallel_subagents`` (issue #257) também entra aqui: durante a
+# execução ele abre o próprio Rich Live (SubAgentPanelRenderer) e suspende o
+# Live do streaming_renderer; o cabeçalho precisa ir pra scrollback ANTES
+# para que o painel multipanel apareça logo abaixo, sem colidir com a tag
+# "● dispatch_parallel_subagents(...)".
+_DIRECT_PRINT_TOOLS: frozenset = frozenset({
+    "bash_execute",
+    "dispatch_parallel_subagents",
+})
 
 # Mapeamento opcional de nome interno → nome amigável exibido.
 _TOOL_DISPLAY_NAME: Dict[str, str] = {
