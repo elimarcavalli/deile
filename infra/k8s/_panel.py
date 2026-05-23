@@ -140,6 +140,10 @@ else:
         deixa o shell do operador em cbreak mode.
         """
 
+        # SIGINT é omitido propositalmente: o cbreak mode preserva `isig`
+        # (Ctrl-C continua disparando SIGINT pelo terminal), e o KeyboardInterrupt
+        # resultante já é capturado por `run_panel()` no entry point — não
+        # precisamos do handler customizado pra restaurar termios nesse caminho.
         _SIGNALS = (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
 
         def __init__(self):
@@ -1525,6 +1529,20 @@ class _ActionSpec:
     # confirmação. Todos os mutadores exigem [y/N] mesmo quando não
     # destrutivos — README anuncia "não muta nada do estado existente".
     mutates: bool = False
+    # Verbo curto pra emitir como `action` no AuditEvent — ergonômico pra
+    # filtragem no log (e.g., `action=k8s_restart`). Derivado por padrão
+    # da segunda palavra do `cmd` (e.g., `[..., "k8s", "restart", ...]`).
+    audit_action: Optional[str] = None
+
+    def resolved_audit_action(self) -> str:
+        if self.audit_action:
+            return self.audit_action
+        # cmd costuma ser [py, deploy, "k8s", "<verb>", ...] — pega o verb.
+        try:
+            k8s_idx = self.cmd.index("k8s")
+            return f"k8s_{self.cmd[k8s_idx + 1]}"
+        except (ValueError, IndexError):
+            return "dispatch"
 
 
 def _audit_panel_action(spec: "_ActionSpec", *, result: str,
@@ -1547,7 +1565,7 @@ def _audit_panel_action(spec: "_ActionSpec", *, result: str,
             severity=severity,
             actor="panel:actions",
             resource=f"deploy.py:{spec.label}",
-            action="dispatch",
+            action=spec.resolved_audit_action(),
             result=result,
             details={
                 "label": spec.label,
@@ -1993,7 +2011,9 @@ class ModelSwitcherView(View):
         for dep in deployments:
             ok, msg = pd_set_preferred_model(dep, slug)
             results.append((dep, ok, msg))
-            if not ok and len(deployments) > 1 and any(
+            # `len(deployments) > 1` é implícito: para `len == 1`,
+            # `results[:-1]` é sempre vazio, logo `any(...)` é False.
+            if not ok and any(
                 ok_prev for _, ok_prev, _ in results[:-1]
             ):
                 # Tenta reverter os deployments já alterados (best-effort).
@@ -2006,9 +2026,15 @@ class ModelSwitcherView(View):
                         # (era default-do-settings). Registra no alerta final.
                         rolled_back.append(f"{prev_dep}:sem-prev")
                         continue
-                    rb_ok, _ = pd_set_preferred_model(prev_dep, prev)
+                    rb_ok, rb_msg = pd_set_preferred_model(prev_dep, prev)
+                    status = "rb-ok" if rb_ok else "rb-fail"
+                    # Inclui prefixo curto do output (até 30 chars) — útil
+                    # pra distinguir "kubectl ausente" de "permission denied"
+                    # sem precisar abrir o audit log.
+                    snippet = (rb_msg or "").strip()[:30]
                     rolled_back.append(
-                        f"{prev_dep}:{'rb-ok' if rb_ok else 'rb-fail'}"
+                        f"{prev_dep}:{status}"
+                        + (f" ({snippet})" if snippet else "")
                     )
                 break  # não tenta o resto da lista após falha+rollback
         all_ok = all(ok for _, ok, _ in results) and len(results) == len(deployments)
@@ -2198,15 +2224,33 @@ class PanelApp:
                 pass
 
     def push_toast(self, icon: str, msg: str, ttl_s: float = 5.0) -> None:
-        """Adiciona um toast efêmero (mostrado no header até expirar)."""
-        self.settings.toasts.append((icon, msg, time.monotonic() + ttl_s))
+        """Adiciona um toast efêmero (mostrado no header até expirar).
+
+        Dedup: se já existe toast com a mesma `msg`, apenas renova o
+        timestamp em vez de empilhar — evita que apertar [s] N vezes
+        acumule N toasts idênticos.
+        """
+        expires_at = time.monotonic() + ttl_s
+        for i, (existing_icon, existing_msg, _) in enumerate(
+            self.settings.toasts,
+        ):
+            if existing_msg == msg:
+                self.settings.toasts[i] = (existing_icon, existing_msg,
+                                           expires_at)
+                return
+        self.settings.toasts.append((icon, msg, expires_at))
 
     def active_toasts(self) -> List[tuple]:
-        """Retorna toasts não-expirados (ícone, mensagem). Limpa expirados."""
+        """Retorna toasts não-expirados (ícone, mensagem). Limpa expirados.
+
+        Fast-path: se nenhum toast expirou, devolve a projeção direta sem
+        reconstruir a lista interna (chamado em ~30fps pelo renderer).
+        """
+        toasts = self.settings.toasts
         now = time.monotonic()
-        self.settings.toasts = [
-            t for t in self.settings.toasts if t[2] > now
-        ]
+        if all(t[2] > now for t in toasts):
+            return [(i, m) for i, m, _ in toasts]
+        self.settings.toasts = [t for t in toasts if t[2] > now]
         return [(i, m) for i, m, _ in self.settings.toasts]
 
     # --- key dispatch ---
