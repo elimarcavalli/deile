@@ -23,6 +23,7 @@ import pytest
 from rich.console import Console
 
 from deile.commands.base import CommandContext, CommandResult
+from deile.commands.builtin import _git_helpers as gh
 from deile.commands.builtin import standup_command as sc
 from deile.commands.builtin.standup_command import (StandupCommand,
                                                     StandupData, build_prompt,
@@ -401,37 +402,37 @@ class TestCollectIssues:
 class TestEnsureChecks:
     def test_not_git_raises(self, monkeypatch, tmp_path: Path):
         # shutil.which("git") presente, mas rev-parse retorna != 0
-        monkeypatch.setattr(sc.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+        monkeypatch.setattr(gh.shutil, "which", lambda exe: f"/usr/bin/{exe}")
         monkeypatch.setattr(
-            sc.subprocess,
+            gh.subprocess,
             "run",
             lambda *a, **kw: _FakeCompleted(128, "", "fatal: not a git repo"),
         )
         with pytest.raises(CommandError) as exc_info:
-            sc._ensure_git_repo()
+            sc.ensure_git_repo()
         assert "git" in str(exc_info.value).lower()
 
     def test_git_not_installed(self, monkeypatch):
-        monkeypatch.setattr(sc.shutil, "which", lambda exe: None)
+        monkeypatch.setattr(gh.shutil, "which", lambda exe: None)
         with pytest.raises(CommandError) as exc_info:
-            sc._ensure_git_repo()
+            sc.ensure_git_repo()
         assert "git" in str(exc_info.value).lower()
 
     def test_gh_not_installed(self, monkeypatch):
-        monkeypatch.setattr(sc.shutil, "which", lambda exe: None if exe == "gh" else f"/usr/bin/{exe}")
+        monkeypatch.setattr(gh.shutil, "which", lambda exe: None if exe == "gh" else f"/usr/bin/{exe}")
         with pytest.raises(CommandError) as exc_info:
-            sc._ensure_gh_available()
+            sc.ensure_gh_authenticated()
         assert "gh" in str(exc_info.value).lower() or "github cli" in str(exc_info.value).lower()
 
     def test_gh_not_authenticated(self, monkeypatch):
-        monkeypatch.setattr(sc.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+        monkeypatch.setattr(gh.shutil, "which", lambda exe: f"/usr/bin/{exe}")
         monkeypatch.setattr(
-            sc.subprocess,
+            gh.subprocess,
             "run",
             lambda *a, **kw: _FakeCompleted(1, "", "You are not logged into any GitHub hosts."),
         )
         with pytest.raises(CommandError) as exc_info:
-            sc._ensure_gh_available()
+            sc.ensure_gh_authenticated()
         assert "auten" in str(exc_info.value).lower() or "auth" in str(exc_info.value).lower()
 
 
@@ -554,9 +555,9 @@ class TestExecute:
 
     async def test_not_in_git_repo(self, monkeypatch, tmp_path: Path):
         # shutil.which retorna paths, mas rev-parse falha
-        monkeypatch.setattr(sc.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+        monkeypatch.setattr(gh.shutil, "which", lambda exe: f"/usr/bin/{exe}")
         monkeypatch.setattr(
-            sc.subprocess,
+            gh.subprocess,
             "run",
             lambda *a, **kw: _FakeCompleted(128, "", "fatal: not a git repo"),
         )
@@ -572,16 +573,16 @@ class TestExecute:
         assert "git" in str(exc_info.value).lower()
 
     async def test_gh_not_authenticated(self, monkeypatch):
-        # git ok (true), gh auth status falha
+        # git ok (resolve_repo_root → show-toplevel), gh auth status falha
         def fake_run(cmd, **kwargs):
-            if cmd[:3] == ["git", "rev-parse", "--is-inside-work-tree"]:
-                return _FakeCompleted(0, "true\n")
+            if cmd[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return _FakeCompleted(0, "/tmp/fake-repo\n")
             if cmd[:3] == ["gh", "auth", "status"]:
                 return _FakeCompleted(1, "", "not logged in")
             return _FakeCompleted(0, "")
 
-        monkeypatch.setattr(sc.shutil, "which", lambda exe: f"/usr/bin/{exe}")
-        monkeypatch.setattr(sc.subprocess, "run", fake_run)
+        monkeypatch.setattr(gh.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+        monkeypatch.setattr(gh.subprocess, "run", fake_run)
 
         cmd = StandupCommand()
         with pytest.raises(CommandError) as exc_info:

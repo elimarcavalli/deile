@@ -2,7 +2,6 @@
 
 import json
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -15,6 +14,7 @@ from ...core.exceptions import CommandError
 from ...core.models.base import ModelMessage
 from ...core.models.router import get_model_router
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._git_helpers import ensure_gh_authenticated, ensure_git_repo
 from ._shared import emit_audit_event, wrap_command_errors
 
 
@@ -56,30 +56,6 @@ def parse_args(args: str) -> str:
     if args.startswith("--"):
         raise CommandError(f"Flag desconhecida: {args}")
     return "24h"
-
-
-def _ensure_git_repo() -> None:
-    if not shutil.which("git"):
-        raise CommandError("Git não está instalado.")
-    res = subprocess.run(
-        ["git", "rev-parse", "--is-inside-work-tree"],
-        capture_output=True,
-        text=True,
-    )
-    if res.returncode != 0:
-        raise CommandError("O diretório atual não é um repositório git.")
-
-
-def _ensure_gh_available() -> None:
-    if not shutil.which("gh"):
-        raise CommandError("GitHub CLI (gh) não está instalada.")
-    res = subprocess.run(
-        ["gh", "auth", "status"],
-        capture_output=True,
-        text=True,
-    )
-    if res.returncode != 0:
-        raise CommandError("CLI do GitHub (gh) não está autenticada.")
 
 
 def collect_commits(since_iso: str) -> List[Dict[str, str]]:
@@ -156,9 +132,9 @@ def collect_issues(since_iso: str) -> List[Dict[str, Any]]:
 
 
 def collect_standup_data(since_spec: str) -> StandupData:
-    _ensure_git_repo()
-    _ensure_gh_available()
-    
+    ensure_git_repo()
+    ensure_gh_authenticated()
+
     delta = parse_since(since_spec)
     since_date = datetime.now(timezone.utc) - delta
     since_iso = since_date.strftime("%Y-%m-%dT%H:%M:%SZ")
