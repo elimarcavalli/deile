@@ -571,23 +571,15 @@ class WorkerImplementer(PipelineImplementer):
         head = (pr_ref.head_ref if pr_ref else "") or f"pr/{number}"
         pr_url_hint = pr_ref.url if pr_ref else ""
 
-        # review_only / work_merge / address all dispatch under the reviewer
-        # persona with a PR-scoped resume block; they differ only in the brief
-        # renderer and whether a merge is expected (work_merge is the only one
-        # that merges, and the only resume-aware brief).
-        reviewer_brief: Optional[str] = None
-        expect_merge = False
-        if mode == "review_only":
-            reviewer_brief = _render_worker_review_only_brief(repo, main, number)
-        elif mode == "work_merge":
-            reviewer_brief = (
-                _render_worker_review_resume_brief(repo, main, number)
-                if resume else _render_worker_review_brief(repo, main, number)
-            )
-            expect_merge = True
-        elif mode == "address":
-            reviewer_brief = _render_worker_pr_address_brief(repo, main, number)
-        if reviewer_brief is not None:
+        # PR-scoped reviewer modes dispatched under the ``reviewer`` persona
+        # with a resume block. ``work_merge`` is the only mode that merges and
+        # the only one resume-aware (uses the review-resume brief on retry).
+        if mode in _MENTION_REVIEWER_MODES:
+            brief_fn, expect_merge = _MENTION_REVIEWER_MODES[mode]
+            if mode == "work_merge" and resume:
+                reviewer_brief = _render_worker_review_resume_brief(repo, main, number)
+            else:
+                reviewer_brief = brief_fn(repo, main, number)
             return await self._dispatch(
                 reviewer_brief, channel_id=channel_id, persona="reviewer",
                 resume_block=_build_resume_block(
@@ -603,11 +595,38 @@ class WorkerImplementer(PipelineImplementer):
 
 
 # ---------------------------------------------------------------------------
+# Mention mode dispatch table
+# ---------------------------------------------------------------------------
+# (brief_renderer, expect_merge) for each PR-scoped reviewer mode used in
+# ``WorkerImplementer.mention``. ``work_merge`` is the only one that merges
+# *and* the only resume-aware mode (the resume brief is selected inline since
+# only that mode has a resume variant).
+_MENTION_REVIEWER_MODES = {
+    "review_only": (_render_worker_review_only_brief, False),
+    "work_merge":  (_render_worker_review_brief,      True),
+    "address":     (_render_worker_pr_address_brief,  False),
+}
+
+
+# ---------------------------------------------------------------------------
 # factory
 # ---------------------------------------------------------------------------
 
-_WORKER_ALIASES = frozenset({"deile_worker", "worker", "deile", "deile-worker"})
-_CLAUDE_ALIASES = frozenset({"claude", "claude_code", "claude-code"})
+WORKER_ALIASES = frozenset({"deile_worker", "worker", "deile", "deile-worker"})
+CLAUDE_ALIASES = frozenset({"claude", "claude_code", "claude-code"})
+
+# Backwards-compatible aliases for internal callers that used the underscored names.
+_WORKER_ALIASES = WORKER_ALIASES
+_CLAUDE_ALIASES = CLAUDE_ALIASES
+
+
+def is_claude_mode(dispatch_mode: Optional[str]) -> bool:
+    """Return True if ``dispatch_mode`` selects the Claude strategy.
+
+    Handles ``None``, empty, whitespace, and case variations uniformly so callers
+    don't reproduce the ``(mode or "claude").strip().lower() in (...)`` idiom.
+    """
+    return (dispatch_mode or "claude").strip().lower() in CLAUDE_ALIASES
 
 
 def build_implementer(

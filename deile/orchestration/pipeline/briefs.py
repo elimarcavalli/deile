@@ -16,13 +16,44 @@ strictly under ``./repo`` relative to that workspace.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from deile.orchestration.pipeline.constants import ISSUE_BODY_MAX_CHARS
 from deile.orchestration.pipeline.labels import title_prefix_for_type
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from deile.orchestration.pipeline.github_client import MentionTrigger
+
+
+# ---------------------------------------------------------------------------
+# Shared brief building blocks (PR #275 quality-gate uniformity)
+#
+# These constants are interpolated into the worker briefs at render time. They
+# centralize phrases that appear verbatim in 5+ briefs (the full-suite test
+# command, the pip-install guard, the BLOQUEADO contract) so a policy change
+# (e.g. moving the gate command, adding a new artifact to upload) is a 1-line
+# edit, not a sweep across 7 templates.
+# ---------------------------------------------------------------------------
+_FULL_SUITE_CMD = "python3 -m pytest deile/tests/ -q"
+_PIP_GUARD = "deps já instaladas — NÃO rode `pip install` (filesystem read-only)"
+_BLOCKED_CONTRACT = "BLOQUEADO: <motivo concreto>"
+
+_BRIEF_CONSTANTS: dict[str, Any] = {
+    "full_suite_cmd": _FULL_SUITE_CMD,
+    "pip_guard": _PIP_GUARD,
+    "blocked_contract": _BLOCKED_CONTRACT,
+}
+
+
+def _render_brief(template: str, **runtime_params: Any) -> str:
+    """Format a brief template with shared constants + runtime params.
+
+    Templates reference shared blocks with placeholders like ``{full_suite_cmd}``
+    alongside runtime placeholders (``{repo}``, ``{number}`` …). This helper
+    keeps the constants in a single declaration so a change propagates without
+    editing the 7 brief templates.
+    """
+    return template.format(**_BRIEF_CONSTANTS, **runtime_params)
 
 
 _WORKER_IMPLEMENT_BRIEF = """\
@@ -33,7 +64,7 @@ Passo a passo:
    Se já existir, entre nela e rode: git fetch origin && git checkout {main} && git reset --hard origin/{main}
 2. Dentro de ./repo, crie e dê checkout no branch {branch} a partir de {main}.
 3. ANTES de codar, leia os comentários da issue: gh issue view {number} --repo {repo} --comments — decisões e esclarecimentos do stakeholder ali FAZEM PARTE do escopo (o corpo pode não conter tudo). Implemente a feature descrita na issue abaixo E o que os comentários decidiram. Crie/edite os arquivos necessários e ADICIONE testes cobrindo todos os casos.
-4. Rode os testes e garanta 100% de aprovação. As dependências (incl. pytest) JÁ estão instaladas no ambiente — NÃO rode `pip install` (o filesystem é read-only). Para iterar rápido durante o desenvolvimento: python3 -m pytest <arquivos_de_teste_novos> -p no:cov -q. MAS, ANTES DE ABRIR A PR, rode a SUÍTE COMPLETA — python3 -m pytest deile/tests/ -q — e garanta que está 100% verde. Se a sua mudança quebrou um teste FORA dos seus arquivos, conserte-o: uma PR com a suíte vermelha NÃO está pronta.
+4. Rode os testes e garanta 100% de aprovação. {pip_guard}. Para iterar rápido durante o desenvolvimento: python3 -m pytest <arquivos_de_teste_novos> -p no:cov -q. MAS, ANTES DE ABRIR A PR, rode a SUÍTE COMPLETA — {full_suite_cmd} — e garanta que está 100% verde. Se a sua mudança quebrou um teste FORA dos seus arquivos, conserte-o: uma PR com a suíte vermelha NÃO está pronta.
 5. Faça commit atômico e `git push -u origin {branch}`.
 6. ABRA A PR (passo OBRIGATÓRIO — sem PR a tarefa NÃO está concluída):
    gh pr create --repo {repo} --base {main} --head {branch} --title "<título coerente>" --body "<resumo>. Closes #{number}."
@@ -64,7 +95,7 @@ Você é o QUALITY GATE final da Pull Request #{number} do repositório {repo}. 
    - Testes cobrem casos de BORDA e a regressão que a PR alega corrigir.
    - Packaging/deploy: arquivo novo importado em runtime está no COPY do Dockerfile E no allowlist do .dockerignore?
 4. CORRIJA os achados com commits normais (SEM force-push) e dê push. Adicione os testes que faltarem.
-5. GATE DE TESTES. Para iterar nas correções: python3 -m pytest <arquivos> -p no:cov -q (deps já instaladas — NÃO rode `pip install`). MAS o VEREDITO exige a SUÍTE COMPLETA: rode PRIMEIRO python3 -m pytest deile/tests/ -x -q (fail-fast — economiza ~100s quando há vermelho); só se passar TUDO no fail-fast, rode python3 -m pytest deile/tests/ -q (sem -x, com gate de cobertura — é o portão real de CI) e cole a saída REAL na evidência. A suíte completa DEVE estar 100% verde. Suíte vermelha — MESMO num arquivo que a PR não tocou — é IMPEDIMENTO: NÃO mergeie.
+5. GATE DE TESTES. Para iterar nas correções: python3 -m pytest <arquivos> -p no:cov -q ({pip_guard}). MAS o VEREDITO exige a SUÍTE COMPLETA: rode {full_suite_cmd} (a suíte inteira, que inclui o gate de cobertura — é o portão real de CI) e ela DEVE estar 100% verde. Suíte vermelha — MESMO num arquivo que a PR não tocou, se a mudança a quebrou — é IMPEDIMENTO: NÃO mergeie. Cole a saída REAL da suíte completa na evidência.
 5b. THREADS/NOTAS de review pendentes: liste os comentários de review (gh api repos/{repo}/pulls/{number}/comments). Para CADA thread/nota, JULGUE criticamente se o que foi pedido está realmente correto — NÃO obedeça cegamente. Se procede, RESOLVA (faça a mudança + responda a thread citando o commit). Se NÃO procede, responda a thread com uma JUSTIFICATIVA concreta de por que não fazer. Não deixe thread pendente sem ação ou justificativa.
 6. DOCUMENTE as evidências como comentário na PR (gh pr comment {number} --repo {repo} --body "..."): o que revisou, os achados, as correções, como tratou cada thread, e a saída REAL dos testes.
 7. VEREDITO:
@@ -94,7 +125,7 @@ Passo a passo:
    b) Veja o diff acumulado em relação a {main}: git diff {main}...HEAD ; e também: git diff HEAD
    c) LEIA TODOS os arquivos não rastreados (untracked) e os modificados — eles contêm o trabalho parcial: git status --porcelain ; depois leia cada arquivo listado.
 4. CONTINUE a implementação de onde parou. Crie/edite o que falta e garanta testes cobrindo todos os casos.
-5. Rode os testes e garanta 100% de aprovação. As dependências (incl. pytest) JÁ estão no ambiente — NÃO rode `pip install` (filesystem read-only). Para iterar rápido: python3 -m pytest <arquivos_de_teste_novos> -p no:cov -q. MAS, ANTES DE ABRIR/CONFIRMAR A PR, rode a SUÍTE COMPLETA — python3 -m pytest deile/tests/ -q — 100% verde. Se sua mudança quebrou um teste fora dos seus arquivos, conserte-o: PR com a suíte vermelha NÃO está pronta.
+5. Rode os testes e garanta 100% de aprovação. {pip_guard}. Para iterar rápido: python3 -m pytest <arquivos_de_teste_novos> -p no:cov -q. MAS, ANTES DE ABRIR/CONFIRMAR A PR, rode a SUÍTE COMPLETA — {full_suite_cmd} — 100% verde. Se sua mudança quebrou um teste fora dos seus arquivos, conserte-o: PR com a suíte vermelha NÃO está pronta.
 6. Faça commit normal (SEM force-push) e `git push -u origin {branch}`.
 7. ABRA A PR (OBRIGATÓRIO — sem PR a tarefa NÃO está concluída):
    gh pr create --repo {repo} --base {main} --head {branch} --title "<título coerente>" --body "<resumo>. Closes #{number}."
@@ -119,7 +150,7 @@ RETOMADA do QUALITY GATE da Pull Request #{number} do repositório {repo} — um
 3. AVALIE com RIGOR contra o checklist do revisor (corretude/IDEMPOTÊNCIA — re-dispara a cada tick sem claim/dedup?; SOLID/SRP/DRY/KISS; arquitetura hexagonal; SEGURANÇA — injeção em jq/shell/SQL, segredo em log; error handling tipado; testes de borda + a regressão alegada; packaging — arquivo novo no COPY do Dockerfile e no allowlist do .dockerignore). Anote cada achado (arquivo:linha + problema).
 3b. CONFRONTE a entrega contra o PEDIDO: descubra a issue (Closes #N no corpo da PR), leia-a com TODOS os comentários (gh issue view <N> --repo {repo} --comments) e verifique item a item se a PR entrega tudo (corpo + decisões do stakeholder). Faltou requisito ou "concluído" sem cumprir → IMPEDIMENTO, NÃO mergeie (testes verdes não suprem), `BLOQUEADO: <o que falta>`.
 4. CORRIJA os achados com commits normais (SEM force-push) e dê push. Adicione os testes que faltarem.
-5. GATE DE TESTES. Iterar nas correções: python3 -m pytest <arquivos> -p no:cov -q (deps já instaladas — NÃO rode `pip install`). MAS o VEREDITO exige a SUÍTE COMPLETA verde: rode PRIMEIRO python3 -m pytest deile/tests/ -x -q (fail-fast — economiza ~100s quando há vermelho); só se passar TUDO no fail-fast, rode python3 -m pytest deile/tests/ -q (sem -x, com cobertura) DEVE estar 100% verde. Suíte vermelha — mesmo fora dos arquivos da PR — é IMPEDIMENTO: NÃO mergeie.
+5. GATE DE TESTES. Iterar nas correções: python3 -m pytest <arquivos> -p no:cov -q ({pip_guard}). MAS o VEREDITO exige a SUÍTE COMPLETA verde: {full_suite_cmd} DEVE estar 100% verde. Suíte vermelha — mesmo fora dos arquivos da PR, se a mudança a quebrou — é IMPEDIMENTO: NÃO mergeie.
 6. DOCUMENTE as evidências como comentário na PR (gh pr comment {number} --repo {repo} --body "..."), colando a saída REAL da suíte completa.
 7. VEREDITO — só mergeie se o checklist passou E a SUÍTE COMPLETA está 100% verde: gh api -X PUT repos/{repo}/pulls/{number}/merge -f merge_method=merge (fallback: gh pr merge {number} --repo {repo} --merge). Confirme: gh pr view {number} --repo {repo} --json merged -q .merged (deve ser true).
 8. ANTES DE PARAR, atualize `.deile-progress.md` no diretório de trabalho (fora de ./repo, sem commitar): o que revisou, achados, correções e o que falta.
@@ -277,7 +308,8 @@ def _render_worker_mention_brief(
 def _render_worker_implement_brief(
     repo: str, main: str, branch: str, number: int, title: str, body: str
 ) -> str:
-    return _WORKER_IMPLEMENT_BRIEF.format(
+    return _render_brief(
+        _WORKER_IMPLEMENT_BRIEF,
         repo=repo,
         main=main,
         branch=branch,
@@ -288,7 +320,7 @@ def _render_worker_implement_brief(
 
 
 def _render_worker_review_brief(repo: str, main: str, number: int) -> str:
-    return _WORKER_REVIEW_BRIEF.format(repo=repo, main=main, number=number)
+    return _render_brief(_WORKER_REVIEW_BRIEF, repo=repo, main=main, number=number)
 
 
 # The journal lives in the worker's per-channel PVC workspace (one level above
@@ -306,7 +338,8 @@ _PROGRESS_BLOCK = (
 def _render_worker_implement_resume_brief(
     repo: str, main: str, branch: str, number: int, title: str, body: str
 ) -> str:
-    return _WORKER_IMPLEMENT_RESUME_BRIEF.format(
+    return _render_brief(
+        _WORKER_IMPLEMENT_RESUME_BRIEF,
         repo=repo,
         main=main,
         branch=branch,
@@ -320,8 +353,9 @@ def _render_worker_implement_resume_brief(
 def _render_worker_review_resume_brief(
     repo: str, main: str, number: int
 ) -> str:
-    return _WORKER_REVIEW_RESUME_BRIEF.format(
-        repo=repo, main=main, number=number, progress_block=_PROGRESS_BLOCK
+    return _render_brief(
+        _WORKER_REVIEW_RESUME_BRIEF,
+        repo=repo, main=main, number=number, progress_block=_PROGRESS_BLOCK,
     )
 
 
@@ -442,7 +476,7 @@ Você foi solicitado APENAS como REVISOR da Pull Request #{number} do repositór
 2. LEIA O DIFF INTEIRO e entenda a intenção: git diff {main}...HEAD. Leia cada arquivo tocado.
 3. AVALIE com RIGOR contra o checklist do revisor (corretude/IDEMPOTÊNCIA — re-dispara a cada tick sem claim/dedup?; SOLID/SRP/DRY/KISS; arquitetura hexagonal; SEGURANÇA — injeção em jq/shell/SQL, segredo em log; error handling tipado; testes de borda; packaging — arquivo novo no COPY do Dockerfile e no allowlist). Anote cada achado com arquivo:linha.
 3b. CONFRONTE A ENTREGA CONTRA O PEDIDO: descubra a issue (Closes #N no corpo: gh pr view {number} --repo {repo} --json body,closingIssuesReferences), leia-a com TODOS os comentários (gh issue view <N> --repo {repo} --comments) e verifique item a item se a PR entrega tudo (corpo + decisões do stakeholder). Faltou requisito, ou autor disse "concluído" sem cumprir → é bloqueante.
-3c. GATE DE TESTES — rode a SUÍTE COMPLETA: python3 -m pytest deile/tests/ -q (deps já instaladas — NÃO rode `pip install`; é o portão real de CI, inclui cobertura). NÃO basta rodar os arquivos do diff — uma mudança quebra testes em arquivos que ela não tocou. Suíte vermelha = bloqueante. Cole a saída REAL no corpo da review.
+3c. GATE DE TESTES — rode a SUÍTE COMPLETA: {full_suite_cmd} ({pip_guard}; é o portão real de CI, inclui cobertura). NÃO basta rodar os arquivos do diff — uma mudança quebra testes em arquivos que ela não tocou. Suíte vermelha = bloqueante. Cole a saída REAL no corpo da review.
 4. POSTE a review via REST com o VEREDITO explícito: gh api -X POST repos/{repo}/pulls/{number}/reviews -f event=<EVENT> -f body="<resumo dos achados, arquivo:linha, + saída da suíte completa>". Escolha o EVENT:
    - **APPROVE** — SÓ se NÃO houver nada bloqueante (checklist limpo, entrega cumpre o pedido do passo 3b, E a SUÍTE COMPLETA do passo 3c está 100% verde). EXCEÇÃO: se VOCÊ for o autor da PR (`gh pr view {number} --json author -q .author.login` == você), o GitHub recusa self-approve — nesse caso use `COMMENT` (o assignee-autor finalizará o merge no próximo tick).
    - **REQUEST_CHANGES** — se houver QUALQUER problema bloqueante: achado do checklist, requisito faltando (3b), OU suíte vermelha (3c). Testes verdes do subset NÃO suprem a suíte completa vermelha.
@@ -470,11 +504,11 @@ Você foi MENCIONADO na Pull Request #{number} do repositório {repo} (em coment
 
 
 def _render_worker_review_only_brief(repo: str, main: str, number: int) -> str:
-    return _WORKER_REVIEW_ONLY_BRIEF.format(repo=repo, main=main, number=number)
+    return _render_brief(_WORKER_REVIEW_ONLY_BRIEF, repo=repo, main=main, number=number)
 
 
 def _render_worker_pr_address_brief(repo: str, main: str, number: int) -> str:
-    return _WORKER_PR_ADDRESS_BRIEF.format(repo=repo, main=main, number=number)
+    return _render_brief(_WORKER_PR_ADDRESS_BRIEF, repo=repo, main=main, number=number)
 
 
 # ---------------------------------------------------------------------------

@@ -15,10 +15,11 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
 import pytest
 
 from deile.commands.builtin.version_command import VersionCommand
-from deile.commands.cli_flags import CLIFlagSpec, build_cli_flag_specs
+from deile.commands.cli_flags import build_cli_flag_specs
 from deile.commands.registry import CommandRegistry
 
 # ---------------------------------------------------------------------------
@@ -305,7 +306,7 @@ class TestInteractiveTTYPrompt:
 
     def test_tty_prompt_shows_when_no_venv(self):
         """Em TTY sem venv, o prompt para painel completo deve aparecer."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         fake_venv = MagicMock()
         fake_venv.exists.return_value = False
@@ -319,8 +320,8 @@ class TestInteractiveTTYPrompt:
 
     def test_tty_prompt_no_shows_short_line(self):
         """TTY com resposta 'não' → sai com linha curta e exit 0."""
-        from unittest.mock import patch, MagicMock
         from io import StringIO
+        from unittest.mock import MagicMock, patch
 
         fake_stdout = StringIO()
         fake_venv = MagicMock()
@@ -339,7 +340,7 @@ class TestInteractiveTTYPrompt:
 
     def test_tty_prompt_yes_triggers_bootstrap_path(self):
         """TTY com resposta 'sim' → chama bootstrap leve (_create_venv, _install_deps)."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         fake_venv = MagicMock()
         fake_venv.exists.return_value = False
@@ -361,7 +362,7 @@ class TestInteractiveTTYPrompt:
 
     def test_tty_prompt_yes_does_not_call_ensure_env(self):
         """Bootstrap leve NÃO deve chamar _ensure_env_file (sem wizard de API key)."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         fake_venv = MagicMock()
         fake_venv.exists.return_value = False
@@ -381,7 +382,7 @@ class TestInteractiveTTYPrompt:
 
     def test_tty_prompt_eof_treated_as_no(self):
         """EOFError/KeyboardInterrupt no input → tratado como 'não'."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         fake_venv = MagicMock()
         fake_venv.exists.return_value = False

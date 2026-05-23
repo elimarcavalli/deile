@@ -1,24 +1,21 @@
 """Standup Command — narrativa do dia (commits + PRs + issues)."""
 
-import asyncio
 import json
-import os
 import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from rich.console import Group
 from rich.panel import Panel
 from rich.text import Text
 
 from ...core.exceptions import CommandError
-from ...core.models.router import get_model_router
 from ...core.models.base import ModelMessage
+from ...core.models.router import get_model_router
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import emit_audit_event, error_panel, success_panel, wrap_command_errors
+from ._shared import emit_audit_event, wrap_command_errors
 
 
 @dataclass
@@ -103,11 +100,19 @@ def collect_commits(since_iso: str) -> List[Dict[str, str]]:
     return commits
 
 
-def collect_prs(since_iso: str) -> List[Dict[str, Any]]:
+def _collect_gh_items(verb: str, since_iso: str) -> List[Dict[str, Any]]:
+    """Coleta itens via ``gh <verb> list`` filtrados por ``updated:>=``.
+
+    Compartilhado por :func:`collect_prs` (``verb='pr'``) e
+    :func:`collect_issues` (``verb='issue'``) — ambos chamavam ``gh`` com
+    a mesma forma de comando, mesmos campos JSON e mesma normalização
+    de autor. Devolve ``[]`` em qualquer falha (returncode != 0 ou JSON
+    inválido) — o caller decide se isso é um erro.
+    """
     res = subprocess.run(
         [
             "gh",
-            "pr",
+            verb,
             "list",
             "--state",
             "all",
@@ -123,62 +128,31 @@ def collect_prs(since_iso: str) -> List[Dict[str, Any]]:
         return []
     try:
         data = json.loads(res.stdout)
-        prs = []
-        for item in data:
-            author = item.get("author")
-            author_name = author.get("login") if isinstance(author, dict) else "?"
-            prs.append(
-                {
-                    "number": item.get("number"),
-                    "title": item.get("title"),
-                    "state": item.get("state"),
-                    "author": author_name,
-                    "url": item.get("url", ""),
-                    "updated_at": item.get("updatedAt", ""),
-                }
-            )
-        return prs
     except json.JSONDecodeError:
         return []
+    items: List[Dict[str, Any]] = []
+    for item in data:
+        author = item.get("author")
+        author_name = author.get("login") if isinstance(author, dict) else "?"
+        items.append(
+            {
+                "number": item.get("number"),
+                "title": item.get("title"),
+                "state": item.get("state"),
+                "author": author_name,
+                "url": item.get("url", ""),
+                "updated_at": item.get("updatedAt", ""),
+            }
+        )
+    return items
+
+
+def collect_prs(since_iso: str) -> List[Dict[str, Any]]:
+    return _collect_gh_items("pr", since_iso)
 
 
 def collect_issues(since_iso: str) -> List[Dict[str, Any]]:
-    res = subprocess.run(
-        [
-            "gh",
-            "issue",
-            "list",
-            "--state",
-            "all",
-            "--search",
-            f"updated:>={since_iso}",
-            "--json",
-            "number,title,state,author,url,updatedAt",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if res.returncode != 0:
-        return []
-    try:
-        data = json.loads(res.stdout)
-        issues = []
-        for item in data:
-            author = item.get("author")
-            author_name = author.get("login") if isinstance(author, dict) else "?"
-            issues.append(
-                {
-                    "number": item.get("number"),
-                    "title": item.get("title"),
-                    "state": item.get("state"),
-                    "author": author_name,
-                    "url": item.get("url", ""),
-                    "updated_at": item.get("updatedAt", ""),
-                }
-            )
-        return issues
-    except json.JSONDecodeError:
-        return []
+    return _collect_gh_items("issue", since_iso)
 
 
 def collect_standup_data(since_spec: str) -> StandupData:

@@ -286,10 +286,10 @@ async def test_unknown_error_format(fake_permission, fake_audit):
 async def test_error_messages_never_leak_sensitive_data(fake_permission, fake_audit):
     """All error messages must be free of sensitive values (token, full text)."""
     from deile.integrations.bot.client import (BotClientAuthError,
-                                                BotClientNotReady,
-                                                BotClientRateLimited,
-                                                BotClientTimeoutError,
-                                                BotClientUpstreamError)
+                                               BotClientNotReady,
+                                               BotClientRateLimited,
+                                               BotClientTimeoutError,
+                                               BotClientUpstreamError)
 
     exceptions = [
         BotClientAuthError("tok_ABC123_secret"),

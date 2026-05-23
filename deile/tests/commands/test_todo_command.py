@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import subprocess
-import tempfile
 from io import StringIO
 from pathlib import Path
 
@@ -20,11 +19,7 @@ import pytest
 from rich.console import Console
 
 from deile.commands.base import CommandContext
-from deile.commands.builtin.todo_command import (
-    _is_comment_line,
-    TodoCommand,
-)
-
+from deile.commands.builtin.todo_command import TodoCommand, _is_comment_line
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
 from collections import defaultdict
 from pathlib import Path
 
@@ -13,7 +12,9 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._git_helpers import git_ls_files
 
 logger = logging.getLogger(__name__)
 
@@ -36,19 +37,9 @@ class LocCommand(DirectCommand):
 
     def _get_git_files(self, cwd: str) -> list[str]:
         try:
-            result = subprocess.run(
-                ["git", "ls-files"],
-                cwd=cwd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
-            return [f for f in result.stdout.splitlines() if f.strip()]
-        except subprocess.CalledProcessError as exc:
+            return git_ls_files(cwd)
+        except CommandError as exc:
             logger.warning("Falha ao executar git ls-files: %s", exc)
-            return []
-        except FileNotFoundError:
-            logger.warning("Git não encontrado no sistema.")
             return []
 
     def _count_lines(self, filepath: str) -> int:
@@ -58,20 +49,18 @@ class LocCommand(DirectCommand):
         except Exception:
             return 0
 
+    _LANGUAGE_BY_EXT: dict[str, str] = {
+        ".py": "Python",
+        ".md": "Markdown",
+        ".yaml": "YAML",
+        ".yml": "YAML",
+        ".json": "JSON",
+        ".sh": "Shell",
+    }
+
     def _get_language(self, filename: str) -> str:
         ext = os.path.splitext(filename)[1].lower()
-        if ext == ".py":
-            return "Python"
-        elif ext == ".md":
-            return "Markdown"
-        elif ext in (".yaml", ".yml"):
-            return "YAML"
-        elif ext == ".json":
-            return "JSON"
-        elif ext == ".sh":
-            return "Shell"
-        else:
-            return "Other"
+        return self._LANGUAGE_BY_EXT.get(ext, "Other")
 
     def _count_tests(self, cwd: str) -> int:
         test_dir = Path(cwd) / "deile" / "tests"

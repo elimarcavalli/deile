@@ -36,7 +36,8 @@ from deile.orchestration.pipeline.constants import (
 from deile.orchestration.pipeline.github_client import GitHubClient, IssueRef
 from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.implementer import (PipelineImplementer,
-                                                      build_implementer)
+                                                      build_implementer,
+                                                      is_claude_mode)
 from deile.orchestration.pipeline.lockfile import LockHeldError
 from deile.orchestration.pipeline.lockfile import acquire as acquire_lock
 from deile.orchestration.pipeline.lockfile import release as release_lock
@@ -168,21 +169,21 @@ def build_default_pipeline_config(*, use_pid_lock: bool = True) -> PipelineConfi
         # The deile_worker path implements/reviews inside the worker Pod; the
         # pipeline process has no local clone, so the on-startup worktree
         # cleanup would only emit warnings. Keep it for the claude path.
-        enable_worktree_cleanup=dispatch_mode in ("claude", "claude_code", "claude-code"),
+        enable_worktree_cleanup=is_claude_mode(dispatch_mode),
         # Resume of partial work (issue #254) — only meaningful on the worker
         # path (the structured ground-truth contract lives there). Resolve all
         # four knobs from settings so the product default mirrors the operator's
         # ``pipeline_resume_*`` configuration.
         enable_resume=(
             bool(settings.pipeline_resume_enabled)
-            and dispatch_mode not in ("claude", "claude_code", "claude-code")
+            and not is_claude_mode(dispatch_mode)
         ),
         resume_interval=int(settings.pipeline_resume_interval),
         resume_max_attempts=int(settings.pipeline_resume_max_attempts),
         resume_budget=int(settings.pipeline_resume_budget),
         refine_max_attempts=int(settings.pipeline_refine_max_attempts),
         max_parallel=int(settings.pipeline_max_parallel),
-        enable_refinement_gate=(dispatch_mode not in ("claude", "claude_code", "claude-code")),
+        enable_refinement_gate=(not is_claude_mode(dispatch_mode)),
     )
 
 
@@ -238,9 +239,7 @@ class PipelineMonitor:
         # manager for the claude strategy (or when one is injected).
         if worktrees is not None:
             self.worktrees = worktrees
-        elif (config.dispatch_mode or "claude").strip().lower() in (
-            "claude", "claude_code", "claude-code"
-        ):
+        elif is_claude_mode(config.dispatch_mode):
             self.worktrees = WorktreeManager(
                 config.base_repo_path,
                 main_branch=config.main_branch,
