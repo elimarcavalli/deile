@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -13,6 +14,12 @@ from .language_detector import LanguageDetector
 from .registry import SkillRegistry
 
 logger = logging.getLogger(__name__)
+
+
+# Cap how much of each referenced file we sample for ``file_content_patterns``.
+# 4 KiB is enough for shebangs, module docstrings, and typical import blocks
+# without turning trigger evaluation into expensive disk I/O.
+_FILE_CONTENT_SAMPLE_BYTES = 4096
 
 
 @dataclass(frozen=True)
@@ -43,12 +50,86 @@ def _matches_code_block_langs(langs: Iterable[str], detected: Iterable[str]) -> 
     return any(lang.lower() in detected_set for lang in langs)
 
 
+def _matches_keywords(keywords: Iterable[str], user_input: str) -> bool:
+    """Word-boundary, case-insensitive match on *user_input*.
+
+    Word boundary (``\\b``) avoids spurious hits like "rust" inside "trust".
+    Keywords containing whitespace are treated as multi-word phrases.
+    """
+    if not keywords:
+        return False
+    if not user_input:
+        return False
+    for raw in keywords:
+        if not raw:
+            continue
+        pattern = r"\b" + re.escape(raw.strip()) + r"\b"
+        if re.search(pattern, user_input, re.IGNORECASE):
+            return True
+    return False
+
+
+def _matches_file_content(
+    patterns: Iterable[str],
+    file_refs: Iterable[str],
+    cache: dict,
+    project_root: Path,
+) -> bool:
+    """Compile *patterns* and search the first sample of each referenced file.
+
+    *cache* maps ``str(absolute_path) → sample_text`` to avoid re-reading the
+    same file across multiple skills in a single ``select_skills`` call.
+    Patterns that fail to compile are skipped with a logged warning so a
+    single bad regex does not break trigger evaluation for other skills.
+    """
+    pattern_list = list(patterns)
+    if not pattern_list:
+        return False
+
+    compiled: List[re.Pattern] = []
+    for raw in pattern_list:
+        if not raw:
+            continue
+        try:
+            compiled.append(re.compile(raw, re.MULTILINE))
+        except re.error as exc:
+            logger.warning("skills: invalid file_content_pattern %r: %s — skipped", raw, exc)
+    if not compiled:
+        return False
+
+    for ref in file_refs:
+        if not ref:
+            continue
+        path = Path(ref)
+        if not path.is_absolute():
+            path = project_root / path
+        key = str(path)
+        if key in cache:
+            sample = cache[key]
+        else:
+            try:
+                with open(path, "rb") as fh:
+                    raw_bytes = fh.read(_FILE_CONTENT_SAMPLE_BYTES)
+            except (OSError, IsADirectoryError):
+                cache[key] = ""
+                continue
+            sample = raw_bytes.decode("utf-8", errors="replace")
+            cache[key] = sample
+        if not sample:
+            continue
+        for compiled_pattern in compiled:
+            if compiled_pattern.search(sample):
+                return True
+    return False
+
+
 class SkillRouter:
     """Selects active skills for a turn based on registered trigger conditions.
 
-    The router is sync (no I/O at match time) and deterministic: ties on
-    ``priority`` are broken by ``skill.name`` so the same context always
-    yields the same ordering.
+    The router is sync (only cheap, bounded I/O at match time for
+    ``file_content_patterns``) and deterministic: ties on ``priority`` are
+    broken by ``skill.name`` so the same context always yields the same
+    ordering.
     """
 
     def __init__(
@@ -56,10 +137,12 @@ class SkillRouter:
         registry: SkillRegistry,
         language_detector: Optional[LanguageDetector] = None,
         max_skills_per_turn: int = 4,
+        project_root: Optional[Path] = None,
     ) -> None:
         self._registry = registry
         self._detector = language_detector or LanguageDetector()
         self._max = max_skills_per_turn
+        self._project_root = project_root or Path.cwd()
 
     def select_skills(self, context: SkillSelectionContext) -> List[Skill]:
         """Return the skills whose triggers fire, capped at ``max_skills_per_turn``."""
@@ -76,6 +159,10 @@ class SkillRouter:
         # for a ``.py`` file reference even if the user did not paste a fence.
         all_detected_langs = list({*code_block_langs, *file_languages})
 
+        # Per-turn cache for file-content reads — multiple skills can reference
+        # the same file without re-reading it.
+        content_cache: dict = {}
+
         matched: List[Skill] = []
         for skill in self._registry.list_all():
             trig = skill.triggers
@@ -83,6 +170,17 @@ class SkillRouter:
                 matched.append(skill)
                 continue
             if _matches_code_block_langs(trig.code_block_langs, all_detected_langs):
+                matched.append(skill)
+                continue
+            if _matches_keywords(trig.keywords, context.user_input):
+                matched.append(skill)
+                continue
+            if _matches_file_content(
+                trig.file_content_patterns,
+                context.file_references,
+                content_cache,
+                self._project_root,
+            ):
                 matched.append(skill)
                 continue
 
@@ -97,3 +195,45 @@ class SkillRouter:
         for skill in skills:
             sections.append(f"### Skill: {skill.name}\n{skill.content}")
         return "\n\n".join(sections)
+
+    def render_catalog(self, exclude_names: Iterable[str] = ()) -> str:
+        """Render a compact catalog of every registered skill.
+
+        Skills already injected verbatim into the prompt (the auto-triggered
+        ones returned by :meth:`select_skills`) can be passed in
+        *exclude_names* so they are not listed twice. The catalog tells the
+        LLM what's available; it can call the ``invoke_skill`` tool with one
+        of these names to pull the full body on demand.
+        """
+        excluded = set(exclude_names)
+        skills = [s for s in self._registry.list_all() if s.name not in excluded]
+        if not skills:
+            return ""
+        skills.sort(key=lambda s: s.name)
+
+        lines: List[str] = [
+            "## Available Skills (load on demand via `invoke_skill`)",
+            "",
+        ]
+        for skill in skills:
+            hint = _trigger_hint(skill)
+            suffix = f" — _{hint}_" if hint else ""
+            lines.append(f"- `{skill.name}` — {skill.description}{suffix}")
+        return "\n".join(lines)
+
+
+def _trigger_hint(skill: Skill) -> str:
+    """One-line ", auto-active for ..." hint describing the skill's triggers."""
+    parts: List[str] = []
+    trig = skill.triggers
+    if trig.file_globs:
+        parts.append("files: " + ", ".join(trig.file_globs))
+    if trig.code_block_langs:
+        parts.append("langs: " + ", ".join(trig.code_block_langs))
+    if trig.keywords:
+        parts.append("keywords: " + ", ".join(trig.keywords))
+    if trig.file_content_patterns:
+        parts.append(f"{len(trig.file_content_patterns)} content pattern(s)")
+    if not parts:
+        return ""
+    return "auto-active when " + "; ".join(parts)

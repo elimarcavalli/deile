@@ -106,6 +106,56 @@ class TestSkillsInjectionViaContextManager:
         assert "### Skill: python" in ctx["system_instruction"]
         assert "RULES FOR PYTHON" in ctx["system_instruction"]
 
+    async def test_catalog_is_always_appended_when_skills_exist(
+        self, python_skill_router: SkillRouter
+    ) -> None:
+        # Even when no trigger fires for the turn, the catalog ("## Available
+        # Skills") must be in the system prompt so the LLM can call
+        # ``invoke_skill`` on the python skill.
+        cm = ContextManager()
+        parse_result = ParseResult(status=ParseStatus.SUCCESS, file_references=["README.md"])
+        session = SimpleNamespace(
+            conversation_history=[{"role": "user", "content": "no triggers here"}],
+            context_data={},
+        )
+
+        ctx = await cm.build_context(
+            user_input="no triggers here",
+            parse_result=parse_result,
+            session=session,
+        )
+
+        sys_instr = ctx["system_instruction"]
+        assert "## Available Skills" in sys_instr
+        assert "`python`" in sys_instr
+        # Not auto-triggered → body is NOT injected.
+        assert "RULES FOR PYTHON" not in sys_instr
+
+    async def test_active_skill_is_omitted_from_catalog(
+        self, python_skill_router: SkillRouter
+    ) -> None:
+        # When a skill auto-triggers AND is also in the catalog, the catalog
+        # should skip it to avoid duplicating the description right above its
+        # own injected body.
+        cm = ContextManager()
+        parse_result = ParseResult(status=ParseStatus.SUCCESS, file_references=["x.py"])
+        session = SimpleNamespace(
+            conversation_history=[{"role": "user", "content": "x.py"}],
+            context_data={},
+        )
+
+        ctx = await cm.build_context(
+            user_input="x.py",
+            parse_result=parse_result,
+            session=session,
+        )
+
+        sys_instr = ctx["system_instruction"]
+        assert "### Skill: python" in sys_instr  # active block present
+        # With only one skill registered, the catalog excludes it → no
+        # "## Available Skills" header in output.
+        assert "## Available Skills" not in sys_instr
+
     async def test_disabled_subsystem_injects_nothing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

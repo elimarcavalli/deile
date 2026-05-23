@@ -370,6 +370,7 @@ class DeileAgent:
         self._sessions: Dict[str, AgentSession] = {}
         self._request_count = 0
         self._skill_loader = None  # set by _auto_discover_components; used by reload_skills()
+        self._skills_watcher = None  # set by _auto_discover_components; stopped in shutdown()
 
         # Initialize PersonaManager - será inicializado via async initialize()
         self.persona_manager: Optional[PersonaManager] = None
@@ -1493,6 +1494,13 @@ class DeileAgent:
             except Exception:
                 pass
             self._session_store = None
+        watcher = getattr(self, "_skills_watcher", None)
+        if watcher is not None:
+            try:
+                watcher.stop()
+            except Exception:
+                pass
+            self._skills_watcher = None
 
     # Métodos privados
 
@@ -2608,6 +2616,23 @@ class DeileAgent:
                 skill_loader.load_into_registry(self.command_registry)
                 # Store for hot-reload via /skills add|remove
                 self._skill_loader = skill_loader
+
+                # Start the filesystem watcher so dropping a new *.md into
+                # any of the scanned directories refreshes the registry
+                # without an agent restart. Failures here are non-fatal —
+                # the agent still works without hot-reload.
+                try:
+                    from ..skills.watcher import SkillsWatcher
+                    self._skills_watcher = SkillsWatcher(
+                        project_dir=Path(project_dir) if project_dir else None,
+                        extra_paths=[
+                            p for p in _settings_mgr.get_all_skills_paths() if p.is_dir()
+                        ],
+                        command_registry=self.command_registry,
+                    )
+                    self._skills_watcher.start()
+                except Exception as _watcher_exc:
+                    self.logger.warning("Skills hot-reload not started: %s", _watcher_exc)
             except Exception as _skill_exc:
                 self.logger.warning("Skill loading failed: %s", _skill_exc)
 

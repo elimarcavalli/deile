@@ -20,6 +20,7 @@ from .loader import SkillLoader, SkillLoadError, normalize_name, parse_skill_tex
 from .registry import SkillRegistry, get_skill_registry, reset_skill_registry
 from .router import SkillRouter, SkillSelectionContext
 from .slash_command_bridge import register_skills_as_commands, unregister_skill_commands
+from .watcher import SkillsWatcher, reload_registry
 
 __all__ = [
     "Skill",
@@ -30,6 +31,7 @@ __all__ = [
     "SkillRouter",
     "SkillSelectionContext",
     "SkillsConfig",
+    "SkillsWatcher",
     "LanguageDetector",
     "bootstrap_skills",
     "discover_skills",
@@ -40,4 +42,5 @@ __all__ = [
     "parse_skill_text",
     "register_skills_as_commands",
     "unregister_skill_commands",
+    "reload_registry",
 ]

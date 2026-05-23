@@ -25,6 +25,7 @@ from .language_detector import LanguageDetector
 from .registry import get_skill_registry
 from .router import SkillRouter
 from .slash_command_bridge import register_skills_as_commands, unregister_skill_commands
+from .watcher import SkillsWatcher
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +37,19 @@ async def bootstrap_skills(
     project_dir: Optional[Path] = None,
     user_home: Optional[Path] = None,
     extra_paths: Iterable[Path] = (),
+    hot_reload: bool = False,
 ) -> Optional[SkillRouter]:
     """Discover skills, populate the registry, and return a ready ``SkillRouter``.
 
     Returns ``None`` when ``config.enabled`` is False — callers should treat
     ``None`` as "skill injection off". When *command_registry* is provided,
     every loaded skill is also registered as a ``/<name>`` slash command.
+
+    When *hot_reload* is True a :class:`SkillsWatcher` is started so
+    subsequent ``.md`` edits/creates/deletes refresh the registry without an
+    agent restart. The watcher reference is attached to the returned router
+    as ``router._watcher`` so callers that need to ``stop()`` it on shutdown
+    can reach it without us cluttering the public API.
     """
     cfg = config or load_skills_config()
     if not cfg.enabled:
@@ -79,8 +87,21 @@ async def bootstrap_skills(
         extension_map=cfg.extension_map,
         basename_map=cfg.basename_map,
     )
-    return SkillRouter(
+    router = SkillRouter(
         registry=registry,
         language_detector=detector,
         max_skills_per_turn=cfg.max_per_turn,
+        project_root=project_dir,
     )
+
+    if hot_reload:
+        watcher = SkillsWatcher(
+            project_dir=project_dir,
+            user_home=user_home,
+            extra_paths=merged_extras,
+            command_registry=command_registry,
+        )
+        watcher.start()
+        router._watcher = watcher  # type: ignore[attr-defined]
+
+    return router

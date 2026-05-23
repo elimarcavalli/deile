@@ -376,17 +376,25 @@ class ContextManager:
             selected = self._skill_router.select_skills(context)
         except Exception as exc:
             logger.warning("skills: selection raised %s; skipping injection this turn", exc)
-            return ""
+            selected = []
 
-        if not selected:
-            return ""
+        # Always include the catalog (compact name+description list) so the LLM
+        # knows what's available and can pull a non-triggered skill via the
+        # ``invoke_skill`` tool. Auto-triggered skills are excluded from the
+        # catalog to avoid duplicating their full bodies right above.
+        excluded = {s.name for s in selected}
+        catalog = self._skill_router.render_catalog(exclude_names=excluded)
+        active_block = self._skill_router.render_block(selected) if selected else ""
 
-        logger.debug(
-            "skills: injecting %d skill(s): %s",
-            len(selected),
-            ", ".join(s.name for s in selected),
-        )
-        return self._skill_router.render_block(selected)
+        if selected:
+            logger.debug(
+                "skills: injecting %d active skill(s): %s",
+                len(selected),
+                ", ".join(s.name for s in selected),
+            )
+
+        parts = [p for p in (active_block, catalog) if p]
+        return "\n\n".join(parts)
     
     # Maximum characters for the file-context block injected into the system prompt.
     # Each LLM token is roughly 4 chars; keeping this at 8 000 chars ≈ 2 000 tokens —
