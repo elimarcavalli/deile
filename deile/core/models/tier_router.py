@@ -134,8 +134,24 @@ class CircuitBreaker:
         return True
 
     def is_open(self, provider_id: str) -> bool:
-        """True if the circuit is currently blocking *provider_id*."""
-        return not self.allow_request(provider_id)
+        """True if the circuit is currently blocking *provider_id*.
+
+        Side-effect-free: must NOT transition OPEN→HALF_OPEN. The previous
+        implementation delegated to ``allow_request``, which "consumes" the
+        single HALF_OPEN probe slot when it flips the state. ``TierRouter.select``
+        calls ``is_open`` once per cascade entry; with duplicate provider_ids
+        in a tier (the YAML allows them: ``[gemini:..., gemini:..., ...]``),
+        the first call would burn the probe before any cascade entry that
+        actually targets that provider could grab it — leaving the breaker
+        stuck OPEN for another full cooldown.
+        """
+        b = self._breakers.get(provider_id)
+        if b is None or b.state == BreakerState.CLOSED:
+            return False
+        if b.state == BreakerState.HALF_OPEN:
+            return False  # probe slot is available
+        # OPEN: blocking unless the cooldown has elapsed (read-only check).
+        return (time.time() - b.opened_at) < self._cooldown
 
     def record_success(self, provider_id: str) -> None:
         b = self._get(provider_id)
@@ -263,15 +279,22 @@ class TierRouter:
             if provider_id in skip_set:
                 logger.debug("TierRouter: skipping %s (in skip_provider_ids)", key)
                 continue
+            # Check breaker without side-effects first — duplicate provider_ids
+            # in a cascade must not consume the HALF_OPEN probe slot before
+            # we've found a registered provider to actually use it.
             if self._circuit_breaker.is_open(provider_id):
                 logger.debug("TierRouter: skipping %s (circuit open)", key)
                 continue
             # Prefer exact provider:model_id match (lets cascade pick the right cheap/expensive variant)
             if key in self._providers:
+                # Commit: consume the breaker probe slot for the chosen
+                # cascade entry only (side-effectful OPEN→HALF_OPEN transition).
+                self._circuit_breaker.allow_request(provider_id)
                 logger.debug("TierRouter: selected %s (exact match)", key)
                 return self._providers[key]
             # Fall back to any registered instance for this provider
             if provider_id in self._providers_by_id:
+                self._circuit_breaker.allow_request(provider_id)
                 logger.debug(
                     "TierRouter: selected %s (provider_id fallback — exact model not registered)",
                     provider_id,
