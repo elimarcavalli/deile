@@ -985,7 +985,12 @@ class GeminiProvider(ModelProvider):
             request_time=float(request_time),
         )
         try:
-            usage.cost_estimate = self._compute_cost(usage)
+            # `estimate_cost` (não `_compute_cost`) — herda de ModelProvider
+            # em base.py:406. O nome errado fazia AttributeError ser
+            # silenciada pelo except e cost_estimate ficar 0 — smoke real
+            # com gemini-3.1-flash-lite-preview (4819 in / 8 out) mostrou
+            # cost=$0 quando o esperado era $0.00121675.
+            usage.cost_estimate = self.estimate_cost(usage)
         except Exception as exc:  # noqa: BLE001 — never break the request on cost calc
             logger.debug("Gemini cost calc failed: %s", exc)
         return usage
