@@ -606,8 +606,21 @@ class WorkerImplementer(PipelineImplementer):
 # factory
 # ---------------------------------------------------------------------------
 
-_WORKER_ALIASES = frozenset({"deile_worker", "worker", "deile", "deile-worker"})
-_CLAUDE_ALIASES = frozenset({"claude", "claude_code", "claude-code"})
+WORKER_ALIASES = frozenset({"deile_worker", "worker", "deile", "deile-worker"})
+CLAUDE_ALIASES = frozenset({"claude", "claude_code", "claude-code"})
+
+# Backwards-compatible aliases for internal callers that used the underscored names.
+_WORKER_ALIASES = WORKER_ALIASES
+_CLAUDE_ALIASES = CLAUDE_ALIASES
+
+
+def is_claude_mode(dispatch_mode: Optional[str]) -> bool:
+    """Return True if ``dispatch_mode`` selects the Claude strategy.
+
+    Handles ``None``, empty, whitespace, and case variations uniformly so callers
+    don't reproduce the ``(mode or "claude").strip().lower() in (...)`` idiom.
+    """
+    return (dispatch_mode or "claude").strip().lower() in CLAUDE_ALIASES
 
 
 def build_implementer(
