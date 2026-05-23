@@ -295,7 +295,8 @@ Zero dependência nova: `rich` já está em `pyproject.toml`.
 
 #### 4.3.1 Visão geral — o dashboard
 
-A primeira tela que aparece. Refresh padrão **3s**.
+A primeira tela que aparece. Refresh visual **1s** (cada bloco refresca
+conforme TTL do seu provider — ver tabela abaixo).
 
 ```text
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
@@ -332,16 +333,35 @@ A primeira tela que aparece. Refresh padrão **3s**.
   [1]Pod watch  [2]Pipeline  [3]Issues/PRs  [4]Logs split  [5]Tokens  [n]otifier  [a]ctions  [m]odel
 ```
 
-Cada bloco vem de um provider diferente:
+**Visual vs fetch — desacoplados.** A view re-renderiza em cadência
+**de 1s** (`refresh_s`) — render é ~3ms, custo desprezível. O fetch
+real (subprocess kubectl/gh, query SQLite) acontece no
+`BackgroundRefresher` (thread daemon) e respeita o TTL próprio de cada
+provider. O thread principal **nunca bloqueia**: `provider.get()`
+devolve o cache (mesmo velho) e o refresher repõe no próximo tick.
 
-| bloco | provider | TTL |
+Cada bloco do dashboard vem de um provider diferente:
+
+| bloco | provider | TTL do provider |
 |---|---|---|
-| PODS | `PodsProvider` + `WorkerProvider` + `PipelineProvider` | 3s + 5s + 5s |
-| PIPELINE | `PipelineProvider` + `GitHubProvider` | 5s + 10s |
+| PODS | `PodsProvider` + `WorkerProvider` + `PipelineProvider` | 1s + 2s + 2s |
+| PIPELINE | `PipelineProvider` + `GitHubProvider` | 2s + 10s |
 | ALERTS | regras locais em `_alerts_from_data` | — (recomputado a cada render) |
-| ACTIVITY | `PipelineProvider.events` | 5s |
-| TOKENS & CUSTOS | `CostsProvider` (SQLite local) | 60s |
-| ÚLTIMAS DECISÕES | últimos 3 eventos `mention`/`dispatch`/`stages` | 5s |
+| ACTIVITY | `PipelineProvider.events` | 2s |
+| TOKENS & CUSTOS | `CostsProvider` (SQLite local) | 30s |
+| ÚLTIMAS DECISÕES | últimos 3 eventos `mention`/`dispatch`/`stages` | 2s |
+
+TTLs escolhidos por origem da fonte:
+
+| fonte | TTL | racional |
+|---|---|---|
+| `kubectl get pods` (local k3s) | 1s | <50ms por chamada, sem custo |
+| `kubectl logs --tail=200` (pipeline/audit) | 2s | ~200ms por chamada |
+| `kubectl logs` por worker (N pods) | 2s | rodam em paralelo no pool |
+| `kubectl get deploy/<dep> -o json` (current model) | 3s | 1 chamada por deploy |
+| `gh api --paginate /repos/.../issues` | 10s | rate-limit (5000/h auth = 1.4/s) — 10s = 360/h, folga confortável |
+| SQLite `usage.db` (costs) | 30s | local, mas poll mais frequente é só barulho |
+| `model_providers.yaml` | 300s | catálogo estático |
 
 #### 4.3.2 Hotkeys globais
 
@@ -408,7 +428,8 @@ SIGKILL como garantia).
 
 #### 4.3.4 Pipeline timeline (`[2]`)
 
-Refresh **5s**. Eventos classificados a partir de
+Refresh visual **1s** (fetch real do `PipelineProvider` a cada **2s**).
+Eventos classificados a partir de
 `kubectl logs deploy/deile-pipeline --tail=200` — mention, dispatch, http,
 startup, stages.
 
@@ -444,7 +465,8 @@ startup, stages.
 
 #### 4.3.5 Issues & PRs (`[3]`)
 
-Refresh **10s** — `gh` API custa rate-limit. Cruz cluster ↔ GitHub,
+Refresh visual **1s** (fetch real do `GitHubProvider` a cada **10s** —
+`gh` API custa rate-limit). Cruz cluster ↔ GitHub,
 respeitando precedência de label (`bloqueada` vence sobre fase).
 
 ```text
@@ -478,8 +500,9 @@ ciano para o estado normal de pipeline.
 
 #### 4.3.6 Tokens & Custos (`[5]`)
 
-Refresh **60s** — SQLite local é barato mas re-abrir a cada 2s é
-desperdício. Lê `~/.deile/db/usage.db` (`UsageRepository`).
+Refresh visual **1s** (fetch real do `CostsProvider` a cada **30s** —
+SQLite local é barato mas poll muito frequente é só barulho). Lê
+`~/.deile/db/usage.db` (`UsageRepository`).
 
 ```text
 ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -505,7 +528,8 @@ desperdício. Lê `~/.deile/db/usage.db` (`UsageRepository`).
 
 #### 4.3.7 Notifier echo (`[n]`)
 
-Refresh **5s**. Parsea `kubectl logs deploy/deilebot --tail=500` filtrando
+Refresh visual **1s** (fetch real do `BotAuditProvider` a cada **2s**).
+Parsea `kubectl logs deploy/deilebot --tail=500` filtrando
 linhas JSON do logger `deilebot.audit`. Captura tanto `outbound_sent`
 quanto `outbound_failed`.
 
@@ -562,7 +586,9 @@ Refresh **1s** (pra mostrar o output streaming). Lista os verbos do
 
 #### 4.3.9 Trocar modelo em runtime (`[m]`)
 
-Refresh **5s**. Lista o catálogo de modelos lido do
+Refresh visual **1s** (fetch real do `CurrentModelProvider` a cada
+**3s**, catálogo `ModelsProvider` a cada **300s** — YAML estático).
+Lista o catálogo de modelos lido do
 `deile/config/model_providers.yaml` e mostra o que está efetivamente em uso
 em cada Deployment. **`enter`** abre overlay de confirmação; **`y`**
 aplica via `kubectl set env`, o que dispara rollout (zero-downtime no

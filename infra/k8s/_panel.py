@@ -54,7 +54,7 @@ import _panel_demo as demo  # noqa: E402
 # sys.path setup feito por `deploy.py` (que insere `infra/k8s/` no path
 # antes de importar `_panel`). Não trocar para `from infra.k8s. ...` sem
 # revisar como o orquestrador invoca o painel.
-from _panel_data import PanelData, _fmt_age, kubectl_bin  # noqa: F401
+from _panel_data import BackgroundRefresher, PanelData, _fmt_age, kubectl_bin  # noqa: F401
 from _panel_data import set_preferred_model as pd_set_preferred_model
 from rich import box
 from rich.align import Align
@@ -481,7 +481,7 @@ class DashboardView(View):
 
     name = "dashboard"
     title = "Dashboard"
-    refresh_s = 3.0
+    refresh_s = 1.0    # render é ~3ms; conteúdo refresca conforme TTL do provider
 
     HOTKEYS = (
         "[1]Pod watch  [2]Pipeline  [3]Issues/PRs  [4]Logs split  "
@@ -783,7 +783,7 @@ class PodPickerView(View):
 
     name = "pod-picker"
     title = "Selecionar pod"
-    refresh_s = 3.0
+    refresh_s = 1.0
 
     HOTKEYS = "[↑/↓] navega   [enter] entra   [esc] volta   [q] sai"
 
@@ -999,7 +999,7 @@ class PipelineTimelineView(View):
 
     name = "pipeline-timeline"
     title = "Pipeline Timeline"
-    refresh_s = 5.0
+    refresh_s = 1.0
 
     HOTKEYS = "[esc] volta   [r] força refresh   [q] sai"
 
@@ -1139,7 +1139,7 @@ class IssuesPRsView(View):
 
     name = "issues-prs"
     title = "Issues & PRs"
-    refresh_s = 10.0
+    refresh_s = 1.0
 
     HOTKEYS = ("[a] all   [i] só issues   [p] só PRs   [b] só bloqueadas   "
                "[m] minhas   [↑/↓] navega   [enter] abrir URL   [esc] volta")
@@ -1304,7 +1304,7 @@ class TokensView(View):
 
     name = "tokens"
     title = "Tokens & Custos"
-    refresh_s = 60.0
+    refresh_s = 1.0
 
     HOTKEYS = "[r] força refresh   [esc] volta   [q] sai"
 
@@ -1396,11 +1396,17 @@ _AUDIT_LOG_RE = re.compile(r'"logger":\s*"deilebot\.audit"')
 
 
 class NotifierEchoView(View):
-    """Últimas mensagens de I/O do bot (audit log)."""
+    """Últimas mensagens de I/O do bot (audit log).
+
+    Os dados vêm do `BotAuditProvider` (cacheado, refrescado em
+    background pelo `BackgroundRefresher`). O render nunca chama
+    subprocess — antes da Fase 11 ele fazia `kubectl logs` direto a
+    cada 5s e congelava a UI.
+    """
 
     name = "notifier-echo"
     title = "Notifier Echo"
-    refresh_s = 5.0
+    refresh_s = 1.0
 
     HOTKEYS = "[r] força refresh   [esc] volta   [q] sai"
 
@@ -1450,6 +1456,11 @@ class NotifierEchoView(View):
             return None
 
     def render(self, app: "PanelApp") -> RenderableType:
+        # Usa o NotifierProvider via _fetch_lines (cache + parse JSON
+        # robusto). Antes desta resolução de merge, render lia direto
+        # de `data.audit` (BotAuditProvider, parser estrito) que foi
+        # substituído pelo NotifierProvider (linhas cruas + parser
+        # JSON-first com fallback regex).
         events = self._fetch_lines()
         if not events:
             body: RenderableType = Text(
@@ -1768,7 +1779,7 @@ class ModelSwitcherView(View):
 
     name = "model-switcher"
     title = "Trocar modelo (runtime)"
-    refresh_s = 5.0
+    refresh_s = 1.0
 
     HOTKEYS = ("[↑/↓] navega   [w] target=worker   [p] target=pipeline   "
                "[b] both   [enter] aplicar   [esc] volta   [q] sai")
@@ -2221,6 +2232,20 @@ class PanelApp:
                 "(stdin e stdout precisam ser TTY).[/yellow]"
             )
             return 1
+        # BackgroundRefresher mantém os caches frescos fora do thread
+        # principal — sem isso, `render()` que cair num provider com TTL
+        # vencido bloqueia a UI por segundos (kubectl/gh).
+        refresher = (BackgroundRefresher(self.data)
+                     if self.data is not None else None)
+        if refresher is not None:
+            refresher.start()
+        try:
+            return self._run_loop(refresher)
+        finally:
+            if refresher is not None:
+                refresher.stop()
+
+    def _run_loop(self, refresher: Optional["BackgroundRefresher"]) -> int:
         with KeyReader() as keys, Live(
             self.current_view.render(self),
             console=self.console,

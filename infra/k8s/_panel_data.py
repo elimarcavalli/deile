@@ -29,6 +29,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+from concurrent import futures
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import cached_property
@@ -87,6 +88,19 @@ class Cache(Generic[T]):
     Em caso de erro, mantém o último valor bom; se nunca houve valor bom,
     devolve o `fallback`. Guarda a última exceção em `last_error` para a
     view exibir um indicador discreto.
+
+    Contrato de blocking:
+    - ``get()`` **nunca bloqueia** depois do primeiro fetch — retorna o
+      valor cacheado mesmo que esteja velho.
+    - ``maybe_refresh()`` é o que o ``BackgroundRefresher`` chama em loop
+      para manter o cache fresco (faz fetch só se TTL venceu).
+    - ``get(force=True)`` continua síncrono — usado pelo hotkey [r] para
+      cold-start no primeiro render.
+
+    Antes desta separação, o render no thread principal eventualmente
+    caía no ramo de fetch quando o TTL vencia, e qualquer subprocess
+    kubectl/gh segurava a UI por segundos. Agora todo I/O pesado vive em
+    ``BackgroundRefresher``.
     """
 
     ttl_s: float
@@ -117,32 +131,52 @@ class Cache(Generic[T]):
             self._fetched_at = 0.0
 
     def get(self, force: bool = False) -> T:
-        now = time.monotonic()
-        fresh_enough = (
-            self._value is not None
-            and (now - self._fetched_at) < self.ttl_s
-        )
-        if fresh_enough and not force:
-            return self._value  # type: ignore[return-value]
-        try:
-            new = self.fetcher()
-        except Exception as exc:  # noqa: BLE001 (defensive — render must never crash)
-            # Falhas crônicas devem ficar visíveis nos logs do operador (debug
-            # apenas — alarmar a cada tick poluiria; last_error já é exibido
-            # discretamente na UI).
-            logger.debug(
-                "Cache.get fetcher failed: %s", exc, exc_info=True,
-            )
-            with self._lock:
-                self._last_error = f"{type(exc).__name__}: {exc}"
-            if self._value is None:
-                return self.fallback
+        """Devolve o valor cacheado, sem bloquear (a menos que `force`).
+
+        - Há valor + ``force=False``: retorna instantâneo, **mesmo se
+          velho**. O ``BackgroundRefresher`` cuida do refresh.
+        - Sem valor (cold start): faz fetch síncrono uma vez, para a
+          primeira render ter algo.
+        - ``force=True``: faz fetch síncrono (usado pelos testes e por
+          comportamento legado).
+        """
+        if self._value is not None and not force:
             return self._value
+        return self._refresh()
+
+    def maybe_refresh(self) -> bool:
+        """Refaz o fetch se o TTL venceu. Para uso do BackgroundRefresher.
+
+        Retorna ``True`` se realmente fez fetch novo.
+        """
+        if (self._value is not None
+                and (time.monotonic() - self._fetched_at) < self.ttl_s):
+            return False
+        self._refresh()
+        return True
+
+    def _refresh(self) -> T:
+        # Combinação dos dois lados do merge: lock thread-safe + logger
+        # debug em falha (vindo do branch remoto a68ace9), mas com o
+        # caminho "não bloqueia depois do primeiro fetch" do lado novo
+        # (theirs / BackgroundRefresher). `invalidate()` já vive acima e
+        # apenas zera `_fetched_at` — o `get()` passa a tratar isso como
+        # "cold start" e refaz fetch único na próxima chamada.
         with self._lock:
-            self._value = new
-            self._fetched_at = now
-            self._last_error = None
-        return new
+            try:
+                new = self.fetcher()
+                self._value = new
+                self._fetched_at = time.monotonic()
+                self._last_error = None
+                return new
+            except Exception as exc:  # noqa: BLE001 (defensive — render must never crash)
+                logger.debug(
+                    "Cache.refresh fetcher failed: %s", exc, exc_info=True,
+                )
+                self._last_error = f"{type(exc).__name__}: {exc}"
+                if self._value is None:
+                    return self.fallback
+                return self._value
 
 
 # ===== subprocess helpers ===================================================
@@ -262,7 +296,8 @@ _ROLE_BY_APP = {
 class PodsProvider:
     """Lista os pods do namespace `deile` em forma tipada."""
 
-    def __init__(self, ttl_s: float = 3.0):
+    def __init__(self, ttl_s: float = 1.0):
+        # 1s: `kubectl get pods` local <50ms, sem custo perceptível.
         self._kubectl = kubectl_bin()
         self._cache: Cache[List[PodInfo]] = Cache(ttl_s, self._fetch, fallback=[])
 
@@ -431,7 +466,8 @@ class PipelineProvider:
     DEPLOY = "deile-pipeline"
     TAIL_LINES = 200
 
-    def __init__(self, ttl_s: float = 5.0):
+    def __init__(self, ttl_s: float = 2.0):
+        # 2s: `kubectl logs --tail=200` ~200ms; balanceado entre vivo e custo.
         self._kubectl = kubectl_bin()
         self._cache: Cache[PipelineState] = Cache(
             ttl_s, self._fetch, fallback=PipelineState(),
@@ -540,7 +576,8 @@ class WorkerProvider:
     LABEL_SELECTOR = "app=deile-worker"
     TAIL_LINES = 200
 
-    def __init__(self, ttl_s: float = 5.0):
+    def __init__(self, ttl_s: float = 2.0):
+        # 2s: N `kubectl logs` (1 por worker) — só roda em background.
         self._kubectl = kubectl_bin()
         self._cache: Cache[Dict[str, WorkerState]] = Cache(
             ttl_s, self._fetch, fallback={},
@@ -685,6 +722,8 @@ class GitHubProvider:
     PER_PAGE = 100
 
     def __init__(self, repo: str = REPO_DEFAULT, ttl_s: float = 10.0):
+        # 10s: `gh api --paginate` custa rate-limit (5000/h auth = 1.4/s);
+        # 10s = 360/h, folga confortável.
         self._gh = gh_bin()
         self._repo = repo
         self._cache: Cache[GitHubSnapshot] = Cache(
@@ -769,7 +808,8 @@ class CostsProvider:
     localmente nem montou o PVC do worker no host).
     """
 
-    def __init__(self, db_path: Path = USAGE_DB, ttl_s: float = 60.0):
+    def __init__(self, db_path: Path = USAGE_DB, ttl_s: float = 30.0):
+        # 30s: SQLite local; mais frequente é só polling barulhento.
         self._db_path = db_path
         self._cache: Cache[CostsSnapshot] = Cache(
             ttl_s, self._fetch, fallback=CostsSnapshot(),
@@ -904,7 +944,8 @@ class CurrentModelProvider:
 
     DEFAULT_DEPLOYMENTS = ("deile-worker", "deile-pipeline")
 
-    def __init__(self, deployments=DEFAULT_DEPLOYMENTS, ttl_s: float = 5.0):
+    def __init__(self, deployments=DEFAULT_DEPLOYMENTS, ttl_s: float = 3.0):
+        # 3s: 1 `kubectl get -o json` por deployment (~100ms cada).
         self._kubectl = kubectl_bin()
         self._deployments = tuple(deployments)
         self._cache: Cache[Dict[str, Optional[str]]] = Cache(
@@ -1107,26 +1148,98 @@ class PanelData:
             notifier=NotifierProvider(),
         )
 
+    def _all_providers(self) -> tuple:
+        """Ordem usada por `force_refresh_all` e `errors`."""
+        return (self.pods, self.pipeline, self.workers, self.github,
+                self.costs, self.models, self.current_model, self.notifier)
+
     def force_refresh_all(self) -> None:
-        """Usado pelo hotkey [r]: invalida todos os caches no próximo `get`."""
-        for p in (self.pods, self.pipeline, self.workers,
-                  self.github, self.costs, self.models, self.current_model,
-                  self.notifier):
-            p._cache.invalidate()  # noqa: SLF001 (público no Cache; provider ainda é pacote)
+        """Hotkey [r]: marca todos os caches como vencidos sem bloquear.
+
+        O ``BackgroundRefresher`` pega no próximo tick (≤0.5s) e refaz.
+        Enquanto isso, ``get()`` continua devolvendo o valor velho — a UI
+        nunca trava.
+        """
+        for p in self._all_providers():
+            p._cache.invalidate()  # noqa: SLF001 (intentional internal)
 
     def errors(self) -> List[tuple]:
         """Lista provider name + último erro, pra UI mostrar discretamente."""
+        names = ("pods", "pipeline", "workers", "github", "costs",
+                 "models", "current_model", "notifier")
         out: List[tuple] = []
-        for name, p in (
-            ("pods", self.pods),
-            ("pipeline", self.pipeline),
-            ("workers", self.workers),
-            ("github", self.github),
-            ("costs", self.costs),
-            ("models", self.models),
-            ("current_model", self.current_model),
-            ("notifier", self.notifier),
-        ):
+        for name, p in zip(names, self._all_providers()):
             if p.last_error:
                 out.append((name, p.last_error))
         return out
+
+
+# ===== BackgroundRefresher ==================================================
+
+class BackgroundRefresher:
+    """Thread daemon que mantém os caches de ``PanelData`` frescos sem
+    bloquear o thread principal.
+
+    Roda ``maybe_refresh`` de cada provider em paralelo via thread pool
+    (até 8 ao mesmo tempo, pra um refresh único do gh API não atrasar o
+    do kubectl que é mais rápido). Cada provider tem seu próprio TTL —
+    o refresher não dispara fetch antes da hora.
+
+    Pensado para iniciar via ``with``/``start()`` no ``PanelApp.run`` e
+    parar no ``__exit__``/``stop()``. Daemon=True: morre junto com o
+    processo se algo der errado.
+    """
+
+    DEFAULT_TICK_S = 0.5  # frequência de checagem; fetch real respeita TTL
+
+    def __init__(self, data: PanelData, tick_s: float = DEFAULT_TICK_S):
+        self._data = data
+        self._tick_s = tick_s
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        # Pool dimensionado para acomodar todos os providers em paralelo
+        # (8 hoje), assim um fetch lento não bloqueia os rápidos.
+        self._pool = futures.ThreadPoolExecutor(
+            max_workers=8, thread_name_prefix="panel-bg",
+        )
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(
+            target=self._loop, daemon=True, name="panel-refresher",
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+            self._thread = None
+        # `cancel_futures=True` evita esperar fetches já enfileirados.
+        self._pool.shutdown(wait=False, cancel_futures=True)
+
+    def __enter__(self) -> "BackgroundRefresher":
+        self.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.stop()
+
+    def _loop(self) -> None:
+        # `maybe_refresh` vive no Cache, não no Provider; cada provider
+        # expõe o cache em `._cache` por convenção.
+        providers = self._data._all_providers()  # noqa: SLF001
+        while not self._stop.is_set():
+            futs = [self._pool.submit(p._cache.maybe_refresh)  # noqa: SLF001
+                    for p in providers]
+            # Aguarda concluir (ou stop ser sinalizado) — sem bloquear
+            # eternamente caso um fetcher pendure.
+            for f in futs:
+                if self._stop.is_set():
+                    break
+                try:
+                    f.result(timeout=20.0)
+                except Exception:  # noqa: BLE001 (defensive — never crash)
+                    pass
+            self._stop.wait(timeout=self._tick_s)

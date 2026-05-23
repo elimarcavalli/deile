@@ -40,12 +40,27 @@ class TestCache:
         assert cache.get() == "ok"
         assert calls == [1]
 
-    def test_second_call_within_ttl_uses_cache(self):
+    def test_second_call_never_refetches_via_get(self):
+        # Contrato novo: get() NUNCA bloqueia depois do primeiro fetch —
+        # devolve sempre o cached. O refresh fica por conta do
+        # BackgroundRefresher chamando `maybe_refresh()`.
         calls: List[int] = []
         cache = pd.Cache(ttl_s=10.0, fetcher=lambda: calls.append(1) or "ok",
                          fallback="-")
         cache.get()
         cache.get()
+        cache.get()
+        assert calls == [1]
+
+    def test_get_returns_cached_even_when_stale(self):
+        # Mesmo com TTL=0, get() devolve o cache existente. Sem essa
+        # garantia, render no thread principal podia disparar fetch
+        # sincrono e congelar a UI.
+        calls: List[int] = []
+        cache = pd.Cache(ttl_s=0.0, fetcher=lambda: calls.append(1) or "ok",
+                         fallback="-")
+        cache.get()                # primeiro fetch (cold start)
+        cache.get()                # cache stale, mas NÃO refaz
         cache.get()
         assert calls == [1]
 
@@ -56,6 +71,37 @@ class TestCache:
         cache.get()
         cache.get(force=True)
         assert calls == [1, 1]
+
+    def test_maybe_refresh_respects_ttl(self):
+        # `maybe_refresh` faz fetch só se TTL venceu — é o que o
+        # BackgroundRefresher chama em loop.
+        calls: List[int] = []
+        cache = pd.Cache(ttl_s=10.0, fetcher=lambda: calls.append(1) or "ok",
+                         fallback="-")
+        cache.get()                              # 1º fetch (cold)
+        assert cache.maybe_refresh() is False    # TTL ainda fresco
+        assert calls == [1]
+
+    def test_maybe_refresh_fetches_when_stale(self):
+        calls: List[int] = []
+        cache = pd.Cache(ttl_s=0.0, fetcher=lambda: calls.append(1) or "ok",
+                         fallback="-")
+        cache.get()                              # 1º fetch (cold)
+        assert cache.maybe_refresh() is True     # TTL=0 → sempre stale
+        assert calls == [1, 1]
+
+    def test_invalidate_marks_stale_without_dropping_value(self):
+        # `invalidate` (usado pelo hotkey [r]) marca como vencido mas
+        # devolve o valor antigo via get() — o BackgroundRefresher
+        # repõe no próximo tick sem segurar a UI.
+        cache = pd.Cache(ttl_s=10.0, fetcher=lambda: "fresh",
+                         fallback="-")
+        cache.get()
+        cache.invalidate()
+        # get() ainda devolve "fresh", sem chamar fetcher de novo.
+        assert cache.get() == "fresh"
+        # maybe_refresh agora rebusca.
+        assert cache.maybe_refresh() is True
 
     def test_error_keeps_last_value_and_records_error(self):
         attempts = {"n": 0}
@@ -68,8 +114,10 @@ class TestCache:
 
         cache = pd.Cache(ttl_s=0.0, fetcher=fetcher, fallback="fallback")
         assert cache.get() == "good"
-        # Segunda chamada (TTL=0) refaz e falha — mantém o último valor bom.
-        assert cache.get() == "good"
+        # `get()` não refaz fetch (contrato novo); precisamos do
+        # `maybe_refresh` para vir o erro.
+        assert cache.maybe_refresh() is True
+        assert cache.get() == "good"             # mantém último valor bom
         assert cache.last_error is not None
         assert "boom" in cache.last_error
 
@@ -259,9 +307,12 @@ class TestPodsProvider:
             prov.get(force=True)
         return prov
 
-    def test_no_kubectl_returns_fallback(self):
+    def test_no_kubectl_returns_fallback(self, monkeypatch):
+        # `kubectl_bin()` é chamado tanto no __init__ quanto no
+        # `_resolve_kubectl` (lazy fallback adicionado no branch
+        # a68ace9). Monkeypatch garante que nenhum dos dois encontra.
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: None)
         prov = pd.PodsProvider(ttl_s=10.0)
-        prov._kubectl = None
         # Cache fallback é []; nenhum erro propagado pra UI.
         assert prov.get() == []
         assert prov.last_error is not None
