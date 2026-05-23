@@ -737,6 +737,143 @@ class CostsProvider:
         return snap
 
 
+# ===== Model providers ======================================================
+
+@dataclass
+class ModelInfo:
+    provider_id: str
+    model_id: str
+    display_name: str
+    tier: str
+    label: str
+    input_cost_per_1m: float
+    output_cost_per_1m: float
+
+    @property
+    def slug(self) -> str:
+        return f"{self.provider_id}:{self.model_id}"
+
+
+_MODELS_YAML_DEFAULT = (
+    Path(__file__).resolve().parent.parent.parent
+    / "deile" / "config" / "model_providers.yaml"
+)
+
+
+class ModelsProvider:
+    """Catálogo de modelos disponíveis lido do `model_providers.yaml`.
+
+    Lê uma vez (TTL 5min) — o catálogo é estático na vasta maioria do
+    tempo; refresh é só pra cobrir o caso de edição em vivo do YAML.
+    """
+
+    def __init__(self, yaml_path: Path = _MODELS_YAML_DEFAULT,
+                 ttl_s: float = 300.0):
+        self._path = yaml_path
+        self._cache: Cache[List[ModelInfo]] = Cache(
+            ttl_s, self._fetch, fallback=[],
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> List[ModelInfo]:
+        return self._cache.get(force)
+
+    def _fetch(self) -> List[ModelInfo]:
+        try:
+            import yaml as _yaml  # lazy
+        except ImportError as exc:
+            raise RuntimeError(f"PyYAML ausente: {exc}") from exc
+        if not self._path.is_file():
+            raise RuntimeError(f"model_providers.yaml não encontrado em {self._path}")
+        data = _yaml.safe_load(self._path.read_text(encoding="utf-8")) or {}
+        models = data.get("models") or []
+        out: List[ModelInfo] = []
+        for m in models:
+            p = (m.get("pricing") or {})
+            out.append(ModelInfo(
+                provider_id=str(m.get("provider_id", "?")),
+                model_id=str(m.get("model_id", "?")),
+                display_name=str(m.get("display_name", m.get("model_id", "?"))),
+                tier=str(m.get("tier", "—")),
+                label=str(m.get("label", "—")),
+                input_cost_per_1m=float(p.get("input_per_1m_usd", 0.0)),
+                output_cost_per_1m=float(p.get("output_per_1m_usd", 0.0)),
+            ))
+        return out
+
+
+class CurrentModelProvider:
+    """Lê o `DEILE_PREFERRED_MODEL` setado no Deployment do worker (e/ou
+    pipeline) — o valor que efetivamente roda agora nos pods."""
+
+    DEFAULT_DEPLOYMENTS = ("deile-worker", "deile-pipeline")
+
+    def __init__(self, deployments=DEFAULT_DEPLOYMENTS, ttl_s: float = 5.0):
+        self._kubectl = kubectl_bin()
+        self._deployments = tuple(deployments)
+        self._cache: Cache[Dict[str, Optional[str]]] = Cache(
+            ttl_s, self._fetch, fallback={d: None for d in deployments},
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> Dict[str, Optional[str]]:
+        return self._cache.get(force)
+
+    def _fetch(self) -> Dict[str, Optional[str]]:
+        if self._kubectl is None:
+            raise RuntimeError("kubectl não encontrado")
+        out: Dict[str, Optional[str]] = {}
+        for dep in self._deployments:
+            data = _capture_json(
+                [self._kubectl, "-n", NS, "get",
+                 f"deployment/{dep}", "-o", "json"],
+                timeout=4.0,
+            )
+            out[dep] = self._extract(data) if data else None
+        return out
+
+    @staticmethod
+    def _extract(data: Dict[str, Any]) -> Optional[str]:
+        containers = (data.get("spec", {}).get("template", {})
+                      .get("spec", {}).get("containers", []) or [])
+        if not containers:
+            return None
+        for env in (containers[0].get("env") or []):
+            if env.get("name") == "DEILE_PREFERRED_MODEL":
+                return env.get("value")
+        return None
+
+
+def set_preferred_model(deployment: str, slug: str,
+                        timeout: float = 15.0) -> tuple:
+    """Aplica `DEILE_PREFERRED_MODEL=<slug>` no Deployment.
+
+    `kubectl set env` modifica a spec do Deployment, o que dispara
+    rollout automático (com a strategy do manifest — `RollingUpdate`
+    para o worker e `Recreate` para o pipeline). Retorna `(ok, msg)`.
+    """
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return False, "kubectl não encontrado"
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", NS, "set", "env", f"deploy/{deployment}",
+             f"DEILE_PREFERRED_MODEL={slug}"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"falha ao executar kubectl: {exc}"
+    if proc.returncode != 0:
+        return False, (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+    return True, (proc.stdout or "rollout disparado").strip()
+
+
 # ===== Aggregate hub ========================================================
 
 @dataclass
@@ -747,6 +884,8 @@ class PanelData:
     workers: WorkerProvider
     github: GitHubProvider
     costs: CostsProvider
+    models: ModelsProvider
+    current_model: CurrentModelProvider
 
     @classmethod
     def default(cls, repo: str = REPO_DEFAULT) -> "PanelData":
@@ -756,12 +895,14 @@ class PanelData:
             workers=WorkerProvider(),
             github=GitHubProvider(repo=repo),
             costs=CostsProvider(),
+            models=ModelsProvider(),
+            current_model=CurrentModelProvider(),
         )
 
     def force_refresh_all(self) -> None:
         """Usado pelo hotkey [r]: invalida todos os caches no próximo `get`."""
         for p in (self.pods, self.pipeline, self.workers,
-                  self.github, self.costs):
+                  self.github, self.costs, self.models, self.current_model):
             p._cache._fetched_at = 0.0  # noqa: SLF001 (intentional internal)
 
     def errors(self) -> List[tuple]:
@@ -773,6 +914,8 @@ class PanelData:
             ("workers", self.workers),
             ("github", self.github),
             ("costs", self.costs),
+            ("models", self.models),
+            ("current_model", self.current_model),
         ):
             if p.last_error:
                 out.append((name, p.last_error))

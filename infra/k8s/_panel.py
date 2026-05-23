@@ -49,6 +49,7 @@ from rich.table import Table
 from rich.text import Text
 
 from _panel_data import PanelData, _fmt_age, kubectl_bin  # noqa: F401
+from _panel_data import set_preferred_model as pd_set_preferred_model
 import _panel_demo as demo
 import collections
 import re
@@ -1551,6 +1552,208 @@ class ActionsView(View):
             self.runner.stop()
 
 
+class ModelSwitcherView(View):
+    """Troca o `DEILE_PREFERRED_MODEL` do worker (e/ou pipeline) em runtime.
+
+    Implementação **opção A** (env var + rollout): `kubectl set env` muda
+    a spec do Deployment e dispara rollout. No worker (RollingUpdate
+    maxSurge:1/maxUnavailable:0) o swap é zero-downtime. Tarefas in-flight
+    rodam até o fim antes do pod morrer.
+
+    Opções B (endpoint /admin/set_model no worker, swap instantâneo) e C
+    (ConfigMap + hot-reload via watchdog) ficam como evolução futura —
+    exigem código no worker_server e no settings/watchdog respectivamente.
+    """
+
+    name = "model-switcher"
+    title = "Trocar modelo (runtime)"
+    refresh_s = 5.0
+
+    HOTKEYS = ("[↑/↓] navega   [w] target=worker   [p] target=pipeline   "
+               "[b] both   [enter] aplicar   [esc] volta   [q] sai")
+
+    def __init__(self, data: Optional[PanelData] = None):
+        self.data = data
+        self.cursor: int = 0
+        self.target: str = "worker"  # 'worker' | 'pipeline' | 'both'
+        # Estado da última troca (mostrado no painel até a próxima).
+        self.last_msg: str = ""
+        self.last_ok: Optional[bool] = None
+        self.confirm_for: Optional[str] = None  # slug em confirmação
+
+    def _models(self):
+        if self.data is None:
+            return []
+        return self.data.models.get()
+
+    def _current(self) -> Dict[str, Optional[str]]:
+        if self.data is None:
+            return {}
+        return self.data.current_model.get()
+
+    def render(self, app: "PanelApp") -> RenderableType:
+        models = self._models()
+        current = self._current()
+
+        # Header com targets + valor atual
+        target_pretty = {"worker": "deile-worker",
+                         "pipeline": "deile-pipeline",
+                         "both": "deile-worker + deile-pipeline"}[self.target]
+        head_lines = [
+            Text.assemble(
+                ("target: ", "dim"),
+                (target_pretty, "bold yellow"),
+            ),
+            Text.assemble(
+                ("DEILE_PREFERRED_MODEL atual:", "dim"),
+            ),
+        ]
+        for dep, val in current.items():
+            head_lines.append(Text.assemble(
+                ("  · ", "dim"),
+                (f"{dep}: ", "bold"),
+                (val or "(não setado — usa defaults do settings)",
+                 "cyan" if val else "dim yellow"),
+            ))
+        header_panel = Panel(Group(*head_lines),
+                             title="[bold]TARGET[/bold]",
+                             title_align="left", border_style="yellow")
+
+        # Tabela de modelos
+        if not models:
+            body: RenderableType = Text(
+                "(sem modelos no catálogo — checar model_providers.yaml)",
+                style="dim")
+            list_panel = Panel(body, title="[bold]MODELOS[/bold]",
+                               title_align="left", border_style="dim")
+        else:
+            self.cursor = max(0, min(self.cursor, len(models) - 1))
+            tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
+            tbl.add_column(" ", width=2)
+            tbl.add_column("slug", style="bold")
+            tbl.add_column("display", style="cyan")
+            tbl.add_column("tier", width=8)
+            tbl.add_column("label", width=10)
+            tbl.add_column("$/1M in", justify="right", style="green")
+            tbl.add_column("$/1M out", justify="right", style="green")
+            current_vals = set(v for v in current.values() if v)
+            for i, m in enumerate(models):
+                marker = "▶" if i == self.cursor else " "
+                is_active = m.slug in current_vals
+                slug_text = Text(
+                    m.slug,
+                    style="bold yellow" if is_active else "bold",
+                )
+                if is_active:
+                    slug_text.append("  ●", style="bold green")
+                tbl.add_row(
+                    Text(marker, style="bold cyan"),
+                    slug_text,
+                    m.display_name,
+                    m.tier,
+                    m.label,
+                    f"${m.input_cost_per_1m:.2f}",
+                    f"${m.output_cost_per_1m:.2f}",
+                )
+            list_panel = Panel(tbl, title="[bold]MODELOS DISPONÍVEIS[/bold]",
+                               title_align="left", border_style="cyan")
+
+        # Painel de status / confirmação
+        if self.confirm_for is not None:
+            confirm_panel: Optional[RenderableType] = Panel(
+                Group(
+                    Text(f"Aplicar {self.confirm_for} em {target_pretty}?",
+                         style="bold yellow"),
+                    Text("`kubectl set env` dispara rollout automático "
+                         "(zero-downtime no worker).", style="dim"),
+                    Text(),
+                    Text("[y] confirmar    [n] cancelar", style="bold cyan"),
+                ),
+                title="[bold yellow]CONFIRMAÇÃO[/bold yellow]",
+                title_align="left", border_style="yellow",
+            )
+        elif self.last_msg:
+            border = "green" if self.last_ok else "red"
+            confirm_panel = Panel(
+                Text(self.last_msg, style="bold green" if self.last_ok
+                     else "bold red"),
+                title="[bold]ÚLTIMA AÇÃO[/bold]",
+                title_align="left", border_style=border,
+            )
+        else:
+            confirm_panel = None
+
+        layout = Layout()
+        layout.split_column(
+            Layout(_head_panel(self.title, app), name="head", size=4),
+            Layout(header_panel, name="targets", size=8),
+            Layout(list_panel, name="list"),
+            *([Layout(confirm_panel, name="confirm", size=7)]
+              if confirm_panel is not None else []),
+            Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
+        )
+        return layout
+
+    def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
+        # Resolver confirmação primeiro: na pendência, só [y]/[n] valem.
+        if self.confirm_for is not None:
+            if key == "y":
+                self._apply(self.confirm_for)
+                self.confirm_for = None
+                return ActionResult.refresh()
+            if key == "n":
+                self.confirm_for = None
+                self.last_msg = "cancelado pelo operador"
+                self.last_ok = False
+                return ActionResult.refresh()
+            return ActionResult()
+        # Troca de target.
+        if key == "w":
+            self.target = "worker"
+            return ActionResult.refresh()
+        if key == "p":
+            self.target = "pipeline"
+            return ActionResult.refresh()
+        if key == "b":
+            self.target = "both"
+            return ActionResult.refresh()
+        models = self._models()
+        n = len(models)
+        if n == 0:
+            return ActionResult()
+        if key in ("UP", "k"):
+            self.cursor = (self.cursor - 1) % n
+            return ActionResult.refresh()
+        if key in ("DOWN", "j"):
+            self.cursor = (self.cursor + 1) % n
+            return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            self.confirm_for = models[self.cursor].slug
+            return ActionResult.refresh()
+        return ActionResult()
+
+    def _apply(self, slug: str) -> None:
+        if self.data is None:
+            self.last_msg = "modo demo — nenhuma ação aplicada"
+            self.last_ok = False
+            return
+        deployments = (("deile-worker",) if self.target == "worker"
+                       else ("deile-pipeline",) if self.target == "pipeline"
+                       else ("deile-worker", "deile-pipeline"))
+        results = []
+        for dep in deployments:
+            ok, msg = pd_set_preferred_model(dep, slug)
+            results.append((dep, ok, msg))
+        all_ok = all(ok for _, ok, _ in results)
+        # Força provider a re-ler o valor atual no próximo render.
+        self.data.current_model._cache._fetched_at = 0.0  # noqa: SLF001
+        self.last_ok = all_ok
+        self.last_msg = " | ".join(
+            f"{dep}: {'OK' if ok else 'FAIL'} ({msg[:40]})"
+            for dep, ok, msg in results
+        )
+
+
 class StubView(View):
     """Sub-view placeholder enquanto a Fase correspondente não foi feita."""
 
@@ -1802,11 +2005,7 @@ def _build_views(data: Optional[PanelData] = None) -> Dict[str, View]:
         "tokens": TokensView(data=data),
         "actions": ActionsView(data=data),
         "notifier-echo": NotifierEchoView(data=data),
-        "model-switcher": StubView(
-            "model-switcher", "Trocar modelo", "Fase 9",
-            "Lista modelos disponíveis e modelo em uso por pod. "
-            "Troca em runtime sem rebuild.",
-        ),
+        "model-switcher": ModelSwitcherView(data=data),
     }
 
 

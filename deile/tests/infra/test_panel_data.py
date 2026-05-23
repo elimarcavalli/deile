@@ -582,6 +582,133 @@ class TestAlerts:
 
 # ===== _pod_rows adapter ====================================================
 
+class TestModelsProvider:
+    def _yaml(self, tmp_path: Path) -> Path:
+        path = tmp_path / "model_providers.yaml"
+        path.write_text(
+            "version: 1\n"
+            "models:\n"
+            "  - provider_id: anthropic\n"
+            "    model_id: claude-opus-4-7\n"
+            "    display_name: Claude Opus 4.7\n"
+            "    tier: tier_1\n"
+            "    label: flagship\n"
+            "    pricing:\n"
+            "      input_per_1m_usd: 5.0\n"
+            "      output_per_1m_usd: 25.0\n"
+            "  - provider_id: openai\n"
+            "    model_id: gpt-5.4\n"
+            "    display_name: GPT-5.4\n"
+            "    tier: tier_2\n"
+            "    label: balanced\n"
+            "    pricing:\n"
+            "      input_per_1m_usd: 2.5\n"
+            "      output_per_1m_usd: 15.0\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def test_parses_models_from_yaml(self, tmp_path):
+        prov = pd.ModelsProvider(yaml_path=self._yaml(tmp_path), ttl_s=0.0)
+        models = prov.get(force=True)
+        assert len(models) == 2
+        slugs = [m.slug for m in models]
+        assert "anthropic:claude-opus-4-7" in slugs
+        assert "openai:gpt-5.4" in slugs
+
+    def test_pricing_extracted(self, tmp_path):
+        prov = pd.ModelsProvider(yaml_path=self._yaml(tmp_path), ttl_s=0.0)
+        models = {m.slug: m for m in prov.get(force=True)}
+        assert models["anthropic:claude-opus-4-7"].input_cost_per_1m == 5.0
+        assert models["openai:gpt-5.4"].output_cost_per_1m == 15.0
+
+    def test_missing_yaml_falls_back_empty(self, tmp_path):
+        prov = pd.ModelsProvider(yaml_path=tmp_path / "nope.yaml", ttl_s=0.0)
+        assert prov.get() == []
+        assert prov.last_error is not None
+
+
+class TestCurrentModelProvider:
+    def test_extracts_from_deployment_json(self):
+        sample = {
+            "spec": {
+                "template": {
+                    "spec": {
+                        "containers": [
+                            {
+                                "env": [
+                                    {"name": "OTHER", "value": "x"},
+                                    {"name": "DEILE_PREFERRED_MODEL",
+                                     "value": "anthropic:claude-opus-4-7"},
+                                ],
+                            },
+                        ],
+                    },
+                },
+            },
+        }
+        assert pd.CurrentModelProvider._extract(sample) \
+            == "anthropic:claude-opus-4-7"
+
+    def test_missing_env_returns_none(self):
+        sample = {"spec": {"template": {"spec": {
+            "containers": [{"env": [{"name": "OTHER", "value": "x"}]}],
+        }}}}
+        assert pd.CurrentModelProvider._extract(sample) is None
+
+    def test_no_containers_returns_none(self):
+        assert pd.CurrentModelProvider._extract(
+            {"spec": {"template": {"spec": {"containers": []}}}}
+        ) is None
+
+    def test_fetch_uses_kubectl_per_deployment(self):
+        prov = pd.CurrentModelProvider(
+            deployments=("deile-worker", "deile-pipeline"), ttl_s=0.0,
+        )
+        prov._kubectl = "kubectl"
+        payloads = {
+            "deile-worker": {"spec": {"template": {"spec": {"containers": [
+                {"env": [{"name": "DEILE_PREFERRED_MODEL",
+                          "value": "anthropic:claude-sonnet-4-6"}]},
+            ]}}}},
+            "deile-pipeline": None,
+        }
+
+        def fake_capture(cmd, timeout=None):
+            # cmd = [kubectl, -n, deile, get, deployment/<name>, -o, json]
+            dep_arg = cmd[4].split("/", 1)[1]
+            return payloads[dep_arg]
+
+        with patch.object(pd, "_capture_json", side_effect=fake_capture):
+            result = prov.get(force=True)
+        assert result["deile-worker"] == "anthropic:claude-sonnet-4-6"
+        assert result["deile-pipeline"] is None
+
+
+class TestSetPreferredModel:
+    def test_no_kubectl_returns_false(self, monkeypatch):
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: None)
+        ok, msg = pd.set_preferred_model("deile-worker",
+                                         "anthropic:claude-opus-4-7")
+        assert ok is False
+        assert "kubectl" in msg
+
+    def test_success_returns_true(self, monkeypatch):
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: "kubectl")
+        mock_proc = MagicMock(returncode=0, stdout="ok\n", stderr="")
+        with patch("subprocess.run", return_value=mock_proc):
+            ok, _ = pd.set_preferred_model("deile-worker", "x:y")
+        assert ok is True
+
+    def test_failure_propagates_stderr(self, monkeypatch):
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: "kubectl")
+        mock_proc = MagicMock(returncode=1, stdout="", stderr="forbidden\n")
+        with patch("subprocess.run", return_value=mock_proc):
+            ok, msg = pd.set_preferred_model("deile-worker", "x:y")
+        assert ok is False
+        assert "forbidden" in msg
+
+
 class TestPodRowsAdapter:
     def test_demo_mode_uses_demo_pods(self):
         rows = panel._pod_rows(None)
