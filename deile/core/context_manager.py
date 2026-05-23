@@ -12,6 +12,8 @@ from ..memory.memory_manager import MemoryManager
 from ..parsers.base import ParseResult
 from ..personas.instruction_loader import InstructionLoader
 from ..personas.manager import PersonaManager
+from ..skills.bootstrap import bootstrap_skills
+from ..skills.router import SkillRouter, SkillSelectionContext
 from ..storage.embeddings import EmbeddingStore
 from ..tools.base import ToolResult
 from .deile_md_loader import \
@@ -134,6 +136,12 @@ class ContextManager:
 
         # CORREÇÃO BG003: Instruction Loader para carregar de arquivos MD
         self.instruction_loader = InstructionLoader()
+
+        # Skills router — lazily bootstrapped on first use so the cost is only
+        # paid when context is actually built. ``None`` once bootstrap has run
+        # means the subsystem is disabled or empty.
+        self._skill_router: Optional[SkillRouter] = None
+        self._skills_bootstrapped: bool = False
 
         # Estatísticas
         self._context_builds = 0
@@ -277,6 +285,11 @@ class ContextManager:
                     # Issue #62: Prefixa camadas DEILE.md (Core → User → CWD)
                     base_instruction = await _prepend_deile_md_layers(base_instruction, working_directory)
 
+                    # Skills layer: aditiva, depois da persona e das regras DEILE.md.
+                    skills_block = await self._build_skills_block(parse_result, session)
+                    if skills_block:
+                        base_instruction += f"\n\n{skills_block}"
+
                     # Adiciona contexto de arquivos
                     file_context = await self._build_file_context(session, **kwargs)
                     if file_context:
@@ -289,11 +302,12 @@ class ContextManager:
 
         # Fallback para instrução de arquivo MD
         logger.debug("Using fallback system instruction from MD file (PersonaManager not available)")
-        return await self._build_fallback_system_instruction(session, **kwargs)
+        return await self._build_fallback_system_instruction(parse_result, session, **kwargs)
 
     async def _build_fallback_system_instruction(
         self,
-        session: Optional[Any],
+        parse_result: Optional[ParseResult] = None,
+        session: Optional[Any] = None,
         **kwargs
     ) -> str:
         """CORREÇÃO BG003: Carrega instrução de arquivo MD (não mais hardcoded!)
@@ -311,12 +325,68 @@ class ContextManager:
         # Issue #62: Prefixa camadas DEILE.md (Core → User → CWD)
         base_instruction = await _prepend_deile_md_layers(base_instruction, working_directory)
 
+        # Skills layer também no fallback (mesma ordem do caminho com persona).
+        skills_block = await self._build_skills_block(parse_result, session)
+        if skills_block:
+            base_instruction += f"\n\n{skills_block}"
+
         # Adiciona contexto de arquivos se disponível
         file_context = await self._build_file_context(session, **kwargs)
         if file_context:
             base_instruction += f"\n\n📁 [ARQUIVOS DISPONÍVEIS NO PROJETO]\n{file_context}"
 
         return _merge_bot_extra(base_instruction, session)
+
+    async def _build_skills_block(
+        self,
+        parse_result: Optional[ParseResult],
+        session: Optional[Any],
+    ) -> str:
+        """Resolve skills for this turn and render them as an appendable block.
+
+        Returns an empty string when the subsystem is disabled, no skills are
+        loaded, or no triggers fired. Bootstrap is lazy — the registry is
+        populated on the first call and reused afterwards.
+        """
+        if not self._skills_bootstrapped:
+            self._skills_bootstrapped = True
+            try:
+                self._skill_router = await bootstrap_skills()
+            except Exception as exc:
+                logger.warning("skills: bootstrap failed (%s); subsystem disabled for session", exc)
+                self._skill_router = None
+
+        if self._skill_router is None:
+            return ""
+
+        # Pull the latest user input from the session for code-block detection.
+        user_input = ""
+        if session is not None and getattr(session, "conversation_history", None):
+            for entry in reversed(session.conversation_history):
+                if entry.get("role") == "user":
+                    content = entry.get("content", "")
+                    if isinstance(content, str):
+                        user_input = content
+                    break
+
+        file_refs = tuple(parse_result.file_references) if parse_result and parse_result.file_references else ()
+
+        context = SkillSelectionContext(user_input=user_input, file_references=file_refs)
+        try:
+            selected = self._skill_router.select_skills(context)
+        except Exception as exc:
+            logger.warning("skills: selection raised %s; skipping injection this turn", exc)
+            return ""
+
+        if not selected:
+            return ""
+
+        logger.debug(
+            "skills: injecting %d skill(s): %s",
+            len(selected),
+            ", ".join(s.name for s in selected),
+        )
+        return self._skill_router.render_block(selected)
     
     # Maximum characters for the file-context block injected into the system prompt.
     # Each LLM token is roughly 4 chars; keeping this at 8 000 chars ≈ 2 000 tokens —
