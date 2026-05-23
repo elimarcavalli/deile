@@ -88,9 +88,9 @@ class PlanStep:
         # Remove result complexo - será salvo separadamente
         if self.result:
             data["result"] = {
-                "success": self.result.success,
+                "success": self.result.is_success,
                 "status": self.result.status.value,
-                "output_preview": str(self.result.output)[:200],
+                "output_preview": str(self.result.data)[:200] if self.result.data is not None else "",
                 "artifact_path": self.result.artifact_path
             }
         return data
@@ -660,7 +660,7 @@ class PlanManager:
                     step.result = result
                     step.completed_at = datetime.now()
                     
-                    if result.success:
+                    if result.is_success:
                         step.status = StepStatus.COMPLETED
                         execution_log.append({
                             "step_id": step.id,
@@ -670,31 +670,37 @@ class PlanManager:
                         })
                     else:
                         step.status = StepStatus.FAILED
-                        step.error_message = result.error_message
+                        step.error_message = result.message
                         execution_log.append({
                             "step_id": step.id,
-                            "action": "failed", 
-                            "error": result.error_message,
+                            "action": "failed",
+                            "error": result.message,
                             "timestamp": step.completed_at.isoformat()
                         })
-                        
-                        # Para execução se configurado
+
+                        # Para execução se configurado. O ``break`` só sai do
+                        # ``for step in concurrent_steps`` — sem marcar o
+                        # stop_flag, o ``while True`` externo voltaria a
+                        # chamar ``get_next_steps()`` e continuaria
+                        # executando o plano apesar do ``stop_on_failure``.
                         if plan.stop_on_failure:
+                            self._stop_flags[plan.id] = True
                             break
-                
+
                 except Exception as e:
                     step.status = StepStatus.FAILED
                     step.error_message = str(e)
                     step.completed_at = datetime.now()
-                    
+
                     execution_log.append({
                         "step_id": step.id,
                         "action": "error",
                         "error": str(e),
                         "timestamp": step.completed_at.isoformat()
                     })
-                    
+
                     if plan.stop_on_failure:
+                        self._stop_flags[plan.id] = True
                         break
             
             # Atualiza estatísticas
@@ -786,10 +792,10 @@ class PlanManager:
                 self.audit_logger.log_tool_execution(
                     tool_name=step.tool_name,
                     resource=step.description or f"step_{step.id}",
-                    success=result.success,
+                    success=result.is_success,
                     duration_ms=duration_ms,
                     exit_code=getattr(result, 'exit_code', None),
-                    output_size=len(str(result.output)) if result.output else 0
+                    output_size=len(str(result.data)) if result.data is not None else 0
                 )
                 
                 return result
