@@ -43,6 +43,7 @@ import re
 import shutil
 import subprocess
 import threading
+from pathlib import Path
 
 _HEALTH_LINE_RE = re.compile(r"GET /v1/health")
 
@@ -385,7 +386,7 @@ class DashboardView(View):
 
     HOTKEYS = (
         "[1]Pod watch  [2]Pipeline  [3]Issues/PRs  [4]Logs split  "
-        "[5]Tokens  [a]ctions  [m]odel  [?]help  [q]uit"
+        "[5]Tokens  [n]otifier  [a]ctions  [m]odel  [?]help  [q]uit"
     )
 
     def __init__(self, data: Optional[PanelData] = None):
@@ -591,6 +592,7 @@ class DashboardView(View):
             "3": "issues-prs",
             "4": "logs-split",
             "5": "tokens",
+            "n": "notifier-echo",
             "a": "actions",
             "m": "model-switcher",
         }
@@ -1158,6 +1160,385 @@ def _copy_to_clipboard(text: str) -> bool:
     return False
 
 
+class TokensView(View):
+    """Detalhe de custos via UsageRepository.
+
+    Mostra breakdown por provider (1h / 24h), records e top 5 sessions.
+    A view tem TTL alto (60s) — o SQLite é local mas re-abrir a cada
+    poucos segundos é desperdício.
+    """
+
+    name = "tokens"
+    title = "Tokens & Custos"
+    refresh_s = 60.0
+
+    HOTKEYS = "[r] força refresh   [esc] volta   [q] sai"
+
+    def __init__(self, data: Optional[PanelData] = None):
+        self.data = data
+
+    def render(self, app: "PanelApp") -> RenderableType:
+        if self.data is None:
+            body: RenderableType = Text(
+                "(modo demo — sem UsageRepository real)", style="dim yellow")
+            return self._wrap(app, body)
+        c = self.data.costs.get()
+        if c.records_24h == 0:
+            body = Text(
+                "Sem registros de uso nas últimas 24h.\n\n"
+                "O UsageRepository fica em ~/.deile/db/usage.db e só recebe\n"
+                "dados quando você roda o agente localmente. Os pods em K8s\n"
+                "usam o PVC do worker — para o painel ver, monte o PVC ou\n"
+                "implemente o endpoint /admin/usage (Fase 9).",
+                style="dim",
+            )
+            return self._wrap(app, body)
+        # Tabela por provider
+        tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
+        tbl.add_column("provider", style="bold cyan")
+        tbl.add_column("24h", justify="right", style="bold green")
+        tbl.add_column("1h", justify="right", style="green")
+        tbl.add_column("%", justify="right", style="dim")
+        for prov in sorted(c.by_provider_24h.keys(),
+                           key=lambda k: -c.by_provider_24h[k]):
+            cost_24 = c.by_provider_24h[prov]
+            cost_1 = c.by_provider_1h.get(prov, 0.0)
+            pct = (cost_24 / c.total_24h * 100) if c.total_24h else 0
+            tbl.add_row(prov, f"${cost_24:.3f}", f"${cost_1:.3f}",
+                        f"{pct:5.1f}%")
+        tbl.add_row(
+            Text("TOTAL", style="bold"),
+            Text(f"${c.total_24h:.3f}", style="bold green"),
+            Text(f"${c.total_1h:.3f}", style="bold green"),
+            "—",
+        )
+        # Top sessions
+        if c.top_sessions_24h:
+            sess_tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
+            sess_tbl.add_column("session_id", style="dim")
+            sess_tbl.add_column("cost", justify="right", style="bold green")
+            for sid, cost in c.top_sessions_24h:
+                sess_tbl.add_row(sid[:40], f"${cost:.3f}")
+        else:
+            sess_tbl = Text("· sem sessions registradas", style="dim")
+        meta = Text.assemble(
+            ("records 24h: ", "dim"),
+            (f"{c.records_24h}", "bold"),
+            ("   ·   total: ", "dim"),
+            (f"${c.total_24h:.2f}", "bold green"),
+            ("   ·   1h: ", "dim"),
+            (f"${c.total_1h:.2f}", "bold green"),
+        )
+        layout = Layout()
+        layout.split_column(
+            Layout(_head_panel(self.title, app), name="head", size=4),
+            Layout(Panel(meta, border_style="dim"), name="meta", size=3),
+            Layout(Panel(tbl, title="[bold]POR PROVIDER[/bold]",
+                         title_align="left", border_style="green"),
+                   name="prov"),
+            Layout(Panel(sess_tbl, title="[bold]TOP 5 SESSIONS (24h)[/bold]",
+                         title_align="left", border_style="blue"),
+                   name="sess", size=10),
+            Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
+        )
+        return layout
+
+    def _wrap(self, app: "PanelApp", body: RenderableType) -> RenderableType:
+        layout = Layout()
+        layout.split_column(
+            Layout(_head_panel(self.title, app), name="head", size=4),
+            Layout(Panel(body, border_style="dim"), name="body"),
+            Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
+        )
+        return layout
+
+
+# ----- Notifier echo --------------------------------------------------------
+
+_AUDIT_LOG_RE = re.compile(r'\{"ts":\s*"[^"]+",\s*"level":\s*"\w+",'
+                           r'\s*"logger":\s*"deilebot\.audit"')
+
+
+class NotifierEchoView(View):
+    """Últimas mensagens de I/O do bot (audit log)."""
+
+    name = "notifier-echo"
+    title = "Notifier Echo"
+    refresh_s = 5.0
+
+    HOTKEYS = "[r] força refresh   [esc] volta   [q] sai"
+
+    BOT_DEPLOY = "deilebot"
+    TAIL = 500
+
+    def __init__(self, data: Optional[PanelData] = None):
+        self.data = data
+
+    def _fetch_lines(self) -> List[Dict[str, Any]]:
+        kubectl = kubectl_bin()
+        if kubectl is None:
+            return []
+        try:
+            out = subprocess.run(
+                [kubectl, "-n", "deile", "logs",
+                 f"deploy/{self.BOT_DEPLOY}", f"--tail={self.TAIL}"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        if out.returncode != 0:
+            return []
+        events: List[Dict[str, Any]] = []
+        import json as _json
+        for line in out.stdout.splitlines():
+            if not _AUDIT_LOG_RE.search(line):
+                continue
+            try:
+                ev = _json.loads(line)
+            except _json.JSONDecodeError:
+                continue
+            events.append(ev)
+        return events
+
+    def render(self, app: "PanelApp") -> RenderableType:
+        events = self._fetch_lines()
+        if not events:
+            body: RenderableType = Text(
+                "Nenhum evento `deilebot.audit` recente.\n\n"
+                "Quando o bot recebe ou envia mensagens, este painel mostra\n"
+                "evento + payload (op, reason, channel, etc).",
+                style="dim",
+            )
+        else:
+            tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
+            tbl.add_column("ts", width=20, style="dim")
+            tbl.add_column("event", width=22, style="bold")
+            tbl.add_column("status", width=10)
+            tbl.add_column("detail")
+            for ev in events[-20:]:
+                ts = (ev.get("ts", "") or "")[-19:]
+                name = ev.get("event") or ev.get("message", "")
+                ok = "OK" if "sent" in name or "received" in name else \
+                     "FAIL" if "failed" in name else "—"
+                ok_style = "green" if ok == "OK" else \
+                           "red" if ok == "FAIL" else "dim"
+                payload = ev.get("payload") or {}
+                detail = ", ".join(f"{k}={v}" for k, v in payload.items())
+                tbl.add_row(ts, name, Text(ok, style=f"bold {ok_style}"),
+                            Text(detail[:60], style="dim"))
+            body = tbl
+        layout = Layout()
+        layout.split_column(
+            Layout(_head_panel(self.title, app), name="head", size=4),
+            Layout(Panel(body, title="[bold]AUDIT EVENTS[/bold]",
+                         title_align="left", border_style="cyan"),
+                   name="body"),
+            Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
+        )
+        return layout
+
+
+# ----- Actions overlay ------------------------------------------------------
+
+@dataclass
+class _ActionSpec:
+    label: str
+    cmd: List[str]
+    destructive: bool = False
+
+
+class _ActionRunner:
+    """Wrap de subprocess streaming pra ActionsView.
+
+    Diferente do _LogStreamer (que vive enquanto a view existe), este é
+    one-shot: roda o comando, encerra, deixa o output no buffer pra
+    consulta. Cancelável com .stop().
+    """
+
+    def __init__(self, cmd: List[str], maxlen: int = 500):
+        self.cmd = cmd
+        self.buf: "collections.deque[str]" = collections.deque(maxlen=maxlen)
+        self._proc: Optional[subprocess.Popen] = None
+        self._thread: Optional[threading.Thread] = None
+        self.returncode: Optional[int] = None
+        self._stop = threading.Event()
+
+    def start(self) -> None:
+        try:
+            self._proc = subprocess.Popen(
+                self.cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+        except OSError as exc:
+            self.buf.append(f"[ERRO] {exc}")
+            self.returncode = -1
+            return
+        self._thread = threading.Thread(target=self._reader, daemon=True)
+        self._thread.start()
+
+    def _reader(self) -> None:
+        if self._proc is None or self._proc.stdout is None:
+            return
+        for line in self._proc.stdout:
+            if self._stop.is_set():
+                break
+            self.buf.append(line.rstrip())
+        self._proc.wait()
+        self.returncode = self._proc.returncode
+        self.buf.append(f"--- exit {self.returncode} ---")
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._proc is not None and self._proc.poll() is None:
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+            except OSError:
+                pass
+
+    @property
+    def running(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+
+class ActionsView(View):
+    """Lista de verbos do deploy.py acionáveis a partir do painel."""
+
+    name = "actions"
+    title = "Ações"
+    refresh_s = 1.0
+
+    HOTKEYS = "[1-9] dispara   [c] cancelar   [esc] volta   [q] sai"
+
+    def __init__(self, data: Optional[PanelData] = None):
+        self.data = data
+        self.runner: Optional[_ActionRunner] = None
+        self.last_action: str = ""
+        self.confirm_for: Optional[_ActionSpec] = None
+
+    @staticmethod
+    def _actions() -> List[_ActionSpec]:
+        # `python3 infra/k8s/deploy.py` resolvido em runtime — o painel vive
+        # dentro do mesmo repo.
+        repo_root = str(Path(__file__).resolve().parent.parent.parent)
+        py = sys.executable
+        deploy = f"{repo_root}/infra/k8s/deploy.py"
+        # `--yes` pula confirmação interna do deploy.py — a confirmação aqui
+        # é nossa, na view, antes de chamar.
+        return [
+            _ActionSpec("status",            [py, deploy, "k8s", "status"]),
+            _ActionSpec("restart",           [py, deploy, "k8s", "restart", "--yes"]),
+            _ActionSpec("build (no restart)",[py, deploy, "k8s", "build", "--yes"]),
+            _ActionSpec("build + restart",   [py, deploy, "k8s", "build", "--restart", "--yes"]),
+            _ActionSpec("up (provisiona)",   [py, deploy, "k8s", "up", "--yes"]),
+            _ActionSpec("stop (scale 0)",    [py, deploy, "k8s", "stop", "--yes"], destructive=False),
+            _ActionSpec("start (scale 1)",   [py, deploy, "k8s", "start", "--yes"]),
+            _ActionSpec("test (Job one-shot)",[py, deploy, "k8s", "test", "--yes"]),
+            _ActionSpec("DOWN (apaga ns)",   [py, deploy, "k8s", "down", "--yes"], destructive=True),
+        ]
+
+    def render(self, app: "PanelApp") -> RenderableType:
+        actions = self._actions()
+        # menu
+        menu = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
+        menu.add_column(" ", width=3)
+        menu.add_column("ação", style="bold")
+        menu.add_column("comando", style="dim")
+        for i, a in enumerate(actions, 1):
+            label = Text(a.label, style="bold red" if a.destructive else "bold")
+            menu.add_row(str(i), label, " ".join(a.cmd[-3:]))
+        # confirmação?
+        if self.confirm_for is not None:
+            confirm_body = Group(
+                Text(f"Vai rodar a ação DESTRUTIVA: {self.confirm_for.label}",
+                     style="bold red"),
+                Text(" ".join(self.confirm_for.cmd), style="dim"),
+                Text(),
+                Text("Aperte [y] para confirmar, [n] para cancelar.",
+                     style="bold yellow"),
+            )
+            confirm_panel: Optional[RenderableType] = Panel(
+                confirm_body, title="[bold red]CONFIRMAÇÃO[/bold red]",
+                title_align="left", border_style="red",
+            )
+        else:
+            confirm_panel = None
+        # output do runner
+        if self.runner is not None:
+            lines = list(self.runner.buf)[-25:]
+            running_label = ("RUNNING" if self.runner.running
+                             else f"DONE (exit {self.runner.returncode})")
+            color = ("yellow" if self.runner.running
+                     else "green" if self.runner.returncode == 0
+                     else "red")
+            output_body: RenderableType = (
+                Text("\n".join(lines), no_wrap=False) if lines
+                else Text("(aguardando output)", style="dim")
+            )
+            output_panel = Panel(
+                output_body,
+                title=f"[bold]OUTPUT[/bold] · {self.last_action} · {running_label}",
+                title_align="left", border_style=color,
+            )
+        else:
+            output_panel = Panel(
+                Text("(rode uma ação para ver o output aqui)", style="dim"),
+                title="[bold]OUTPUT[/bold]", title_align="left",
+                border_style="dim",
+            )
+        layout = Layout()
+        layout.split_column(
+            Layout(_head_panel(self.title, app), name="head", size=4),
+            Layout(Panel(menu, title="[bold]AÇÕES[/bold]",
+                         title_align="left", border_style="cyan"),
+                   name="menu", size=14),
+            *([Layout(confirm_panel, name="confirm", size=6)]
+              if confirm_panel is not None else []),
+            Layout(output_panel, name="output"),
+            Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
+        )
+        return layout
+
+    def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
+        if self.confirm_for is not None:
+            if key == "y":
+                self._dispatch(self.confirm_for)
+                self.confirm_for = None
+                return ActionResult.refresh()
+            if key == "n":
+                self.confirm_for = None
+                return ActionResult.refresh()
+            return ActionResult()
+        if key == "c" and self.runner is not None and self.runner.running:
+            self.runner.stop()
+            return ActionResult.refresh()
+        if key.isdigit():
+            idx = int(key) - 1
+            actions = self._actions()
+            if 0 <= idx < len(actions):
+                spec = actions[idx]
+                if spec.destructive:
+                    self.confirm_for = spec
+                else:
+                    self._dispatch(spec)
+                return ActionResult.refresh()
+        return ActionResult()
+
+    def _dispatch(self, spec: _ActionSpec) -> None:
+        if self.runner is not None and self.runner.running:
+            return                # já tem ação rodando, ignora
+        self.runner = _ActionRunner(spec.cmd)
+        self.last_action = spec.label
+        self.runner.start()
+
+    def on_unmount(self, app: "PanelApp") -> None:
+        # Mata runner pendente quando o usuário sai da view (ESC).
+        if self.runner is not None and self.runner.running:
+            self.runner.stop()
+
+
 class StubView(View):
     """Sub-view placeholder enquanto a Fase correspondente não foi feita."""
 
@@ -1402,19 +1783,13 @@ def _build_views(data: Optional[PanelData] = None) -> Dict[str, View]:
         "pipeline-timeline": PipelineTimelineView(data=data),
         "issues-prs": IssuesPRsView(data=data),
         "logs-split": StubView(
-            "logs-split", "Logs Split", "Fase 4",
-            "Pipeline + Worker-1 + Worker-2 lado a lado, follow real.",
+            "logs-split", "Logs Split", "Pós-MVP",
+            "Pipeline + Worker-1 + Worker-2 lado a lado, follow real. "
+            "Pode ser composto a partir do _LogStreamer.",
         ),
-        "tokens": StubView(
-            "tokens", "Tokens & Custos", "Fase 6",
-            "Gasto 24h por provider e por task type. "
-            "Top 5 issues mais caras.",
-        ),
-        "actions": StubView(
-            "actions", "Ações", "Fase 6",
-            "Build / restart / up / down / test acionáveis sem sair "
-            "do painel.",
-        ),
+        "tokens": TokensView(data=data),
+        "actions": ActionsView(data=data),
+        "notifier-echo": NotifierEchoView(data=data),
         "model-switcher": StubView(
             "model-switcher", "Trocar modelo", "Fase 9",
             "Lista modelos disponíveis e modelo em uso por pod. "
