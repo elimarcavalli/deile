@@ -1718,11 +1718,8 @@ class DeileAgent:
                     message_parts: List[Any] = [user_input]
                     for file_data in context["file_data_parts"]:
                         if "file_data" in file_data:
-                            file_uri = file_data["file_data"]["file_uri"]
-                            import google.genai.types as genai_types
-                            file_obj = genai_types.File(
-                                name=file_uri.split('/')[-1],
-                                uri=file_uri,
+                            file_obj = model_provider.format_user_file_part(
+                                file_uri=file_data["file_data"]["file_uri"],
                                 mime_type=file_data["file_data"].get("mime_type", "text/plain"),
                             )
                             message_parts.append(file_obj)
