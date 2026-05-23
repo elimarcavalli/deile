@@ -95,7 +95,10 @@ class TestRoundRobin:
         assert picks[0:3] == providers
         # Second pass repeats the cycle (cursor wrapped).
         assert picks[3:6] == providers
-        assert selector._round_robin_index == 6
+        # Cursor advanced exactly 6 ticks — peek the next value via next().
+        # ``itertools.count`` exposes its state only through next(), so
+        # the assertion captures the "advanced 6 times" invariant.
+        assert next(selector._round_robin_counter) == 6
 
     def test_empty_providers_returns_none(self):
         selector = RoutingStrategySelector()

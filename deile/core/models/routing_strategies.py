@@ -81,7 +81,15 @@ class RoutingStrategySelector:
     """
 
     def __init__(self) -> None:
-        self._round_robin_index = 0
+        # ``itertools.count`` é atomic em CPython (a thread holding the GIL
+        # advances the counter as a single bytecode step), evitando a corrida
+        # entre dois ``select_provider`` concorrentes (ex.: dois
+        # ``asyncio.gather`` workers no pipeline). O loop assíncrono ainda
+        # é single-threaded mas ``await``-points entre o load e o write da
+        # versão antiga (``selected = providers[idx % N]; idx += 1``)
+        # permitiam reentrada e duas seleções colidiam no mesmo provedor.
+        from itertools import count
+        self._round_robin_counter = count()
         # Mapeamento de tarefas para tipos de modelo
         self.task_model_mapping = {
             "code_analysis": ModelSize.MEDIUM,
@@ -124,9 +132,8 @@ class RoutingStrategySelector:
         if not providers:
             return None
 
-        selected = providers[self._round_robin_index % len(providers)]
-        self._round_robin_index += 1
-        return selected
+        idx = next(self._round_robin_counter)
+        return providers[idx % len(providers)]
 
     def _least_busy_selection(
         self, providers: List[ModelProvider], metrics: Dict[str, ModelMetrics]
