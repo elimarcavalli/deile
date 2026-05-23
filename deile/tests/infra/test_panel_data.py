@@ -27,9 +27,8 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-import _panel_data as pd  # noqa: E402
 import _panel as panel  # noqa: E402
-
+import _panel_data as pd  # noqa: E402
 
 # ===== Cache TTL ============================================================
 
@@ -708,6 +707,37 @@ class TestSetPreferredModel:
         assert ok is False
         assert "forbidden" in msg
 
+    @pytest.mark.parametrize("bad_slug", [
+        "evil\nDEILE_OTHER=injected",   # newline → outra env via shell
+        "x=y",                          # '=' não é permitido (corromperia argv)
+        "with space",                   # espaço não permitido
+        "ctrl\x01char",                 # caractere de controle
+        "ctrl\x00null",                 # NUL
+        "",                             # vazio
+        "/leading-slash",               # primeiro char inválido
+        "a" * 200,                      # comprimento > 128
+    ])
+    def test_rejects_malicious_slugs_without_calling_kubectl(self, bad_slug,
+                                                              monkeypatch):
+        """B2: slugs com caracteres perigosos são recusados ANTES de
+        chegar ao kubectl (subprocess.run nunca deve ser chamado)."""
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: "kubectl")
+        with patch("subprocess.run") as run:
+            ok, msg = pd.set_preferred_model("deile-worker", bad_slug)
+        assert ok is False
+        assert "slug" in msg.lower()
+        run.assert_not_called()
+
+    def test_accepts_typical_anthropic_slug(self, monkeypatch):
+        """Sanity: o slug canônico não pode regredir junto com a validação."""
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: "kubectl")
+        mock_proc = MagicMock(returncode=0, stdout="ok\n", stderr="")
+        with patch("subprocess.run", return_value=mock_proc):
+            ok, _ = pd.set_preferred_model(
+                "deile-worker", "anthropic:claude-opus-4-7",
+            )
+        assert ok is True
+
 
 class TestPodRowsAdapter:
     def test_demo_mode_uses_demo_pods(self):
@@ -735,3 +765,17 @@ class TestPodRowsAdapter:
         rows = panel._pod_rows(d)
         assert rows[0].busy is True
         assert rows[0].icon == "⚡"
+
+    def test_cluster_up_but_no_pods_returns_empty(self):
+        """n4: cobrir o caminho 'cluster respondeu, mas namespace está
+        vazio' — antes da gente assumir, pods.get() pode devolver lista
+        vazia (namespace recém-criado, scale 0 etc) sem erro."""
+        d = MagicMock()
+        d.pods.get.return_value = []
+        d.workers.get.return_value = {}
+        ps = MagicMock()
+        ps.last_action_age_s = None
+        ps.last_action_summary = ""
+        d.pipeline.get.return_value = ps
+        rows = panel._pod_rows(d)
+        assert rows == []
