@@ -224,6 +224,20 @@ def _setup_git_credentials() -> None:
             ["git", "config", "--global", "credential.helper", "store"],
             check=False,
         )
+        # Author identity — REQUIRED to `git commit`. Without these the worker
+        # silently fails every commit step ("fatal: unable to auto-detect email
+        # address (got 'deile@...(none)')"), reviews finalize without applying
+        # fixes, and the issue ends up "incompleto sem PR". Regression observed
+        # on PR #293 review on 2026-05-23: gemini-pro responded fine, but
+        # every git commit attempt died at the identity check.
+        _subprocess.run(
+            ["git", "config", "--global", "user.email", "deile@deile.info"],
+            check=False,
+        )
+        _subprocess.run(
+            ["git", "config", "--global", "user.name", "DEILE-One"],
+            check=False,
+        )
     except OSError as exc:
         print(f"wrapper: could not update ~/.gitconfig: {exc}", file=sys.stderr)
 
