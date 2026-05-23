@@ -54,7 +54,12 @@ import _panel_demo as demo  # noqa: E402
 # sys.path setup feito por `deploy.py` (que insere `infra/k8s/` no path
 # antes de importar `_panel`). Não trocar para `from infra.k8s. ...` sem
 # revisar como o orquestrador invoca o painel.
-from _panel_data import BackgroundRefresher, PanelData, _fmt_age, kubectl_bin  # noqa: F401
+from _panel_data import (  # noqa: F401
+    BackgroundRefresher, PanelData, _fmt_age, kubectl_bin,
+)
+from _panel_data import (
+    _audit_security_policy_change as pd_audit_security_policy_change,
+)
 from _panel_data import set_preferred_model as pd_set_preferred_model
 from rich import box
 from rich.align import Align
@@ -183,6 +188,16 @@ else:
         def _signal_handler(self, signum, frame):
             # Restaura o terminal e re-dispara o sinal com o handler default
             # — o processo sai com o status canônico do sinal.
+            #
+            # Trade-off: `termios.tcsetattr` e `signal.signal` não são
+            # estritamente async-signal-safe pela POSIX, mas no CPython
+            # típico (signal handlers executados entre instruções de
+            # bytecode pelo eval loop, fora de syscalls bloqueantes) o
+            # padrão é seguro o suficiente para um cleanup TUI best-effort.
+            # A alternativa pure-safe (set flag + checar no loop principal)
+            # exigiria um caminho de wakeup confiável a partir do
+            # `select.select` em `KeyReader.read`, o que não é uma melhoria
+            # proporcional ao risco aqui.
             self._restore()
             try:
                 signal.signal(signum, signal.SIG_DFL)
@@ -1781,7 +1796,7 @@ class ModelSwitcherView(View):
     title = "Trocar modelo (runtime)"
     refresh_s = 1.0
 
-    HOTKEYS = ("[↑/↓] navega   [w] target=worker   [p] target=pipeline   "
+    HOTKEYS = ("[↑/↓] navega   [w] target=worker   [l] target=pipeline   "
                "[b] both   [enter] aplicar   [esc] volta   [q] sai")
 
     def __init__(self, data: Optional[PanelData] = None):
@@ -1907,23 +1922,30 @@ class ModelSwitcherView(View):
         return layout
 
     def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
-        # Resolver confirmação primeiro: na pendência, só [y]/[n] valem.
+        # Resolver confirmação primeiro: na pendência, default-deny (só [y]
+        # aplica; qualquer outra tecla cancela e emite audit). Casa o
+        # padrão de ActionsView e evita confirmação ficar pendurada.
         if self.confirm_for is not None:
+            slug = self.confirm_for
             if key == "y":
-                self._apply(self.confirm_for)
+                self._apply(slug)
                 self.confirm_for = None
                 return ActionResult.refresh()
-            if key == "n":
-                self.confirm_for = None
-                self.last_msg = "cancelado pelo operador"
-                self.last_ok = False
-                return ActionResult.refresh()
-            return ActionResult()
-        # Troca de target.
+            reason = ("operador cancelou na confirmação" if key == "n"
+                      else f"tecla inesperada na confirmação: {key!r}")
+            pd_audit_security_policy_change(
+                self.target, slug, result="cancelled", detail=reason,
+            )
+            self.confirm_for = None
+            self.last_msg = "cancelado pelo operador"
+            self.last_ok = False
+            return ActionResult.refresh()
+        # Troca de target. Note: 'p' é shadowed pelo pause/resume global —
+        # usamos 'l' (pipe-L-ine) para o target pipeline.
         if key == "w":
             self.target = "worker"
             return ActionResult.refresh()
-        if key == "p":
+        if key == "l":
             self.target = "pipeline"
             return ActionResult.refresh()
         if key == "b":
@@ -1955,10 +1977,12 @@ class ModelSwitcherView(View):
         # Para rollback em "both": captura o slug ATUAL de cada deployment
         # ANTES de tentar trocar. Se o segundo falhar depois do primeiro
         # ter sucesso, tentamos reverter o primeiro ao valor capturado.
+        # `force=True` evita usar um snapshot do cache (até 5s de idade) —
+        # o estado real do cluster pode ter mudado desde a última leitura.
         prev_slugs: Dict[str, Optional[str]] = {}
         if len(deployments) > 1:
             try:
-                current_snap = self.data.current_model.get()
+                current_snap = self.data.current_model.get(force=True)
             except Exception:  # noqa: BLE001
                 current_snap = {}
             for dep in deployments:

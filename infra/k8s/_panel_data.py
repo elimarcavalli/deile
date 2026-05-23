@@ -47,6 +47,10 @@ MAX_LOG_BYTES = 256_000
 # Slug seguro para kubectl set env: alfanum + [._:/-], 1-128 chars, sem
 # espaços, sem controle, sem '=' nem '\n'. Rejeita injeção em argv.
 _MODEL_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$")
+# Deployments cuja env DEILE_PREFERRED_MODEL é modificável pelo painel.
+# Argumento `deployment` de `set_preferred_model` vai direto em argv —
+# whitelist impede qualquer outro alvo (acidental ou malicioso).
+_ALLOWED_DEPLOYMENTS = frozenset({"deile-worker", "deile-pipeline"})
 
 
 def _detect_default_repo() -> str:
@@ -1007,10 +1011,16 @@ def _audit_security_policy_change(
             "audit logger indisponível para set_preferred_model: %s", exc,
         )
         return
+    # INFO para fluxos não-anômalos (allowed/completed/cancelled); WARNING
+    # para falhas ou recusas — evita que toda troca bem-sucedida (ou um
+    # cancelamento legítimo do operador) vire WARNING no log.
+    severity = (SeverityLevel.INFO
+                if result in ("allowed", "completed", "cancelled")
+                else SeverityLevel.WARNING)
     try:
         get_audit_logger().log_event(
             event_type=AuditEventType.SECURITY_POLICY_CHANGED,
-            severity=SeverityLevel.WARNING,
+            severity=severity,
             actor="panel:set_preferred_model",
             resource=f"deployment:{NS}/{deployment}:DEILE_PREFERRED_MODEL",
             action="kubectl_set_env",
@@ -1034,6 +1044,17 @@ def set_preferred_model(deployment: str, slug: str,
     injeção em argumentos do kubectl. Toda chamada (allowed/denied/falha)
     emite `AuditEvent(SECURITY_POLICY_CHANGED)`.
     """
+    if deployment not in _ALLOWED_DEPLOYMENTS:
+        _audit_security_policy_change(
+            deployment if isinstance(deployment, str) else repr(deployment),
+            slug if isinstance(slug, str) else repr(slug),
+            result="denied", detail="deployment fora da whitelist",
+        )
+        allowed = ", ".join(sorted(_ALLOWED_DEPLOYMENTS))
+        return False, (
+            f"deployment '{deployment}' não permitido — "
+            f"esperado um de: {allowed}"
+        )
     if not isinstance(slug, str) or not _MODEL_SLUG_RE.match(slug):
         _audit_security_policy_change(
             deployment, slug if isinstance(slug, str) else repr(slug),
