@@ -78,14 +78,27 @@ class ResumeTracker:
         attempt: int,
         budget_s: float,
     ) -> None:
-        """Absorb the worker's structured result into the tracked state."""
+        """Absorb the worker's structured result into the tracked state.
+
+        ``update_from_worker`` is called exactly once per dispatch outcome, so
+        the pipeline-side counter is **always grown by at least 1** here. This
+        protects against the worker reporting ``tentativa=1`` every time (which
+        happens when the PVC progress file is missing, the workspace was reset,
+        or the worker bookkeeping silently fails) — the ceiling in stages.py
+        would otherwise never bite and the issue would re-dispatch forever
+        (regression observed on #283: 50+ "incompleto sem PR" parks before the
+        operator manually applied ``~workflow:bloqueada``). The worker's
+        ``attempt`` is honored when LARGER than the pipeline's count (it has
+        a durable PVC source we lack), but never used to shrink the counter.
+        """
         state = self.get(number)
         if fingerprint:
             state.last_fingerprint = fingerprint
-        if attempt:
-            state.attempt = attempt
+        # Always +1 per call (each call == one dispatch); worker's view wins
+        # only when it is AHEAD (legitimate growth from durable bookkeeping).
+        state.attempt = max(state.attempt + 1, attempt or 0)
         if budget_s:
-            state.budget_s = budget_s
+            state.budget_s = max(state.budget_s, budget_s)
 
     def bump_refine(self, number: int) -> int:
         """Increment and return the refinement-pass counter for *number*."""

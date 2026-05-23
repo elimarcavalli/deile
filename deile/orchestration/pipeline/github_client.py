@@ -605,6 +605,36 @@ class GitHubClient:
             log_label="list_prs_assigned_to",
         )
 
+    async def pr_reviewer_still_requested(self, number: int, login: str) -> bool:
+        """True when *login* is still in the PR's ``requested_reviewers``.
+
+        Used by the ``review_only`` mention flow to detect a silent worker
+        failure: when DEILE successfully posts a review, GitHub auto-removes it
+        from ``requested_reviewers`` (natural idempotency for the reviewer
+        trigger). If the worker crashes/times out before posting, the reviewer
+        stays requested → the trigger re-fires next tick → infinite storm
+        (#277 hit this: 20+ dispatches with zero reviews posted). The pipeline
+        uses this check to apply ``~mention:processado`` as a fallback loop
+        guard. Fails OPEN (returns False) so a transient gh error never
+        triggers the guard spuriously.
+        """
+        try:
+            out = await self._run_checked(
+                "api", "-X", "GET",
+                f"repos/{self.repo}/pulls/{number}",
+                "--jq", ".requested_reviewers[].login",
+            )
+        except GhCommandError as exc:
+            logger.warning(
+                "pr_reviewer_still_requested(#%d, %s) failed: %s — assuming NOT requested (fail-open)",
+                number, login, exc,
+            )
+            return False
+        for line in (out or "").splitlines():
+            if line.strip() == login:
+                return True
+        return False
+
     async def list_prs_with_review_requests(self, login: str) -> List["PrRef"]:
         """Return open PRs where *login* is a requested reviewer.
 

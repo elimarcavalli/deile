@@ -93,9 +93,24 @@ class WorkOutcome:
 # parse the LAST matching line from the agent's final text (``WorkOutcome.text``).
 # Defaults err on the SAFE side: a missing critique verdict reads as POOR (do not
 # advance an unjudged issue); a missing refine verdict reads as ``unknown`` (retry).
-_CRITIQUE_RE = re.compile(r"^\s*VEREDITO:\s*(CLARO|VAGO)\b\s*:?\s*(.*)$", re.IGNORECASE | re.MULTILINE)
-_REFINE_RE = re.compile(r"^\s*REFINO:\s*(OK|AGUARDA_STAKEHOLDER)\b", re.IGNORECASE | re.MULTILINE)
-_DECOMPOSE_RE = re.compile(r"^\s*DECOMPOSTO:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+# Tolerate markdown decoration around the keyword. The brief says "na ÚLTIMA
+# LINHA escreva SOMENTE …" but personas habitually wrap the verdict in **bold**,
+# headers (`### VEREDITO`), blockquotes (`> VEREDITO`) or list bullets — and the
+# old strict `^\s*VEREDITO:` regex defaulted every decorated answer to "POBRE/
+# veredito ausente", feeding an infinite refine→re-critique loop on #281/#283.
+_MD_PFX = r"[*_#>\s\-]*"  # leading markdown decoration (zero or more)
+_CRITIQUE_RE = re.compile(
+    rf"{_MD_PFX}VEREDITO[*_:\s]*\**\s*(CLARO|VAGO)\b\s*[:\-]?\s*\**\s*([^\n*_]*)",
+    re.IGNORECASE,
+)
+_REFINE_RE = re.compile(
+    rf"{_MD_PFX}REFINO[*_:\s]*\**\s*(OK|AGUARDA_STAKEHOLDER)\b",
+    re.IGNORECASE,
+)
+_DECOMPOSE_RE = re.compile(
+    rf"{_MD_PFX}DECOMPOSTO[*_:\s]*\**\s*([^\n]+)",
+    re.IGNORECASE,
+)
 
 
 def parse_critique_verdict(text: str) -> Tuple[bool, str]:

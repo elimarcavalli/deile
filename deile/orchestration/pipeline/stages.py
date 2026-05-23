@@ -522,6 +522,39 @@ async def _dispatch_mention_group(
         # (Decisão #32). Other sticky modes still get the marker.
         if mode != "review_only":
             await _mark_mention_done(monitor, kind, number)
+        elif kind == "pr":
+            # Silent-failure guard (regression #277): a "successful" outcome
+            # whose review never reached GitHub leaves the reviewer trigger
+            # armed → re-fires every tick → token storm. If our login is STILL
+            # requested as reviewer, the worker did NOT post a review — break
+            # the loop ourselves.
+            try:
+                still_requested = await monitor.github.pr_reviewer_still_requested(
+                    number, gh_login,
+                )
+            except Exception as exc:  # noqa: BLE001 — guard is best-effort
+                logger.warning(
+                    "post-review verification failed for pr#%d: %s — skipping guard",
+                    number, exc,
+                )
+                still_requested = False
+            if still_requested:
+                logger.warning(
+                    "review_only pr#%d: worker reported ok but no review posted "
+                    "(reviewer still requested); applying %s to break the loop",
+                    number, MENTION_DONE,
+                )
+                try:
+                    await monitor.github.comment_on_pr(
+                        number,
+                        f"⚠️ DEILE não conseguiu postar a review (worker terminou "
+                        f"sem registrar review apesar de retornar ok). Aplicando "
+                        f"`{MENTION_DONE}` para cortar o loop de re-disparo. "
+                        f"Remova esse label para tentar de novo.",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("could not comment on pr#%d: %s", number, exc)
+                await _mark_mention_done(monitor, kind, number)
         monitor._resume_tracker.clear(number)
     author = next((t.comment.author for t in group if t.comment is not None), "")
     await monitor.notifier.mention_processed(

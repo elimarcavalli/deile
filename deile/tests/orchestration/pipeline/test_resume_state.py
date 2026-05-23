@@ -23,18 +23,46 @@ class TestResumeTracker:
         t.update_from_worker(1, fingerprint="abc", attempt=3, budget_s=12.0)
         s = t.get(1)
         assert s.last_fingerprint == "abc"
+        # Worker reported 3 on first dispatch: max(0+1, 3) = 3.
         assert s.attempt == 3
         assert s.budget_s == 12.0
 
-    def test_update_from_worker_ignores_empty(self):
-        # Empty/zero values must NOT clobber existing tracked state.
+    def test_update_from_worker_keeps_fingerprint_and_budget_when_empty(self):
+        # Empty/zero fingerprint+budget must NOT clobber existing tracked
+        # values. Attempt, however, always grows (see counter test below).
         t = ResumeTracker()
         t.update_from_worker(1, fingerprint="abc", attempt=2, budget_s=5.0)
         t.update_from_worker(1, fingerprint="", attempt=0, budget_s=0.0)
         s = t.get(1)
         assert s.last_fingerprint == "abc"
-        assert s.attempt == 2
         assert s.budget_s == 5.0
+
+    def test_update_from_worker_attempt_grows_per_dispatch(self):
+        # Each call == one dispatch; the pipeline-side counter must grow by at
+        # least 1 even when the worker keeps reporting tentativa=0 or 1 (which
+        # is what happens when the PVC progress file is missing or the worker
+        # resets the workspace). Without this, the ceiling in stages.py never
+        # bites — regression on #283 (50+ "incompleto sem PR" parks).
+        t = ResumeTracker()
+        for _ in range(5):
+            t.update_from_worker(1, fingerprint="x", attempt=1, budget_s=0.0)
+        assert t.get(1).attempt == 5
+
+    def test_update_from_worker_attempt_honors_worker_when_higher(self):
+        # When the worker DOES have an authoritative larger count (durable PVC
+        # bookkeeping survives), that value wins.
+        t = ResumeTracker()
+        t.update_from_worker(1, fingerprint="x", attempt=10, budget_s=0.0)
+        assert t.get(1).attempt == 10
+        t.update_from_worker(1, fingerprint="x", attempt=11, budget_s=0.0)
+        assert t.get(1).attempt == 11
+
+    def test_update_from_worker_budget_only_grows(self):
+        # Budget is cumulative wall-clock; later report must never shrink it.
+        t = ResumeTracker()
+        t.update_from_worker(1, fingerprint="x", attempt=1, budget_s=30.0)
+        t.update_from_worker(1, fingerprint="x", attempt=2, budget_s=10.0)
+        assert t.get(1).budget_s == 30.0
 
     def test_clear_drops_state(self):
         t = ResumeTracker()
