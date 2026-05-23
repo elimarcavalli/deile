@@ -113,30 +113,82 @@ _DECOMPOSE_RE = re.compile(
 )
 
 
+def _tail_text(text: str, n_lines: int = 5) -> str:
+    """Return the last *n_lines* non-empty lines joined by newline.
+
+    Used by the verdict-fallback heuristics: the brief says "na ÚLTIMA LINHA
+    escreva SOMENTE …", so the verdict word always sits near the end. Looking
+    at the tail bounds false-positives from prose elsewhere in the text.
+    """
+    lines = [ln for ln in (text or "").splitlines() if ln.strip()]
+    return "\n".join(lines[-n_lines:])
+
+
 def parse_critique_verdict(text: str) -> Tuple[bool, str]:
-    """Return ``(is_clear, reason)`` from a critique outcome. Missing → POOR."""
+    """Return ``(is_clear, reason)`` from a critique outcome. Missing → POOR.
+
+    Two-stage matcher:
+      1. Strict regex (markdown-tolerant) anywhere in the text.
+      2. Fallback: look for a standalone ``CLARO`` or ``VAGO`` token in the
+         last 5 non-empty lines — catches even more exotic decorations
+         (emoji, numbered list, multi-line bold, etc.). Returns the inferred
+         verdict ONLY when exactly one of the two tokens is present in the
+         tail (ambiguous tails fall through to POOR, the safe default).
+
+    Personas can decorate the verdict in countless ways; the fallback keeps
+    relaxing the input space without ever defaulting to "advance" (POOR is
+    the only safe miss).
+    """
     matches = list(_CRITIQUE_RE.finditer(text or ""))
-    if not matches:
-        return False, "veredito de crítica ausente"
-    m = matches[-1]
-    is_clear = m.group(1).upper() == "CLARO"
-    return is_clear, (m.group(2) or "").strip()
+    if matches:
+        m = matches[-1]
+        is_clear = m.group(1).upper() == "CLARO"
+        return is_clear, (m.group(2) or "").strip()
+    tail = _tail_text(text)
+    has_claro = re.search(r"\bCLARO\b", tail, re.IGNORECASE) is not None
+    has_vago = re.search(r"\bVAGO\b", tail, re.IGNORECASE) is not None
+    if has_vago and not has_claro:
+        rm = re.search(r"\bVAGO\b\s*[:\-\.]?\s*([^\n*_]{0,200})", tail, re.IGNORECASE)
+        reason = (rm.group(1) if rm else "").strip()
+        return False, reason or "VAGO (inferido do fim do texto)"
+    if has_claro and not has_vago:
+        return True, "CLARO (inferido do fim do texto)"
+    return False, "veredito de crítica ausente"
 
 
 def parse_refine_verdict(text: str) -> str:
-    """Return ``"ok"`` | ``"waiting"`` | ``"unknown"`` from a refine outcome."""
+    """Return ``"ok"`` | ``"waiting"`` | ``"unknown"`` from a refine outcome.
+
+    Mirrors ``parse_critique_verdict``: strict regex first, then a tail-line
+    fallback that looks for ``AGUARDA_STAKEHOLDER`` or ``OK`` as standalone
+    tokens. ``unknown`` is the safe default (caller retries).
+    """
     matches = list(_REFINE_RE.finditer(text or ""))
-    if not matches:
-        return "unknown"
-    return "waiting" if matches[-1].group(1).upper() == "AGUARDA_STAKEHOLDER" else "ok"
+    if matches:
+        return "waiting" if matches[-1].group(1).upper() == "AGUARDA_STAKEHOLDER" else "ok"
+    tail = _tail_text(text)
+    has_waiting = re.search(r"\bAGUARDA_STAKEHOLDER\b", tail, re.IGNORECASE) is not None
+    has_ok = re.search(r"\bREFINO[:\s*_]+OK\b", tail, re.IGNORECASE) is not None
+    if has_waiting and not has_ok:
+        return "waiting"
+    if has_ok and not has_waiting:
+        return "ok"
+    return "unknown"
 
 
 def parse_decompose_result(text: str) -> List[int]:
-    """Return the derived issue numbers reported by a decompose outcome."""
+    """Return the derived issue numbers reported by a decompose outcome.
+
+    Two-stage: strict ``DECOMPOSTO: …`` regex first; fallback collects ``#NN``
+    references from the last 8 lines (architect frequently lists the created
+    issues right above the verdict). Returns an empty list on ambiguity.
+    """
     matches = list(_DECOMPOSE_RE.finditer(text or ""))
-    if not matches:
-        return []
-    return [int(n) for n in re.findall(r"#(\d+)", matches[-1].group(1))]
+    if matches:
+        return [int(n) for n in re.findall(r"#(\d+)", matches[-1].group(1))]
+    tail = _tail_text(text, n_lines=8)
+    found = re.findall(r"#(\d+)", tail)
+    return [int(n) for n in found]
 
 
 class PipelineImplementer(ABC):

@@ -64,6 +64,57 @@ class TestVerdictParserToleratesMarkdown:
         assert is_clear is False
         assert "ausente" in reason
 
+    def test_critique_fallback_infers_vago_from_tail(self):
+        # Even more exotic decoration that escapes the strict regex must be
+        # caught by the tail-line fallback. The brief says "ÚLTIMA LINHA";
+        # the heuristic scans the last 5 non-empty lines for a standalone
+        # CLARO/VAGO. (#281 critique on 2026-05-23 hit this gap.)
+        text = (
+            "Vamos analisar a issue.\n\n"
+            "Lacunas encontradas: a) X, b) Y.\n\n"
+            "## 🎯 Veredito de escopo\n\n"
+            "**VAGO**: faltam critérios mensuráveis."
+        )
+        is_clear, reason = parse_critique_verdict(text)
+        assert is_clear is False
+        assert "ausente" not in reason  # the fallback found VAGO
+
+    def test_critique_fallback_infers_claro_from_tail(self):
+        text = (
+            "Analisei a issue completa.\n\n"
+            "Escopo: bem delimitado, critérios mensuráveis.\n\n"
+            "🚀 Conclusão: **CLARO**."
+        )
+        is_clear, _ = parse_critique_verdict(text)
+        assert is_clear is True
+
+    def test_critique_fallback_ambiguous_tail_stays_pobre(self):
+        # Both tokens appearing in the tail is ambiguous → safe default.
+        text = "VAGO e CLARO aparecem aqui — qual é o veredito?"
+        is_clear, reason = parse_critique_verdict(text)
+        assert is_clear is False
+        assert "ausente" in reason
+
+    def test_refine_fallback_infers_waiting(self):
+        text = (
+            "Refinei o corpo da issue.\n\n"
+            "Subi também o título no padrão [BUG].\n\n"
+            "Como a decisão de escopo precisa de input, deixo em "
+            "AGUARDA_STAKEHOLDER."
+        )
+        assert parse_refine_verdict(text) == "waiting"
+
+    def test_decompose_fallback_collects_hash_refs_from_tail(self):
+        # When the strict DECOMPOSTO: line is missing, scrape #NN from the
+        # last 8 lines as a best-effort.
+        text = (
+            "Criei as derivadas:\n"
+            "- #401 — split A\n"
+            "- #402 — split B\n"
+            "- #403 — split C\n"
+        )
+        assert parse_decompose_result(text) == [401, 402, 403]
+
     @pytest.mark.parametrize("text,expected", [
         ("REFINO: OK", "ok"),
         ("**REFINO: OK**", "ok"),
