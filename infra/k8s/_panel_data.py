@@ -22,20 +22,59 @@ Fontes:
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import sqlite3
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar
 
 T = TypeVar("T")
 
+logger = logging.getLogger(__name__)
+
 NS = "deile"
-REPO_DEFAULT = "elimarcavalli/deile"
+# Tamanho máximo de log (bytes) que parsers carregam em memória — protege
+# contra pods com saídas multi-MB. Aplicado antes de `splitlines()`.
+MAX_LOG_BYTES = 256_000
+# Slug seguro para kubectl set env: alfanum + [._:/-], 1-128 chars, sem
+# espaços, sem controle, sem '=' nem '\n'. Rejeita injeção em argv.
+_MODEL_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$")
+
+
+def _detect_default_repo() -> str:
+    """Tenta derivar `owner/repo` de `git remote get-url origin`.
+
+    Fallback para `elimarcavalli/deile` se git ausente, sem origin, ou
+    formato não reconhecido. Roda uma única vez no import — silencioso.
+    """
+    fallback = "elimarcavalli/deile"
+    git = shutil.which("git")
+    if git is None:
+        return fallback
+    try:
+        out = subprocess.run(
+            [git, "remote", "get-url", "origin"],
+            capture_output=True, text=True, timeout=2.0,
+            cwd=str(Path(__file__).resolve().parent.parent.parent),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return fallback
+    if out.returncode != 0:
+        return fallback
+    url = out.stdout.strip()
+    # github.com[:/]owner/repo(.git)?  — cobre https e ssh.
+    m = re.search(r"github\.com[:/]([^/]+/[^/.]+?)(?:\.git)?/?$", url)
+    return m.group(1) if m else fallback
+
+
+REPO_DEFAULT = _detect_default_repo()
 USAGE_DB = Path.home() / ".deile" / "db" / "usage.db"
 
 
@@ -56,6 +95,9 @@ class Cache(Generic[T]):
     _value: Optional[T] = field(default=None, init=False, repr=False)
     _fetched_at: float = field(default=0.0, init=False, repr=False)
     _last_error: Optional[str] = field(default=None, init=False, repr=False)
+    _lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False,
+    )
 
     @property
     def last_error(self) -> Optional[str]:
@@ -64,6 +106,15 @@ class Cache(Generic[T]):
     @property
     def age_s(self) -> float:
         return time.monotonic() - self._fetched_at if self._fetched_at else 0.0
+
+    def invalidate(self) -> None:
+        """Força o próximo `get()` a refazer o fetch.
+
+        Substitui o acesso direto a `_fetched_at = 0.0` (que tinha race
+        entre threads e ignorava o lock interno).
+        """
+        with self._lock:
+            self._fetched_at = 0.0
 
     def get(self, force: bool = False) -> T:
         now = time.monotonic()
@@ -75,15 +126,23 @@ class Cache(Generic[T]):
             return self._value  # type: ignore[return-value]
         try:
             new = self.fetcher()
-            self._value = new
-            self._fetched_at = now
-            self._last_error = None
-            return new
         except Exception as exc:  # noqa: BLE001 (defensive — render must never crash)
-            self._last_error = f"{type(exc).__name__}: {exc}"
+            # Falhas crônicas devem ficar visíveis nos logs do operador (debug
+            # apenas — alarmar a cada tick poluiria; last_error já é exibido
+            # discretamente na UI).
+            logger.debug(
+                "Cache.get fetcher failed: %s", exc, exc_info=True,
+            )
+            with self._lock:
+                self._last_error = f"{type(exc).__name__}: {exc}"
             if self._value is None:
                 return self.fallback
             return self._value
+        with self._lock:
+            self._value = new
+            self._fetched_at = now
+            self._last_error = None
+        return new
 
 
 # ===== subprocess helpers ===================================================
@@ -214,7 +273,15 @@ class PodsProvider:
     def get(self, force: bool = False) -> List[PodInfo]:
         return self._cache.get(force)
 
+    def _resolve_kubectl(self) -> Optional[str]:
+        """Re-resolve kubectl lazy — operador pode tê-lo instalado depois
+        do painel ter sido aberto."""
+        if self._kubectl is None:
+            self._kubectl = kubectl_bin()
+        return self._kubectl
+
     def _fetch(self) -> List[PodInfo]:
+        self._resolve_kubectl()
         if self._kubectl is None:
             raise RuntimeError("kubectl não encontrado")
         data = _capture_json(
@@ -377,7 +444,13 @@ class PipelineProvider:
     def get(self, force: bool = False) -> PipelineState:
         return self._cache.get(force)
 
+    def _resolve_kubectl(self) -> Optional[str]:
+        if self._kubectl is None:
+            self._kubectl = kubectl_bin()
+        return self._kubectl
+
     def _fetch(self) -> PipelineState:
+        self._resolve_kubectl()
         if self._kubectl is None:
             raise RuntimeError("kubectl não encontrado")
         text = _capture_text(
@@ -394,6 +467,10 @@ class PipelineProvider:
         state = PipelineState()
         now = datetime.now(_UTC)
         cutoff_24h = now - timedelta(hours=24)
+        # Cap defensivo: pods com saída multi-MB não devem virar strings de
+        # MB em memória. Mantemos o final do log (mais recente).
+        if len(text) > MAX_LOG_BYTES:
+            text = text[-MAX_LOG_BYTES:]
         for raw in text.splitlines():
             state.raw_lines += 1
             ll = _parse_log_line(raw)
@@ -438,21 +515,18 @@ class WorkerState:
     pod_name: str
     busy: bool = False
     last_dispatch_ts: Optional[datetime] = None
+    last_substantive_ts: Optional[datetime] = None
     last_health_ts: Optional[datetime] = None
     last_substantive_body: str = ""
 
     @property
     def last_activity_s(self) -> Optional[float]:
-        ts = self.last_substantive_ts
+        ts = self.last_substantive_ts or self.last_dispatch_ts
         if ts is None:
             ts = self.last_health_ts
         if ts is None:
             return None
         return (datetime.now(_UTC) - ts).total_seconds()
-
-    @property
-    def last_substantive_ts(self) -> Optional[datetime]:
-        return self.last_dispatch_ts
 
 
 _WORKER_HEALTH_RE = re.compile(r"GET /v1/health", re.IGNORECASE)
@@ -479,7 +553,13 @@ class WorkerProvider:
     def get(self, force: bool = False) -> Dict[str, WorkerState]:
         return self._cache.get(force)
 
+    def _resolve_kubectl(self) -> Optional[str]:
+        if self._kubectl is None:
+            self._kubectl = kubectl_bin()
+        return self._kubectl
+
     def _fetch(self) -> Dict[str, WorkerState]:
+        self._resolve_kubectl()
         if self._kubectl is None:
             raise RuntimeError("kubectl não encontrado")
         names_raw = _capture_text(
@@ -504,6 +584,9 @@ class WorkerProvider:
     def _parse(self, pod_name: str, text: str) -> WorkerState:
         state = WorkerState(pod_name=pod_name)
         now = datetime.now(_UTC)
+        # Cap defensivo contra logs muito grandes.
+        if len(text) > MAX_LOG_BYTES:
+            text = text[-MAX_LOG_BYTES:]
         for raw in text.splitlines():
             ll = _parse_log_line(raw)
             if ll is None:
@@ -512,13 +595,19 @@ class WorkerProvider:
                 state.last_health_ts = ll.ts
                 continue
             if _WORKER_DISPATCH_RE.search(ll.body):
+                # `last_dispatch_ts` é a fonte de verdade do busy-window —
+                # restrita a "POST /v1/dispatch" para casar com a constante
+                # `_WORKER_BUSY_WINDOW_S` ("nos últimos 90s teve dispatch").
                 state.last_dispatch_ts = ll.ts
+                state.last_substantive_ts = ll.ts
                 state.last_substantive_body = ll.body[:100]
                 continue
-            # Qualquer outra linha "não-health" também conta como atividade real.
+            # Qualquer outra linha "não-health" conta como atividade real
+            # (substantiva) mas NÃO sobe busy — só dispatch real faz isso.
             state.last_substantive_body = ll.body[:100]
-            if state.last_dispatch_ts is None or ll.ts > state.last_dispatch_ts:
-                state.last_dispatch_ts = ll.ts
+            if (state.last_substantive_ts is None
+                    or ll.ts > state.last_substantive_ts):
+                state.last_substantive_ts = ll.ts
         if state.last_dispatch_ts is not None:
             since = (now - state.last_dispatch_ts).total_seconds()
             state.busy = since < _WORKER_BUSY_WINDOW_S
@@ -549,7 +638,7 @@ class GitHubSnapshot:
     issues: List[GitHubIssue] = field(default_factory=list)
     prs: List[GitHubIssue] = field(default_factory=list)
 
-    @property
+    @cached_property
     def issue_states(self) -> Dict[str, int]:
         counts: Dict[str, int] = {}
         for it in self.issues:
@@ -557,7 +646,7 @@ class GitHubSnapshot:
             counts[key] = counts.get(key, 0) + 1
         return counts
 
-    @property
+    @cached_property
     def pr_states(self) -> Dict[str, int]:
         counts: Dict[str, int] = {}
         for pr in self.prs:
@@ -613,6 +702,10 @@ class GitHubProvider:
         if self._gh is None:
             raise RuntimeError("gh não encontrado")
         # /issues retorna issues + PRs no mesmo array; PR tem chave 'pull_request'.
+        # `--paginate` percorre tudo; o único limite é o timeout de 15s
+        # abaixo — repositórios com milhares de issues abertas atingem o
+        # timeout antes do limite de páginas. Adicionar `--slurp --jq`
+        # com cap explícito é evolução futura caso o teto fique pequeno.
         data = _capture_json(
             [self._gh, "api", "--paginate",
              f"/repos/{self._repo}/issues?state=open&per_page={self.PER_PAGE}"],
@@ -825,7 +918,13 @@ class CurrentModelProvider:
     def get(self, force: bool = False) -> Dict[str, Optional[str]]:
         return self._cache.get(force)
 
+    def _resolve_kubectl(self) -> Optional[str]:
+        if self._kubectl is None:
+            self._kubectl = kubectl_bin()
+        return self._kubectl
+
     def _fetch(self) -> Dict[str, Optional[str]]:
+        self._resolve_kubectl()
         if self._kubectl is None:
             raise RuntimeError("kubectl não encontrado")
         out: Dict[str, Optional[str]] = {}
@@ -850,6 +949,38 @@ class CurrentModelProvider:
         return None
 
 
+def _audit_security_policy_change(
+    deployment: str, slug: str, *, result: str, detail: str,
+) -> None:
+    """Emite AuditEvent(SECURITY_POLICY_CHANGED) para a troca de modelo.
+
+    Silencioso se o pacote deile não estiver importável (e.g., rodando
+    o painel em isolamento sem o módulo principal no sys.path). A falha
+    de log NUNCA bloqueia a ação — mas a falha de validação sim.
+    """
+    try:
+        from deile.security.audit_logger import (  # noqa: PLC0415
+            AuditEvent, AuditEventType, SeverityLevel, get_audit_logger,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "audit logger indisponível para set_preferred_model: %s", exc,
+        )
+        return
+    try:
+        get_audit_logger().log_event(
+            event_type=AuditEventType.SECURITY_POLICY_CHANGED,
+            severity=SeverityLevel.WARNING,
+            actor="panel:set_preferred_model",
+            resource=f"deployment:{NS}/{deployment}:DEILE_PREFERRED_MODEL",
+            action="kubectl_set_env",
+            result=result,
+            details={"slug": slug, "detail": detail[:200]},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("falha emitindo AuditEvent: %s", exc)
+
+
 def set_preferred_model(deployment: str, slug: str,
                         timeout: float = 15.0) -> tuple:
     """Aplica `DEILE_PREFERRED_MODEL=<slug>` no Deployment.
@@ -857,10 +988,29 @@ def set_preferred_model(deployment: str, slug: str,
     `kubectl set env` modifica a spec do Deployment, o que dispara
     rollout automático (com a strategy do manifest — `RollingUpdate`
     para o worker e `Recreate` para o pipeline). Retorna `(ok, msg)`.
+
+    Slug é validado contra `_MODEL_SLUG_RE` antes de virar argv — rejeita
+    quebras de linha, `=`, NUL, controle e espaços que permitiriam
+    injeção em argumentos do kubectl. Toda chamada (allowed/denied/falha)
+    emite `AuditEvent(SECURITY_POLICY_CHANGED)`.
     """
+    if not isinstance(slug, str) or not _MODEL_SLUG_RE.match(slug):
+        _audit_security_policy_change(
+            deployment, slug if isinstance(slug, str) else repr(slug),
+            result="denied", detail="slug inválido",
+        )
+        return False, "slug inválido — recusado por validação"
     kubectl = kubectl_bin()
     if kubectl is None:
+        _audit_security_policy_change(
+            deployment, slug, result="failed", detail="kubectl não encontrado",
+        )
         return False, "kubectl não encontrado"
+    # Audit ANTES de executar — registra a intenção, ainda que o
+    # subprocess depois falhe ou trave.
+    _audit_security_policy_change(
+        deployment, slug, result="allowed", detail="executando kubectl set env",
+    )
     try:
         proc = subprocess.run(
             [kubectl, "-n", NS, "set", "env", f"deploy/{deployment}",
@@ -868,10 +1018,67 @@ def set_preferred_model(deployment: str, slug: str,
             capture_output=True, text=True, timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
+        _audit_security_policy_change(
+            deployment, slug, result="failed", detail=f"subprocess: {exc}",
+        )
         return False, f"falha ao executar kubectl: {exc}"
     if proc.returncode != 0:
-        return False, (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
-    return True, (proc.stdout or "rollout disparado").strip()
+        err = (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+        _audit_security_policy_change(
+            deployment, slug, result="failed",
+            detail=f"rc={proc.returncode} {err}",
+        )
+        return False, err
+    msg = (proc.stdout or "rollout disparado").strip()
+    _audit_security_policy_change(
+        deployment, slug, result="completed", detail=msg,
+    )
+    return True, msg
+
+
+# ===== Notifier (bot audit log) =============================================
+
+class NotifierProvider:
+    """Tail dos audit events do `deilebot` via kubectl logs.
+
+    Sai como `List[str]` (linhas cruas) — a view filtra/parsea. Cache TTL
+    5s evita o `kubectl logs deploy/deilebot --tail=500` por render (a
+    NotifierEchoView refresha em 5s; era 12 chamadas/min sem cache).
+    """
+
+    BOT_DEPLOY = "deilebot"
+    TAIL = 500
+
+    def __init__(self, ttl_s: float = 5.0):
+        self._kubectl = kubectl_bin()
+        self._cache: Cache[List[str]] = Cache(ttl_s, self._fetch, fallback=[])
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> List[str]:
+        return self._cache.get(force)
+
+    def _resolve_kubectl(self) -> Optional[str]:
+        if self._kubectl is None:
+            self._kubectl = kubectl_bin()
+        return self._kubectl
+
+    def _fetch(self) -> List[str]:
+        self._resolve_kubectl()
+        if self._kubectl is None:
+            raise RuntimeError("kubectl não encontrado")
+        text = _capture_text(
+            [self._kubectl, "-n", NS, "logs",
+             f"deploy/{self.BOT_DEPLOY}", f"--tail={self.TAIL}"],
+            timeout=5.0,
+        )
+        if text is None:
+            raise RuntimeError("kubectl logs deilebot falhou")
+        if len(text) > MAX_LOG_BYTES:
+            text = text[-MAX_LOG_BYTES:]
+        return text.splitlines()
 
 
 # ===== Aggregate hub ========================================================
@@ -886,6 +1093,7 @@ class PanelData:
     costs: CostsProvider
     models: ModelsProvider
     current_model: CurrentModelProvider
+    notifier: NotifierProvider
 
     @classmethod
     def default(cls, repo: str = REPO_DEFAULT) -> "PanelData":
@@ -897,13 +1105,15 @@ class PanelData:
             costs=CostsProvider(),
             models=ModelsProvider(),
             current_model=CurrentModelProvider(),
+            notifier=NotifierProvider(),
         )
 
     def force_refresh_all(self) -> None:
         """Usado pelo hotkey [r]: invalida todos os caches no próximo `get`."""
         for p in (self.pods, self.pipeline, self.workers,
-                  self.github, self.costs, self.models, self.current_model):
-            p._cache._fetched_at = 0.0  # noqa: SLF001 (intentional internal)
+                  self.github, self.costs, self.models, self.current_model,
+                  self.notifier):
+            p._cache.invalidate()  # noqa: SLF001 (público no Cache; provider ainda é pacote)
 
     def errors(self) -> List[tuple]:
         """Lista provider name + último erro, pra UI mostrar discretamente."""
@@ -916,6 +1126,7 @@ class PanelData:
             ("costs", self.costs),
             ("models", self.models),
             ("current_model", self.current_model),
+            ("notifier", self.notifier),
         ):
             if p.last_error:
                 out.append((name, p.last_error))
