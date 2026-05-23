@@ -1108,52 +1108,6 @@ class DeileAgent:
         ):
             yield event
 
-    async def process_stream(
-        self,
-        user_input: str,
-        session_id: str = "default",
-        **kwargs
-    ) -> AsyncIterator[str]:
-        """Processa entrada com resposta em streaming
-        
-        Args:
-            user_input: Entrada do usuário
-            session_id: ID da sessão
-            **kwargs: Parâmetros adicionais
-            
-        Yields:
-            str: Chunks da resposta
-        """
-        self._status = AgentStatus.PROCESSING
-        
-        try:
-            # Obtém ou cria sessão
-            session = self._get_or_create_session(session_id, **kwargs)
-            session.update_activity()
-            
-            # Parsing e execução de tools
-            parse_result = await self._parse_input(user_input, session)
-            tool_results = await self._execute_tools(parse_result, session)
-            
-            # Streaming da resposta
-            self._status = AgentStatus.GENERATING_RESPONSE
-            async for chunk in self._generate_response_stream(
-                user_input, parse_result, tool_results, session
-            ):
-                yield chunk
-            
-        except Exception as e:
-            self._status = AgentStatus.ERROR
-            if isinstance(e, _BudgetExceeded):
-                yield (
-                    f"\n[Budget limit reached ({getattr(e, 'limit_type', 'unknown')}): {str(e)}\n"
-                    f"Use /model budget to view limits.]\n"
-                )
-            else:
-                yield f"Error: {str(e)}"
-        finally:
-            self._status = AgentStatus.IDLE
-    
     def get_session(self, session_id: str) -> Optional[AgentSession]:
         """Obtém sessão por ID"""
         return self._sessions.get(session_id)
@@ -2522,71 +2476,7 @@ class DeileAgent:
         except Exception as e:
             self.logger.error(f"Response generation failed: {e}")
             return f"I encountered an error generating a response: {str(e)}"
-    
-    async def _generate_response_stream(
-        self,
-        user_input: str,
-        parse_result: Optional[ParseResult],
-        tool_results: List[ToolResult],
-        session: AgentSession
-    ) -> AsyncIterator[str]:
-        """Geração de resposta em streaming — consome UnifiedStreamEvent de qualquer provider."""
-        from deile.core.models.stream_events import (StreamEventType,
-                                                     UnifiedStreamEvent)
 
-        try:
-            context = await self.context_manager.build_context(
-                user_input=user_input,
-                parse_result=parse_result,
-                tool_results=tool_results,
-                session=session
-            )
-
-            model_provider = await self.model_router.select_provider(
-                context=context,
-                session=session
-            )
-
-            if isinstance(context, dict):
-                messages = context.get("messages", [])
-                system_instruction = context.get("system_instruction")
-            else:
-                messages = []
-                system_instruction = "You are DEILE, a helpful AI assistant."
-
-            async for event in model_provider.generate_stream(
-                messages=messages,
-                system_instruction=system_instruction
-            ):
-                if not isinstance(event, UnifiedStreamEvent):
-                    # Legacy provider yields raw str — pass through
-                    if isinstance(event, str):
-                        yield event
-                    continue
-
-                if event.type == StreamEventType.TEXT_DELTA:
-                    if event.text:
-                        yield event.text
-
-                elif event.type == StreamEventType.TOOL_USE_START:
-                    if event.tool_name:
-                        yield f"\n[tool: {event.tool_name}]\n"
-
-                elif event.type == StreamEventType.TOOL_USE_END:
-                    yield "\n"
-
-                elif event.type == StreamEventType.USAGE_FINAL:
-                    # Consumed silently — usage recording handled elsewhere
-                    pass
-
-                elif event.type == StreamEventType.ERROR:
-                    env = event.error_envelope
-                    msg = str(env) if env else "unknown streaming error"
-                    yield f"\n[error: {msg}]\n"
-
-        except Exception as e:
-            yield f"Error in streaming response: {str(e)}"
-    
     def reload_skills(self) -> int:
         """Re-scan all skill directories and hot-reload the command registry.
 
