@@ -61,6 +61,27 @@ def _labels_from_gh(item: dict) -> Tuple[str, ...]:
     return tuple(out)
 
 
+def _standup_item_from_gh_json(item: dict) -> dict:
+    """Normalise a ``gh pr/issue list`` JSON item to the standup shape.
+
+    Flattens ``author`` (which can be ``{"login": ...}`` or ``None``) to a
+    plain string and remaps ``updatedAt`` to snake_case. Used by
+    :meth:`GitHubClient.list_prs_updated_since` and
+    :meth:`GitHubClient.list_issues_updated_since` — both consumed by the
+    ``/standup`` slash command, which only needs basic display fields.
+    """
+    author = item.get("author")
+    author_name = author.get("login") if isinstance(author, dict) else "?"
+    return {
+        "number": item.get("number"),
+        "title": item.get("title"),
+        "state": item.get("state"),
+        "author": author_name,
+        "url": item.get("url", ""),
+        "updated_at": item.get("updatedAt", ""),
+    }
+
+
 @dataclass(frozen=True)
 class IssueRef:
     number: int
@@ -751,6 +772,47 @@ class GitHubClient:
                 len(seen), offset + page_size,
             )
         return result
+
+    async def list_prs_updated_since(
+        self, since_iso: str, *, limit: int = 100
+    ) -> List[dict]:
+        """Return PRs updated since *since_iso* (ISO-8601 UTC) — any state.
+
+        Used by ``/standup`` to enumerate recent PR activity in the window.
+        Returns plain dicts (already normalised: ``author`` flattened to its
+        ``login`` string, ``updated_at`` keyed in snake_case) because the
+        consumer only needs basic display fields, not the full ``PrRef``
+        wrapper. ``[]`` is returned on any ``gh`` failure (logged at WARNING).
+        """
+        return await self._list_refs(
+            "pr", "list",
+            "--repo", self.repo,
+            "--state", "all",
+            "--search", f"updated:>={since_iso}",
+            "--limit", str(limit),
+            "--json", "number,title,state,author,url,updatedAt",
+            factory=_standup_item_from_gh_json,
+            log_label="list_prs_updated_since",
+        )
+
+    async def list_issues_updated_since(
+        self, since_iso: str, *, limit: int = 100
+    ) -> List[dict]:
+        """Return issues updated since *since_iso* (ISO-8601 UTC) — any state.
+
+        Companion of :meth:`list_prs_updated_since` for ``/standup``. Returns
+        plain dicts with the same shape; ``[]`` on any ``gh`` failure.
+        """
+        return await self._list_refs(
+            "issue", "list",
+            "--repo", self.repo,
+            "--state", "all",
+            "--search", f"updated:>={since_iso}",
+            "--limit", str(limit),
+            "--json", "number,title,state,author,url,updatedAt",
+            factory=_standup_item_from_gh_json,
+            log_label="list_issues_updated_since",
+        )
 
     async def list_recently_merged_prs(self, *, limit: int = 20) -> List[PrRef]:
         """Return recently merged PRs, ordered most-recent-first.

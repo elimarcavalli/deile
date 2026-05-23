@@ -1,12 +1,11 @@
 """Standup Command — narrativa do dia (commits + PRs + issues)."""
 
 import asyncio
-import json
 import re
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from rich.panel import Panel
 from rich.text import Text
@@ -14,6 +13,7 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...core.models.base import ModelMessage
 from ...core.models.router import get_model_router
+from ...orchestration.pipeline.github_client import GitHubClient
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._git_helpers import ensure_gh_authenticated, ensure_git_repo
 from ._shared import emit_audit_event, wrap_command_errors
@@ -59,6 +59,53 @@ def parse_args(args: str) -> str:
     return "24h"
 
 
+# Reconhece tanto SSH (``git@github.com:owner/name(.git)?``) quanto HTTPS
+# (``https://github.com/owner/name(.git)?``). Em ambos os casos captura o
+# par ``owner/name`` — único shape aceito por :class:`GitHubClient`.
+_REMOTE_RE = re.compile(
+    r"(?:git@github\.com:|https?://github\.com/)"
+    r"(?P<repo>[A-Za-z0-9._-]+/[A-Za-z0-9._-]+?)"
+    r"(?:\.git)?/?$"
+)
+
+
+def _resolve_repo_from_git(cwd: Optional[str] = None) -> str:
+    """Inferir ``owner/name`` a partir de ``git remote get-url origin``.
+
+    O ``/standup`` precisa saber qual repo GitHub consultar via ``gh``; ao
+    invés de exigir configuração explícita, derivamos do ``remote origin``
+    do repositório git atual. Aceita os dois formatos canônicos (HTTPS e
+    SSH). Levanta :class:`CommandError` em PT-BR quando o remote não
+    existe ou não casa com um repo do GitHub — o caller decide se isso
+    interrompe a execução.
+    """
+    try:
+        res = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        raise CommandError(
+            "não consegui detectar o repo GitHub a partir do remote origin"
+        ) from exc
+
+    if res.returncode != 0:
+        raise CommandError(
+            "não consegui detectar o repo GitHub a partir do remote origin"
+        )
+
+    url = (res.stdout or "").strip()
+    match = _REMOTE_RE.search(url)
+    if not match:
+        raise CommandError(
+            "não consegui detectar o repo GitHub a partir do remote origin"
+        )
+    return match.group("repo")
+
+
 def collect_commits(since_iso: str) -> List[Dict[str, str]]:
     res = subprocess.run(
         ["git", "log", f"--since={since_iso}", "--format=%h\x1f%an\x1f%s"],
@@ -77,73 +124,39 @@ def collect_commits(since_iso: str) -> List[Dict[str, str]]:
     return commits
 
 
-def _collect_gh_items(verb: str, since_iso: str) -> List[Dict[str, Any]]:
-    """Coleta itens via ``gh <verb> list`` filtrados por ``updated:>=``.
+async def collect_prs(client: GitHubClient, since_iso: str) -> List[Dict[str, Any]]:
+    """Lista PRs atualizados desde ``since_iso`` via :class:`GitHubClient`.
 
-    Compartilhado por :func:`collect_prs` (``verb='pr'``) e
-    :func:`collect_issues` (``verb='issue'``) — ambos chamavam ``gh`` com
-    a mesma forma de comando, mesmos campos JSON e mesma normalização
-    de autor. Devolve ``[]`` em qualquer falha (returncode != 0 ou JSON
-    inválido) — o caller decide se isso é um erro.
+    A integração com ``gh`` (subprocess, JSON, normalização de autor) vive
+    no adapter da camada de pipeline — o comando só consome a forma já
+    normalizada. Falha do ``gh`` é logada pelo adapter e devolvida como
+    lista vazia (preservando o comportamento original do command).
     """
-    res = subprocess.run(
-        [
-            "gh",
-            verb,
-            "list",
-            "--state",
-            "all",
-            "--search",
-            f"updated:>={since_iso}",
-            "--json",
-            "number,title,state,author,url,updatedAt",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    if res.returncode != 0:
-        return []
-    try:
-        data = json.loads(res.stdout)
-    except json.JSONDecodeError:
-        return []
-    items: List[Dict[str, Any]] = []
-    for item in data:
-        author = item.get("author")
-        author_name = author.get("login") if isinstance(author, dict) else "?"
-        items.append(
-            {
-                "number": item.get("number"),
-                "title": item.get("title"),
-                "state": item.get("state"),
-                "author": author_name,
-                "url": item.get("url", ""),
-                "updated_at": item.get("updatedAt", ""),
-            }
-        )
-    return items
+    return await client.list_prs_updated_since(since_iso)
 
 
-def collect_prs(since_iso: str) -> List[Dict[str, Any]]:
-    return _collect_gh_items("pr", since_iso)
+async def collect_issues(client: GitHubClient, since_iso: str) -> List[Dict[str, Any]]:
+    """Lista issues atualizadas desde ``since_iso`` via :class:`GitHubClient`."""
+    return await client.list_issues_updated_since(since_iso)
 
 
-def collect_issues(since_iso: str) -> List[Dict[str, Any]]:
-    return _collect_gh_items("issue", since_iso)
-
-
-def collect_standup_data(since_spec: str) -> StandupData:
+async def collect_standup_data(since_spec: str) -> StandupData:
     ensure_git_repo()
     ensure_gh_authenticated()
 
     delta = parse_since(since_spec)
     since_date = datetime.now(timezone.utc) - delta
     since_iso = since_date.strftime("%Y-%m-%dT%H:%M:%SZ")
-    
-    commits = collect_commits(since_iso)
-    prs = collect_prs(since_iso)
-    issues = collect_issues(since_iso)
-    
+
+    repo = _resolve_repo_from_git()
+    client = GitHubClient(repo)
+
+    # ``collect_commits`` ainda usa ``git`` síncrono — mantém em thread para
+    # não bloquear o loop; os métodos do GitHubClient já são nativamente async.
+    commits = await asyncio.to_thread(collect_commits, since_iso)
+    prs = await collect_prs(client, since_iso)
+    issues = await collect_issues(client, since_iso)
+
     return StandupData(
         since_spec=since_spec,
         since_iso=since_iso,
@@ -156,25 +169,25 @@ def collect_standup_data(since_spec: str) -> StandupData:
 def build_prompt(data: StandupData) -> str:
     prompt = f"Gere um resumo de standup em PT-BR para as últimas {data.since_spec} (desde {data.since_iso}).\n"
     prompt += "O resumo deve ter no máximo 8 linhas no corpo principal, seguido de bullets de Destaques.\n\n"
-    
+
     prompt += f"Commits ({len(data.commits)}):\n"
     if not data.commits:
         prompt += "- (nenhum)\n"
     for c in data.commits:
         prompt += f"- {c['hash']} por {c['author']}: {c['title']}\n"
-        
+
     prompt += f"\nPull Requests ({len(data.prs)}):\n"
     if not data.prs:
         prompt += "- (nenhuma)\n"
     for pr in data.prs:
         prompt += f"- #{pr['number']} [{pr['state']}] por {pr['author']}: {pr['title']}\n"
-        
+
     prompt += f"\nIssues ({len(data.issues)}):\n"
     if not data.issues:
         prompt += "- (nenhuma)\n"
     for issue in data.issues:
         prompt += f"- #{issue['number']} [{issue['state']}] por {issue['author']}: {issue['title']}\n"
-        
+
     return prompt
 
 
@@ -183,7 +196,7 @@ async def generate_narrative(prompt: str) -> str:
     provider = await router.select_provider()
     if not provider:
         raise CommandError("Nenhum provedor de IA disponível para gerar o standup.")
-    
+
     messages = [ModelMessage(role="user", content=prompt)]
     response = await provider.generate(messages, system_instruction="Você é um assistente técnico que gera resumos de standup em PT-BR.")
     return response.content
@@ -207,21 +220,22 @@ class StandupCommand(DirectCommand):
     @wrap_command_errors("standup", message_template="Falha ao executar /{name}: {exc}")
     async def execute(self, context: CommandContext) -> CommandResult:
         self._emit_audit_event(context)
-        
+
         since_spec = parse_args(context.args)
-        # I/O síncrono (subprocess git/gh) — proteger o event loop
-        data = await asyncio.to_thread(collect_standup_data, since_spec)
+        # collect_standup_data é async: chama GitHubClient diretamente
+        # e isola o git (síncrono) em asyncio.to_thread internamente.
+        data = await collect_standup_data(since_spec)
         prompt = build_prompt(data)
-        
+
         narrative = await generate_narrative(prompt)
-        
+
         metadata = {
             "since_spec": data.since_spec,
             "commit_count": len(data.commits),
             "pr_count": len(data.prs),
             "issue_count": len(data.issues),
         }
-        
+
         return CommandResult.success_result(
             Panel(Text(narrative), title=f"📰 DEILE — Standup das últimas {since_spec}", border_style="blue"),
             "rich",
