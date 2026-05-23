@@ -1,7 +1,7 @@
 """Testes para o comando /loc."""
 
-import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from deile.commands.base import CommandContext, CommandStatus
@@ -25,7 +25,7 @@ async def test_loc_command_execute(loc_command, tmp_path):
     # Create a fake test file
     test_dir = repo_dir / "deile" / "tests"
     test_dir.mkdir(parents=True)
-    (test_dir / "test_fake.py").write_text("def test_something():\n    pass\n")
+    (test_dir / "test_fake.py").write_text("def test_something():\n    pass\nasync def test_async_something():\n    pass\n")
     
     # Mock git ls-files
     def mock_run(*args, **kwargs):
@@ -42,8 +42,25 @@ async def test_loc_command_execute(loc_command, tmp_path):
         
         # Check metadata
         assert result.metadata["total_files"] == 4
-        assert result.metadata["total_lines"] == 8
-        assert result.metadata["total_tests"] == 1
+        assert result.metadata["total_lines"] == 10
+        assert result.metadata["total_tests"] == 2
+        
+        # Check lang_stats
+        lang_stats = result.metadata["lang_stats"]
+        assert lang_stats["Python"]["files"] == 2
+        assert lang_stats["Python"]["lines"] == 6
+        assert lang_stats["Markdown"]["files"] == 1
+        assert lang_stats["Markdown"]["lines"] == 3
+        assert lang_stats["YAML"]["files"] == 1
+        assert lang_stats["YAML"]["lines"] == 1
+        
+        # Check top_files
+        top_files = result.metadata["top_files"]
+        assert len(top_files) == 4
+        assert top_files[0] == ("deile/tests/test_fake.py", 4)
+        assert top_files[1] == ("file2.md", 3)
+        assert top_files[2] == ("file1.py", 2)
+        assert top_files[3] == ("file3.yaml", 1)
 
 @pytest.mark.asyncio
 async def test_loc_command_git_error(loc_command, tmp_path):
