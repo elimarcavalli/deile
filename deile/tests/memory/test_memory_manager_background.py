@@ -54,25 +54,38 @@ async def test_spawn_background_keeps_task_referenced(tmp_path) -> None:
     assert task not in mm._background_tasks
 
 
-async def test_spawn_background_logs_exception(tmp_path, caplog) -> None:
+async def test_spawn_background_logs_exception(tmp_path, monkeypatch) -> None:
+    """A failing background task must log instead of silently disappearing.
+
+    We patch the module-level ``logger.error`` method directly so the
+    assertion is decoupled from caplog/propagation state (other tests may
+    have set propagate=False on the ``deile`` logger via storage/logs.py,
+    which makes caplog/root-handler approaches flaky depending on test
+    ordering).
+    """
     mm = _new_manager(tmp_path)
-    caplog.set_level("ERROR")
+
+    import deile.memory.memory_manager as mm_mod
+    captured: list[tuple[str, tuple, dict]] = []
+
+    def fake_error(msg, *args, **kwargs):
+        captured.append((msg % args if args else msg, args, kwargs))
+
+    monkeypatch.setattr(mm_mod.logger, "error", fake_error)
 
     async def broken() -> None:
         raise RuntimeError("kaboom")
 
     task = mm._spawn_background(broken(), name="broken")
-    # Wait until done.
     try:
         await task
     except RuntimeError:
         pass
-    # Done-callback yields control once for cleanup.
     await asyncio.sleep(0)
 
     assert task not in mm._background_tasks
-    assert any("Background task" in rec.message for rec in caplog.records)
-    assert any("kaboom" in rec.message or "kaboom" in str(rec.exc_info) for rec in caplog.records)
+    assert any("Background task" in msg for msg, _, _ in captured), captured
+    assert any("broken" in msg for msg, _, _ in captured), captured
 
 
 async def test_spawn_background_cancelled_task_does_not_log_error(
