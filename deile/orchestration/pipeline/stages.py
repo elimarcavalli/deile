@@ -21,9 +21,9 @@ import asyncio
 import logging
 import re
 import time
-from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Optional
 
+from deile.orchestration.pipeline._time_utils import now_utc
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
 from deile.orchestration.pipeline.follow_up_detector import detect_follow_ups
 from deile.orchestration.pipeline.github_client import (CommentRef,
@@ -326,7 +326,7 @@ async def process_mentions(monitor: "PipelineMonitor") -> None:
 
     triggers = await _collect_mention_triggers(monitor, handle, gh_login)
     if not triggers:
-        monitor._save_mention_cursor(datetime.now(tz=timezone.utc))
+        monitor._save_mention_cursor(now_utc())
         return
 
     # ---- Deduplicate by target ------------------------------------------
@@ -334,7 +334,7 @@ async def process_mentions(monitor: "PipelineMonitor") -> None:
     for t in triggers:
         groups.setdefault(t.dedup_key, []).append(t)
 
-    now = datetime.now(tz=timezone.utc)
+    now = now_utc()
     mono = _monotonic()
     for dedup_key, group in groups.items():
         await _dispatch_mention_group(monitor, dedup_key, group, gh_login, mono)
