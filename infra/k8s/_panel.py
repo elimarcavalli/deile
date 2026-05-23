@@ -54,12 +54,10 @@ import _panel_demo as demo  # noqa: E402
 # sys.path setup feito por `deploy.py` (que insere `infra/k8s/` no path
 # antes de importar `_panel`). Não trocar para `from infra.k8s. ...` sem
 # revisar como o orquestrador invoca o painel.
-from _panel_data import (  # noqa: F401
-    BackgroundRefresher, PanelData, _fmt_age, kubectl_bin,
-)
-from _panel_data import (
-    _audit_security_policy_change as pd_audit_security_policy_change,
-)
+from _panel_data import BackgroundRefresher, PanelData  # noqa: F401
+from _panel_data import \
+    _audit_security_policy_change as pd_audit_security_policy_change
+from _panel_data import _fmt_age, kubectl_bin  # noqa: F401
 from _panel_data import set_preferred_model as pd_set_preferred_model
 from rich import box
 from rich.align import Align
