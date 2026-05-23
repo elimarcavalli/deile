@@ -508,61 +508,57 @@ class PipelineMonitor:
 
             if schedule.recurring:
                 scheduled_actions = {e.action for e in schedule.recurring if e.enabled}
-                if self.config.enable_classify and "classify" not in scheduled_actions:
-                    logger.debug("classify not in schedule; running legacy fallback")
-                    await self._classify_new_issues()
-                if self.config.enable_review and "review" not in scheduled_actions:
-                    logger.debug("review not in schedule; running legacy fallback")
-                    await self._review_one_new_issue()
-                # Refinement loop (issue #257): a per-tick sweep like resume, not
-                # a cron action — runs after critique so an issue judged POOR is
-                # refined on the NEXT tick, then re-critiqued.
-                if self.config.enable_refinement_gate:
-                    await self._refine_one_issue()
-                # Resume parked, continuable work BEFORE claiming new issues
-                # (issue #254). Running it first is what stops a freshly-claimed
-                # issue (revisada → em_implementacao THIS tick) from being
-                # re-dispatched again in the SAME tick: its first resume happens
-                # on the NEXT tick — exactly the "immediate = next free tick"
-                # cadence. Gated by enable_resume; never on the schedule (it is a
-                # per-tick sweep, not a cron action).
-                if self.config.enable_resume:
-                    await self._resume_in_progress_issues()
-                if self.config.enable_implement and "implement" not in scheduled_actions:
-                    logger.debug("implement not in schedule; running legacy fallback")
-                    await self._implement_one_reviewed_issue()
-                # Decompose CLEAR intents into derived issues (issue #257).
-                if self.config.enable_refinement_gate:
-                    await self._decompose_one_reviewed_intent()
-                if self.config.enable_pr_review and "pr_review" not in scheduled_actions:
-                    logger.debug("pr_review not in schedule; running legacy fallback")
-                    await self._review_one_open_pr()
-                if self.config.enable_pr_triage:
-                    await self._classify_new_prs()
-                if self.config.enable_mention_handling:
-                    await self._process_mentions()
+                await self._dispatch_stages(skip=scheduled_actions)
             return
 
-        if self.config.enable_classify:
+        await self._dispatch_stages()
+
+    async def _dispatch_stages(self, skip: set[str] | None = None) -> None:
+        """Run the per-tick stage sequence.
+
+        Stages whose key is in ``skip`` are bypassed because the scheduler
+        has already run them in this tick. Stages without a schedule key
+        (refinement_gate, resume, decompose, pr_triage, mention_handling)
+        always run when their feature flag is enabled.
+
+        ``skip=None`` is the legacy "every action every tick" mode used
+        when there is no schedule file with recurring entries.
+        """
+        skip = skip or set()
+        scheduled_mode = bool(skip)
+        cfg = self.config
+
+        if cfg.enable_classify and "classify" not in skip:
+            if scheduled_mode:
+                logger.debug("classify not in schedule; running legacy fallback")
             await self._classify_new_issues()
-        if self.config.enable_review:
+        if cfg.enable_review and "review" not in skip:
+            if scheduled_mode:
+                logger.debug("review not in schedule; running legacy fallback")
             await self._review_one_new_issue()
-        if self.config.enable_refinement_gate:
+        # Refinement loop (issue #257): per-tick sweep, not a cron action —
+        # runs after critique so a POOR issue is refined on the NEXT tick.
+        if cfg.enable_refinement_gate:
             await self._refine_one_issue()
-        # Resume parked work BEFORE claiming new issues (issue #254) so a
-        # freshly-claimed issue is not re-dispatched again in the same tick;
-        # its first resume lands on the next tick.
-        if self.config.enable_resume:
+        # Resume parked, continuable work BEFORE claiming new issues
+        # (issue #254) so a freshly-claimed issue is not re-dispatched in
+        # the same tick; its first resume lands on the next tick.
+        if cfg.enable_resume:
             await self._resume_in_progress_issues()
-        if self.config.enable_implement:
+        if cfg.enable_implement and "implement" not in skip:
+            if scheduled_mode:
+                logger.debug("implement not in schedule; running legacy fallback")
             await self._implement_one_reviewed_issue()
-        if self.config.enable_refinement_gate:
+        # Decompose CLEAR intents into derived issues (issue #257).
+        if cfg.enable_refinement_gate:
             await self._decompose_one_reviewed_intent()
-        if self.config.enable_pr_review:
+        if cfg.enable_pr_review and "pr_review" not in skip:
+            if scheduled_mode:
+                logger.debug("pr_review not in schedule; running legacy fallback")
             await self._review_one_open_pr()
-        if self.config.enable_pr_triage:
+        if cfg.enable_pr_triage:
             await self._classify_new_prs()
-        if self.config.enable_mention_handling:
+        if cfg.enable_mention_handling:
             await self._process_mentions()
 
     # ------------------------------------------------------------------

@@ -134,10 +134,19 @@ def test_no_os_system(rel_path: str) -> None:
 # 3. cost_tracker.py — SQL parameterisation safety
 # ---------------------------------------------------------------------------
 
+# The SQL persistence layer was extracted from cost_tracker.py into
+# cost_repository.py; both files are audited so the guarantee follows the code.
+_COST_SQL_FILES = (
+    "deile/infrastructure/monitoring/cost_tracker.py",
+    "deile/infrastructure/monitoring/cost_repository.py",
+)
+
+
 @pytest.mark.security
-def test_cost_tracker_sql_uses_params() -> None:
-    """cost_tracker.py must pass a `params` list to every f-string execute call."""
-    source = _source("deile/infrastructure/monitoring/cost_tracker.py")
+@pytest.mark.parametrize("rel_path", _COST_SQL_FILES)
+def test_cost_sql_uses_params(rel_path: str) -> None:
+    """Every f-string execute call must also pass a `params` list."""
+    source = _source(rel_path)
     tree = ast.parse(source)
 
     for node in ast.walk(tree):
@@ -153,16 +162,17 @@ def test_cost_tracker_sql_uses_params() -> None:
         # If the first arg is an f-string (JoinedStr), ensure a second arg (params) exists
         if isinstance(first_arg, ast.JoinedStr):
             assert len(node.args) >= 2, (
-                f"cost_tracker.py line {node.lineno}: "
+                f"{rel_path} line {node.lineno}: "
                 "f-string passed to .execute() without a params argument — "
                 "this is a SQL injection risk."
             )
 
 
 @pytest.mark.security
-def test_cost_tracker_where_clauses_hardcoded() -> None:
-    """where_clauses in cost_tracker.py must only append string literals."""
-    source = _source("deile/infrastructure/monitoring/cost_tracker.py")
+@pytest.mark.parametrize("rel_path", _COST_SQL_FILES)
+def test_cost_where_clauses_hardcoded(rel_path: str) -> None:
+    """where_clauses must only append string literals (no user-controlled SQL)."""
+    source = _source(rel_path)
 
     # Find all where_clauses.append(...) calls in the source
     pattern = re.compile(r'where_clauses\.append\(([^)]+)\)')
@@ -174,7 +184,7 @@ def test_cost_tracker_where_clauses_hardcoded() -> None:
             or (arg.startswith("'") and arg.endswith("'"))
         )
         assert is_string_literal, (
-            f"where_clauses.append() called with non-literal argument: {arg!r}. "
+            f"{rel_path}: where_clauses.append() called with non-literal argument: {arg!r}. "
             "Only hardcoded SQL clause strings are allowed."
         )
 

@@ -26,6 +26,19 @@ def _safe_summary_values(summary) -> Tuple[int, float]:
     return count, total
 
 
+def _period_range(days: int) -> Tuple[datetime, datetime]:
+    """Return ``(start, end)`` for the trailing ``days``-window ending now.
+
+    Centralises the ``end = datetime.now(); start = end - timedelta(days=N)``
+    pattern repeated by every cost view (summary, categories, forecast,
+    export, top) — keeps a single clock point and a single semantics for
+    the trailing-window so a future migration to an injectable clock has
+    one site to update.
+    """
+    end_time = datetime.now()
+    return end_time - timedelta(days=days), end_time
+
+
 class CostCommand(DirectCommand):
     """Rastreamento de custos, orçamentos e análise financeira"""
 
@@ -141,8 +154,7 @@ EXEMPLOS:
 
     def _show_cost_summary(self, days: int = 30) -> "CommandResult":
         try:
-            end_time = datetime.now()
-            start_time = end_time - timedelta(days=days)
+            start_time, end_time = _period_range(days)
 
             summary = self.cost_tracker.get_cost_summary(start_time, end_time)
             session_cost = self.cost_tracker.get_current_session_cost()
@@ -186,8 +198,7 @@ EXEMPLOS:
 
     def _show_categories(self) -> "CommandResult":
         try:
-            end_time = datetime.now()
-            start_time = end_time - timedelta(days=30)
+            start_time, end_time = _period_range(30)
             summary = self.cost_tracker.get_cost_summary(start_time, end_time)
 
             if not summary.categories:
@@ -253,8 +264,7 @@ EXEMPLOS:
 
     def _show_forecast(self, forecast_days: int = 7) -> "CommandResult":
         try:
-            hist_end = datetime.now()
-            hist_start = hist_end - timedelta(days=30)
+            hist_start, hist_end = _period_range(30)
             summary = self.cost_tracker.get_cost_summary(hist_start, hist_end)
 
             entry_count, total_amount = _safe_summary_values(summary)
@@ -293,8 +303,7 @@ EXEMPLOS:
 
     async def _export_costs(self, fmt: str = "json", days: int = 30) -> "CommandResult":
         try:
-            end_time = datetime.now()
-            start_time = end_time - timedelta(days=days)
+            start_time, end_time = _period_range(days)
             data = self.cost_tracker.export_costs(start_time, end_time, format_type=fmt)
 
             if not data:
@@ -327,8 +336,7 @@ EXEMPLOS:
 
     def _show_top(self, n: int = 5) -> "CommandResult":
         try:
-            end_time = datetime.now()
-            start_time = end_time - timedelta(days=30)
+            start_time, end_time = _period_range(30)
             summary = self.cost_tracker.get_cost_summary(start_time, end_time)
 
             top = summary.top_expenses[:n] if summary.top_expenses else []

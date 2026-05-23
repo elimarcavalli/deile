@@ -255,6 +255,40 @@ class ClaudeImplementer(PipelineImplementer):
 
     name = "claude"
 
+    async def _run_in_worktree(
+        self,
+        monitor: "PipelineMonitor",
+        branch: str | None,
+        prompt: str,
+        *,
+        label: str,
+        force_recreate: bool = False,
+    ) -> WorkOutcome:
+        """Setup a worktree (if ``branch`` is given), then run ``claude``.
+
+        ``branch=None`` skips worktree setup and runs ``claude`` at
+        ``monitor.config.base_repo_path`` — used by the mention path which
+        has no per-issue branch.
+
+        Worktree creation failures become a failed ``WorkOutcome`` with the
+        ``worktree:`` prefix; ``label`` is used in the exception log.
+        """
+        if branch is None:
+            cwd = monitor.config.base_repo_path
+        else:
+            try:
+                worktree = await monitor.worktrees.create_branch_worktree(
+                    branch, force_recreate=force_recreate
+                )
+            except Exception as exc:  # noqa: BLE001 — surface as failed outcome
+                logger.exception("worktree setup for %s failed", label)
+                return WorkOutcome(
+                    ok=False, text="", error=f"worktree: {type(exc).__name__}: {exc}"
+                )
+            cwd = worktree.path
+        result = await monitor.claude.run(prompt, cwd=cwd)
+        return WorkOutcome(ok=result.ok, text=result.stdout, error=result.stderr.strip())
+
     async def implement(
         self, monitor: "PipelineMonitor", issue: "IssueRef", *, resume: bool = False
     ) -> WorkOutcome:
@@ -264,31 +298,21 @@ class ClaudeImplementer(PipelineImplementer):
         # ground-truth contract (that lives in the deile-worker path), so the
         # flag does not change behaviour here beyond the existing reuse.
         branch = monitor.branch_for_issue(issue.number)
-        try:
-            worktree = await monitor.worktrees.create_branch_worktree(
-                branch, force_recreate=False
-            )
-        except Exception as exc:  # noqa: BLE001 — surface as a failed outcome
-            logger.exception("worktree setup for #%s failed", issue.number)
-            return WorkOutcome(ok=False, text="", error=f"worktree: {type(exc).__name__}: {exc}")
         prompt = render_implement_prompt(
             monitor.config.repo, issue.number, issue.title, issue.body
         )
-        result = await monitor.claude.run(prompt, cwd=worktree.path)
-        return WorkOutcome(ok=result.ok, text=result.stdout, error=result.stderr.strip())
+        return await self._run_in_worktree(
+            monitor, branch, prompt, label=f"#{issue.number}"
+        )
 
     async def review(
         self, monitor: "PipelineMonitor", pr: "PrRef", *, resume: bool = False
     ) -> WorkOutcome:
         worktree_branch = pr.head_ref or f"pr/{pr.number}"
-        try:
-            wt = await monitor.worktrees.create_branch_worktree(worktree_branch)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("PR worktree #%s failed", pr.number)
-            return WorkOutcome(ok=False, text="", error=f"worktree: {type(exc).__name__}: {exc}")
         prompt = render_review_prompt(monitor.config.repo, pr.number, pr.title)
-        result = await monitor.claude.run(prompt, cwd=wt.path)
-        return WorkOutcome(ok=result.ok, text=result.stdout, error=result.stderr.strip())
+        return await self._run_in_worktree(
+            monitor, worktree_branch, prompt, label=f"PR #{pr.number}"
+        )
 
     async def mention(
         self,
@@ -305,8 +329,8 @@ class ClaudeImplementer(PipelineImplementer):
         prompt = _render_claude_mention_prompt(
             monitor.config.repo, ref, trigger_types or [], all_triggers or []
         )
-        result = await monitor.claude.run(prompt, cwd=monitor.config.base_repo_path)
-        return WorkOutcome(ok=result.ok, text=result.stdout, error=result.stderr.strip())
+        # mention runs at base_repo_path; no per-issue branch worktree.
+        return await self._run_in_worktree(monitor, None, prompt, label="mention")
 
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,46 @@ from .base import SyncTool, ToolContext, ToolResult, ToolStatus
 logger = logging.getLogger(__name__)
 
 
+def _run_subprocess(
+    cmd: list[str],
+    *,
+    timeout: int,
+    cwd: str | None,
+    timeout_msg: str,
+    timeout_error_msg: str,
+    generic_err_prefix: str,
+) -> tuple[subprocess.CompletedProcess | None, ToolResult | None]:
+    """Run ``cmd`` capturing stdout/stderr.
+
+    Returns ``(proc, None)`` on a successful spawn (regardless of returncode),
+    or ``(None, error_result)`` when the subprocess timed out or raised any
+    other exception — in which case the caller just returns ``error_result``.
+
+    Keeps the timeout/exception envelope identical across the three execution
+    tools so each tool only has to interpret ``returncode`` to build its
+    success/error ``ToolResult``.
+    """
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=cwd,
+        )
+        return proc, None
+    except subprocess.TimeoutExpired:
+        return None, ToolResult.error_result(
+            message=timeout_msg,
+            error=TimeoutError(timeout_error_msg),
+        )
+    except Exception as exc:  # noqa: BLE001 — every path returns an error result
+        return None, ToolResult.error_result(
+            message=f"{generic_err_prefix}: {exc}",
+            error=exc,
+        )
+
+
 class PythonExecutionTool(SyncTool):
     """Run a Python snippet in a subprocess with timeout.
 
@@ -43,65 +83,55 @@ class PythonExecutionTool(SyncTool):
                 error=ValidationError("code is required"),
             )
 
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(code)
+            temp_file = f.name
+
         try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".py", delete=False, encoding="utf-8"
-            ) as f:
-                f.write(code)
-                temp_file = f.name
+            result, err = _run_subprocess(
+                [sys.executable, temp_file],
+                timeout=timeout,
+                cwd=context.working_directory,
+                timeout_msg=f"Python code timed out after {timeout} seconds",
+                timeout_error_msg=f"Execution timeout: {timeout}s",
+                generic_err_prefix="Error executing Python code",
+            )
+            if err is not None:
+                return err
 
-            try:
-                result = subprocess.run(
-                    [sys.executable, temp_file],
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    cwd=context.working_directory,
-                )
+            stdout = result.stdout or ""
+            stderr = result.stderr or ""
 
-                stdout = result.stdout or ""
-                stderr = result.stderr or ""
-
-                if result.returncode == 0:
-                    return ToolResult(
-                        status=ToolStatus.SUCCESS,
-                        data=stdout.strip(),
-                        message=stdout.strip() or "Python executed successfully (no stdout)",
-                        metadata={
-                            "exit_code": result.returncode,
-                            "stdout": stdout,
-                            "stderr": stderr,
-                        },
-                    )
-                return ToolResult.error_result(
-                    data=stderr.strip(),
-                    message=(
-                        f"Python failed with exit code {result.returncode}.\n"
-                        f"stderr:\n{stderr.strip()}"
-                    ),
+            if result.returncode == 0:
+                return ToolResult(
+                    status=ToolStatus.SUCCESS,
+                    data=stdout.strip(),
+                    message=stdout.strip() or "Python executed successfully (no stdout)",
                     metadata={
                         "exit_code": result.returncode,
                         "stdout": stdout,
                         "stderr": stderr,
                     },
                 )
-
-            finally:
-                try:
-                    os.unlink(temp_file)
-                except OSError:
-                    pass
-
-        except subprocess.TimeoutExpired:
             return ToolResult.error_result(
-                message=f"Python code timed out after {timeout} seconds",
-                error=TimeoutError(f"Execution timeout: {timeout}s"),
+                data=stderr.strip(),
+                message=(
+                    f"Python failed with exit code {result.returncode}.\n"
+                    f"stderr:\n{stderr.strip()}"
+                ),
+                metadata={
+                    "exit_code": result.returncode,
+                    "stdout": stdout,
+                    "stderr": stderr,
+                },
             )
-        except Exception as e:
-            return ToolResult.error_result(
-                message=f"Error executing Python code: {str(e)}",
-                error=e,
-            )
+        finally:
+            try:
+                os.unlink(temp_file)
+            except OSError:
+                pass
 
 
 class PipInstallTool(SyncTool):
@@ -206,24 +236,16 @@ class PipInstallTool(SyncTool):
             cmd.append("--upgrade")
         cmd.append(spec)
 
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=context.working_directory,
-            )
-        except subprocess.TimeoutExpired:
-            return ToolResult.error_result(
-                message=f"pip install {spec} timed out after {timeout} seconds",
-                error=TimeoutError(f"pip timeout: {timeout}s"),
-            )
-        except Exception as e:
-            return ToolResult.error_result(
-                message=f"Failed to invoke pip: {e}",
-                error=e,
-            )
+        result, err = _run_subprocess(
+            cmd,
+            timeout=timeout,
+            cwd=context.working_directory,
+            timeout_msg=f"pip install {spec} timed out after {timeout} seconds",
+            timeout_error_msg=f"pip timeout: {timeout}s",
+            generic_err_prefix="Failed to invoke pip",
+        )
+        if err is not None:
+            return err
 
         stdout = result.stdout or ""
         stderr = result.stderr or ""
@@ -313,57 +335,48 @@ class TestRunnerTool(SyncTool):
                 error=ValidationError(f"test_type must be one of: {list(test_commands.keys())}")
             )
 
-        try:
-            cmd = test_commands[test_type].copy()
+        cmd = test_commands[test_type].copy()
 
-            if test_path and test_path != ".":
-                cmd.append(test_path)
+        if test_path and test_path != ".":
+            cmd.append(test_path)
 
-            if verbose and test_type == "pytest":
-                cmd.append("-v")
+        if verbose and test_type == "pytest":
+            cmd.append("-v")
 
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300,
-                cwd=context.working_directory
-            )
+        result, err = _run_subprocess(
+            cmd,
+            timeout=300,
+            cwd=context.working_directory,
+            timeout_msg="Tests timed out after 5 minutes",
+            timeout_error_msg="Test execution timeout",
+            generic_err_prefix="Error running tests",
+        )
+        if err is not None:
+            return err
 
-            output = result.stdout.strip() if result.stdout else ""
-            error_output = result.stderr.strip() if result.stderr else ""
+        output = result.stdout.strip() if result.stdout else ""
+        error_output = result.stderr.strip() if result.stderr else ""
 
-            if test_type == "pytest":
-                if "failed" in output.lower() or result.returncode != 0:
-                    status = ToolStatus.ERROR
-                    message = "Tests failed"
-                else:
-                    status = ToolStatus.SUCCESS
-                    message = "All tests passed"
+        if test_type == "pytest":
+            if "failed" in output.lower() or result.returncode != 0:
+                status = ToolStatus.ERROR
+                message = "Tests failed"
             else:
-                status = ToolStatus.SUCCESS if result.returncode == 0 else ToolStatus.ERROR
-                message = "Tests completed" if result.returncode == 0 else "Tests failed"
+                status = ToolStatus.SUCCESS
+                message = "All tests passed"
+        else:
+            status = ToolStatus.SUCCESS if result.returncode == 0 else ToolStatus.ERROR
+            message = "Tests completed" if result.returncode == 0 else "Tests failed"
 
-            return ToolResult(
-                status=status,
-                data=output,
-                message=message,
-                metadata={
-                    "test_type": test_type,
-                    "test_path": test_path,
-                    "exit_code": result.returncode,
-                    "stdout": output,
-                    "stderr": error_output
-                }
-            )
-
-        except subprocess.TimeoutExpired:
-            return ToolResult.error_result(
-                message="Tests timed out after 5 minutes",
-                error=TimeoutError("Test execution timeout")
-            )
-        except Exception as e:
-            return ToolResult.error_result(
-                message=f"Error running tests: {str(e)}",
-                error=e
-            )
+        return ToolResult(
+            status=status,
+            data=output,
+            message=message,
+            metadata={
+                "test_type": test_type,
+                "test_path": test_path,
+                "exit_code": result.returncode,
+                "stdout": output,
+                "stderr": error_output
+            }
+        )
