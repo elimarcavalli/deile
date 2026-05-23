@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 from ..core.exceptions import DEILEError
 from ..security import (AuditEventType, SeverityLevel, get_audit_logger,
                         get_permission_manager)
-from ..tools.base import ToolResult
+from ..tools.base import ToolContext, ToolResult
 from ..tools.registry import get_tool_registry
 from ._deps import all_dependencies_met
 from ._objective_steps import derive_step_specs
@@ -891,13 +891,34 @@ class PlanManager:
         }
     
     async def _run_tool_with_params(self, tool, params: Dict[str, Any]) -> ToolResult:
-        """Executa tool com parâmetros"""
-        
-        # Usa execute_function_call do registry para compatibilidade
-        return self.tool_registry.execute_function_call(
-            function_name=tool.name,
-            arguments=params
+        """Executa tool com parâmetros sem bloquear o event loop.
+
+        ``execute_function_call`` é síncrono e, quando chamado de dentro de um
+        loop ativo, executa a coroutine da tool em um worker thread cujo
+        ``Future.result()`` BLOQUEIA o loop — anulando o ``asyncio.wait_for``
+        que envolve esta chamada (``timeout/cancellation`` não cruzam para o
+        worker). Aqui invocamos diretamente o pipeline async da Tool, que via
+        ``SyncTool.execute`` já agenda ``execute_sync`` em ``asyncio.to_thread``.
+        """
+        context = ToolContext(
+            user_input="",
+            parsed_args=params or {},
+            metadata={
+                "execution_method": "plan_step",
+                "tool_name": tool.name,
+            },
         )
+        try:
+            return await tool.execute(context)
+        except Exception as exc:
+            # Tools devem encapsular falhas em ToolResult, mas tools terceiras
+            # podem violar o contrato — preserva-se a semântica do bridge
+            # antigo (que mapeava exceções a ToolResult.error_result).
+            return ToolResult.error_result(
+                f"Execution error: {type(exc).__name__}: {exc}",
+                error=exc,
+                error_code="EXECUTION_ERROR",
+            )
     
     async def _save_plan(self, plan: ExecutionPlan) -> None:
         """Salva plano em arquivo JSON"""
