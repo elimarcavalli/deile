@@ -39,7 +39,7 @@ def _fake_response(usage_md=None):
 class TestExtractGeminiUsage:
     def test_reads_all_four_token_fields(self):
         prov = MagicMock(spec=GeminiProvider)
-        prov._compute_cost = lambda u: 0.0  # ignore cost in this test
+        prov.estimate_cost = lambda u: 0.0  # ignore cost in this test
         resp = _fake_response(_fake_usage_md(
             prompt=1500, candidates=380, total=1880, cached=200,
         ))
@@ -53,7 +53,7 @@ class TestExtractGeminiUsage:
 
     def test_missing_usage_metadata_returns_zeros(self):
         prov = MagicMock(spec=GeminiProvider)
-        prov._compute_cost = lambda u: 0.0
+        prov.estimate_cost = lambda u: 0.0
         resp = _fake_response(usage_md=None)
         usage = GeminiProvider._extract_gemini_usage(prov, resp)
         assert usage.prompt_tokens == 0
@@ -62,23 +62,23 @@ class TestExtractGeminiUsage:
 
     def test_total_falls_back_to_sum_when_zero(self):
         prov = MagicMock(spec=GeminiProvider)
-        prov._compute_cost = lambda u: 0.0
+        prov.estimate_cost = lambda u: 0.0
         resp = _fake_response(_fake_usage_md(prompt=100, candidates=50, total=0))
         usage = GeminiProvider._extract_gemini_usage(prov, resp)
         assert usage.total_tokens == 150     # fallback: prompt + completion
 
     def test_calls_compute_cost(self):
         prov = MagicMock(spec=GeminiProvider)
-        prov._compute_cost = MagicMock(return_value=0.0042)
+        prov.estimate_cost = MagicMock(return_value=0.0042)
         resp = _fake_response(_fake_usage_md(prompt=1000, candidates=500, cached=100))
         usage = GeminiProvider._extract_gemini_usage(prov, resp)
-        prov._compute_cost.assert_called_once()
+        prov.estimate_cost.assert_called_once()
         assert usage.cost_estimate == 0.0042
 
     def test_cost_calc_exception_does_not_propagate(self):
         # Cost calc nunca pode quebrar a request — falha em DEBUG, devolve 0.
         prov = MagicMock(spec=GeminiProvider)
-        prov._compute_cost = MagicMock(side_effect=RuntimeError("catalog miss"))
+        prov.estimate_cost = MagicMock(side_effect=RuntimeError("catalog miss"))
         resp = _fake_response(_fake_usage_md(prompt=10, candidates=5))
         usage = GeminiProvider._extract_gemini_usage(prov, resp)
         assert usage.cost_estimate == 0.0    # default, sem propagar
