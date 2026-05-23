@@ -86,7 +86,8 @@ class LocCommand(DirectCommand):
                     try:
                         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
                             for line in f:
-                                if line.strip().startswith("def test_"):
+                                stripped = line.strip()
+                                if stripped.startswith("def test_") or stripped.startswith("async def test_"):
                                     count += 1
                     except Exception:
                         pass
@@ -165,5 +166,7 @@ class LocCommand(DirectCommand):
             "rich",
             total_files=total_files,
             total_lines=total_lines,
-            total_tests=total_tests
+            total_tests=total_tests,
+            lang_stats=dict(lang_stats),
+            top_files=top_files
         )
