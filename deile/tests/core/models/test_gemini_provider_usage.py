@@ -19,7 +19,6 @@ import pytest
 from deile.core.models.base import ModelUsage
 from deile.core.models.gemini_provider import GeminiProvider
 
-
 # -------- helpers de fixture -------------------------------------------------
 
 def _fake_usage_md(prompt=0, candidates=0, total=0, cached=0):
