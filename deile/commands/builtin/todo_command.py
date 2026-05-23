@@ -18,8 +18,8 @@ from pathlib import Path
 from rich.table import Table
 from rich.text import Text
 
-from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._git_helpers import git_ls_files, resolve_repo_root
 from ._shared import wrap_command_errors
 
 logger = logging.getLogger(__name__)
@@ -92,17 +92,7 @@ class TodoCommand(DirectCommand):
 
     @staticmethod
     def _resolve_repo_root() -> Path:
-        """Encontra a raiz do repo git a partir do CWD."""
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode == 0:
-                return Path(result.stdout.strip())
-        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-            raise CommandError(f"git rev-parse falhou: {exc}") from exc
-        raise CommandError("Não foi possível determinar a raiz do repositório git")
+        return resolve_repo_root()
 
     def _scan_markers(self, repo_root: Path) -> list[dict]:
         """Varre os arquivos versionados e retorna lista de marcadores encontrados.
@@ -152,21 +142,7 @@ class TodoCommand(DirectCommand):
 
     @staticmethod
     def _git_ls_files(repo_root: Path) -> list[str]:
-        """Retorna lista de paths relativos versionados via ``git ls-files``."""
-        try:
-            result = subprocess.run(
-                ["git", "ls-files"],
-                capture_output=True, text=True, timeout=30,
-                cwd=str(repo_root),
-            )
-            if result.returncode != 0:
-                raise CommandError(f"git ls-files falhou: {result.stderr.strip()}")
-            lines = result.stdout.strip().split("\n")
-            return [line for line in lines if line]
-        except subprocess.TimeoutExpired as exc:
-            raise CommandError(f"git ls-files timeout: {exc}") from exc
-        except FileNotFoundError as exc:
-            raise CommandError(f"git não encontrado: {exc}") from exc
+        return git_ls_files(repo_root)
 
     @staticmethod
     def _find_markers_in_text(rel_path: str, text: str) -> list[dict]:
