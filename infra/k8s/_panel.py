@@ -35,8 +35,14 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from _panel_data import PanelData, _fmt_age  # noqa: F401 (re-export)
+from _panel_data import PanelData, _fmt_age, kubectl_bin  # noqa: F401
 import _panel_demo as demo
+import collections
+import re
+import subprocess
+import threading
+
+_HEALTH_LINE_RE = re.compile(r"GET /v1/health")
 
 
 # ===== key reader ===========================================================
@@ -578,7 +584,7 @@ class DashboardView(View):
 
     def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
         nav = {
-            "1": "pod-watch",
+            "1": "pod-picker",
             "2": "pipeline-timeline",
             "3": "issues-prs",
             "4": "logs-split",
@@ -607,6 +613,271 @@ def _compact_state_counts(counts: Dict[str, int]) -> str:
             continue
         bits.append(f"{short.get(k, k)}:{v}")
     return "  ".join(bits) if bits else "—"
+
+
+class _LogStreamer:
+    """Background `kubectl logs -f` que enche uma deque rolling.
+
+    Pensado para ser dono curto-prazo: criado pelo `PodWatchView.on_mount`
+    e parado no `on_unmount`. O processo `kubectl` recebe SIGTERM; após
+    2s sem morrer, SIGKILL. A thread de leitura é daemon — segura contra
+    vazamento se o app fechar antes do `stop`.
+    """
+
+    def __init__(self, kubectl: str, ns: str, pod: str,
+                 tail: int = 50, maxlen: int = 300):
+        self._cmd = [kubectl, "-n", ns, "logs", pod, "-f",
+                     f"--tail={tail}", "--timestamps"]
+        self.buf: "collections.deque[str]" = collections.deque(maxlen=maxlen)
+        self._proc: Optional[subprocess.Popen] = None
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+
+    def start(self) -> None:
+        if self._proc is not None:
+            return
+        try:
+            self._proc = subprocess.Popen(
+                self._cmd, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, bufsize=1,
+            )
+        except OSError as exc:
+            self.buf.append(f"[ERRO] não consegui rodar kubectl: {exc}")
+            return
+        self._thread = threading.Thread(target=self._reader, daemon=True)
+        self._thread.start()
+
+    def _reader(self) -> None:
+        if self._proc is None or self._proc.stdout is None:
+            return
+        for line in self._proc.stdout:
+            if self._stop.is_set():
+                break
+            self.buf.append(line.rstrip())
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._proc is not None:
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+            except OSError:
+                pass
+            self._proc = None
+        self._thread = None
+
+    def snapshot(self, n: int = 30) -> List[str]:
+        return list(self.buf)[-n:]
+
+
+class PodPickerView(View):
+    """Lista pods selecionável com setas / Enter abre o PodWatch."""
+
+    name = "pod-picker"
+    title = "Selecionar pod"
+    refresh_s = 3.0
+
+    HOTKEYS = "[↑/↓] navega   [enter] entra   [esc] volta   [q] sai"
+
+    def __init__(self, data: Optional[PanelData] = None):
+        self.data = data
+        self.cursor = 0
+
+    def _rows(self) -> List[PodRow]:
+        return _pod_rows(self.data)
+
+    def render(self, app: "PanelApp") -> RenderableType:
+        rows = self._rows()
+        if rows:
+            self.cursor = max(0, min(self.cursor, len(rows) - 1))
+        tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
+        tbl.add_column(" ", width=2)
+        tbl.add_column(" ", width=2)
+        tbl.add_column("pod", style="bold")
+        tbl.add_column("role", width=10)
+        tbl.add_column("status", width=10)
+        tbl.add_column("age", width=6)
+        tbl.add_column("doing now")
+        for i, p in enumerate(rows):
+            marker = "▶" if i == self.cursor else " "
+            row_style = "bold cyan on grey15" if i == self.cursor else ""
+            tbl.add_row(
+                Text(marker, style="bold cyan"),
+                Text(p.icon, style="bold yellow" if p.busy else "green"),
+                Text(p.name, style=row_style),
+                p.role,
+                p.status,
+                p.age,
+                Text(p.doing_now, style="dim"),
+            )
+        layout = Layout()
+        layout.split_column(
+            Layout(_head_panel(self.title, app), name="head", size=4),
+            Layout(Panel(tbl, title="[bold]escolha um pod para assistir[/bold]",
+                         title_align="left", border_style="cyan"),
+                   name="body"),
+            Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
+        )
+        return layout
+
+    def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
+        rows = self._rows()
+        n = len(rows)
+        if n == 0:
+            return ActionResult()
+        if key in ("UP", "k"):
+            self.cursor = (self.cursor - 1) % n
+            return ActionResult.refresh()
+        if key in ("DOWN", "j"):
+            self.cursor = (self.cursor + 1) % n
+            return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            pod = rows[self.cursor]
+            return ActionResult.nav("pod-watch", pod_name=pod.name,
+                                    pod_role=pod.role)
+        return ActionResult()
+
+
+class PodWatchView(View):
+    """Drill-in num pod: header + log live via kubectl logs -f.
+
+    Fase 4 entrega o log streaming e o cabeçalho com o estado atual do
+    pod (via PodsProvider) + busy/idle do worker (via WorkerProvider).
+    Resources (cpu/mem via metrics-server) e o `.deile-progress.md`
+    ficam para refinamento em fase posterior — exigem `kubectl top` /
+    `kubectl exec` extras que valem encapsular como sub-providers.
+    """
+
+    name = "pod-watch"
+    title = "Pod Watch"
+    refresh_s = 1.0
+
+    HOTKEYS = ("[f] follow on/off   [h] mostrar/esconder health   "
+               "[c] clear log   [esc] volta   [q] sai")
+
+    def __init__(self, data: Optional[PanelData] = None):
+        self.data = data
+        self.pod_name: str = ""
+        self.pod_role: str = ""
+        self.streamer: Optional[_LogStreamer] = None
+        self.following: bool = True
+        # Health-checks lotam o buffer em workers ociosos; por default escondemos.
+        self.hide_health: bool = True
+
+    def on_mount(self, app: "PanelApp") -> None:
+        # Payload da navegação vem em `app.last_payload` (setado pelo PanelApp).
+        payload = getattr(app, "last_payload", {}) or {}
+        self.pod_name = payload.get("pod_name", "")
+        self.pod_role = payload.get("pod_role", "")
+        kubectl = kubectl_bin()
+        if not self.pod_name or kubectl is None:
+            return
+        self.streamer = _LogStreamer(kubectl, "deile", self.pod_name,
+                                     tail=40, maxlen=400)
+        self.streamer.start()
+
+    def on_unmount(self, app: "PanelApp") -> None:
+        if self.streamer is not None:
+            self.streamer.stop()
+            self.streamer = None
+
+    def _header_body(self) -> RenderableType:
+        if self.data is None:
+            return Text("(modo demo — sem dados reais do pod)", style="dim yellow")
+        pod = next((p for p in self.data.pods.get() if p.name == self.pod_name), None)
+        if pod is None:
+            return Text(f"pod `{self.pod_name}` não encontrado.", style="red")
+        wstate = self.data.workers.get().get(self.pod_name) \
+            if self.pod_role == "worker" else None
+        lines = [
+            Text.assemble(
+                ("name: ", "dim"), (pod.name, "bold"),
+                ("   role: ", "dim"), (pod.role, "bold cyan"),
+                ("   status: ", "dim"),
+                (pod.status, "green" if pod.status == "Running" else "red"),
+            ),
+            Text.assemble(
+                ("uptime: ", "dim"), (_fmt_age(pod.age_s), "bold"),
+                ("   restarts: ", "dim"),
+                (str(pod.restarts),
+                 "bold red" if pod.restarts > 0 else "bold green"),
+                ("   ready: ", "dim"),
+                ("yes" if pod.ready else "NO",
+                 "bold green" if pod.ready else "bold red"),
+                ("   node: ", "dim"), (pod.node or "?", "dim"),
+            ),
+        ]
+        if wstate is not None:
+            lines.append(Text.assemble(
+                ("worker: ", "dim"),
+                ("BUSY" if wstate.busy else "idle",
+                 "bold yellow" if wstate.busy else "dim"),
+                ("   last activity: ", "dim"),
+                (_fmt_age(wstate.last_activity_s) + " ago"
+                 if wstate.last_activity_s is not None else "—", "bold"),
+            ))
+        return Group(*lines)
+
+    def _log_panel(self) -> Panel:
+        hidden = 0
+        if self.streamer is None:
+            body: RenderableType = Text("(streamer não iniciado)", style="dim")
+        else:
+            raw = self.streamer.snapshot(n=200)
+            if self.hide_health:
+                before = len(raw)
+                raw = [ln for ln in raw if not _HEALTH_LINE_RE.search(ln)]
+                hidden = before - len(raw)
+            raw = raw[-30:]
+            if not raw:
+                body = Text(
+                    "(sem linhas significativas — aguardando atividade real)"
+                    if self.hide_health
+                    else "(sem linhas no buffer ainda — aguardando log)",
+                    style="dim",
+                )
+            else:
+                body = Text("\n".join(raw), no_wrap=False)
+        follow_label = "FOLLOW ON" if self.following else "PAUSED"
+        health_label = ("health ESCONDIDOS" if self.hide_health
+                        else "health VISÍVEIS")
+        hidden_label = f"  ·  {hidden} health filtrados" if hidden else ""
+        title = (f"[bold]LIVE LOG[/bold]  ·  {follow_label}  ·  "
+                 f"{health_label}{hidden_label}  ·  {self.pod_name}")
+        return Panel(body, title=title, title_align="left",
+                     border_style="green" if self.following else "yellow")
+
+    def render(self, app: "PanelApp") -> RenderableType:
+        layout = Layout()
+        layout.split_column(
+            Layout(_head_panel(self.title, app), name="head", size=4),
+            Layout(Panel(self._header_body(),
+                         title="[bold]POD[/bold]", title_align="left",
+                         border_style="cyan"),
+                   name="info", size=6),
+            Layout(self._log_panel(), name="log"),
+            Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
+        )
+        return layout
+
+    def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
+        if key == "f":
+            self.following = not self.following
+            if self.following and self.streamer is None:
+                self.on_mount(app)
+            elif not self.following and self.streamer is not None:
+                self.streamer.stop()
+                self.streamer = None
+            return ActionResult.refresh()
+        if key == "c" and self.streamer is not None:
+            self.streamer.buf.clear()
+            return ActionResult.refresh()
+        if key == "h":
+            self.hide_health = not self.hide_health
+            return ActionResult.refresh()
+        return ActionResult()
 
 
 class StubView(View):
@@ -700,6 +971,7 @@ class PanelApp:
         self.console = Console()
         self.settings = _Settings()
         self.data = data
+        self.last_payload: Dict[str, Any] = {}
         self._last_render = 0.0
 
     # --- propriedades de conveniência expostas às views ---
@@ -727,6 +999,7 @@ class PanelApp:
         if view is None:
             return
         self.current_view.on_unmount(self)
+        self.last_payload = payload
         self.stack.append(view)
         view.on_mount(self)
 
@@ -846,11 +1119,8 @@ def _build_views(data: Optional[PanelData] = None) -> Dict[str, View]:
     return {
         "dashboard": DashboardView(data=data),
         "help": HelpView(),
-        "pod-watch": StubView(
-            "pod-watch", "Pod Watch", "Fase 4",
-            "Drill-in num pod (worker/pipeline/bot): "
-            "phase atual, progress.md, log live, recent tasks.",
-        ),
+        "pod-picker": PodPickerView(data=data),
+        "pod-watch": PodWatchView(data=data),
         "pipeline-timeline": StubView(
             "pipeline-timeline", "Pipeline Timeline", "Fase 5",
             "Últimos N ticks com duração + actions. "
