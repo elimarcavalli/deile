@@ -23,7 +23,8 @@ import pytest
 
 from deile.orchestration.pipeline.github_client import (
     GhCommandError, GitHubClient, IssueRef, PrRef, compute_batch_id_for_number)
-from deile.orchestration.pipeline.labels import REVIEW_PENDING, WORKFLOW_NEW
+from deile.orchestration.pipeline.labels import (FOLLOW_UPS_PROCESSED,
+                                                  REVIEW_PENDING, WORKFLOW_NEW)
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
 from deile.orchestration.pipeline.scheduler import (VALID_ACTIONS,
@@ -675,14 +676,14 @@ class TestGetPrMethods:
         client = GitHubClient("owner/repo")
         payload = json.dumps([{
             "number": 5, "title": "merged pr", "url": "u",
-            "labels": [{"name": "~follow_ups:processed"}],
+            "labels": [{"name": FOLLOW_UPS_PROCESSED}],
             "headRefName": "auto/issue-5",
             "baseRefName": "main", "state": "merged", "isDraft": False,
         }])
         with patch.object(client, "_run_checked", new=AsyncMock(return_value=payload)):
             prs = await client.list_recently_merged_prs()
         assert len(prs) == 1
-        assert "~follow_ups:processed" in prs[0].labels
+        assert FOLLOW_UPS_PROCESSED in prs[0].labels
 
     async def test_list_recently_merged_prs_returns_empty_on_error(self):
         client = GitHubClient("owner/repo")
@@ -885,7 +886,7 @@ class TestStandaloneFollowUps:
         )
         already_processed = PrRef(
             number=1, title="done", url="u",
-            labels=("~follow_ups:processed",),
+            labels=(FOLLOW_UPS_PROCESSED,),
         )
         github = AsyncMock()
         github.list_recently_merged_prs = AsyncMock(return_value=[already_processed])
@@ -925,7 +926,7 @@ class TestStandaloneFollowUps:
         await monitor._standalone_follow_ups()
         assert stage4_calls == [(2, "new merged", "https://gh/o/r/pull/2")]
         github.add_labels.assert_called_once_with(
-            "pr", 2, ["~follow_ups:processed"]
+            "pr", 2, [FOLLOW_UPS_PROCESSED]
         )
 
     async def test_list_error_is_caught(self, tmp_path):
