@@ -40,13 +40,19 @@ class SemanticMemory:
         logger.info("SemanticMemory inicializada")
 
     async def store_knowledge(self, knowledge: Dict[str, Any]) -> None:
-        """Armazena conhecimento"""
-        knowledge['stored_at'] = knowledge.get('extracted_at', 0)
-        self._knowledge_base.append(knowledge)
+        """Armazena conhecimento.
+
+        Copia o dict antes de adicionar campos internos — caso contrário o
+        argumento do caller é mutado (``stored_at`` aparece magicamente em
+        dicts que continuam sendo iterados/serializados rio acima).
+        """
+        record = dict(knowledge)
+        record['stored_at'] = record.get('extracted_at', 0)
+        self._knowledge_base.append(record)
 
         # Salva no arquivo
         with open(self.knowledge_file, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(knowledge, ensure_ascii=False) + '\n')
+            f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
     async def search_knowledge(self, query: str, max_results: int = 10) -> List[Dict[str, Any]]:
         """Busca conhecimento (implementação básica)"""
