@@ -1811,12 +1811,32 @@ class DeileAgent:
                     logger.info("Sent message with %d file attachments", len(context["file_data_parts"]))
 
                 try:
-                    content, tool_results = await model_provider._gemini_chat_with_tools(
+                    # `_gemini_chat_with_tools` agora devolve 3-tuple:
+                    # (text, tool_results, ModelUsage agregado). Antes desse
+                    # fix, retornava só 2-tuple e o usage era descartado —
+                    # gemini nunca registrava nada na DB de custos.
+                    content, tool_results, _gemini_usage = await model_provider._gemini_chat_with_tools(
                         chat=chat,
                         message=message_content,
                         working_directory=str(session.working_directory),
                         session_data=session.context_data,
                     )
+                    # Persiste o usage agregado — sem isso, o caminho legado
+                    # (que ainda é o default no agent) seguiria sem registrar
+                    # nada mesmo com o helper preenchendo os tokens corretos.
+                    try:
+                        latency_ms = int((time.time() - _t0) * 1000)
+                        await model_provider._record_usage(
+                            session_id=str(session.session_id),
+                            usage=_gemini_usage,
+                            latency_ms=latency_ms,
+                            success=True,
+                        )
+                    except Exception as _rec_err:  # noqa: BLE001 — telemetry must never block
+                        logger.debug(
+                            "gemini usage record (agent path) failed: %s",
+                            _rec_err,
+                        )
                     _self_record_circuit(model_provider.provider_id, success=True)
                 except Exception as _gemini_err:
                     _self_record_circuit(model_provider.provider_id, success=False)

@@ -46,14 +46,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-# aiohttp comes from the deilebot extra (already in the image).
-from aiohttp import web
-
 # Resume-mode helpers (issue #254). Sibling module under infra/k8s — the worker
 # runs with this directory on sys.path (set by the entrypoint / Dockerfile), so
 # a plain import resolves it. Done as a module so the git/fingerprint/journal
 # logic is unit-testable without aiohttp.
 import _worker_resume as resume
+# aiohttp comes from the deilebot extra (already in the image).
+from aiohttp import web
 
 logger = logging.getLogger("deile.worker_server")
 logging.basicConfig(
