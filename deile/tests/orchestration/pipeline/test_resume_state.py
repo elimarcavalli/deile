@@ -85,6 +85,80 @@ class TestResumeTracker:
         t = ResumeTracker()
         assert t.cadence_ok(99, 0.0, 60) is True
 
+    def test_cadence_backoff_exponencial_para_issue_problematica(self):
+        # Fix #8: a partir da 2ª tentativa, a janela efetiva é interval × 2^(attempt-1)
+        # (teto em 16×). Issue saudável retoma na cadência normal; problemática
+        # espera 2×, 4×, 8×, 16× — limita queima de tokens em loops difíceis.
+        t = ResumeTracker()
+        t.record_dispatch(1, 100.0)
+        # attempt=1 → fator 1× → janela = 60s (cadência normal)
+        t.update_from_worker(1, fingerprint="x", attempt=1, budget_s=0.0)
+        assert t.cadence_ok(1, 160.0, 60) is True
+        # attempt=2 → fator 2× → janela = 120s
+        t.update_from_worker(1, fingerprint="x", attempt=2, budget_s=0.0)
+        assert t.cadence_ok(1, 165.0, 60) is False
+        assert t.cadence_ok(1, 221.0, 60) is True
+        # attempt=5 → fator 16× (teto) → janela = 960s
+        for _ in range(3):  # já está em 2, +3 = 5
+            t.update_from_worker(1, fingerprint="x", attempt=0, budget_s=0.0)
+        assert t.get(1).attempt == 5
+        assert t.cadence_ok(1, 500.0, 60) is False    # 400s passados < 960
+        assert t.cadence_ok(1, 1061.0, 60) is True    # >= 960
+
+
+class TestFailureStreak:
+    """Fix #6: detecta 2 falhas consecutivas do mesmo tipo (TIMEOUT etc.) pra
+    escalar antes de queimar o ceiling inteiro hitting o mesmo muro."""
+
+    def test_first_failure_streak_is_one(self):
+        t = ResumeTracker()
+        assert t.record_failure(7, "TIMEOUT") == 1
+
+    def test_consecutive_same_kind_grows_streak(self):
+        t = ResumeTracker()
+        t.record_failure(7, "TIMEOUT")
+        t.record_failure(7, "TIMEOUT")
+        assert t.record_failure(7, "TIMEOUT") == 3
+
+    def test_different_kind_resets_streak(self):
+        t = ResumeTracker()
+        t.record_failure(7, "TIMEOUT")
+        t.record_failure(7, "TIMEOUT")
+        # mudou pra WORKER_UNREACHABLE — streak reseta pra 1
+        assert t.record_failure(7, "WORKER_UNREACHABLE") == 1
+
+    def test_clear_failure_zeros_streak(self):
+        t = ResumeTracker()
+        t.record_failure(7, "TIMEOUT")
+        t.record_failure(7, "TIMEOUT")
+        t.clear_failure(7)
+        assert t.record_failure(7, "TIMEOUT") == 1
+
+
+class TestIncompleteNoPrCounter:
+    """Fix #10: contador dedicado pro 'incompleto sem PR' (categoria
+    tipicamente irrecuperável; teto menor que resume_max_attempts genérico)."""
+
+    def test_increments_per_call(self):
+        t = ResumeTracker()
+        assert t.bump_incomplete_no_pr(50) == 1
+        assert t.bump_incomplete_no_pr(50) == 2
+        assert t.bump_incomplete_no_pr(50) == 3
+
+    def test_per_issue_isolated(self):
+        t = ResumeTracker()
+        t.bump_incomplete_no_pr(50)
+        t.bump_incomplete_no_pr(50)
+        assert t.bump_incomplete_no_pr(51) == 1
+        assert t.get(50).incomplete_no_pr_count == 2
+
+    def test_clear_resets(self):
+        t = ResumeTracker()
+        t.bump_incomplete_no_pr(50)
+        t.bump_incomplete_no_pr(50)
+        t.clear(50)
+        assert t.bump_incomplete_no_pr(50) == 1
+
     def test_zero_progress_requires_match(self):
         t = ResumeTracker()
         t.update_from_worker(1, fingerprint="abc", attempt=1, budget_s=0.0)

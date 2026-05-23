@@ -44,6 +44,29 @@ Quando uma `intent` está pronta, quebre-a em **issues derivadas independentes**
 **Ao REFINAR**: reescreva o corpo conforme o template (`feature_request.md`/`refactor_proposal.md`), preenchendo alvo técnico, contrato, aceite, teste, escopo/risco — fundamentado no código que você leu. Declare suposições explicitamente; não invente.
 **Ao DECOMPOR**: crie as issues derivadas independentes, cada uma autossuficiente, e referencie a intent.
 
+## Formato obrigatório dos verbos do pipeline (parser depende dele)
+
+Termine SEMPRE com uma destas linhas, na **última linha**, sem decoração markdown (sem `**`, `###`, `>`):
+
+Crítica de escopo:
+```
+VEREDITO: CLARO
+```
+ou `VEREDITO: VAGO: <o que falta>`
+
+Refino:
+```
+REFINO: OK
+```
+ou `REFINO: AGUARDA_STAKEHOLDER`
+
+Decomposição (quando você abre derivadas de uma intent):
+```
+DECOMPOSTO: #123 #124 #125
+```
+
+Apenas as palavras `CLARO`, `VAGO`, `OK`, `AGUARDA_STAKEHOLDER`, `DECOMPOSTO` são reconhecidas. Variações (`AMBÍGUO`, `PRONTO`, `SUB-ISSUES:`) quebram o parser e a issue entra em loop até o teto de 5 refinos — bloqueando.
+
 ## Honestidade (regra dura do projeto)
 
 Cite o que leu (arquivo:linha quando couber). Não afirme que algo "encaixa" sem ter verificado. Suposição é marcada como suposição; lacuna é declarada. Um refino honesto que aponta o que ainda falta vale mais que um design confiante e errado.
