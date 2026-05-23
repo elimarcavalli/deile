@@ -71,20 +71,35 @@ def _load_dotenv() -> None:
 
 
 def _silence_genai_shutdown_noise() -> None:
-    """Make `google.genai.Client.__del__` defensive (no AttributeError at shutdown)."""
+    """Make `google.genai.Client.__del__` and `BaseApiClient.aclose` defensive (no AttributeError at shutdown)."""
     try:
         from google.genai import client as _gc
     except ImportError:
         return
-    original_del = _gc.Client.__del__
 
-    def _safe_del(self: object) -> None:
-        try:
-            original_del(self)
-        except Exception:
-            pass
+    if hasattr(_gc, "Client") and hasattr(_gc.Client, "__del__"):
+        original_del = _gc.Client.__del__
 
-    _gc.Client.__del__ = _safe_del
+        def _safe_del(self: object) -> None:
+            try:
+                original_del(self)
+            except Exception:
+                pass
+
+        _gc.Client.__del__ = _safe_del
+
+    if hasattr(_gc, "BaseApiClient") and hasattr(_gc.BaseApiClient, "aclose"):
+        original_aclose = _gc.BaseApiClient.aclose
+
+        async def _safe_aclose(self: object) -> None:
+            try:
+                await original_aclose(self)
+            except AttributeError:
+                pass
+            except Exception:
+                pass
+
+        _gc.BaseApiClient.aclose = _safe_aclose
 
 
 def _silence_logging() -> None:
