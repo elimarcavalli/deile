@@ -742,6 +742,49 @@ Padrões do contract:
 | painel trava ao apertar `c` em Ações com runner em curso | é a parada (SIGTERM → SIGKILL 2s); aguarde | até 2s; se persistir, `Ctrl-C` no terminal mata o painel inteiro |
 | logs do pod-watch só mostram `health` em loop | filtro `[h]` está em "VISÍVEIS" | aperte `h` para esconder; o título mostra `N health filtrados` |
 
+#### 4.3.15 Contabilidade de custos — assertividade
+
+O painel `[5] Tokens & Custos` lê de `~/.deile/db/usage.db`
+(`UsageRepository`). Cada provider grava via `_record_usage` no
+sucesso e `_record_failed_usage` no erro — cobertura recente:
+
+| Provider | `generate()` | `chat_with_tools()` | `generate_stream()` |
+|---|---|---|---|
+| Anthropic | ✅ | ✅ | ✅ |
+| OpenAI | ✅ | ✅ | ✅ |
+| DeepSeek (herda OpenAI) | ✅ | ✅ | ✅ |
+| Gemini | ✅ | ✅ (loop multi-turn agrega usage) | ✅ |
+
+Fórmula em `deile/core/models/base.py:_compute_cost`:
+
+```
+input_cost  = (prompt_tokens     / 1_000_000) × input_per_1m_usd
+output_cost = (completion_tokens / 1_000_000) × output_per_1m_usd
+cached_cost = (cached_tokens     / 1_000_000) × cached_input_per_1m_usd
+total       = round(input + output + cached, 8)
+```
+
+Pricing por modelo: `deile/config/model_providers.yaml`, campo
+`pricing: { input_per_1m_usd, output_per_1m_usd, cached_input_per_1m_usd }`.
+
+**Tests isolam DB.** O conftest raiz (`deile/tests/conftest.py`)
+aponta `_DEFAULT_DB_PATH` para `tmp_path` por teste — a suite não
+escreve mais na DB de produção. Antes do fix de mai/2026, uma suite
+completa adicionava ~28 registros falsos.
+
+**TODO — reconciliação com faturas.** Validar valor absoluto contra
+os dashboards dos providers depois de uma janela longa de uso real:
+
+| Provider | Dashboard |
+|---|---|
+| Anthropic | https://console.anthropic.com/settings/usage |
+| OpenAI | https://platform.openai.com/usage |
+| Gemini | Google AI Studio billing |
+| DeepSeek | https://platform.deepseek.com/usage |
+
+Critério de assertividade: diferença ≤ 5% (margem de arredondamento
+de pricing per-1M).
+
 ### 4.4 Diagnóstico rápido
 
 ```bash
