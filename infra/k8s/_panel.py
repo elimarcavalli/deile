@@ -24,7 +24,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from rich import box
 from rich.align import Align
@@ -34,6 +34,9 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+
+from _panel_data import PanelData, _fmt_age  # noqa: F401 (re-export)
+import _panel_demo as demo
 
 
 # ===== key reader ===========================================================
@@ -170,15 +173,108 @@ class View(ABC):
         return ActionResult()
 
 
-# ===== mock data (Fase 1) ===================================================
+# ===== alerts engine ========================================================
 #
-# Substituído pela camada `_panel_data.py` na Fase 2. Mantido aqui para o
-# esqueleto rodar standalone sem cluster.
+# Regras simples, todas baseadas em snapshots dos providers. Cada regra
+# retorna 0 ou 1 alerta — agregamos antes de renderizar. Mantemos no nível
+# de módulo pra Fase 7 testar isoladamente sem montar a UI.
 
 @dataclass
-class _PodRow:
+class Alert:
+    severity: str  # 'warn' | 'crit'
+    icon: str
+    msg: str
+
+
+def _alerts_from_data(data: Optional[PanelData]) -> List[Alert]:
+    """Avalia thresholds contra o estado atual dos providers.
+
+    Em modo demo (data is None), devolve o alerta sintético — para o
+    operador ver como o painel se comporta com algo aceso.
+    """
+    if data is None:
+        return [Alert("warn", icon, msg) for icon, msg in demo.ALERTS]
+
+    out: List[Alert] = []
+    # Pods restarting recentemente.
+    for p in data.pods.get():
+        if p.restarts >= 3:
+            out.append(Alert(
+                "crit", "⛔",
+                f"{p.name} reiniciou {p.restarts} vez(es) — investigar",
+            ))
+        elif p.restarts >= 1 and p.age_s < 1800:
+            out.append(Alert(
+                "warn", "⚠",
+                f"{p.name} reiniciou {p.restarts}× nos últimos 30min",
+            ))
+    # Pipeline ocioso por muito tempo (talvez tick travado).
+    ps = data.pipeline.get()
+    if ps.last_action_age_s is not None and ps.last_action_age_s > 300:
+        out.append(Alert(
+            "warn", "⚠",
+            f"pipeline sem ação há {_fmt_age(ps.last_action_age_s)} — "
+            "pode estar travado",
+        ))
+    # Issues bloqueadas em aberto.
+    snap = data.github.get()
+    blocked = [it for it in snap.issues if it.blocked]
+    if blocked:
+        nums = ", ".join(f"#{it.number}" for it in blocked[:3])
+        more = f" (+{len(blocked) - 3})" if len(blocked) > 3 else ""
+        out.append(Alert(
+            "warn", "⚠",
+            f"{len(blocked)} issue(s) com ~workflow:bloqueada: {nums}{more}",
+        ))
+    # Aguardando stakeholder (humano).
+    awaiting = [it for it in snap.issues
+                if it.workflow == "aguardando_stakeholder"]
+    if awaiting:
+        nums = ", ".join(f"#{it.number}" for it in awaiting[:3])
+        out.append(Alert(
+            "warn", "🙋",
+            f"{len(awaiting)} issue(s) aguardando você: {nums}",
+        ))
+    # Provider errors.
+    for name, err in data.errors():
+        out.append(Alert("warn", "⚠", f"provider {name}: {err.split(':', 1)[0]}"))
+    return out
+
+
+# ===== activity feed ========================================================
+
+@dataclass
+class ActivityRow:
+    hhmmss: str
+    actor: str
+    action: str
+    target: str
+    detail: str
+
+
+def _activity_from_data(data: Optional[PanelData], limit: int = 8) -> List[ActivityRow]:
+    if data is None:
+        return [ActivityRow(*row) for row in demo.ACTIVITY[:limit]]
+    rows: List[ActivityRow] = []
+    ps = data.pipeline.get()
+    for ev in reversed(ps.events[-limit:]):
+        rows.append(ActivityRow(
+            hhmmss=ev.hhmmss,
+            actor=ev.actor,
+            action=ev.action,
+            target=ev.target,
+            detail=ev.detail,
+        ))
+    return rows
+
+
+# ===== pod adapter para a tabela ============================================
+
+@dataclass
+class PodRow:
     icon: str
     name: str
+    role: str
     status: str
     age: str
     restarts: str
@@ -187,54 +283,50 @@ class _PodRow:
     busy: bool = False
 
 
-_MOCK_PODS: List[_PodRow] = [
-    _PodRow("●", "deile-pipeline-7f8d", "Running", "17m", "0",
-            "23s ago", "tick #287, idle"),
-    _PodRow("●", "deile-worker-abc-1", "Running", "2h", "0",
-            "4m ago", "idle"),
-    _PodRow("⚡", "deile-worker-abc-2", "Running", "2h", "0",
-            "0s ago", "IMPL #296 [t+240s]", busy=True),
-    _PodRow("●", "deilebot-xyz", "Running", "5h", "0",
-            "1m ago", "0 inflight DMs"),
-    _PodRow("●", "deile-shell-def0", "Running", "5h", "0",
-            "—", "idle"),
-]
+def _pod_rows(data: Optional[PanelData]) -> List[PodRow]:
+    """Converte o estado dos providers em linhas da tabela de pods."""
+    if data is None:
+        return [
+            PodRow(p.icon, p.name, p.role, p.status, p.age, p.restarts,
+                   p.last_activity, p.doing_now, p.busy)
+            for p in demo.PODS
+        ]
+    workers = data.workers.get()
+    ps = data.pipeline.get()
+    rows: List[PodRow] = []
+    for p in data.pods.get():
+        # Last-activity humano por role.
+        if p.role == "worker":
+            ws = workers.get(p.name)
+            last = _fmt_age(ws.last_activity_s) + " ago" if ws else "—"
+            doing = ws.last_substantive_body[:32] if ws and ws.last_substantive_body \
+                else ("ocupado" if ws and ws.busy else "idle")
+            busy = bool(ws and ws.busy)
+            icon = "⚡" if busy else "●"
+        elif p.role == "pipeline":
+            last = (_fmt_age(ps.last_action_age_s) + " ago"
+                    if ps.last_action_age_s is not None else "—")
+            doing = ps.last_action_summary[:48] or "idle"
+            busy = (ps.last_action_age_s is not None
+                    and ps.last_action_age_s < 60)
+            icon = "⚡" if busy else "●"
+        else:
+            last = "—"
+            doing = "—"
+            busy = False
+            icon = "●"
 
-_MOCK_PIPELINE = {
-    "tick_n": 287,
-    "tick_age_s": 23,
-    "issues_open": 12,
-    "issue_states": {"nova": 2, "em_refinamento": 1, "revisada": 0,
-                     "em_impl": 3, "bloqueada": 1, "outros": 5},
-    "prs_open": 4,
-    "pr_states": {"pendente": 1, "em_andamento": 1, "concluida": 0,
-                  "outros": 2},
-    "last_decisions": [
-        ("#296", "claim+dispatch implement"),
-        ("#294", "refine round 2 (em_refinamento)"),
-        ("#281", "blocked (escalou TIMEOUT 2×)"),
-    ],
-}
+        ready_label = p.status
+        if p.status == "Running" and not p.ready:
+            ready_label = "NotReady"
 
-_MOCK_ACTIVITY: List[Tuple[str, str, str, str, str]] = [
-    ("14:51:48", "worker-2", "start  implement", "#296", "attempt 2  budget 0s"),
-    ("14:51:30", "pipeline", "claim", "#294", "batch:7a2c → analyst"),
-    ("14:50:55", "worker-1", "done   review", "#293", "veredito APROVADO"),
-    ("14:50:30", "pipeline", "merge", "PR#293", "commit 6bba656 (green suite)"),
-    ("14:49:12", "notifier", "→discord", "", "PR #293 merged"),
-    ("14:48:30", "pipeline", "resume", "#281", "attempt 3/5  backoff 4×"),
-    ("14:47:30", "pipeline", "classify", "PR#293", "→ ~review:pendente"),
-    ("14:46:08", "worker-1", "start  review", "PR#293", "budget 0s"),
-]
-
-_MOCK_ALERTS: List[Tuple[str, str]] = [
-    ("⚠", "#281 attempt 3/5 — próximo loop com mesmo erro vai bloquear"),
-]
-
-_MOCK_TOKENS = {
-    "providers": [("anthropic", 9.43), ("openai", 1.12), ("deepseek", 0.85)],
-    "total": 11.40,
-}
+        rows.append(PodRow(
+            icon=icon, name=p.name, role=p.role,
+            status=ready_label, age=_fmt_age(p.age_s),
+            restarts=str(p.restarts), last_activity=last,
+            doing_now=doing, busy=busy,
+        ))
+    return rows
 
 
 # ===== renderers reaproveitáveis ============================================
@@ -271,7 +363,13 @@ def _footer_panel(hotkeys: str) -> Panel:
 # ===== views ================================================================
 
 class DashboardView(View):
-    """Tela-mãe: pods + pipeline + activity + alerts + tokens."""
+    """Tela-mãe: pods + pipeline + activity + alerts + tokens.
+
+    Quando `data` é None roda em modo demo (mocks); caso contrário lê
+    dos providers do `_panel_data`. Cada `_*_panel` é resiliente — se um
+    provider falhar, o painel correspondente desenha o último valor bom
+    e o erro vai pro feed de alertas via `_alerts_from_data`.
+    """
 
     name = "dashboard"
     title = "Dashboard"
@@ -281,6 +379,9 @@ class DashboardView(View):
         "[1]Pod watch  [2]Pipeline  [3]Issues/PRs  [4]Logs split  "
         "[5]Tokens  [a]ctions  [m]odel  [?]help  [q]uit"
     )
+
+    def __init__(self, data: Optional[PanelData] = None):
+        self.data = data
 
     def render(self, app: "PanelApp") -> RenderableType:
         layout = Layout()
@@ -305,6 +406,7 @@ class DashboardView(View):
     # --- panels ---
 
     def _pods_panel(self) -> Panel:
+        rows = _pod_rows(self.data)
         tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
         tbl.add_column(" ", width=2, no_wrap=True)
         tbl.add_column("pod", style="bold")
@@ -312,14 +414,15 @@ class DashboardView(View):
         tbl.add_column("age", width=5)
         tbl.add_column("r", width=2, justify="right")
         tbl.add_column("last-activity", width=12)
-        tbl.add_column("doing now")
-        for p in _MOCK_PODS:
+        tbl.add_column("doing now", no_wrap=False)
+        for p in rows:
             icon_style = "bold yellow" if p.busy else "green"
             doing_style = "bold yellow" if p.busy else "dim"
+            status_style = "green" if p.status == "Running" else "red"
             tbl.add_row(
                 Text(p.icon, style=icon_style),
                 p.name,
-                Text(p.status, style="green"),
+                Text(p.status, style=status_style),
                 p.age,
                 p.restarts,
                 Text(p.last_activity, style="dim"),
@@ -329,85 +432,146 @@ class DashboardView(View):
                      title_align="left", border_style="cyan")
 
     def _pipeline_panel(self) -> Panel:
-        states = _MOCK_PIPELINE["issue_states"]
-        pr_states = _MOCK_PIPELINE["pr_states"]
+        if self.data is None:
+            running = demo.PIPELINE["running_for_human"]
+            last_age = demo.PIPELINE["last_action_age_human"]
+            summary = demo.PIPELINE["last_action_summary"]
+            dispatches = demo.PIPELINE["dispatches_24h"]
+            mentions = demo.PIPELINE["mentions_24h"]
+            issue_states = demo.ISSUE_STATES
+            pr_states = demo.PR_STATES
+            issues_n = sum(issue_states.values())
+            prs_n = sum(pr_states.values())
+        else:
+            ps = self.data.pipeline.get()
+            running = _fmt_age(ps.running_for_s)
+            last_age = (_fmt_age(ps.last_action_age_s) + " ago"
+                        if ps.last_action_age_s is not None else "—")
+            summary = ps.last_action_summary
+            dispatches = ps.dispatches_24h
+            mentions = ps.mentions_24h
+            snap = self.data.github.get()
+            issue_states = snap.issue_states
+            pr_states = snap.pr_states
+            issues_n = len(snap.issues)
+            prs_n = len(snap.prs)
         lines = [
             Text.assemble(
-                ("tick #", "dim"),
-                (str(_MOCK_PIPELINE["tick_n"]), "bold cyan"),
-                ("  ·  ", "dim"),
-                (f"{_MOCK_PIPELINE['tick_age_s']}s ago", "dim"),
+                ("running for ", "dim"),
+                (running, "bold cyan"),
+                ("   ·  last action ", "dim"),
+                (last_age, "bold cyan"),
             ),
             Text.assemble(
-                (f"Issues abertas: {_MOCK_PIPELINE['issues_open']}",
-                 "bold"),
-                ("  ", ""),
-                (f"nova:{states['nova']}  refine:{states['em_refinamento']}  "
-                 f"revisada:{states['revisada']}  "
-                 f"impl:{states['em_impl']}  block:{states['bloqueada']}",
-                 "dim"),
+                ("summary: ", "dim"),
+                (summary[:60], "italic"),
             ),
             Text.assemble(
-                (f"PRs abertos:    {_MOCK_PIPELINE['prs_open']}", "bold"),
-                ("  ", ""),
-                (f"pendente:{pr_states['pendente']}  "
-                 f"em_andamento:{pr_states['em_andamento']}  "
-                 f"concluida:{pr_states['concluida']}", "dim"),
+                (f"dispatches/24h: {dispatches}  ", "dim"),
+                (f"mentions/24h: {mentions}", "dim"),
+            ),
+            Text.assemble(
+                (f"Issues open: {issues_n}  ", "bold"),
+                (_compact_state_counts(issue_states), "dim"),
+            ),
+            Text.assemble(
+                (f"PRs open:    {prs_n}  ", "bold"),
+                (_compact_state_counts(pr_states), "dim"),
             ),
         ]
         return Panel(Group(*lines), title="[bold]PIPELINE[/bold]",
                      title_align="left", border_style="magenta")
 
     def _activity_panel(self) -> Panel:
-        tbl = Table(box=box.SIMPLE, expand=True, show_header=False,
-                    pad_edge=False)
-        tbl.add_column(width=8, style="dim")
-        tbl.add_column(width=10, style="bold cyan")
-        tbl.add_column(width=18)
-        tbl.add_column(width=8, style="yellow")
-        tbl.add_column()
-        for ts, actor, action, target, detail in _MOCK_ACTIVITY:
-            tbl.add_row(ts, actor, action, target, Text(detail, style="dim"))
-        return Panel(tbl, title="[bold]ACTIVITY[/bold] (últimos 10)",
+        rows = _activity_from_data(self.data, limit=10)
+        if not rows:
+            body: RenderableType = Text(
+                "· sem atividade recente registrada", style="dim"
+            )
+        else:
+            tbl = Table(box=box.SIMPLE, expand=True, show_header=False,
+                        pad_edge=False)
+            tbl.add_column(width=8, style="dim")
+            tbl.add_column(width=10, style="bold cyan")
+            tbl.add_column(width=12)
+            tbl.add_column(width=8, style="yellow")
+            tbl.add_column()
+            for r in rows:
+                tbl.add_row(r.hhmmss, r.actor, r.action, r.target,
+                            Text(r.detail, style="dim"))
+            body = tbl
+        return Panel(body, title="[bold]ACTIVITY[/bold] (últimos 10)",
                      title_align="left", border_style="green")
 
     def _alerts_panel(self) -> Panel:
-        if not _MOCK_ALERTS:
-            body: RenderableType = Text("· sem alertas críticos", style="dim")
+        alerts = _alerts_from_data(self.data)
+        if not alerts:
+            body: RenderableType = Text(
+                "· sem alertas críticos", style="dim green",
+            )
         else:
-            lines = [
-                Text.assemble((f"{icon} ", "bold yellow"), msg)
-                for icon, msg in _MOCK_ALERTS
-            ]
+            lines = []
+            for a in alerts[:6]:
+                style = "bold red" if a.severity == "crit" else "bold yellow"
+                lines.append(Text.assemble((f"{a.icon} ", style), a.msg))
+            if len(alerts) > 6:
+                lines.append(Text(f"… (+{len(alerts) - 6} mais)", style="dim"))
             body = Group(*lines)
+        border = ("red" if any(a.severity == "crit" for a in alerts)
+                  else "yellow" if alerts else "green")
         return Panel(body, title="[bold]ALERTS[/bold]",
-                     title_align="left", border_style="yellow")
+                     title_align="left", border_style=border)
 
     def _tokens_panel(self) -> Panel:
-        bits: List[Text] = []
-        for prov, cost in _MOCK_TOKENS["providers"]:
-            bits.append(Text.assemble(
-                (f"{prov} ", "dim"),
-                (f"${cost:.2f}", "bold green"),
-            ))
-        line = Text("   ").join(bits)
-        total = Text.assemble(
+        if self.data is None:
+            providers = list(demo.TOKENS["providers"])
+            total = float(demo.TOKENS["total_24h"])
+            extra = f"records: {demo.TOKENS['records_24h']}  "  \
+                    f"·  1h: ${demo.TOKENS['total_1h']:.2f}"
+        else:
+            c = self.data.costs.get()
+            providers = sorted(c.by_provider_24h.items(),
+                               key=lambda kv: -kv[1])
+            total = c.total_24h
+            extra = (f"records: {c.records_24h}  ·  "
+                     f"1h: ${c.total_1h:.2f}")
+        if providers:
+            bits: List[Text] = []
+            for prov, cost in providers:
+                bits.append(Text.assemble(
+                    (f"{prov} ", "dim"),
+                    (f"${cost:.2f}", "bold green"),
+                ))
+            line = Text("   ").join(bits)
+        else:
+            line = Text("· sem registros de uso", style="dim")
+        total_line = Text.assemble(
             ("total 24h: ", "dim"),
-            (f"${_MOCK_TOKENS['total']:.2f}", "bold green"),
+            (f"${total:.2f}", "bold green"),
+            ("   ", ""),
+            (extra, "dim"),
         )
-        return Panel(Group(line, total), title="[bold]TOKENS (24h)[/bold]",
+        return Panel(Group(line, total_line),
+                     title="[bold]TOKENS & CUSTOS[/bold]",
                      title_align="left", border_style="green")
 
     def _decisions_panel(self) -> Panel:
-        lines = [
-            Text.assemble(
-                (f"{ref}  ", "bold cyan"),
-                (desc, "dim"),
-            )
-            for ref, desc in _MOCK_PIPELINE["last_decisions"]
-        ]
-        return Panel(Group(*lines),
-                     title="[bold]ÚLTIMAS DECISÕES[/bold]",
+        if self.data is None:
+            items = list(demo.DECISIONS)
+        else:
+            ps = self.data.pipeline.get()
+            items = [(ev.target or "—", ev.detail)
+                     for ev in reversed(ps.events[-5:])
+                     if ev.action in {"mention", "stages", "dispatch"}][:3]
+        if not items:
+            body: RenderableType = Text("· sem decisões recentes", style="dim")
+        else:
+            lines = [
+                Text.assemble((f"{ref}  ", "bold cyan"), (desc[:50], "dim"))
+                for ref, desc in items
+            ]
+            body = Group(*lines)
+        return Panel(body, title="[bold]ÚLTIMAS DECISÕES[/bold]",
                      title_align="left", border_style="blue")
 
     # --- key ---
@@ -427,6 +591,22 @@ class DashboardView(View):
         if key == "?":
             return ActionResult.nav("help")
         return ActionResult()
+
+
+def _compact_state_counts(counts: Dict[str, int]) -> str:
+    """Formata `{nova:2, em_impl:3}` em string compacta `nova:2  impl:3`."""
+    if not counts:
+        return "—"
+    # Aliases pra encurtar nomes longos no header.
+    short = {"em_refinamento": "refine", "em_arquitetura": "arq",
+             "em_implementacao": "impl", "em_pr": "pr",
+             "aguardando_stakeholder": "aguard"}
+    bits = []
+    for k, v in counts.items():
+        if v == 0:
+            continue
+        bits.append(f"{short.get(k, k)}:{v}")
+    return "  ".join(bits) if bits else "—"
 
 
 class StubView(View):
@@ -512,12 +692,14 @@ class PanelApp:
     a cadência efetiva.
     """
 
-    def __init__(self, views: Dict[str, View], root: str = "dashboard"):
+    def __init__(self, views: Dict[str, View], root: str = "dashboard",
+                 data: Optional[PanelData] = None):
         self.views = views
         self.stack: List[View] = [views[root]]
         self.running = True
         self.console = Console()
         self.settings = _Settings()
+        self.data = data
         self._last_render = 0.0
 
     # --- propriedades de conveniência expostas às views ---
@@ -597,6 +779,8 @@ class PanelApp:
             return True
         if key == "r":
             self._last_render = 0.0       # força próximo tick a renderizar
+            if self.data is not None:
+                self.data.force_refresh_all()
             return True
         if key == "s":
             path = self._snapshot()
@@ -657,10 +841,10 @@ class PanelApp:
 
 # ===== entry point ==========================================================
 
-def _build_views() -> Dict[str, View]:
+def _build_views(data: Optional[PanelData] = None) -> Dict[str, View]:
     """Registry das views. Próximas fases trocam os stubs por views reais."""
     return {
-        "dashboard": DashboardView(),
+        "dashboard": DashboardView(data=data),
         "help": HelpView(),
         "pod-watch": StubView(
             "pod-watch", "Pod Watch", "Fase 4",
@@ -700,8 +884,20 @@ def _build_views() -> Dict[str, View]:
 
 
 def run_panel() -> int:
-    """Entry point chamado pelo `deploy.py panel`."""
-    app = PanelApp(_build_views())
+    """Entry point chamado pelo `deploy.py panel`.
+
+    Tenta levantar os providers reais (kubectl/gh/SQLite). Se `kubectl`
+    não existe, cai em modo demo (mocks) com aviso — UI ainda abre.
+    """
+    try:
+        data: Optional[PanelData] = PanelData.default()
+        # Toque inicial pra detectar fonte morta cedo (sem custo perceptível —
+        # o provider mais pesado é o gh, mas cai em fallback se falhar).
+        data.pods.get()
+    except Exception:
+        data = None
+
+    app = PanelApp(_build_views(data), data=data)
     try:
         return app.run()
     except KeyboardInterrupt:
