@@ -1,5 +1,6 @@
 """Standup Command — narrativa do dia (commits + PRs + issues)."""
 
+import asyncio
 import json
 import re
 import subprocess
@@ -208,7 +209,8 @@ class StandupCommand(DirectCommand):
         self._emit_audit_event(context)
         
         since_spec = parse_args(context.args)
-        data = collect_standup_data(since_spec)
+        # I/O síncrono (subprocess git/gh) — proteger o event loop
+        data = await asyncio.to_thread(collect_standup_data, since_spec)
         prompt = build_prompt(data)
         
         narrative = await generate_narrative(prompt)
