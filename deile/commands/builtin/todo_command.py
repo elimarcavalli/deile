@@ -162,7 +162,7 @@ class TodoCommand(DirectCommand):
             if result.returncode != 0:
                 raise CommandError(f"git ls-files falhou: {result.stderr.strip()}")
             lines = result.stdout.strip().split("\n")
-            return [l for l in lines if l]
+            return [line for line in lines if line]
         except subprocess.TimeoutExpired as exc:
             raise CommandError(f"git ls-files timeout: {exc}") from exc
         except FileNotFoundError as exc:
