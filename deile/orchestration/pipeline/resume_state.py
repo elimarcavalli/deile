@@ -42,6 +42,18 @@ class IssueResumeState:
     #: ``attempt`` this has no durable PVC source — it is reset on monitor restart
     #: (a safety ceiling, not a hard guarantee). Bounded by ``refine_max_attempts``.
     refine_attempt: int = 0
+    #: Last error signature (e.g. "TIMEOUT", "INCOMPLETO_SEM_PR", "WORKER_UNREACHABLE").
+    #: Used to detect 2 consecutive identical failures = same root cause →
+    #: pipeline can escalate (block earlier) instead of burning ``resume_max_attempts``
+    #: dispatches all hitting the same wall.
+    last_error_kind: str = ""
+    #: Count of consecutive failures with ``last_error_kind`` (cleared on success).
+    same_error_streak: int = 0
+    #: Dedicated counter for "agent finished but no PR" failures — this class of
+    #: failure tends to be irrecoverable (LLM gave up on the task structure), so
+    #: a tighter ceiling (``incomplete_no_pr_max``) makes sense than the generic
+    #: ``resume_max_attempts`` used for transient timeouts.
+    incomplete_no_pr_count: int = 0
 
 
 @dataclass
@@ -120,13 +132,51 @@ class ResumeTracker:
 
         ``interval_s <= 0`` means "immediate" — always allowed. A first attempt
         (no recorded dispatch) is always allowed.
+
+        **Backoff exponencial** (a partir da 2ª tentativa): a janela efetiva é
+        ``interval_s * 2**min(attempt-1, 4)`` — issue saudável retoma na
+        cadência configurada; issue problemática espera 2×, 4×, 8×, 16×
+        antes de cada retry (teto em 16×). Limita queima de tokens em loops
+        difíceis sem precisar bloquear cedo demais.
         """
         if interval_s <= 0:
             return True
         state = self.peek(number)
         if state is None or state.last_dispatch_monotonic <= 0.0:
             return True
-        return (now_monotonic - state.last_dispatch_monotonic) >= interval_s
+        attempt = state.attempt or 0
+        backoff_factor = 2 ** min(max(attempt - 1, 0), 4)
+        effective_interval = interval_s * backoff_factor
+        return (now_monotonic - state.last_dispatch_monotonic) >= effective_interval
+
+    def record_failure(self, number: int, error_kind: str) -> int:
+        """Record an outcome failure and return the consecutive-same-error streak.
+
+        ``error_kind`` is a short signature (e.g. ``"TIMEOUT"``,
+        ``"INCOMPLETO_SEM_PR"``, ``"WORKER_UNREACHABLE"``). Two consecutive
+        failures with the same kind signal a non-transient cause — the caller
+        can escalate to ``_block_issue`` instead of burning the full ceiling.
+        """
+        state = self.get(number)
+        if error_kind and error_kind == state.last_error_kind:
+            state.same_error_streak += 1
+        else:
+            state.last_error_kind = error_kind
+            state.same_error_streak = 1
+        return state.same_error_streak
+
+    def clear_failure(self, number: int) -> None:
+        """Reset the failure streak (call on success)."""
+        state = self.peek(number)
+        if state is not None:
+            state.last_error_kind = ""
+            state.same_error_streak = 0
+
+    def bump_incomplete_no_pr(self, number: int) -> int:
+        """Increment and return the dedicated 'incomplete no PR' counter."""
+        state = self.get(number)
+        state.incomplete_no_pr_count += 1
+        return state.incomplete_no_pr_count
 
     def is_zero_progress(self, number: int, new_fingerprint: str) -> bool:
         """True if *new_fingerprint* equals the last one tracked (progress guard).

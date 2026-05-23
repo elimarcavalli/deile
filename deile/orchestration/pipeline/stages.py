@@ -863,17 +863,25 @@ async def _block_refinement(monitor: "PipelineMonitor", issue, reason: str) -> N
     number = issue.number
     issue_type = issue_type_from_labels(issue.labels)
     refine_state = refine_workflow_state(issue_type)
-    if refine_state not in issue.labels:
-        cur = next(
-            (s for s in (WORKFLOW_REVIEWING, WORKFLOW_NEW, *REFINE_WORKFLOW_STATES)
-             if s in issue.labels and s != refine_state),
-            None,
-        )
+    # First, scrub every stage/refine-state label that ISN'T the resting one.
+    # Pre-fix the issue could end up wearing 4+ workflow labels at once
+    # (~workflow:em_revisao + em_arquitetura + refinar + bloqueada), which left
+    # humans confused about the actual state — observed on #281 on 2026-05-23.
+    stale = [
+        s for s in (WORKFLOW_REVIEWING, WORKFLOW_NEW, WORKFLOW_IMPLEMENTING,
+                    *REFINE_WORKFLOW_STATES)
+        if s in issue.labels and s != refine_state
+    ]
+    if stale:
         try:
-            if cur:
-                await monitor.github.transition_issue(number, from_label=cur, to_label=refine_state)
-            else:
-                await monitor.github.add_labels("issue", number, [refine_state])
+            await monitor.github.remove_labels("issue", number, stale)
+        except GhCommandError as exc:
+            await _record_gh_error(
+                monitor, f"could not strip stale labels {stale} from #{number}", exc,
+            )
+    if refine_state not in issue.labels:
+        try:
+            await monitor.github.add_labels("issue", number, [refine_state])
         except GhCommandError as exc:
             await _record_gh_error(monitor, f"could not rest #{number} in {refine_state}", exc)
     await monitor.github.add_labels("issue", number, [REFINAR])
@@ -923,6 +931,16 @@ async def decompose_one_reviewed_intent(monitor: "PipelineMonitor") -> None:
     if not outcome.ok and not derived:
         logger.warning("decompose #%d failed: %s", target.number, (outcome.error or "")[:200])
         return  # stays revisada — retry next tick
+    # Diagnostic (#2): the parser returned [] but the architect may still have
+    # created issues via gh in its run. Log the tail of the outcome so we can
+    # see what format escaped the regex+fallback, and fall back to scraping the
+    # GitHub state directly (architect references them with #N in the comment).
+    if outcome.ok and not derived:
+        tail = (outcome.text or "")[-600:].replace("\n", " | ")
+        logger.warning(
+            "decompose #%d: ok but parser returned [] — outcome tail: %s",
+            target.number, tail,
+        )
     # Mark decomposed when derived issues were created (even if the ok flag is
     # noisy) so we never re-decompose and duplicate the derived issues.
     try:
@@ -1163,6 +1181,22 @@ async def _finalize_implement_outcome(
         monitor._stats.errors += 1
         monitor._stats.claude_errors += 1
         err_detail = (outcome.error or "implementation failed")[:PIPELINE_MSG_TRUNCATE_CHARS]
+        # Adaptive escalation (#6): two consecutive failures of the same kind
+        # (TIMEOUT, WORKER_UNREACHABLE, etc.) usually point at a non-transient
+        # cause — escalate to block instead of burning the full resume ceiling.
+        err_kind = _classify_outcome_error(outcome.error or "")
+        streak = monitor._resume_tracker.record_failure(number, err_kind)
+        if streak >= 2 and err_kind in _ESCALATE_ON_REPEAT:
+            logger.warning(
+                "implement #%d: 2x %s consecutive — escalating to block",
+                number, err_kind,
+            )
+            await _block_issue(
+                monitor, number,
+                f"falha repetida ({err_kind}) em duas tentativas seguidas — "
+                f"causa provavelmente não-transitória; humano deve intervir.",
+            )
+            return
         logger.error(
             "implement #%d failed: %s — parked in %s",
             number, err_detail, WORKFLOW_IMPLEMENTING,
@@ -1195,13 +1229,58 @@ async def _finalize_implement_outcome(
         return
     monitor._stats.errors += 1
     monitor._stats.claude_errors += 1
+    # Dedicated ceiling for "agent finished but no PR" (#10) — this class of
+    # failure tends to be irrecoverable (the LLM gave up on the task structure
+    # or fundamentally misunderstood the brief), so a tighter cap than
+    # ``resume_max_attempts`` makes sense. #283 hit 50+ of these before the
+    # operator blocked it manually.
+    incomplete_count = monitor._resume_tracker.bump_incomplete_no_pr(number)
+    ceiling = getattr(monitor.config, "incomplete_no_pr_max", 3)
+    if incomplete_count >= ceiling:
+        logger.warning(
+            "implement #%d: %d-th 'incompleto sem PR' — escalating to block",
+            number, incomplete_count,
+        )
+        await _block_issue(
+            monitor, number,
+            f"agente finalizou sem abrir PR {incomplete_count}x consecutivas "
+            f"(teto {ceiling}) — provável incapacidade de cumprir o escopo; "
+            f"humano deve revisar a issue.",
+        )
+        return
     logger.warning(
-        "implement #%d: incompleto (sem PR) — parked in %s%s",
-        number, WORKFLOW_IMPLEMENTING, " (será retomada)" if resume else "",
+        "implement #%d: incompleto (sem PR) %d/%d — parked in %s%s",
+        number, incomplete_count, ceiling, WORKFLOW_IMPLEMENTING,
+        " (será retomada)" if resume else "",
     )
     await _park_or_keep(
         monitor, number, "o agente finalizou sem abrir PR", resume=resume
     )
+
+
+# --- Adaptive resume escalation (#6) -----------------------------------------
+# When the same kind of failure repeats N times in a row on the same issue, the
+# cause is almost certainly NOT transient. Burning the full resume ceiling
+# (10 dispatches × ~10min each) hitting the same wall wastes ~$5-10. Two
+# consecutive identical failures suffice to escalate to block.
+
+#: Error kinds whose 2x-in-a-row recurrence triggers immediate block. Excluded:
+#: WORKER_UNREACHABLE (transient — pod restart, network blip) and unknown.
+_ESCALATE_ON_REPEAT = frozenset({"TIMEOUT", "BAD_REQUEST"})
+
+
+def _classify_outcome_error(error: str) -> str:
+    """Return a short signature for an outcome error message (or '' if empty)."""
+    if not error:
+        return ""
+    e = error.upper()
+    if "TIMEOUT" in e:
+        return "TIMEOUT"
+    if "WORKER_UNREACHABLE" in e or "CONNECTERROR" in e or "REMOTEPROTOCOL" in e:
+        return "WORKER_UNREACHABLE"
+    if "BAD_REQUEST" in e or "VALIDATION" in e:
+        return "BAD_REQUEST"
+    return "OTHER"
 
 
 async def _park_or_keep(

@@ -25,6 +25,32 @@ Está **VAGO** quando: não há passos de reprodução; não dá para dizer onde
 5. **Critério**: descreva o teste de regressão que captura o bug.
 
 **Ao CRITICAR**: julgue contra o critério acima. Veredito honesto `CLARO` (pronto para implementar o fix) / `VAGO` (falta repro, localização ou causa) + o motivo concreto.
+
+**FORMATO OBRIGATÓRIO DO VEREDITO (regra dura — o parser do pipeline depende dele):**
+
+Termine sua resposta SEMPRE com uma destas linhas, exatamente neste formato, **sem decoração markdown extra** (sem `**bold**`, sem `### header`, sem `>` blockquote):
+
+```
+VEREDITO: CLARO
+```
+
+ou
+
+```
+VEREDITO: VAGO: <o que falta, em uma frase concreta>
+```
+
+Exemplos válidos (note: sempre a ÚLTIMA LINHA, sem nada depois):
+- `VEREDITO: CLARO`
+- `VEREDITO: VAGO: não há passos de reprodução nem localização no código`
+- `VEREDITO: VAGO: o stacktrace mistura três erros distintos sem isolar qual investigar`
+
+Exemplos INVÁLIDOS (o parser falha e a issue entra em loop até bloquear):
+- `**VEREDITO:** CLARO` (com `**`)
+- `### VEREDITO: VAGO` (com header)
+- `Em conclusão, este bug está claro.` (sem o token literal `VEREDITO:`)
+- `VEREDITO: AMBÍGUO` ou `VEREDITO: INCONCLUSIVO` (só CLARO ou VAGO são reconhecidos)
+
 **Ao REFINAR**: reescreva o corpo conforme o template `bug_report.md`, preenchendo reprodução, esperado/atual, localização (`arquivo:linha`), hipótese de causa-raiz e o teste de regressão — tudo fundamentado no código que você leu.
 
 ## Honestidade (regra dura do projeto)

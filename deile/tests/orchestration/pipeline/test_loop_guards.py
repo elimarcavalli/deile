@@ -115,6 +115,39 @@ class TestVerdictParserToleratesMarkdown:
         )
         assert parse_decompose_result(text) == [401, 402, 403]
 
+
+class TestClassifyOutcomeError:
+    """Fix #6: o classificador agrupa erros do worker em categorias estáveis
+    (TIMEOUT, WORKER_UNREACHABLE, BAD_REQUEST, OTHER). Duas falhas
+    consecutivas do mesmo tipo escalam pro block."""
+
+    def test_classify_known_kinds(self):
+        from deile.orchestration.pipeline.stages import _classify_outcome_error
+        assert _classify_outcome_error("") == ""
+        assert _classify_outcome_error("erro: timeout após 600.0s") == "TIMEOUT"
+        assert _classify_outcome_error("Timeout while dispatching") == "TIMEOUT"
+        assert _classify_outcome_error(
+            "WORKER_UNREACHABLE: worker unreachable: ConnectError"
+        ) == "WORKER_UNREACHABLE"
+        assert _classify_outcome_error(
+            "RemoteProtocolError: Server disconnected"
+        ) == "WORKER_UNREACHABLE"
+        assert _classify_outcome_error(
+            "BAD_REQUEST: brief too long"
+        ) == "BAD_REQUEST"
+        assert _classify_outcome_error("validation error") == "BAD_REQUEST"
+        assert _classify_outcome_error("nothing interesting") == "OTHER"
+
+    def test_only_timeout_and_bad_request_escalate(self):
+        # Workers blip transitorio (UNREACHABLE) NÃO deve escalar — restart de
+        # pod no rolling update produz isso normalmente. Só erros que indicam
+        # impossibilidade estrutural (TIMEOUT recorrente, BAD_REQUEST) escalam.
+        from deile.orchestration.pipeline.stages import _ESCALATE_ON_REPEAT
+        assert "TIMEOUT" in _ESCALATE_ON_REPEAT
+        assert "BAD_REQUEST" in _ESCALATE_ON_REPEAT
+        assert "WORKER_UNREACHABLE" not in _ESCALATE_ON_REPEAT
+        assert "OTHER" not in _ESCALATE_ON_REPEAT
+
     @pytest.mark.parametrize("text,expected", [
         ("REFINO: OK", "ok"),
         ("**REFINO: OK**", "ok"),
