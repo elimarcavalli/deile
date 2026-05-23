@@ -23,6 +23,7 @@ import sys
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
@@ -39,6 +40,7 @@ from _panel_data import PanelData, _fmt_age, kubectl_bin  # noqa: F401
 import _panel_demo as demo
 import collections
 import re
+import shutil
 import subprocess
 import threading
 
@@ -880,6 +882,282 @@ class PodWatchView(View):
         return ActionResult()
 
 
+class PipelineTimelineView(View):
+    """Timeline de eventos do pipeline + stats + histograma 24h."""
+
+    name = "pipeline-timeline"
+    title = "Pipeline Timeline"
+    refresh_s = 5.0
+
+    HOTKEYS = "[esc] volta   [r] força refresh   [q] sai"
+
+    HIST_BUCKETS = 24      # 24 buckets de 1h cada
+    _SPARK = " ▁▂▃▄▅▆▇█"
+
+    def __init__(self, data: Optional[PanelData] = None):
+        self.data = data
+
+    def _events(self):
+        if self.data is None:
+            return []
+        return self.data.pipeline.get().events
+
+    def _stats(self) -> Dict[str, Any]:
+        evs = self._events()
+        if not evs:
+            return {"count": 0, "p95": None, "max": None, "avg": None,
+                    "ticks_h": 0, "failures_h": 0,
+                    "running_for": None, "last_age": None}
+        # "Gap" entre eventos consecutivos como proxy de inatividade do pipeline.
+        gaps: List[float] = []
+        for i in range(1, len(evs)):
+            delta = (evs[i].ts - evs[i - 1].ts).total_seconds()
+            if delta >= 0:
+                gaps.append(delta)
+        ps = self.data.pipeline.get() if self.data else None
+        return {
+            "count": len(evs),
+            "p95": _percentile(gaps, 0.95) if gaps else None,
+            "max": max(gaps) if gaps else None,
+            "avg": sum(gaps) / len(gaps) if gaps else None,
+            "ticks_h": sum(1 for e in evs
+                           if (datetime.now(timezone.utc) - e.ts).total_seconds() < 3600),
+            "failures_h": sum(1 for e in evs
+                              if e.action == "http"
+                              and "→ 5" in (e.detail or "")),
+            "running_for": ps.running_for_s if ps else None,
+            "last_age": ps.last_action_age_s if ps else None,
+        }
+
+    def _histogram(self) -> str:
+        """24 colunas (1 por hora) — densidade de events em cada hora."""
+        now = datetime.now(timezone.utc)
+        buckets = [0] * self.HIST_BUCKETS
+        for e in self._events():
+            age_h = (now - e.ts).total_seconds() / 3600
+            if 0 <= age_h < self.HIST_BUCKETS:
+                buckets[self.HIST_BUCKETS - 1 - int(age_h)] += 1
+        if not any(buckets):
+            return " " * self.HIST_BUCKETS
+        peak = max(buckets)
+        return "".join(self._SPARK[min(len(self._SPARK) - 1,
+                                       int(v / peak * (len(self._SPARK) - 1)))]
+                       for v in buckets)
+
+    def render(self, app: "PanelApp") -> RenderableType:
+        events = list(reversed(self._events()))  # mais recentes em cima
+        stats = self._stats()
+        # Tabela de eventos
+        if events:
+            tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
+            tbl.add_column("time", width=8, style="dim")
+            tbl.add_column("action", width=10, style="bold cyan")
+            tbl.add_column("target", width=8, style="yellow")
+            tbl.add_column("detail")
+            for e in events[:30]:
+                tbl.add_row(e.hhmmss, e.action, e.target,
+                            Text(e.detail[:80], style="dim"))
+            events_body: RenderableType = tbl
+        else:
+            events_body = Text(
+                "(sem eventos — pipeline não logou nada nas últimas 200 linhas, "
+                "ou está em modo demo)", style="dim")
+        # Stats panel
+        stats_lines = [
+            Text.assemble(("events:    ", "dim"),
+                          (str(stats["count"]), "bold")),
+            Text.assemble(("ticks/1h:  ", "dim"),
+                          (str(stats["ticks_h"]), "bold")),
+            Text.assemble(("running:   ", "dim"),
+                          (_fmt_age(stats["running_for"]) if stats["running_for"]
+                           else "—", "bold")),
+            Text.assemble(("last age:  ", "dim"),
+                          (_fmt_age(stats["last_age"]) if stats["last_age"]
+                           else "—", "bold")),
+            Text.assemble(("gap p95:   ", "dim"),
+                          (_fmt_age(stats["p95"]) if stats["p95"]
+                           else "—", "bold")),
+            Text.assemble(("gap max:   ", "dim"),
+                          (_fmt_age(stats["max"]) if stats["max"]
+                           else "—", "bold")),
+            Text.assemble(("failures:  ", "dim"),
+                          (str(stats["failures_h"]),
+                           "bold red" if stats["failures_h"] else "bold green")),
+        ]
+        hist = self._histogram()
+        hist_panel = Group(
+            Text("events 24h (1 col = 1h, mais recente à direita):", style="dim"),
+            Text(hist, style="bold cyan"),
+            Text(("├" + "─" * (self.HIST_BUCKETS - 2) + "┤"), style="dim"),
+            Text(f"{'-24h':<{self.HIST_BUCKETS - 4}}now", style="dim"),
+        )
+        layout = Layout()
+        layout.split_column(
+            Layout(_head_panel(self.title, app), name="head", size=4),
+            Layout(name="middle", size=10),
+            Layout(Panel(events_body,
+                         title="[bold]EVENTS (mais recentes em cima)[/bold]",
+                         title_align="left", border_style="green"),
+                   name="events"),
+            Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
+        )
+        layout["middle"].split_row(
+            Layout(Panel(Group(*stats_lines),
+                         title="[bold]STATS[/bold]", title_align="left",
+                         border_style="magenta")),
+            Layout(Panel(hist_panel,
+                         title="[bold]HISTOGRAMA 24h[/bold]",
+                         title_align="left", border_style="blue")),
+        )
+        return layout
+
+
+def _percentile(values: List[float], p: float) -> Optional[float]:
+    """Percentil simples (interpolação linear); None se vazio."""
+    if not values:
+        return None
+    s = sorted(values)
+    k = (len(s) - 1) * p
+    f, c = int(k), min(int(k) + 1, len(s) - 1)
+    return s[f] + (s[c] - s[f]) * (k - f)
+
+
+class IssuesPRsView(View):
+    """Tabela de issues e PRs com labels cruzadas + filtros."""
+
+    name = "issues-prs"
+    title = "Issues & PRs"
+    refresh_s = 10.0
+
+    HOTKEYS = ("[a] all   [i] só issues   [p] só PRs   [b] só bloqueadas   "
+               "[m] minhas   [↑/↓] navega   [enter] abrir URL   [esc] volta")
+
+    def __init__(self, data: Optional[PanelData] = None):
+        self.data = data
+        self.filter: str = "all"
+        self.cursor: int = 0
+        self.my_login: str = os.environ.get("GH_USER", "elimarcavalli")
+
+    def _rows(self):
+        if self.data is None:
+            return [], []
+        snap = self.data.github.get()
+        issues, prs = snap.issues, snap.prs
+        if self.filter == "i":
+            prs = []
+        elif self.filter == "p":
+            issues = []
+        elif self.filter == "b":
+            issues = [it for it in issues if it.blocked]
+            prs = [pr for pr in prs if pr.blocked]
+        elif self.filter == "m":
+            issues = [it for it in issues if self.my_login in it.assignees]
+            prs = [pr for pr in prs if self.my_login in pr.assignees]
+        return issues, prs
+
+    def _flat(self):
+        issues, prs = self._rows()
+        return list(issues) + list(prs)
+
+    def _build_table(self, items, label: str) -> Panel:
+        if not items:
+            return Panel(Text(f"· nada em {label}", style="dim"),
+                         title=f"[bold]{label.upper()}[/bold]",
+                         title_align="left", border_style="dim")
+        tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
+        tbl.add_column(" ", width=2)
+        tbl.add_column("#", width=6)
+        tbl.add_column("workflow", width=22)
+        tbl.add_column("review", width=14)
+        tbl.add_column("updated", width=10)
+        tbl.add_column("assignees", width=18)
+        tbl.add_column("title")
+        now = datetime.now(timezone.utc)
+        flat = self._flat()
+        for it in items:
+            global_idx = flat.index(it)
+            marker = "▶" if global_idx == self.cursor else " "
+            wf_style = "bold red" if it.blocked else "cyan"
+            age_s = ((now - it.updated_at).total_seconds()
+                     if it.updated_at else None)
+            tbl.add_row(
+                Text(marker, style="bold cyan"),
+                str(it.number),
+                Text(it.workflow or "—", style=wf_style),
+                Text(it.review or "—", style="magenta" if it.review else "dim"),
+                _fmt_age(age_s),
+                ", ".join(it.assignees) or "—",
+                Text(it.title[:60], style="dim"),
+            )
+        return Panel(tbl, title=f"[bold]{label.upper()}[/bold]",
+                     title_align="left", border_style="cyan")
+
+    def render(self, app: "PanelApp") -> RenderableType:
+        issues, prs = self._rows()
+        flat = list(issues) + list(prs)
+        if flat:
+            self.cursor = max(0, min(self.cursor, len(flat) - 1))
+        filter_label = {
+            "all": "todos", "i": "só issues", "p": "só PRs",
+            "b": "só bloqueadas", "m": f"minhas (@{self.my_login})",
+        }[self.filter]
+        filter_panel = Panel(
+            Text.assemble(
+                ("filtro: ", "dim"), (filter_label, "bold yellow"),
+                ("    issues: ", "dim"), (str(len(issues)), "bold"),
+                ("    PRs: ", "dim"), (str(len(prs)), "bold"),
+            ),
+            border_style="dim",
+        )
+        layout = Layout()
+        layout.split_column(
+            Layout(_head_panel(self.title, app), name="head", size=4),
+            Layout(filter_panel, name="filter", size=3),
+            Layout(self._build_table(issues, "Issues"), name="issues"),
+            Layout(self._build_table(prs, "PRs"), name="prs"),
+            Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
+        )
+        return layout
+
+    def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
+        flat = self._flat()
+        if key in ("a", "i", "p", "b", "m"):
+            self.filter = key
+            self.cursor = 0
+            return ActionResult.refresh()
+        n = len(flat)
+        if n == 0:
+            return ActionResult()
+        if key in ("UP", "k"):
+            self.cursor = (self.cursor - 1) % n
+            return ActionResult.refresh()
+        if key in ("DOWN", "j"):
+            self.cursor = (self.cursor + 1) % n
+            return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            url = flat[self.cursor].url
+            _copy_to_clipboard(url)
+            # Não temos toast ainda — devolve refresh para a próxima render
+            # surgir com indicador. (Fase 6: ActionsOverlay com toast queue.)
+            return ActionResult.refresh()
+        return ActionResult()
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    """Tenta colar `text` no clipboard via pbcopy/xclip/wl-copy.
+
+    Sem erro se nenhum bin disponível — é só um nice-to-have.
+    """
+    for cmd in (["pbcopy"], ["xclip", "-selection", "clipboard"], ["wl-copy"]):
+        if shutil.which(cmd[0]):
+            try:
+                subprocess.run(cmd, input=text, text=True, check=True, timeout=2)
+                return True
+            except (OSError, subprocess.SubprocessError):
+                continue
+    return False
+
+
 class StubView(View):
     """Sub-view placeholder enquanto a Fase correspondente não foi feita."""
 
@@ -1121,16 +1399,8 @@ def _build_views(data: Optional[PanelData] = None) -> Dict[str, View]:
         "help": HelpView(),
         "pod-picker": PodPickerView(data=data),
         "pod-watch": PodWatchView(data=data),
-        "pipeline-timeline": StubView(
-            "pipeline-timeline", "Pipeline Timeline", "Fase 5",
-            "Últimos N ticks com duração + actions. "
-            "Stats (P95/P99) e histograma 24h.",
-        ),
-        "issues-prs": StubView(
-            "issues-prs", "Issues & PRs", "Fase 5",
-            "Tabela cruzada cluster ↔ GitHub: estado, tempo no estado, "
-            "assignee, próxima ação esperada.",
-        ),
+        "pipeline-timeline": PipelineTimelineView(data=data),
+        "issues-prs": IssuesPRsView(data=data),
         "logs-split": StubView(
             "logs-split", "Logs Split", "Fase 4",
             "Pipeline + Worker-1 + Worker-2 lado a lado, follow real.",
