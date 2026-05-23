@@ -96,7 +96,14 @@ else:
     class KeyReader:
         """Lê uma tecla em cbreak mode, sem ecoar e sem bloquear.
 
-        Decodifica ESC sozinho (vs prefix de seta) com timeout de 50ms — o
+        Usa ``os.read`` no FD bruto em vez de ``sys.stdin.read`` para
+        bypassar o BufferedReader interno do TextIOWrapper — sem isso, o
+        ``\\x1b`` da seta era puxado para o buffer e o ``select.select``
+        seguinte (testando só o FD raw) retornava vazio, fazendo o reader
+        confundir uma seta CSI com ESC sozinho. Resultado prático antes do
+        fix: setas ↑/↓ não funcionavam.
+
+        Decodifica ESC sozinho (vs prefix CSI) com timeout de 50ms — o
         suficiente para distinguir num terminal local sem deixar o usuário
         sentir lag.
         """
@@ -120,24 +127,28 @@ else:
         def read(self, timeout: float = 0.0) -> Optional[str]:
             if self._fd is None:
                 return None
-            if not select.select([sys.stdin], [], [], timeout)[0]:
+            if not select.select([self._fd], [], [], timeout)[0]:
                 return None
-            ch = sys.stdin.read(1)
-            if ch != "\x1b":
-                return ch
+            b = os.read(self._fd, 1)
+            if not b:
+                return None
+            if b != b"\x1b":
+                return b.decode("utf-8", errors="ignore") or None
             # ESC sozinho ou prefix CSI?
-            if not select.select([sys.stdin], [], [], 0.05)[0]:
+            if not select.select([self._fd], [], [], 0.05)[0]:
                 return "ESC"
-            seq = sys.stdin.read(1)
-            if seq != "[":
+            seq = os.read(self._fd, 1)
+            if seq != b"[":
                 return "ESC"
-            buf: List[str] = []
-            while select.select([sys.stdin], [], [], 0.05)[0]:
-                c = sys.stdin.read(1)
-                buf.append(c)
-                if c.isalpha() or c == "~":
+            buf: List[bytes] = []
+            while select.select([self._fd], [], [], 0.05)[0]:
+                c = os.read(self._fd, 1)
+                if not c:
                     break
-            code = "".join(buf)
+                buf.append(c)
+                if c.isalpha() or c == b"~":
+                    break
+            code = b"".join(buf).decode("utf-8", errors="ignore")
             return _ARROW.get(code, f"CSI:{code}")
 
 
@@ -1796,14 +1807,16 @@ class HelpView(View):
         tbl.add_column("tecla", style="bold cyan", width=18)
         tbl.add_column("ação")
         rows = [
-            ("1-5, a, m",   "drill em sub-view (no dashboard)"),
-            ("esc",         "volta à view anterior (ou ao dashboard)"),
-            ("q",           "sai do painel"),
-            ("p",           "pause / resume refresh automático"),
-            ("+ / -",       "acelera / desacelera o refresh (×0.5 a ×4)"),
-            ("r",           "força um refresh imediato"),
-            ("s",           "snapshot: salva a tela atual em .deile/snapshots/"),
-            ("?",           "esta tela"),
+            ("1-5, a, m, n",  "drill em sub-view (no dashboard)"),
+            ("↑/↓ ou j/k",    "navega em listas (picker, issues/PRs, modelos)"),
+            ("enter",         "seleciona o item destacado"),
+            ("esc",           "volta à view anterior (ou ao dashboard)"),
+            ("q",             "sai do painel"),
+            ("p",             "pause / resume refresh automático"),
+            ("+ / -",         "acelera / desacelera o refresh (×0.25 a ×4)"),
+            ("r",             "força refresh imediato (invalida caches)"),
+            ("s",             "snapshot: salva a tela atual em ~/.deile/snapshots/"),
+            ("?",             "esta tela"),
         ]
         for k, v in rows:
             tbl.add_row(k, v)
@@ -1951,26 +1964,35 @@ class PanelApp:
             self.current_view.render(self),
             console=self.console,
             screen=True,
-            refresh_per_second=10,
+            refresh_per_second=30,
             transient=False,
         ) as live:
             self._last_render = time.monotonic()
             while self.running:
-                key = keys.read(timeout=0.1)
+                # `timeout=0.05` mantém o loop responsivo (até 50ms para
+                # detectar tecla nova) sem ficar acordando inutilmente.
+                key = keys.read(timeout=0.05)
+                consumed = False
                 if key:
-                    if not self._handle_global(key):
+                    if self._handle_global(key):
+                        consumed = True
+                    else:
                         result = self.current_view.handle_key(key, self)
                         self._apply(result)
+                        # NOOP = tecla ignorada pela view; não força render.
+                        if result.kind != Action.NOOP:
+                            consumed = True
                 if not self.running:
                     break
-                if (not self.paused) and (
-                    time.monotonic() - self._last_render
-                    >= self.current_refresh_s
-                ):
-                    live.update(self.current_view.render(self))
-                    self._last_render = time.monotonic()
-                elif self._last_render == 0.0:
-                    # Force-refresh pedido via [r].
+                # Render imediato quando: (a) tecla mudou o estado,
+                # (b) hotkey [r] zerou `_last_render`, ou (c) o
+                # `refresh_s` da view vigente venceu.
+                now = time.monotonic()
+                cadence_due = (
+                    not self.paused
+                    and (now - self._last_render) >= self.current_refresh_s
+                )
+                if consumed or self._last_render == 0.0 or cadence_due:
                     live.update(self.current_view.render(self))
                     self._last_render = time.monotonic()
         return 0
