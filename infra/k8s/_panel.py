@@ -1,18 +1,30 @@
 """TUI ao vivo de monitoramento da stack DEILE no Kubernetes.
 
 Painel full-screen com `rich.Live` que cruza o estado do cluster (pods,
-deployments, métricas) com o estado da fonte de verdade do pipeline
-(issues + PRs no GitHub) e do trabalho LLM (logs, progress.md, custos).
+deployments) com a fonte de verdade do pipeline (issues + PRs no
+GitHub) e do uso (UsageRepository).
 
-Esqueleto (Fase 1): layout completo do dashboard + key handler navegável
-+ stub das sub-views. Dados ainda são mock — as Fases 2+ ligam providers
-reais (kubectl, gh, sqlite de usage).
+Composição em três módulos (todos em `infra/k8s/`):
+- `_panel_data.py` — Cache TTL + providers (Pods, Pipeline, Worker,
+  GitHub, Costs). Fonte única de verdade dos números.
+- `_panel_demo.py` — mocks usados quando o cluster está fora ou o
+  kubectl não está instalado (modo demo: UI ainda abre).
+- `_panel.py` (este arquivo) — KeyReader (termios cbreak / msvcrt),
+  view contract (`View`/`ActionResult`/`PanelApp`), alerts engine,
+  adapters de rendering e o registry/loop principal.
 
 Uso:
-    python3 infra/k8s/deploy.py panel        # entra no painel
-    [1-5] drill em sub-view   [esc] back   [q] quit
-    [p] pause refresh         [+/-] velocidade   [r] force refresh
-    [s] snapshot              [?] ajuda
+    python3 infra/k8s/deploy.py k8s panel     # entra no painel
+
+Hotkeys globais (qualquer view):
+    [1-5, a, m, n]  drill em sub-view (do dashboard)
+    [esc]           volta à view anterior
+    [q]             sai do painel
+    [p]             pause / resume refresh automático
+    [+] / [-]       acelera / desacelera o refresh (×0.25 a ×4)
+    [r]             força refresh imediato (invalida caches dos providers)
+    [s]             snapshot da tela em ~/.deile/snapshots/
+    [?]             tela de ajuda
 """
 
 from __future__ import annotations
