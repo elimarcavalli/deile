@@ -35,15 +35,14 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
-import sys
 import time
 from collections import defaultdict
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from deile.orchestration.subagents import (HISTORY_MARKER_KEY,
                                            MAX_SUBAGENT_BUDGET_S,
-                                           SubAgentOrchestrator,
-                                           SubAgentTask, resolve_runner)
+                                           SubAgentOrchestrator, SubAgentTask,
+                                           resolve_runner)
 from deile.orchestration.subagents.events import SubAgentState
 
 from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,

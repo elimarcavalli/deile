@@ -15,13 +15,11 @@ import time
 
 import pytest
 
-from deile.orchestration.subagents import (SubAgentOrchestrator,
-                                           SubAgentTask)
+from deile.orchestration.subagents import SubAgentOrchestrator, SubAgentTask
 from deile.orchestration.subagents.events import (SubAgentEvent,
                                                   SubAgentEventKind,
                                                   SubAgentState)
-from deile.orchestration.subagents.runner import OnEvent, SubAgentRunner
-
+from deile.orchestration.subagents.runner import OnEvent
 
 pytestmark = pytest.mark.unit
 

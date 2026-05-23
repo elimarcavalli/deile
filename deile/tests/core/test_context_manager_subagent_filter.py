@@ -17,7 +17,6 @@ import pytest
 from deile.orchestration.subagents.constants import (HISTORY_MARKER_KEY,
                                                      is_display_only_entry)
 
-
 pytestmark = pytest.mark.unit
 
 

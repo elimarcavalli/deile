@@ -29,7 +29,6 @@ aiohttp_test_utils = pytest.importorskip("aiohttp.test_utils")
 
 import worker_server  # noqa: E402
 
-
 pytestmark = pytest.mark.unit
 
 

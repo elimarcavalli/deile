@@ -7,6 +7,7 @@ import pytest
 from deile.commands.base import CommandContext, CommandStatus
 from deile.commands.builtin.loc_command import LocCommand
 
+
 @pytest.fixture
 def loc_command():
     return LocCommand()

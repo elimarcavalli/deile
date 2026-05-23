@@ -32,8 +32,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from deile.orchestration.subagents.events import (SubAgentEvent,
-                                                  SubAgentState)
+from deile.orchestration.subagents.events import SubAgentEvent, SubAgentState
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +261,7 @@ class SubAgentPanelRenderer:
         t.add_row(
             "model",
             Text.from_markup(
-                f"[dim](herdado da sessão)[/dim]" if not st.task.model
+                "[dim](herdado da sessão)[/dim]" if not st.task.model
                 else _escape_markup(st.task.model)
             ),
         )

@@ -23,7 +23,6 @@ import asyncio
 import logging
 import time
 import uuid
-from pathlib import Path
 from typing import Any, Callable, Optional, Protocol
 
 from .events import SubAgentEvent, SubAgentEventKind, SubAgentState
@@ -331,7 +330,7 @@ class WorkerSubAgentRunner:
 
         try:
             from deile.infrastructure.deile_worker_client import (
-                build_dispatch_payload, WorkerDispatchError)
+                WorkerDispatchError, build_dispatch_payload)
 
             # Synthetic channel_id — bot integration silently no-ops when the
             # facade is unavailable (worker_server.py:_bot_facade returns None).
@@ -485,7 +484,8 @@ def resolve_runner(
 
     if kind == "worker":
         try:
-            from deile.infrastructure.deile_worker_client import DeileWorkerClient
+            from deile.infrastructure.deile_worker_client import \
+                DeileWorkerClient
 
             return WorkerSubAgentRunner(
                 DeileWorkerClient(),

@@ -14,7 +14,6 @@ from rich.console import Console
 from deile.orchestration.subagents.events import SubAgentState, SubAgentTask
 from deile.ui.subagent_panel import SubAgentPanelRenderer
 
-
 pytestmark = pytest.mark.unit
 
 

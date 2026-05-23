@@ -12,12 +12,10 @@ from __future__ import annotations
 
 import pytest
 
-from deile.core.models.stream_events import (StreamEventType,
-                                             UnifiedStreamEvent)
+from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
 from deile.orchestration.subagents.events import (SubAgentEventKind,
                                                   SubAgentState, SubAgentTask)
 from deile.orchestration.subagents.runner import LocalSubAgentRunner
-
 
 pytestmark = pytest.mark.unit
 

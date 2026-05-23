@@ -14,7 +14,6 @@ from deile.orchestration.subagents.events import (SubAgentEventKind,
                                                   SubAgentState, SubAgentTask)
 from deile.orchestration.subagents.runner import WorkerSubAgentRunner
 
-
 pytestmark = pytest.mark.unit
 
 

@@ -36,8 +36,7 @@ logger = logging.getLogger(__name__)
 #: chance to finish (regression observed on PR #293: server raised to 900s, but
 #: client was stuck at 600s+60s buffer = 660s — review timed out client-side
 #: while the worker was still working).
-import os as _os
-DEFAULT_TIMEOUT_S: float = float(_os.environ.get("DEILE_WORKER_TASK_TIMEOUT_S", "600"))
+DEFAULT_TIMEOUT_S: float = float(os.environ.get("DEILE_WORKER_TASK_TIMEOUT_S", "600"))
 # Budget máximo permitido para um dispatch ``wait=True`` — compartilhado
 # entre o ``max_execution_time`` da tool e o timeout do cliente httpx, de
 # modo que um cancel upstream não mascare ``WORKER_TIMEOUT`` como

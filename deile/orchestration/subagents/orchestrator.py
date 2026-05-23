@@ -24,20 +24,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional, TextIO
 
 from .events import SubAgentEvent, SubAgentState, SubAgentTask
-from .runner import OnEvent, SubAgentRunner
+from .runner import SubAgentRunner
 
 logger = logging.getLogger(__name__)
 
 
 # Teto global de tempo da invocação do tool. Override via
 # ``DEILE_SUBAGENT_BUDGET_S``; default = 10min (mesmo budget do worker).
-import os
 MAX_SUBAGENT_BUDGET_S: float = float(
     os.environ.get("DEILE_SUBAGENT_BUDGET_S", "600")
 )
@@ -261,7 +261,6 @@ class SubAgentOrchestrator:
         # o painel continua aparecendo no terminal mesmo enquanto ``sys.stdout``
         # está redirecionado para suprimir os ``print()`` dos sub-DEILEs.
         real_stdout: TextIO = sys.stdout
-        real_stderr: TextIO = sys.stderr
 
         # Renderer é opcional: tests + chamadas headless passam None.
         renderer = None

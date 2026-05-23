@@ -9,16 +9,12 @@ Foca em:
 """
 from __future__ import annotations
 
-import asyncio
-import time
-
 import pytest
 
-from deile.orchestration.subagents.events import (SubAgentState, SubAgentTask)
+from deile.orchestration.subagents.events import SubAgentState, SubAgentTask
 from deile.tools.base import ToolContext
 from deile.tools.dispatch_parallel_subagents import (
     DispatchParallelSubagentsTool, _build_tasks_from_payload)
-
 
 pytestmark = pytest.mark.unit
 
@@ -293,7 +289,8 @@ async def test_tool_persists_summary_to_session_history(monkeypatch):
         def __init__(self, *a, **kw): pass
 
         async def run(self, tasks):
-            from deile.orchestration.subagents.orchestrator import SubAgentResult
+            from deile.orchestration.subagents.orchestrator import \
+                SubAgentResult
             states = []
             for t in tasks:
                 st = SubAgentState(task=t)
@@ -356,7 +353,8 @@ async def test_tool_persistence_failure_does_not_break_tool(monkeypatch):
     class _NoopOrch:
         def __init__(self, *a, **kw): pass
         async def run(self, tasks):
-            from deile.orchestration.subagents.orchestrator import SubAgentResult
+            from deile.orchestration.subagents.orchestrator import \
+                SubAgentResult
             return SubAgentResult(states=[], elapsed_s=0.1, ok_count=0, error_count=0)
 
     monkeypatch.setattr(
