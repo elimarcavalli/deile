@@ -264,7 +264,7 @@ class TestChatWithToolsLoop:
     ) -> None:
         chat = _FakeChat([_make_response(_make_text_part("hi"))])
 
-        text, results = await provider._gemini_chat_with_tools(chat, "ping")
+        text, results, _usage = await provider._gemini_chat_with_tools(chat, "ping")
 
         assert text == "hi"
         assert results == []
@@ -294,7 +294,7 @@ class TestChatWithToolsLoop:
             ]
         )
 
-        text, results = await provider._gemini_chat_with_tools(
+        text, results, _usage = await provider._gemini_chat_with_tools(
             chat, "list files", working_directory="/work"
         )
 
@@ -333,7 +333,7 @@ class TestChatWithToolsLoop:
             ]
         )
 
-        text, results = await provider._gemini_chat_with_tools(chat, "run my script")
+        text, results, _usage = await provider._gemini_chat_with_tools(chat, "run my script")
 
         assert "Sorry" in text
         assert len(results) == 1
@@ -368,7 +368,7 @@ class TestChatWithToolsLoop:
             for i in range(20)
         ])
 
-        text, results = await provider._gemini_chat_with_tools(
+        text, results, _usage = await provider._gemini_chat_with_tools(
             chat, "loop please", max_iterations=3
         )
 
@@ -407,7 +407,7 @@ class TestChatWithToolsLoop:
             ]
         )
 
-        text, results = await provider._gemini_chat_with_tools(chat, "two cmds")
+        text, results, _usage = await provider._gemini_chat_with_tools(chat, "two cmds")
 
         assert text == "Done."
         assert len(results) == 2
