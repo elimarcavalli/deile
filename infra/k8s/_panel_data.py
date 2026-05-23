@@ -259,6 +259,21 @@ def _parse_log_line(line: str) -> Optional["LogLine"]:
     return LogLine(ts=ts, body=m.group(2))
 
 
+class _KubectlProviderMixin:
+    """Reusa o padrão `_kubectl + _resolve_kubectl()` entre os providers.
+
+    Operador pode ter instalado kubectl depois do painel abrir — toda
+    chamada de fetch tenta re-resolver se a referência local ainda é None.
+    """
+
+    _kubectl: Optional[str]
+
+    def _resolve_kubectl(self) -> Optional[str]:
+        if self._kubectl is None:
+            self._kubectl = kubectl_bin()
+        return self._kubectl
+
+
 def _fmt_age(seconds: Optional[float]) -> str:
     """Idade humanamente legível: 3s, 47s, 2m, 1h12m, 3d."""
     if seconds is None:
@@ -297,7 +312,7 @@ _ROLE_BY_APP = {
 }
 
 
-class PodsProvider:
+class PodsProvider(_KubectlProviderMixin):
     """Lista os pods do namespace `deile` em forma tipada."""
 
     def __init__(self, ttl_s: float = 1.0):
@@ -311,13 +326,6 @@ class PodsProvider:
 
     def get(self, force: bool = False) -> List[PodInfo]:
         return self._cache.get(force)
-
-    def _resolve_kubectl(self) -> Optional[str]:
-        """Re-resolve kubectl lazy — operador pode tê-lo instalado depois
-        do painel ter sido aberto."""
-        if self._kubectl is None:
-            self._kubectl = kubectl_bin()
-        return self._kubectl
 
     def _fetch(self) -> List[PodInfo]:
         self._resolve_kubectl()
@@ -464,7 +472,7 @@ class PipelineState:
         return (datetime.now(_UTC) - self.last_action_ts).total_seconds()
 
 
-class PipelineProvider:
+class PipelineProvider(_KubectlProviderMixin):
     """Lê os últimos N segundos de log do deile-pipeline e classifica."""
 
     DEPLOY = "deile-pipeline"
@@ -483,11 +491,6 @@ class PipelineProvider:
 
     def get(self, force: bool = False) -> PipelineState:
         return self._cache.get(force)
-
-    def _resolve_kubectl(self) -> Optional[str]:
-        if self._kubectl is None:
-            self._kubectl = kubectl_bin()
-        return self._kubectl
 
     def _fetch(self) -> PipelineState:
         self._resolve_kubectl()
@@ -574,7 +577,7 @@ _WORKER_DISPATCH_RE = re.compile(r"POST /v1/dispatch", re.IGNORECASE)
 _WORKER_BUSY_WINDOW_S = 90  # se houve POST /v1/dispatch nos últimos 90s, está busy
 
 
-class WorkerProvider:
+class WorkerProvider(_KubectlProviderMixin):
     """Por pod worker, deduz busy/idle do log."""
 
     LABEL_SELECTOR = "app=deile-worker"
@@ -593,11 +596,6 @@ class WorkerProvider:
 
     def get(self, force: bool = False) -> Dict[str, WorkerState]:
         return self._cache.get(force)
-
-    def _resolve_kubectl(self) -> Optional[str]:
-        if self._kubectl is None:
-            self._kubectl = kubectl_bin()
-        return self._kubectl
 
     def _fetch(self) -> Dict[str, WorkerState]:
         self._resolve_kubectl()
@@ -942,7 +940,7 @@ class ModelsProvider:
         return out
 
 
-class CurrentModelProvider:
+class CurrentModelProvider(_KubectlProviderMixin):
     """Lê o `DEILE_PREFERRED_MODEL` setado no Deployment do worker (e/ou
     pipeline) — o valor que efetivamente roda agora nos pods."""
 
@@ -962,11 +960,6 @@ class CurrentModelProvider:
 
     def get(self, force: bool = False) -> Dict[str, Optional[str]]:
         return self._cache.get(force)
-
-    def _resolve_kubectl(self) -> Optional[str]:
-        if self._kubectl is None:
-            self._kubectl = kubectl_bin()
-        return self._kubectl
 
     def _fetch(self) -> Dict[str, Optional[str]]:
         self._resolve_kubectl()
@@ -1044,10 +1037,13 @@ def set_preferred_model(deployment: str, slug: str,
     injeção em argumentos do kubectl. Toda chamada (allowed/denied/falha)
     emite `AuditEvent(SECURITY_POLICY_CHANGED)`.
     """
+    # Normaliza valores não-string pra um repr seguro antes de logar — evita
+    # crashes no audit quando o caller passa algo bizarro (None, dict, etc).
+    safe_dep = deployment if isinstance(deployment, str) else repr(deployment)
+    safe_slug = slug if isinstance(slug, str) else repr(slug)
     if deployment not in _ALLOWED_DEPLOYMENTS:
         _audit_security_policy_change(
-            deployment if isinstance(deployment, str) else repr(deployment),
-            slug if isinstance(slug, str) else repr(slug),
+            safe_dep, safe_slug,
             result="denied", detail="deployment fora da whitelist",
         )
         allowed = ", ".join(sorted(_ALLOWED_DEPLOYMENTS))
@@ -1057,7 +1053,7 @@ def set_preferred_model(deployment: str, slug: str,
         )
     if not isinstance(slug, str) or not _MODEL_SLUG_RE.match(slug):
         _audit_security_policy_change(
-            deployment, slug if isinstance(slug, str) else repr(slug),
+            deployment, safe_slug,
             result="denied", detail="slug inválido",
         )
         return False, "slug inválido — recusado por validação"
@@ -1099,7 +1095,7 @@ def set_preferred_model(deployment: str, slug: str,
 
 # ===== Notifier (bot audit log) =============================================
 
-class NotifierProvider:
+class NotifierProvider(_KubectlProviderMixin):
     """Tail dos audit events do `deilebot` via kubectl logs.
 
     Sai como `List[str]` (linhas cruas) — a view filtra/parsea. Cache TTL
@@ -1120,11 +1116,6 @@ class NotifierProvider:
 
     def get(self, force: bool = False) -> List[str]:
         return self._cache.get(force)
-
-    def _resolve_kubectl(self) -> Optional[str]:
-        if self._kubectl is None:
-            self._kubectl = kubectl_bin()
-        return self._kubectl
 
     def _fetch(self) -> List[str]:
         self._resolve_kubectl()
