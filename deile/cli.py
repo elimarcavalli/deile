@@ -29,16 +29,9 @@ from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
                                        SWITCH_SESSION_KEY)
 
 from .cli_install import (  # noqa: F401 — re-exports kept for backwards compatibility (callers & tests still import from deile.cli)
-    _create_venv_with_deile,
-    _ensure_scripts_dir_on_path,
-    _link_global_command,
-    _pip_run,
-    _prompt_install_mode,
-    _run_self_install,
-    _run_self_install_async,
-    _user_scripts_dir,
-    _wrapper_target_dir,
-)
+    _create_venv_with_deile, _ensure_scripts_dir_on_path, _link_global_command,
+    _pip_run, _prompt_install_mode, _run_self_install, _run_self_install_async,
+    _user_scripts_dir, _wrapper_target_dir)
 
 # ── package root (where deile/ lives) ───────────────────────────────────────
 _PACKAGE_ROOT = Path(__file__).parent.resolve()

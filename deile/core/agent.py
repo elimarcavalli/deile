@@ -1,6 +1,5 @@
 """Agent Orchestrator principal do DEILE"""
 
-import asyncio
 import logging
 import re
 import time
@@ -12,7 +11,6 @@ from typing import (TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional,
                     Tuple)
 
 if TYPE_CHECKING:
-    from .models.stream_events import UnifiedStreamEvent
     from .proactive_analyzer import ProactiveIntent
 
 from .exceptions import DEILEError, ModelError
@@ -36,8 +34,6 @@ from ..storage.logs import get_logger
 from ..tools.base import ToolContext, ToolResult, ToolStatus
 from ..tools.registry import ToolRegistry, get_tool_registry
 from ..ui.display_manager import DisplayManager
-from ..ui.stage_cascade import cascade_until
-from ..ui.stage_messages import get_stage_message
 from .agent_streaming import AgentStreamingMixin
 from .context_manager import ContextManager
 from .intent_analyzer import get_intent_analyzer

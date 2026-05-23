@@ -59,6 +59,7 @@ class AgentStreamingMixin:
         from deile.core.models.stream_events import (ModelUsageSnapshot,
                                                      StreamEventType,
                                                      UnifiedStreamEvent)
+
         # Imported lazily to avoid a circular import (agent_streaming is
         # imported by agent.py, and AgentStatus lives in agent.py).
         from .agent import AgentStatus, _BudgetExceeded
@@ -398,7 +399,8 @@ class AgentStreamingMixin:
         from deile.core.tool_loop_executor import ToolLoopExecutor
         from deile.events.event_bus import Event, EventPriority, EventType
 
-        from .agent import AgentStatus, _record_model_used, _select_configured_model_provider
+        from .agent import (AgentStatus, _record_model_used,
+                            _select_configured_model_provider)
 
         self._status = AgentStatus.GENERATING_RESPONSE
 

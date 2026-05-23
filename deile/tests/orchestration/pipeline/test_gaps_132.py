@@ -24,7 +24,7 @@ import pytest
 from deile.orchestration.pipeline.github_client import (
     GhCommandError, GitHubClient, IssueRef, PrRef, compute_batch_id_for_number)
 from deile.orchestration.pipeline.labels import (FOLLOW_UPS_PROCESSED,
-                                                  REVIEW_PENDING, WORKFLOW_NEW)
+                                                 REVIEW_PENDING, WORKFLOW_NEW)
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
 from deile.orchestration.pipeline.scheduler import (VALID_ACTIONS,
