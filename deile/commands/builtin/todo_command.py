@@ -8,6 +8,7 @@ com linha, autor (via ``git blame``) e idade em dias.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import subprocess
@@ -61,8 +62,12 @@ class TodoCommand(DirectCommand):
 
     @wrap_command_errors("todo", message_template="Falha ao executar /{name}: {exc}")
     async def execute(self, context: CommandContext) -> CommandResult:
-        repo_root = self._resolve_repo_root()
-        markers = self._scan_markers(repo_root)
+        # `_scan_markers` runs `git ls-files`, opens every tracked file, then
+        # runs `git blame --line-porcelain` per file with markers — all
+        # blocking subprocess+filesystem I/O. Off-loading the whole scan to a
+        # worker thread keeps the event loop responsive (pillar 03 §1).
+        repo_root = await asyncio.to_thread(self._resolve_repo_root)
+        markers = await asyncio.to_thread(self._scan_markers, repo_root)
         if not markers:
             msg = Text(
                 "Nenhum TODO/FIXME/HACK/XXX encontrado 🎉",
