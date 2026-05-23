@@ -138,9 +138,11 @@ async def test_renderer_factory_is_optional_and_invoked_when_provided():
     captured = {}
 
     class _FakeRenderer:
-        def __init__(self, states, broadcast):
+        # Issue #257 round 2: factory agora aceita (states, broadcast, real_stdout)
+        def __init__(self, states, broadcast, real_stdout=None):
             captured["states"] = states
             captured["broadcast"] = broadcast
+            captured["real_stdout"] = real_stdout
 
         async def run(self):
             # Encerra rápido para não segurar a finalização.
@@ -156,6 +158,81 @@ async def test_renderer_factory_is_optional_and_invoked_when_provided():
     assert result.ok_count == 2
     assert "states" in captured and len(captured["states"]) == 2
     assert captured["broadcast"] is not None
+    # real_stdout deve ser repassado (sys.stdout durante o teste)
+    assert captured["real_stdout"] is not None
+
+
+async def test_renderer_factory_backward_compat_with_2_args():
+    """Factory antiga (states, broadcast) ainda funciona — TypeError → retry."""
+    runner = _StubRunner(delays={1: 0.005})
+
+    class _OldRenderer:
+        def __init__(self, states, broadcast):  # sem real_stdout
+            self.states = states
+
+        async def run(self):
+            await asyncio.sleep(0.001)
+
+    orch = SubAgentOrchestrator(
+        runner, max_parallel=1, renderer_factory=_OldRenderer
+    )
+    result = await orch.run(_mk_tasks(2))
+    assert result.ok_count == 2
+
+
+async def test_capture_output_suppresses_print_from_subagent():
+    """Quando capture_output=True (default), print() durante o runner vai
+    para o buffer interno em vez de poluir o terminal do usuário.
+    """
+    import sys as _sys
+
+    class _PrintingRunner:
+        async def run_one(self, state, *, on_event):
+            state.status = "running"
+            state.started_at = 0.0
+            print("OUTPUT FROM SUBAGENT", flush=True)
+            print("STDERR FROM SUBAGENT", file=_sys.stderr, flush=True)
+            state.status = "ok"
+            state.finished_at = 0.05
+
+    orch = SubAgentOrchestrator(_PrintingRunner(), max_parallel=1, capture_output=True)
+    result = await orch.run(_mk_tasks(2))
+
+    assert "OUTPUT FROM SUBAGENT" in result.captured_stdout
+    assert "STDERR FROM SUBAGENT" in result.captured_stderr
+    # Após o run, sys.stdout/stderr foram restaurados (smoke test).
+    assert _sys.stdout is not None
+    assert _sys.stderr is not None
+
+
+async def test_capture_output_false_does_not_redirect():
+    """capture_output=False mantém prints fluindo para o terminal real
+    (usado em testes onde queremos VER o output do runner).
+    """
+    class _NoopRunner:
+        async def run_one(self, state, *, on_event):
+            state.status = "ok"
+            state.finished_at = 0.001
+
+    orch = SubAgentOrchestrator(_NoopRunner(), max_parallel=1, capture_output=False)
+    result = await orch.run(_mk_tasks(2))
+    assert result.captured_stdout == ""
+    assert result.captured_stderr == ""
+
+
+async def test_markdown_summary_format():
+    """``markdown_summary`` produz markdown adequado para renderização no /resume."""
+    runner = _StubRunner(delays={1: 0.001, 2: 0.001}, fail_for={2})
+    orch = SubAgentOrchestrator(runner, max_parallel=2)
+    result = await orch.run(_mk_tasks(2))
+
+    md = result.markdown_summary()
+    assert "**Sub-DEILEs paralelos**" in md
+    assert "✅" in md and "❌" in md
+    assert "#1" in md and "#2" in md
+    assert "**task 1**" in md or "task 1" in md
+    # Arquivos do task ok aparecem como inline-code
+    assert "`file_1.py`" in md
 
 
 async def test_empty_tasks_returns_empty_result():

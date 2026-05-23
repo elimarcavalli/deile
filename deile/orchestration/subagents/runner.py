@@ -127,20 +127,26 @@ class LocalSubAgentRunner:
             if task.persona:
                 # ``persona_name`` é a chave canônica usada pelo worker_server.
                 # Para o caminho local o efeito é limitado (o PersonaManager é
-                # singleton — switch entre sub-tarefas causaria race), então
-                # **prepende** uma linha de papel ao prompt como reforço. Em
-                # paralelo entregamos ``persona_name`` no kwargs para uso
-                # futuro caso o agente passe a respeitar por sessão.
+                # singleton — switch entre sub-tarefas causaria race condition
+                # entre sub-DEILEs paralelos com personas diferentes), então
+                # passamos no kwargs como hint mas NÃO ativamos persona real.
+                # O caminho WorkerSubAgentRunner sim isola via processo separado.
                 kwargs["persona_name"] = task.persona
             if task.model:
                 kwargs["forced_model"] = task.model
 
-            prompt = task.prompt
-            if task.persona:
-                prompt = (
-                    f"[Você está atuando como persona: **{task.persona}**.]\n\n"
-                    + prompt
-                )
+            # Envelope: sub-DEILE recebe contexto explícito de que é um
+            # sub-agente despachado. Isso ajuda independente de persona — o
+            # LLM trata o prompt como tarefa pontual sem inventar interação
+            # com "usuário principal".
+            prompt = (
+                "[CONTEXTO] Você é um sub-DEILE despachado em paralelo a partir "
+                "de um DEILE principal. Sessão limpa, contexto isolado. Foque "
+                "exclusivamente no que está descrito a seguir. Trabalhe sozinho "
+                "até concluir; não interaja com 'o usuário' — não há usuário "
+                "aqui, só você e a tarefa.\n\n"
+                f"[TAREFA]\n{task.prompt}"
+            )
 
             # Importação tardia para evitar dependência circular (este módulo
             # é importado pelo pacote orchestration; o agent.py importa de cá).

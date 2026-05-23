@@ -223,8 +223,10 @@ async def test_tool_happy_path_calls_orchestrator(monkeypatch):
     captured_tasks = {}
 
     class _StubOrchestrator:
-        def __init__(self, runner, *, max_parallel, renderer_factory=None):
+        def __init__(self, runner, *, max_parallel, renderer_factory=None,
+                     capture_output=True):
             captured_tasks["max_parallel"] = max_parallel
+            captured_tasks["capture_output"] = capture_output
             self._runner = runner
 
         async def run(self, tasks):
@@ -278,6 +280,122 @@ async def test_tool_happy_path_calls_orchestrator(monkeypatch):
     assert captured_tasks["max_parallel"] == 3
     # Tasks recebem index 1..N.
     assert [t.index for t in captured_tasks["tasks"]] == [1, 2, 3]
+
+
+async def test_tool_persists_summary_to_session_history(monkeypatch):
+    """Fix #2: ao terminar, a tool grava entrada role=assistant com
+    metadata HISTORY_MARKER_KEY na conversation_history — sobrevive /resume.
+    """
+    tool = DispatchParallelSubagentsTool()
+    from deile.tools.dispatch_parallel_subagents import HISTORY_MARKER_KEY
+
+    class _NoopOrch:
+        def __init__(self, *a, **kw): pass
+
+        async def run(self, tasks):
+            from deile.orchestration.subagents.orchestrator import SubAgentResult
+            states = []
+            for t in tasks:
+                st = SubAgentState(task=t)
+                st.status = "ok"
+                st.started_at = 0.0
+                st.finished_at = 0.5
+                st.add_file(f"file_{t.index}.py")
+                states.append(st)
+            return SubAgentResult(
+                states=states, elapsed_s=0.5,
+                ok_count=len(states), error_count=0,
+            )
+
+    monkeypatch.setattr(
+        "deile.tools.dispatch_parallel_subagents.SubAgentOrchestrator", _NoopOrch
+    )
+    monkeypatch.setattr(
+        "deile.tools.dispatch_parallel_subagents.resolve_runner",
+        lambda agent, *, session_id: object(),
+    )
+
+    # Mock agente com session que tem add_to_history
+    class _FakeSession:
+        def __init__(self):
+            self.history = []
+
+        def add_to_history(self, role, content, metadata=None):
+            self.history.append({"role": role, "content": content, "metadata": metadata or {}})
+
+    fake_session = _FakeSession()
+    fake_agent = type("FakeAgent", (), {"_sessions": {"hist-test": fake_session}})()
+
+    ctx = ToolContext(
+        user_input="",
+        parsed_args={"subtasks": [_valid_subtask(1), _valid_subtask(2)]},
+        session_data={"session_id": "hist-test", "_agent": fake_agent},
+    )
+    result = await tool.execute(ctx)
+    assert result.is_success
+
+    # Histórico recebeu UMA entrada de panel summary
+    panel_entries = [
+        h for h in fake_session.history
+        if h["role"] == "assistant" and h["metadata"].get(HISTORY_MARKER_KEY)
+    ]
+    assert len(panel_entries) == 1
+    e = panel_entries[0]
+    assert "Sub-DEILEs paralelos" in e["content"]
+    assert e["metadata"]["ok_count"] == 2
+    assert e["metadata"]["error_count"] == 0
+    assert e["metadata"]["n_subtasks"] == 2
+
+
+async def test_tool_persistence_failure_does_not_break_tool(monkeypatch):
+    """Persistência é best-effort: agente sem _sessions, ou sem add_to_history,
+    ou exception arbitrária, NÃO derruba a tool — só loga em debug.
+    """
+    tool = DispatchParallelSubagentsTool()
+
+    class _NoopOrch:
+        def __init__(self, *a, **kw): pass
+        async def run(self, tasks):
+            from deile.orchestration.subagents.orchestrator import SubAgentResult
+            return SubAgentResult(states=[], elapsed_s=0.1, ok_count=0, error_count=0)
+
+    monkeypatch.setattr(
+        "deile.tools.dispatch_parallel_subagents.SubAgentOrchestrator", _NoopOrch
+    )
+    monkeypatch.setattr(
+        "deile.tools.dispatch_parallel_subagents.resolve_runner",
+        lambda agent, *, session_id: object(),
+    )
+
+    # Agent sem _sessions
+    ctx = ToolContext(
+        user_input="",
+        parsed_args={"subtasks": [_valid_subtask(1), _valid_subtask(2)]},
+        session_data={"session_id": "x", "_agent": object()},
+    )
+    result = await tool.execute(ctx)
+    assert result.is_success  # mesmo sem persistência conseguida
+
+
+async def test_recursion_guard_blocks_nested_calls(monkeypatch):
+    """Fix complementar: dispatch_parallel_subagents recursivo é fora de escopo.
+    O ContextVar _NESTING_DEPTH bloqueia chamada aninhada.
+    """
+    from deile.tools.dispatch_parallel_subagents import _NESTING_DEPTH
+    tool = DispatchParallelSubagentsTool()
+    ctx = ToolContext(
+        user_input="",
+        parsed_args={"subtasks": [_valid_subtask(1), _valid_subtask(2)]},
+        session_data={"session_id": "nest", "_agent": object()},
+    )
+    # Simula que já estamos dentro de uma chamada
+    token = _NESTING_DEPTH.set(1)
+    try:
+        result = await tool.execute(ctx)
+    finally:
+        _NESTING_DEPTH.reset(token)
+    assert result.is_error
+    assert result.metadata.get("error_code") == "RECURSION_DENIED"
 
 
 async def test_tool_schema_is_well_formed():

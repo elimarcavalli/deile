@@ -150,6 +150,34 @@ async def test_clean_session_id_per_subagent_and_kwargs_propagation():
     assert agent.last_kwargs.get("forced_model") == "claude-opus"
 
 
+async def test_prompt_envelope_isolates_subagent_context():
+    """Sub-DEILE recebe envelope explícito de 'CONTEXTO' + 'TAREFA' antes do
+    prompt do usuário. Sem isso, o LLM pode tentar interagir com 'o usuário'
+    ou re-narrar o estado da conversa principal (que não existe pra ele).
+    """
+    captured_prompt = []
+
+    class _CapturingAgent:
+        def process_input_stream(self, prompt, **kwargs):
+            captured_prompt.append(prompt)
+            async def _gen():
+                return
+                yield  # pragma: no cover — generator vazio
+            return _gen()
+
+    runner = LocalSubAgentRunner(_CapturingAgent())
+    state = SubAgentState(task=_task(index=1))
+    await runner.run_one(state, on_event=lambda _: None)
+
+    assert len(captured_prompt) == 1
+    body = captured_prompt[0]
+    assert "[CONTEXTO]" in body
+    assert "sub-DEILE" in body or "sub-DEILE" in body  # case-sensitive
+    assert "[TAREFA]" in body
+    # Prompt original do usuário deve estar lá depois do header.
+    assert "prompt longo o suficiente" in body
+
+
 async def test_two_subagents_get_distinct_session_ids():
     agent = _StubAgent([])
     runner = LocalSubAgentRunner(agent)

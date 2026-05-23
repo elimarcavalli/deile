@@ -21,12 +21,21 @@ Heurística da persona, NÃO desta tool (mantemos a tool burra):
 Esta tool valida apenas o shape do payload (2-5 subtasks, prompts não-vazios,
 descriptions únicas) e roda um anti-loop curto (5s) por ``session_id`` para
 o LLM não chamar duas vezes seguidas.
+
+Round 2 (post-feedback):
+    * Captura ``sys.stdout`` real ANTES do orquestrador redirecionar — passa
+      ao renderer factory para que o painel apareça no terminal mesmo com
+      ``print()`` dos sub-DEILEs suprimido.
+    * Após o painel fechar, grava entrada ``role=assistant`` com markdown do
+      resumo na ``conversation_history`` da sessão — sobrevive ao ``/resume``.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
+import sys
 import time
 from collections import defaultdict
 from typing import Dict, List, Optional
@@ -38,6 +47,14 @@ from deile.orchestration.subagents.events import SubAgentState
 
 from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
                    ToolSchema)
+
+# Recursion guard (issue #257 "decomposição recursiva — fora de escopo").
+# ContextVar herda no ``asyncio.create_task``, então sub-DEILEs spawnados via
+# LocalSubAgentRunner enxergam ``_NESTING_DEPTH > 0`` e refusam nova chamada
+# à tool. Reset acontece automaticamente quando o context manager sai.
+_NESTING_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "dispatch_parallel_subagents.nesting", default=0
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +68,11 @@ _MAX_SUBTASKS = 5
 _DESCRIPTION_MAX_LEN = 80
 _PROMPT_MIN_LEN = 30
 _PROMPT_MAX_LEN = 8000
+
+# Marcador metadata na conversation_history para entradas geradas por esta tool.
+# Lido por :func:`deile.cli_session_helpers.replay_history` para reaplicar o
+# resumo do painel em ``/resume`` sem depender do LLM ter consolidado por escrito.
+HISTORY_MARKER_KEY = "subagent_panel_summary"
 
 
 class DispatchParallelSubagentsTool(Tool):
@@ -155,6 +177,19 @@ class DispatchParallelSubagentsTool(Tool):
                 or "default"
             )
 
+            # Recursion guard: a issue #257 explicitamente exclui decomposição
+            # recursiva. Se ESTE tool já está sendo executado no contexto
+            # atual (ou seja, um sub-DEILE local tentando se decompor de novo),
+            # rejeita antes de qualquer outro trabalho.
+            if _NESTING_DEPTH.get() > 0:
+                return ToolResult.error_result(
+                    "dispatch_parallel_subagents cannot be nested — você já está "
+                    "rodando dentro de um sub-DEILE. Faça o trabalho diretamente "
+                    "com as outras ferramentas; decomposição recursiva está fora "
+                    "de escopo (issue #257).",
+                    error_code="RECURSION_DENIED",
+                )
+
             # Validação defensiva (defense-in-depth: o schema do JSON-Schema já
             # checa minItems/maxItems, mas alguns providers são mais frouxos).
             tasks, validation_error = _build_tasks_from_payload(raw_subtasks)
@@ -199,20 +234,28 @@ class DispatchParallelSubagentsTool(Tool):
 
             runner = resolve_runner(agent, session_id=session_id)
 
-            # Renderer factory — opcional, evita importar UI nos testes
-            # headless (passamos console=None para desabilitar).
-            console = context.session_data.get("_console")
+            # Renderer factory — assina (states, broadcast, real_stdout). O
+            # orquestrador captura sys.stdout REAL antes do redirect e passa
+            # aqui, para que o painel apareça no terminal mesmo enquanto os
+            # ``print()`` dos sub-DEILEs estão sendo desviados pro buffer.
+            host_console = context.session_data.get("_console")
             renderer_factory = None
-            if console is not None:
-                def _make_renderer(states: List[SubAgentState], broadcast):
+            if host_console is not None:
+                def _make_renderer(states, broadcast, real_stdout=None):
                     from deile.ui.subagent_panel import SubAgentPanelRenderer
-                    return SubAgentPanelRenderer(console, states, broadcast)
+                    return SubAgentPanelRenderer(
+                        host_console,
+                        states,
+                        broadcast,
+                        real_stdout=real_stdout,
+                    )
                 renderer_factory = _make_renderer
 
             orchestrator = SubAgentOrchestrator(
                 runner,
                 max_parallel=max_parallel,
                 renderer_factory=renderer_factory,
+                capture_output=True,
             )
 
             logger.info(
@@ -221,13 +264,34 @@ class DispatchParallelSubagentsTool(Tool):
                 runner.__class__.__name__,
                 max_parallel,
             )
-            result = await orchestrator.run(tasks)
+
+            # Eleva profundidade de nesting — sub-DEILEs spawnados via
+            # asyncio.create_task herdam este ContextVar e bloqueiam recursão.
+            token = _NESTING_DEPTH.set(_NESTING_DEPTH.get() + 1)
+            try:
+                result = await orchestrator.run(tasks)
+            finally:
+                _NESTING_DEPTH.reset(token)
+
+            # ── Persistência no histórico (issue #257 round 2, fix #2) ──────
+            # Grava uma entrada role=assistant com o markdown do resumo do
+            # painel. ``replay_history`` (cli_session_helpers.py) detecta o
+            # marcador HISTORY_MARKER_KEY e renderiza no /resume, mesmo
+            # quando o LLM não escreveu consolidação textual.
+            try:
+                self._persist_to_history(agent, session_id, result, len(tasks))
+            except Exception:
+                # Persistência é best-effort — não vale a pena falhar a tool
+                # por causa de um histórico ausente (sessão recém-criada,
+                # agente sem sessão registrada, etc.).
+                logger.debug("persist_to_history failed", exc_info=True)
 
             return ToolResult.success_result(
                 data={
                     "ok_global": result.ok_global,
                     "ok_count": result.ok_count,
                     "error_count": result.error_count,
+                    "cancelled": result.cancelled,
                     "elapsed_s": result.elapsed_s,
                     "subtasks": [_state_to_dict(s) for s in result.states],
                 },
@@ -246,6 +310,38 @@ class DispatchParallelSubagentsTool(Tool):
         stale = [sid for sid, ts in cls._LAST_DISPATCH.items() if (now - ts) > cutoff]
         for sid in stale:
             cls._LAST_DISPATCH.pop(sid, None)
+
+    @staticmethod
+    def _persist_to_history(agent, session_id: str, result, n_tasks: int) -> None:
+        """Escreve o resumo do painel na conversation_history da sessão.
+
+        Adiciona uma entrada ``role=assistant`` com o markdown_summary do
+        resultado e metadata flag ``HISTORY_MARKER_KEY=True``. Ao ``/resume``,
+        :func:`replay_history` reconhece a flag e renderiza, mesmo quando o
+        LLM principal não escreveu nenhuma consolidação por conta própria.
+        """
+        sessions = getattr(agent, "_sessions", None)
+        if not isinstance(sessions, dict):
+            return
+        session = sessions.get(session_id)
+        if session is None:
+            return
+        add_to_history = getattr(session, "add_to_history", None)
+        if not callable(add_to_history):
+            return
+        markdown = result.markdown_summary()
+        add_to_history(
+            "assistant",
+            markdown,
+            {
+                HISTORY_MARKER_KEY: True,
+                "ok_count": result.ok_count,
+                "error_count": result.error_count,
+                "elapsed_s": result.elapsed_s,
+                "n_subtasks": n_tasks,
+                "cancelled": result.cancelled,
+            },
+        )
 
 
 def _build_tasks_from_payload(raw: object):
@@ -341,5 +437,6 @@ def _state_to_dict(st: SubAgentState) -> dict:
 
 __all__ = [
     "DispatchParallelSubagentsTool",
+    "HISTORY_MARKER_KEY",
     "_build_tasks_from_payload",
 ]

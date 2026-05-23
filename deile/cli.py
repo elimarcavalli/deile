@@ -430,10 +430,21 @@ class _DeileCLI:
             await self.ui.display_streaming_turn(event_stream)
             return False
 
+        # Issue #257: o painel multipanel de sub-DEILEs também quer ler stdin.
+        # Para evitar race + byte-loss, o painel seta um flag global ao abrir;
+        # este watcher pausa cooperativamente enquanto o flag está ativo.
+        from .ui._stdin_owner import panel_owns_stdin
+
         def _watch() -> None:
             try:
                 tty.setcbreak(sys.stdin.fileno())
                 while not esc_event.is_set():
+                    if panel_owns_stdin():
+                        # Outro consumidor (painel de sub-DEILEs) tem prioridade.
+                        # Não fazemos `read(1)` — os bytes vão pro painel.
+                        import time as _time
+                        _time.sleep(0.1)
+                        continue
                     r, _, _ = _select.select([sys.stdin], [], [], 0.1)
                     if not r:
                         continue
