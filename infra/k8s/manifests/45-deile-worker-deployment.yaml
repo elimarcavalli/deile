@@ -71,7 +71,7 @@ spec:
             # otherwise pick (the PRO performs near Claude Sonnet). Soft
             # preference — falls back to the router if deepseek is unavailable.
             # Configurable: change the value or remove this line.
-            - { name: DEILE_PREFERRED_MODEL,        value: "anthropic:claude-sonnet-4-6" }
+            - { name: DEILE_PREFERRED_MODEL,        value: "deepseek:deepseek-v4-pro" }
             # Worker's own listener.
             - { name: DEILE_WORKER_HOST,            value: "0.0.0.0" }
             - { name: DEILE_WORKER_PORT,            value: "8766" }
