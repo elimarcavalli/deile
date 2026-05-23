@@ -106,3 +106,18 @@ async def test_silence_genai_shutdown_noise_base_api_client_aclose_other_excepti
     
     # Verify original was called but exception was swallowed
     assert original_aclose_called is True
+
+
+@pytest.mark.asyncio
+async def test_silence_genai_shutdown_noise_idempotent(mock_google_genai):
+    """Test that the patch is idempotent and doesn't wrap multiple times."""
+    # Apply patch twice
+    _silence_genai_shutdown_noise()
+    first_patch = mock_google_genai.BaseApiClient.aclose
+    
+    _silence_genai_shutdown_noise()
+    second_patch = mock_google_genai.BaseApiClient.aclose
+    
+    # Should be the exact same function reference
+    assert first_patch is second_patch
+    assert first_patch.__name__ == "_safe_aclose"
