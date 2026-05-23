@@ -110,3 +110,209 @@ async def test_security_level_is_moderate():
     from deile.tools.base import SecurityLevel
 
     assert tool.schema.security_level == SecurityLevel.MODERATE
+
+
+# ── Error-message refactor tests (issue #280) ───────────────────────────────
+
+
+def _make_error_client(exc: Exception):
+    """Return a FakeBotClient that raises `exc` on channel_post."""
+    from .conftest import FakeBotClient
+
+    return FakeBotClient(raise_on={"channel_post": exc})
+
+
+def _assert_error_details(result, *, error_code: str, recoverable: bool):
+    """Assert that ToolResult.metadata contains well-formed error_details."""
+    assert result.is_error
+    details = result.metadata.get("error_details")
+    assert isinstance(details, dict), f"error_details missing or not dict: {details}"
+    assert details.get("error_code") == error_code
+    assert isinstance(details.get("suggestion"), str)
+    assert len(details["suggestion"]) > 0
+    assert details.get("recoverable") == recoverable
+
+
+async def test_auth_error_format(fake_permission, fake_audit):
+    """BotClientAuthError → message with tool_name + suggestion + error_details."""
+    from deile.integrations.bot.client import BotClientAuthError
+
+    tool = DiscordSendMessageTool()
+    ctx = make_context(
+        args={"channel_id": "100", "text": "x"},
+        fake_client=_make_error_client(BotClientAuthError("bad token")),
+        permission=fake_permission,
+        audit=fake_audit,
+    )
+    result = await tool.execute(ctx)
+    _assert_error_details(result, error_code="BOT_AUTH_ERROR", recoverable=False)
+    assert "discord_send_message" in result.message
+    assert "autenticação" in result.message.lower()
+    assert "DEILE_BOT_AUTH_TOKEN" in result.message
+    # Sensitive check: no raw token value leaked
+    assert "bad token" not in result.message
+
+
+async def test_rate_limited_format(fake_permission, fake_audit):
+    """BotClientRateLimited → message + suggestion + error_details (no retry_after)."""
+    from deile.integrations.bot.client import BotClientRateLimited
+
+    tool = DiscordSendMessageTool()
+    ctx = make_context(
+        args={"channel_id": "200", "text": "x"},
+        fake_client=_make_error_client(BotClientRateLimited("slow down")),
+        permission=fake_permission,
+        audit=fake_audit,
+    )
+    result = await tool.execute(ctx)
+    _assert_error_details(result, error_code="BOT_RATE_LIMITED", recoverable=True)
+    assert "discord_send_message" in result.message
+    assert "rate-limited" in result.message.lower()
+    assert "Aguarde" in result.message
+    # retry_after not set → key absent
+    assert "retry_after" not in result.metadata["error_details"]
+
+
+async def test_rate_limited_with_retry_after(fake_permission, fake_audit):
+    """BotClientRateLimited with retry_after attribute → included in error_details."""
+    from deile.integrations.bot.client import BotClientRateLimited
+
+    exc = BotClientRateLimited("slow down")
+    exc.retry_after = 5.0  # simulate real client attribute
+
+    tool = DiscordSendMessageTool()
+    ctx = make_context(
+        args={"channel_id": "200", "text": "x"},
+        fake_client=_make_error_client(exc),
+        permission=fake_permission,
+        audit=fake_audit,
+    )
+    result = await tool.execute(ctx)
+    _assert_error_details(result, error_code="BOT_RATE_LIMITED", recoverable=True)
+    assert result.metadata["error_details"]["retry_after"] == 5.0
+    assert "5.0s" in result.message
+
+
+async def test_not_ready_format(fake_permission, fake_audit):
+    """BotClientNotReady → message + suggestion + error_details."""
+    from deile.integrations.bot.client import BotClientNotReady
+
+    tool = DiscordSendMessageTool()
+    ctx = make_context(
+        args={"channel_id": "300", "text": "x"},
+        fake_client=_make_error_client(BotClientNotReady("starting")),
+        permission=fake_permission,
+        audit=fake_audit,
+    )
+    result = await tool.execute(ctx)
+    _assert_error_details(result, error_code="BOT_NOT_READY", recoverable=True)
+    assert "discord_send_message" in result.message
+    assert "pronto" in result.message.lower()
+    assert "Tente novamente" in result.message
+
+
+async def test_timeout_format(fake_permission, fake_audit):
+    """BotClientTimeoutError → message + suggestion + error_details."""
+    from deile.integrations.bot.client import BotClientTimeoutError
+
+    tool = DiscordSendMessageTool()
+    ctx = make_context(
+        args={"channel_id": "400", "text": "x"},
+        fake_client=_make_error_client(BotClientTimeoutError("timed out")),
+        permission=fake_permission,
+        audit=fake_audit,
+    )
+    result = await tool.execute(ctx)
+    _assert_error_details(result, error_code="BOT_TIMEOUT", recoverable=True)
+    assert "discord_send_message" in result.message
+    assert "timeout" in result.message.lower()
+    assert "saudável" in result.message.lower()
+
+
+async def test_upstream_error_format_with_channel(fake_permission, fake_audit):
+    """BotClientUpstreamError → includes channel_id when available."""
+    from deile.integrations.bot.client import BotClientUpstreamError
+
+    tool = DiscordSendMessageTool()
+    ctx = make_context(
+        args={"channel_id": "999", "text": "test"},
+        fake_client=_make_error_client(BotClientUpstreamError("discord 500")),
+        permission=fake_permission,
+        audit=fake_audit,
+    )
+    result = await tool.execute(ctx)
+    _assert_error_details(result, error_code="BOT_UPSTREAM", recoverable=True)
+    assert "discord_send_message" in result.message
+    assert "999" in result.message  # channel_id present
+    assert "instabilidade" in result.message.lower()
+    assert "Tente novamente" in result.message
+
+
+def test_upstream_error_without_channel_direct():
+    """BotClientUpstreamError without channel_id → generic channel reference.
+
+    Tests _map_exception directly because discord_send_message._perform
+    requires channel_id (KeyError before the bot client is reached).
+    """
+    from deile.integrations.bot.client import BotClientUpstreamError
+
+    tool = DiscordSendMessageTool()
+    result = tool._map_exception(
+        BotClientUpstreamError("discord 500"), args={}
+    )
+    _assert_error_details(result, error_code="BOT_UPSTREAM", recoverable=True)
+    assert "discord_send_message" in result.message
+    # Without channel_id, no "canal <id>" in message — but "Discord" should appear
+    assert "Discord" in result.message
+    assert "falha" in result.message.lower()
+
+
+async def test_unknown_error_format(fake_permission, fake_audit):
+    """Unmapped exception → BOT_UNREACHABLE with diagnostic message."""
+    tool = DiscordSendMessageTool()
+    ctx = make_context(
+        args={"channel_id": "500", "text": "x"},
+        fake_client=_make_error_client(ValueError("unexpected")),
+        permission=fake_permission,
+        audit=fake_audit,
+    )
+    result = await tool.execute(ctx)
+    _assert_error_details(result, error_code="BOT_UNREACHABLE", recoverable=False)
+    assert "discord_send_message" in result.message
+    assert "ValueError" in result.message
+    assert "inesperada" in result.message.lower()
+
+
+async def test_error_messages_never_leak_sensitive_data(fake_permission, fake_audit):
+    """All error messages must be free of sensitive values (token, full text)."""
+    from deile.integrations.bot.client import (BotClientAuthError,
+                                                BotClientNotReady,
+                                                BotClientRateLimited,
+                                                BotClientTimeoutError,
+                                                BotClientUpstreamError)
+
+    exceptions = [
+        BotClientAuthError("tok_ABC123_secret"),
+        BotClientRateLimited("rate limit"),
+        BotClientNotReady("not ready"),
+        BotClientTimeoutError("timeout"),
+        BotClientUpstreamError("error"),
+        ValueError("unknown"),
+    ]
+    tool = DiscordSendMessageTool()
+    for exc in exceptions:
+        ctx = make_context(
+            args={"channel_id": "1", "text": "my-secret-payload"},
+            fake_client=_make_error_client(exc),
+            permission=fake_permission,
+            audit=fake_audit,
+            # clean audit between iterations
+        )
+        result = await tool.execute(ctx)
+        # The full message text must never appear in the error message
+        assert "my-secret-payload" not in result.message, (
+            f"{type(exc).__name__} message leaked text payload"
+        )
+        # The raw exception message with token-like content must not leak
+        if isinstance(exc, BotClientAuthError):
+            assert "tok_ABC123" not in result.message

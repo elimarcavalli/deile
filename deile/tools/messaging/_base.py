@@ -213,7 +213,7 @@ class MessagingTool(Tool, abc.ABC):
         try:
             data = await self._perform(facade, args)
         except Exception as exc:
-            err = self._map_exception(exc)
+            err = self._map_exception(exc, args)
             self._emit_audit(
                 audit,
                 "failed",
@@ -313,48 +313,148 @@ class MessagingTool(Tool, abc.ABC):
         )
         return None
 
-    def _map_exception(self, exc: Exception) -> ToolResult:
+    def _map_exception(
+        self, exc: Exception, args: Optional[Dict[str, Any]] = None
+    ) -> ToolResult:
         from ...integrations.bot.client import (BotClientAuthError,
                                                 BotClientNotReady,
                                                 BotClientRateLimited,
                                                 BotClientTimeoutError,
                                                 BotClientUpstreamError)
 
+        # Log full traceback at ERROR level for diagnostics.
+        logger.error("%s: erro mapeado — %s", self.tool_name, type(exc).__name__,
+                     exc_info=exc)
+
+        tool = self.tool_name
+        args = args or {}
+        channel_id = args.get("channel_id", "")
+
+        # ── BotClientAuthError ──────────────────────────────────────────
         if isinstance(exc, BotClientAuthError):
+            msg = (
+                f"{tool}: token de autenticação do deilebot rejeitado. "
+                f"O daemon deilebot não aceitou o token configurado. "
+                f"Verifique DEILE_BOT_AUTH_TOKEN."
+            )
             return ToolResult.error_result(
-                "control-plane rejected the auth token",
+                msg,
                 error=exc,
                 error_code="BOT_AUTH_ERROR",
+                metadata={
+                    "error_details": {
+                        "error_code": "BOT_AUTH_ERROR",
+                        "suggestion": "Verifique DEILE_BOT_AUTH_TOKEN",
+                        "recoverable": False,
+                    }
+                },
             )
+
+        # ── BotClientRateLimited ────────────────────────────────────────
         if isinstance(exc, BotClientRateLimited):
+            retry_after = getattr(exc, "retry_after", None)
+            if retry_after is not None:
+                suggestion = f"Aguarde {retry_after}s antes de reenviar."
+            else:
+                suggestion = "Aguarde antes de reenviar."
+            msg = (
+                f"{tool}: rate-limited pela API do Discord. "
+                f"O daemon deilebot foi limitado pela API do Discord. "
+                f"{suggestion}"
+            )
+            details: Dict[str, Any] = {
+                "error_code": "BOT_RATE_LIMITED",
+                "suggestion": suggestion,
+                "recoverable": True,
+            }
+            if retry_after is not None:
+                details["retry_after"] = retry_after
             return ToolResult.error_result(
-                "control-plane rate-limited the request",
+                msg,
                 error=exc,
                 error_code="BOT_RATE_LIMITED",
+                metadata={"error_details": details},
             )
+
+        # ── BotClientNotReady ───────────────────────────────────────────
         if isinstance(exc, BotClientNotReady):
+            msg = (
+                f"{tool}: deilebot não está pronto. "
+                f"O daemon pode estar iniciando ou indisponível. "
+                f"Tente novamente em alguns segundos."
+            )
             return ToolResult.error_result(
-                "deilebot adapter not ready",
+                msg,
                 error=exc,
                 error_code="BOT_NOT_READY",
+                metadata={
+                    "error_details": {
+                        "error_code": "BOT_NOT_READY",
+                        "suggestion": "Tente novamente em alguns segundos",
+                        "recoverable": True,
+                    }
+                },
             )
+
+        # ── BotClientTimeoutError ───────────────────────────────────────
         if isinstance(exc, BotClientTimeoutError):
+            msg = (
+                f"{tool}: timeout ao enviar requisição. "
+                f"O daemon deilebot não respondeu a tempo. "
+                f"Verifique se o serviço deilebot está saudável e tente novamente."
+            )
             return ToolResult.error_result(
-                "control-plane timed out",
+                msg,
                 error=exc,
                 error_code="BOT_TIMEOUT",
+                metadata={
+                    "error_details": {
+                        "error_code": "BOT_TIMEOUT",
+                        "suggestion": "Verifique se o serviço deilebot está saudável",
+                        "recoverable": True,
+                    }
+                },
             )
+
+        # ── BotClientUpstreamError ──────────────────────────────────────
         if isinstance(exc, BotClientUpstreamError):
+            if channel_id:
+                prefix = f"{tool}: falha ao postar no canal {channel_id}."
+            else:
+                prefix = f"{tool}: falha ao comunicar com o Discord."
+            msg = (
+                f"{prefix} "
+                f"O daemon deilebot recebeu erro da API do Discord "
+                f"(possível instabilidade temporária ou payload inválido). "
+                f"Tente novamente em alguns segundos."
+            )
             return ToolResult.error_result(
-                "control-plane upstream error (Discord side?)",
+                msg,
                 error=exc,
                 error_code="BOT_UPSTREAM",
+                metadata={
+                    "error_details": {
+                        "error_code": "BOT_UPSTREAM",
+                        "suggestion": "Tente novamente em alguns segundos",
+                        "recoverable": True,
+                    }
+                },
             )
-        # Unknown error → BOT_UNREACHABLE so the surface stays uniform.
+
+        # ── Unknown error → BOT_UNREACHABLE ────────────────────────────
         return ToolResult.error_result(
-            f"messaging tool failed: {type(exc).__name__}",
+            f"{tool}: falha inesperada ({type(exc).__name__}). "
+            f"Erro não classificado na comunicação com o deilebot. "
+            f"Verifique os logs do daemon para diagnóstico.",
             error=exc,
             error_code="BOT_UNREACHABLE",
+            metadata={
+                "error_details": {
+                    "error_code": "BOT_UNREACHABLE",
+                    "suggestion": "Verifique os logs do daemon para diagnóstico",
+                    "recoverable": False,
+                }
+            },
         )
 
     def _success_message(self, data: Dict[str, Any], args: Dict[str, Any]) -> str:
