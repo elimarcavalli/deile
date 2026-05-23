@@ -340,12 +340,12 @@ Você é o GATE DE CRÍTICA DE ESCOPO da issue #{number} (tipo: {type}) do repos
 1. Leia a issue (abaixo) e o template oficial do tipo:
    gh api repos/{repo}/contents/.github/ISSUE_TEMPLATE/{template} --jq .content | base64 --decode
    (Para feature/bug/refactor, consulte a arquitetura real — docs/system_design/ e o código; clone com `gh repo clone {repo} repo` se ainda não houver ./repo. Para bug, verifique se dá pra localizar a origem no código.)
-2. Julgue com RIGOR: a issue está CLARA e bem-escopada (segue o template, tem substância para a PRÓXIMA etapa sem ambiguidade) ou POBRE (vazia, template em branco/incompleto, genérica demais, sem alvo/critério)?
-3. Seja honesto e específico — se POBRE, aponte exatamente o que falta.
+2. Julgue com RIGOR: a issue está CLARA e bem-escopada (segue o template, tem substância para a PRÓXIMA etapa sem ambiguidade) ou VAGO (vazia, template em branco/incompleto, genérica demais, sem alvo/critério)?
+3. Seja honesto e específico — se VAGO, aponte exatamente o que falta.
 
 VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE uma destas, nada depois dela:
   VEREDITO: CLARO
-  VEREDITO: POBRE: <o que falta, em uma frase concreta>
+  VEREDITO: VAGO: <o que falta, em uma frase concreta>
 
 === Issue #{number} (tipo: {type}): {title} ===
 {body}

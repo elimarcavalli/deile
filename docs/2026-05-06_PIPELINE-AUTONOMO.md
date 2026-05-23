@@ -22,7 +22,7 @@
 >            (crítica de escopo, persona por tipo)
 >                          │
 >          ┌───────────────┴───────────────┐
->        CLARO                           POBRE
+>        CLARO                           VAGO
 >          │                               │
 >          ▼                               ▼
 >   ✅ ~workflow:               🏷️ refinar +
@@ -71,7 +71,7 @@
 > | `bug`         | 🪲 **debugger**        | `~workflow:em_arquitetura`   | `bug_report.md`                       |
 > | `refactor`    | 🏛️ **architect**       | `~workflow:em_arquitetura`   | `refactor_proposal.md`                |
 >
-> **CLARO** → vai pra `revisada`. **POBRE** → entra no refino (até **5 voltas**); se a decisão de alto impacto precisa do humano, o refinador **pausa em `~workflow:aguardando_stakeholder`** com 2-3 sugestões já comentadas; o humano resolve no comentário, remove a pausa, o ciclo retoma. Teto estourado → `~workflow:bloqueada` + assignee do autor.
+> **CLARO** → vai pra `revisada`. **VAGO** → entra no refino (até **5 voltas**); se a decisão de alto impacto precisa do humano, o refinador **pausa em `~workflow:aguardando_stakeholder`** com 2-3 sugestões já comentadas; o humano resolve no comentário, remove a pausa, o ciclo retoma. Teto estourado → `~workflow:bloqueada` + assignee do autor.
 >
 > ### 🚀 Decomposição vs implementação paralela
 >

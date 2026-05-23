@@ -2,8 +2,8 @@
 
 Exercises the worker-mode stage logic with mocked github / worker / notifier:
 
-- CRITIQUE: CLARO → revisada (+ clears refinar); POBRE → refinar + the type's
-  refine state (intent→em_refinamento, code→em_arquitetura); POBRE at the
+- CRITIQUE: CLARO → revisada (+ clears refinar); VAGO → refinar + the type's
+  refine state (intent→em_refinamento, code→em_arquitetura); VAGO at the
   ceiling → block + assign author.
 - REFINE: OK → bump count + back to nova; AGUARDA_STAKEHOLDER → waiting overlay;
   paused/blocked issues skipped; hand-applied ``refinar`` rehydrated.
@@ -155,7 +155,7 @@ class TestCritique:
     async def test_poor_feature_goes_to_arquitetura(self):
         monitor, _, _ = _make_monitor(
             label_map={WORKFLOW_NEW: [_issue(2, "feature")]},
-            worker_responses=[_resp("VEREDITO: POBRE: falta contrato")],
+            worker_responses=[_resp("VEREDITO: VAGO: falta contrato")],
         )
         await monitor._review_one_new_issue()
         assert (2, WORKFLOW_REVIEWING, WORKFLOW_ARCHITECTURE) in _transitions(monitor.github)
@@ -164,7 +164,7 @@ class TestCritique:
     async def test_poor_intent_goes_to_refinamento(self):
         monitor, _, _ = _make_monitor(
             label_map={WORKFLOW_NEW: [_issue(3, "intent")]},
-            worker_responses=[_resp("VEREDITO: POBRE: template vazio")],
+            worker_responses=[_resp("VEREDITO: VAGO: template vazio")],
         )
         await monitor._review_one_new_issue()
         assert (3, WORKFLOW_REVIEWING, WORKFLOW_REFINING) in _transitions(monitor.github)
@@ -172,7 +172,7 @@ class TestCritique:
     async def test_poor_at_ceiling_blocks_and_assigns_author(self):
         monitor, _, _ = _make_monitor(
             label_map={WORKFLOW_NEW: [_issue(4, "bug", author="bob")]},
-            worker_responses=[_resp("VEREDITO: POBRE: sem repro")],
+            worker_responses=[_resp("VEREDITO: VAGO: sem repro")],
             refine_max_attempts=5,
         )
         monitor._resume_tracker.get(4).refine_attempt = 5  # ceiling already hit

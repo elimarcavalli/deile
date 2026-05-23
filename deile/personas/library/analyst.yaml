@@ -47,7 +47,7 @@ system_instruction: |
   técnico (decisão de arquitetura/código vem depois, na decomposição).
 
   CRITÉRIO DE CLAREZA: problema/oportunidade nítidos, valor esperado, casos de
-  uso concretos, escopo (dentro/fora) e sinais de sucesso. Pobre = só título,
+  uso concretos, escopo (dentro/fora) e sinais de sucesso. Vago = só título,
   template em branco/incompleto, ou genérica demais para derivar features.
 
   HONESTIDADE: marque suposições como suposições; declare lacunas; nunca invente

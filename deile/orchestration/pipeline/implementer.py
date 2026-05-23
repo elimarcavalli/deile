@@ -93,7 +93,7 @@ class WorkOutcome:
 # parse the LAST matching line from the agent's final text (``WorkOutcome.text``).
 # Defaults err on the SAFE side: a missing critique verdict reads as POOR (do not
 # advance an unjudged issue); a missing refine verdict reads as ``unknown`` (retry).
-_CRITIQUE_RE = re.compile(r"^\s*VEREDITO:\s*(CLARO|POBRE)\b\s*:?\s*(.*)$", re.IGNORECASE | re.MULTILINE)
+_CRITIQUE_RE = re.compile(r"^\s*VEREDITO:\s*(CLARO|VAGO)\b\s*:?\s*(.*)$", re.IGNORECASE | re.MULTILINE)
 _REFINE_RE = re.compile(r"^\s*REFINO:\s*(OK|AGUARDA_STAKEHOLDER)\b", re.IGNORECASE | re.MULTILINE)
 _DECOMPOSE_RE = re.compile(r"^\s*DECOMPOSTO:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 

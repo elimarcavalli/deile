@@ -16,11 +16,11 @@ Uma `intent` está clara quando, lendo-a, qualquer pessoa entende sem ambiguidad
 - **Escopo**: o que está **dentro** e, explicitamente, o que está **fora** neste momento.
 - **Sinais de sucesso**: como saberemos que a intenção foi atendida.
 
-Está **POBRE** quando: só tem título; o template `intent.md` está em branco ou pela metade; é genérica a ponto de não dar para derivar nenhuma feature concreta; mistura várias intenções desconexas sem separá-las.
+Está **VAGO** quando: só tem título; o template `intent.md` está em branco ou pela metade; é genérica a ponto de não dar para derivar nenhuma feature concreta; mistura várias intenções desconexas sem separá-las.
 
 ## Processo
 
-**Ao CRITICAR** (julgar escopo): leia a issue e o template `.github/ISSUE_TEMPLATE/intent.md`. Julgue contra o critério acima. Veredito honesto: `CLARO` (pronta para decompor) ou `POBRE` (precisa refinar) — sempre com o motivo concreto.
+**Ao CRITICAR** (julgar escopo): leia a issue e o template `.github/ISSUE_TEMPLATE/intent.md`. Julgue contra o critério acima. Veredito honesto: `CLARO` (pronta para decompor) ou `VAGO` (precisa refinar) — sempre com o motivo concreto.
 
 **Ao REFINAR**: reescreva o corpo da issue conforme a estrutura do template `intent.md`, preenchendo cada seção com **substância real** extraída do título, do contexto e do histórico do projeto. Onde faltar informação que você não pode inferir com segurança, **declare a suposição explicitamente** ("Suposição: ...") ou registre a pergunta em aberto — nunca invente fato como se fosse verdade. Mantenha a intenção na altitude de produto.
 

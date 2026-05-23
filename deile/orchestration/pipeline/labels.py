@@ -231,7 +231,7 @@ LABEL_DESCRIPTIONS = {
     REVIEW_IN_PROGRESS: "Pipeline: PR em revisão (lock)",
     REVIEW_CONCLUDED: "Pipeline: PR revisada/mergeada",
     MENTION_DONE: "Pipeline: menção/atribuição já processada — humano remove para reprocessar",
-    REFINAR: "Pipeline: escopo pobre — precisa de refinamento antes de avançar (humano pode aplicar à mão)",
+    REFINAR: "Pipeline: escopo vago — precisa de refinamento antes de avançar (humano pode aplicar à mão)",
 }
 
 

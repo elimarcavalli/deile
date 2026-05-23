@@ -590,7 +590,7 @@ async def _route_issue_to_pipeline(
 
 async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
     """Stage 1. With the refinement gate ON (issue #257) this is the CRITIQUE of
-    scope: dispatch the type's persona to judge CLARO/POBRE; clear → revisada,
+    scope: dispatch the type's persona to judge CLARO/VAGO; clear → revisada,
     poor → refinar + the type's refine state (analyst→em_refinamento, others→
     em_arquitetura), with a block-to-author after ``refine_max_attempts`` passes.
     With the gate OFF it keeps the legacy no-op transition (nova→revisada)."""
@@ -730,7 +730,7 @@ async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
     except GhCommandError as exc:
         await _record_gh_error(monitor, f"could not move #{number} to {refine_state}", exc)
         return
-    logger.info("critique #%d POBRE → %s (%s)", number, refine_state, reason[:120])
+    logger.info("critique #%d VAGO → %s (%s)", number, refine_state, reason[:120])
 
 
 async def refine_one_issue(monitor: "PipelineMonitor") -> None:
@@ -849,7 +849,7 @@ async def _block_refinement(monitor: "PipelineMonitor", issue, reason: str) -> N
     short = reason[:PIPELINE_MSG_TRUNCATE_CHARS]
     comment = (
         f"⛔ **Refino atingiu o teto de {monitor.config.refine_max_attempts} tentativas** "
-        f"e o escopo ainda está pobre.\n\n"
+        f"e o escopo ainda está vago.\n\n"
         f"**Falta:** {short}\n\n"
         f"Autor: por favor refine esta issue manualmente (preencha o template) e remova o "
         f"label `{WORKFLOW_BLOCKED}` para o pipeline retomar o refinamento."

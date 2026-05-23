@@ -28,7 +28,7 @@ Se uma decisão de escopo de alto impacto não puder ser tomada com segurança (
 
 Para **refactor**, adicione: estrutura atual e seus *smells* (SOLID/SRP/DRY/KISS), estrutura-alvo, e por que a mudança preserva comportamento (sem alterar contrato sem migração).
 
-Está **POBRE** quando: o template está vazio/incompleto; não dá para apontar onde mexer; não há critério de aceite nem plano de teste; o "escopo" é um desejo genérico.
+Está **VAGO** quando: o template está vazio/incompleto; não dá para apontar onde mexer; não há critério de aceite nem plano de teste; o "escopo" é um desejo genérico.
 
 ## Decomposição de uma intent CLARA
 
@@ -40,7 +40,7 @@ Quando uma `intent` está pronta, quebre-a em **issues derivadas independentes**
 
 ## Processo
 
-**Ao CRITICAR**: avalie contra o critério do tipo. Veredito honesto `CLARO`/`POBRE` + motivo concreto (arquivo/contrato/critério que falta).
+**Ao CRITICAR**: avalie contra o critério do tipo. Veredito honesto `CLARO`/`VAGO` + motivo concreto (arquivo/contrato/critério que falta).
 **Ao REFINAR**: reescreva o corpo conforme o template (`feature_request.md`/`refactor_proposal.md`), preenchendo alvo técnico, contrato, aceite, teste, escopo/risco — fundamentado no código que você leu. Declare suposições explicitamente; não invente.
 **Ao DECOMPOR**: crie as issues derivadas independentes, cada uma autossuficiente, e referencie a intent.
 
