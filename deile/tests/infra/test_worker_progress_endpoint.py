@@ -149,6 +149,50 @@ async def test_progress_caps_progress_lines_at_30(client):
     assert data["progress_lines"][-1] == "line 99"
 
 
+async def test_evict_old_tasks_preserves_in_flight():
+    """Fix G4: ``_evict_old_tasks_if_needed`` descarta entradas terminais
+    quando ``_TASKS`` excede o cap, preservando entradas com ok=None
+    (em execução)."""
+    worker_server._TASKS.clear()
+    original_max = worker_server._TASKS_MAX
+    worker_server._TASKS_MAX = 3
+    try:
+        # 3 terminais + 1 em execução = 4 (> max=3)
+        worker_server._TASKS["t1"] = {"ok": True, "finished_at": "2026-01-01T00:00:00"}
+        worker_server._TASKS["t2"] = {"ok": True, "finished_at": "2026-01-02T00:00:00"}
+        worker_server._TASKS["t3"] = {"ok": False, "finished_at": "2026-01-03T00:00:00"}
+        worker_server._TASKS["running"] = {"ok": None}
+
+        worker_server._evict_old_tasks_if_needed()
+
+        # Em execução SEMPRE preservada
+        assert "running" in worker_server._TASKS
+        # Total <= max (3) — pelo menos a mais antiga foi removida
+        assert len(worker_server._TASKS) <= 3
+        # A mais antiga (t1) foi a primeira a sair
+        assert "t1" not in worker_server._TASKS
+    finally:
+        worker_server._TASKS.clear()
+        worker_server._TASKS_MAX = original_max
+
+
+async def test_evict_noop_when_only_in_flight_tasks():
+    """Se todas as entradas estão em execução, eviction não faz nada (não
+    descartamos trabalho ativo)."""
+    worker_server._TASKS.clear()
+    original_max = worker_server._TASKS_MAX
+    worker_server._TASKS_MAX = 1
+    try:
+        worker_server._TASKS["a"] = {"ok": None}
+        worker_server._TASKS["b"] = {"ok": None}
+        worker_server._TASKS["c"] = {"ok": None}
+        worker_server._evict_old_tasks_if_needed()
+        assert len(worker_server._TASKS) == 3
+    finally:
+        worker_server._TASKS.clear()
+        worker_server._TASKS_MAX = original_max
+
+
 async def test_result_strips_internal_keys(client):
     """``GET /v1/result/{id}`` não deve vazar ``_mono_start`` (chave interna)."""
     task_id = "result-strip"

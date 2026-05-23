@@ -16,6 +16,7 @@ A UI (Rich Live multiplexada) vive em :mod:`deile.ui.subagent_panel`; a tool
 LLM-facing em :mod:`deile.tools.dispatch_parallel_subagents`.
 """
 
+from .constants import HISTORY_MARKER_KEY, is_display_only_entry
 from .events import (SubAgentEvent, SubAgentEventKind, SubAgentState,
                      SubAgentStatus, SubAgentTask)
 from .orchestrator import (MAX_SUBAGENT_BUDGET_S, SubAgentOrchestrator,
@@ -24,6 +25,7 @@ from .runner import (LocalSubAgentRunner, SubAgentRunner, WorkerSubAgentRunner,
                      resolve_runner)
 
 __all__ = [
+    "HISTORY_MARKER_KEY",
     "LocalSubAgentRunner",
     "MAX_SUBAGENT_BUDGET_S",
     "SubAgentEvent",
@@ -35,5 +37,6 @@ __all__ = [
     "SubAgentStatus",
     "SubAgentTask",
     "WorkerSubAgentRunner",
+    "is_display_only_entry",
     "resolve_runner",
 ]

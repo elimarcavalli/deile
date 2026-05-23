@@ -398,6 +398,67 @@ async def test_recursion_guard_blocks_nested_calls(monkeypatch):
     assert result.metadata.get("error_code") == "RECURSION_DENIED"
 
 
+async def test_tool_cleans_subagent_sessions_after_run(monkeypatch):
+    """Fix B1: cada sub-DEILE cria session_id ``subagent_*`` no agente; sem
+    cleanup, ``agent._sessions`` cresce indefinidamente. O LocalRunner deve
+    deletar a sub-session no finally (ou erro).
+    """
+    from deile.orchestration.subagents.runner import LocalSubAgentRunner
+
+    class _FakeAgent:
+        def __init__(self):
+            self._sessions = {}
+            self._call_count = 0
+
+        def process_input_stream(self, prompt, **kwargs):
+            sid = kwargs["session_id"]
+            self._sessions[sid] = object()  # simula registro
+            self._call_count += 1
+            async def _gen():
+                return
+                yield  # pragma: no cover
+            return _gen()
+
+    agent = _FakeAgent()
+    runner = LocalSubAgentRunner(agent)
+    state = SubAgentState(task=SubAgentTask(
+        index=1, description="x", prompt="p" * 60,
+    ))
+    await runner.run_one(state, on_event=lambda _: None)
+
+    assert agent._call_count == 1
+    # Sessão foi criada E deletada — não fica residual.
+    assert agent._sessions == {}
+
+
+async def test_safe_truncate_markdown_handles_unclosed_code_fences():
+    """Fix H3: truncar em 400 chars não pode deixar code-fence aberta."""
+    from deile.tools.dispatch_parallel_subagents import _safe_truncate_markdown
+
+    bad = "Algumas linhas\n\n```python\n" + "x" * 600
+    result = _safe_truncate_markdown(bad, max_chars=200)
+    # Deve fechar a fence com ``` no final
+    assert result.count("```") % 2 == 0, f"odd fences: {result!r}"
+
+
+async def test_safe_truncate_markdown_prefers_paragraph_break():
+    """Truncamento preferencial em \\n\\n na janela [70%..100%] do limite."""
+    from deile.tools.dispatch_parallel_subagents import _safe_truncate_markdown
+    text = "A" * 250 + "\n\n" + "B" * 300
+    result = _safe_truncate_markdown(text, max_chars=400)
+    # Cortou no \n\n (índice 250), não em 400.
+    assert "B" not in result
+    assert len(result) <= 400
+
+
+async def test_safe_truncate_markdown_short_text_passthrough():
+    """Texto curto retorna inalterado (sem ellipsis)."""
+    from deile.tools.dispatch_parallel_subagents import _safe_truncate_markdown
+    short = "tudo certo aqui"
+    assert _safe_truncate_markdown(short, max_chars=400) == short
+    assert _safe_truncate_markdown("", max_chars=400) == ""
+
+
 async def test_tool_schema_is_well_formed():
     """Verifica que o schema declara os campos esperados pra LLM."""
     tool = DispatchParallelSubagentsTool()

@@ -118,11 +118,13 @@ class LocalSubAgentRunner:
             label=task.description,
         ))
 
-        try:
-            # session_id próprio garante contexto/histórico limpos. Não usamos
-            # uuid completo pra manter logs legíveis.
-            session_id = f"subagent_{task.index}_{uuid.uuid4().hex[:8]}"
+        # session_id próprio garante contexto/histórico limpos. Não usamos
+        # uuid completo pra manter logs legíveis. Limpamos a sessão no
+        # ``finally`` para evitar RAM leak — agent._sessions é um dict que
+        # cresceria sem limite após dispatches sucessivos.
+        session_id = f"subagent_{task.index}_{uuid.uuid4().hex[:8]}"
 
+        try:
             kwargs: dict = {"session_id": session_id}
             if task.persona:
                 # ``persona_name`` é a chave canônica usada pelo worker_server.
@@ -239,6 +241,19 @@ class LocalSubAgentRunner:
                 label=f"✗ erro: {_short(err, 80)}",
                 error=err,
             ))
+        finally:
+            # Cleanup do sub-session — sem isso ``agent._sessions`` cresce
+            # indefinidamente sob dispatches repetidos (revisão crítica B1).
+            try:
+                delete = getattr(self._agent, "delete_session", None)
+                if callable(delete):
+                    delete(session_id)
+                else:
+                    sessions = getattr(self._agent, "_sessions", None)
+                    if isinstance(sessions, dict):
+                        sessions.pop(session_id, None)
+            except Exception:
+                logger.debug("could not clean sub-session", exc_info=True)
 
 
 def _format_tool_inline(tool_name: str, args: dict) -> str:

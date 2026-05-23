@@ -116,10 +116,36 @@ def _read_auth_token() -> str:
 
 # A single-process registry of recent tasks. Survives until pod restart;
 # results live in the PVC under /home/deile/work/<id>/result.json anyway.
+# Issue #257 round 3: cap em ``_TASKS_MAX`` para evitar crescimento ilimitado
+# sob carga prolongada — evicção FIFO da entrada mais antiga TERMINAL (ok não
+# é None) preservando todas as tasks em execução.
 _TASKS: Dict[str, Dict[str, Any]] = {}
+_TASKS_MAX: int = int(os.environ.get("DEILE_WORKER_MAX_INMEM_TASKS", "500"))
 _TASK_LOCK = asyncio.Lock()  # MVP: serialize CWD-coupled work
 _AGENT = None
 _AGENT_LOCK = asyncio.Lock()
+
+
+def _evict_old_tasks_if_needed() -> None:
+    """Quando ``_TASKS`` excede ``_TASKS_MAX``, descarta as entradas terminais
+    mais antigas (preserva execuções em andamento). Best-effort; chamado em
+    ``dispatch_handler`` na admissão de novas tasks.
+    """
+    if len(_TASKS) <= _TASKS_MAX:
+        return
+    # Lista candidatas: ok já não é None (terminal) e tem ``finished_at``.
+    terminal_ids = [
+        (tid, state.get("finished_at", ""))
+        for tid, state in _TASKS.items()
+        if state.get("ok") is not None
+    ]
+    if not terminal_ids:
+        # Todas em execução — não evita o crescimento, mas preserva trabalho.
+        return
+    terminal_ids.sort(key=lambda t: t[1])  # mais antigas primeiro
+    excess = len(_TASKS) - _TASKS_MAX
+    for tid, _ in terminal_ids[:excess]:
+        _TASKS.pop(tid, None)
 
 
 # ---- Bot integration (for status messages) -----------------------------------
@@ -739,6 +765,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     resume_ctx = _parse_resume_ctx(body)
 
     task_id = uuid.uuid4().hex[:12]
+    _evict_old_tasks_if_needed()
     _TASKS[task_id] = {
         "task_id": task_id,
         "ok": None,

@@ -220,6 +220,31 @@ async def test_capture_output_false_does_not_redirect():
     assert result.captured_stderr == ""
 
 
+async def test_capped_buffer_truncates_oversize_writes():
+    """Fix C5: ``_CappedBuffer`` substitui StringIO unbounded — após o cap,
+    descarta o resto e injeta marker ``[...truncated]``."""
+    from deile.orchestration.subagents.orchestrator import _CappedBuffer
+    buf = _CappedBuffer(max_bytes=100)
+    for _ in range(50):
+        buf.write("x" * 10)  # 500 chars total
+    content = buf.getvalue()
+    assert len(content) < 200  # bem abaixo de 500
+    assert "[...truncated]" in content
+    # Continua aceitando writes (report success) sem estourar
+    buf.write("more")
+    # write() retorna len(s) por contrato fileio mesmo após cap
+    assert buf.write("test") == 4
+
+
+async def test_capped_buffer_below_cap_keeps_everything():
+    from deile.orchestration.subagents.orchestrator import _CappedBuffer
+    buf = _CappedBuffer(max_bytes=1024)
+    buf.write("hello ")
+    buf.write("world")
+    assert buf.getvalue() == "hello world"
+    assert "[...truncated]" not in buf.getvalue()
+
+
 async def test_markdown_summary_format():
     """``markdown_summary`` produz markdown adequado para renderização no /resume."""
     runner = _StubRunner(delays={1: 0.001, 2: 0.001}, fail_for={2})

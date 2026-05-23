@@ -202,11 +202,13 @@ class SubAgentPanelRenderer:
         glyph = _STATUS_GLYPH.get(status, "•")
         elapsed = _fmt_mmss(st.elapsed_s)
 
-        # Title: status glyph + descrição + tempo
+        # Title: status glyph + descrição + tempo. ``description`` é
+        # LLM-supplied (vem do payload da tool) — pode conter ``[red]…[/]``
+        # que o LLM gere literalmente. Sem escape, quebra o markup do painel.
         title = (
             f"[{style}]{glyph}[/{style}] "
             f"[bold]sub-DEILE #{st.task.index}[/bold] · "
-            f"{_truncate(st.task.description, 56)} "
+            f"{_escape_markup(_truncate(st.task.description, 56))} "
             f"[dim]{elapsed}[/dim]"
         )
 
@@ -443,10 +445,28 @@ class SubAgentPanelRenderer:
         if not sys.stdin.isatty():
             return None
 
+        # Snapshot atual + check se já estamos em cbreak (caso comum: CLI já
+        # entrou em cbreak via :meth:`_stream_with_esc_cancel`). NÃO chamamos
+        # setcbreak novamente se já estiver — evita o bug de double-restore
+        # do CLI watcher acabar com termios cooked quando o painel sair antes.
+        # O atexit em ``_stdin_owner`` é a rede de segurança absoluta para
+        # Ctrl+C / exit abrupto.
         try:
-            saved = termios.tcgetattr(sys.stdin.fileno())
+            fd = sys.stdin.fileno()
+            current_attrs = termios.tcgetattr(fd)
+            # lflag está no índice 3; ICANON ativo = modo cooked.
+            already_cbreak = not bool(current_attrs[3] & termios.ICANON)
         except Exception:
-            return None
+            already_cbreak = True  # assume sim — não tentamos setar
+            current_attrs = None
+        we_set_cbreak = False
+        if not already_cbreak and current_attrs is not None:
+            try:
+                tty.setcbreak(sys.stdin.fileno())
+                we_set_cbreak = True
+            except Exception:
+                logger.debug("setcbreak failed; keyboard watcher disabled", exc_info=True)
+                return None
 
         loop = asyncio.get_running_loop()
 
@@ -494,7 +514,9 @@ class SubAgentPanelRenderer:
 
         def _watch() -> None:
             try:
-                tty.setcbreak(sys.stdin.fileno())
+                # stdin já está em cbreak (configurado pelo CLI watcher).
+                # Não chamamos setcbreak aqui pra não criar um segundo
+                # snapshot que poderia ser restaurado fora de ordem.
                 while not stop_event.is_set():
                     # Bloco curto pro stop_event ser checado a cada 100ms.
                     r, _, _ = _select.select([sys.stdin], [], [], 0.1)
@@ -553,10 +575,14 @@ class SubAgentPanelRenderer:
             except Exception:
                 logger.debug("keyboard watcher crashed", exc_info=True)
             finally:
-                try:
-                    termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, saved)
-                except Exception:
-                    pass
+                # Só restauramos se NÓS setamos cbreak (caso o painel rode
+                # fora de um turno cbreak da CLI). Quando ``already_cbreak``,
+                # quem setou (CLI ou outro) é responsável por restaurar.
+                if we_set_cbreak and current_attrs is not None:
+                    try:
+                        termios.tcsetattr(fd, termios.TCSADRAIN, current_attrs)
+                    except Exception:
+                        pass
 
         t = threading.Thread(target=_watch, daemon=True, name="subagent-kb-watcher")
         t.start()

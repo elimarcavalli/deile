@@ -64,7 +64,7 @@ def replay_history(ui: Any, session: Any, history: list) -> None:
     relying on the LLM having written a textual consolidation.
     """
     from .core.agent import _normalize_history_content
-    from .tools.dispatch_parallel_subagents import HISTORY_MARKER_KEY
+    from .orchestration.subagents.constants import HISTORY_MARKER_KEY
 
     ui.show_welcome(session)
     for entry in history:

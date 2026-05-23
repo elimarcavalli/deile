@@ -40,7 +40,8 @@ import time
 from collections import defaultdict
 from typing import Dict, List, Optional
 
-from deile.orchestration.subagents import (MAX_SUBAGENT_BUDGET_S,
+from deile.orchestration.subagents import (HISTORY_MARKER_KEY,
+                                           MAX_SUBAGENT_BUDGET_S,
                                            SubAgentOrchestrator,
                                            SubAgentTask, resolve_runner)
 from deile.orchestration.subagents.events import SubAgentState
@@ -69,10 +70,9 @@ _DESCRIPTION_MAX_LEN = 80
 _PROMPT_MIN_LEN = 30
 _PROMPT_MAX_LEN = 8000
 
-# Marcador metadata na conversation_history para entradas geradas por esta tool.
-# Lido por :func:`deile.cli_session_helpers.replay_history` para reaplicar o
-# resumo do painel em ``/resume`` sem depender do LLM ter consolidado por escrito.
-HISTORY_MARKER_KEY = "subagent_panel_summary"
+# HISTORY_MARKER_KEY mora em deile/orchestration/subagents/constants.py
+# (re-exportado acima) — único ponto de verdade, lido por replay_history,
+# build_context (filtragem) e esta tool (escrita).
 
 
 class DispatchParallelSubagentsTool(Tool):
@@ -415,6 +415,44 @@ def _build_tasks_from_payload(raw: object):
     return tasks, None
 
 
+def _safe_truncate_markdown(text: str, max_chars: int = 400) -> str:
+    """Trunca preservando integridade básica de markdown.
+
+    O ``result_text`` do LocalRunner é a concatenação de TEXT_DELTAs do
+    sub-DEILE — pode conter code-fences abertas, links, listas. Cortar em
+    400 chars no meio de um ``[abc](http://...)`` ou de um ` ``` ` solto
+    polui o contexto do LLM principal (que pode tentar consolidar e usar
+    a sintaxe quebrada).
+
+    Estratégia: corta no último ``\\n\\n`` ou ``.`` antes do limite. Se não
+    achar, corta no limite cru com ``…``. Code-fences abertas são fechadas
+    com um ``\\n```\\n`` defensivo.
+    """
+    if not text:
+        return ""
+    text = text.strip()
+    if len(text) <= max_chars:
+        return text
+    # Procura a última quebra "boa" dentro de [0..max_chars]:
+    # \n\n (parágrafo) > ". " (sentença). Sem floor — se a única quebra estiver
+    # no início, mesmo assim entregamos um corte clean (melhor que cortar no
+    # meio de markdown).
+    cut = text.rfind("\n\n", 0, max_chars)
+    if cut < 0:
+        cut = text.rfind(". ", 0, max_chars)
+        if cut > 0:
+            cut += 1  # inclui o ponto
+    if cut < 0:
+        cut = max_chars - 1
+        truncated = text[:cut].rstrip() + "…"
+    else:
+        truncated = text[:cut].rstrip()
+    # Se ficou com code-fence aberta (número ímpar de ```), fecha.
+    if truncated.count("```") % 2 == 1:
+        truncated += "\n```"
+    return truncated
+
+
 def _state_to_dict(st: SubAgentState) -> dict:
     """Serializa um :class:`SubAgentState` para o payload de retorno do tool.
 
@@ -431,7 +469,7 @@ def _state_to_dict(st: SubAgentState) -> dict:
         "files_touched": list(st.files_touched),
         "task_id": st.task_id,
         "error": st.error,
-        "summary": st.result_text[:400] if st.result_text else "",
+        "summary": _safe_truncate_markdown(st.result_text, 400),
     }
 
 

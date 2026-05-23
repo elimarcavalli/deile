@@ -27,7 +27,6 @@ import logging
 import sys
 import time
 from dataclasses import dataclass
-from io import StringIO
 from typing import Any, Callable, List, Optional, TextIO
 
 from .events import SubAgentEvent, SubAgentState, SubAgentTask
@@ -147,23 +146,60 @@ class _Broadcast:
                 logger.exception("SubAgentEvent subscriber raised")
 
 
-class _SuppressedIO:
-    """``TextIO`` write-only que descarta tudo silenciosamente.
+# Cap do buffer de stdout/stderr capturados — sub-DEILE pode rodar
+# ``apt install`` ou ``npm install`` que despeja MB de output. Sem o cap,
+# 5 sub-DEILEs em paralelo manteriam dezenas de MB em RAM até o resultado
+# ser devolvido (e o ``data`` da tool é truncado em ``summary[:400]``
+# downstream — o buffer completo é desperdício). Cap por stream.
+_CAPTURE_BUFFER_MAX_BYTES: int = 256 * 1024  # 256 KiB cada stream
 
-    Usado quando não queremos manter o buffer dos sub-DEILEs em memória (caso
-    o usuário não habilite o modo "ver logs brutos"). Implementa só os métodos
-    que ``print()``, ``sys.stdout`` flushes e ``subprocess`` line-buffering
-    podem chamar — suficiente para o caminho típico do ``bash_tool``.
+
+class _CappedBuffer:
+    """``TextIO`` write-only com limite de tamanho.
+
+    Mantém os primeiros ``max_bytes`` caracteres; descarta o resto sem
+    quebrar ``print()`` / ``subprocess`` line-buffering. Após o limite,
+    escreve uma única marca ``[...truncated]`` na primeira tentativa pós-cap
+    pra deixar claro pra debug que algo foi cortado.
+
+    Issue #257 round 3 — substitui o ``StringIO`` unbounded original (C5).
     """
 
-    def write(self, s: str) -> int:  # noqa: D401
-        return len(s)
+    __slots__ = ("_chunks", "_size", "_max", "_truncated")
+
+    def __init__(self, max_bytes: int = _CAPTURE_BUFFER_MAX_BYTES) -> None:
+        self._chunks: list = []
+        self._size: int = 0
+        self._max: int = max(0, int(max_bytes))
+        self._truncated: bool = False
+
+    def write(self, s: str) -> int:
+        if not isinstance(s, str):
+            s = str(s)
+        n = len(s)
+        if self._size >= self._max:
+            if not self._truncated:
+                self._chunks.append("\n[...truncated]\n")
+                self._truncated = True
+            return n  # report success per file protocol
+        # Espaço restante; pode ser tudo ou parte.
+        remaining = self._max - self._size
+        if n <= remaining:
+            self._chunks.append(s)
+            self._size += n
+        else:
+            self._chunks.append(s[:remaining])
+            self._chunks.append("\n[...truncated]\n")
+            self._size = self._max
+            self._truncated = True
+        return n
 
     def flush(self) -> None:
         return None
 
     def writelines(self, lines) -> None:
-        return None
+        for line in lines:
+            self.write(line)
 
     def isatty(self) -> bool:
         return False
@@ -171,6 +207,10 @@ class _SuppressedIO:
     @property
     def encoding(self) -> str:
         return "utf-8"
+
+    def getvalue(self) -> str:
+        """Retorna conteúdo agregado — compatível com ``io.StringIO.getvalue``."""
+        return "".join(self._chunks)
 
 
 class SubAgentOrchestrator:
@@ -243,8 +283,8 @@ class SubAgentOrchestrator:
         # diretamente, e isso polui o terminal do usuário em sub-DEILEs locais.
         # Redirecionamos sys.stdout/sys.stderr para buffers durante a execução.
         # O painel mantém referência ao stdout REAL, então continua renderizando.
-        captured_out = StringIO() if self._capture_output else None
-        captured_err = StringIO() if self._capture_output else None
+        captured_out = _CappedBuffer() if self._capture_output else None
+        captured_err = _CappedBuffer() if self._capture_output else None
         prev_stdout = sys.stdout
         prev_stderr = sys.stderr
         if self._capture_output:
