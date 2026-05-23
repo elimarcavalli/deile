@@ -155,6 +155,20 @@ class AnthropicProvider(ModelProvider):
         try:
             response = await self._client.messages.create(**create_kwargs, **kwargs)
         except anthropic.APIError as exc:
+            # Bug 2 (fix): generate() simples também precisa registrar o
+            # request mesmo quando falha, igual ao chat_with_tools faz via
+            # _record_failed_usage. Sem isso, /loop, summarization e qualquer
+            # caller de `generate()` (agent.py:2205/2458/2515) ficavam fora
+            # da contabilidade — explicava por que o painel de custos
+            # subestimava o burn.
+            await self._record_failed_usage(
+                session_id=kwargs.get("session_id", "default"),
+                start_time=start,
+                prompt_tokens=0,
+                completion_tokens=0,
+                cached_tokens=0,
+                error_envelope=_make_envelope(exc, self.provider_id, self.model_name),
+            )
             raise ProviderInvocationError(_make_envelope(exc, self.provider_id, self.model_name)) from exc
 
         text = "".join(b.text for b in response.content if hasattr(b, "text"))
@@ -167,6 +181,14 @@ class AnthropicProvider(ModelProvider):
         )
         usage.cost_estimate = self.estimate_cost(usage)
         self._update_stats(usage)
+        # Bug 2 (fix): persiste no caminho generate(); idêntico ao
+        # padrão aplicado em chat_with_tools e em todos os providers.
+        await self._record_usage(
+            session_id=kwargs.get("session_id", "default"),
+            usage=usage,
+            latency_ms=int(usage.request_time * 1000),
+            success=True,
+        )
         return ModelResponse(
             content=text,
             model_name=self.model_name,

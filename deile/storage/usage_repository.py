@@ -62,8 +62,14 @@ class UsageRepository:
     Thread-safe for single-process use (each call gets its own connection).
     """
 
-    def __init__(self, db_path: Path = _DEFAULT_DB_PATH) -> None:
-        self._db_path = Path(db_path)
+    def __init__(self, db_path: Optional[Path] = None) -> None:
+        # Resolve o default no __init__ (não como default param), assim
+        # `monkeypatch.setattr(module, "_DEFAULT_DB_PATH", tmp)` em
+        # fixture de teste pega — antes o default ficava bound na
+        # definição da função e ignorava monkeypatch, deixando os
+        # tests escreverem em `~/.deile/db/usage.db` real (poluição
+        # confirmada: 28 registros falsos por suite completa).
+        self._db_path = Path(db_path) if db_path is not None else _DEFAULT_DB_PATH
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 

@@ -155,6 +155,10 @@ class OpenAIProvider(ModelProvider):
         system_instruction = self._compose_system_instruction(system_instruction)
         oai_msgs = self._to_openai_messages(messages, system_instruction)
 
+        # Bug 2 (fix): `session_id` é metadado interno do DEILE, NÃO um
+        # parâmetro do SDK do OpenAI/DeepSeek — extraímos antes do
+        # `**kwargs` ir pro `chat.completions.create`.
+        session_id = kwargs.pop("session_id", "default")
         try:
             response = await self._client.chat.completions.create(
                 model=self.model_name,
@@ -163,6 +167,18 @@ class OpenAIProvider(ModelProvider):
                 **kwargs,
             )
         except openai.APIError as exc:
+            # Bug 2 (fix): generate() simples também precisa registrar
+            # o request mesmo quando falha — antes só chat_with_tools fazia,
+            # então qualquer chamada direta via agent.py:2205/2458/2515
+            # ficava fora da contabilidade de custos do painel.
+            await self._record_failed_usage(
+                session_id=session_id,
+                start_time=start,
+                prompt_tokens=0,
+                completion_tokens=0,
+                cached_tokens=0,
+                error_envelope=_make_envelope(exc, self.provider_id, self.model_name),
+            )
             raise ProviderInvocationError(_make_envelope(exc, self.provider_id, self.model_name)) from exc
 
         text = response.choices[0].message.content or ""
@@ -178,6 +194,14 @@ class OpenAIProvider(ModelProvider):
         )
         usage.cost_estimate = self.estimate_cost(usage)
         self._update_stats(usage)
+        # Bug 2 (fix): persiste no caminho generate(). DeepSeekProvider
+        # herda este método sem mudança, então o fix vale para os 2.
+        await self._record_usage(
+            session_id=session_id,
+            usage=usage,
+            latency_ms=int(usage.request_time * 1000),
+            success=True,
+        )
         return ModelResponse(
             content=text,
             model_name=self.model_name,

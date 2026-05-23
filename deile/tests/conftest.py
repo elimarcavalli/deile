@@ -23,6 +23,35 @@ def _reset_settings_singleton():
     reset_settings()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_usage_repository(tmp_path, monkeypatch):
+    """Aponta o UsageRepository pra um SQLite tmp por teste.
+
+    Sem isso, qualquer test que toca um provider (`_record_usage`,
+    `_record_failed_usage`) ou `BudgetGuard` escreve em
+    `~/.deile/db/usage.db` no HOME real — vinhetas:
+
+    * Os tests do GeminiProvider (test_gemini_provider_*) deixaram 14
+      registros falsos com modelos hipotéticos (gemini-2.5-pro,
+      gemini-1.5-pro) e cost_usd=0, inflando o painel TUI.
+    * `pytest` repetido acumula linhas indefinidamente; um run de suite
+      completa pode adicionar centenas de registros polluentes.
+
+    Faz o equivalente do `_isolate_audit_logger` mas em escopo por
+    teste (cada teste ganha seu próprio DB tmp; reset do singleton no
+    teardown garante que o próximo teste comece do zero).
+    """
+    from deile.storage import usage_repository as repo_module
+
+    test_db = tmp_path / "usage_test.db"
+    monkeypatch.setattr(repo_module, "_DEFAULT_DB_PATH", test_db)
+    # Reseta o singleton ANTES — se outro teste deixou um aberto apontando
+    # pro HOME real, o próximo `get_usage_repository()` ia reusar.
+    repo_module.reset_usage_repository()
+    yield
+    repo_module.reset_usage_repository()
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _isolate_audit_logger(tmp_path_factory):
     """Point the global ``AuditLogger`` at a session-scoped temp dir.
