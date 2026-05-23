@@ -267,7 +267,55 @@ kubectl delete pvc deile-shell-home -n deile
 > **Nota:** O PVC sobrevive a `kubectl rollout restart` mas NÃO a
 > `bash infra/k8s/run.sh down` (que deleta o namespace inteiro).
 
-### 4.3 Diagnóstico rápido
+### 4.3 Painel TUI ao vivo (`deploy.py k8s panel`)
+
+Para acompanhar a stack em tempo real, sem ficar abrindo `kubectl get`/`logs`
+em loop:
+
+```bash
+python3 infra/k8s/deploy.py k8s panel
+```
+
+O painel é uma TUI navegável (`rich.Live`) que cruza o estado do cluster com
+a fonte de verdade do pipeline (GitHub issues + PRs) e o uso do
+`UsageRepository`. **Não muta nada** — é só observação.
+
+**Hotkeys globais** (qualquer view):
+
+| tecla | ação |
+|---|---|
+| `1-5, a, m, n` | drill em sub-view |
+| `esc` | volta à view anterior |
+| `q` | sai do painel |
+| `p` | pause / resume refresh automático |
+| `+` / `-` | acelera / desacelera o refresh (×0.25 a ×4) |
+| `r` | força refresh imediato (invalida caches) |
+| `s` | snapshot da tela em `~/.deile/snapshots/` |
+| `?` | mostra a tela de ajuda |
+
+**Views**:
+
+| `[N]` | view | refresh | o que mostra |
+|---|---|---|---|
+| `[1]` | Pod picker → Pod watch | 3s / 1s | lista de pods navegável (↑/↓, enter); pod-watch abre kubectl logs -f embedded com filtro de health-checks |
+| `[2]` | Pipeline timeline | 5s | events classificados (mention/dispatch/http/startup) + stats (gap p95/max, ticks/h, failures) + histograma 24h |
+| `[3]` | Issues & PRs | 10s | tabela viva GitHub × labels do pipeline (filtros `a/i/p/b/m`, enter copia URL pro clipboard) |
+| `[5]` | Tokens & Custos | 60s | `~/.deile/db/usage.db` por provider (24h/1h, %, top 5 sessions) |
+| `[n]` | Notifier echo | 5s | últimos eventos `deilebot.audit` (outbound_sent/failed) |
+| `[a]` | Ações | 1s | `status` / `restart` / `build` / `up` / `stop` / `start` / `test` / `DOWN` (com confirmação) acionáveis sem sair do painel |
+| `[?]` | Help | — | resumo dos hotkeys |
+
+**Alertas automáticos** acendem no dashboard quando:
+- algum pod reiniciou ≥3× (crítico) ou ≥1× nos últimos 30min (warning);
+- o pipeline está sem ação há >5min (provável travamento);
+- existe issue com `~workflow:bloqueada`;
+- existe issue com `~workflow:aguardando_stakeholder` (esperando você);
+- algum provider está reportando erro.
+
+**Modo demo**: quando `kubectl` não está disponível ou o cluster está fora,
+o painel cai em mocks (mostra dados sintéticos) — a UI ainda abre.
+
+### 4.4 Diagnóstico rápido
 
 ```bash
 # tudo no namespace
@@ -285,7 +333,7 @@ kubectl -n deile exec deploy/deilebot -- \
   python3 -c "import sqlite3; print(sorted(r[0] for r in sqlite3.connect('/home/deile/data/deilebot.sqlite').execute('SELECT name FROM sqlite_master WHERE type=\"table\"')))"
 ```
 
-### 4.4 Health checks de isolamento
+### 4.5 Health checks de isolamento
 
 São esses os experimentos que provam que o container está fechado.
 Reaproveite a qualquer hora:
