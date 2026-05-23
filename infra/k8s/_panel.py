@@ -49,6 +49,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional
 
+import _panel_demo as demo  # noqa: E402
+# Imports `_panel_data` e `_panel_demo` são unqualified — dependem do
+# sys.path setup feito por `deploy.py` (que insere `infra/k8s/` no path
+# antes de importar `_panel`). Não trocar para `from infra.k8s. ...` sem
+# revisar como o orquestrador invoca o painel.
+from _panel_data import PanelData, _fmt_age, kubectl_bin  # noqa: F401
+from _panel_data import set_preferred_model as pd_set_preferred_model
 from rich import box
 from rich.align import Align
 from rich.console import Console, Group, RenderableType
@@ -57,14 +64,6 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
-
-# Imports `_panel_data` e `_panel_demo` são unqualified — dependem do
-# sys.path setup feito por `deploy.py` (que insere `infra/k8s/` no path
-# antes de importar `_panel`). Não trocar para `from infra.k8s. ...` sem
-# revisar como o orquestrador invoca o painel.
-from _panel_data import PanelData, _fmt_age, kubectl_bin  # noqa: F401
-from _panel_data import set_preferred_model as pd_set_preferred_model
-import _panel_demo as demo  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -1510,8 +1509,7 @@ def _audit_panel_action(spec: "_ActionSpec", *, result: str,
     isolado) — mas registra warning no logger local."""
     try:
         from deile.security.audit_logger import (  # noqa: PLC0415
-            AuditEvent, AuditEventType, SeverityLevel, get_audit_logger,
-        )
+            AuditEventType, SeverityLevel, get_audit_logger)
     except Exception as exc:  # noqa: BLE001
         logger.warning("audit logger indisponível para ação do painel: %s", exc)
         return

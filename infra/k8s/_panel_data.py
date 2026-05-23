@@ -960,8 +960,7 @@ def _audit_security_policy_change(
     """
     try:
         from deile.security.audit_logger import (  # noqa: PLC0415
-            AuditEvent, AuditEventType, SeverityLevel, get_audit_logger,
-        )
+            AuditEventType, SeverityLevel, get_audit_logger)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "audit logger indisponível para set_preferred_model: %s", exc,
