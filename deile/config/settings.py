@@ -807,6 +807,63 @@ def _set_typed(settings: "Settings", attr: str, value: Any) -> None:
         logger.warning("Cannot apply setting %s=%r: %s", attr, value, exc)
 
 
+def _env_bool(raw: str) -> bool:
+    """Lenient bool coercion for env vars: unknown → False.
+
+    Matches the dominant ``raw.strip().lower() in {"1","true","yes","on"}``
+    idiom used historically across DEILE_* boolean envs, and is more lenient
+    than the strict ``_to_bool`` (which raises on unknown strings).
+    """
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _int_floor(floor: int) -> Callable[[str], int]:
+    """Build a converter that parses int and clamps below to ``floor``."""
+    def _convert(raw: str) -> int:
+        return max(floor, int(raw))
+    return _convert
+
+
+def _resolved_path(raw: str) -> Path:
+    """Convert env-var raw string to absolute resolved Path."""
+    return Path(raw).resolve()
+
+
+# Table-driven env-var → settings attribute mapping. Each row converts the env
+# var's raw string with ``convert``; ValueError is swallowed (legacy behavior
+# preserved). ``deprecated=True`` rows emit a deprecation pointer to the
+# matching key in ``_DEILE_DEPRECATED_ENV_VARS`` (issue #111 migration path).
+_ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any], bool], ...] = (
+    # (env_var, settings_attr, converter, deprecated)
+    ("DEILE_DEBUG",                          "debug_enabled",                  _env_bool,         True),
+    ("DEILE_PREFERRED_MODEL",                "preferred_model",                str,               True),
+    ("DEILE_VISION_MODEL",                   "vision_model",                   str.strip,         True),
+    ("DEILE_BOT_APPROVAL_AUTO",              "bot_approval_auto",              _env_bool,         True),
+    ("DEILE_LOOP_GUARD_DISABLE",             "loop_guard_disabled",            _env_bool,         True),
+    ("DEILE_LOOP_GUARD_MAX_CALLS",           "loop_guard_max_calls",           _int_floor(1),     True),
+    ("DEILE_LOOP_GUARD_REPEAT_THRESHOLD",    "loop_guard_repeat_threshold",    _int_floor(1),     True),
+    ("DEILE_LOOP_GUARD_WINDOW_SIZE",         "loop_guard_window_size",         _int_floor(1),     True),
+    ("DEILE_LOOP_GUARD_WINDOW_THRESHOLD",    "loop_guard_window_threshold",    _int_floor(1),     True),
+    ("DEILE_LOOP_GUARD_NO_PROGRESS",         "loop_guard_no_progress",         _int_floor(1),     True),
+    ("DEILE_PIPELINE_BASE_PATH",             "pipeline_base_path",             _resolved_path,    True),
+    ("DEILE_PIPELINE_REPO",                  "pipeline_repo",                  str,               True),
+    ("DEILE_PIPELINE_NOTIFY_USER_ID",        "pipeline_notify_user_id",        str,               True),
+    ("DEILE_PIPELINE_POLL_INTERVAL",         "pipeline_poll_interval",         int,               True),
+    ("DEILE_PIPELINE_CLAUDE_TIMEOUT",        "pipeline_claude_timeout",        int,               True),
+    # PIPELINE_AUTOSTART is a current knob (no deprecation warning).
+    ("DEILE_PIPELINE_AUTOSTART",             "pipeline_autostart",             _env_bool,         False),
+    ("DEILE_PIPELINE_DISPATCH_MODE",         "pipeline_dispatch_mode",         lambda s: s.strip().lower(), True),
+    ("DEILE_PIPELINE_RESUME_ENABLED",        "pipeline_resume_enabled",        _env_bool,         True),
+    ("DEILE_PIPELINE_RESUME_INTERVAL",       "pipeline_resume_interval",       _int_floor(0),     True),
+    ("DEILE_PIPELINE_RESUME_MAX_ATTEMPTS",   "pipeline_resume_max_attempts",   _int_floor(1),     True),
+    ("DEILE_PIPELINE_RESUME_BUDGET",         "pipeline_resume_budget",         _int_floor(0),     True),
+    ("DEILE_CRON_DB_PATH",                   "cron_db_path",                   _resolved_path,    True),
+    ("DEILE_CRON_POLL_INTERVAL",             "cron_poll_interval",             int,               True),
+    # Current knob (no deprecation): agent tool-loop cap.
+    ("DEILE_MAX_TOOL_ITERATIONS",            "max_tool_iterations",            _int_floor(1),     False),
+)
+
+
 def _apply_env_overrides(settings: "Settings") -> None:
     """Apply DEILE_* env vars on top of JSON settings, with deprecation warnings."""
     env = os.environ.get
@@ -818,127 +875,17 @@ def _apply_env_overrides(settings: "Settings") -> None:
             json_key,
         )
 
-    # debug
-    raw = env("DEILE_DEBUG", "")
-    if raw:
-        _warn("DEILE_DEBUG", "debug.enabled")
-        settings.debug_enabled = raw.lower() in {"1", "true", "yes", "on"}
-
-    # model
-    raw = env("DEILE_PREFERRED_MODEL")
-    if raw:
-        _warn("DEILE_PREFERRED_MODEL", "model.preferred")
-        settings.preferred_model = raw
-
-    raw = env("DEILE_VISION_MODEL")
-    if raw:
-        _warn("DEILE_VISION_MODEL", "model.vision_model")
-        settings.vision_model = raw.strip()
-
-    # approval
-    raw = env("DEILE_BOT_APPROVAL_AUTO", "")
-    if raw:
-        _warn("DEILE_BOT_APPROVAL_AUTO", "approval.auto")
-        settings.bot_approval_auto = raw.strip().lower() in {"1", "true", "yes", "on"}
-
-    # loop_guard
-    raw = env("DEILE_LOOP_GUARD_DISABLE", "")
-    if raw:
-        _warn("DEILE_LOOP_GUARD_DISABLE", "loop_guard.disabled")
-        settings.loop_guard_disabled = raw.strip() in ("1", "true", "TRUE", "yes")
-
-    for env_var, attr, cast, default in (
-        ("DEILE_LOOP_GUARD_MAX_CALLS", "loop_guard_max_calls", int, 50),
-        ("DEILE_LOOP_GUARD_REPEAT_THRESHOLD", "loop_guard_repeat_threshold", int, 3),
-        ("DEILE_LOOP_GUARD_WINDOW_SIZE", "loop_guard_window_size", int, 5),
-        ("DEILE_LOOP_GUARD_WINDOW_THRESHOLD", "loop_guard_window_threshold", int, 3),
-        ("DEILE_LOOP_GUARD_NO_PROGRESS", "loop_guard_no_progress", int, 6),
-    ):
+    for env_var, attr, convert, deprecated in _ENV_OVERRIDES:
         raw = env(env_var)
-        if raw:
-            json_key = _DEILE_DEPRECATED_ENV_VARS.get(env_var, env_var)
-            _warn(env_var, json_key)
-            try:
-                setattr(settings, attr, max(1, cast(raw)))
-            except ValueError:
-                pass
-
-    # pipeline
-    raw = env("DEILE_PIPELINE_BASE_PATH")
-    if raw:
-        _warn("DEILE_PIPELINE_BASE_PATH", "pipeline.base_path")
-        settings.pipeline_base_path = Path(raw).resolve()
-
-    raw = env("DEILE_PIPELINE_REPO")
-    if raw:
-        _warn("DEILE_PIPELINE_REPO", "pipeline.repo")
-        settings.pipeline_repo = raw
-
-    raw = env("DEILE_PIPELINE_NOTIFY_USER_ID")
-    if raw:
-        _warn("DEILE_PIPELINE_NOTIFY_USER_ID", "pipeline.notify_user_id")
-        settings.pipeline_notify_user_id = raw
-
-    for env_var, attr, cast in (
-        ("DEILE_PIPELINE_POLL_INTERVAL", "pipeline_poll_interval", int),
-        ("DEILE_PIPELINE_CLAUDE_TIMEOUT", "pipeline_claude_timeout", int),
-    ):
-        raw = env(env_var)
-        if raw:
+        if not raw:
+            continue
+        if deprecated:
             _warn(env_var, _DEILE_DEPRECATED_ENV_VARS.get(env_var, env_var))
-            try:
-                setattr(settings, attr, int(raw))
-            except ValueError:
-                pass
-
-    raw = env("DEILE_PIPELINE_AUTOSTART")
-    if raw:
-        settings.pipeline_autostart = raw.lower().strip() in ("1", "true", "yes", "on")
-
-    raw = env("DEILE_PIPELINE_DISPATCH_MODE")
-    if raw:
-        _warn("DEILE_PIPELINE_DISPATCH_MODE", "pipeline.dispatch_mode")
-        settings.pipeline_dispatch_mode = raw.strip().lower()
-
-    # pipeline resume (issue #254)
-    raw = env("DEILE_PIPELINE_RESUME_ENABLED")
-    if raw:
-        _warn("DEILE_PIPELINE_RESUME_ENABLED", "pipeline.resume_enabled")
-        settings.pipeline_resume_enabled = raw.strip().lower() in ("1", "true", "yes", "on")
-
-    for env_var, attr, floor in (
-        ("DEILE_PIPELINE_RESUME_INTERVAL", "pipeline_resume_interval", 0),
-        ("DEILE_PIPELINE_RESUME_MAX_ATTEMPTS", "pipeline_resume_max_attempts", 1),
-        ("DEILE_PIPELINE_RESUME_BUDGET", "pipeline_resume_budget", 0),
-    ):
-        raw = env(env_var)
-        if raw:
-            _warn(env_var, _DEILE_DEPRECATED_ENV_VARS.get(env_var, env_var))
-            try:
-                setattr(settings, attr, max(floor, int(raw)))
-            except ValueError:
-                pass
-
-    # cron
-    raw = env("DEILE_CRON_DB_PATH")
-    if raw:
-        _warn("DEILE_CRON_DB_PATH", "cron.db_path")
-        settings.cron_db_path = Path(raw).resolve()
-
-    raw = env("DEILE_CRON_POLL_INTERVAL")
-    if raw:
-        _warn("DEILE_CRON_POLL_INTERVAL", "cron.poll_interval")
         try:
-            settings.cron_poll_interval = int(raw)
-        except ValueError:
-            pass
-
-    # Agent tool-loop cap — current knob (not deprecated), so no migration warning.
-    raw = env("DEILE_MAX_TOOL_ITERATIONS")
-    if raw:
-        try:
-            settings.max_tool_iterations = max(1, int(raw))
-        except ValueError:
+            setattr(settings, attr, convert(raw))
+        except (ValueError, TypeError):
+            # Legacy behavior: malformed env values are silently ignored, the
+            # default (or JSON layer value) stays in place.
             pass
 
 
