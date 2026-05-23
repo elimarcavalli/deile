@@ -1,24 +1,21 @@
 """Standup Command — narrativa do dia (commits + PRs + issues)."""
 
-import asyncio
 import json
-import os
 import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from rich.console import Group
 from rich.panel import Panel
 from rich.text import Text
 
 from ...core.exceptions import CommandError
-from ...core.models.router import get_model_router
 from ...core.models.base import ModelMessage
+from ...core.models.router import get_model_router
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._shared import emit_audit_event, error_panel, success_panel, wrap_command_errors
+from ._shared import emit_audit_event, wrap_command_errors
 
 
 @dataclass
