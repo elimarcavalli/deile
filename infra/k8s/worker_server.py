@@ -494,9 +494,16 @@ async def _run_task(
             prompt = _build_prompt(brief, workdir, history or "")
 
             # Hook the agent's event bus if available, to feed progress.
-            # Bug fix: previous code used bus.subscribe(_on_event) (1 arg)
-            # but the real signature is subscribe(event_type, handler).
-            # Now we use subscribe_all for catch-all + async handler.
+            # IMPORTANT: store the handler reference so we can unsubscribe in
+            # the finally block. Each _run_task registered a fresh closure
+            # with no cleanup, and ``EventBus.subscribe_all`` keeps strong
+            # refs in ``_wildcard_handlers``. Under sustained dispatch the
+            # list grew unbounded — each new event invoked every stale
+            # handler (O(N²) CPU), each closure held the dead task's
+            # ``progress_lines`` list (memory growth), and progress lines
+            # could leak across tasks.
+            bus = None
+            on_event_handler = None
             try:
                 from deile.events.event_bus import get_event_bus
                 bus = get_event_bus()
@@ -516,11 +523,13 @@ async def _run_task(
 
                 if hasattr(bus, "subscribe_all"):
                     bus.subscribe_all(_on_event)
+                    on_event_handler = _on_event
                 elif hasattr(bus, "subscribe"):
                     # Some EventBus signatures take (event_type, handler) —
                     # try a sensible catch-all key if available.
                     try:
                         bus.subscribe("*", _on_event)
+                        on_event_handler = _on_event
                     except Exception:
                         pass
             except Exception:
@@ -592,6 +601,14 @@ async def _run_task(
                     )
             except Exception:  # noqa: BLE001 — never break the dispatch
                 logger.exception("resume bookkeeping failed for task %s", task_id)
+            # Unsubscribe the per-task event-bus handler so wildcard
+            # subscribers don't accumulate across dispatches.
+            if bus is not None and on_event_handler is not None:
+                try:
+                    if hasattr(bus, "unsubscribe_all"):
+                        bus.unsubscribe_all(on_event_handler)
+                except Exception:  # noqa: BLE001 — never break the dispatch
+                    logger.debug("event bus unsubscribe failed", exc_info=True)
             os.chdir(prev_cwd)
 
     elapsed = time.monotonic() - start

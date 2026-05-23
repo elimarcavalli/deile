@@ -219,6 +219,22 @@ class EventBus:
                 self._handlers[event_type].remove(handler)
                 logger.debug(f"Handler removido de {event_type.value}")
 
+    def unsubscribe_all(self, handler: EventHandler) -> bool:
+        """Remove um handler wildcard previamente registrado via ``subscribe_all``.
+
+        Retorna True se algo foi removido, False caso contrário. Sem este
+        método, cada caller (ex.: worker_server._run_task) que adicionasse um
+        wildcard handler em cada dispatch ficava acumulando closures —
+        memória crescia, e cada ``publish`` ainda invocava todos os
+        handlers stale, com custo O(N²) ao longo da vida do processo.
+        """
+        try:
+            self._wildcard_handlers.remove(handler)
+            logger.debug("Handler wildcard removido")
+            return True
+        except ValueError:
+            return False
+
     async def publish(self, event: Event) -> bool:
         """Publica evento no bus
 
