@@ -470,6 +470,22 @@ def k8s_logs(args: dict) -> int:
 
 # ===== k8s: test (Job one-shot) ==============================================
 
+def k8s_panel(args: dict) -> int:
+    """Sobe o painel TUI ao vivo de monitoramento da stack."""
+    kubectl = _kubectl()
+    if kubectl is None or not cluster_reachable():
+        ui.err("cluster Kubernetes inacessível.")
+        ui.info("Rode `deploy.py k8s up` para subir a stack antes do painel.")
+        return 1
+    if not namespace_exists():
+        ui.warn(f"namespace `{NS}` ausente — a stack não está no ar.")
+        ui.info("Rode `deploy.py k8s up` primeiro.")
+        return 1
+    # `panel` é inspeção pura (não muta nada); sem `announce_plan`.
+    from _panel import run_panel  # import tardio: rich só é carregado se usado
+    return run_panel()
+
+
 def k8s_test(args: dict) -> int:
     kubectl = _kubectl()
     if kubectl is None or not cluster_reachable():
@@ -681,7 +697,7 @@ _K8S = {
     "up": k8s_up, "down": k8s_down, "start": k8s_start, "stop": k8s_stop,
     "restart": k8s_restart, "status": k8s_status, "logs": k8s_logs,
     "build": k8s_build, "test": k8s_test, "clone": k8s_clone,
-    "doctor": cmd_doctor,
+    "panel": k8s_panel, "doctor": cmd_doctor,
 }
 _LOCAL = {
     "start": local_start, "stop": local_stop, "restart": local_restart,
@@ -691,6 +707,7 @@ _LOCAL = {
 # (ação, descrição) — usado no help E no menu interativo. `clone` fica fora do
 # menu por exigir um argumento <owner/repo>.
 _K8S_ACTIONS = [
+    ("panel", "painel TUI ao vivo (pods + pipeline + GitHub + custos)"),
     ("status", "ver pods, deployments e services"),
     ("up", "provisionar / atualizar a stack (idempotente)"),
     ("build", "rebuildar a imagem (--restart religa os pods)"),

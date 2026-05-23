@@ -24,18 +24,13 @@ from rich.console import Console
 
 from deile.commands.base import CommandContext, CommandResult
 from deile.commands.builtin import standup_command as sc
-from deile.commands.builtin.standup_command import (
-    StandupCommand,
-    StandupData,
-    build_prompt,
-    collect_commits,
-    collect_issues,
-    collect_prs,
-    parse_args,
-    parse_since,
-)
+from deile.commands.builtin.standup_command import (StandupCommand,
+                                                    StandupData, build_prompt,
+                                                    collect_commits,
+                                                    collect_issues,
+                                                    collect_prs, parse_args,
+                                                    parse_since)
 from deile.core.exceptions import CommandError
-
 
 # ---------------------------------------------------------------------------
 # Helpers
