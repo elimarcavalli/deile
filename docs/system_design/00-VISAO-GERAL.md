@@ -103,6 +103,7 @@
 | 31 | `PipelineImplementer` como estratégia plugável (`ClaudeImplementer` via `claude -p` **vs** `WorkerImplementer` que despacha ao `deile-worker` por HTTP), selecionada por `dispatch_mode` — torna o Claude opcional no loop autônomo DEILE-a-DEILE — issue #255 | V1 | Arquitetura (02), Componentes (04) |
 | 32 | Roteamento de menção/atribuição por papel (`process_mentions` é roteador): issue+assignee/body → injeta `~workflow:nova`; PR+assignee → review+merge; PR+reviewer-só → revisa e devolve ao autor sem mergear; comment → atende ao pedido. Idempotência cross-tick via `~mention:processado`; review de PR sob a persona `reviewer` (quality-gate SOLID/SRP/segurança, não só testes verdes) — issues #253/#261 | V1 | Fluxo (05), Componentes (04), Segurança (08) |
 | 33 | Triagem de PR só rotula `~review:pendente` em branch que o monitor revisaria (`auto/issue-*`, ou qualquer com `enable_review_human_prs`); lock `~batch:` na classificação só é reivindicado quando `shard_count>1` (monitor único não gera churn) — PR #264 | V1 patch | Arquitetura (02), Princípios (03) |
+| 34 | Helpers `aio_fileio` (`read_json` / `write_json` / `write_text`) em `deile/storage/` para isolar I/O bloqueante de paths `async`. Formatos domain-specific (JSONL, YAML estruturado) ficam locais ao subpacote dono — PR #298 | V1 patch | Princípios (03), Arquitetura (02) |
 
 ## Estado dos pilares
 

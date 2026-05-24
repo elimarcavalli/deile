@@ -414,6 +414,19 @@
 
 ---
 
+## Decisão #34 — Helpers `aio_fileio` em `deile/storage/` para isolar I/O bloqueante de paths `async`
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 patch |
+| Pilar dono | 03-Princípios, 02-Arquitetura |
+| Decisão | I/O bloqueante (`open()`, `json.dump`, `json.load`, `f.write`) chamado de dentro de `async def` viola o princípio 03 §1 ("I/O bloqueante proibido em contexto async"). Onde múltiplos subpacotes precisam do mesmo round-trip (JSON dict, texto), centralizar em `deile/storage/aio_fileio.py` (`read_json` / `write_json` / `write_text`) — cada helper é um one-liner `await asyncio.to_thread(<sync_fn>, ...)`. Subpacotes consomem via `from deile.storage.aio_fileio import ...`, não redefinem helpers locais. Formatos domain-specific (JSONL append em `semantic_memory`, mutação de estrutura YAML em `config/manager`) ficam **locais** — pertencem ao domínio que conhece o esquema, não ao módulo genérico. |
+| Evidência | `deile/storage/aio_fileio.py` (3 funções públicas); call sites em `deile/orchestration/approval_system.py` (`_save_request`, `_load_request`, `list_requests`) e `deile/orchestration/plan_manager.py` (`load_plan`, `list_plans`, `_save_plan`, `_save_plan_markdown`); auditoria que motivou a fix em `docs/system_design/03-PRINCIPIOS-ARQUITETURAIS.md` §1. |
+| Motivação | (1) Cumprir o princípio inegociável de async-first sem proliferação de helpers `_read_json` privados em cada arquivo (5 cópias near-idênticas antes da consolidação); (2) Reuso máximo + SRP: o módulo expõe apenas os primitivos genéricos, formatos especializados permanecem com seu dono lógico. |
+| Histórico | Introduzido durante o bug-audit PR #298 (sweep com 4 auditores sonnet) — eliminou 5 helpers duplicados em `approval_system.py` e `plan_manager.py`. |
+
+---
+
 ## Como adicionar uma nova decisão
 
 | # | Passo |
