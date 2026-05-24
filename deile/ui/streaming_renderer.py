@@ -296,7 +296,8 @@ class StreamingRenderer:
         # without feedback the user thinks the agent is hung. The spinner
         # is cancelled on the first event, so it never overlaps real
         # content.
-        _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        from .spinner import BRAILLE_SPINNER_FRAMES as _SPINNER_FRAMES
+
         # Animation tick — runs for the entire turn. As long as the tail
         # of ``blocks`` is a _StageBlock (i.e., we're in a "silent wait"),
         # we refresh the Live region so the spinner frame visibly rotates.

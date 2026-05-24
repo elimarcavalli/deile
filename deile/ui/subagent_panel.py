@@ -36,11 +36,12 @@ from rich.text import Text
 from deile.orchestration.subagents.events import SubAgentEvent, SubAgentState
 
 from ..common.text_utils import truncate
+from .spinner import BRAILLE_SPINNER_FRAMES as _SPINNER
 
 logger = logging.getLogger(__name__)
 
 
-_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
 _REFRESH_HZ = 6.0
 # Timeout (segundos) após receber ``\x1b`` para decidir se é ESC genuíno ou
 # prefixo de escape-sequence (seta etc.). 200ms é a recomendação clássica de
