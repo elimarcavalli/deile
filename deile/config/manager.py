@@ -689,27 +689,16 @@ class ConfigManager:
         persona_id: str,
         updated_config: Dict[str, Any]
     ) -> None:
-        """Persist persona configuration change to file"""
+        """Persist persona configuration change to file (I/O em worker thread)."""
         config_file = self._config_files["persona_config"]
 
         try:
-            # Read current file
-            with open(config_file, 'r', encoding='utf-8') as f:
-                file_config = yaml.safe_load(f) or {}
-
-            # Ensure structure exists
-            if 'personas' not in file_config:
-                file_config['personas'] = {'persona_configs': {}}
-            if 'persona_configs' not in file_config['personas']:
-                file_config['personas']['persona_configs'] = {}
-
-            # Update specific persona
-            file_config['personas']['persona_configs'][persona_id] = updated_config
-
-            # Write back to file
-            with open(config_file, 'w', encoding='utf-8') as f:
-                yaml.dump(file_config, f, default_flow_style=False, indent=2)
-
+            # Read + mutate + write via worker thread. Two sequential sync
+            # YAML I/Os on the event loop would freeze hot-reload + UI for
+            # the duration of the disk roundtrip.
+            await asyncio.to_thread(
+                _update_persona_in_yaml, config_file, persona_id, updated_config
+            )
         except Exception as e:
             self.logger.error(f"Failed to persist persona config change: {e}")
             raise
@@ -748,17 +737,9 @@ class ConfigManager:
         del personas_config[persona_id]
         await self._update_config_value('personas.persona_configs', personas_config)
 
-        # Update file
+        # Update file (I/O delegated to a worker thread).
         config_file = self._config_files["persona_config"]
-        with open(config_file, 'r', encoding='utf-8') as f:
-            file_config = yaml.safe_load(f) or {}
-
-        if 'personas' in file_config and 'persona_configs' in file_config['personas']:
-            if persona_id in file_config['personas']['persona_configs']:
-                del file_config['personas']['persona_configs'][persona_id]
-
-                with open(config_file, 'w', encoding='utf-8') as f:
-                    yaml.dump(file_config, f, default_flow_style=False, indent=2)
+        await asyncio.to_thread(_remove_persona_from_yaml, config_file, persona_id)
 
         # Notify observers
         await self._notify_persona_observers(persona_id, {}, event_type='removed')
@@ -882,6 +863,34 @@ class ConfigManager:
             self._observer.join()
             self._observer = None
             self.logger.info("Hot-reload stopped")
+
+
+# --------------------------------------------------------------------------
+# Sync YAML helpers invoked via ``asyncio.to_thread`` so persona-config
+# mutations (hot-reload, /persona add/remove) never block the event loop.
+# --------------------------------------------------------------------------
+
+def _update_persona_in_yaml(config_file: Path, persona_id: str,
+                            updated_config: Dict[str, Any]) -> None:
+    with open(config_file, 'r', encoding='utf-8') as f:
+        file_config = yaml.safe_load(f) or {}
+    if 'personas' not in file_config:
+        file_config['personas'] = {'persona_configs': {}}
+    if 'persona_configs' not in file_config['personas']:
+        file_config['personas']['persona_configs'] = {}
+    file_config['personas']['persona_configs'][persona_id] = updated_config
+    with open(config_file, 'w', encoding='utf-8') as f:
+        yaml.dump(file_config, f, default_flow_style=False, indent=2)
+
+
+def _remove_persona_from_yaml(config_file: Path, persona_id: str) -> None:
+    with open(config_file, 'r', encoding='utf-8') as f:
+        file_config = yaml.safe_load(f) or {}
+    personas = file_config.get('personas', {}).get('persona_configs', {})
+    if persona_id in personas:
+        del personas[persona_id]
+        with open(config_file, 'w', encoding='utf-8') as f:
+            yaml.dump(file_config, f, default_flow_style=False, indent=2)
 
 
 # Singleton instance

@@ -144,6 +144,19 @@ class ApprovalRule:
         
         return True
 
+
+def _write_json_atomic(path: Path, data: Dict[str, Any]) -> None:
+    """Sync helper invoked from ``asyncio.to_thread`` for atomic writes."""
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def _read_json(path: Path) -> Dict[str, Any]:
+    """Sync helper invoked from ``asyncio.to_thread`` for blocking reads."""
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
 class ApprovalSystem:
     """Approval workflow management system"""
     
@@ -515,31 +528,31 @@ class ApprovalSystem:
             future.cancel()
     
     async def _save_request(self, request: ApprovalRequest):
-        """Save request to storage"""
-        
+        """Save request to storage (offloaded to a worker thread).
+
+        Wrapped in ``asyncio.to_thread`` because this is awaited from every
+        approval gate (10+ call sites); a sync ``json.dump`` here blocks the
+        event loop for the duration of the disk write. Principle 03 §1.
+        """
         request_file = self.approvals_dir / f"{request.request_id}.json"
-        
+
         try:
-            with open(request_file, 'w', encoding='utf-8') as f:
-                json.dump(request.to_dict(), f, indent=2, ensure_ascii=False)
-                
+            await asyncio.to_thread(
+                _write_json_atomic, request_file, request.to_dict()
+            )
         except Exception as e:
             logger.error(f"Failed to save approval request {request.request_id}: {e}")
             raise
-    
+
     async def _load_request(self, request_id: str) -> Optional[ApprovalRequest]:
-        """Load request from storage"""
-        
+        """Load request from storage (offloaded to a worker thread)."""
         request_file = self.approvals_dir / f"{request_id}.json"
         if not request_file.exists():
             return None
-        
+
         try:
-            with open(request_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
+            data = await asyncio.to_thread(_read_json, request_file)
             return ApprovalRequest.from_dict(data)
-            
         except Exception as e:
             logger.error(f"Failed to load approval request {request_id}: {e}")
             return None

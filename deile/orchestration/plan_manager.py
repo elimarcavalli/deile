@@ -295,33 +295,28 @@ class PlanManager:
         return plan
     
     async def load_plan(self, plan_id: str) -> Optional[ExecutionPlan]:
-        """Carrega um plano salvo"""
-        
+        """Carrega um plano salvo (I/O em worker thread)."""
         plan_file = self.plans_dir / f"{plan_id}.json"
         if not plan_file.exists():
             return None
-        
+
         try:
-            with open(plan_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
-            plan = ExecutionPlan.from_dict(data)
-            return plan
-            
+            # Sync open()+json.load() awaited blocks the event loop. Wrapping
+            # in to_thread keeps the loop responsive (principle 03 §1).
+            data = await asyncio.to_thread(_read_plan_json, plan_file)
+            return ExecutionPlan.from_dict(data)
         except Exception as e:
             logger.error(f"Failed to load plan {plan_id}: {e}")
             return None
-    
+
     async def list_plans(self, status_filter: Optional[PlanStatus] = None) -> List[Dict[str, Any]]:
-        """Lista planos disponíveis"""
-        
+        """Lista planos disponíveis (I/O por arquivo em worker thread)."""
         plans_info = []
-        
+
         for plan_file in self.plans_dir.glob("*.json"):
             try:
-                with open(plan_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                
+                data = await asyncio.to_thread(_read_plan_json, plan_file)
+
                 # Filtra por status se necessário
                 if status_filter and data.get("status") != status_filter.value:
                     continue
@@ -942,18 +937,14 @@ class PlanManager:
             )
     
     async def _save_plan(self, plan: ExecutionPlan) -> None:
-        """Salva plano em arquivo JSON"""
-        
+        """Salva plano em arquivo JSON (I/O em worker thread)."""
         plan_file = self.plans_dir / f"{plan.id}.json"
-        
+
         try:
-            with open(plan_file, 'w', encoding='utf-8') as f:
-                json.dump(plan.to_dict(), f, indent=2, ensure_ascii=False)
-            
+            await asyncio.to_thread(_write_plan_json, plan_file, plan.to_dict())
             # Também salva versão human-readable
             md_file = self.plans_dir / f"{plan.id}.md"
             await self._save_plan_markdown(plan, md_file)
-            
         except Exception as e:
             logger.error(f"Failed to save plan {plan.id}: {e}")
             raise
@@ -1023,10 +1014,31 @@ class PlanManager:
             ])
         
         try:
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(content))
+            await asyncio.to_thread(
+                _write_text, file_path, '\n'.join(content)
+            )
         except Exception as e:
             logger.warning(f"Failed to save plan markdown {file_path}: {e}")
+
+
+# --------------------------------------------------------------------------
+# Sync I/O helpers invoked via ``asyncio.to_thread`` so the load/list/save
+# paths above never block the event loop.
+# --------------------------------------------------------------------------
+
+def _read_plan_json(path: Path) -> Dict[str, Any]:
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _write_plan_json(path: Path, data: Dict[str, Any]) -> None:
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+def _write_text(path: Path, text: str) -> None:
+    with open(path, 'w', encoding='utf-8') as f:
+        f.write(text)
 
 
 # Singleton instance

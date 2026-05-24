@@ -26,15 +26,15 @@ class SemanticMemory:
         self._is_initialized = False
 
     async def initialize(self) -> None:
-        """Inicialização"""
+        """Inicialização (load offloaded to a worker thread)."""
         if self._is_initialized:
             return
 
-        # Carrega conhecimento existente
+        # Carrega conhecimento existente.
         if self.knowledge_file.exists():
-            with open(self.knowledge_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    self._knowledge_base.append(json.loads(line.strip()))
+            self._knowledge_base.extend(
+                await asyncio.to_thread(_read_jsonl, self.knowledge_file)
+            )
 
         self._is_initialized = True
         logger.info("SemanticMemory inicializada")
@@ -45,14 +45,16 @@ class SemanticMemory:
         Copia o dict antes de adicionar campos internos — caso contrário o
         argumento do caller é mutado (``stored_at`` aparece magicamente em
         dicts que continuam sendo iterados/serializados rio acima).
+
+        Sync ``open()`` é delegado para uma worker thread porque este método
+        é chamado a cada interação (via ``MemoryManager`` background task);
+        bloquear o loop nesse caminho viola o princípio 03 §1.
         """
         record = dict(knowledge)
         record['stored_at'] = record.get('extracted_at', 0)
         self._knowledge_base.append(record)
 
-        # Salva no arquivo
-        with open(self.knowledge_file, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(record, ensure_ascii=False) + '\n')
+        await asyncio.to_thread(_append_jsonl_record, self.knowledge_file, record)
 
     async def search_knowledge(self, query: str, max_results: int = 10) -> List[Dict[str, Any]]:
         """Busca conhecimento (implementação básica)"""
@@ -91,3 +93,19 @@ class SemanticMemory:
     async def shutdown(self) -> None:
         """Finalização"""
         self._is_initialized = False
+
+def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
+    """Sync JSONL reader called from ``asyncio.to_thread``."""
+    out: List[Dict[str, Any]] = []
+    with open(path, 'r', encoding='utf-8') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                out.append(json.loads(line))
+    return out
+
+
+def _append_jsonl_record(path: Path, record: Dict[str, Any]) -> None:
+    """Sync JSONL append called from ``asyncio.to_thread``."""
+    with open(path, 'a', encoding='utf-8') as f:
+        f.write(json.dumps(record, ensure_ascii=False) + '\n')
