@@ -52,9 +52,18 @@ class RoutingContext:
 
 @dataclass
 class ModelMetrics:
-    """Métricas de um modelo"""
+    """Métricas de um modelo.
+
+    ``active_requests`` é exposto por compatibilidade com callers existentes
+    mas NUNCA é incrementado pela classe — para um contador "ativo" correto
+    a API precisaria de ``record_complete`` simétrico chamado pelo agent
+    em todos os 6+ call sites, refator fora do escopo do bug-audit. As
+    estratégias ``LEAST_BUSY``/``LOAD_BALANCED`` migraram para
+    ``total_requests`` como proxy ("menos usado historicamente"), que é
+    monotônico-correto e bounded.
+    """
     total_requests: int = 0
-    active_requests: int = 0
+    active_requests: int = 0  # deprecated — always 0; see class docstring
     avg_response_time: float = 0.0
     error_rate: float = 0.0
     cost_per_token: float = 0.0
@@ -62,9 +71,16 @@ class ModelMetrics:
     last_used: float = 0.0
 
     def record_request(self) -> None:
-        """Registra nova requisição"""
+        """Registra nova requisição.
+
+        Antes incrementava ``active_requests`` sem nenhum decremento simétrico
+        no fluxo do agent — o contador crescia indefinidamente, corrompendo
+        ``LEAST_BUSY``/``LOAD_BALANCED`` (que viravam essencialmente "least
+        total_requests + algum drift"). Como ``LEAST_BUSY``/``LOAD_BALANCED``
+        agora consultam ``total_requests`` diretamente, o incremento aqui é
+        redundante e foi removido.
+        """
         self.total_requests += 1
-        self.active_requests += 1
         self.last_used = time.time()
 
 
@@ -138,15 +154,20 @@ class RoutingStrategySelector:
     def _least_busy_selection(
         self, providers: List[ModelProvider], metrics: Dict[str, ModelMetrics]
     ) -> Optional[ModelProvider]:
-        """Seleciona provedor menos ocupado"""
+        """Seleciona provedor menos usado (proxy: total_requests).
+
+        Antes usava ``active_requests``, contador broken (nunca decrementado).
+        ``total_requests`` é monotônico-correto e dá a semântica útil de
+        "menos usado historicamente" — adequada como balanceador de carga
+        aproximado quando todas as requisições têm custo similar.
+        """
         if not providers:
             return None
 
-        least_busy = min(
+        return min(
             providers,
-            key=lambda p: metrics[_provider_key(p)].active_requests
+            key=lambda p: metrics[_provider_key(p)].total_requests,
         )
-        return least_busy
 
     def _task_optimized_selection(
         self,
@@ -231,12 +252,14 @@ class RoutingStrategySelector:
         if not providers:
             return None
 
-        # Combina least_busy com performance
+        # Combina least_busy com performance.
+        # ``active_requests`` foi substituído por ``total_requests`` — ver
+        # docstring de ``ModelMetrics`` para o motivo (contador broken).
         def load_score(provider: ModelProvider) -> float:
             m = metrics[_provider_key(provider)]
 
             # Score inverso: menor = melhor
-            load_factor = m.active_requests + 1
+            load_factor = m.total_requests + 1
             performance_factor = m.avg_response_time if m.avg_response_time > 0 else 1
 
             return load_factor * performance_factor / max(m.success_rate, 0.1)
