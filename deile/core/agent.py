@@ -7,11 +7,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import Enum
 from pathlib import Path
-from typing import (TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional,
-                    Tuple)
-
-if TYPE_CHECKING:
-    from .proactive_analyzer import ProactiveIntent
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from .exceptions import DEILEError, ModelError
 
