@@ -1,15 +1,14 @@
 """Stdin ownership coordination + termios safety-net for the subagent panel.
 
 The CLI's ESC watcher and the panel's keyboard watcher both read ``stdin``.
-``read()`` is exclusive, so without coordination the CLI eats bytes that
-should reach the panel. The panel ``claim`` s stdin (the CLI pauses while
-the flag is set) and ``release`` s it on exit.
+``read()`` is exclusive — without coordination, the CLI eats bytes that should
+reach the panel. The panel ``claim`` s stdin (the CLI pauses while the flag is
+set) and ``release`` s it on exit.
 
-The panel watcher runs in a daemon thread — if the process dies abruptly
-(Ctrl+C, unhandled exception), its ``finally`` does not run and the
-terminal stays in cbreak. We capture the original (cooked) termios on the
-first claim and register an ``atexit`` handler that restores it; ``atexit``
-runs on the main thread even when daemons are killed.
+The panel watcher is a daemon thread; if the process dies abruptly its
+``finally`` never runs and the terminal stays in cbreak. We capture the
+original cooked termios on the first claim and register an ``atexit`` handler
+that restores it (``atexit`` runs on the main thread even when daemons die).
 """
 
 from __future__ import annotations
@@ -38,10 +37,7 @@ def _restore_termios() -> None:
         if _termios_fd >= 0:
             termios.tcsetattr(_termios_fd, termios.TCSADRAIN, _saved_termios)
     except Exception:
-        try:
-            logger.debug("termios restore failed", exc_info=True)
-        except Exception:
-            pass
+        logger.debug("termios restore failed", exc_info=True)
     finally:
         _saved_termios = None
         _termios_fd = -1
@@ -51,9 +47,9 @@ def prime_termios_snapshot(original_termios=None) -> None:
     """Record the *original cooked* termios for the atexit safety-net.
 
     Caller (CLI) should pass the snapshot captured BEFORE its own ``setcbreak``;
-    when ``None`` we auto-capture the current state but refuse it if the
-    terminal is already in cbreak (capturing cbreak as "original" would let
-    atexit leave the terminal broken). Idempotent — first snapshot wins.
+    ``None`` auto-captures but refuses cbreak state (capturing cbreak as
+    "original" would let atexit leave the terminal broken). Idempotent — first
+    snapshot wins.
     """
     global _saved_termios, _termios_fd, _atexit_registered
 
@@ -67,7 +63,6 @@ def prime_termios_snapshot(original_termios=None) -> None:
                     _termios_fd = fd
                 else:
                     current = termios.tcgetattr(fd)
-                    # lflag (index 3) carries ICANON. ICANON off ⇒ cbreak.
                     lflag = current[3] if len(current) > 3 else 0
                     if not (lflag & termios.ICANON):
                         logger.warning(
@@ -92,9 +87,8 @@ def prime_termios_snapshot(original_termios=None) -> None:
 def claim_stdin_for_panel(original_termios=None) -> None:
     """Panel announces exclusive stdin reading.
 
-    Also flushes the stdin input buffer (TCIFLUSH) to drop bytes the CLI
-    watcher may have queued before the claim took effect — closes the
-    TOCTOU window between user keypress and the claim.
+    Also flushes the stdin buffer (``TCIFLUSH``) to drop bytes the CLI watcher
+    may have queued before the claim took effect (closes the TOCTOU window).
     """
     prime_termios_snapshot(original_termios=original_termios)
     _panel_owns_stdin.set()
@@ -108,9 +102,8 @@ def claim_stdin_for_panel(original_termios=None) -> None:
 
 
 def release_stdin_for_panel() -> None:
-    """Panel returns stdin to the CLI. Does NOT restore termios — the CLI
-    owns its own cbreak/restore cycle; the atexit handler is the safety net.
-    """
+    """Panel returns stdin to the CLI. Does NOT restore termios — the CLI owns
+    its own cbreak/restore cycle; atexit handler is the safety net."""
     _panel_owns_stdin.clear()
 
 
