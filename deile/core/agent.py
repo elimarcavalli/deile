@@ -1047,19 +1047,15 @@ class DeileAgent(AgentStreamingMixin):
                 logger.debug("BudgetGuard non-fatal: %s", _budget_err)
 
             # Observability: log provider selection
-            try:
-                from deile.storage.debug_logger import get_debug_logger
-                await get_debug_logger().log_router_event(
-                    "provider_selected",
-                    {
-                        "provider_id": model_provider.provider_id,
-                        "model_id": getattr(model_provider, "model_name", "unknown"),
-                        "tier": getattr(model_tier, "value", "unknown"),
-                        "session_id": session.session_id,
-                    },
-                )
-            except Exception:
-                pass
+            await _emit_router_event(
+                "provider_selected",
+                {
+                    "provider_id": model_provider.provider_id,
+                    "model_id": getattr(model_provider, "model_name", "unknown"),
+                    "tier": getattr(model_tier, "value", "unknown"),
+                    "session_id": session.session_id,
+                },
+            )
 
             _t0 = time.time()
 
@@ -1132,18 +1128,14 @@ class DeileAgent(AgentStreamingMixin):
                     raise
 
                 # Observability — completion event for Gemini path too
-                try:
-                    from deile.storage.debug_logger import get_debug_logger
-                    await get_debug_logger().log_router_event(
-                        "provider_call_completed",
-                        {
-                            "provider_id": model_provider.provider_id,
-                            "tool_calls": len(tool_results),
-                            "latency_ms": int((time.time() - _t0) * 1000),
-                        },
-                    )
-                except Exception:
-                    pass
+                await _emit_router_event(
+                    "provider_call_completed",
+                    {
+                        "provider_id": model_provider.provider_id,
+                        "tool_calls": len(tool_results),
+                        "latency_ms": int((time.time() - _t0) * 1000),
+                    },
+                )
 
                 logger.info("Chat session completed with %d tool execution(s)", len(tool_results))
                 _record_model_used(session, model_provider)
@@ -1284,18 +1276,14 @@ class DeileAgent(AgentStreamingMixin):
                 latency_ms = int((time.time() - _t0) * 1000)
 
                 # Observability — completion event
-                try:
-                    from deile.storage.debug_logger import get_debug_logger
-                    await get_debug_logger().log_router_event(
-                        "provider_call_completed",
-                        {
-                            "provider_id": model_provider.provider_id,
-                            "tool_calls": len(tool_results_raw),
-                            "latency_ms": latency_ms,
-                        },
-                    )
-                except Exception:
-                    pass
+                await _emit_router_event(
+                    "provider_call_completed",
+                    {
+                        "provider_id": model_provider.provider_id,
+                        "tool_calls": len(tool_results_raw),
+                        "latency_ms": latency_ms,
+                    },
+                )
 
                 tool_results: List[ToolResult] = [
                     tr for tr in tool_results_raw if isinstance(tr, ToolResult)
@@ -1321,19 +1309,15 @@ class DeileAgent(AgentStreamingMixin):
             # context the CLI uses to render Rich panels. _BudgetExceeded is module-level (line 18).
             if isinstance(e, _BudgetExceeded):
                 # Emit observability event then propagate
-                try:
-                    from deile.storage.debug_logger import get_debug_logger
-                    await get_debug_logger().log_router_event(
-                        "budget_exceeded",
-                        {
-                            "session_id": session.session_id,
-                            "provider_id": getattr(e, "provider_id", "unknown"),
-                            "limit_type": getattr(e, "limit_type", "unknown"),
-                            "message": str(e),
-                        },
-                    )
-                except Exception:
-                    pass
+                await _emit_router_event(
+                    "budget_exceeded",
+                    {
+                        "session_id": session.session_id,
+                        "provider_id": getattr(e, "provider_id", "unknown"),
+                        "limit_type": getattr(e, "limit_type", "unknown"),
+                        "message": str(e),
+                    },
+                )
                 raise
             # FORCED_MODEL_NOT_REGISTERED also propagates so process_input can build a structured response
             if isinstance(e, ModelError) and getattr(e, "error_code", "") == "FORCED_MODEL_NOT_REGISTERED":
