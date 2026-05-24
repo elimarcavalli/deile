@@ -54,8 +54,11 @@ def _restore_termios() -> None:
         if _termios_fd >= 0:
             termios.tcsetattr(_termios_fd, termios.TCSADRAIN, _saved_termios)
     except Exception:
-        # Atexit não pode falhar — não vale a pena logar (logger já pode estar fechado).
-        pass
+        # Atexit não pode falhar — logger pode já estar fechado, mas tentamos.
+        try:
+            logger.debug("termios restore failed", exc_info=True)
+        except Exception:
+            pass
     finally:
         _saved_termios = None
         _termios_fd = -1
@@ -70,7 +73,13 @@ def prime_termios_snapshot(original_termios=None) -> None:
     quebrado. Para resolver, o caller (CLI) deve invocar esta função
     ANTES de qualquer ``setcbreak`` própria, passando o snapshot original
     capturado naquele momento (``original_termios``). Quando ``None``,
-    captura o snapshot atual — útil para callers que já garantem ordem.
+    captura o snapshot atual.
+
+    Iter-2 review: quando ``original_termios`` é ``None`` e o terminal já
+    está em cbreak (ICANON desligado), RECUSAMOS capturar — capturar
+    cbreak como "original" deixaria atexit restaurando cbreak (sem echo
+    nem line-editing). Caller deve passar o snapshot cooked explícito.
+    Emitimos um logger.warning para sinalizar.
 
     Idempotente: chamadas após o snapshot já estar registrado são no-op
     (preservamos o snapshot mais antigo, que é o realmente original).
@@ -82,12 +91,25 @@ def prime_termios_snapshot(original_termios=None) -> None:
             try:
                 import termios
                 fd = sys.stdin.fileno()
-                _saved_termios = (
-                    original_termios
-                    if original_termios is not None
-                    else termios.tcgetattr(fd)
-                )
-                _termios_fd = fd
+                if original_termios is not None:
+                    _saved_termios = original_termios
+                    _termios_fd = fd
+                else:
+                    current = termios.tcgetattr(fd)
+                    # current = [iflag, oflag, cflag, lflag, ispeed, ospeed, cc]
+                    # ICANON está em lflag (index 3). Se OFF, terminal já está
+                    # em cbreak — capturar agora gravaria o estado "errado".
+                    lflag = current[3] if len(current) > 3 else 0
+                    if not (lflag & termios.ICANON):
+                        logger.warning(
+                            "prime_termios_snapshot: terminal já está em cbreak "
+                            "(ICANON desligado); ignorando auto-capture. "
+                            "Caller deve passar o snapshot cooked explicitamente "
+                            "via prime_termios_snapshot(original_termios=saved)."
+                        )
+                    else:
+                        _saved_termios = current
+                        _termios_fd = fd
             except Exception:
                 logger.debug("could not capture termios snapshot", exc_info=True)
 

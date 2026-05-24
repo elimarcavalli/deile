@@ -471,17 +471,42 @@ class DeileWorkerClient:
         # 404 é transiente logo após o dispatch (a task pode ainda não estar
         # registrada no _TASKS); retornar NOT_FOUND tipado deixa o caller
         # (WorkerSubAgentRunner) retentar especificamente esse caso. Erros
-        # ≥500 viram BAD_RESPONSE sem depender de o body ser JSON-parseable
+        # ≥500 viram SERVER_ERROR sem depender de o body ser JSON-parseable
         # (o nginx/proxy pode devolver HTML 502).
+        #
+        # Iter-2 review: discrimina 401/403/5xx ANTES do json parse — um
+        # auth proxy que devolve HTML em 401 antes mapeava para
+        # WORKER_BAD_RESPONSE e o caller (loop de retry) tratava como
+        # transient. Agora cada classe de status vira um error_code
+        # específico para que o caller possa decidir corretamente.
         if resp.status_code == 404:
             raise WorkerDispatchError(
                 f"task not found at {path}",
                 error_code="NOT_FOUND",
             )
+        if resp.status_code in (401, 403):
+            raise WorkerDispatchError(
+                f"worker auth/forbidden (status={resp.status_code}) at {path}",
+                error_code="WORKER_AUTH_ERROR" if resp.status_code == 401
+                else "WORKER_FORBIDDEN",
+            )
+        if resp.status_code >= 500:
+            raise WorkerDispatchError(
+                f"worker server error (status={resp.status_code}) at {path}",
+                error_code="WORKER_SERVER_ERROR",
+            )
 
         try:
             data = resp.json()
         except json.JSONDecodeError as exc:
+            # Status já filtrou 401/403/5xx acima; o que sobra são 2xx e
+            # 4xx outros. 4xx sem JSON parseable → BAD_REQUEST. 2xx →
+            # body inválido, ainda BAD_RESPONSE (era o original).
+            if resp.status_code >= 400:
+                raise WorkerDispatchError(
+                    f"worker bad request (status={resp.status_code}, non-JSON body)",
+                    error_code="WORKER_BAD_REQUEST",
+                ) from exc
             raise WorkerDispatchError(
                 f"worker returned non-JSON (status={resp.status_code})",
                 error_code="WORKER_BAD_RESPONSE",
@@ -489,7 +514,7 @@ class DeileWorkerClient:
 
         if resp.status_code >= 400:
             err = (data.get("error") if isinstance(data, dict) else None) or {}
-            code = err.get("code") or "WORKER_ERROR"
+            code = err.get("code") or "WORKER_BAD_REQUEST"
             msg = err.get("message") or f"HTTP {resp.status_code}"
             raise WorkerDispatchError(msg, error_code=code)
         if not isinstance(data, dict):

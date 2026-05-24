@@ -28,6 +28,7 @@ from typing import List, Optional, TextIO
 
 from rich.console import Console, Group
 from rich.live import Live
+from rich.markup import escape as _rich_escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -626,8 +627,7 @@ def _escape_markup(text) -> str:
     """
     if text is None:
         return ""
-    from rich.markup import escape
-    return escape(str(text))
+    return _rich_escape(str(text))
 
 
 __all__ = ["SubAgentPanelRenderer"]
