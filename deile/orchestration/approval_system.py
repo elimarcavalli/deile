@@ -163,7 +163,10 @@ class ApprovalSystem:
     def __init__(self, approvals_dir: Path = None):
         """Initialize approval system"""
         self.approvals_dir = approvals_dir or Path("APPROVALS")
-        self.approvals_dir.mkdir(exist_ok=True)
+        # ``parents=True`` so a caller-supplied multi-level path doesn't raise
+        # FileNotFoundError; default ``Path("APPROVALS")`` is a single segment
+        # under cwd so the new flag is also harmless there.
+        self.approvals_dir.mkdir(parents=True, exist_ok=True)
         
         # Active requests
         self.pending_requests: Dict[str, ApprovalRequest] = {}

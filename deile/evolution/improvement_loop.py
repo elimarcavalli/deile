@@ -288,10 +288,20 @@ class ImprovementLoop:
 
                 logger.info(f"Melhoria aplicada com sucesso: {attempt_id}")
 
-                # Remove ponto de rollback após confirmação
-                asyncio.create_task(
-                    self.rollback_manager.remove_rollback_point(rollback_data["rollback_id"])
-                )
+                # Remove ponto de rollback após confirmação. Awaited
+                # diretamente porque (a) já estamos numa coroutine, (b) o
+                # custo é desprezível, (c) o fire-and-forget anterior
+                # (``create_task`` sem ref) podia ser coletado pelo GC antes
+                # de remover o ponto, deixando estado órfão no disco.
+                try:
+                    await self.rollback_manager.remove_rollback_point(
+                        rollback_data["rollback_id"]
+                    )
+                except Exception as exc:  # noqa: BLE001 - cleanup é best-effort
+                    logger.warning(
+                        "Falha ao remover rollback %s: %s",
+                        rollback_data["rollback_id"], exc,
+                    )
 
             else:
                 # Falhou validação - executa rollback
