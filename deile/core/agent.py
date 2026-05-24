@@ -976,6 +976,20 @@ class DeileAgent:
             session=session,
         )
 
+        # Surface auto-triggered skills so the user sees which project-specific
+        # rules are contributing to the answer. ContextManager._build_skills_block
+        # stashes the active skill names on session.context_data['_active_skills']
+        # — auto-injection would otherwise be invisible (the body lands in the
+        # system prompt with no UI signal).
+        _active_skills = session.context_data.get("_active_skills") if session else None
+        if _active_skills:
+            yield UnifiedStreamEvent(
+                type=StreamEventType.STAGE,
+                stage=get_stage_message(
+                    "skills_active", "initial", names=", ".join(_active_skills)
+                ),
+            )
+
         # Tier classification (best-effort)
         yield UnifiedStreamEvent(
             type=StreamEventType.STAGE,
@@ -2618,9 +2632,25 @@ class DeileAgent:
                     project_dir=project_dir,
                     settings_manager=_settings_mgr,
                 )
-                skill_loader.load_into_registry(self.command_registry)
+                invocable_count = skill_loader.load_into_registry(self.command_registry)
                 # Store for hot-reload via /skills add|remove
                 self._skill_loader = skill_loader
+
+                # Visible boot summary so the operator sees in the launch log
+                # how many skills came from where — bundled (auto-trigger +
+                # invoke_skill), user/project (those + slash /<name>). Counts
+                # via the unified registry to include bundled, which the
+                # loader hides by design (legacy slash-command contract).
+                from ..skills.registry import get_skill_registry
+                _by_src: dict = {}
+                for _sk in get_skill_registry().list_all():
+                    _by_src[_sk.source] = _by_src.get(_sk.source, 0) + 1
+                self.logger.info(
+                    "Skills carregadas: total=%d (%s); %d invocáveis como /<nome>",
+                    sum(_by_src.values()),
+                    ", ".join(f"{k}={v}" for k, v in sorted(_by_src.items())) or "vazio",
+                    invocable_count,
+                )
 
                 # The watcher uses the SAME extras the loader saw, so a path
                 # added via /skills add is watched too. Failures here are

@@ -286,7 +286,9 @@ class ContextManager:
                     base_instruction = await _prepend_deile_md_layers(base_instruction, working_directory)
 
                     # Skills layer: aditiva, depois da persona e das regras DEILE.md.
-                    skills_block = await self._build_skills_block(parse_result, session)
+                    skills_block = await self._build_skills_block(
+                        parse_result, session, working_directory=working_directory
+                    )
                     if skills_block:
                         base_instruction += f"\n\n{skills_block}"
 
@@ -326,7 +328,9 @@ class ContextManager:
         base_instruction = await _prepend_deile_md_layers(base_instruction, working_directory)
 
         # Skills layer também no fallback (mesma ordem do caminho com persona).
-        skills_block = await self._build_skills_block(parse_result, session)
+        skills_block = await self._build_skills_block(
+            parse_result, session, working_directory=working_directory
+        )
         if skills_block:
             base_instruction += f"\n\n{skills_block}"
 
@@ -341,17 +345,32 @@ class ContextManager:
         self,
         parse_result: Optional[ParseResult],
         session: Optional[Any],
+        working_directory: Optional[str] = None,
     ) -> str:
         """Resolve skills for this turn and render them as an appendable block.
 
         Returns an empty string when the subsystem is disabled, no skills are
         loaded, or no triggers fired. Bootstrap is lazy — the registry is
         populated on the first call and reused afterwards.
+
+        The bootstrap is anchored on the session's ``working_directory`` (or
+        the caller-supplied ``working_directory`` kwarg) so the
+        ``SkillRouter``'s ``project_root`` matches the agent's actual project
+        — critical for the path-traversal containment in
+        ``file_content_patterns`` triggers, which would otherwise fall back
+        to the process CWD and accept arbitrary references when the user
+        launched DEILE from a different directory.
         """
         if not self._skills_bootstrapped:
             self._skills_bootstrapped = True
             try:
-                self._skill_router = await bootstrap_skills()
+                project_dir: Optional[Path] = None
+                session_wd = getattr(session, "working_directory", None) if session else None
+                if session_wd:
+                    project_dir = Path(session_wd)
+                elif working_directory:
+                    project_dir = Path(working_directory)
+                self._skill_router = await bootstrap_skills(project_dir=project_dir)
             except Exception as exc:
                 logger.warning("skills: bootstrap failed (%s); subsystem disabled for session", exc)
                 self._skill_router = None
@@ -378,6 +397,18 @@ class ContextManager:
             logger.warning("skills: selection raised %s; skipping injection this turn", exc)
             selected = []
 
+        # Stash the active skill names on the session so the streaming layer
+        # in ``DeileAgent`` can emit a STAGE event ("Skill ativa: <names>")
+        # before the LLM call — that's the only place where the user actually
+        # sees feedback that a skill is being used (auto-injection is
+        # otherwise invisible). Best-effort: a session without
+        # ``context_data`` is fine, we just skip the feedback.
+        if session is not None:
+            try:
+                session.context_data["_active_skills"] = [s.name for s in selected]
+            except Exception:
+                pass
+
         # Always include the catalog (compact name+description list) so the LLM
         # knows what's available and can pull a non-triggered skill via the
         # ``invoke_skill`` tool. Auto-triggered skills are excluded from the
@@ -387,7 +418,7 @@ class ContextManager:
         active_block = self._skill_router.render_block(selected) if selected else ""
 
         if selected:
-            logger.debug(
+            logger.info(
                 "skills: injecting %d active skill(s): %s",
                 len(selected),
                 ", ".join(s.name for s in selected),

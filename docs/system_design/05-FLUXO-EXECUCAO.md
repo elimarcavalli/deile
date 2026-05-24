@@ -105,6 +105,33 @@ Erros que devem aparecer ao usuário com formatação especial são marcados via
 
 Falhas no bootstrap ou na seleção são logadas (warning) e não interrompem o turno — `_build_skills_block` retorna string vazia e a turn continua sem skills.
 
+### Ordem final do system prompt (com persona ativa)
+
+```
+┌─ DEILE.md Core         (prepend, não negociável)  ┐
+├─ DEILE.md User         (prepend)                   │ via _prepend_deile_md_layers
+├─ DEILE.md CWD          (prepend, regras do projeto)┘
+├─ Persona instructions  (base, persona.build_system_instruction)
+├─ ## Active Skills      (append, skills auto-disparadas)
+│  ### Skill: <name>
+│  <body>
+├─ ## Available Skills   (append, catálogo das demais)
+├─ 📁 [ARQUIVOS DISPONÍVEIS NO PROJETO] (append, listagem do cwd)
+└─ extra_system_prompt   (append, modo bot via _merge_bot_extra)
+```
+
+No caminho de fallback (sem `PersonaManager`), `instruction_loader.load_fallback_instruction()` substitui a camada Persona; o resto da ordem é idêntico.
+
+### Feedback visual ao usuário
+
+| Evento | Onde aparece |
+|---|---|
+| Skills carregadas no startup | `logger.info` em `agent.py:_auto_discover_components` com `total + breakdown por source + invocáveis como /<nome>` |
+| Skill auto-injetada no turno | STAGE event `"🧩 Skill ativa: <names>"` (chave `skills_active` em `stage_messages.py`) emitido pelo agent logo após `build_context`, surgindo no spinner antes da chamada ao LLM. Source: `session.context_data["_active_skills"]` populado por `_build_skills_block` |
+| Skill invocada via `invoke_skill` | Aparece como tool call no transcript (renderização padrão de tool result) |
+| Skill invocada via `/<name>` | Aparece como execução de slash command |
+| Hot-reload do watcher | `logger.info` `"skills: hot-reload — registry now holds N skill(s)"` |
+
 ## Memória ao longo do turno
 
 | Camada | Uso típico durante o turno |
