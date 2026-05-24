@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..memory.memory_manager import MemoryManager
+from ..orchestration.subagents.constants import is_display_only_entry
 from ..parsers.base import ParseResult
 from ..personas.instruction_loader import InstructionLoader
 from ..personas.manager import PersonaManager
@@ -167,13 +168,21 @@ class ContextManager:
             # adicionou a entrada "user" do turno corrente em add_to_history()
             # antes de chamar build_context, então conversation_history sempre
             # termina com a mensagem atual do usuário.
+            #
+            # Issue #257: entradas marcadas como "display-only" (resumo do painel
+            # de sub-DEILEs paralelos) são FILTRADAS aqui — elas existem apenas
+            # para que ``replay_history`` possa re-renderizar o painel no
+            # ``/resume``, mas mandar para o provider quebra alternância
+            # user/assistant (Anthropic 400, OpenAI percepção corrompida).
             messages: List[Dict[str, Any]] = []
             if session is not None and getattr(session, "conversation_history", None):
                 for entry in session.conversation_history:
+                    entry_meta = entry.get("metadata") or {}
+                    if is_display_only_entry(entry_meta):
+                        continue
                     role = entry.get("role", "user")
                     content = entry.get("content", "")
                     msg_dict: Dict[str, Any] = {"role": role, "content": content}
-                    entry_meta = entry.get("metadata") or {}
                     if entry_meta:
                         msg_dict["metadata"] = entry_meta
                     messages.append(msg_dict)

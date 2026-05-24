@@ -392,6 +392,24 @@ class DeileAgent:
         if len(self.model_router.providers) == 0:
             self._register_default_providers()
 
+        # Surface UI opcional para tools que abrem renderers próprios
+        # (issue #257: ``dispatch_parallel_subagents`` abre um painel Rich
+        # Live multiplexado durante a execução). A CLI seta isso via
+        # :meth:`set_ui_console` logo após construir o agente; quando o
+        # agente roda fora de um CLI (e.g. worker pod), o atributo
+        # permanece ``None`` e a tool roda em modo headless.
+        self._ui_console = None
+
+    def set_ui_console(self, console) -> None:
+        """Registra o ``rich.console.Console`` da UI para tools que precisem dele.
+
+        Issue #257 — a tool ``dispatch_parallel_subagents`` consulta isso
+        via ``session.context_data["_console"]`` para abrir o painel
+        multiplexado ao vivo. Setar ``None`` desabilita a UI (modo headless,
+        e.g. testes).
+        """
+        self._ui_console = console
+
     async def initialize(self) -> None:
         """Inicializa componentes assíncronos do agente"""
         try:
@@ -1497,10 +1515,27 @@ class DeileAgent:
     # Métodos privados
 
     def _get_or_create_session(self, session_id: str, **kwargs) -> AgentSession:
-        """Obtém sessão existente ou cria nova"""
+        """Obtém sessão existente ou cria nova.
+
+        Sempre injeta a referência ao próprio agente (``_agent``) e ao
+        console de UI (``_console``, opcional) no ``context_data`` da sessão
+        para tools que precisem desses handles — por exemplo
+        ``dispatch_parallel_subagents`` (issue #257), que spawna sub-DEILEs
+        in-process e abre seu próprio Rich Live multipanel.
+        """
         if session_id not in self._sessions:
-            return self.create_session(session_id, **kwargs)
-        return self._sessions[session_id]
+            session = self.create_session(session_id, **kwargs)
+        else:
+            session = self._sessions[session_id]
+        # Re-injection em cada turn é barata (apenas escreve no dict) e
+        # sobrevive a substituições de console em testes. ``getattr`` defensivo
+        # pq fixtures de teste constroem o agente via ``__new__`` (skip __init__).
+        session.context_data["_agent"] = self
+        _console = getattr(self, "_ui_console", None)
+        if _console is not None:
+            session.context_data["_console"] = _console
+        session.context_data["session_id"] = session_id
+        return session
     
     async def _process_slash_command(self, user_input: str, session: AgentSession, start_time: float) -> AgentResponse:
         """Processa comando slash diretamente"""

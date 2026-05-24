@@ -40,6 +40,7 @@ DEFAULT_TOOL_PACKAGES = [
     "deile.tools.cron_delete_tool",
     "deile.tools.worktree_tool",
     "deile.tools.dispatch_deile_task",
+    "deile.tools.dispatch_parallel_subagents",
 ]
 
 

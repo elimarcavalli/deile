@@ -322,6 +322,15 @@ class _DeileCLI:
                     working_directory=self.settings.working_directory,
                 )
 
+                # Issue #257 — surface o console da CLI ao agente para que
+                # tools que abrem renderers próprios (dispatch_parallel_
+                # subagents) possam usá-lo. No-op em ambiente sem UI Rich.
+                try:
+                    if hasattr(self.agent, "set_ui_console") and hasattr(self.ui, "console"):
+                        self.agent.set_ui_console(self.ui.console)
+                except Exception:
+                    pass
+
             self.ui.setup_hybrid_completion(
                 working_directory=str(self.settings.working_directory)
             )
@@ -421,10 +430,25 @@ class _DeileCLI:
             await self.ui.display_streaming_turn(event_stream)
             return False
 
+        # M13 (PR #295 review): registra o termios *cooked* ANTES de
+        # `setcbreak` rodar dentro de `_watch`. Sem isto, quando o painel
+        # de sub-DEILEs invoca `claim_stdin_for_panel` o cbreak já está
+        # ativo e o snapshot atexit restauraria cbreak no shutdown.
+        from .ui._stdin_owner import panel_owns_stdin, prime_termios_snapshot
+        try:
+            prime_termios_snapshot(original_termios=saved)
+        except Exception:
+            pass  # best-effort — atexit fallback still protects
+
         def _watch() -> None:
             try:
                 tty.setcbreak(sys.stdin.fileno())
                 while not esc_event.is_set():
+                    if panel_owns_stdin():
+                        # Outro consumidor (painel de sub-DEILEs) tem prioridade.
+                        # Não fazemos `read(1)` — os bytes vão pro painel.
+                        time.sleep(0.1)
+                        continue
                     r, _, _ = _select.select([sys.stdin], [], [], 0.1)
                     if not r:
                         continue

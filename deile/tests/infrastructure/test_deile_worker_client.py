@@ -220,12 +220,15 @@ async def test_dispatch_bad_request_invalid_payload(monkeypatch):
     assert ei.value.error_code == "BAD_REQUEST"
 
 
-async def _run_with_transport(monkeypatch, handler):
-    """Helper: install a MockTransport and a token, then dispatch."""
+def _install_mock_transport(monkeypatch, handler) -> DeileWorkerClient:
+    """Install MockTransport + token + endpoint and return a fresh client.
+
+    Shared bootstrap for the dispatch / get_progress / get_result helpers —
+    all three paths needed the same four monkeypatch lines (token, endpoint,
+    AsyncClient factory, transport).
+    """
     monkeypatch.setattr(wc, "_read_token", lambda: "a-valid-token-123")
-    monkeypatch.setattr(
-        wc, "_resolve_endpoint", lambda: "http://mock.invalid"
-    )
+    monkeypatch.setattr(wc, "_resolve_endpoint", lambda: "http://mock.invalid")
     transport = httpx.MockTransport(handler)
     real_async_client = httpx.AsyncClient
 
@@ -234,7 +237,12 @@ async def _run_with_transport(monkeypatch, handler):
         return real_async_client(*args, **kwargs)
 
     monkeypatch.setattr(httpx, "AsyncClient", _factory)
-    cli = DeileWorkerClient()
+    return DeileWorkerClient()
+
+
+async def _run_with_transport(monkeypatch, handler):
+    """Helper: install a MockTransport and a token, then dispatch."""
+    cli = _install_mock_transport(monkeypatch, handler)
     return await cli.dispatch(_good_payload(), wait=False)
 
 
@@ -335,3 +343,101 @@ async def test_dispatch_timeout_value_changes_with_wait(monkeypatch):
 
 def test_default_timeout_is_float():
     assert isinstance(DEFAULT_TIMEOUT_S, float)
+
+
+# ----- get_progress / get_result (issue #257) -----
+
+async def _run_get_with_transport(monkeypatch, handler, *, fn, path):
+    """Helper: install MockTransport and exercise ``cli.<fn>(task_id)``.
+
+    ``path`` is unused but kept as a kwarg for callers that document intent
+    (it appears in the request URL the handler inspects).
+    """
+    del path  # documented intent only — actual URL is asserted by handlers
+    cli = _install_mock_transport(monkeypatch, handler)
+    method = getattr(cli, fn)
+    return await method("test-task-id")
+
+
+async def test_get_progress_returns_snapshot_dict(monkeypatch):
+    expected = {
+        "task_id": "test-task-id",
+        "ok": None,
+        "phase": "▶️ trabalhando...",
+        "progress_lines": ["a", "b"],
+        "elapsed_s": 2.5,
+    }
+
+    def handler(request):
+        assert request.method == "GET"
+        assert "/v1/progress/test-task-id" in str(request.url)
+        assert request.headers["authorization"].startswith("Bearer ")
+        return httpx.Response(200, json=expected)
+
+    data = await _run_get_with_transport(
+        monkeypatch, handler, fn="get_progress", path="/v1/progress"
+    )
+    assert data == expected
+
+
+async def test_get_progress_404_raises_not_found(monkeypatch):
+    def handler(request):
+        return httpx.Response(
+            404, json={"error": {"code": "NOT_FOUND", "message": "x"}}
+        )
+
+    with pytest.raises(WorkerDispatchError) as ei:
+        await _run_get_with_transport(
+            monkeypatch, handler, fn="get_progress", path="/v1/progress"
+        )
+    assert ei.value.error_code == "NOT_FOUND"
+
+
+async def test_get_progress_auth_missing(monkeypatch):
+    monkeypatch.setattr(wc, "_read_token", lambda: "")
+    monkeypatch.setattr(wc, "_resolve_endpoint", lambda: "http://mock.invalid")
+    cli = DeileWorkerClient()
+    with pytest.raises(WorkerDispatchError) as ei:
+        await cli.get_progress("any-task")
+    assert ei.value.error_code == "WORKER_AUTH_MISSING"
+
+
+async def test_get_result_returns_full_dict(monkeypatch):
+    expected = {
+        "task_id": "test-task-id",
+        "ok": True,
+        "files": ["foo.py"],
+        "summary": "done",
+        "elapsed_s": 12.0,
+    }
+
+    def handler(request):
+        assert "/v1/result/test-task-id" in str(request.url)
+        return httpx.Response(200, json=expected)
+
+    data = await _run_get_with_transport(
+        monkeypatch, handler, fn="get_result", path="/v1/result"
+    )
+    assert data == expected
+
+
+async def test_get_result_timeout(monkeypatch):
+    def handler(request):
+        raise httpx.TimeoutException("simulated")
+
+    with pytest.raises(WorkerDispatchError) as ei:
+        await _run_get_with_transport(
+            monkeypatch, handler, fn="get_result", path="/v1/result"
+        )
+    assert ei.value.error_code == "WORKER_TIMEOUT"
+
+
+async def test_get_progress_non_dict_body(monkeypatch):
+    def handler(request):
+        return httpx.Response(200, content=b'"not-a-dict"', headers={"Content-Type": "application/json"})
+
+    with pytest.raises(WorkerDispatchError) as ei:
+        await _run_get_with_transport(
+            monkeypatch, handler, fn="get_progress", path="/v1/progress"
+        )
+    assert ei.value.error_code == "WORKER_BAD_RESPONSE"

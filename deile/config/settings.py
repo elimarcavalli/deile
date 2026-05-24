@@ -184,6 +184,11 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     # Refinement gate + parallel decomposition (issue #257)
     "pipeline.refine_max_attempts": ("pipeline_refine_max_attempts", _to_pos_int),
     "pipeline.max_parallel": ("pipeline_max_parallel", _to_pos_int),
+    # Sub-DEILEs paralelos (issue #257)
+    "subagent.runner": ("subagent_runner", lambda v: str(v).strip().lower()),
+    "subagent.max_parallel": ("subagent_max_parallel", _to_pos_int),
+    "subagent.poll_interval_s": ("subagent_poll_interval_s", float),
+    "subagent.budget_s": ("subagent_budget_s", float),
     # Trust boundary (issue #125): allowlist of directories whose
     # ``./.deile/settings.json`` is honored as the project layer.
     "trust.project_layer_dirs": ("trust_project_layer_dirs", _to_str_list),
@@ -339,6 +344,19 @@ class Settings:
     pipeline_resume_budget: int = 0
     pipeline_refine_max_attempts: int = 5
     pipeline_max_parallel: int = 2
+
+    # Sub-DEILEs paralelos em sessão CLI (issue #257)
+    # `subagent_runner`        — "local" (default; in-process via asyncio.gather de
+    #                            DeileAgent.process_input_stream em sessões limpas)
+    #                            ou "worker" (delega ao deile-worker HTTP).
+    # `subagent_max_parallel`  — teto de concorrência por chamada da tool.
+    # `subagent_poll_interval_s` — período de polling do WorkerSubAgentRunner.
+    subagent_runner: str = "local"
+    subagent_max_parallel: int = 3
+    subagent_poll_interval_s: float = 0.8
+    # Teto global de tempo da invocação do tool `dispatch_parallel_subagents`
+    # (M2/M11 — issue #295 review). Default = 10min = mesmo budget do worker.
+    subagent_budget_s: float = 600.0
 
     # Cron
     cron_db_path: Optional[Path] = None
@@ -696,6 +714,11 @@ _JSON_FIELD_MAP: Dict[str, str] = {
     "pipeline.resume_budget": "pipeline_resume_budget",
     "cron.db_path": "cron_db_path",
     "cron.poll_interval": "cron_poll_interval",
+    # Sub-DEILEs paralelos (issue #257)
+    "subagent.runner": "subagent_runner",
+    "subagent.max_parallel": "subagent_max_parallel",
+    "subagent.poll_interval_s": "subagent_poll_interval_s",
+    "subagent.budget_s": "subagent_budget_s",
     "agent.max_tool_iterations": "max_tool_iterations",
     # Trust boundary (issue #125) — see ``_OVERRIDE_HANDLERS`` for the
     # strict converters; this map covers the layered-loading path.
@@ -861,6 +884,11 @@ _ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any], bool], ...] = (
     ("DEILE_CRON_POLL_INTERVAL",             "cron_poll_interval",             int,               True),
     # Current knob (no deprecation): agent tool-loop cap.
     ("DEILE_MAX_TOOL_ITERATIONS",            "max_tool_iterations",            _int_floor(1),     False),
+    # Sub-DEILEs paralelos (issue #257) — current knobs, no deprecation.
+    ("DEILE_SUBAGENT_RUNNER",                "subagent_runner",                lambda s: s.strip().lower(), False),
+    ("DEILE_SUBAGENT_MAX_PARALLEL",          "subagent_max_parallel",          _int_floor(1),     False),
+    ("DEILE_SUBAGENT_POLL_INTERVAL_S",       "subagent_poll_interval_s",       float,             False),
+    ("DEILE_SUBAGENT_BUDGET_S",              "subagent_budget_s",              float,             False),
 )
 
 
