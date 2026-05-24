@@ -25,6 +25,8 @@ import time
 import uuid
 from typing import Any, Callable, Optional, Protocol
 
+from ...common.text_utils import truncate
+from ...common.tool_args import TOOL_PRIMARY_ARG_KEYS
 from .events import SubAgentEvent, SubAgentEventKind, SubAgentState
 
 logger = logging.getLogger(__name__)
@@ -73,11 +75,13 @@ _FILE_TOUCHING_TOOLS = frozenset({
 
 
 def _short(text: str, limit: int = 100) -> str:
-    """Sanitize text for one-liner display (no newlines, bounded length)."""
-    if text is None:
-        return ""
-    s = str(text).replace("\n", " ⏎ ").replace("\r", " ").strip()
-    return s if len(s) <= limit else s[: limit - 1] + "…"
+    """Sanitize text for one-liner display (no newlines, bounded length).
+
+    Thin wrapper around :func:`deile.common.text_utils.truncate` preserved for
+    in-module call sites; central implementation lives in ``common`` to share
+    semantics with ``deile/ui/subagent_panel._truncate``.
+    """
+    return truncate(text, limit, flatten_newlines=True)
 
 
 class LocalSubAgentRunner:
@@ -306,16 +310,7 @@ def _format_tool_inline(tool_name: str, args: dict) -> str:
     if not isinstance(args, dict) or not args:
         return ""
     # Tools de comando primário: mostra só o valor.
-    primary_keys = {
-        "bash_execute": "command",
-        "python_execute": "code",
-        "read_file": "file_path",
-        "write_file": "file_path",
-        "list_files": "path",
-        "delete_file": "file_path",
-        "edit_file": "file_path",
-    }
-    pk = primary_keys.get(tool_name)
+    pk = TOOL_PRIMARY_ARG_KEYS.get(tool_name)
     if pk and pk in args:
         return _short(str(args[pk]), 60)
     # Fallback: primeira chave string.
