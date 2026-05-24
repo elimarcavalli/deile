@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
 
-from deile.skills.bootstrap import bootstrap_skills
+from deile.skills.bootstrap import (
+    BootstrapResult,
+    bootstrap_skills,
+    bootstrap_skills_with_handle,
+)
 from deile.skills.config import SkillsConfig, load_skills_config
 from deile.skills.registry import get_skill_registry, reset_skill_registry
 
@@ -69,6 +74,21 @@ class TestLoadSkillsConfig:
         f.write_text("max_per_turn: 0\n", encoding="utf-8")
         assert load_skills_config(f).max_per_turn == 1
 
+    def test_unreadable_file_falls_back_to_enabled(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # An unreadable file behaves like a missing one (defaults + WARNING).
+        # Different from malformed YAML, which disables to surface the mistake.
+        f = tmp_path / "skills.yaml"
+        f.write_text("enabled: true", encoding="utf-8")
+        f.chmod(0o000)
+        try:
+            with caplog.at_level(logging.WARNING, logger="deile.skills.config"):
+                cfg = load_skills_config(f)
+            assert cfg.enabled is True
+        finally:
+            f.chmod(0o644)
+
 
 @pytest.mark.unit
 class TestBootstrapSkills:
@@ -123,3 +143,27 @@ class TestBootstrapSkills:
         assert router is not None
         names = set(get_skill_registry().list_names())
         assert {"python", "typescript", "tdd"}.issubset(names)
+
+
+@pytest.mark.unit
+class TestBootstrapHandle:
+    async def test_with_handle_returns_typed_dataclass(self, tmp_path: Path) -> None:
+        result = await bootstrap_skills_with_handle(
+            project_dir=tmp_path / "p", user_home=tmp_path / "h",
+        )
+        assert isinstance(result, BootstrapResult)
+        assert result.router is not None
+        # Without hot_reload=True, watcher is None.
+        assert result.watcher is None
+
+    async def test_with_handle_returns_none_when_disabled(self) -> None:
+        result = await bootstrap_skills_with_handle(SkillsConfig(enabled=False))
+        assert result is None
+
+    async def test_legacy_bootstrap_skills_returns_just_router(self, tmp_path: Path) -> None:
+        router = await bootstrap_skills(
+            project_dir=tmp_path / "p", user_home=tmp_path / "h",
+        )
+        assert router is not None
+        # watcher attribute exists on the router for direct access.
+        assert router.watcher is None

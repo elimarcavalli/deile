@@ -1,14 +1,9 @@
 """Unified skills subsystem.
 
-A **Skill** is a Markdown file with optional YAML frontmatter that can be:
-
-- **Auto-injected** into the system prompt when its ``triggers`` fire for the
-  current turn (handled by ``SkillRouter`` from ``ContextManager``).
-- **Manually invoked** via ``/<name>`` as a slash command (handled by the
-  bridge in ``slash_command_bridge.py``).
-
-Both modes use the same registry, so a skill cataloged here is visible
-through both paths. See ``bootstrap.py`` for the single entry point.
+A skill is a Markdown file with optional YAML frontmatter that can be
+auto-injected into the system prompt when triggers fire, or invoked
+manually via ``/<name>``. Both modes share the same registry — see
+``bootstrap.py`` for the single entry point.
 """
 
 from .base import Skill, SkillTrigger

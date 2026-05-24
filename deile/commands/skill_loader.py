@@ -1,14 +1,9 @@
 """Backward-compat shim — the canonical skill subsystem lives in ``deile.skills``.
 
-This module preserves the public API the rest of the codebase (and existing
-tests) relies on:
-
-- ``SkillLoader(project_dir, user_home, settings_manager)``
-- ``SkillDefinition`` (alias of ``deile.skills.base.Skill``)
-- ``_normalize_name``, ``_parse_skill_file`` (private helpers used by tests)
-
-All real work — parsing, discovery, slash-command bridging — is delegated to
-``deile.skills``. Add new logic there, not here.
+Preserves the legacy public API: ``SkillLoader``, ``SkillDefinition``,
+and the private helpers (``_normalize_name``, ``_parse_skill_file``,
+``_VALID_NAME_RE``, ``_FRONTMATTER_RE``, ``_list_md_files``) that existing
+tests import. All real work delegates to ``deile.skills``.
 """
 
 from __future__ import annotations
@@ -38,8 +33,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# Backward-compat alias. Existing code (and tests in
-# ``deile/tests/test_skill_loader.py``) import ``SkillDefinition`` directly.
+# Legacy alias — tests import ``SkillDefinition`` directly.
 SkillDefinition = _Skill
 
 
@@ -49,9 +43,8 @@ def _parse_skill_file(
     force_uppercase_name: bool = False,
     kind: str = "skill",
 ) -> Optional[_Skill]:
-    """Legacy parser — reads *path* and delegates to the unified text parser.
+    """Legacy parser — delegates to the unified text parser.
 
-    Returns None on any recoverable failure (matches pre-unification behavior).
     YAML errors are pre-detected here so the warning lands on THIS module's
     logger, where legacy tests look for it.
     """
@@ -69,25 +62,17 @@ def _parse_skill_file(
         except yaml.YAMLError as exc:
             logger.warning(
                 "Skill file %s has invalid YAML front-matter and will be skipped: %s",
-                path,
-                exc,
+                path, exc,
             )
             return None
     return parse_skill_text(
-        text,
-        path,
-        source=source,
-        kind=kind,
-        force_uppercase_name=force_uppercase_name,
+        text, path,
+        source=source, kind=kind, force_uppercase_name=force_uppercase_name,
     )
 
 
 class SkillLoader:
-    """Legacy entry point — delegates discovery to ``deile.skills``.
-
-    Preserved so existing call sites (and ``DeileAgent.reload_skills``) keep
-    working without changes.
-    """
+    """Legacy entry point — delegates discovery to ``deile.skills``."""
 
     def __init__(
         self,
@@ -116,7 +101,6 @@ class SkillLoader:
         return self._project_dir / ".claude" / "commands"
 
     def _ensure_user_dir(self) -> None:
-        """Create ``~/.deile/skills/`` if it doesn't exist."""
         try:
             self.user_skills_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -135,44 +119,39 @@ class SkillLoader:
             paths.append(extra_path)
         return paths
 
-    def load_skills(self) -> List[_Skill]:
-        """Scan supported skill directories and return merged skill list.
-
-        Legacy contract: only user/project/extras are returned — bundled
-        specialist skills are NOT exposed via this method, because they
-        should not be registered as ``/<name>`` slash commands.
-        Use ``deile.skills.discovery.discover_skills_sync`` directly when
-        you need the full set (including bundled).
-        """
+    def _discover_all(self) -> List[_Skill]:
         self._ensure_user_dir()
-        all_skills, _overrides = discover_skills_sync(
+        all_skills, _ = discover_skills_sync(
             project_dir=self._project_dir,
             user_home=self._user_home,
             extra_paths=self._extra_paths(),
         )
-        skills = [s for s in all_skills if s.source != "bundled"]
+        return all_skills
+
+    def load_skills(self) -> List[_Skill]:
+        """Return non-bundled skills only (legacy contract).
+
+        Bundled specialists are not exposed via this method — they should not
+        be registered as ``/<name>`` slash commands. Use
+        ``deile.skills.discovery.discover_skills_sync`` for the full set.
+        """
+        skills = [s for s in self._discover_all() if s.source != "bundled"]
         if skills:
             logger.info(
                 "Loaded %d skill(s) from %s",
-                len(skills),
-                ", ".join(sorted({s.source for s in skills})),
+                len(skills), ", ".join(sorted({s.source for s in skills})),
             )
         return skills
 
     def load_into_registry(self, registry) -> int:
-        """Load skills, register slash commands AND populate the unified registry.
+        """Populate the unified registry AND register slash commands.
 
         The unified ``SkillRegistry`` gets the FULL set (including bundled
         specialists) so ``SkillRouter`` can auto-trigger on them. The
         command registry only gets non-bundled skills — bundled specialists
         are not invokable via ``/<name>`` by design.
         """
-        self._ensure_user_dir()
-        all_skills, _overrides = discover_skills_sync(
-            project_dir=self._project_dir,
-            user_home=self._user_home,
-            extra_paths=self._extra_paths(),
-        )
+        all_skills = self._discover_all()
 
         unified = get_skill_registry()
         for skill in all_skills:
@@ -182,12 +161,11 @@ class SkillLoader:
         if invocable:
             logger.info(
                 "Loaded %d skill(s) from %s",
-                len(invocable),
-                ", ".join(sorted({s.source for s in invocable})),
+                len(invocable), ", ".join(sorted({s.source for s in invocable})),
             )
 
-        # Pre-filter collisions HERE so the warning lands on THIS module's
-        # logger (legacy tests patch sl_mod.logger.warning to capture it).
+        # Pre-filter collisions HERE so warnings land on THIS module's logger
+        # (legacy tests patch sl_mod.logger.warning to capture them).
         filtered: List[_Skill] = []
         collisions: List[str] = []
         for skill in invocable:
@@ -198,9 +176,7 @@ class SkillLoader:
                     "Skill %r (from %s) collides with existing command /%s "
                     "(category=%s) — skipping. Built-in commands cannot be "
                     "overridden by a skill file.",
-                    skill.name,
-                    skill.source_path,
-                    existing.name,
+                    skill.name, skill.source_path, existing.name,
                     getattr(existing, "category", "general"),
                 )
                 continue
@@ -208,8 +184,7 @@ class SkillLoader:
         if collisions:
             logger.warning(
                 "Skipped %d skill(s) due to name collision with existing commands: %s",
-                len(collisions),
-                ", ".join(sorted(collisions)),
+                len(collisions), ", ".join(sorted(collisions)),
             )
         return register_skills_as_commands(filtered, registry)
 

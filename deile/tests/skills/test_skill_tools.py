@@ -108,6 +108,35 @@ class TestInvokeSkillTool:
 
 
 @pytest.mark.unit
+class TestInvokeSkillErrorCapping:
+    async def test_error_truncates_long_name_list(self) -> None:
+        reg = get_skill_registry()
+        for i in range(50):
+            reg.register(Skill(name=f"skill-{i:03d}", description="d", body="b"))
+
+        tool = InvokeSkillTool()
+        result = await tool.execute(
+            ToolContext(user_input="", parsed_args={"name": "does-not-exist"})
+        )
+        assert result.is_error
+        # Cap is 25; message must indicate the cut-off.
+        assert "more" in result.message
+        assert "list_skills" in result.message
+
+    async def test_error_below_cap_shows_full_list(self) -> None:
+        _register("alpha")
+        _register("beta")
+        tool = InvokeSkillTool()
+        result = await tool.execute(
+            ToolContext(user_input="", parsed_args={"name": "gamma"})
+        )
+        assert result.is_error
+        assert "alpha" in result.message
+        assert "beta" in result.message
+        assert "more" not in result.message
+
+
+@pytest.mark.unit
 class TestAutoDiscovery:
     def test_tools_appear_in_DEFAULT_TOOL_PACKAGES(self) -> None:
         # Guard against accidental removal — if these aren't auto-discovered,

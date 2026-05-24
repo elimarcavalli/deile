@@ -17,8 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 # Cap how much of each referenced file we sample for ``file_content_patterns``.
-# 4 KiB is enough for shebangs, module docstrings, and typical import blocks
-# without turning trigger evaluation into expensive disk I/O.
+# 4 KiB covers shebangs, module docstrings and typical import blocks without
+# turning trigger evaluation into expensive disk I/O.
 _FILE_CONTENT_SAMPLE_BYTES = 4096
 
 
@@ -51,14 +51,8 @@ def _matches_code_block_langs(langs: Iterable[str], detected: Iterable[str]) -> 
 
 
 def _matches_keywords(keywords: Iterable[str], user_input: str) -> bool:
-    """Word-boundary, case-insensitive match on *user_input*.
-
-    Word boundary (``\\b``) avoids spurious hits like "rust" inside "trust".
-    Keywords containing whitespace are treated as multi-word phrases.
-    """
-    if not keywords:
-        return False
-    if not user_input:
+    """Word-boundary, case-insensitive match — ``\\b`` avoids 'rust' inside 'trust'."""
+    if not keywords or not user_input:
         return False
     for raw in keywords:
         if not raw:
@@ -72,11 +66,10 @@ def _matches_keywords(keywords: Iterable[str], user_input: str) -> bool:
 def _resolve_within(ref: str, project_root: Path) -> Optional[Path]:
     """Resolve *ref* into an absolute path that stays inside *project_root*.
 
-    Returns ``None`` when the resolved path is outside the project root
-    (a defense against a malicious skill frontmatter trying to use
-    ``file_content_patterns`` to probe ``/etc/passwd`` via a crafted
-    ``file_reference`` value). The check tolerates the case where
-    *project_root* itself does not exist (legitimate during tests).
+    Returns ``None`` for paths that escape the root — a defense against a
+    malicious skill frontmatter using ``file_content_patterns`` to probe
+    ``/etc/passwd`` via a crafted ``file_reference`` value. Tolerates a
+    non-existent project root (legitimate during tests).
     """
     path = Path(ref)
     if not path.is_absolute():
@@ -88,8 +81,6 @@ def _resolve_within(ref: str, project_root: Path) -> Optional[Path]:
     try:
         root_resolved = project_root.resolve()
     except (OSError, RuntimeError):
-        # If the project root does not exist, fall back to a no-containment
-        # check — we cannot prove the path is "inside" something undefined.
         return resolved
     try:
         resolved.relative_to(root_resolved)
@@ -104,15 +95,6 @@ def _matches_file_content(
     cache: dict,
     project_root: Path,
 ) -> bool:
-    """Compile *patterns* and search the first sample of each referenced file.
-
-    *cache* maps ``str(absolute_path) → sample_text`` to avoid re-reading the
-    same file across multiple skills in a single ``select_skills`` call.
-    Patterns that fail to compile are skipped with a logged warning so a
-    single bad regex does not break trigger evaluation for other skills.
-    Files outside *project_root* are silently ignored — see
-    :func:`_resolve_within`.
-    """
     pattern_list = list(patterns)
     if not pattern_list:
         return False
@@ -136,10 +118,7 @@ def _matches_file_content(
             continue
         resolved = _resolve_within(ref, project_root)
         if resolved is None:
-            logger.debug(
-                "skills: file_content trigger ignoring out-of-root reference %r",
-                ref,
-            )
+            logger.debug("skills: file_content trigger ignoring out-of-root reference %r", ref)
             continue
         key = str(resolved)
         if key in cache:
@@ -168,10 +147,8 @@ def _matches_file_content(
 class SkillRouter:
     """Selects active skills for a turn based on registered trigger conditions.
 
-    The router is sync (only cheap, bounded I/O at match time for
-    ``file_content_patterns``) and deterministic: ties on ``priority`` are
-    broken by ``skill.name`` so the same context always yields the same
-    ordering.
+    Deterministic: ties on ``priority`` are broken by ``skill.name`` so the
+    same context always yields the same ordering.
     """
 
     def __init__(
@@ -186,10 +163,8 @@ class SkillRouter:
         self._max = max_skills_per_turn
         self._project_root = project_root or Path.cwd()
         # Optional handle to a running ``SkillsWatcher`` — set by
-        # :func:`bootstrap_skills` when hot-reload is enabled. Callers that
-        # need to ``stop()`` the watcher on shutdown can reach it here
-        # without us cluttering the constructor signature for the common
-        # (no-watcher) case.
+        # ``bootstrap_skills`` when hot-reload is enabled so callers can
+        # ``stop()`` it on shutdown without cluttering the constructor.
         self.watcher: Optional[Any] = None
 
     def select_skills(self, context: SkillSelectionContext) -> List[Skill]:
@@ -197,18 +172,14 @@ class SkillRouter:
         if not self._registry.list_all():
             return []
 
-        # Detect once per turn — both inputs are cheap but we still avoid redoing
-        # the regex/extension scan for every skill.
         code_block_langs = self._detector.langs_in_code_blocks(context.user_input)
         file_languages = self._detector.languages_for_paths(context.file_references)
 
-        # Treat detected file-extension languages the same as code-block fences:
-        # a skill whose ``code_block_langs`` includes "python" should also fire
-        # for a ``.py`` file reference even if the user did not paste a fence.
+        # A skill whose ``code_block_langs`` includes "python" should also fire
+        # for a ``.py`` file reference even without a code-fence in the input.
         all_detected_langs = list({*code_block_langs, *file_languages})
 
-        # Per-turn cache for file-content reads — multiple skills can reference
-        # the same file without re-reading it.
+        # Per-turn cache so multiple skills referencing the same file read it once.
         content_cache: dict = {}
 
         matched: List[Skill] = []
@@ -236,7 +207,7 @@ class SkillRouter:
         return matched[: self._max]
 
     def render_block(self, skills: List[Skill]) -> str:
-        """Format selected skills as a single block ready to append to the system prompt."""
+        """Format selected skills as a block ready to append to the system prompt."""
         if not skills:
             return ""
         sections: List[str] = ["## Active Skills"]
@@ -247,20 +218,9 @@ class SkillRouter:
     def render_catalog(self, exclude_names: Iterable[str] = ()) -> str:
         """Render a compact catalog of every registered skill.
 
-        Skills already injected verbatim into the prompt (the auto-triggered
-        ones returned by :meth:`select_skills`) can be passed in
-        *exclude_names* so they are not listed twice. The catalog tells the
-        LLM what's available; it can call the ``invoke_skill`` tool with one
-        of these names to pull the full body on demand.
-
-        The top of the block is a hard directive — empirical testing
-        (commit 25b2cd7) showed that a plain list of "Available skills"
-        was not enough for the LLM to spontaneously call ``invoke_skill``
-        even when the question matched a skill's topic, because the
-        inference jump from "this question is about X" to "skill Y covers
-        X — let me load it" is bigger than the literal mapping
-        ``read_file`` → "read this file". The directive primes the LLM
-        to actively consult relevant skills before answering.
+        The directive at the top is load-bearing: empirical testing (commit
+        25b2cd7) showed that without it the LLM does not spontaneously call
+        ``invoke_skill`` even when a skill clearly matches the question.
         """
         excluded = set(exclude_names)
         skills = [s for s in self._registry.list_all() if s.name not in excluded]
@@ -295,7 +255,7 @@ class SkillRouter:
 
 
 def _trigger_hint(skill: Skill) -> str:
-    """One-line ", auto-active for ..." hint describing the skill's triggers."""
+    """One-line "auto-active when ..." hint describing the skill's triggers."""
     parts: List[str] = []
     trig = skill.triggers
     if trig.file_globs:

@@ -1,14 +1,11 @@
 """SkillRegistry — keeps loaded skills and exposes them by name.
 
-Thread-safety: every mutation and every read of the internal dict is
-guarded by an :class:`threading.RLock`. The hot-reload watcher mutates the
-registry from its own thread; readers (the per-turn router and the
-``invoke_skill`` tool) can be called from the main asyncio loop. The lock
-covers both single-op mutations and compound operations like
-``replace_all`` so a reader never sees a torn intermediate state.
-
-The singleton accessor itself is also thread-safe — the constructor lock
-prevents two threads from each instantiating their own copy.
+Thread-safety: every mutation and read is guarded by ``RLock``. The hot-reload
+watcher mutates from its own thread; readers (the per-turn router, the
+``invoke_skill`` tool) may be called from the main asyncio loop. The lock
+covers compound operations like ``replace_all`` so a reader never sees a torn
+state. The singleton accessor uses double-checked locking to prevent two
+threads from instantiating their own copy.
 """
 
 from __future__ import annotations
@@ -32,20 +29,13 @@ class SkillRegistry:
         self._lock = threading.RLock()
 
     def register(self, skill: Skill) -> None:
-        """Add *skill* to the registry. A duplicate name replaces the previous entry.
-
-        Duplicates are logged at INFO so a deliberate user override (e.g. a project
-        ``python.md`` shadowing the bundled one) is visible without being noisy.
-        """
         with self._lock:
             previous = self._skills.get(skill.name)
             self._skills[skill.name] = skill
         if previous is not None:
             logger.info(
                 "Skill '%s' replaced: %s → %s",
-                skill.name,
-                previous.source_path,
-                skill.source_path,
+                skill.name, previous.source_path, skill.source_path,
             )
 
     def unregister(self, name: str) -> bool:
@@ -57,7 +47,6 @@ class SkillRegistry:
             return self._skills.get(name)
 
     def list_all(self) -> List[Skill]:
-        # Snapshot under lock — callers iterate the returned list freely.
         with self._lock:
             return list(self._skills.values())
 
@@ -70,13 +59,7 @@ class SkillRegistry:
             self._skills.clear()
 
     def replace_all(self, skills: Iterable[Skill]) -> None:
-        """Atomically swap the registry contents to *skills*.
-
-        Use this from the hot-reload path so concurrent readers never observe
-        a torn state where some skills have been removed but new ones not
-        yet added. Equivalent to ``clear()`` followed by ``register()`` for
-        each skill, but performed under a single lock.
-        """
+        """Atomically swap registry contents — readers never observe a torn state."""
         new_state: Dict[str, Skill] = {}
         for skill in skills:
             new_state[skill.name] = skill
@@ -84,10 +67,6 @@ class SkillRegistry:
             self._skills = new_state
 
     async def load_from_directories(self, directories: Iterable[Path]) -> int:
-        """Discover and register skills from every directory in *directories*.
-
-        Returns the count of skills registered (replacements count as 1).
-        """
         loader = SkillLoader()
         count = 0
         for directory in directories:
@@ -116,11 +95,7 @@ _registry_lock = threading.Lock()
 
 
 def get_skill_registry() -> SkillRegistry:
-    """Return the process-wide ``SkillRegistry`` singleton (lazily created).
-
-    Thread-safe: two threads racing to first-access will agree on a single
-    instance (the lock excludes both from running the constructor twice).
-    """
+    """Return the process-wide ``SkillRegistry`` singleton (lazily created, thread-safe)."""
     global _registry
     if _registry is None:
         with _registry_lock:

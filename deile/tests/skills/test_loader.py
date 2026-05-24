@@ -23,6 +23,23 @@ from deile.skills.loader import (
 )
 
 
+@pytest.fixture
+def capture_loader_warnings(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Capture loader warnings via direct logger patch.
+
+    Used in place of ``caplog`` because other tests in the suite mutate the
+    global logging config (propagate=False, root handler tweaks) and
+    silently clobber the capture.
+    """
+    from deile.skills import loader as loader_mod
+    warns: list = []
+    monkeypatch.setattr(
+        loader_mod.logger, "warning",
+        lambda msg, *a, **kw: warns.append(msg % a if a else msg),
+    )
+    return warns
+
+
 VALID_SKILL = """\
 ---
 name: python
@@ -72,37 +89,18 @@ body"""
         assert skill.description == "Skill: my-skill"
         assert skill.body == "just a body"
 
-    def test_empty_body_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # caplog gets clobbered by other tests that mutate global logging
-        # config (propagate=False, root handler tweaks). Patch the loader's
-        # logger directly — same pattern legacy skill_loader tests use.
-        from deile.skills import loader as loader_mod
-
-        warns: list = []
-        monkeypatch.setattr(
-            loader_mod.logger, "warning",
-            lambda msg, *a, **kw: warns.append(msg % a if a else msg),
-        )
+    def test_empty_body_is_rejected(self, capture_loader_warnings) -> None:
         skill = parse_skill_text(
             "---\nname: foo\ndescription: bar\n---\n", Path("x.md")
         )
         assert skill is None
-        assert any("empty body" in m for m in warns), warns
+        assert any("empty body" in m for m in capture_loader_warnings), capture_loader_warnings
 
-    def test_invalid_yaml_returns_none_with_warning(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deile.skills import loader as loader_mod
-
-        warns: list = []
-        monkeypatch.setattr(
-            loader_mod.logger, "warning",
-            lambda msg, *a, **kw: warns.append(msg % a if a else msg),
-        )
+    def test_invalid_yaml_returns_none_with_warning(self, capture_loader_warnings) -> None:
         bad = "---\nname: 'unclosed\n---\nbody"
         skill = parse_skill_text(bad, Path("x.md"))
         assert skill is None
-        assert any("invalid YAML" in m for m in warns), warns
+        assert any("invalid YAML" in m for m in capture_loader_warnings), capture_loader_warnings
 
     def test_non_string_name_falls_back_to_stem(
         self, caplog: pytest.LogCaptureFixture
@@ -185,6 +183,37 @@ body"""
         with caplog.at_level(logging.WARNING, logger="deile.skills.loader"):
             skill = parse_skill_text("body here", Path("___.md"))
         assert skill is None
+
+    def test_crlf_frontmatter_is_recognized(self) -> None:
+        # A file saved by a Windows editor (or git core.autocrlf=true) used
+        # to slip through frontmatter parsing entirely.
+        text = "---\r\nname: win\r\ndescription: From Windows\r\n---\r\nbody"
+        skill = parse_skill_text(text, Path("win.md"))
+        assert skill is not None
+        assert skill.name == "win"
+        assert skill.description == "From Windows"
+        assert skill.body == "body"
+
+    def test_priority_yes_no_yaml_bool_is_rejected(self) -> None:
+        # YAML 1.1 reads `yes` as True. ``int(True) == 1`` would silently
+        # coerce to priority=1 — almost certainly not what the author meant.
+        text = "---\nname: x\ndescription: y\npriority: yes\n---\nbody"
+        skill = parse_skill_text(text, Path("x.md"))
+        assert skill is not None
+        assert skill.priority == 0
+
+    def test_priority_dict_value_is_rejected(self) -> None:
+        text = "---\nname: x\ndescription: y\npriority: {nested: 5}\n---\nbody"
+        skill = parse_skill_text(text, Path("x.md"))
+        assert skill is not None
+        assert skill.priority == 0
+
+    def test_priority_string_numeric_still_works(self) -> None:
+        # A string that parses as int is OK — YAML quoting habits vary.
+        text = "---\nname: x\ndescription: y\npriority: \"42\"\n---\nbody"
+        skill = parse_skill_text(text, Path("x.md"))
+        assert skill is not None
+        assert skill.priority == 42
 
 
 @pytest.mark.unit

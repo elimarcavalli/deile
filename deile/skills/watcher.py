@@ -1,25 +1,13 @@
 """File-system watcher that reloads the unified ``SkillRegistry`` in place.
 
-When DEILE is running interactively, dropping a new ``*.md`` into one of
-the skill directories (or editing/removing an existing one) should make the
-skill available on the very next turn — no agent restart required.
-
-The watcher is built on top of the **same** scan order that the
-``bootstrap_skills`` flow uses (``default_scan_order()``), so any path
-configured for discovery is automatically picked up — no hardcoded path
-list lives in this module.
-
-Concurrency model:
-
-- ``watchdog`` runs the file-system observer on its own thread.
-- ``SkillsWatcher`` debounces bursts of editor write events (many editors
-  emit multiple writes per save) into a single reload pass via a
-  ``threading.Timer`` guarded by ``_timer_lock``.
-- ``reload_registry`` swaps the singleton ``SkillRegistry`` contents
-  atomically using ``SkillRegistry.replace_all`` so a reader never sees an
-  empty / partially-populated state.
-- A dedicated ``_reload_lock`` serializes overlapping reloads (a long
-  rescan + a fresh event arriving before it completes).
+Concurrency:
+- ``watchdog`` runs the observer on its own thread.
+- Editor write-bursts are debounced via a ``threading.Timer`` guarded by
+  ``_timer_lock`` (many editors emit multiple writes per save).
+- ``reload_registry`` swaps registry contents atomically via
+  ``SkillRegistry.replace_all`` so readers never see a torn state.
+- ``_RELOAD_LOCK`` serializes overlapping reloads (manual + watcher; or two
+  watcher events while a rescan is still running).
 - ``stop()`` is idempotent and joins the observer thread before returning.
 """
 
@@ -39,13 +27,9 @@ from .slash_command_bridge import (
 
 logger = logging.getLogger(__name__)
 
-
-# Coalesce editor write-bursts into a single reload.
 _DEFAULT_DEBOUNCE_SECONDS = 0.5
 
-# Process-wide lock for ``reload_registry`` — keeps overlapping reload
-# requests (manual + watcher; or two watcher events while one rescan is
-# still running) from racing on the registry swap.
+# Process-wide lock — keeps overlapping reloads from racing on the registry swap.
 _RELOAD_LOCK = threading.Lock()
 
 
@@ -59,12 +43,6 @@ def reload_registry(
     """Rescan every configured directory and overwrite the registry atomically.
 
     Returns the number of skills now in the registry.
-
-    Thread-safe: serialized by ``_RELOAD_LOCK`` and the registry swap uses
-    ``SkillRegistry.replace_all`` (one ``RLock`` acquisition) so concurrent
-    readers either see the full old state or the full new state — never a
-    half-cleared registry. Refreshing the slash-command bridge (when
-    *command_registry* is provided) happens under the same outer lock.
     """
     with _RELOAD_LOCK:
         skills, _overrides = discover_skills_sync(
@@ -119,18 +97,15 @@ class SkillsWatcher:
     def start(self) -> bool:
         """Begin watching every existing directory in the scan order.
 
-        Returns True when at least one directory was scheduled. False when
-        ``watchdog`` is not installed or no scan-order directory exists yet
-        (in which case startup is a no-op — the watcher does nothing rather
-        than waiting on directories that may never appear). Both failure
-        cases log a clear warning so a misconfigured environment is
-        immediately visible in the logs.
+        Returns False (and logs a warning) when ``watchdog`` is missing or no
+        scan-order directory exists yet — so a misconfigured environment is
+        immediately visible without crashing startup.
         """
         if self._is_active:
             return True
 
         try:
-            from watchdog.events import FileSystemEventHandler  # noqa: F401 — availability check only
+            from watchdog.events import FileSystemEventHandler
             from watchdog.observers import Observer
         except ImportError:
             logger.warning(
@@ -145,20 +120,27 @@ class SkillsWatcher:
             extra_paths=self._extra_paths,
         )
         observable_dirs = [entry.directory for entry in scan_entries if entry.directory.is_dir()]
-        missing_dirs = [entry.directory for entry in scan_entries if not entry.directory.is_dir()]
-
         if not observable_dirs:
+            missing = [entry.directory for entry in scan_entries]
             logger.warning(
                 "skills: hot-reload not started — none of the %d configured "
                 "skill directories exists yet: %s",
                 len(scan_entries),
-                ", ".join(str(p) for p in missing_dirs),
+                ", ".join(str(p) for p in missing),
             )
             return False
 
-        handler = _make_event_handler(self._on_event)
-        scheduled_count = 0
+        callback = self._on_event
+
+        class _Handler(FileSystemEventHandler):
+            def on_any_event(self, event):
+                if event.is_directory or not str(event.src_path).endswith(".md"):
+                    return
+                callback(event.src_path)
+
+        handler = _Handler()
         observer = Observer()
+        scheduled_count = 0
         for directory in observable_dirs:
             try:
                 observer.schedule(handler, str(directory), recursive=True)
@@ -167,14 +149,11 @@ class SkillsWatcher:
                 logger.warning(
                     "skills: cannot watch %s for hot-reload (%s); changes there "
                     "will be ignored until restart",
-                    directory,
-                    exc,
+                    directory, exc,
                 )
 
         if scheduled_count == 0:
-            logger.warning(
-                "skills: hot-reload not started — every observer.schedule() call failed"
-            )
+            logger.warning("skills: hot-reload not started — every observer.schedule() call failed")
             return False
 
         observer.start()
@@ -184,10 +163,7 @@ class SkillsWatcher:
         return True
 
     def stop(self) -> None:
-        """Stop the observer and cancel any pending debounce timer.
-
-        Idempotent — safe to call multiple times.
-        """
+        """Idempotent — cancels any pending debounce timer and joins the observer."""
         self._stopping = True
         with self._timer_lock:
             if self._timer is not None:
@@ -202,12 +178,7 @@ class SkillsWatcher:
             self._observer = None
         self._is_active = False
 
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
-
     def _on_event(self, src_path: str) -> None:
-        """Schedule (or reschedule) a debounced reload."""
         if self._stopping:
             return
         with self._timer_lock:
@@ -218,8 +189,8 @@ class SkillsWatcher:
             self._timer.start()
 
     def _trigger_reload(self) -> None:
-        # Clear the timer reference first so a fresh event arriving while
-        # we run can start a new timer without races.
+        # Clear the timer reference first so a fresh event arriving while we
+        # run can start a new timer without races.
         with self._timer_lock:
             self._timer = None
         if self._stopping:
@@ -234,8 +205,7 @@ class SkillsWatcher:
         except Exception as exc:
             logger.warning(
                 "skills: hot-reload failed (%s: %s) — registry kept the prior state",
-                type(exc).__name__,
-                exc,
+                type(exc).__name__, exc,
             )
             if self._on_error is not None:
                 try:
@@ -248,22 +218,3 @@ class SkillsWatcher:
                 self._on_reload(count)
             except Exception as exc:
                 logger.warning("skills: on_reload callback raised: %s", exc)
-
-
-def _make_event_handler(callback):
-    """Build a watchdog event handler that fires *callback* on every ``.md`` event.
-
-    Kept module-level so importing this module without ``watchdog`` installed
-    only fails when ``SkillsWatcher.start()`` actually runs.
-    """
-    from watchdog.events import FileSystemEventHandler
-
-    class _Handler(FileSystemEventHandler):
-        def on_any_event(self, event):
-            if event.is_directory:
-                return
-            if not str(event.src_path).endswith(".md"):
-                return
-            callback(event.src_path)
-
-    return _Handler()

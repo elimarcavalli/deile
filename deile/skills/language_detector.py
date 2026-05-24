@@ -1,16 +1,4 @@
-"""Extension-to-language map and code-block language extraction.
-
-Two sources are supported in the MVP:
-
-1. File extensions: ``LanguageDetector.language_for_path`` walks the path's
-   suffixes (longest first, so ``.tar.gz`` style compounds are handled) and
-   returns the first matching language tag.
-2. Code-block fences in chat input: ``LanguageDetector.langs_in_code_blocks``
-   finds `````<lang>\\n...````` blocks and returns the language tags.
-
-Both lookups are case-insensitive and operate on the merged extension map
-(built-in defaults overlaid by ``skills.yaml`` ``extension_map`` overrides).
-"""
+"""Extension-to-language map and code-block language extraction."""
 
 from __future__ import annotations
 
@@ -72,8 +60,8 @@ _DEFAULT_BASENAME_MAP: Dict[str, str] = {
     "gemfile": "ruby",
 }
 
-# ``[a-zA-Z0-9_+-]`` mirrors the fence pattern in ``deile/ui/markup.py``; we
-# duplicate it here to avoid coupling the skills package to the UI layer.
+# Mirrors the fence pattern in ``deile/ui/markup.py``. Duplicated to avoid
+# coupling the skills package to the UI layer.
 _FENCE_RE = re.compile(r"```([a-zA-Z0-9_+-]+)\b", re.MULTILINE)
 
 
@@ -107,7 +95,6 @@ class LanguageDetector:
         return self._extension_map
 
     def language_for_path(self, path: str) -> Optional[str]:
-        """Return the language tag for *path* or None if no rule matches."""
         if not path:
             return None
         p = Path(path)
@@ -121,7 +108,7 @@ class LanguageDetector:
         return None
 
     def languages_for_paths(self, paths: Iterable[str]) -> List[str]:
-        """Return the unique, order-preserving languages detected across *paths*."""
+        """Return unique, order-preserving languages detected across *paths*."""
         seen: List[str] = []
         for path in paths:
             lang = self.language_for_path(path)

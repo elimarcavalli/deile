@@ -1,21 +1,9 @@
 """Function-call tools that let the LLM consume skills on demand.
 
-These tools wrap the unified ``deile.skills.SkillRegistry`` — they do not
-read disk, parse files, or maintain their own state. Whatever the registry
-holds (bundled + user + project + extras, hot-reloaded or not) is what
-these tools see.
-
-Two tools are exposed:
-
-- **list_skills** — returns the catalog (names + descriptions + trigger
-  hints) so the LLM can discover what's available.
-- **invoke_skill(name)** — returns the body of one named skill, suitable
-  for the LLM to read and apply.
-
-Together they implement the "the LLM can dynamically pull any skill"
-half of the design — complementary to the auto-injection performed by
-``SkillRouter`` for triggered skills. Auto-discovery picks both up via
-``DEFAULT_TOOL_PACKAGES``.
+Two tools — ``list_skills`` (catalog) and ``invoke_skill(name)`` (pull body
+of one) — implement the "LLM can dynamically pull any skill" half of the
+design, complementing ``SkillRouter``'s auto-injection. Auto-discovery picks
+them up via ``DEFAULT_TOOL_PACKAGES``.
 """
 
 from __future__ import annotations
@@ -53,10 +41,7 @@ class ListSkillsTool(Tool):
                     "above as 'Active Skills' — listing them again here "
                     "would be redundant."
                 ),
-                parameters={
-                    "type": "object",
-                    "properties": {},
-                },
+                parameters={"type": "object", "properties": {}},
                 required=[],
                 security_level=SecurityLevel.SAFE,
                 category=ToolCategory.OTHER,
@@ -133,9 +118,8 @@ class InvokeSkillTool(Tool):
             )
         )
 
-    # Maximum number of skill names listed in the "not found" error message.
-    # An LLM that mistypes a name can recover from a short list; flooding the
-    # error with hundreds of names just buries the signal and wastes tokens.
+    # Cap the name list in "not found" errors — flooding with hundreds of
+    # names buries the signal and wastes tokens.
     _NAME_LIST_CAP = 25
 
     async def execute(self, context: ToolContext) -> ToolResult:

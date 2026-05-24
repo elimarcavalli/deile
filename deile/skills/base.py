@@ -1,15 +1,8 @@
 """Skill / SkillTrigger value objects.
 
-The ``Skill`` type is shared across two activation modes:
-
-- **Auto-injection** (new): when ``triggers`` fire for the current turn,
-  ``SkillRouter`` appends ``content`` to the system prompt.
-- **Slash command** (legacy): every loaded skill is also registered as a
-  ``/<name>`` slash command via ``deile.commands.skill_loader``, which runs
-  ``content`` as a one-shot LLM prompt.
-
-A skill can support both modes simultaneously — the same MD file appears in
-the catalog, fires its triggers, and is invokable via ``/<name>``.
+A skill is shared across two activation modes: auto-injection (router fires
+on triggers, body is appended to the system prompt) and slash invocation
+(``/<name>`` runs the body as a one-shot LLM prompt).
 """
 
 from __future__ import annotations
@@ -53,5 +46,5 @@ class Skill:
 
     @property
     def content(self) -> str:
-        """Alias for ``body``. Kept for callers that prefer the newer name."""
+        """Alias for ``body`` — kept for callers that prefer the newer name."""
         return self.body

@@ -7,6 +7,7 @@ debounce window. They avoid sleeping for long periods by polling.
 
 from __future__ import annotations
 
+import threading
 import time
 from pathlib import Path
 
@@ -204,3 +205,33 @@ class TestSkillsWatcher:
         watcher.stop()
         watcher.stop()  # second stop should not raise
         assert watcher.is_active is False
+
+
+@pytest.mark.unit
+class TestReloadSerialization:
+    def test_reload_registry_uses_atomic_swap(self, tmp_path: Path) -> None:
+        # Two threads call reload_registry concurrently — the second blocks on
+        # the lock so the registry never has a torn state. Proxy assertion:
+        # after both reloads complete, the expected skills are present.
+        user_skills_dir = tmp_path / "home" / ".deile" / "skills"
+        user_skills_dir.mkdir(parents=True)
+        (user_skills_dir / "z.md").write_text(
+            "---\nname: z\n---\nbody", encoding="utf-8"
+        )
+
+        def go() -> None:
+            for _ in range(20):
+                reload_registry(
+                    project_dir=tmp_path / "project",
+                    user_home=tmp_path / "home",
+                )
+
+        threads = [threading.Thread(target=go) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        names = set(get_skill_registry().list_names())
+        # 'z' from disk plus the bundled skills (python/typescript/tdd).
+        assert "z" in names
+        assert {"python", "typescript", "tdd"}.issubset(names)

@@ -1,9 +1,5 @@
 """Unified ``Skill`` file parser.
 
-Supersedes the legacy ``deile/commands/skill_loader.py`` parsing helpers.
-``deile/commands/skill_loader.py`` is now a thin backward-compat shim that
-delegates here.
-
 Frontmatter format (all fields optional unless noted)::
 
     ---
@@ -14,10 +10,7 @@ Frontmatter format (all fields optional unless noted)::
       code_block_langs: [python]
     priority: 50                     # default 0; higher = ranked first
     ---
-    Body — required. Slash-command flow sends it as a prompt;
-    auto-injection appends it to the system instruction.
-
-Skills with no triggers are valid — they only respond to ``/<name>`` invocation.
+    Body — required.
 """
 
 from __future__ import annotations
@@ -34,10 +27,9 @@ from .base import Skill, SkillTrigger
 
 logger = logging.getLogger(__name__)
 
-# Accept both Unix (LF) and Windows (CRLF) line endings. The pattern was
-# previously Unix-only, so a skill file saved by a Windows editor (or by a
-# git config with ``core.autocrlf=true``) would silently lose its
-# frontmatter parsing and fall back to "stem = name, body = whole text".
+# Accept both Unix (LF) and Windows (CRLF) line endings — files saved by a
+# Windows editor (or git core.autocrlf=true) would otherwise silently lose
+# frontmatter parsing.
 _FRONTMATTER_RE = re.compile(r"^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n", re.DOTALL)
 _VALID_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\-]{0,63}$")
 
@@ -47,15 +39,10 @@ class SkillLoadError(ValueError):
 
 
 def normalize_name(raw: str) -> str:
-    """Lower-case, replace whitespace/underscores with hyphens, strip extras."""
     name = raw.strip().lower()
     name = re.sub(r"[\s_]+", "-", name)
     name = re.sub(r"[^a-z0-9\-]", "", name)
     return name.strip("-")
-
-
-def _name_from_stem(stem: str) -> str:
-    return normalize_name(stem)
 
 
 def parse_skill_text(
@@ -68,12 +55,9 @@ def parse_skill_text(
 ) -> Optional[Skill]:
     """Parse skill MD text into a ``Skill`` or return None when unrecoverable.
 
-    Returns None (with a logged warning) for these recoverable problems, to
-    match the legacy behavior of ``deile.commands.skill_loader``:
-
-    - Invalid YAML frontmatter
-    - Invalid resulting name (after normalization/uppercasing)
-    - Empty body
+    Returns None (with a logged warning) for recoverable problems — invalid
+    YAML, invalid name after normalization, empty body — to match the legacy
+    lenient behavior so one bad file does not abort a whole directory scan.
     """
     frontmatter: dict = {}
     body = text
@@ -85,22 +69,20 @@ def parse_skill_text(
         except yaml.YAMLError as exc:
             logger.warning(
                 "Skill file %s has invalid YAML front-matter and will be skipped: %s",
-                source_path,
-                exc,
+                source_path, exc,
             )
             return None
         if isinstance(parsed, dict):
             frontmatter = parsed
         body = text[match.end():]
 
-    raw_name = frontmatter.get("name") or _name_from_stem(source_path.stem)
+    raw_name = frontmatter.get("name") or normalize_name(source_path.stem)
     if not isinstance(raw_name, str):
         logger.warning(
-            "Skill file %s: front-matter 'name' must be a string, got %s — using filename stem",
-            source_path,
-            type(raw_name).__name__,
+            "Skill file %s: 'name' must be a string (got %s) — using filename stem",
+            source_path, type(raw_name).__name__,
         )
-        raw_name = _name_from_stem(source_path.stem)
+        raw_name = normalize_name(source_path.stem)
 
     name = normalize_name(raw_name)
     if force_uppercase_name:
@@ -113,9 +95,8 @@ def parse_skill_text(
     raw_desc = frontmatter.get("description")
     if raw_desc is not None and not isinstance(raw_desc, str):
         logger.warning(
-            "Skill file %s: front-matter 'description' must be a string, got %s — using default",
-            source_path,
-            type(raw_desc).__name__,
+            "Skill file %s: 'description' must be a string (got %s) — using default",
+            source_path, type(raw_desc).__name__,
         )
         raw_desc = None
     description = (raw_desc or "").strip() or f"Skill: {name}"
@@ -125,16 +106,12 @@ def parse_skill_text(
         logger.warning("Skill file %s has an empty body — skipped", source_path)
         return None
 
-    triggers = _build_trigger(frontmatter.get("triggers"), source_path)
-
+    # Reject bools explicitly — ``isinstance(True, int)`` is True in Python so
+    # ``int(True)`` returns 1, silently coercing YAML ``priority: yes`` to 1.
     priority_raw = frontmatter.get("priority", 0)
-    # Reject bools explicitly — ``isinstance(True, int)`` is True in Python,
-    # so ``int(True)`` happily returns 1. That would silently coerce
-    # ``priority: yes`` (which YAML 1.1 reads as True) into priority 1,
-    # which is not what the skill author meant. Same for ``priority: no``.
     if isinstance(priority_raw, bool) or not isinstance(priority_raw, (int, float, str)):
         logger.warning(
-            "Skill file %s: 'priority' must be an integer (got %s: %r); defaulting to 0",
+            "Skill file %s: 'priority' must be an integer (got %s: %r) — defaulting to 0",
             source_path, type(priority_raw).__name__, priority_raw,
         )
         priority = 0
@@ -143,7 +120,7 @@ def parse_skill_text(
             priority = int(priority_raw)
         except (TypeError, ValueError):
             logger.warning(
-                "Skill file %s: 'priority' is not parseable as int (%r); defaulting to 0",
+                "Skill file %s: 'priority' not parseable as int (%r) — defaulting to 0",
                 source_path, priority_raw,
             )
             priority = 0
@@ -152,7 +129,7 @@ def parse_skill_text(
         name=name,
         description=description,
         body=body,
-        triggers=triggers,
+        triggers=_build_trigger(frontmatter.get("triggers"), source_path),
         priority=priority,
         source=source,
         kind=kind,
@@ -173,8 +150,7 @@ def _build_trigger(raw: Any, source_path: Path) -> SkillTrigger:
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
             logger.warning(
                 "Skill file %s: 'triggers.%s' must be a list of strings — ignoring",
-                source_path,
-                field_name,
+                source_path, field_name,
             )
             return []
         return [v.strip() for v in value if v and v.strip()]
@@ -193,10 +169,8 @@ class SkillLoader:
     async def load_file(self, path: Path, **kwargs: Any) -> Skill:
         """Load *path* into a ``Skill``. Raises ``SkillLoadError`` for hard failures.
 
-        Unlike the legacy ``_parse_skill_file`` (which returns None for any
-        recoverable problem), this method raises so test code can be precise
-        about expected failure cases. Use ``parse_skill_text`` directly for
-        the lenient "warn-and-skip" behavior used by directory scans.
+        Unlike directory scans (which warn and skip), this raises so test code
+        can assert specific failure modes.
         """
         text = await asyncio.to_thread(path.read_text, encoding="utf-8")
         skill = parse_skill_text(text, path, **kwargs)
@@ -212,11 +186,6 @@ class SkillLoader:
         kind: str = "skill",
         force_uppercase_name: bool = False,
     ) -> List[Skill]:
-        """Recursively load every ``*.md`` under *directory*.
-
-        Files that fail validation are logged and skipped — one bad file does
-        not block the rest of the library from loading.
-        """
         if not directory.exists() or not directory.is_dir():
             return []
 
@@ -225,11 +194,8 @@ class SkillLoader:
         for md_path in md_files:
             text = await asyncio.to_thread(md_path.read_text, encoding="utf-8")
             skill = parse_skill_text(
-                text,
-                md_path,
-                source=source,
-                kind=kind,
-                force_uppercase_name=force_uppercase_name,
+                text, md_path,
+                source=source, kind=kind, force_uppercase_name=force_uppercase_name,
             )
             if skill is not None:
                 skills.append(skill)

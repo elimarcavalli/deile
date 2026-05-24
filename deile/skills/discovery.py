@@ -1,22 +1,13 @@
 """Resolve every directory that contributes skills, in priority order.
 
-The scan order is intentional: later sources override earlier ones when names
-collide, so a user can shadow a bundled skill (``~/.deile/skills/python.md``
-beats the bundled one) and a project can shadow a user skill.
+Scan order (lowest to highest priority — later sources override earlier):
 
-Sources, lowest to highest priority:
-
-1. **Bundled** — ``deile/skills/library/**/*.md`` (ships with DEILE)
+1. **Bundled** — ``deile/skills/library/**/*.md``
 2. **User** — ``~/.deile/skills/*.md``
 3. **User-Claude** — ``~/.claude/commands/*.md`` (UPPERCASE names, ``kind=command``)
 4. **Project** — ``<cwd>/.deile/skills/*.md``
 5. **Project-Claude** — ``<cwd>/.claude/commands/*.md`` (UPPERCASE names)
 6. **Extras** — paths added via ``SettingsManager.get_all_skills_paths()``
-
-A duplicate name from a later source replaces the earlier entry. Both a sync
-(``discover_skills_sync``) and an async (``discover_skills``) form are exposed
-because the legacy ``SkillLoader.load_skills()`` is sync and may be called
-from inside an event loop, while the async path runs disk I/O off-thread.
 """
 
 from __future__ import annotations
@@ -74,17 +65,12 @@ def discover_skills_sync(
     user_home: Optional[Path] = None,
     extra_paths: Iterable[Path] = (),
 ) -> Tuple[List[Skill], List[Tuple[str, Path, Path]]]:
-    """Synchronous discovery — reads files in the calling thread.
-
-    Returns ``(skills, overrides)`` — see :func:`discover_skills`.
-    """
+    """Sync discovery. Returns ``(skills, overrides)``."""
     merged: dict = {}
     overrides: List[Tuple[str, Path, Path]] = []
 
     for entry in default_scan_order(
-        project_dir=project_dir,
-        user_home=user_home,
-        extra_paths=extra_paths,
+        project_dir=project_dir, user_home=user_home, extra_paths=extra_paths,
     ):
         if not entry.directory.is_dir():
             continue
@@ -104,8 +90,7 @@ def discover_skills_sync(
                 )
                 continue
             skill = parse_skill_text(
-                text,
-                md_path,
+                text, md_path,
                 source=entry.source,
                 kind=entry.kind,
                 force_uppercase_name=entry.force_uppercase_name,
@@ -113,8 +98,7 @@ def discover_skills_sync(
             if skill is None:
                 continue
             if skill.name in merged:
-                previous = merged[skill.name]
-                overrides.append((skill.name, previous.source_path, skill.source_path))
+                overrides.append((skill.name, merged[skill.name].source_path, skill.source_path))
             merged[skill.name] = skill
 
     return list(merged.values()), overrides
@@ -126,7 +110,7 @@ async def discover_skills(
     user_home: Optional[Path] = None,
     extra_paths: Iterable[Path] = (),
 ) -> Tuple[List[Skill], List[Tuple[str, Path, Path]]]:
-    """Async wrapper around :func:`discover_skills_sync` (I/O off-thread)."""
+    """Async wrapper — runs ``discover_skills_sync`` off-thread."""
     return await asyncio.to_thread(
         discover_skills_sync,
         project_dir=project_dir,

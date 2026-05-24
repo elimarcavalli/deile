@@ -7,11 +7,11 @@
       "skill_name": "python",
       "prompt": "Tenho uma dúvida geral sobre Python: qual é a melhor prática para lidar com CancelledError em código async? Responda em 2 linhas.",
       "pass_criterion": "invoke_skill_called",
-      "duration_s": 3.277012348175049,
+      "duration_s": 3.689542293548584,
       "invoke_skill_called": false,
       "invoke_skill_arg": null,
       "tool_calls": [],
-      "response_preview": "**Sempre re-lance `asyncio.CancelledError` imediatamente em qualquer `except` que o capture** — engoli-lo vaza tasks e corrompe o cancelamento coordenado. Use `try/finally` para cleanup em vez de `exc",
+      "response_preview": "Sempre re-lance `CancelledError` dentro de qualquer `except` que o capture — engoli-lo vaza tarefas e corrompe o cancelamento da `Task`. Use `except asyncio.CancelledError: ...; raise` para garantir q",
       "body_marker_present": false,
       "passed": false,
       "error": null
@@ -22,13 +22,13 @@
       "skill_name": "typescript",
       "prompt": "Pergunta rápida sobre TypeScript: para um lookup keyed, devo usar Record<string, T> ou Map? Responda em 2 linhas.",
       "pass_criterion": "invoke_skill_called",
-      "duration_s": 6.486653804779053,
+      "duration_s": 4.8047449588775635,
       "invoke_skill_called": true,
       "invoke_skill_arg": "typescript",
       "tool_calls": [
         "invoke_skill"
       ],
-      "response_preview": "**`Record<string, T>` — melhor só quando você quer dizer que **toda** string possível é uma chave válida (quase nunca é o caso).**  \n**`Map<K, V>` — melhor quando as chaves são dinâmicas/desconhecidas",
+      "response_preview": "Use **`Map<string, T>`** — `Record<string, T>` fala que **toda** string key existe no objeto, o que quase nunca é verdade. `Map` oferece `.get`/`.has`/`.set` honestos, e a skill recomenda explicitamen",
       "body_marker_present": false,
       "passed": true,
       "error": null
@@ -39,13 +39,13 @@
       "skill_name": "tdd",
       "prompt": "Vou começar um módulo novo de processamento de pagamentos. Me descreva em 3 linhas seu ciclo de TDD.",
       "pass_criterion": "invoke_skill_called",
-      "duration_s": 5.579096078872681,
+      "duration_s": 5.718500137329102,
       "invoke_skill_called": true,
       "invoke_skill_arg": "tdd",
       "tool_calls": [
         "invoke_skill"
       ],
-      "response_preview": "Aqui está o ciclo TDD do projeto (3 linhas):\n\n**🔴 Red** — escreva o menor teste que falha, capturando **uma** expectativa comportamental do módulo de pagamentos (ex.: `test_rejeita_cartao_expirado`).\n",
+      "response_preview": "Em **3 linhas**, o ciclo TDD para o seu módulo de pagamentos:\n\n1. **🔴 Red** — escreva o menor teste que falhe capturando **um** comportamento específico (ex.: `test_rejeita_cartao_vencido`), antes de ",
       "body_marker_present": true,
       "passed": true,
       "error": null
@@ -56,13 +56,16 @@
       "skill_name": "python",
       "prompt": "Estou revisando o arquivo deile/__version__.py — me lembre qual é a regra do projeto para tratar CancelledError, em 2 linhas.",
       "pass_criterion": "body_marker_in_response",
-      "duration_s": 3.273668050765991,
+      "duration_s": 6.505220413208008,
       "invoke_skill_called": false,
       "invoke_skill_arg": null,
-      "tool_calls": [],
-      "response_preview": "**Sempre re-raise `asyncio.CancelledError` de qualquer `except` block** — engoli-lo vaza tasks e corrompe o loop de eventos. Essa regra está na skill `python` ativa neste turno.",
-      "body_marker_present": true,
-      "passed": true,
+      "tool_calls": [
+        "read_file",
+        "read_file"
+      ],
+      "response_preview": "A regra está no skill **python** (seção Async):\n\n> **Sempre re-lance `asyncio.CancelledError` de qualquer bloco `except` — engoli-lo vaza tasks.**\n\nResumo em 2 linhas:\n\n1. **Nunca silencie** `Cancelle",
+      "body_marker_present": false,
+      "passed": false,
       "error": null
     },
     {
@@ -71,7 +74,7 @@
       "skill_name": "python",
       "prompt": "Antes de responder, chame a tool invoke_skill com name=\"python\" e use o conteúdo retornado para responder: qual a regra do projeto sobre CancelledError? Responda em 1 linha citando a recomendação literal da skill.",
       "pass_criterion": "invoke_skill_called",
-      "duration_s": 3.230020523071289,
+      "duration_s": 2.8235244750976562,
       "invoke_skill_called": true,
       "invoke_skill_arg": "python",
       "tool_calls": [

@@ -1,10 +1,8 @@
 """Register loaded ``Skill`` objects as ``/<name>`` slash commands.
 
-This is the bridge that keeps the legacy slash-invocation flow (PR #41 era)
-working on top of the unified ``Skill`` registry. The command registry sees
-a thin ``SlashCommand`` subclass whose ``execute`` returns the skill's
-content as a ``content_type="llm_prompt"`` result — same observable behavior
-as the original ``deile/commands/skill_loader.py:load_into_registry``.
+Bridges the unified ``Skill`` registry to the legacy slash-invocation flow
+(PR #41 era). The command registry sees a thin ``SlashCommand`` subclass
+whose ``execute`` returns the skill's body as ``content_type="llm_prompt"``.
 """
 
 from __future__ import annotations
@@ -18,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 
 def _make_command(skill: Skill):
-    """Build a ``SlashCommand`` subclass instance that sends *skill.content* as a prompt."""
     from ..commands.base import CommandContext, CommandResult, CommandStatus, SlashCommand
     from ..config.manager import CommandConfig
 
@@ -49,24 +46,20 @@ def _make_command(skill: Skill):
 def register_skills_as_commands(skills: Iterable[Skill], command_registry: Any) -> int:
     """Register each *skill* as a ``/<name>`` command on *command_registry*.
 
-    Refuses to override an existing command (built-ins and other skills are
-    protected — a dropped ``help.md`` cannot hijack ``/help``). Returns the
-    count of successfully registered commands.
+    Refuses to override existing commands (built-ins and other skills are
+    protected — a dropped ``help.md`` cannot hijack ``/help``).
     """
     registered = 0
     collisions: List[str] = []
     for skill in skills:
         existing = command_registry.get_command(skill.name)
         if existing is not None:
-            # Avoid log spam when the existing command IS one of our previously
-            # registered skill commands (re-registration is a no-op).
+            # Re-registration of an existing skill command is a silent no-op.
             if not getattr(existing, "_is_skill_command", False):
                 collisions.append(skill.name)
                 logger.warning(
                     "Skill %r (from %s) collides with existing command /%s — skipping",
-                    skill.name,
-                    skill.source_path,
-                    existing.name,
+                    skill.name, skill.source_path, existing.name,
                 )
             continue
         try:
@@ -78,19 +71,14 @@ def register_skills_as_commands(skills: Iterable[Skill], command_registry: Any) 
     if collisions:
         logger.warning(
             "Skipped %d skill(s) due to name collision with existing commands: %s",
-            len(collisions),
-            ", ".join(sorted(collisions)),
+            len(collisions), ", ".join(sorted(collisions)),
         )
     return registered
 
 
 def unregister_skill_commands(command_registry: Any) -> int:
-    """Drop every command marked ``_is_skill_command=True`` from *command_registry*.
-
-    Used by the hot-reload flow (`/skills add` etc.) to wipe stale skill
-    commands before loading the fresh set.
-    """
-    # We access _commands directly because that is the contract the legacy
+    """Drop every command marked ``_is_skill_command=True`` from *command_registry*."""
+    # Accesses ``_commands`` directly because that is the contract the legacy
     # ``SkillLoader.reload_into_registry`` already used (preserved for parity).
     skill_names = [
         name
