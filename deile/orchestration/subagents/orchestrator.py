@@ -110,82 +110,12 @@ class SubAgentResult:
         return self.error_count == 0 and not self.cancelled
 
     def consolidated_summary(self) -> str:
-        """Resumo curto agregado para o LLM (≤2KB).
-
-        Cada frente vira ~2 linhas: status + descrição + arquivos. NÃO inclui o
-        ``result_text`` completo — o LLM já viu o painel ao vivo e deve apenas
-        consolidar; despejar resultados longos satura o contexto e induz o LLM
-        a re-narrar (anti-padrão da issue #257).
-        """
-        lines: List[str] = []
-        header = (
-            f"sub-DEILEs paralelos · {self.ok_count} ok · "
-            f"{self.error_count} erro · {self.elapsed_s:.1f}s total"
-        )
-        if self.cancelled:
-            # NT5 (iter-3): discrimina a razão para o LLM/auditor.
-            reason_label = {
-                "user_esc": "cancelado pelo usuário (ESC)",
-                "budget_exceeded": "cancelado por budget estourado",
-                "parent_cancel": "cancelado pelo caller (parent)",
-            }.get(self.cancellation_reason or "", "cancelado")
-            header += f" · {reason_label}"
-        lines.append(header)
-        for st in self.states:
-            glyph = {"ok": "✅", "error": "❌", "cancelled": "⏹"}.get(st.status, "•")
-            files = ", ".join(st.files_touched[:5])
-            if len(st.files_touched) > 5:
-                files += f" (+{len(st.files_touched) - 5})"
-            head = f"  #{st.task.index} {glyph} {st.task.description}"
-            if files:
-                head += f" — {files}"
-            if st.elapsed_s:
-                head += f" · {st.elapsed_s:.1f}s"
-            lines.append(head)
-            if st.error:
-                lines.append(f"      erro: {st.error[:120]}")
-        full = "\n".join(lines)
-        return full[:2000]
+        from ._summary import render_consolidated
+        return render_consolidated(self)
 
     def markdown_summary(self) -> str:
-        """Versão markdown do resumo para gravar no histórico e replay.
-
-        Diferente do ``consolidated_summary``, este é renderizado num bloco
-        Markdown (a CLI replay usa ``ui.display_response`` que parseia
-        Markdown), então deve usar formatação rica e legível.
-        """
-        lines: List[str] = []
-        status_emoji = "✅" if self.ok_global else ("⏹" if self.cancelled else "⚠️")
-        header = (
-            f"{status_emoji} **Sub-DEILEs paralelos** · "
-            f"{self.ok_count} ok · {self.error_count} erro · "
-            f"{self.elapsed_s:.1f}s total"
-        )
-        if self.cancelled and self.cancellation_reason:
-            # NT5 (iter-3): inclui razão tipada no markdown — replay/audit
-            # via /resume vê qual cancel-path foi seguido.
-            reason_label = {
-                "user_esc": "ESC do usuário",
-                "budget_exceeded": "budget estourado",
-                "parent_cancel": "cancelado pelo caller",
-            }.get(self.cancellation_reason, self.cancellation_reason)
-            header += f" · _{reason_label}_"
-        lines.append(header)
-        lines.append("")
-        for st in self.states:
-            glyph = {"ok": "✅", "error": "❌", "cancelled": "⏹"}.get(st.status, "•")
-            line = f"- {glyph} **#{st.task.index} {st.task.description}**"
-            if st.elapsed_s:
-                line += f" _({st.elapsed_s:.1f}s)_"
-            lines.append(line)
-            if st.files_touched:
-                files = ", ".join(f"`{f}`" for f in st.files_touched[:5])
-                if len(st.files_touched) > 5:
-                    files += f" _(+{len(st.files_touched) - 5})_"
-                lines.append(f"  - Arquivos: {files}")
-            if st.error:
-                lines.append(f"  - Erro: `{st.error[:200]}`")
-        return "\n".join(lines)
+        from ._summary import render_markdown
+        return render_markdown(self)
 
 
 class _Broadcast:
