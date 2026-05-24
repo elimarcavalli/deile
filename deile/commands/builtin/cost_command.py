@@ -304,12 +304,30 @@ EXEMPLOS:
     async def _export_costs(self, fmt: str = "json", days: int = 30) -> "CommandResult":
         try:
             start_time, end_time = _period_range(days)
+
+            # Issue #301: `export_costs` always returns a non-empty payload
+            # (metadata wrapper around `entries`), so `if not data:` never
+            # catches the empty case. Gate the file write on the actual entry
+            # count from the summary to avoid leaving dead `{"entries": []}`
+            # artifacts in the working tree.
+            summary = self.cost_tracker.get_cost_summary(start_time, end_time)
+            entry_count, _ = _safe_summary_values(summary)
+
+            if entry_count == 0:
+                return CommandResult.success_result(
+                    _cost_views.build_no_data_panel(
+                        "Nenhum dado de custo encontrado no período. Nenhum arquivo foi criado.",
+                        title="📤 Export de Custos",
+                    ),
+                    "rich",
+                )
+
             data = self.cost_tracker.export_costs(start_time, end_time, format_type=fmt)
 
             if not data:
                 return CommandResult.success_result(
                     _cost_views.build_no_data_panel(
-                        "Nenhum dado de custo encontrado no período.",
+                        "Falha ao gerar payload de exportação.",
                         title="📤 Export de Custos",
                     ),
                     "rich",
