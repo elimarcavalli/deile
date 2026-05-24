@@ -33,6 +33,7 @@ Security model (defence in depth):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hmac
 import json
 import logging
@@ -44,7 +45,7 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 # Resume-mode helpers (issue #254). Sibling module under infra/k8s — the worker
 # runs with this directory on sys.path (set by the entrypoint / Dockerfile), so
@@ -132,10 +133,16 @@ _AGENT_LOCK = asyncio.Lock()
 _BG_DISPATCH_TASKS: "set[asyncio.Task]" = set()
 
 # M10 (PR #295 review): task_ids são gerados internamente como
-# ``uuid.uuid4().hex[:12]`` — 12 chars hex. Validamos com regex estrita antes
-# de tocar filesystem ou usar como key, defendendo contra path traversal
-# (`/v1/progress/../../etc/passwd`).
-_TASK_ID_RE = re.compile(r"^[a-f0-9]{12}$")
+# ``uuid.uuid4().hex[:_TASK_ID_LEN]`` (12 chars hex). Validamos com regex
+# estrita antes de tocar filesystem ou usar como key, defendendo contra
+# path traversal (`/v1/progress/../../etc/passwd`).
+#
+# Iter-2 review: extracted _TASK_ID_LEN — antes a regex era hard-coded
+# com ``{12}`` enquanto a geração usava ``[:12]``. Drift silencioso
+# (regex rejeitaria task_ids legítimos) é evitado compartilhando a
+# constante; a regex é built a partir dela.
+_TASK_ID_LEN: int = 12
+_TASK_ID_RE = re.compile(rf"^[a-f0-9]{{{_TASK_ID_LEN}}}$")
 
 
 def _evict_old_tasks_if_needed() -> None:
@@ -158,6 +165,48 @@ def _evict_old_tasks_if_needed() -> None:
     excess = len(_TASKS) - _TASKS_MAX
     for tid, _ in terminal_ids[:excess]:
         _TASKS.pop(tid, None)
+
+
+# ---- EventBus subscription helper --------------------------------------------
+
+
+@contextlib.contextmanager
+def _event_bus_subscription(handler: Callable):
+    """Subscribe ``handler`` to the singleton EventBus for the lifetime of
+    the context, guaranteeing unsubscribe on exit (B3 — iter-2 review).
+
+    Encapsulates the init+cleanup pair so future contributors cannot
+    accidentally leak handlers (the prior pattern duplicated state
+    management — bus/_on_event lived as plain locals reset both BEFORE
+    the try and inside the except, which is fragile under refactor).
+
+    Yields the bus instance (or None when unavailable). Cleanup is best-
+    effort: failures during unsubscribe are logged at debug level and
+    never propagate.
+    """
+    bus = None
+    try:
+        from deile.events.event_bus import get_event_bus
+        bus = get_event_bus()
+        if hasattr(bus, "subscribe_all"):
+            bus.subscribe_all(handler)
+        elif hasattr(bus, "subscribe"):
+            try:
+                bus.subscribe("*", handler)
+            except Exception:
+                pass
+    except Exception:
+        logger.debug("event bus hook unavailable", exc_info=True)
+        bus = None
+    try:
+        yield bus
+    finally:
+        if bus is not None:
+            try:
+                if hasattr(bus, "unsubscribe_all"):
+                    bus.unsubscribe_all(handler)
+            except Exception:  # noqa: BLE001 — cleanup never breaks dispatch
+                logger.debug("event bus unsubscribe failed", exc_info=True)
 
 
 # ---- Bot integration (for status messages) -----------------------------------
@@ -792,7 +841,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     # Resume context — present only on pipeline dispatches (issue #254).
     resume_ctx = _parse_resume_ctx(body)
 
-    task_id = uuid.uuid4().hex[:12]
+    task_id = uuid.uuid4().hex[:_TASK_ID_LEN]
     _evict_old_tasks_if_needed()
     _TASKS[task_id] = {
         "task_id": task_id,
@@ -817,9 +866,19 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     else:
         # Fire-and-forget — caller polls /v1/result/{id}
         async def _bg():
+            # Iter-2 review: handle CancelledError separately so that loop
+            # shutdown still writes a terminal state to _TASKS (otherwise
+            # ``ok`` stays ``None`` forever and pollers loop indefinitely).
             try:
                 _TASKS[task_id] = await _run_task(task_id, brief, channel_id, user_message_id, persona,
                                                   attachments, history, resume_ctx=resume_ctx)
+            except asyncio.CancelledError:
+                _TASKS[task_id] = {
+                    **_TASKS.get(task_id, {"task_id": task_id}),
+                    "ok": False,
+                    "error": "task cancelled",
+                }
+                raise
             except Exception as exc:
                 _TASKS[task_id] = {
                     "task_id": task_id, "ok": False,

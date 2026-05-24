@@ -285,3 +285,21 @@ async def test_result_strips_internal_keys(client):
     data = await resp.json()
     assert "_mono_start" not in data
     assert data["task_id"] == task_id
+
+
+def test_task_id_regex_matches_generated_ids():
+    """Iter-2 review: ``_TASK_ID_RE`` deve aceitar IDs gerados pelo próprio
+    worker (``uuid.uuid4().hex[:_TASK_ID_LEN]``). Drift entre regex e
+    geração silenciosamente rejeitaria task_ids legítimos.
+    """
+    import uuid
+
+    # Sanity: o _TASK_ID_LEN é usado em ambos os lados.
+    assert worker_server._TASK_ID_LEN == 12
+    # 10 IDs sintéticos — todos devem casar.
+    for _ in range(10):
+        tid = uuid.uuid4().hex[: worker_server._TASK_ID_LEN]
+        assert worker_server._TASK_ID_RE.match(tid) is not None, (
+            f"task_id {tid!r} foi gerado por uuid.hex[:{worker_server._TASK_ID_LEN}] "
+            f"mas a regex {worker_server._TASK_ID_RE.pattern!r} o rejeita"
+        )

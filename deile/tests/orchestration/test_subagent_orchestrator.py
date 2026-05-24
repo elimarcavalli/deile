@@ -357,6 +357,119 @@ async def test_budget_enforcement_cancels_pending_states(monkeypatch):
         assert st.status in ("cancelled",)
 
 
+async def test_outer_cancel_cancels_runners_and_reraises_cancelled_error():
+    """MA3 (iter-2): cancel injetado pelo caller propaga corretamente.
+
+    Antes: ``asyncio.wait_for`` só capturava ``TimeoutError`` — um
+    ``CancelledError`` injetado pelo caller pulava o bloco de cancel dos
+    runners, deixando tasks órfãs vivas e violando Pilar 03 §6.
+    """
+    runner_cancelled = {"flag": False}
+
+    class _LongRunner:
+        async def run_one(self, state, *, on_event):
+            state.status = "running"
+            state.started_at = time.monotonic()
+            try:
+                await asyncio.sleep(10.0)
+            except asyncio.CancelledError:
+                runner_cancelled["flag"] = True
+                state.status = "cancelled"
+                state.finished_at = time.monotonic()
+                raise
+
+    orch = SubAgentOrchestrator(_LongRunner(), max_parallel=2, capture_output=False)
+    task = asyncio.create_task(orch.run(_mk_tasks(2)))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    # Runner foi efetivamente cancelado pelo orchestrator antes do re-raise.
+    assert runner_cancelled["flag"] is True
+
+
+async def test_budget_exceeded_with_noncooperative_runner_marks_pending(monkeypatch):
+    """MA7 + minor coverage: runner que NÃO captura CancelledError ainda
+    permite o orchestrator marcar states como ``subagent_budget_exceeded``
+    (path do orchestrator.py:392), e o gather final tem timeout bounded.
+    """
+    monkeypatch.setattr(
+        "deile.orchestration.subagents.orchestrator._get_budget_s",
+        lambda: 0.15,
+    )
+
+    class _NonCoopRunner:
+        """Runner que NÃO propaga CancelledError corretamente — engole."""
+        async def run_one(self, state, *, on_event):
+            state.status = "running"
+            state.started_at = time.monotonic()
+            try:
+                await asyncio.sleep(10.0)
+            except asyncio.CancelledError:
+                # Engole — não re-raise (anti-padrão proposital pro teste).
+                # State fica "running" — orchestrator deve marcá-lo cancelled.
+                return
+
+    orch = SubAgentOrchestrator(_NonCoopRunner(), max_parallel=2, capture_output=False)
+    result = await orch.run(_mk_tasks(2))
+    assert result.cancelled is True
+    # Branch crítico: orchestrator marcou error='subagent_budget_exceeded'
+    # para states que ficaram em running quando runner não cooperou.
+    assert any(
+        st.error == "subagent_budget_exceeded" for st in result.states
+    ), f"states: {[(s.status, s.error) for s in result.states]}"
+
+
+def test_lazy_capture_lock_per_event_loop():
+    """MA5 (iter-2): _CAPTURE_LOCK é lazy-bound ao event loop corrente.
+
+    Antes, asyncio.Lock() em escopo de classe pegava o loop do primeiro
+    __aenter__. Múltiplos asyncio.run() (e.g. CLI subcommands, pytest
+    loop-per-test) batiam em RuntimeError. O lazy-init re-cria por loop.
+
+    Síncrono propositalmente para usar asyncio.run() — asyncio_mode=auto
+    do pytest já provê um loop ativo que conflitaria com o nested run().
+    """
+    class _NoopRunner:
+        async def run_one(self, state, *, on_event):
+            state.status = "ok"
+            state.finished_at = time.monotonic()
+
+    async def _scenario():
+        orch = SubAgentOrchestrator(_NoopRunner(), capture_output=True)
+        return await orch.run(_mk_tasks(2))
+
+    # Limpa qualquer lock-state prévio de outro teste.
+    SubAgentOrchestrator._CAPTURE_LOCK = None
+
+    # Rodar em dois loops sucessivos — antes seria RuntimeError no segundo.
+    r1 = asyncio.run(_scenario())
+    r2 = asyncio.run(_scenario())
+    assert r1.ok_count == 2
+    assert r2.ok_count == 2
+
+
+async def test_capture_output_false_does_not_redirect_via_capsys(capsys):
+    """Reforço da cobertura (iter-2 review): capture_output=False não
+    redireciona sys.stdout — prints fluem para o stdout do processo
+    (captado por capsys neste teste).
+    """
+    class _PrintRunner:
+        async def run_one(self, state, *, on_event):
+            print("VISIBLE_FROM_RUNNER")
+            state.status = "ok"
+            state.finished_at = time.monotonic()
+
+    orch = SubAgentOrchestrator(_PrintRunner(), max_parallel=1, capture_output=False)
+    result = await orch.run(_mk_tasks(2))
+    assert result.ok_count == 2
+    # capsys captura prints reais que escaparam pro stdout do processo.
+    captured = capsys.readouterr()
+    assert "VISIBLE_FROM_RUNNER" in captured.out
+    # E result.captured_stdout permanece vazio porque não houve redirect.
+    assert result.captured_stdout == ""
+
+
 async def test_renderer_task_awaited_before_stdout_restore():
     """M15 (PR #295 review): após cancel/normal, o renderer_task deve ser
     aguardado antes do finally restaurar sys.stdout. Sem isto, uma frame

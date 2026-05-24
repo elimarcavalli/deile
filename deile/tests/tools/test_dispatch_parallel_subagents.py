@@ -9,6 +9,8 @@ Foca em:
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from deile.orchestration.subagents.events import SubAgentState, SubAgentTask
@@ -471,4 +473,109 @@ async def test_tool_schema_is_well_formed():
     assert "model" in items
     assert "developer" in items["persona"]["enum"]
     assert schema.parameters["properties"]["subtasks"]["minItems"] == 2
-    assert schema.parameters["properties"]["subtasks"]["maxItems"] == 5
+    # Iter-2 review: defense-in-depth — additionalProperties:false rejeita
+    # campos extras antes do spread para SubAgentTask.__init__.
+    assert schema.parameters["properties"]["subtasks"]["items"][
+        "additionalProperties"
+    ] is False
+
+
+async def test_session_lock_lru_eviction_skips_locked_without_break(monkeypatch):
+    """MA1 (iter-2): a eviction LRU não pode parar no primeiro lock-em-uso —
+    deve PULAR (continue) e seguir evictando os não-locked subsequentes.
+    Antes, ``break`` na primeira entrada locked parava a poda permanentemente.
+    """
+    # Cap pequeno pra forçar eviction.
+    monkeypatch.setattr(DispatchParallelSubagentsTool, "_SESSION_LOCKS_MAX", 3)
+
+    # Cria 5 entradas: o lock #0 (oldest) FICA travado; os outros 4 são livres.
+    # Quando _get_session_lock("new") inserir a 6ª entrada, eviction precisa
+    # rodar e remover 3 (excess=3); deve PULAR o #0 locked e remover #1, #2, #3.
+    locks = []
+    for i in range(5):
+        lk = asyncio.Lock()
+        DispatchParallelSubagentsTool._SESSION_LOCKS[f"sess_{i}"] = lk
+        locks.append(lk)
+    # Trava o oldest.
+    await locks[0].acquire()
+    try:
+        # Pede um novo lock — vai inserir "new" (6 total) e disparar eviction.
+        new_lock = await DispatchParallelSubagentsTool._get_session_lock("new")
+        assert new_lock is not None
+        # Estado pós-eviction: cap=3, removidos 3 não-locked, locked #0 ficou.
+        # OrderedDict atual deve conter {sess_0 (locked), sess_4, new}.
+        remaining = list(DispatchParallelSubagentsTool._SESSION_LOCKS.keys())
+        assert "sess_0" in remaining, "locked entry MUST NOT be evicted"
+        assert "new" in remaining
+        # E o tamanho voltou ao cap.
+        assert len(DispatchParallelSubagentsTool._SESSION_LOCKS) == 3
+    finally:
+        locks[0].release()
+
+
+async def test_audit_emits_terminal_event(monkeypatch):
+    """MA6 (iter-2): audit emite tanto na admissão (result='accepted')
+    quanto no terminal (success/failure/cancelled/budget_exceeded) e usa
+    self.name como tool_name (Pilar 4).
+    """
+    captured: list[dict] = []
+
+    class _FakeAuditLogger:
+        def log_event(self, **kwargs):
+            captured.append(kwargs)
+
+    fake_logger = _FakeAuditLogger()
+    import deile.security.audit_logger as audit_mod
+    monkeypatch.setattr(audit_mod, "get_audit_logger", lambda: fake_logger)
+
+    # Stub o orchestrator.run pra retornar success rápido.
+    class _StubResult:
+        ok_global = True
+        cancelled = False
+        ok_count = 2
+        error_count = 0
+        elapsed_s = 0.01
+        states = []
+
+        def consolidated_summary(self):
+            return "ok"
+
+        def markdown_summary(self):
+            return "ok"
+
+    async def _stub_run(self, tasks):
+        return _StubResult()
+
+    monkeypatch.setattr(
+        "deile.orchestration.subagents.SubAgentOrchestrator.run",
+        _stub_run,
+    )
+    # Stub resolve_runner para evitar criar runners reais.
+    class _StubRunner:
+        pass
+    monkeypatch.setattr(
+        "deile.tools.dispatch_parallel_subagents.resolve_runner",
+        lambda *a, **kw: _StubRunner(),
+    )
+
+    tool = DispatchParallelSubagentsTool()
+    ctx = ToolContext(
+        user_input="",
+        parsed_args={"subtasks": [_valid_subtask(1), _valid_subtask(2)]},
+        session_data={"session_id": "audit-test", "_agent": object()},
+    )
+    result = await tool.execute(ctx)
+    assert result.is_success or not result.is_error
+
+    # Devem haver pelo menos 2 audit events para a tool: accepted + terminal.
+    tool_events = [
+        e for e in captured
+        if e.get("tool_name") == "dispatch_parallel_subagents"
+    ]
+    assert len(tool_events) >= 2, f"expected accepted+terminal, got {tool_events}"
+    results = [e.get("result") for e in tool_events]
+    assert "accepted" in results
+    assert "success" in results
+    # Pilar 4: actor == self.name (não literal hard-coded).
+    for e in tool_events:
+        assert e.get("actor") == "dispatch_parallel_subagents"

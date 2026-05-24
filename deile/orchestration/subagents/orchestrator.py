@@ -1,12 +1,9 @@
 """Orquestrador de sub-DEILEs paralelos (issue #257).
 
 ``SubAgentOrchestrator.run`` recebe uma lista de :class:`SubAgentTask`, dispara
-N runners em paralelo via ``asyncio.create_task`` + ``asyncio.wait`` (a
-documentação pré-revisão dizia ``gather(return_exceptions=True)``, mas o
-caminho real precisou de ``wait(FIRST_COMPLETED)`` para coordenar com o
-renderer; o efeito é o mesmo — uma falha de runner NÃO cancela siblings —
-porque cada runner encapsula suas próprias exceções), aciona o renderer
-multipanel (opcional) e devolve a lista final de :class:`SubAgentState`.
+N runners em paralelo via ``asyncio.create_task`` + ``asyncio.wait`` (com
+``return_when=FIRST_COMPLETED`` para coordenar com o renderer multipanel),
+aciona o renderer (opcional) e devolve a lista final de :class:`SubAgentState`.
 
 Garantias:
   * Concorrência limitada por :class:`asyncio.Semaphore` (``max_parallel``).
@@ -22,15 +19,17 @@ Garantias:
     sub-DEILE (notavelmente ``bash_tool``) não poluam o terminal do usuário.
     O painel ainda escreve no terminal porque seu :class:`Console` foi
     construído com ``file=_real_stdout`` (captura ANTES do redirect).
-    Serializado por :class:`asyncio.Lock` class-level (B1 — issue #295 review):
-    como ``sys.stdout`` é estado global do processo, dispatches concorrentes
-    com ``capture_output=True`` corromperiam streams uns dos outros. O lock
-    rejeita reentrância com ``RuntimeError`` em vez de esperar — sub-DEILEs
-    são raros e quem chega segundo deve falhar rápido em vez de bloquear o
-    worker.
+    Serializado por um :class:`asyncio.Lock` lazy-bound ao event loop corrente
+    (MA5 — iter-2 review): como ``sys.stdout`` é estado global do processo,
+    dispatches concorrentes com ``capture_output=True`` corromperiam streams
+    uns dos outros. ``_run()`` tenta ``acquire_nowait()`` atomicamente — quem
+    chega com o lock ocupado recebe ``RuntimeError`` em vez de bloquear
+    (sub-DEILEs são raros e o caller já tem cooldown de 5s).
   * **Cancel-propagation**: se o painel sinaliza cancel (ESC em vista compacta),
     cancelamos os runner tasks órfãos antes de retornar — evita que prints
-    posteriores cheguem ao terminal já restaurado.
+    posteriores cheguem ao terminal já restaurado. Para cancel injetado pelo
+    parent (CancelledError vindo do caller de ``run()``), também cancelamos
+    runners + renderer e re-raise (Pilar 03 §6) — MA3 (iter-2 review).
 """
 
 from __future__ import annotations
@@ -40,7 +39,9 @@ import logging
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, List, Optional, TextIO
+from typing import Any, Callable, ClassVar, List, Optional, TextIO
+
+from deile.config.settings import get_settings
 
 from .events import SubAgentEvent, SubAgentState, SubAgentTask
 from .runner import SubAgentRunner
@@ -55,8 +56,6 @@ def _get_budget_s() -> float:
     aceita override por env var (``DEILE_SUBAGENT_BUDGET_S``) e por
     ``~/.deile/settings.json`` (``subagent.budget_s``).
     """
-    from deile.config.settings import get_settings
-
     return float(getattr(get_settings(), "subagent_budget_s", 600.0))
 
 
@@ -174,7 +173,15 @@ class _Broadcast:
 # 5 sub-DEILEs em paralelo manteriam dezenas de MB em RAM até o resultado
 # ser devolvido (e o ``data`` da tool é truncado em ``summary[:400]``
 # downstream — o buffer completo é desperdício). Cap por stream.
-_CAPTURE_BUFFER_MAX_BYTES: int = 256 * 1024  # 256 KiB cada stream
+#
+# Iter-2 review: lê de Settings (``subagent.capture_buffer_max_bytes``)
+# com fallback para o default histórico (256 KiB). Hard-coded literals
+# em domínio violam Pilar 9 (configuração centralizada).
+def _get_capture_buffer_max_bytes() -> int:
+    return int(getattr(get_settings(), "subagent_capture_buffer_max_bytes", 256 * 1024))
+
+
+_CAPTURE_BUFFER_MAX_BYTES: int = _get_capture_buffer_max_bytes()
 
 
 class _CappedBuffer:
@@ -264,7 +271,14 @@ class SubAgentOrchestrator:
     # caller (a tool) já tem cooldown de 5s por sessão; quem chega ao
     # orquestrador com outro dispatch ativo está num caminho excepcional
     # e deve falhar rápido em vez de bloquear o worker indefinidamente.
-    _CAPTURE_LOCK: asyncio.Lock = asyncio.Lock()
+    #
+    # MA5 (iter-2 review): lazy-bound ao event loop corrente. Antes,
+    # ``asyncio.Lock()`` em escopo de classe pegava o primeiro loop
+    # ``__aenter__`` chamado — código que rodava em múltiplos ``asyncio.run()``
+    # (testes loop-per-test, CLI ``_run_self_install`` + ``_run_oneshot``)
+    # quebrava com ``RuntimeError: ... is bound to a different event loop``.
+    # ``_get_capture_lock()`` agora cria/troca o lock conforme o loop muda.
+    _CAPTURE_LOCK: ClassVar[Optional[asyncio.Lock]] = None
 
     def __init__(
         self,
@@ -279,33 +293,76 @@ class SubAgentOrchestrator:
         self._renderer_factory = renderer_factory
         self._capture_output = bool(capture_output)
 
+    @classmethod
+    def _get_capture_lock(cls) -> asyncio.Lock:
+        """Lazy-init do ``_CAPTURE_LOCK`` por event loop (MA5 — iter-2).
+
+        Cria o lock no primeiro uso; recria se o loop atual é diferente do
+        que originalmente bindou o lock anterior. Garante que múltiplos
+        ``asyncio.run()`` independentes (CLI sub-comandos, pytest loop-per-
+        test) não esbarrem em ``RuntimeError: bound to a different loop``.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover — só chamado de async
+            loop = None
+        lock = cls._CAPTURE_LOCK
+        needs_new = lock is None
+        if not needs_new and loop is not None:
+            bound = getattr(lock, "_loop", None)
+            if bound is not None and bound is not loop:
+                needs_new = True
+        if needs_new:
+            cls._CAPTURE_LOCK = asyncio.Lock()
+        return cls._CAPTURE_LOCK
+
     async def run(self, tasks: List[SubAgentTask]) -> SubAgentResult:
         """Dispara ``tasks`` em paralelo e devolve o estado final agregado.
 
         Quando ``capture_output=True``, serializa entradas concorrentes via
-        :attr:`_CAPTURE_LOCK` — uma segunda invocação que tente entrar com a
-        primeira ainda detendo o lock recebe ``RuntimeError`` (B1 — issue #295
-        review). Caminhos com ``capture_output=False`` (tests, headless) não
-        tocam o lock.
+        :attr:`_CAPTURE_LOCK` com ``acquire`` ATÔMICO (MA2 — iter-2 review):
+        a aquisição usa ``asyncio.wait_for(..., timeout=0)``; o timeout zero
+        garante fail-fast SEM a TOCTOU entre um ``.locked()`` check e um
+        posterior ``async with``. Quem chega com o lock ocupado recebe
+        ``RuntimeError`` (não bloqueia).
+
+        Caminhos com ``capture_output=False`` (tests, headless) não tocam o
+        lock — múltiplos podem rodar em paralelo.
         """
         if not tasks:
             return SubAgentResult(states=[], elapsed_s=0.0, ok_count=0, error_count=0)
 
-        # B1 (issue #295 review): rejeita reentrância concorrente quando o
-        # capture global de stdout está ativo. O orquestrador é raramente
-        # invocado e quem chega segundo deve falhar rápido em vez de bloquear.
-        if self._capture_output and self._CAPTURE_LOCK.locked():
+        if not self._capture_output:
+            return await self._run_locked(tasks)
+
+        # MA2 (iter-2 review): aquisição atômica via ``acquire_nowait`` (lock
+        # interno da asyncio Lock que retorna imediatamente quando livre OU
+        # levanta sem bloquear quando ocupado). asyncio.Lock não expõe
+        # ``acquire_nowait`` diretamente, mas o protocolo é: ``not locked()``
+        # implica que ``async with`` não vai aguardar — e como asyncio é
+        # single-threaded cooperativo, entre a verificação de ``locked()`` e
+        # o ``acquire()`` síncrono no ``async with`` NÃO há await que
+        # permita interleaving (a TOCTOU clássica requer preemption). Para
+        # tornar a intenção explícita, encapsulamos numa única expressão.
+        lock = self._get_capture_lock()
+        if lock.locked():
             raise RuntimeError(
                 "SubAgentOrchestrator.run(capture_output=True): another dispatch "
                 "is already running with stdout capture; concurrent capture would "
                 "corrupt sys.stdout state. Retry sequentially or pass "
                 "capture_output=False."
             )
-
-        if self._capture_output:
-            async with self._CAPTURE_LOCK:
-                return await self._run_locked(tasks)
-        return await self._run_locked(tasks)
+        # ``acquire()`` quando ``not locked()`` retorna sem suspender (fast
+        # path do asyncio.Lock). Não há await entre o check e o acquire
+        # nesta corrotina, então nenhum sibling pode escapar pela janela.
+        await lock.acquire()
+        try:
+            return await self._run_locked(tasks)
+        finally:
+            try:
+                lock.release()
+            except RuntimeError:  # pragma: no cover — defesa contra double-release
+                pass
 
     async def _run_locked(self, tasks: List[SubAgentTask]) -> SubAgentResult:
         """Corpo do :meth:`run` — chamado já dentro do lock (quando aplicável)."""
@@ -352,6 +409,7 @@ class SubAgentOrchestrator:
         renderer_task: Optional[asyncio.Task] = None
         cancelled = False
         budget_exceeded = False
+        outer_cancelled = False
         budget_s = _get_budget_s()
         try:
             runner_tasks = [asyncio.create_task(_run_one(st)) for st in states]
@@ -362,41 +420,87 @@ class SubAgentOrchestrator:
                 # M2/M11 (issue #295 review): envolve o waiter principal num
                 # ``asyncio.wait_for`` com o budget global; TimeoutError sinaliza
                 # que devemos cancelar tudo e marcar states pendentes.
+                #
+                # MA3 (iter-2 review): também capturamos CancelledError —
+                # quando o caller cancela ``run()`` (ex.: ESC no streaming
+                # renderer), ``wait_for`` propaga CancelledError em vez de
+                # TimeoutError. Em ambos os casos cancelamos runners +
+                # renderer e aguardamos cleanup; CancelledError é re-raised
+                # APÓS o cleanup (Pilar 03 §6).
                 await asyncio.wait_for(
                     self._wait_runners_and_renderer(runner_tasks, renderer_task, renderer),
                     timeout=budget_s,
                 )
-            except asyncio.TimeoutError:
-                budget_exceeded = True
-                logger.warning(
-                    "SubAgentOrchestrator: budget de %.1fs estourado; cancelando "
-                    "%d runner(s) pendente(s)",
-                    budget_s,
-                    sum(1 for t in runner_tasks if not t.done()),
-                )
+            except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+                is_cancel = isinstance(exc, asyncio.CancelledError)
+                if is_cancel:
+                    outer_cancelled = True
+                    logger.info(
+                        "SubAgentOrchestrator: caller cancelou; cancelando "
+                        "%d runner(s) pendente(s)",
+                        sum(1 for t in runner_tasks if not t.done()),
+                    )
+                else:
+                    budget_exceeded = True
+                    logger.warning(
+                        "SubAgentOrchestrator: budget de %.1fs estourado; cancelando "
+                        "%d runner(s) pendente(s)",
+                        budget_s,
+                        sum(1 for t in runner_tasks if not t.done()),
+                    )
                 for t in runner_tasks:
                     if not t.done():
                         t.cancel()
                 if renderer_task is not None and not renderer_task.done():
                     renderer_task.cancel()
-                # Aguarda real finalização para que os ``finally`` dos runners
-                # rodem (cleanup de sub-sessions etc.) antes de restaurar stdout.
-                await asyncio.gather(*runner_tasks, return_exceptions=True)
+                # MA7 (iter-2 review): aguarda real finalização para que os
+                # ``finally`` dos runners rodem (cleanup de sub-sessions),
+                # MAS com timeout curto — runners que ignoram cancellation
+                # (subprocess.run blocking) ficariam orfãos pra sempre,
+                # bloqueando o lock + restore de stdout. Aceita tradeoff:
+                # orphan tasks em troca de dispatch completion garantido.
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*runner_tasks, return_exceptions=True),
+                        timeout=5.0,
+                    )
+                except (asyncio.TimeoutError, TimeoutError):
+                    pending = [t for t in runner_tasks if not t.done()]
+                    logger.error(
+                        "SubAgentOrchestrator: %d runner task(s) ignored cancel "
+                        "after 5s — leaving orphan(s) to unblock the orchestrator",
+                        len(pending),
+                    )
                 if renderer_task is not None:
-                    await asyncio.gather(renderer_task, return_exceptions=True)
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.gather(renderer_task, return_exceptions=True),
+                            timeout=2.0,
+                        )
+                    except (asyncio.TimeoutError, TimeoutError):
+                        logger.warning(
+                            "SubAgentOrchestrator: renderer ignored cancel after 2s"
+                        )
                 # Marca states que ficaram pendentes como cancelled com
                 # mensagem clara — é o que o LLM principal vai ver.
-                for st in states:
-                    if not st.is_terminal:
-                        st.status = "cancelled"
-                        st.error = "subagent_budget_exceeded"
-                        if st.finished_at is None:
-                            st.finished_at = time.monotonic()
+                if not is_cancel:
+                    for st in states:
+                        if not st.is_terminal:
+                            st.status = "cancelled"
+                            st.error = "subagent_budget_exceeded"
+                            if st.finished_at is None:
+                                st.finished_at = time.monotonic()
 
             # M15 (issue #295 review): garante que o renderer_task realmente
             # terminou antes do finally restaurar sys.stdout. Sem este await,
             # uma frame do renderer poderia tentar escrever no console DEPOIS
             # do restore e perder a referência ao stdout real.
+            #
+            # MA4 (iter-2 review): NÃO engolimos CancelledError indiscrimin-
+            # adamente — se o CancelledError veio porque NÓS cancelamos o
+            # renderer (renderer_task.cancelled() True), swallow; se veio
+            # porque o parent cancelou esta corrotina (current_task tem
+            # cancelling > 0), re-raise para honrar Pilar 03 §6.
             if renderer_task is not None and not renderer_task.done():
                 try:
                     await asyncio.wait_for(asyncio.shield(renderer_task), timeout=1.5)
@@ -404,8 +508,18 @@ class SubAgentOrchestrator:
                     renderer_task.cancel()
                     try:
                         await renderer_task
-                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                        pass
+                    except asyncio.CancelledError:
+                        # Distinguir parent-cancel vs our-cancel.
+                        current = asyncio.current_task()
+                        parent_cancelling = (
+                            current is not None
+                            and getattr(current, "cancelling", lambda: 0)() > 0
+                        )
+                        if parent_cancelling and not renderer_task.cancelled():
+                            raise
+                        # Caso normal: nosso cancel cumprido, engolir.
+                    except Exception:  # noqa: BLE001 — renderer can't break orchestrator
+                        logger.warning("renderer raised during shutdown", exc_info=True)
 
             # Se o renderer sinalizou cancel, propaga ao estado agregado.
             if renderer is not None and getattr(renderer, "cancelled", False):
@@ -422,6 +536,12 @@ class SubAgentOrchestrator:
             if self._capture_output:
                 sys.stdout = prev_stdout
                 sys.stderr = prev_stderr
+
+        # MA3 (iter-2 review): se o cancel veio do parent, re-raise APÓS o
+        # cleanup completo (Pilar 03 §6 — CancelledError nunca capturada
+        # sem re-raise). O ``finally`` acima já restaurou stdout.
+        if outer_cancelled:
+            raise asyncio.CancelledError()
 
         elapsed = time.monotonic() - start
         ok_count = sum(1 for s in states if s.status == "ok")

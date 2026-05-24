@@ -45,8 +45,8 @@ class SubAgentRunner(Protocol):
       2. Chamar ``on_event(...)`` em milestones (STARTED, TOOL, TOOL_RESULT,
          TEXT, COMPLETED, FAILED) — o orquestrador repassa ao renderer;
       3. Capturar exceções e marcar ``state.status="error"`` em vez de propagar
-         (o orquestrador usa ``asyncio.gather(return_exceptions=True)`` como
-         rede de segurança, mas o caminho normal NÃO deve propagar).
+         (o orquestrador drena ``task.exception()`` pós-``wait`` como rede de
+         segurança, mas o caminho normal NÃO deve propagar).
     """
 
     async def run_one(
@@ -259,6 +259,9 @@ class LocalSubAgentRunner:
         finally:
             # Cleanup do sub-session — sem isso ``agent._sessions`` cresce
             # indefinidamente sob dispatches repetidos (revisão crítica B1).
+            # iter-2 review: especifica exceções (KeyError/AttributeError —
+            # session já removida ou agent sem o atributo); CancelledError
+            # mid-cleanup precisa de log + re-raise (Pilar 03 §6).
             try:
                 delete = getattr(self._agent, "delete_session", None)
                 if callable(delete):
@@ -267,8 +270,17 @@ class LocalSubAgentRunner:
                     sessions = getattr(self._agent, "_sessions", None)
                     if isinstance(sessions, dict):
                         sessions.pop(session_id, None)
-            except Exception:
-                logger.debug("could not clean sub-session", exc_info=True)
+            except (KeyError, AttributeError):
+                logger.debug(
+                    "sub-session %s already cleaned or unavailable",
+                    session_id,
+                )
+            except asyncio.CancelledError:
+                logger.warning(
+                    "LocalSubAgentRunner: cancel during session cleanup #%d",
+                    task.index,
+                )
+                raise
 
 
 def _format_tool_inline(tool_name: str, args: dict) -> str:

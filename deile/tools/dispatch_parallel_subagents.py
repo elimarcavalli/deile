@@ -33,17 +33,19 @@ Round 2 (post-feedback):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import logging
 import time
 from collections import OrderedDict
-from typing import Dict, List
+from typing import Dict, List, Optional
 
+from deile.config.settings import get_settings
 from deile.orchestration.subagents import (HISTORY_MARKER_KEY,
-                                           MAX_SUBAGENT_BUDGET_S,
                                            SubAgentOrchestrator, SubAgentTask,
                                            resolve_runner)
 from deile.orchestration.subagents.events import SubAgentState
+from deile.orchestration.subagents.orchestrator import _get_budget_s
 
 from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
                    ToolSchema)
@@ -57,6 +59,20 @@ _NESTING_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar(
 )
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _nesting_depth_inc():
+    """Context manager que incrementa ``_NESTING_DEPTH`` e garante reset.
+
+    Wrapper sobre ``ContextVar.set/reset`` para que futuras edições não
+    esqueçam o reset (Pilar 03 §1 — cleanup confiável).
+    """
+    token = _NESTING_DEPTH.set(_NESTING_DEPTH.get() + 1)
+    try:
+        yield
+    finally:
+        _NESTING_DEPTH.reset(token)
 
 
 # Personas que o runner aceita (espelha WorkerPersona em deile_worker_client).
@@ -89,7 +105,11 @@ class DispatchParallelSubagentsTool(Tool):
     # de 256 evita o problema sem custar mais que O(1) por acesso.
     _SESSION_LOCKS: "OrderedDict[str, asyncio.Lock]" = OrderedDict()
     _SESSION_LOCKS_MAX: int = 256
-    _SESSION_LOCKS_GUARD: asyncio.Lock = asyncio.Lock()
+    # MA5 (iter 2 review): lock-guarda é lazy-inicializado por event-loop —
+    # ``asyncio.Lock()`` em escopo de classe ficaria bound ao loop do primeiro
+    # ``__aenter__``, quebrando em testes / processos que usam múltiplos
+    # ``asyncio.run()`` invocados em loops distintos.
+    _SESSION_LOCKS_GUARD: Optional[asyncio.Lock] = None
 
     @property
     def name(self) -> str:
@@ -162,6 +182,10 @@ class DispatchParallelSubagentsTool(Tool):
                                     },
                                 },
                                 "required": ["description", "prompt"],
+                                # Defense-in-depth (iter-2 review): rejeita
+                                # campos extras antes de spread para
+                                # ``SubAgentTask.__init__``.
+                                "additionalProperties": False,
                             },
                         },
                     },
@@ -169,7 +193,9 @@ class DispatchParallelSubagentsTool(Tool):
                 required=["subtasks"],
                 security_level=SecurityLevel.MODERATE,
                 category=ToolCategory.SYSTEM,
-                max_execution_time=int(MAX_SUBAGENT_BUDGET_S),
+                # iter-2 review: lê budget em runtime (respeita override por
+                # env/settings) ao invés do snapshot-on-import legado.
+                max_execution_time=int(_get_budget_s()),
             )
         )
 
@@ -232,7 +258,6 @@ class DispatchParallelSubagentsTool(Tool):
                     error_code="AGENT_NOT_AVAILABLE",
                 )
 
-            from deile.config.settings import get_settings
             settings = get_settings()
             max_parallel = min(
                 int(getattr(settings, "subagent_max_parallel", 3)),
@@ -272,37 +297,62 @@ class DispatchParallelSubagentsTool(Tool):
                 max_parallel,
             )
 
-            # M12 (PR #295 review): audit log na execução — Pilar 8 (segurança)
-            # exige que ações tool-driven sejam logadas tipadas. Best-effort
-            # (audit nunca quebra a tool, igual ao padrão de vision_tool).
-            try:
-                from deile.security.audit_logger import (AuditEventType,
-                                                         SeverityLevel,
-                                                         get_audit_logger)
-                get_audit_logger().log_event(
-                    event_type=AuditEventType.TOOL_EXECUTION,
-                    severity=SeverityLevel.INFO,
-                    actor="dispatch_parallel_subagents",
-                    resource=f"session:{session_id}",
-                    action="dispatch",
-                    result="started",
-                    details={
-                        "n_subtasks": len(tasks),
-                        "runner": runner.__class__.__name__,
-                        "max_parallel": max_parallel,
-                    },
-                    tool_name="dispatch_parallel_subagents",
-                )
-            except Exception:  # audit must never crash the tool
-                logger.debug("audit emission failed", exc_info=True)
+            # MA6 / M12 (iter-2 review): emite audit ANTES + DEPOIS da
+            # execução. ``result='accepted'`` é a fase de admissão (Pilar 8 —
+            # AuditEvent.result deve refletir um estado tipado, não 'started'
+            # solto). O evento terminal (success/failure/cancelled/budget) é
+            # emitido no ``finally`` abaixo, capturando o desfecho real para
+            # auditoria completa.
+            audit_details = {
+                "n_subtasks": len(tasks),
+                "runner": runner.__class__.__name__,
+                "max_parallel": max_parallel,
+            }
+            self._audit_emit(
+                action="dispatch",
+                result="accepted",
+                session_id=session_id,
+                details=audit_details,
+            )
 
             # Eleva profundidade de nesting — sub-DEILEs spawnados via
             # asyncio.create_task herdam este ContextVar e bloqueiam recursão.
-            token = _NESTING_DEPTH.set(_NESTING_DEPTH.get() + 1)
+            # ``_nesting_depth_inc`` (helper contextmanager) garante reset
+            # mesmo em paths de exceção.
+            result = None
+            audit_result = "failure"
             try:
-                result = await orchestrator.run(tasks)
+                with _nesting_depth_inc():
+                    result = await orchestrator.run(tasks)
+                # Mapeia desfecho real para o vocabulário do AuditEvent.
+                if result.cancelled:
+                    audit_result = "cancelled"
+                elif result.ok_global:
+                    audit_result = "success"
+                else:
+                    audit_result = "failure"
             finally:
-                _NESTING_DEPTH.reset(token)
+                terminal_details = dict(audit_details)
+                if result is not None:
+                    terminal_details.update({
+                        "ok_count": result.ok_count,
+                        "error_count": result.error_count,
+                        "elapsed_s": round(result.elapsed_s, 3),
+                        "cancelled": result.cancelled,
+                    })
+                    # Discrimina budget_exceeded (subagent_budget_exceeded
+                    # vira o ``error`` dos states cancelados pelo budget).
+                    if any(
+                        (st.error or "").strip() == "subagent_budget_exceeded"
+                        for st in result.states
+                    ):
+                        audit_result = "budget_exceeded"
+                self._audit_emit(
+                    action="dispatch",
+                    result=audit_result,
+                    session_id=session_id,
+                    details=terminal_details,
+                )
 
             # ── Persistência no histórico (issue #257 round 2, fix #2) ──────
             # Grava uma entrada role=assistant com o markdown do resumo do
@@ -335,12 +385,75 @@ class DispatchParallelSubagentsTool(Tool):
                 f"unexpected error: {exc}", error=exc, error_code="INTERNAL_ERROR"
             )
 
+    def _audit_emit(
+        self,
+        *,
+        action: str,
+        result: str,
+        session_id: str,
+        details: dict,
+    ) -> None:
+        """Emit a typed audit event for this tool (best-effort, never raises).
+
+        Pilar 8 (segurança) — toda ação tool-driven precisa de trilha
+        auditável. ``tool_name=self.name`` (Pilar 4 — Tools resolvem
+        identidade pelo registry, sem string literal).
+        """
+        try:
+            from deile.security.audit_logger import (AuditEventType,
+                                                     SeverityLevel,
+                                                     get_audit_logger)
+            severity = (
+                SeverityLevel.WARNING
+                if result in ("failure", "budget_exceeded")
+                else SeverityLevel.INFO
+            )
+            get_audit_logger().log_event(
+                event_type=AuditEventType.TOOL_EXECUTION,
+                severity=severity,
+                actor=self.name,
+                resource=f"session:{session_id}",
+                action=action,
+                result=result,
+                details=details,
+                tool_name=self.name,
+            )
+        except Exception:  # audit must never crash the tool
+            logger.debug("audit emission failed", exc_info=True)
+
     @classmethod
     def _prune_expired(cls, now: float) -> None:
         cutoff = cls._DISPATCH_COOLDOWN_S * 10
         stale = [sid for sid, ts in cls._LAST_DISPATCH.items() if (now - ts) > cutoff]
         for sid in stale:
             cls._LAST_DISPATCH.pop(sid, None)
+
+    @classmethod
+    def _get_locks_guard(cls) -> asyncio.Lock:
+        """Lazy-init do lock-guarda por event loop (MA5 — iter-2 review).
+
+        ``asyncio.Lock()`` em escopo de classe ``binda`` ao loop do primeiro
+        ``__aenter__``; uso em múltiplos loops (testes, ``asyncio.run`` repetido)
+        levanta ``RuntimeError: ... is bound to a different event loop``.
+        Resolve criando o lock no primeiro acesso *do loop corrente* e
+        re-criando se o loop mudou.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover — chamado fora de async
+            loop = None
+        guard = cls._SESSION_LOCKS_GUARD
+        # Cria novo lock se nunca foi criado OU se está bound a um loop
+        # diferente do atual. ``asyncio.Lock`` em 3.10+ guarda referência
+        # ao loop em ``_loop`` (frequentemente None até primeiro uso).
+        needs_new = guard is None
+        if not needs_new and loop is not None:
+            bound = getattr(guard, "_loop", None)
+            if bound is not None and bound is not loop:
+                needs_new = True
+        if needs_new:
+            cls._SESSION_LOCKS_GUARD = asyncio.Lock()
+        return cls._SESSION_LOCKS_GUARD
 
     @classmethod
     async def _get_session_lock(cls, session_id: str) -> asyncio.Lock:
@@ -351,8 +464,15 @@ class DispatchParallelSubagentsTool(Tool):
         não voltarem a chamar a tool serão eventualmente desalojadas.
         Acesso é serializado por um lock-guarda para evitar race na criação
         sob disparos paralelos do mesmo session_id.
+
+        MA1 (iter-2 review): a eviction não pode parar no primeiro lock-em-uso
+        encontrado — antes a poda quebrava permanentemente quando o LRU-front
+        estava ``locked()``. Agora itera por TODAS as entradas mais antigas
+        que o cap, pulando as travadas (``continue``) e removendo as livres;
+        se TODAS estiverem travadas, aceita overshoot temporário com um
+        ``logger.warning``.
         """
-        async with cls._SESSION_LOCKS_GUARD:
+        async with cls._get_locks_guard():
             lock = cls._SESSION_LOCKS.get(session_id)
             if lock is None:
                 lock = asyncio.Lock()
@@ -360,16 +480,34 @@ class DispatchParallelSubagentsTool(Tool):
             else:
                 # LRU: marca como mais recente.
                 cls._SESSION_LOCKS.move_to_end(session_id)
-            # Evicta os mais antigos quando estoura o cap.
-            while len(cls._SESSION_LOCKS) > cls._SESSION_LOCKS_MAX:
-                evicted_id, evicted_lock = cls._SESSION_LOCKS.popitem(last=False)
-                # Não desaloja se ainda está em uso — re-insere na ponta
-                # do MRU. Pode levar a um overshoot temporário do cap mas
-                # nunca corrompe semântica.
-                if evicted_lock.locked():
-                    cls._SESSION_LOCKS[evicted_id] = evicted_lock
-                    cls._SESSION_LOCKS.move_to_end(evicted_id)
-                    break
+            # Eviction: itera por toda a OrderedDict (oldest → newest) sem
+            # break prematuro. Coleta candidatos não-locked, remove até cair
+            # sob o cap. Se TUDO estiver locked, registra warning e segue.
+            if len(cls._SESSION_LOCKS) > cls._SESSION_LOCKS_MAX:
+                excess = len(cls._SESSION_LOCKS) - cls._SESSION_LOCKS_MAX
+                removed = 0
+                # snapshot dos ids ordenados (oldest first) para iterar sem
+                # mutar durante o loop.
+                ordered_ids = list(cls._SESSION_LOCKS.keys())
+                for sid in ordered_ids:
+                    if removed >= excess:
+                        break
+                    candidate = cls._SESSION_LOCKS.get(sid)
+                    if candidate is None:
+                        continue
+                    if candidate.locked():
+                        # Skip locked — não interrompe a varredura.
+                        continue
+                    cls._SESSION_LOCKS.pop(sid, None)
+                    removed += 1
+                if removed < excess:
+                    logger.warning(
+                        "_SESSION_LOCKS over cap (%d > %d); %d still locked, "
+                        "accepting transitory overshoot",
+                        len(cls._SESSION_LOCKS),
+                        cls._SESSION_LOCKS_MAX,
+                        excess - removed,
+                    )
             return lock
 
     @staticmethod
