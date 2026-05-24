@@ -447,8 +447,7 @@ class _DeileCLI:
                     if panel_owns_stdin():
                         # Outro consumidor (painel de sub-DEILEs) tem prioridade.
                         # Não fazemos `read(1)` — os bytes vão pro painel.
-                        import time as _time
-                        _time.sleep(0.1)
+                        time.sleep(0.1)
                         continue
                     r, _, _ = _select.select([sys.stdin], [], [], 0.1)
                     if not r:

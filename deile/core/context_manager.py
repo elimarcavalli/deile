@@ -9,8 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..memory.memory_manager import MemoryManager
-from ..orchestration.subagents.constants import \
-    is_display_only_entry as _is_display_only_entry
+from ..orchestration.subagents.constants import is_display_only_entry
 from ..parsers.base import ParseResult
 from ..personas.instruction_loader import InstructionLoader
 from ..personas.manager import PersonaManager
@@ -179,7 +178,7 @@ class ContextManager:
             if session is not None and getattr(session, "conversation_history", None):
                 for entry in session.conversation_history:
                     entry_meta = entry.get("metadata") or {}
-                    if _is_display_only_entry(entry_meta):
+                    if is_display_only_entry(entry_meta):
                         continue
                     role = entry.get("role", "user")
                     content = entry.get("content", "")

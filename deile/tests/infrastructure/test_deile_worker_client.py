@@ -220,12 +220,15 @@ async def test_dispatch_bad_request_invalid_payload(monkeypatch):
     assert ei.value.error_code == "BAD_REQUEST"
 
 
-async def _run_with_transport(monkeypatch, handler):
-    """Helper: install a MockTransport and a token, then dispatch."""
+def _install_mock_transport(monkeypatch, handler) -> DeileWorkerClient:
+    """Install MockTransport + token + endpoint and return a fresh client.
+
+    Shared bootstrap for the dispatch / get_progress / get_result helpers —
+    all three paths needed the same four monkeypatch lines (token, endpoint,
+    AsyncClient factory, transport).
+    """
     monkeypatch.setattr(wc, "_read_token", lambda: "a-valid-token-123")
-    monkeypatch.setattr(
-        wc, "_resolve_endpoint", lambda: "http://mock.invalid"
-    )
+    monkeypatch.setattr(wc, "_resolve_endpoint", lambda: "http://mock.invalid")
     transport = httpx.MockTransport(handler)
     real_async_client = httpx.AsyncClient
 
@@ -234,7 +237,12 @@ async def _run_with_transport(monkeypatch, handler):
         return real_async_client(*args, **kwargs)
 
     monkeypatch.setattr(httpx, "AsyncClient", _factory)
-    cli = DeileWorkerClient()
+    return DeileWorkerClient()
+
+
+async def _run_with_transport(monkeypatch, handler):
+    """Helper: install a MockTransport and a token, then dispatch."""
+    cli = _install_mock_transport(monkeypatch, handler)
     return await cli.dispatch(_good_payload(), wait=False)
 
 
@@ -340,18 +348,13 @@ def test_default_timeout_is_float():
 # ----- get_progress / get_result (issue #257) -----
 
 async def _run_get_with_transport(monkeypatch, handler, *, fn, path):
-    """Helper: install MockTransport and exercise ``cli.<fn>(task_id)``."""
-    monkeypatch.setattr(wc, "_read_token", lambda: "a-valid-token-123")
-    monkeypatch.setattr(wc, "_resolve_endpoint", lambda: "http://mock.invalid")
-    transport = httpx.MockTransport(handler)
-    real_async_client = httpx.AsyncClient
+    """Helper: install MockTransport and exercise ``cli.<fn>(task_id)``.
 
-    def _factory(*args, **kwargs):
-        kwargs["transport"] = transport
-        return real_async_client(*args, **kwargs)
-
-    monkeypatch.setattr(httpx, "AsyncClient", _factory)
-    cli = DeileWorkerClient()
+    ``path`` is unused but kept as a kwarg for callers that document intent
+    (it appears in the request URL the handler inspects).
+    """
+    del path  # documented intent only — actual URL is asserted by handlers
+    cli = _install_mock_transport(monkeypatch, handler)
     method = getattr(cli, fn)
     return await method("test-task-id")
 

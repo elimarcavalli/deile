@@ -285,6 +285,37 @@ def _validate_token_charset(token: str) -> bool:
     return bool(_TOKEN_SAFE_CHARS.match(token))
 
 
+async def _resolve_auth_and_httpx() -> tuple[str, Any]:
+    """Shared bootstrap: resolve token (off-loop), validate it, import httpx.
+
+    Returns ``(token, httpx_module)``. Raises :class:`WorkerDispatchError`
+    with the same ``error_code`` codes that ``dispatch`` / ``_get_json``
+    previously emitted inline (``WORKER_AUTH_MISSING``,
+    ``WORKER_AUTH_MALFORMED``, ``WORKER_TRANSPORT_MISSING``) — kept in one
+    place so any future change (e.g. cached token, alternate transport)
+    lands in a single helper.
+    """
+    token = await asyncio.to_thread(_read_token)
+    if not token:
+        raise WorkerDispatchError(
+            "WORKER_BEARER_TOKEN not configured in this Pod",
+            error_code="WORKER_AUTH_MISSING",
+        )
+    if not _validate_token_charset(token):
+        raise WorkerDispatchError(
+            "bearer token has invalid characters",
+            error_code="WORKER_AUTH_MALFORMED",
+        )
+    try:
+        import httpx
+    except ImportError as exc:
+        raise WorkerDispatchError(
+            "httpx is not installed in this image",
+            error_code="WORKER_TRANSPORT_MISSING",
+        ) from exc
+    return token, httpx
+
+
 class DeileWorkerClient:
     """Cliente do control plane do deile-worker (``POST /v1/dispatch``).
 
@@ -326,28 +357,7 @@ class DeileWorkerClient:
         # Token resolution touches secret files on disk — keep that blocking
         # I/O off the event loop. The token is a secret: it must never be
         # interpolated into log or error messages.
-        token = await asyncio.to_thread(_read_token)
-        if not token:
-            raise WorkerDispatchError(
-                "WORKER_BEARER_TOKEN not configured in this Pod",
-                error_code="WORKER_AUTH_MISSING",
-            )
-        if not _validate_token_charset(token):
-            # Defense-in-depth: rejeita CR/LF/NUL antes de injetar no
-            # header. Não logamos o token nem o seu fingerprint —
-            # apenas o code-path.
-            raise WorkerDispatchError(
-                "bearer token has invalid characters",
-                error_code="WORKER_AUTH_MALFORMED",
-            )
-
-        try:
-            import httpx
-        except ImportError as exc:
-            raise WorkerDispatchError(
-                "httpx is not installed in this image",
-                error_code="WORKER_TRANSPORT_MISSING",
-            ) from exc
+        token, httpx = await _resolve_auth_and_httpx()
 
         request_id = str(uuid.uuid4())
         timeout: float = MAX_DISPATCH_BUDGET_S if wait else _NOWAIT_TIMEOUT_S
@@ -430,24 +440,7 @@ class DeileWorkerClient:
         :class:`WorkerDispatchError` codes; o caller decide se é fatal.
         """
         endpoint = _resolve_endpoint().rstrip("/") + path
-        token = await asyncio.to_thread(_read_token)
-        if not token:
-            raise WorkerDispatchError(
-                "WORKER_BEARER_TOKEN not configured in this Pod",
-                error_code="WORKER_AUTH_MISSING",
-            )
-        if not _validate_token_charset(token):
-            raise WorkerDispatchError(
-                "bearer token has invalid characters",
-                error_code="WORKER_AUTH_MALFORMED",
-            )
-        try:
-            import httpx
-        except ImportError as exc:
-            raise WorkerDispatchError(
-                "httpx is not installed in this image",
-                error_code="WORKER_TRANSPORT_MISSING",
-            ) from exc
+        token, httpx = await _resolve_auth_and_httpx()
 
         headers = {
             "Authorization": f"Bearer {token}",

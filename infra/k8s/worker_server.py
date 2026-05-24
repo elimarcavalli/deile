@@ -850,11 +850,17 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         return web.json_response({"task_id": task_id, "status": "running"}, status=202)
 
 
-async def result_handler(request: web.Request) -> web.Response:
-    task_id = request.match_info["task_id"]
-    # M10 (PR #295 review): valida task_id ANTES de tocar filesystem.
+def _lookup_task_state(task_id: str):
+    """Resolve a task state from memory or the persisted ``.results`` PVC file.
+
+    Returns ``(state, error_response)``: exactly one is non-``None``.
+    ``state`` is a dict; ``error_response`` is a ready-to-return
+    :class:`aiohttp.web.Response`. Shared by ``result_handler`` and
+    ``progress_handler`` to keep validation + lookup + disk-fallback in
+    one place (M10 — PR #295 review).
+    """
     if not _TASK_ID_RE.match(task_id):
-        return web.json_response(
+        return None, web.json_response(
             {"error": {"code": "BAD_REQUEST", "message": "invalid task_id format"}},
             status=400,
         )
@@ -868,10 +874,18 @@ async def result_handler(request: web.Request) -> web.Response:
             except Exception:
                 state = None
     if state is None:
-        return web.json_response(
+        return None, web.json_response(
             {"error": {"code": "NOT_FOUND", "message": f"task {task_id} unknown"}},
             status=404,
         )
+    return state, None
+
+
+async def result_handler(request: web.Request) -> web.Response:
+    task_id = request.match_info["task_id"]
+    state, error = _lookup_task_state(task_id)
+    if error is not None:
+        return error
     # Strip internal-only keys (_mono_start) before returning to the client.
     payload = {k: v for k, v in state.items() if not k.startswith("_")}
     return web.json_response(payload)
@@ -887,29 +901,9 @@ async def progress_handler(request: web.Request) -> web.Response:
     completo via ``/v1/result/{task_id}``.
     """
     task_id = request.match_info["task_id"]
-    # M10 (PR #295 review): valida task_id ANTES de tocar filesystem ou
-    # usar como key. Defende contra path traversal (`../etc/passwd`) e
-    # caracteres inesperados que poderiam crashar o JSON loader.
-    if not _TASK_ID_RE.match(task_id):
-        return web.json_response(
-            {"error": {"code": "BAD_REQUEST", "message": "invalid task_id format"}},
-            status=400,
-        )
-    state = _TASKS.get(task_id)
-    if state is None:
-        # Tarefa pode ter sido completada e despejada em disco no .results;
-        # carregamos o que estiver lá para refletir terminal.
-        f = WORK_ROOT / ".results" / f"{task_id}.json"
-        if f.is_file():
-            try:
-                state = json.loads(f.read_text(encoding="utf-8"))
-            except Exception:
-                state = None
-    if state is None:
-        return web.json_response(
-            {"error": {"code": "NOT_FOUND", "message": f"task {task_id} unknown"}},
-            status=404,
-        )
+    state, error = _lookup_task_state(task_id)
+    if error is not None:
+        return error
 
     ok = state.get("ok")
     # elapsed: usa _mono_start enquanto rodando; depois, elapsed_s gravado.

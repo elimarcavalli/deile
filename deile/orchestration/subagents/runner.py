@@ -235,27 +235,11 @@ class LocalSubAgentRunner:
             ))
 
         except asyncio.CancelledError:
-            state.status = "cancelled"
-            state.finished_at = time.monotonic()
-            on_event(SubAgentEvent(
-                kind=SubAgentEventKind.FAILED,
-                index=task.index,
-                label="⏹ cancelado",
-                error="cancelled",
-            ))
+            _mark_cancelled(state, on_event)
             raise
         except Exception as exc:  # noqa: BLE001 — runner DEVE encapsular
-            err = f"{type(exc).__name__}: {exc}"
             logger.exception("LocalSubAgentRunner: sub-tarefa #%d falhou", task.index)
-            state.status = "error"
-            state.error = err
-            state.finished_at = time.monotonic()
-            on_event(SubAgentEvent(
-                kind=SubAgentEventKind.FAILED,
-                index=task.index,
-                label=f"✗ erro: {_short(err, 80)}",
-                error=err,
-            ))
+            _mark_error(state, on_event, exc)
         finally:
             # Cleanup do sub-session — sem isso ``agent._sessions`` cresce
             # indefinidamente sob dispatches repetidos (revisão crítica B1).
@@ -281,6 +265,40 @@ class LocalSubAgentRunner:
                     task.index,
                 )
                 raise
+
+
+def _mark_cancelled(state: SubAgentState, on_event: OnEvent) -> None:
+    """Helper: marca um state como cancelled e emite o evento FAILED correspondente.
+
+    Compartilhado entre :class:`LocalSubAgentRunner` e :class:`WorkerSubAgentRunner`
+    para evitar drift entre os dois blocos ``except asyncio.CancelledError``.
+    """
+    state.status = "cancelled"
+    state.finished_at = time.monotonic()
+    on_event(SubAgentEvent(
+        kind=SubAgentEventKind.FAILED,
+        index=state.task.index,
+        label="⏹ cancelado",
+        error="cancelled",
+    ))
+
+
+def _mark_error(state: SubAgentState, on_event: OnEvent, exc: BaseException) -> str:
+    """Helper: marca um state como error e emite o evento FAILED correspondente.
+
+    Retorna a string ``err`` formatada para que o caller possa logá-la.
+    """
+    err = f"{type(exc).__name__}: {exc}"
+    state.status = "error"
+    state.error = err
+    state.finished_at = time.monotonic()
+    on_event(SubAgentEvent(
+        kind=SubAgentEventKind.FAILED,
+        index=state.task.index,
+        label=f"✗ erro: {_short(err, 80)}",
+        error=err,
+    ))
+    return err
 
 
 def _format_tool_inline(tool_name: str, args: dict) -> str:
@@ -453,27 +471,11 @@ class WorkerSubAgentRunner:
                     return
 
         except asyncio.CancelledError:
-            state.status = "cancelled"
-            state.finished_at = time.monotonic()
-            on_event(SubAgentEvent(
-                kind=SubAgentEventKind.FAILED,
-                index=task.index,
-                label="⏹ cancelado",
-                error="cancelled",
-            ))
+            _mark_cancelled(state, on_event)
             raise
         except Exception as exc:  # noqa: BLE001
-            err = f"{type(exc).__name__}: {exc}"
             logger.exception("WorkerSubAgentRunner: sub-tarefa #%d falhou", task.index)
-            state.status = "error"
-            state.error = err
-            state.finished_at = time.monotonic()
-            on_event(SubAgentEvent(
-                kind=SubAgentEventKind.FAILED,
-                index=task.index,
-                label=f"✗ erro: {_short(err, 80)}",
-                error=err,
-            ))
+            _mark_error(state, on_event, exc)
 
 
 # ---------- Factory -----------------------------------------------------------

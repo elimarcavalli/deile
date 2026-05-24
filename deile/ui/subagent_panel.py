@@ -228,12 +228,7 @@ class SubAgentPanelRenderer:
 
         # Final state collapses to a 1-line summary
         if st.is_terminal:
-            files = ", ".join(st.files_touched[:3])
-            tail = ""
-            if files:
-                tail = f" · {_escape_markup(files)}"
-                if len(st.files_touched) > 3:
-                    tail += f" (+{len(st.files_touched) - 3})"
+            tail = _files_tail(st.files_touched, head=3)
             if status == "ok":
                 body_lines = [f"[green]✅ concluído[/green]{tail}"]
             elif status == "error":
@@ -418,12 +413,7 @@ class SubAgentPanelRenderer:
         for st in self._states:
             glyph = _STATUS_GLYPH.get(st.status, "•")
             style = _STATUS_STYLE.get(st.status, "white")
-            files = ", ".join(st.files_touched[:5])
-            tail = ""
-            if files:
-                tail = f" · {_escape_markup(files)}"
-                if len(st.files_touched) > 5:
-                    tail += f" (+{len(st.files_touched) - 5})"
+            tail = _files_tail(st.files_touched, head=5)
             elapsed = _fmt_mmss(st.elapsed_s)
             desc = _escape_markup(_truncate(st.task.description, 56))
             line = (
@@ -605,6 +595,23 @@ def _safe_get_parent_live(console) -> Optional[object]:
     except Exception:
         logger.debug("Could not access Console._live (Rich API drift)", exc_info=True)
         return None
+
+
+def _files_tail(files: list, *, head: int) -> str:
+    """Format a "files touched" tail for the panel: " · a, b, c (+N)".
+
+    Returns the formatted suffix (already including the leading separator)
+    or an empty string when ``files`` is empty. Used by both the compact
+    panel body and the final scrollback summary — keeps the truncation
+    logic in one place.
+    """
+    if not files:
+        return ""
+    head_files = ", ".join(files[:head])
+    tail = f" · {_escape_markup(head_files)}"
+    if len(files) > head:
+        tail += f" (+{len(files) - head})"
+    return tail
 
 
 def _truncate(text, limit: int) -> str:
