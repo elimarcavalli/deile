@@ -1,5 +1,6 @@
 """Standup Command — narrativa do dia (commits + PRs + issues)."""
 
+import asyncio
 import json
 import re
 import shutil
@@ -230,9 +231,13 @@ class StandupCommand(DirectCommand):
     @wrap_command_errors("standup", message_template="Falha ao executar /{name}: {exc}")
     async def execute(self, context: CommandContext) -> CommandResult:
         self._emit_audit_event(context)
-        
+
         since_spec = parse_args(context.args)
-        data = collect_standup_data(since_spec)
+        # `collect_standup_data` runs `git rev-parse`, `gh auth status`,
+        # `git log` e duas chamadas `gh <verb> list` em sequência — todo
+        # subprocess síncrono. Off-loading para uma worker thread evita
+        # bloquear o event loop (pilar 03 §1).
+        data = await asyncio.to_thread(collect_standup_data, since_spec)
         prompt = build_prompt(data)
         
         narrative = await generate_narrative(prompt)
