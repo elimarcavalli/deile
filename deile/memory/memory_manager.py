@@ -97,12 +97,9 @@ class MemoryManager:
         # Estado do manager
         self._is_initialized = False
         self._consolidation_task: Optional[asyncio.Task] = None
-        # Background tasks (fire-and-forget). Mantemos hard references aqui
-        # porque o event loop apenas mantém ``weakref`` para Tasks
-        # (https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task);
-        # sem isso, semantic-knowledge extraction e pattern analysis podiam
-        # ser coletadas pelo GC no meio da execução, silenciosamente
-        # perdendo trabalho.
+        # Hard references to fire-and-forget tasks. The event loop only
+        # keeps weakrefs (see docs of ``asyncio.create_task``), so without
+        # this set background work could be GC'd mid-execution.
         self._background_tasks: Set[asyncio.Task] = set()
         self._memory_stats = {
             "retrievals": 0,

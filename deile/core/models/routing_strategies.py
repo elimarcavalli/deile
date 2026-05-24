@@ -54,13 +54,11 @@ class RoutingContext:
 class ModelMetrics:
     """Métricas de um modelo.
 
-    ``active_requests`` é exposto por compatibilidade com callers existentes
-    mas NUNCA é incrementado pela classe — para um contador "ativo" correto
-    a API precisaria de ``record_complete`` simétrico chamado pelo agent
-    em todos os 6+ call sites, refator fora do escopo do bug-audit. As
-    estratégias ``LEAST_BUSY``/``LOAD_BALANCED`` migraram para
-    ``total_requests`` como proxy ("menos usado historicamente"), que é
-    monotônico-correto e bounded.
+    ``active_requests`` is kept for backwards compatibility but is never
+    incremented — a correct "active" counter would need symmetric
+    ``record_complete`` calls at every agent call site (refactor out of
+    scope). ``LEAST_BUSY``/``LOAD_BALANCED`` now use ``total_requests`` as
+    a monotonic proxy for "least historically used".
     """
     total_requests: int = 0
     active_requests: int = 0  # deprecated — always 0; see class docstring
@@ -71,15 +69,7 @@ class ModelMetrics:
     last_used: float = 0.0
 
     def record_request(self) -> None:
-        """Registra nova requisição.
-
-        Antes incrementava ``active_requests`` sem nenhum decremento simétrico
-        no fluxo do agent — o contador crescia indefinidamente, corrompendo
-        ``LEAST_BUSY``/``LOAD_BALANCED`` (que viravam essencialmente "least
-        total_requests + algum drift"). Como ``LEAST_BUSY``/``LOAD_BALANCED``
-        agora consultam ``total_requests`` diretamente, o incremento aqui é
-        redundante e foi removido.
-        """
+        """Registra nova requisição."""
         self.total_requests += 1
         self.last_used = time.time()
 
@@ -97,13 +87,10 @@ class RoutingStrategySelector:
     """
 
     def __init__(self) -> None:
-        # ``itertools.count`` é atomic em CPython (a thread holding the GIL
-        # advances the counter as a single bytecode step), evitando a corrida
-        # entre dois ``select_provider`` concorrentes (ex.: dois
-        # ``asyncio.gather`` workers no pipeline). O loop assíncrono ainda
-        # é single-threaded mas ``await``-points entre o load e o write da
-        # versão antiga (``selected = providers[idx % N]; idx += 1``)
-        # permitiam reentrada e duas seleções colidiam no mesmo provedor.
+        # ``itertools.count`` is atomic under the CPython GIL — replaces a
+        # non-atomic ``idx = self._cursor; self._cursor += 1`` that allowed
+        # two concurrent ``select_provider`` callers to collide on the same
+        # provider when an ``await`` was interleaved between the load+write.
         from itertools import count
         self._round_robin_counter = count()
         # Mapeamento de tarefas para tipos de modelo
@@ -154,13 +141,9 @@ class RoutingStrategySelector:
     def _least_busy_selection(
         self, providers: List[ModelProvider], metrics: Dict[str, ModelMetrics]
     ) -> Optional[ModelProvider]:
-        """Seleciona provedor menos usado (proxy: total_requests).
-
-        Antes usava ``active_requests``, contador broken (nunca decrementado).
-        ``total_requests`` é monotônico-correto e dá a semântica útil de
-        "menos usado historicamente" — adequada como balanceador de carga
-        aproximado quando todas as requisições têm custo similar.
-        """
+        """Seleciona provedor menos usado historicamente (proxy:
+        ``total_requests`` — monotonic, correct; ``active_requests`` was
+        a broken never-decremented counter)."""
         if not providers:
             return None
 
@@ -252,9 +235,8 @@ class RoutingStrategySelector:
         if not providers:
             return None
 
-        # Combina least_busy com performance.
-        # ``active_requests`` foi substituído por ``total_requests`` — ver
-        # docstring de ``ModelMetrics`` para o motivo (contador broken).
+        # Combine least_busy with performance.
+        # Uses ``total_requests`` (see ``ModelMetrics`` docstring).
         def load_score(provider: ModelProvider) -> float:
             m = metrics[_provider_key(provider)]
 

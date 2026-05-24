@@ -1,7 +1,6 @@
 """Plan Manager - Sistema de orquestração autônoma com plans e execução"""
 
 import asyncio
-import json
 import logging
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -13,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from ..core.exceptions import DEILEError
 from ..security import (AuditEventType, SeverityLevel, get_audit_logger,
                         get_permission_manager)
+from ..storage.aio_fileio import read_json, write_json, write_text
 from ..tools.base import ToolContext, ToolResult
 from ..tools.registry import get_tool_registry
 from ._deps import all_dependencies_met
@@ -301,9 +301,7 @@ class PlanManager:
             return None
 
         try:
-            # Sync open()+json.load() awaited blocks the event loop. Wrapping
-            # in to_thread keeps the loop responsive (principle 03 §1).
-            data = await asyncio.to_thread(_read_plan_json, plan_file)
+            data = await read_json(plan_file)
             return ExecutionPlan.from_dict(data)
         except Exception as e:
             logger.error(f"Failed to load plan {plan_id}: {e}")
@@ -315,7 +313,7 @@ class PlanManager:
 
         for plan_file in self.plans_dir.glob("*.json"):
             try:
-                data = await asyncio.to_thread(_read_plan_json, plan_file)
+                data = await read_json(plan_file)
 
                 # Filtra por status se necessário
                 if status_filter and data.get("status") != status_filter.value:
@@ -673,11 +671,9 @@ class PlanManager:
                             "timestamp": step.completed_at.isoformat()
                         })
 
-                        # Para execução se configurado. O ``break`` só sai do
-                        # ``for step in concurrent_steps`` — sem marcar o
-                        # stop_flag, o ``while True`` externo voltaria a
-                        # chamar ``get_next_steps()`` e continuaria
-                        # executando o plano apesar do ``stop_on_failure``.
+                        # ``break`` only exits the inner for-loop; without
+                        # setting the stop_flag the outer while-loop would
+                        # ignore ``stop_on_failure`` and resume execution.
                         if plan.stop_on_failure:
                             self._stop_flags[plan.id] = True
                             break
@@ -892,19 +888,11 @@ class PlanManager:
         }
     
     async def _run_tool_with_params(self, tool, params: Dict[str, Any]) -> ToolResult:
-        """Executa tool com parâmetros sem bloquear o event loop.
+        """Executa a tool diretamente pelo pipeline async.
 
-        ``execute_function_call`` é síncrono e, quando chamado de dentro de um
-        loop ativo, executa a coroutine da tool em um worker thread cujo
-        ``Future.result()`` BLOQUEIA o loop — anulando o ``asyncio.wait_for``
-        que envolve esta chamada (``timeout/cancellation`` não cruzam para o
-        worker). Aqui invocamos diretamente o pipeline async da Tool, que via
-        ``SyncTool.execute`` já agenda ``execute_sync`` em ``asyncio.to_thread``.
-
-        Preserva a validação de schema que o bridge fazia, para que params
-        malformados continuem caindo em ``INVALID_ARGUMENTS`` em vez de
-        explodirem dentro da própria tool (regressão capturada na
-        self-review do PR de bug-audit).
+        Não usa ``execute_function_call`` (síncrono — bloqueia o loop e
+        anula o ``asyncio.wait_for`` externo). Schema validation continua
+        sendo aplicada para preservar a semântica ``INVALID_ARGUMENTS``.
         """
         if getattr(tool, "schema", None):
             from ..tools.function_call import validate_function_arguments
@@ -941,7 +929,7 @@ class PlanManager:
         plan_file = self.plans_dir / f"{plan.id}.json"
 
         try:
-            await asyncio.to_thread(_write_plan_json, plan_file, plan.to_dict())
+            await write_json(plan_file, plan.to_dict())
             # Também salva versão human-readable
             md_file = self.plans_dir / f"{plan.id}.md"
             await self._save_plan_markdown(plan, md_file)
@@ -1014,31 +1002,9 @@ class PlanManager:
             ])
         
         try:
-            await asyncio.to_thread(
-                _write_text, file_path, '\n'.join(content)
-            )
+            await write_text(file_path, '\n'.join(content))
         except Exception as e:
             logger.warning(f"Failed to save plan markdown {file_path}: {e}")
-
-
-# --------------------------------------------------------------------------
-# Sync I/O helpers invoked via ``asyncio.to_thread`` so the load/list/save
-# paths above never block the event loop.
-# --------------------------------------------------------------------------
-
-def _read_plan_json(path: Path) -> Dict[str, Any]:
-    with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-
-def _write_plan_json(path: Path, data: Dict[str, Any]) -> None:
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-
-def _write_text(path: Path, text: str) -> None:
-    with open(path, 'w', encoding='utf-8') as f:
-        f.write(text)
 
 
 # Singleton instance
