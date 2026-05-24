@@ -36,7 +36,7 @@ import asyncio
 import contextvars
 import logging
 import time
-from collections import defaultdict
+from collections import OrderedDict
 from typing import Dict, List
 
 from deile.orchestration.subagents import (HISTORY_MARKER_KEY,
@@ -82,7 +82,14 @@ class DispatchParallelSubagentsTool(Tool):
     # o resumo, "ache" que precisa retentar.
     _LAST_DISPATCH: Dict[str, float] = {}
     _DISPATCH_COOLDOWN_S: float = 5.0
-    _SESSION_LOCKS: "Dict[str, asyncio.Lock]" = defaultdict(asyncio.Lock)
+    # M5/M14 (PR #295 review): cap LRU para evitar crescimento sem limite.
+    # Sessões fechadas deixavam locks órfãos no defaultdict; sob carga
+    # prolongada (worker singleton com centenas de sessões), isto vazaria
+    # RAM e cresceria a estrutura indefinidamente. ``OrderedDict`` com cap
+    # de 256 evita o problema sem custar mais que O(1) por acesso.
+    _SESSION_LOCKS: "OrderedDict[str, asyncio.Lock]" = OrderedDict()
+    _SESSION_LOCKS_MAX: int = 256
+    _SESSION_LOCKS_GUARD: asyncio.Lock = asyncio.Lock()
 
     @property
     def name(self) -> str:
@@ -198,7 +205,8 @@ class DispatchParallelSubagentsTool(Tool):
                 )
 
             # Anti-loop por sessão (atômico via lock).
-            async with self._SESSION_LOCKS[session_id]:
+            session_lock = await self._get_session_lock(session_id)
+            async with session_lock:
                 now = time.monotonic()
                 self._prune_expired(now)
                 last = self._LAST_DISPATCH.get(session_id)
@@ -264,6 +272,30 @@ class DispatchParallelSubagentsTool(Tool):
                 max_parallel,
             )
 
+            # M12 (PR #295 review): audit log na execução — Pilar 8 (segurança)
+            # exige que ações tool-driven sejam logadas tipadas. Best-effort
+            # (audit nunca quebra a tool, igual ao padrão de vision_tool).
+            try:
+                from deile.security.audit_logger import (AuditEventType,
+                                                         SeverityLevel,
+                                                         get_audit_logger)
+                get_audit_logger().log_event(
+                    event_type=AuditEventType.TOOL_EXECUTION,
+                    severity=SeverityLevel.INFO,
+                    actor="dispatch_parallel_subagents",
+                    resource=f"session:{session_id}",
+                    action="dispatch",
+                    result="started",
+                    details={
+                        "n_subtasks": len(tasks),
+                        "runner": runner.__class__.__name__,
+                        "max_parallel": max_parallel,
+                    },
+                    tool_name="dispatch_parallel_subagents",
+                )
+            except Exception:  # audit must never crash the tool
+                logger.debug("audit emission failed", exc_info=True)
+
             # Eleva profundidade de nesting — sub-DEILEs spawnados via
             # asyncio.create_task herdam este ContextVar e bloqueiam recursão.
             token = _NESTING_DEPTH.set(_NESTING_DEPTH.get() + 1)
@@ -309,6 +341,36 @@ class DispatchParallelSubagentsTool(Tool):
         stale = [sid for sid, ts in cls._LAST_DISPATCH.items() if (now - ts) > cutoff]
         for sid in stale:
             cls._LAST_DISPATCH.pop(sid, None)
+
+    @classmethod
+    async def _get_session_lock(cls, session_id: str) -> asyncio.Lock:
+        """Returns the per-session lock; LRU-bounded at ``_SESSION_LOCKS_MAX``.
+
+        M5/M14 (PR #295 review): substitui o ``defaultdict(asyncio.Lock)``
+        ilimitado por um ``OrderedDict`` com cap LRU — sessões fechadas que
+        não voltarem a chamar a tool serão eventualmente desalojadas.
+        Acesso é serializado por um lock-guarda para evitar race na criação
+        sob disparos paralelos do mesmo session_id.
+        """
+        async with cls._SESSION_LOCKS_GUARD:
+            lock = cls._SESSION_LOCKS.get(session_id)
+            if lock is None:
+                lock = asyncio.Lock()
+                cls._SESSION_LOCKS[session_id] = lock
+            else:
+                # LRU: marca como mais recente.
+                cls._SESSION_LOCKS.move_to_end(session_id)
+            # Evicta os mais antigos quando estoura o cap.
+            while len(cls._SESSION_LOCKS) > cls._SESSION_LOCKS_MAX:
+                evicted_id, evicted_lock = cls._SESSION_LOCKS.popitem(last=False)
+                # Não desaloja se ainda está em uso — re-insere na ponta
+                # do MRU. Pode levar a um overshoot temporário do cap mas
+                # nunca corrompe semântica.
+                if evicted_lock.locked():
+                    cls._SESSION_LOCKS[evicted_id] = evicted_lock
+                    cls._SESSION_LOCKS.move_to_end(evicted_id)
+                    break
+            return lock
 
     @staticmethod
     def _persist_to_history(agent, session_id: str, result, n_tasks: int) -> None:

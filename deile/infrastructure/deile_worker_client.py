@@ -467,6 +467,18 @@ class DeileWorkerClient:
                     error_code="WORKER_UNREACHABLE",
                 ) from exc
 
+        # M9 (PR #295 review): checa status_code ANTES de tentar parsear JSON.
+        # 404 é transiente logo após o dispatch (a task pode ainda não estar
+        # registrada no _TASKS); retornar NOT_FOUND tipado deixa o caller
+        # (WorkerSubAgentRunner) retentar especificamente esse caso. Erros
+        # ≥500 viram BAD_RESPONSE sem depender de o body ser JSON-parseable
+        # (o nginx/proxy pode devolver HTML 502).
+        if resp.status_code == 404:
+            raise WorkerDispatchError(
+                f"task not found at {path}",
+                error_code="NOT_FOUND",
+            )
+
         try:
             data = resp.json()
         except json.JSONDecodeError as exc:
@@ -475,12 +487,6 @@ class DeileWorkerClient:
                 error_code="WORKER_BAD_RESPONSE",
             ) from exc
 
-        if resp.status_code == 404:
-            # Transient logo após dispatch: caller decide se retenta.
-            raise WorkerDispatchError(
-                f"task not found at {path}",
-                error_code="NOT_FOUND",
-            )
         if resp.status_code >= 400:
             err = (data.get("error") if isinstance(data, dict) else None) or {}
             code = err.get("code") or "WORKER_ERROR"

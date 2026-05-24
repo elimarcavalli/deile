@@ -133,6 +133,22 @@ class LocalSubAgentRunner:
                 # passamos no kwargs como hint mas NÃO ativamos persona real.
                 # O caminho WorkerSubAgentRunner sim isola via processo separado.
                 kwargs["persona_name"] = task.persona
+                # M4 (PR #295 review): aviso visível para que o caller saiba
+                # que persona ainda não é efetivamente honored pelo runner local.
+                # Emite tanto no log quanto como evento progress para o painel.
+                warn_msg = (
+                    f"persona={task.persona!r} é apenas hint no LocalSubAgentRunner "
+                    "(PersonaManager singleton — switching entre sub-DEILEs paralelos "
+                    "causaria race). Use o WorkerSubAgentRunner para isolamento real."
+                )
+                logger.warning(
+                    "LocalSubAgentRunner #%d: %s", task.index, warn_msg
+                )
+                on_event(SubAgentEvent(
+                    kind=SubAgentEventKind.PROGRESS,
+                    index=task.index,
+                    label=f"⚠ persona={task.persona} (hint apenas — local runner)",
+                ))
             if task.model:
                 kwargs["forced_model"] = task.model
 

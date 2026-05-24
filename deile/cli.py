@@ -430,10 +430,15 @@ class _DeileCLI:
             await self.ui.display_streaming_turn(event_stream)
             return False
 
-        # Issue #257: o painel multipanel de sub-DEILEs também quer ler stdin.
-        # Para evitar race + byte-loss, o painel seta um flag global ao abrir;
-        # este watcher pausa cooperativamente enquanto o flag está ativo.
-        from .ui._stdin_owner import panel_owns_stdin
+        # M13 (PR #295 review): registra o termios *cooked* ANTES de
+        # `setcbreak` rodar dentro de `_watch`. Sem isto, quando o painel
+        # de sub-DEILEs invoca `claim_stdin_for_panel` o cbreak já está
+        # ativo e o snapshot atexit restauraria cbreak no shutdown.
+        from .ui._stdin_owner import panel_owns_stdin, prime_termios_snapshot
+        try:
+            prime_termios_snapshot(original_termios=saved)
+        except Exception:
+            pass  # best-effort — atexit fallback still protects
 
         def _watch() -> None:
             try:

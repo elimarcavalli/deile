@@ -315,9 +315,10 @@ class SubAgentPanelRenderer:
         """Renderiza enquanto houver state não-terminal. Não levanta exceção."""
         self._start_t = time.monotonic()
         # Suspende o Live do pai (streaming_renderer) — Rich só permite um Live
-        # ativo por console. Usamos a API pública ``stop()``+``start()`` em vez
-        # de tocar em ``_live`` diretamente (mais estável entre versões do Rich).
-        prev_live = getattr(self._host_console, "_live", None)
+        # ativo por console. Encapsulado em :func:`_safe_get_parent_live` porque
+        # Rich não expõe API pública para "qual Live está ativo neste console"
+        # e ``_live`` é privado/fragile (M7 — PR #295 review).
+        prev_live = _safe_get_parent_live(self._host_console)
         if prev_live is not None:
             try:
                 prev_live.stop()
@@ -586,6 +587,23 @@ class SubAgentPanelRenderer:
         t = threading.Thread(target=_watch, daemon=True, name="subagent-kb-watcher")
         t.start()
         return t
+
+
+def _safe_get_parent_live(console) -> Optional[object]:
+    """Best-effort lookup do ``Live`` ativo no console pai.
+
+    Rich 13.x não expõe API pública para "qual Live está ativo neste
+    console" — armazena em ``Console._live`` (atributo privado). Sem suspender
+    esse Live, abrir um segundo crasha com ``LiveError``. M7 (PR #295 review):
+    encapsulamos o acesso aqui com try/except + comentário de fragilidade;
+    se Rich um dia mudar o nome, retornamos ``None`` (fallback gracioso —
+    o caller tolera ausência do Live pai).
+    """
+    try:
+        return getattr(console, "_live", None)
+    except Exception:
+        logger.debug("Could not access Console._live (Rich API drift)", exc_info=True)
+        return None
 
 
 def _truncate(text, limit: int) -> str:

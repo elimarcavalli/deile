@@ -61,17 +61,19 @@ def _restore_termios() -> None:
         _termios_fd = -1
 
 
-def claim_stdin_for_panel() -> None:
-    """Painel anuncia leitura exclusiva de stdin.
+def prime_termios_snapshot(original_termios=None) -> None:
+    """Captura (ou registra) o snapshot termios *original* (cooked).
 
-    Na primeira chamada do processo, captura os termios originais e registra
-    o handler atexit. As chamadas seguintes só (re-)setam o event — o
-    snapshot capturado é estável (atributos do TTY antes de QUALQUER cbreak
-    do painel ou do CLI).
+    M13 (PR #295 review): o CLI principal já chamou ``setcbreak`` quando o
+    painel pede o claim, então um ``tcgetattr`` agora devolveria estado
+    cbreak — atexit restauraria cbreak (não cooked) e deixaria o terminal
+    quebrado. Para resolver, o caller (CLI) deve invocar esta função
+    ANTES de qualquer ``setcbreak`` própria, passando o snapshot original
+    capturado naquele momento (``original_termios``). Quando ``None``,
+    captura o snapshot atual — útil para callers que já garantem ordem.
 
-    Também faz ``tcflush(TCIFLUSH)`` para descartar bytes pendentes que o
-    CLI possa ter colocado no buffer ANTES da exclusão entrar em vigor
-    (fecha a janela TOCTOU do A2 da revisão).
+    Idempotente: chamadas após o snapshot já estar registrado são no-op
+    (preservamos o snapshot mais antigo, que é o realmente original).
     """
     global _saved_termios, _termios_fd, _atexit_registered
 
@@ -80,7 +82,11 @@ def claim_stdin_for_panel() -> None:
             try:
                 import termios
                 fd = sys.stdin.fileno()
-                _saved_termios = termios.tcgetattr(fd)
+                _saved_termios = (
+                    original_termios
+                    if original_termios is not None
+                    else termios.tcgetattr(fd)
+                )
                 _termios_fd = fd
             except Exception:
                 logger.debug("could not capture termios snapshot", exc_info=True)
@@ -92,6 +98,25 @@ def claim_stdin_for_panel() -> None:
             except Exception:
                 pass
 
+
+def claim_stdin_for_panel(original_termios=None) -> None:
+    """Painel anuncia leitura exclusiva de stdin.
+
+    Na primeira chamada do processo, captura os termios originais (ou usa o
+    snapshot passado em ``original_termios`` — M13 — PR #295 review) e
+    registra o handler atexit. As chamadas seguintes só (re-)setam o event.
+
+    Também faz ``tcflush(TCIFLUSH)`` para descartar bytes pendentes que o
+    CLI possa ter colocado no buffer ANTES da exclusão entrar em vigor
+    (fecha a janela TOCTOU do A2 da revisão).
+
+    Args:
+        original_termios: snapshot capturado ANTES de o CLI entrar em cbreak.
+            Quando ``None`` (default), captura o estado atual — caminho legado
+            que pode capturar cbreak se o CLI já modificou. Prefira passar
+            explicitamente o snapshot cooked.
+    """
+    prime_termios_snapshot(original_termios=original_termios)
     _panel_owns_stdin.set()
 
     # Descarta bytes pendentes do buffer de entrada — fecha TOCTOU window
@@ -130,6 +155,7 @@ def restore_termios_now() -> None:
 __all__ = [
     "claim_stdin_for_panel",
     "panel_owns_stdin",
+    "prime_termios_snapshot",
     "release_stdin_for_panel",
     "restore_termios_now",
 ]
