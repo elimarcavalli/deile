@@ -905,7 +905,22 @@ class PlanManager:
         que envolve esta chamada (``timeout/cancellation`` não cruzam para o
         worker). Aqui invocamos diretamente o pipeline async da Tool, que via
         ``SyncTool.execute`` já agenda ``execute_sync`` em ``asyncio.to_thread``.
+
+        Preserva a validação de schema que o bridge fazia, para que params
+        malformados continuem caindo em ``INVALID_ARGUMENTS`` em vez de
+        explodirem dentro da própria tool (regressão capturada na
+        self-review do PR de bug-audit).
         """
+        if getattr(tool, "schema", None):
+            from ..tools.function_call import validate_function_arguments
+            validation = validate_function_arguments(tool.schema, params or {})
+            if not validation["valid"]:
+                return ToolResult.error_result(
+                    f"Invalid arguments for '{tool.name}': "
+                    f"{validation['errors']}",
+                    error_code="INVALID_ARGUMENTS",
+                )
+
         context = ToolContext(
             user_input="",
             parsed_args=params or {},

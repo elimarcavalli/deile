@@ -198,3 +198,26 @@ async def test_loop_remains_responsive_while_sync_tool_runs(tmp_path) -> None:
     assert result.is_success
     # If the loop were blocked, heartbeat would not have advanced.
     assert ticks >= 5, f"loop appears blocked; ticks={ticks}"
+
+
+async def test_invalid_arguments_return_invalid_arguments_error(tmp_path) -> None:
+    """Schema validation must run before tool.execute — regression caught
+    in self-review: the original fix removed the bridge that validated
+    against ToolSchema, letting bad params crash inside the tool.
+    """
+    pm = PlanManager(plans_dir=tmp_path)
+    tool = _FastSyncTool()  # requires {"x": integer}
+    # Missing required param "x".
+    result = await pm._run_tool_with_params(tool, {})
+    assert not result.is_success
+    code = (result.metadata or {}).get("error_code")
+    assert code == "INVALID_ARGUMENTS", (code, result.message)
+    assert "x" in (result.message or "") or "required" in (result.message or "").lower()
+
+
+async def test_valid_arguments_pass_through(tmp_path) -> None:
+    """Sanity: schema-valid params still reach the tool."""
+    pm = PlanManager(plans_dir=tmp_path)
+    result = await pm._run_tool_with_params(_FastSyncTool(), {"x": 7})
+    assert result.is_success
+    assert result.data == {"doubled": 14}
