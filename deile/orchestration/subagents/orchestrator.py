@@ -43,12 +43,8 @@ from typing import Any, Callable, ClassVar, List, Literal, Optional, TextIO
 
 from deile.config.settings import get_settings
 
-from ._capture import (
-    CappedBuffer,
-    _capture_lock_holder,
-    get_capture_buffer_max_bytes,
-    get_capture_lock,
-)
+from ._capture import (CappedBuffer, _capture_lock_holder,
+                       get_capture_buffer_max_bytes, get_capture_lock)
 from ._loop_lock import LoopBoundLock
 from .events import SubAgentEvent, SubAgentState, SubAgentTask
 from .runner import SubAgentRunner

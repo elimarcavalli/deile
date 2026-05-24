@@ -48,8 +48,7 @@ from deile.orchestration.subagents._loop_lock import LoopBoundLock
 from deile.orchestration.subagents.events import SubAgentState
 from deile.orchestration.subagents.orchestrator import _get_budget_s
 
-from ._dispatch_cooldown import (is_in_cooldown, prune_expired,
-                                 record_dispatch)
+from ._dispatch_cooldown import is_in_cooldown, prune_expired, record_dispatch
 from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
                    ToolSchema)
 

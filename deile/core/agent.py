@@ -38,12 +38,12 @@ from ..tools.registry import ToolRegistry, get_tool_registry
 from ..ui.display_manager import DisplayManager
 from ..ui.stage_cascade import cascade_until
 from ..ui.stage_messages import get_stage_message
+from . import validation_gate as _validation_gate
 from .context_manager import ContextManager
 from .intent_analyzer import get_intent_analyzer
 from .models.router import ModelRouter
 from .proactive_analyzer import (ProactiveAction, ProactiveAnalyzer,
                                  get_proactive_analyzer)
-from . import validation_gate as _validation_gate
 
 logger = logging.getLogger(__name__)
 
