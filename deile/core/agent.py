@@ -391,10 +391,6 @@ class DeileAgent(AgentStreamingMixin):
         # Auto-discover tools, parsers, and commands
         self._auto_discover_components()
 
-        # CORREÇÃO: Registra model providers se não há nenhum
-        if len(self.model_router.providers) == 0:
-            self._register_default_providers()
-
     async def initialize(self) -> None:
         """Inicializa componentes assíncronos do agente"""
         try:
@@ -1784,29 +1780,6 @@ class DeileAgent(AgentStreamingMixin):
         except Exception as e:
             self.logger.warning(f"Auto-discovery failed: {e}")
     
-    def _register_default_providers(self) -> None:
-        """Registra model providers padrão se nenhum estiver configurado"""
-        try:
-            # Registra GeminiProvider se API key disponível
-            import os
-            if os.getenv("GOOGLE_API_KEY"):
-                from .models.gemini_provider import GeminiProvider
-                gemini_provider = GeminiProvider()
-                self.model_router.register_provider(
-                    provider=gemini_provider,
-                    priority=1,
-                    cost_per_token=0.000125  # Custo aproximado
-                )
-                logger.info("Registered GeminiProvider")
-
-            # Adicione outros providers aqui no futuro
-            # if os.getenv("OPENAI_API_KEY"):
-            #     from .models.openai_provider import OpenAIProvider
-            #     ...
-
-        except Exception as e:
-            logger.warning(f"Failed to register default model providers: {e}")
-
     async def _execute_proactive_tools(self, user_input: str, session: AgentSession) -> List[ToolResult]:
         """Wrapper sem streaming — drena o stream e devolve só os ToolResults.
 
