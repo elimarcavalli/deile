@@ -43,6 +43,7 @@ from .intent_analyzer import get_intent_analyzer
 from .models.router import ModelRouter
 from .proactive_analyzer import (ProactiveAction, ProactiveAnalyzer,
                                  get_proactive_analyzer)
+from . import validation_gate as _validation_gate
 
 logger = logging.getLogger(__name__)
 
@@ -2026,53 +2027,23 @@ class DeileAgent:
     # ------------------------------------------------------------------
     # Validation gate (anti-hallucination + post-write enforcement)
     # ------------------------------------------------------------------
+    #
+    # The implementation lives in ``deile.core.validation_gate`` (SRP / god-
+    # object refactor). The methods below are thin wrappers preserving the
+    # observable API used by the test suite and by ``self.…`` call sites
+    # inside the streaming/legacy code paths.
 
-    _PROMISE_PATTERNS = [
-        # Portuguese — actions the model commonly promises but skips
-        r"\bvou\s+(?:testar|rodar|executar|validar|verificar|instalar|conferir|checar)\b",
-        r"\b(?:testar|rodar|executar|validar|verificar|instalar)\s+(?:agora|isso|isto|esse|essa)\b",
-        r"\bdeixa\s+eu\s+(?:testar|rodar|executar|validar|verificar)\b",
-        r"\bvamos\s+(?:testar|rodar|executar|validar|verificar)\b",
-        # English
-        r"\b(?:I'?ll|I\s+will|let\s+me)\s+(?:test|run|verify|check|install|validate|execute)\b",
-        r"\b(?:testing|running|executing|validating|verifying|installing)\s+(?:it|that|now|this)\b",
-    ]
+    @staticmethod
+    def _contains_promise_pattern(text: str) -> bool:
+        """Delegate to ``validation_gate.contains_promise_pattern``."""
+        return _validation_gate.contains_promise_pattern(text)
 
-    _VALIDATION_TOOL_NAMES = {
-        "bash_execute", "python_execute", "run_tests",
-    }
-
-    @classmethod
-    def _contains_promise_pattern(cls, text: str) -> bool:
-        if not text:
-            return False
-        # cache compiled patterns lazily on the class
-        compiled = getattr(cls, "_PROMISE_RE", None)
-        if compiled is None:
-            compiled = [re.compile(p, re.IGNORECASE) for p in cls._PROMISE_PATTERNS]
-            cls._PROMISE_RE = compiled
-        return any(rx.search(text) for rx in compiled)
-
-    @classmethod
+    @staticmethod
     def _detect_unvalidated_writes(
-        cls, tool_results: List[ToolResult]
+        tool_results: List[ToolResult],
     ) -> List[ToolResult]:
-        """Return write_file results for executable files that lack a following validation tool call."""
-        # All write_file results that the tool flagged as needing validation
-        flagged_writes = [
-            tr for tr in tool_results
-            if tr.metadata.get("post_write_validation_required") is True
-        ]
-        if not flagged_writes:
-            return []
-        # Any subsequent execution tool counts as "the model tried to validate"
-        validated = any(
-            tr.metadata.get("function_name") in cls._VALIDATION_TOOL_NAMES
-            for tr in tool_results
-        )
-        if validated:
-            return []
-        return flagged_writes
+        """Delegate to ``validation_gate.detect_unvalidated_writes``."""
+        return _validation_gate.detect_unvalidated_writes(tool_results)
 
     async def _apply_validation_gate(
         self,
@@ -2083,78 +2054,20 @@ class DeileAgent:
         content: str,
         tool_results: List[ToolResult],
     ) -> tuple[str, List[ToolResult]]:
-        """Re-invoke the model once if it wrote executable code without testing
-        or promised an action without taking it. Persona-side rules already ask
-        for this; the gate is the deterministic enforcement layer.
+        """Delegate to ``validation_gate.apply_validation_gate``.
 
-        Recursion is impossible: the gate marks the session, runs at most one
-        retry, and clears the marker. If the retry still violates, the result
-        is returned to the user unaltered — surfacing the failure rather than
-        masking it.
+        The retry callback is bound to ``self._process_iterative_function_calling``
+        so the module never has to import ``DeileAgent`` (circular-import
+        hazard).
         """
-        # Single-shot per turn — and re-entry from a workflow path also skips
-        if session.context_data.get("_validation_gate_active"):
-            return content, tool_results
-
-        unvalidated = self._detect_unvalidated_writes(tool_results)
-        # Promise gate only fires on SHORT replies — long explanations may use
-        # "vamos testar a hipótese" / "let me check" rhetorically without
-        # actually intending to invoke a tool. The gate's value is catching
-        # the model saying "vou rodar agora!" and stopping cold.
-        promise_without_action = (
-            not tool_results
-            and len(content) <= 500
-            and self._contains_promise_pattern(content)
+        return await _validation_gate.apply_validation_gate(
+            user_input=user_input,
+            parse_result=parse_result,
+            session=session,
+            content=content,
+            tool_results=tool_results,
+            retry=self._process_iterative_function_calling,
         )
-
-        if not unvalidated and not promise_without_action:
-            return content, tool_results
-
-        if unvalidated:
-            paths = [tr.metadata.get("file_path", "?") for tr in unvalidated]
-            cmds = [
-                tr.metadata.get("post_write_validation_command")
-                for tr in unvalidated
-                if tr.metadata.get("post_write_validation_command")
-            ]
-            cmd_block = "\n".join(f"  - {c}" for c in cmds) if cmds else "  (none suggested)"
-            gate_prompt = (
-                "[INTERNAL_VALIDATION_GATE] You wrote the following executable file(s) "
-                "but did not validate them in the same turn:\n"
-                f"  {', '.join(paths)}\n\n"
-                "Per the Definition of Done, you MUST validate now using the tools. "
-                "Suggested validation commands (run via bash_execute):\n"
-                f"{cmd_block}\n\n"
-                "If validation fails (exit code != 0 or stderr non-empty), diagnose "
-                "and fix the file with write_file, then re-validate. Use pip_install "
-                "for any ModuleNotFoundError. Only after exit 0 do you report the "
-                "task complete to the user — and the report MUST include the actual "
-                "validation output, not a summary."
-            )
-        else:
-            gate_prompt = (
-                "[INTERNAL_VALIDATION_GATE] Your previous response promised an action "
-                "(test / run / install / validate) but no tool was invoked in that "
-                "turn. Per the anti-hallucination rule in your persona, that is a "
-                "policy violation. Either invoke the tool now to fulfill the promise, "
-                "or revise the answer to not promise. Do not produce a final answer "
-                "until the action is actually taken."
-            )
-
-        # Persist the pre-gate assistant turn so the model sees the gap
-        session.add_to_history("assistant", content, {"validation_gate_pre": True})
-        session.add_to_history("user", gate_prompt, {"validation_gate": True})
-        session.context_data["_validation_gate_active"] = True
-        try:
-            new_content, new_tool_results = await self._process_iterative_function_calling(
-                user_input=gate_prompt,
-                parse_result=parse_result,
-                session=session,
-            )
-        finally:
-            session.context_data.pop("_validation_gate_active", None)
-
-        return new_content, list(tool_results) + list(new_tool_results)
 
 
     async def _process_legacy_function_calling(
