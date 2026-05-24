@@ -209,6 +209,25 @@ class EventBus:
                 self._handlers[event_type].remove(handler)
                 logger.debug(f"Handler removido de {event_type.value}")
 
+    def unsubscribe_all(self, handler: EventHandler) -> bool:
+        """Remove handler wildcard registrado via :meth:`subscribe_all`.
+
+        Issue #295 review (B3): subscribers wildcard que não são removidos
+        após o dispatch terminar acumulam no singleton de processo. Como o
+        EventBus dispara para todos os wildcard handlers a cada evento, o
+        custo cresce O(N) por evento × N dispatches passados que não
+        limparam — efetivamente um vazamento.
+
+        Returns:
+            True se o handler foi removido, False se não estava registrado.
+        """
+        try:
+            self._wildcard_handlers.remove(handler)
+            logger.debug("Handler wildcard removido")
+            return True
+        except ValueError:
+            return False
+
     async def publish(self, event: Event) -> bool:
         """Publica evento no bus
 

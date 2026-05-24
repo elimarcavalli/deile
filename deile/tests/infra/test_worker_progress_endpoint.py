@@ -59,10 +59,27 @@ async def _get(client, path, token=_TOKEN):
 
 
 async def test_progress_404_when_task_unknown(client):
-    resp = await _get(client, "/v1/progress/does-not-exist")
+    # task_id válido (12 chars hex), mas não registrado → 404 NOT_FOUND.
+    resp = await _get(client, "/v1/progress/abcdef012345")
     assert resp.status == 404
     data = await resp.json()
     assert data["error"]["code"] == "NOT_FOUND"
+
+
+async def test_progress_400_when_task_id_invalid_format(client):
+    """M10 (PR #295): task_id fora do formato hex de 12 chars retorna 400 BAD_REQUEST.
+
+    Defende contra path traversal e caracteres inesperados antes de tocar
+    o filesystem ou usar como dict key.
+    """
+    # ``..`` é interceptado pelo router (vira ``/v1/`` → 404) — defesa
+    # em camadas. Os demais alcançam o handler e devem ser rejeitados como
+    # BAD_REQUEST antes de qualquer toque em filesystem.
+    for bad in ("does-not-exist", "abcdef01234", "ABCDEF012345", "abcdef0123456"):
+        resp = await _get(client, f"/v1/progress/{bad}")
+        assert resp.status == 400, f"esperado 400 para task_id={bad!r}"
+        data = await resp.json()
+        assert data["error"]["code"] == "BAD_REQUEST"
 
 
 async def test_progress_401_without_bearer(client):
@@ -77,7 +94,7 @@ async def test_progress_401_with_bad_bearer(client):
 
 async def test_progress_midflight_returns_phase_and_progress_lines(client):
     """Simula uma task em execução escrevendo direto no ``_TASKS`` dict."""
-    task_id = "midflight1234"
+    task_id = "abcdef123456"
     worker_server._TASKS[task_id] = {
         "task_id": task_id,
         "ok": None,
@@ -110,7 +127,7 @@ async def test_progress_midflight_returns_phase_and_progress_lines(client):
 
 async def test_progress_terminal_returns_ok_and_elapsed_frozen(client):
     """Após o término, elapsed_s deve ser o valor gravado (não cresce)."""
-    task_id = "done1234"
+    task_id = "fedcba987654"
     worker_server._TASKS[task_id] = {
         "task_id": task_id,
         "ok": True,
@@ -133,7 +150,7 @@ async def test_progress_terminal_returns_ok_and_elapsed_frozen(client):
 
 async def test_progress_caps_progress_lines_at_30(client):
     """Defensive: o endpoint corta progress_lines em 30 itens (last 30)."""
-    task_id = "many"
+    task_id = "0123456789ab"
     worker_server._TASKS[task_id] = {
         "task_id": task_id,
         "ok": None,
@@ -192,9 +209,69 @@ async def test_evict_noop_when_only_in_flight_tasks():
         worker_server._TASKS_MAX = original_max
 
 
+async def test_result_400_when_task_id_invalid_format(client):
+    """M10 (PR #295): mesmo guard em ``/v1/result/`` — task_id fora do
+    formato hex de 12 chars retorna 400 antes de tocar o filesystem."""
+    resp = await _get(client, "/v1/result/not-hex")
+    assert resp.status == 400
+    data = await resp.json()
+    assert data["error"]["code"] == "BAD_REQUEST"
+
+
+# ── Regression tests para PR #295 review ──────────────────────────────────
+
+
+async def test_bg_dispatch_tasks_set_keeps_strong_ref():
+    """B2 (PR #295 review): tasks geradas em wait=False com create_task DEVEM
+    ser referenciadas em ``_BG_DISPATCH_TASKS`` para evitar coleta pelo GC.
+    Verifica que o set existe e tem o pattern add_done_callback(discard).
+    """
+    import inspect
+
+    src = inspect.getsource(worker_server.dispatch_handler)
+    # Pattern do fix: add ao set + add_done_callback(_BG_DISPATCH_TASKS.discard)
+    assert "_BG_DISPATCH_TASKS.add(" in src
+    assert "_BG_DISPATCH_TASKS.discard" in src
+    # E a estrutura existe:
+    assert isinstance(worker_server._BG_DISPATCH_TASKS, set)
+
+
+async def test_event_bus_unsubscribed_at_dispatch_end():
+    """B3 (PR #295 review): handler subscribe_all deve ser unsubscribed
+    quando a task termina. Verifica via leitura do source code que existe
+    o pattern correto no ``finally``.
+    """
+    import inspect
+
+    src = inspect.getsource(worker_server._run_task)
+    # O fix garante unsubscribe_all no finally do dispatch.
+    assert "unsubscribe_all" in src, (
+        "B3 regression: _run_task deve chamar bus.unsubscribe_all(_on_event) "
+        "no finally para evitar handler leak no EventBus singleton"
+    )
+
+
+async def test_event_bus_unsubscribe_all_removes_handler():
+    """B3 (PR #295 review): EventBus.unsubscribe_all remove o handler do
+    wildcard list — sem isto, handlers stale acumulam no singleton."""
+    from deile.events.event_bus import EventBus
+
+    bus = EventBus()
+
+    async def _h(_evt):
+        return None
+
+    bus.subscribe_all(_h)
+    assert _h in bus._wildcard_handlers
+    assert bus.unsubscribe_all(_h) is True
+    assert _h not in bus._wildcard_handlers
+    # Idempotente: segunda remoção retorna False, não levanta.
+    assert bus.unsubscribe_all(_h) is False
+
+
 async def test_result_strips_internal_keys(client):
     """``GET /v1/result/{id}`` não deve vazar ``_mono_start`` (chave interna)."""
-    task_id = "result-strip"
+    task_id = "aabbccddeeff"
     worker_server._TASKS[task_id] = {
         "task_id": task_id,
         "ok": True,

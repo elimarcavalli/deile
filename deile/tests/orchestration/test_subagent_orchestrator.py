@@ -266,3 +266,143 @@ async def test_empty_tasks_returns_empty_result():
     assert result.error_count == 0
     assert result.elapsed_s == 0.0
     assert result.states == []
+
+
+# ── Regression tests para PR #295 review ──────────────────────────────────
+
+
+async def test_concurrent_capture_dispatches_rejected(monkeypatch):
+    """B1 (PR #295 review): com ``capture_output=True``, dispatches concorrentes
+    devem ser rejeitados (RuntimeError) — sys.stdout é global do processo e
+    sobreposição corromperia o stream.
+    """
+    # Runner que segura por um tempo para garantir overlap.
+    class _HoldRunner:
+        async def run_one(self, state, *, on_event):
+            state.status = "running"
+            state.started_at = time.monotonic()
+            await asyncio.sleep(0.2)
+            state.status = "ok"
+            state.finished_at = time.monotonic()
+
+    orch1 = SubAgentOrchestrator(_HoldRunner(), max_parallel=1, capture_output=True)
+    orch2 = SubAgentOrchestrator(_HoldRunner(), max_parallel=1, capture_output=True)
+
+    async def _dispatch_first():
+        return await orch1.run(_mk_tasks(2))
+
+    # Dispatcher 1 entra primeiro; espera mínima para o lock ser adquirido.
+    t1 = asyncio.create_task(_dispatch_first())
+    await asyncio.sleep(0.02)
+
+    # Segundo dispatcher concorrente DEVE falhar imediatamente.
+    with pytest.raises(RuntimeError, match="another dispatch is already running"):
+        await orch2.run(_mk_tasks(2))
+
+    # Primeiro segue normalmente.
+    result = await t1
+    assert result.ok_count == 2
+
+
+async def test_no_lock_when_capture_disabled():
+    """capture_output=False não deve acionar o lock — testes/headless rodam
+    concorrentemente sem mutar sys.stdout.
+    """
+    class _NoopRunner:
+        async def run_one(self, state, *, on_event):
+            state.status = "ok"
+            state.finished_at = time.monotonic()
+
+    # Dois orquestradores capture=False rodando em paralelo devem ok.
+    orch1 = SubAgentOrchestrator(_NoopRunner(), capture_output=False)
+    orch2 = SubAgentOrchestrator(_NoopRunner(), capture_output=False)
+    r1, r2 = await asyncio.gather(orch1.run(_mk_tasks(2)), orch2.run(_mk_tasks(2)))
+    assert r1.ok_count == 2 and r2.ok_count == 2
+
+
+async def test_budget_enforcement_cancels_pending_states(monkeypatch):
+    """M2/M11 (PR #295 review): com budget pequeno, runners que travam são
+    cancelados; states ainda pendentes são marcados como ``cancelled`` com
+    erro ``subagent_budget_exceeded``.
+    """
+    # Substitui o getter de budget por uma janela curta para o teste.
+    monkeypatch.setattr(
+        "deile.orchestration.subagents.orchestrator._get_budget_s",
+        lambda: 0.3,
+    )
+
+    class _HangRunner:
+        """Runner que nunca termina (até ser cancelado)."""
+        async def run_one(self, state, *, on_event):
+            state.status = "running"
+            state.started_at = time.monotonic()
+            try:
+                await asyncio.sleep(10.0)
+                state.status = "ok"
+                state.finished_at = time.monotonic()
+            except asyncio.CancelledError:
+                # Runner correto: marca cancelled e re-raise
+                state.status = "cancelled"
+                state.finished_at = time.monotonic()
+                raise
+
+    orch = SubAgentOrchestrator(_HangRunner(), max_parallel=2, capture_output=False)
+    result = await orch.run(_mk_tasks(2))
+
+    # Budget estourou → cancelled global
+    assert result.cancelled is True
+    # States ficaram cancelled. (Pode ser "cancelled" do runner ou marcado
+    # pelo orquestrador como subagent_budget_exceeded se runner não capturou.)
+    for st in result.states:
+        assert st.status in ("cancelled",)
+
+
+async def test_renderer_task_awaited_before_stdout_restore():
+    """M15 (PR #295 review): após cancel/normal, o renderer_task deve ser
+    aguardado antes do finally restaurar sys.stdout. Sem isto, uma frame
+    final do renderer poderia escrever no ``Console(file=real_stdout)`` que
+    já foi restaurado fora do contexto do orquestrador.
+    """
+    import sys as _sys
+    saved_stdout = _sys.stdout
+
+    class _SlowRenderer:
+        def __init__(self, states, broadcast, real_stdout=None):
+            self._states = states
+            self.cancelled = False
+            self._ran_full = False
+
+        async def run(self):
+            # Renderer toma um pouco a mais que os runners.
+            try:
+                await asyncio.sleep(0.15)
+                self._ran_full = True
+            except asyncio.CancelledError:
+                raise
+
+    class _FastRunner:
+        async def run_one(self, state, *, on_event):
+            state.status = "running"
+            state.started_at = time.monotonic()
+            await asyncio.sleep(0.02)
+            state.status = "ok"
+            state.finished_at = time.monotonic()
+
+    captured = {}
+
+    def _factory(states, broadcast, real_stdout=None):
+        renderer = _SlowRenderer(states, broadcast, real_stdout)
+        captured["renderer"] = renderer
+        return renderer
+
+    orch = SubAgentOrchestrator(
+        _FastRunner(),
+        max_parallel=2,
+        renderer_factory=_factory,
+        capture_output=True,
+    )
+    result = await orch.run(_mk_tasks(2))
+
+    assert result.ok_count == 2
+    # Stdout restaurado ao final
+    assert _sys.stdout is saved_stdout

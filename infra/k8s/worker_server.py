@@ -124,6 +124,19 @@ _TASK_LOCK = asyncio.Lock()  # MVP: serialize CWD-coupled work
 _AGENT = None
 _AGENT_LOCK = asyncio.Lock()
 
+# B2 (PR #295 review): strong refs para background tasks geradas em
+# ``dispatch_handler`` quando ``wait=False``. ``asyncio.create_task`` mantém
+# apenas weak refs internamente (issue #298); sem capturar a task num
+# container, o GC pode coletá-la a meio caminho. Padrão idêntico ao usado
+# em ``workflow_executor.py`` (``_running_loops``).
+_BG_DISPATCH_TASKS: "set[asyncio.Task]" = set()
+
+# M10 (PR #295 review): task_ids são gerados internamente como
+# ``uuid.uuid4().hex[:12]`` — 12 chars hex. Validamos com regex estrita antes
+# de tocar filesystem ou usar como key, defendendo contra path traversal
+# (`/v1/progress/../../etc/passwd`).
+_TASK_ID_RE = re.compile(r"^[a-f0-9]{12}$")
+
 
 def _evict_old_tasks_if_needed() -> None:
     """Quando ``_TASKS`` excede ``_TASKS_MAX``, descarta as entradas terminais
@@ -534,6 +547,11 @@ async def _run_task(
             # Bug fix: previous code used bus.subscribe(_on_event) (1 arg)
             # but the real signature is subscribe(event_type, handler).
             # Now we use subscribe_all for catch-all + async handler.
+            # B3 (PR #295 review): the handler is later unsubscribed in the
+            # `finally` block — sem isso, dispatches acumulam handlers no
+            # singleton EventBus e o fan-out vira O(N) sob carga.
+            bus = None
+            _on_event = None
             try:
                 from deile.events.event_bus import get_event_bus
                 bus = get_event_bus()
@@ -566,6 +584,8 @@ async def _run_task(
                         pass
             except Exception:
                 logger.debug("event bus hook unavailable", exc_info=True)
+                bus = None
+                _on_event = None
 
             kwargs: Dict[str, Any] = {"session_id": session_id}
             if persona:
@@ -620,6 +640,15 @@ async def _run_task(
             logger.exception("task %s failed", task_id)
             loop_ended = resume.LOOP_ERROR
         finally:
+            # B3 (PR #295 review): desinscreve o handler do EventBus singleton.
+            # Sem isto handlers stale acumulam pinando estado (memory leak +
+            # O(N) por evento × N dispatches passados).
+            if bus is not None and _on_event is not None:
+                try:
+                    if hasattr(bus, "unsubscribe_all"):
+                        bus.unsubscribe_all(_on_event)
+                except Exception:  # noqa: BLE001 — cleanup never breaks dispatch
+                    logger.debug("event bus unsubscribe failed", exc_info=True)
             # Resume bookkeeping (issue #254) — computed WHILE cwd is still the
             # workspace so git sees ``./repo``. Wrapped so a failure here never
             # breaks the dispatch; on the non-pipeline path it is a no-op.
@@ -796,12 +825,23 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                     "task_id": task_id, "ok": False,
                     "error": f"{type(exc).__name__}: {exc}",
                 }
-        asyncio.create_task(_bg())
+        # B2 (PR #295 review): guarda strong ref para a task em background.
+        # asyncio mantém apenas weak refs internamente; sem o set + callback,
+        # o GC pode coletar a task antes de ela completar.
+        bg_task = asyncio.create_task(_bg())
+        _BG_DISPATCH_TASKS.add(bg_task)
+        bg_task.add_done_callback(_BG_DISPATCH_TASKS.discard)
         return web.json_response({"task_id": task_id, "status": "running"}, status=202)
 
 
 async def result_handler(request: web.Request) -> web.Response:
     task_id = request.match_info["task_id"]
+    # M10 (PR #295 review): valida task_id ANTES de tocar filesystem.
+    if not _TASK_ID_RE.match(task_id):
+        return web.json_response(
+            {"error": {"code": "BAD_REQUEST", "message": "invalid task_id format"}},
+            status=400,
+        )
     state = _TASKS.get(task_id)
     if state is None:
         # Try to load from disk (PVC persists results across restarts).
@@ -831,6 +871,14 @@ async def progress_handler(request: web.Request) -> web.Response:
     completo via ``/v1/result/{task_id}``.
     """
     task_id = request.match_info["task_id"]
+    # M10 (PR #295 review): valida task_id ANTES de tocar filesystem ou
+    # usar como key. Defende contra path traversal (`../etc/passwd`) e
+    # caracteres inesperados que poderiam crashar o JSON loader.
+    if not _TASK_ID_RE.match(task_id):
+        return web.json_response(
+            {"error": {"code": "BAD_REQUEST", "message": "invalid task_id format"}},
+            status=400,
+        )
     state = _TASKS.get(task_id)
     if state is None:
         # Tarefa pode ter sido completada e despejada em disco no .results;
