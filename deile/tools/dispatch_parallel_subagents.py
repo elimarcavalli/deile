@@ -38,12 +38,13 @@ import contextvars
 import logging
 import time
 from collections import OrderedDict
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from deile.config.settings import get_settings
 from deile.orchestration.subagents import (HISTORY_MARKER_KEY,
                                            SubAgentOrchestrator, SubAgentTask,
                                            resolve_runner)
+from deile.orchestration.subagents._loop_lock import LoopBoundLock
 from deile.orchestration.subagents.events import SubAgentState
 from deile.orchestration.subagents.orchestrator import _get_budget_s
 
@@ -105,16 +106,11 @@ class DispatchParallelSubagentsTool(Tool):
     # de 256 evita o problema sem custar mais que O(1) por acesso.
     _SESSION_LOCKS: "OrderedDict[str, asyncio.Lock]" = OrderedDict()
     _SESSION_LOCKS_MAX: int = 256
-    # MA5 (iter 2 review): lock-guarda é lazy-inicializado por event-loop —
-    # ``asyncio.Lock()`` em escopo de classe ficaria bound ao loop do primeiro
-    # ``__aenter__``, quebrando em testes / processos que usam múltiplos
-    # ``asyncio.run()`` invocados em loops distintos.
-    #
-    # NT1 (iter-3 review): trocamos a inspeção de ``getattr(lock, "_loop", ...)``
-    # (CPython-private) por rastreio explícito do ``id(loop)`` que criou o lock.
-    # Mesma semântica, sem depender de API interna que pode mudar entre versões.
-    _SESSION_LOCKS_GUARD: Optional[asyncio.Lock] = None
-    _SESSION_LOCKS_GUARD_LOOP_ID: Optional[int] = None
+    # MA5 (iter 2 review) + NT1 (iter-3 review): lock-guarda lazy-inicializado
+    # por event loop, com rastreio explícito de ``id(loop)``. Lógica
+    # encapsulada em :class:`LoopBoundLock` (compartilhada com
+    # ``SubAgentOrchestrator._get_capture_lock``).
+    _SESSION_LOCKS_GUARD_HOLDER: LoopBoundLock = LoopBoundLock()
 
     @property
     def name(self) -> str:
@@ -455,34 +451,12 @@ class DispatchParallelSubagentsTool(Tool):
     def _get_locks_guard(cls) -> asyncio.Lock:
         """Lazy-init do lock-guarda por event loop (MA5 — iter-2 review).
 
-        ``asyncio.Lock()`` em escopo de classe ``binda`` ao loop do primeiro
-        ``__aenter__``; uso em múltiplos loops (testes, ``asyncio.run`` repetido)
-        levanta ``RuntimeError: ... is bound to a different event loop``.
-        Resolve criando o lock no primeiro acesso *do loop corrente* e
-        re-criando se o loop mudou.
-
-        NT1 (iter-3 review): em vez de inspecionar ``Lock._loop`` (API privada
-        do CPython, sem garantia de estabilidade entre versões), guardamos o
-        ``id(loop)`` que originalmente criou o lock e comparamos com o ``id``
-        do loop corrente. Mesma semântica, sem depender de internals.
+        Delega a :class:`LoopBoundLock`, que cria/troca o Lock conforme o
+        loop muda — evitando ``RuntimeError: ... is bound to a different
+        event loop`` em múltiplos ``asyncio.run()`` (testes loop-per-test,
+        CLI ``_run_self_install`` + ``_run_oneshot``).
         """
-        try:
-            loop = asyncio.get_running_loop()
-            loop_id: Optional[int] = id(loop)
-        except RuntimeError:  # pragma: no cover — chamado fora de async
-            loop_id = None
-        needs_new = cls._SESSION_LOCKS_GUARD is None
-        if (
-            not needs_new
-            and loop_id is not None
-            and cls._SESSION_LOCKS_GUARD_LOOP_ID is not None
-            and cls._SESSION_LOCKS_GUARD_LOOP_ID != loop_id
-        ):
-            needs_new = True
-        if needs_new:
-            cls._SESSION_LOCKS_GUARD = asyncio.Lock()
-            cls._SESSION_LOCKS_GUARD_LOOP_ID = loop_id
-        return cls._SESSION_LOCKS_GUARD
+        return cls._SESSION_LOCKS_GUARD_HOLDER.get()
 
     @classmethod
     async def _get_session_lock(cls, session_id: str) -> asyncio.Lock:

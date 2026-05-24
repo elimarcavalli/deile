@@ -440,8 +440,7 @@ def test_lazy_capture_lock_per_event_loop():
         return await orch.run(_mk_tasks(2))
 
     # Limpa qualquer lock-state prévio de outro teste.
-    SubAgentOrchestrator._CAPTURE_LOCK = None
-    SubAgentOrchestrator._CAPTURE_LOCK_LOOP_ID = None
+    SubAgentOrchestrator._CAPTURE_LOCK_HOLDER.reset()
 
     # Rodar em dois loops sucessivos — antes seria RuntimeError no segundo.
     r1 = asyncio.run(_scenario())

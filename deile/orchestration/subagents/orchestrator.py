@@ -43,6 +43,7 @@ from typing import Any, Callable, ClassVar, List, Literal, Optional, TextIO
 
 from deile.config.settings import get_settings
 
+from ._loop_lock import LoopBoundLock
 from .events import SubAgentEvent, SubAgentState, SubAgentTask
 from .runner import SubAgentRunner
 
@@ -335,9 +336,10 @@ class SubAgentOrchestrator:
     #
     # NT1 (iter-3 review): rastreamos o ``id(loop)`` que originalmente criou
     # o lock em vez de inspecionar ``Lock._loop`` (CPython-private). Mesma
-    # semântica, sem depender de API interna instável.
-    _CAPTURE_LOCK: ClassVar[Optional[asyncio.Lock]] = None
-    _CAPTURE_LOCK_LOOP_ID: ClassVar[Optional[int]] = None
+    # semântica, sem depender de API interna instável. Lógica encapsulada
+    # em :class:`LoopBoundLock` (compartilhada com
+    # ``DispatchParallelSubagentsTool._get_locks_guard``).
+    _CAPTURE_LOCK_HOLDER: ClassVar[LoopBoundLock] = LoopBoundLock()
 
     def __init__(
         self,
@@ -354,34 +356,14 @@ class SubAgentOrchestrator:
 
     @classmethod
     def _get_capture_lock(cls) -> asyncio.Lock:
-        """Lazy-init do ``_CAPTURE_LOCK`` por event loop (MA5 — iter-2).
+        """Lazy-init do lock de captura por event loop (MA5 — iter-2).
 
-        Cria o lock no primeiro uso; recria se o loop atual é diferente do
-        que originalmente bindou o lock anterior. Garante que múltiplos
-        ``asyncio.run()`` independentes (CLI sub-comandos, pytest loop-per-
-        test) não esbarrem em ``RuntimeError: bound to a different loop``.
-
-        NT1 (iter-3 review): rastreia o ``id(loop)`` em vez de inspecionar
-        ``Lock._loop`` (API privada do CPython). Mesma semântica, sem
-        depender de internals que podem mudar entre versões.
+        Delega a :class:`LoopBoundLock`, que cria/troca o Lock conforme o
+        loop muda — evitando ``RuntimeError: ... is bound to a different
+        event loop`` em múltiplos ``asyncio.run()`` (CLI sub-comandos,
+        pytest loop-per-test).
         """
-        try:
-            loop = asyncio.get_running_loop()
-            loop_id: Optional[int] = id(loop)
-        except RuntimeError:  # pragma: no cover — só chamado de async
-            loop_id = None
-        needs_new = cls._CAPTURE_LOCK is None
-        if (
-            not needs_new
-            and loop_id is not None
-            and cls._CAPTURE_LOCK_LOOP_ID is not None
-            and cls._CAPTURE_LOCK_LOOP_ID != loop_id
-        ):
-            needs_new = True
-        if needs_new:
-            cls._CAPTURE_LOCK = asyncio.Lock()
-            cls._CAPTURE_LOCK_LOOP_ID = loop_id
-        return cls._CAPTURE_LOCK
+        return cls._CAPTURE_LOCK_HOLDER.get()
 
     async def run(self, tasks: List[SubAgentTask]) -> SubAgentResult:
         """Dispara ``tasks`` em paralelo e devolve o estado final agregado.
