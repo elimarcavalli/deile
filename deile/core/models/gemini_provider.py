@@ -93,6 +93,35 @@ class GeminiProvider(ModelProvider):
 
         return handle, gemini_config, api_key
 
+    @staticmethod
+    def build_file_attachment_part(
+        file_uri: str,
+        mime_type: str = "text/plain",
+        name: Optional[str] = None,
+    ) -> Any:
+        """Build a Gemini ``File`` part for a file attachment.
+
+        Encapsulates the ``google.genai.types.File(...)`` construction so callers
+        in ``deile/core/`` do not need to import the Gemini SDK directly
+        (Clean Architecture: SDK adapters belong to ``deile/core/models/``).
+
+        Args:
+            file_uri: URI returned by the Gemini File API upload (e.g.
+                ``files/abc123``).
+            mime_type: MIME type of the file; defaults to ``text/plain``.
+            name: Optional file name; defaults to the last path component of
+                ``file_uri``.
+
+        Returns:
+            A ``google.genai.types.File`` instance suitable for appending to a
+            multimodal message payload.
+        """
+        return types.File(
+            name=name if name is not None else file_uri.split("/")[-1],
+            uri=file_uri,
+            mime_type=mime_type,
+        )
+
     def __init__(
         self,
         gemini_config=None,
