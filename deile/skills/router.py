@@ -7,7 +7,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Any, Iterable, List, Optional
 
 from .base import Skill
 from .language_detector import LanguageDetector
@@ -69,6 +69,35 @@ def _matches_keywords(keywords: Iterable[str], user_input: str) -> bool:
     return False
 
 
+def _resolve_within(ref: str, project_root: Path) -> Optional[Path]:
+    """Resolve *ref* into an absolute path that stays inside *project_root*.
+
+    Returns ``None`` when the resolved path is outside the project root
+    (a defense against a malicious skill frontmatter trying to use
+    ``file_content_patterns`` to probe ``/etc/passwd`` via a crafted
+    ``file_reference`` value). The check tolerates the case where
+    *project_root* itself does not exist (legitimate during tests).
+    """
+    path = Path(ref)
+    if not path.is_absolute():
+        path = project_root / path
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError):
+        return None
+    try:
+        root_resolved = project_root.resolve()
+    except (OSError, RuntimeError):
+        # If the project root does not exist, fall back to a no-containment
+        # check — we cannot prove the path is "inside" something undefined.
+        return resolved
+    try:
+        resolved.relative_to(root_resolved)
+    except ValueError:
+        return None
+    return resolved
+
+
 def _matches_file_content(
     patterns: Iterable[str],
     file_refs: Iterable[str],
@@ -81,6 +110,8 @@ def _matches_file_content(
     same file across multiple skills in a single ``select_skills`` call.
     Patterns that fail to compile are skipped with a logged warning so a
     single bad regex does not break trigger evaluation for other skills.
+    Files outside *project_root* are silently ignored — see
+    :func:`_resolve_within`.
     """
     pattern_list = list(patterns)
     if not pattern_list:
@@ -93,24 +124,35 @@ def _matches_file_content(
         try:
             compiled.append(re.compile(raw, re.MULTILINE))
         except re.error as exc:
-            logger.warning("skills: invalid file_content_pattern %r: %s — skipped", raw, exc)
+            logger.warning(
+                "skills: invalid file_content_pattern %r: %s — pattern skipped",
+                raw, exc,
+            )
     if not compiled:
         return False
 
     for ref in file_refs:
         if not ref:
             continue
-        path = Path(ref)
-        if not path.is_absolute():
-            path = project_root / path
-        key = str(path)
+        resolved = _resolve_within(ref, project_root)
+        if resolved is None:
+            logger.debug(
+                "skills: file_content trigger ignoring out-of-root reference %r",
+                ref,
+            )
+            continue
+        key = str(resolved)
         if key in cache:
             sample = cache[key]
         else:
             try:
-                with open(path, "rb") as fh:
+                with open(resolved, "rb") as fh:
                     raw_bytes = fh.read(_FILE_CONTENT_SAMPLE_BYTES)
-            except (OSError, IsADirectoryError):
+            except (OSError, IsADirectoryError) as exc:
+                logger.debug(
+                    "skills: cannot read %s for file_content trigger (%s); skipped",
+                    resolved, exc,
+                )
                 cache[key] = ""
                 continue
             sample = raw_bytes.decode("utf-8", errors="replace")
@@ -143,6 +185,12 @@ class SkillRouter:
         self._detector = language_detector or LanguageDetector()
         self._max = max_skills_per_turn
         self._project_root = project_root or Path.cwd()
+        # Optional handle to a running ``SkillsWatcher`` — set by
+        # :func:`bootstrap_skills` when hot-reload is enabled. Callers that
+        # need to ``stop()`` the watcher on shutdown can reach it here
+        # without us cluttering the constructor signature for the common
+        # (no-watcher) case.
+        self.watcher: Optional[Any] = None
 
     def select_skills(self, context: SkillSelectionContext) -> List[Skill]:
         """Return the skills whose triggers fire, capped at ``max_skills_per_turn``."""
@@ -204,6 +252,15 @@ class SkillRouter:
         *exclude_names* so they are not listed twice. The catalog tells the
         LLM what's available; it can call the ``invoke_skill`` tool with one
         of these names to pull the full body on demand.
+
+        The top of the block is a hard directive — empirical testing
+        (commit 25b2cd7) showed that a plain list of "Available skills"
+        was not enough for the LLM to spontaneously call ``invoke_skill``
+        even when the question matched a skill's topic, because the
+        inference jump from "this question is about X" to "skill Y covers
+        X — let me load it" is bigger than the literal mapping
+        ``read_file`` → "read this file". The directive primes the LLM
+        to actively consult relevant skills before answering.
         """
         excluded = set(exclude_names)
         skills = [s for s in self._registry.list_all() if s.name not in excluded]
@@ -212,7 +269,22 @@ class SkillRouter:
         skills.sort(key=lambda s: s.name)
 
         lines: List[str] = [
-            "## Available Skills (load on demand via `invoke_skill`)",
+            "## Available Skills",
+            "",
+            "**Before answering any question, check whether one of the skills below "
+            "covers the topic.** Each skill contains project-specific rules that "
+            "OVERRIDE generic knowledge from your training. To consult one, call "
+            "the `invoke_skill` tool with its name — do this BEFORE writing your "
+            "answer, not after. Failing to consult an applicable skill is a "
+            "regression: the user added these skills precisely so you would use "
+            "them.",
+            "",
+            "Concrete example: if the user asks _\"how should I handle X in "
+            "<topic>?\"_ and a skill named `<topic>` is listed below, your first "
+            "action MUST be `invoke_skill(name=\"<topic>\")` — even if you think "
+            "you already know the answer. Read the returned body, THEN answer.",
+            "",
+            "Catalog (`name` — description — _trigger hint_):",
             "",
         ]
         for skill in skills:

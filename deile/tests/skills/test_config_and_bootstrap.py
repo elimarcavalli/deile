@@ -20,9 +20,12 @@ def _reset_registry():
 
 @pytest.mark.unit
 class TestLoadSkillsConfig:
-    def test_missing_file_yields_disabled(self, tmp_path: Path) -> None:
+    def test_missing_file_yields_enabled_defaults(self, tmp_path: Path) -> None:
+        # Bullet-proofing fix: a missing skills.yaml no longer silently
+        # disables the whole subsystem. Defaults take over. See
+        # ``test_bulletproofing.TestConfigDefaults`` for the full contract.
         cfg = load_skills_config(tmp_path / "absent.yaml")
-        assert cfg.enabled is False
+        assert cfg.enabled is True
 
     def test_valid_yaml_round_trips_all_fields(self, tmp_path: Path) -> None:
         f = tmp_path / "skills.yaml"

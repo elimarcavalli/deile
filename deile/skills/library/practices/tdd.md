@@ -1,9 +1,10 @@
 ---
 name: tdd
-description: Test-Driven Development cycle and fixture/mocking patterns
+description: Project-specific TDD rules — the red-green-refactor cycle, test-isolation patterns, fixture/mocking guidance, and when to write tests first vs last for this codebase
 triggers:
   file_globs: ["test_*.py", "*_test.py", "*.test.ts", "*.spec.ts", "*.spec.js"]
   code_block_langs: []
+  keywords: ["TDD", "test-driven", "red green refactor", "test first", "write a test"]
 priority: 40
 ---
 # TDD discipline

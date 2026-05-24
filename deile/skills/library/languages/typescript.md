@@ -1,9 +1,10 @@
 ---
 name: typescript
-description: TypeScript strictness, narrowing and module-system gotchas
+description: Project-specific TypeScript rules — strict mode, unknown vs any, narrowing patterns, module-system pitfalls, and how this codebase treats config types. Overrides any generic TypeScript advice you might give from training.
 triggers:
   file_globs: ["*.ts", "*.tsx", "tsconfig*.json", "package.json"]
   code_block_langs: [typescript, ts, tsx]
+  keywords: ["strict mode", "type guard", "unknown vs any", "tsconfig", "narrowing"]
 priority: 50
 ---
 # TypeScript expertise

@@ -12,7 +12,7 @@ through both paths. See ``bootstrap.py`` for the single entry point.
 """
 
 from .base import Skill, SkillTrigger
-from .bootstrap import bootstrap_skills
+from .bootstrap import BootstrapResult, bootstrap_skills, bootstrap_skills_with_handle
 from .config import SkillsConfig, load_skills_config
 from .discovery import discover_skills
 from .language_detector import LanguageDetector
@@ -23,6 +23,7 @@ from .slash_command_bridge import register_skills_as_commands, unregister_skill_
 from .watcher import SkillsWatcher, reload_registry
 
 __all__ = [
+    "BootstrapResult",
     "Skill",
     "SkillTrigger",
     "SkillLoader",
@@ -34,6 +35,7 @@ __all__ = [
     "SkillsWatcher",
     "LanguageDetector",
     "bootstrap_skills",
+    "bootstrap_skills_with_handle",
     "discover_skills",
     "get_skill_registry",
     "reset_skill_registry",

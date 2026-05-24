@@ -133,6 +133,11 @@ class InvokeSkillTool(Tool):
             )
         )
 
+    # Maximum number of skill names listed in the "not found" error message.
+    # An LLM that mistypes a name can recover from a short list; flooding the
+    # error with hundreds of names just buries the signal and wastes tokens.
+    _NAME_LIST_CAP = 25
+
     async def execute(self, context: ToolContext) -> ToolResult:
         name = context.parsed_args.get("name")
         if not isinstance(name, str) or not name.strip():
@@ -141,17 +146,25 @@ class InvokeSkillTool(Tool):
             )
 
         registry = get_skill_registry()
-        skill = registry.get(name.strip())
+        clean_name = name.strip()
+        skill = registry.get(clean_name)
         if skill is None:
-            available = ", ".join(registry.list_names()) or "(none loaded)"
+            all_names = registry.list_names()
+            if not all_names:
+                hint = "(no skills are loaded)"
+            elif len(all_names) <= self._NAME_LIST_CAP:
+                hint = ", ".join(all_names)
+            else:
+                head = ", ".join(all_names[: self._NAME_LIST_CAP])
+                hint = f"{head}, … (+{len(all_names) - self._NAME_LIST_CAP} more — call `list_skills` for the full catalog)"
             return ToolResult.error_result(
-                message=(
-                    f"Skill '{name}' is not registered. Available skills: "
-                    f"{available}"
-                ),
+                message=f"Skill '{clean_name}' is not registered. Available skills: {hint}",
             )
 
-        logger.debug("skill_tools: invoke_skill('%s') served (source=%s)", name, skill.source)
+        logger.debug(
+            "skill_tools: invoke_skill('%s') served (source=%s)",
+            clean_name, skill.source,
+        )
         return ToolResult.success_result(
             data={
                 "name": skill.name,

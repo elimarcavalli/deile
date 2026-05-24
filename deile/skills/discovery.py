@@ -91,8 +91,17 @@ def discover_skills_sync(
         for md_path in sorted(entry.directory.rglob("*.md")):
             try:
                 text = md_path.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError) as exc:
-                logger.warning("Cannot read skill file %s: %s", md_path, exc)
+            except OSError as exc:
+                logger.warning(
+                    "skills: cannot read skill file %s (%s: %s); skipped",
+                    md_path, type(exc).__name__, exc,
+                )
+                continue
+            except UnicodeDecodeError as exc:
+                logger.warning(
+                    "skills: skill file %s is not valid UTF-8 (%s); skipped",
+                    md_path, exc,
+                )
                 continue
             skill = parse_skill_text(
                 text,

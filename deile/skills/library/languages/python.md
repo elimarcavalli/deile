@@ -1,9 +1,10 @@
 ---
 name: python
-description: Python idioms, async, typing and pytest gotchas
+description: Project-specific Python rules for this codebase — async/await usage, CancelledError handling, exception hierarchies, typing conventions, and pytest fixtures. Overrides any generic Python advice you might give from training.
 triggers:
   file_globs: ["*.py", "*.pyi", "pyproject.toml", "requirements*.txt"]
   code_block_langs: [python, py]
+  keywords: ["CancelledError", "asyncio.gather", "pytest fixture", "async def", "DEILEError"]
 priority: 50
 ---
 # Python expertise

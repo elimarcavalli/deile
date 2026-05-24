@@ -34,7 +34,11 @@ from .base import Skill, SkillTrigger
 
 logger = logging.getLogger(__name__)
 
-_FRONTMATTER_RE = re.compile(r"^---[ \t]*\n(.*?)\n---[ \t]*\n", re.DOTALL)
+# Accept both Unix (LF) and Windows (CRLF) line endings. The pattern was
+# previously Unix-only, so a skill file saved by a Windows editor (or by a
+# git config with ``core.autocrlf=true``) would silently lose its
+# frontmatter parsing and fall back to "stem = name, body = whole text".
+_FRONTMATTER_RE = re.compile(r"^---[ \t]*\r?\n(.*?)\r?\n---[ \t]*\r?\n", re.DOTALL)
 _VALID_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\-]{0,63}$")
 
 
@@ -124,11 +128,25 @@ def parse_skill_text(
     triggers = _build_trigger(frontmatter.get("triggers"), source_path)
 
     priority_raw = frontmatter.get("priority", 0)
-    try:
-        priority = int(priority_raw)
-    except (TypeError, ValueError):
-        logger.warning("Skill file %s: 'priority' must be an integer — defaulting to 0", source_path)
+    # Reject bools explicitly — ``isinstance(True, int)`` is True in Python,
+    # so ``int(True)`` happily returns 1. That would silently coerce
+    # ``priority: yes`` (which YAML 1.1 reads as True) into priority 1,
+    # which is not what the skill author meant. Same for ``priority: no``.
+    if isinstance(priority_raw, bool) or not isinstance(priority_raw, (int, float, str)):
+        logger.warning(
+            "Skill file %s: 'priority' must be an integer (got %s: %r); defaulting to 0",
+            source_path, type(priority_raw).__name__, priority_raw,
+        )
         priority = 0
+    else:
+        try:
+            priority = int(priority_raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Skill file %s: 'priority' is not parseable as int (%r); defaulting to 0",
+                source_path, priority_raw,
+            )
+            priority = 0
 
     return Skill(
         name=name,

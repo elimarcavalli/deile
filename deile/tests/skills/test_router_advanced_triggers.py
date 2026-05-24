@@ -176,6 +176,21 @@ class TestRenderCatalog:
         assert "`python`" in out
         assert "`tdd`" in out
 
+    def test_catalog_includes_invocation_directive(self) -> None:
+        # The directive that tells the LLM to call invoke_skill BEFORE
+        # answering — without it, the LLM tends to skip the catalog. Verified
+        # empirically (commit 25b2cd7) against deepseek-v4-flash. Removing
+        # this string is a regression.
+        reg = SkillRegistry()
+        reg.register(_skill("python", file_globs=["*.py"]))
+        router = SkillRouter(reg)
+
+        out = router.render_catalog()
+        assert "invoke_skill" in out
+        assert "BEFORE" in out
+        # And it has to make clear these override generic knowledge.
+        assert "OVERRIDE" in out or "override" in out
+
     def test_excludes_named_skills(self) -> None:
         reg = SkillRegistry()
         reg.register(_skill("python", file_globs=["*.py"]))

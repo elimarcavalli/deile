@@ -37,22 +37,48 @@ class SkillsConfig:
 def load_skills_config(path: Optional[Path] = None) -> SkillsConfig:
     """Read *path* (or the bundled default) and return a ``SkillsConfig``.
 
-    A missing or unreadable file degrades gracefully to a config with
-    ``enabled=False`` so a broken YAML never crashes the agent on startup.
+    Fallback semantics:
+
+    - **Missing file** → defaults (``enabled=True``). The skills system is
+      built to ship with sensible defaults, so the absence of a YAML
+      override is not a reason to turn the whole subsystem off.
+    - **Unreadable file** (permissions, I/O error) → defaults + WARNING log.
+      Same reasoning: the user intends skills to work and was not asked to
+      provide this file.
+    - **Malformed YAML** → ``enabled=False`` + WARNING log. A broken YAML is
+      a deliberate configuration that the user wrote and got wrong; turning
+      the subsystem off avoids silently ignoring intent.
+    - **Non-mapping root** (e.g. YAML list) → ``enabled=False`` + WARNING log.
+      Same reason as malformed YAML.
     """
     config_path = path or _DEFAULT_CONFIG_PATH
     if not config_path.exists():
-        logger.debug("skills: config file not found at %s; skills disabled", config_path)
-        return SkillsConfig(enabled=False)
+        logger.debug("skills: config file not found at %s; using defaults", config_path)
+        return SkillsConfig()
 
     try:
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError) as exc:
-        logger.warning("skills: cannot read %s (%s); skills disabled", config_path, exc)
+    except OSError as exc:
+        logger.warning(
+            "skills: cannot read %s (%s); using defaults instead",
+            config_path,
+            exc,
+        )
+        return SkillsConfig()
+    except yaml.YAMLError as exc:
+        logger.warning(
+            "skills: %s is malformed YAML (%s); subsystem disabled — fix the file to re-enable",
+            config_path,
+            exc,
+        )
         return SkillsConfig(enabled=False)
 
     if not isinstance(raw, dict):
-        logger.warning("skills: %s is not a YAML mapping; skills disabled", config_path)
+        logger.warning(
+            "skills: %s root is %s, expected a YAML mapping; subsystem disabled",
+            config_path,
+            type(raw).__name__,
+        )
         return SkillsConfig(enabled=False)
 
     enabled = bool(raw.get("enabled", True))

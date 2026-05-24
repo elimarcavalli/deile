@@ -2601,10 +2601,15 @@ class DeileAgent:
             self.command_registry.auto_discover_builtin_commands()
             self.command_registry.load_commands_from_config()
 
-            # Load user/project skills as slash commands
+            # Load user/project skills as slash commands AND start hot-reload.
+            # The unified skills subsystem owns both — keeping them wired in
+            # one place ensures the watcher and the slash-command bridge see
+            # the exact same scan order.
             try:
                 from ..commands.settings_manager import SettingsManager
                 from ..commands.skill_loader import SkillLoader
+                from ..skills.watcher import SkillsWatcher
+
                 project_dir = getattr(self.settings, "working_directory", None)
                 _settings_mgr = SettingsManager(
                     project_dir=Path(project_dir) if project_dir else None
@@ -2617,12 +2622,10 @@ class DeileAgent:
                 # Store for hot-reload via /skills add|remove
                 self._skill_loader = skill_loader
 
-                # Start the filesystem watcher so dropping a new *.md into
-                # any of the scanned directories refreshes the registry
-                # without an agent restart. Failures here are non-fatal —
-                # the agent still works without hot-reload.
+                # The watcher uses the SAME extras the loader saw, so a path
+                # added via /skills add is watched too. Failures here are
+                # non-fatal — the agent still works without hot-reload.
                 try:
-                    from ..skills.watcher import SkillsWatcher
                     self._skills_watcher = SkillsWatcher(
                         project_dir=Path(project_dir) if project_dir else None,
                         extra_paths=[
