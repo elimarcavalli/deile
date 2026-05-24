@@ -267,6 +267,7 @@ Tutorial passo-a-passo, troubleshooting, modelo de ameaça e operação:
 | 🛠️ REGISTRO     | Extensível de ferramentas     | `deile/tools/registry.py`                                                         |
 | 📜 COMANDOS      | Slash registráveis            | `deile/commands/registry.py`, `commands/builtin/`                                 |
 | 🎭 PERSONAS      | Dinâmicas via YAML+Markdown   | `deile/personas/library/`, `deile/personas/instructions/`                         |
+| 🧩 SKILLS        | MD-driven, hot-reload, 4 triggers, `invoke_skill` tool | `deile/skills/`, `deile/tools/skill_tools.py`              |
 | 🧠 MEMÓRIA       | Quatro camadas                | `deile/memory/*.py`                                                               |
 | 🔒 PERMISSÕES    | Auditoria e scan de segredos  | `deile/security/*.py`                                                             |
 | 💾 PERSISTÊNCIA  | SQLite (tasks + uso)          | `deile/orchestration/sqlite_task_manager.py`, `deile/storage/usage_repository.py` |
@@ -278,7 +279,7 @@ Tutorial passo-a-passo, troubleshooting, modelo de ameaça e operação:
 
 ## 🏗️ Arquitetura e camadas
 
-DEILE segue arquitetura por camadas, com registries para artefatos extensíveis (tools, commands, parsers, personas).
+DEILE segue arquitetura por camadas, com registries para artefatos extensíveis (tools, commands, parsers, personas, skills).
 
 
 | Camada                 | Pacote                             | Responsabilidade                                     |
@@ -411,6 +412,45 @@ Personas MD-driven:
 - 🛠️ Infra (`deile/personas/`): loader, builder, manager, etc.
 
 Modificar `instructions/*.md` altera o comportamento sem tocar em Python. Os YAMLs definem nome/persona_id/capacidades.
+
+---
+
+## 🧩 Sistema de skills
+
+Skills são unidades composáveis de expertise em Markdown puro (sem código). Vivem em cinco diretórios escaneados em ordem de prioridade crescente (override em colisão de nome):
+
+1. `deile/skills/library/` — bundled (vai no repo)
+2. `~/.deile/skills/` — pessoal, em qualquer projeto seu
+3. `~/.claude/commands/` — compat Claude Code (nome vira UPPERCASE)
+4. `<cwd>/.deile/skills/` — específica do projeto, versionada no git
+5. `<cwd>/.claude/commands/` — projeto + compat Claude Code
+6. Extras configurados via `/skills add <path> [--scope global|project]`
+
+Cada skill tem três caminhos de ativação:
+
+- **Auto-injeção** no system prompt do turno quando uma `trigger` casa: glob de arquivo, code-block fence, keyword (word-boundary), ou regex em conteúdo de arquivo (4 KiB de sample, contido ao `project_root`)
+- **Function-call tools** `invoke_skill(name)` e `list_skills` — o LLM enxerga o catálogo no system prompt e pode puxar uma skill que não disparou por trigger
+- **Slash command** `/<name>` — invocação explícita pelo usuário
+
+Hot-reload via `watchdog`: dropar um `.md` num dos diretórios refresca o registry em 0,5 s, sem reiniciar o agente.
+
+Formato:
+
+```markdown
+---
+name: rust
+description: Regras do projeto sobre Rust — ownership, async/Tokio. Sobrescreve conselho genérico.
+triggers:
+  file_globs: ["*.rs", "Cargo.toml"]
+  code_block_langs: [rust]
+  keywords: ["ownership", "tokio"]
+  file_content_patterns: ['^use tokio::']
+priority: 50
+---
+# Body em Markdown puro — entra no prompt ou é devolvido por invoke_skill.
+```
+
+Bundled out-of-the-box: `python`, `typescript`, `tdd`. Detalhes em [`docs/system_design/04-MODELO-COMPONENTES.md`](docs/system_design/04-MODELO-COMPONENTES.md) e template em [`docs/system_design/12-PADROES-CODIGO.md`](docs/system_design/12-PADROES-CODIGO.md). Decisão #34 em [`docs/system_design/DECISOES.md`](docs/system_design/DECISOES.md).
 
 ---
 
