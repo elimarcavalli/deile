@@ -48,6 +48,8 @@ from deile.orchestration.subagents._loop_lock import LoopBoundLock
 from deile.orchestration.subagents.events import SubAgentState
 from deile.orchestration.subagents.orchestrator import _get_budget_s
 
+from ._dispatch_cooldown import (is_in_cooldown, prune_expired,
+                                 record_dispatch)
 from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
                    ToolSchema)
 
@@ -236,8 +238,11 @@ class DispatchParallelSubagentsTool(Tool):
             async with session_lock:
                 now = time.monotonic()
                 self._prune_expired(now)
-                last = self._LAST_DISPATCH.get(session_id)
-                if last is not None and (now - last) < self._DISPATCH_COOLDOWN_S:
+                if is_in_cooldown(
+                    self._LAST_DISPATCH, session_id,
+                    self._DISPATCH_COOLDOWN_S, now,
+                ):
+                    last = self._LAST_DISPATCH[session_id]
                     remaining = self._DISPATCH_COOLDOWN_S - (now - last)
                     return ToolResult.error_result(
                         f"dispatch_parallel_subagents já foi chamado há {now-last:.0f}s; "
@@ -246,7 +251,7 @@ class DispatchParallelSubagentsTool(Tool):
                         f"diferente.",
                         error_code="DISPATCH_COOLDOWN",
                     )
-                self._LAST_DISPATCH[session_id] = now
+                record_dispatch(self._LAST_DISPATCH, session_id, now)
 
             # Resolve agent + runner + orquestrador.
             agent = context.session_data.get("_agent")
@@ -443,9 +448,7 @@ class DispatchParallelSubagentsTool(Tool):
     @classmethod
     def _prune_expired(cls, now: float) -> None:
         cutoff = cls._DISPATCH_COOLDOWN_S * 10
-        stale = [sid for sid, ts in cls._LAST_DISPATCH.items() if (now - ts) > cutoff]
-        for sid in stale:
-            cls._LAST_DISPATCH.pop(sid, None)
+        prune_expired(cls._LAST_DISPATCH, cutoff, now)
 
     @classmethod
     def _get_locks_guard(cls) -> asyncio.Lock:
