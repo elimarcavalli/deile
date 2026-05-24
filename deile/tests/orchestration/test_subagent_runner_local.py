@@ -134,6 +134,21 @@ async def test_exception_caught_and_marked_error_without_propagating():
     assert any(e.kind is SubAgentEventKind.FAILED for e in captured)
 
 
+async def test_skip_autonomous_kwarg_is_passed_to_agent():
+    """Bug A (issue #257 round 4): sem ``_skip_autonomous=True``, sub-DEILE
+    pode ser interceptado pelo caminho ``process_autonomous_request`` (fast
+    path que yieldou só TEXT_DELTA + USAGE_FINAL — NENHUM evento de tool),
+    deixando o painel com '(sem atividade ainda)' o turno todo. Verificado em
+    teste end-to-end real com deepseek-v4-flash."""
+    agent = _StubAgent([])
+    runner = LocalSubAgentRunner(agent)
+    state = SubAgentState(task=_task(index=7))
+
+    await runner.run_one(state, on_event=lambda _: None)
+
+    assert agent.last_kwargs.get("_skip_autonomous") is True
+
+
 async def test_clean_session_id_per_subagent_and_kwargs_propagation():
     agent = _StubAgent([])
     runner = LocalSubAgentRunner(agent)

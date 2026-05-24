@@ -124,7 +124,12 @@ class LocalSubAgentRunner:
         session_id = f"subagent_{task.index}_{uuid.uuid4().hex[:8]}"
 
         try:
-            kwargs: dict = {"session_id": session_id}
+            # _skip_autonomous=True — bypass o caminho "autonomous request"
+            # do agente principal. Sem isso, o sub-DEILE poderia ser despachado
+            # à fast-path autônoma (que sintetiza resposta sem tool_loop) e
+            # o painel ficaria sem atividade enquanto o sub trabalha — bug
+            # observado em teste end-to-end (issue #257 round 4).
+            kwargs: dict = {"session_id": session_id, "_skip_autonomous": True}
             if task.persona:
                 # ``persona_name`` é a chave canônica usada pelo worker_server.
                 # Para o caminho local o efeito é limitado (o PersonaManager é

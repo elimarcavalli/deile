@@ -259,6 +259,74 @@ async def test_autonomous_path_yields_single_text(configured_agent, tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_skip_autonomous_kwarg_also_skips_workflow_path(configured_agent, tmp_path: Path):
+    """Issue #257 round 4: ``_skip_autonomous=True`` deve pular tanto o
+    autonomous path quanto o workflow path. O workflow path executa tools
+    OPACAMENTE (yieldando só TEXT_DELTA agregado), deixando o painel
+    multipanel sem atividade visível mesmo com sub-DEILE trabalhando.
+
+    Confirmado em teste end-to-end real (issue #257 round 4): sub-DEILEs
+    entravam no workflow path e o painel ficava '(sem atividade ainda)'
+    enquanto write_file/bash_execute rodavam internamente.
+    """
+    # Workflow seria criado normalmente
+    configured_agent._should_create_workflow = AsyncMock(return_value=True)
+    configured_agent.process_autonomous_request = AsyncMock(return_value=None)
+    fake = _FakeProvider(
+        iterations=[[
+            UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="tool path used"),
+            UnifiedStreamEvent(
+                type=StreamEventType.USAGE_FINAL,
+                usage=ModelUsageSnapshot(input_tokens=1, output_tokens=1),
+            ),
+        ]]
+    )
+    configured_agent.model_router.select_provider = AsyncMock(return_value=fake)
+    session = configured_agent.create_session("skip_wf", working_directory=str(tmp_path))
+
+    events = [
+        e async for e in configured_agent.process_input_stream(
+            user_input="multi-step task", session_id=session.session_id, _skip_autonomous=True,
+        )
+    ]
+    # Workflow predicate should NOT have been called (skipped before)
+    configured_agent._should_create_workflow.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_skip_autonomous_kwarg_bypasses_autonomous_path(configured_agent, tmp_path: Path):
+    """Issue #257 round 4: ``_skip_autonomous=True`` deve fazer
+    ``process_input_stream`` pular o caminho ``process_autonomous_request``
+    para ir direto ao tool-loop. Necessário para sub-DEILEs alimentarem o
+    painel multipanel com eventos TOOL_USE_END/TOOL_RESULT."""
+    # Configura autonomous para retornar resposta — mas o skip deve ignorar.
+    configured_agent.process_autonomous_request = AsyncMock(return_value="should NOT be used")
+    # Fake provider para a chat-with-tools path
+    fake = _FakeProvider(
+        iterations=[[
+            UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="tool path"),
+            UnifiedStreamEvent(
+                type=StreamEventType.USAGE_FINAL,
+                usage=ModelUsageSnapshot(input_tokens=1, output_tokens=1),
+            ),
+        ]]
+    )
+    configured_agent.model_router.select_provider = AsyncMock(return_value=fake)
+    session = configured_agent.create_session("skip_auto", working_directory=str(tmp_path))
+
+    events = [
+        e async for e in configured_agent.process_input_stream(
+            user_input="hi", session_id=session.session_id, _skip_autonomous=True,
+        )
+    ]
+    texts = [e.text for e in events if e.type is StreamEventType.TEXT_DELTA and e.text]
+    assert "should NOT be used" not in "".join(texts), \
+        "autonomous result leaked into stream despite _skip_autonomous=True"
+    # process_autonomous_request NÃO deve ter sido chamado
+    configured_agent.process_autonomous_request.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_error_in_setup_emits_error_event(configured_agent, tmp_path: Path):
     """Exception during stream setup → single ERROR event, not a crash."""
 

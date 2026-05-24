@@ -650,6 +650,13 @@ class DeileAgent:
         self._request_count += 1
 
         try:
+            # Issue #257 — sub-DEILEs invocados pelo LocalSubAgentRunner devem
+            # IR DIRETO para o tool-loop. O caminho autônomo (linha ~745) é
+            # uma fast-path que sintetiza resposta sem invocar tools, e o
+            # painel multipanel não vê eventos de tool, ficando "(sem atividade
+            # ainda)" o turno inteiro — confirmado em teste end-to-end real
+            # com deepseek-v4-flash (log /tmp/deile-clean.txt).
+            skip_autonomous = bool(kwargs.pop("_skip_autonomous", False))
             session = self._get_or_create_session(session_id, **kwargs)
             session.update_activity()
             session.add_to_history("user", user_input)
@@ -737,12 +744,17 @@ class DeileAgent:
                 self._status = AgentStatus.IDLE
                 return
 
-            # Autonomous path — non-streaming.
-            yield UnifiedStreamEvent(
-                type=StreamEventType.STAGE,
-                stage=get_stage_message("autonomous_process", "initial"),
-            )
-            autonomous_result = await self.process_autonomous_request(user_input, session)
+            # Autonomous path — non-streaming. Sub-DEILEs pulam essa via
+            # (skip_autonomous=True via kwarg) para garantir que tool events
+            # cheguem ao LocalSubAgentRunner alimentar o painel multipanel.
+            if skip_autonomous:
+                autonomous_result = None
+            else:
+                yield UnifiedStreamEvent(
+                    type=StreamEventType.STAGE,
+                    stage=get_stage_message("autonomous_process", "initial"),
+                )
+                autonomous_result = await self.process_autonomous_request(user_input, session)
             if autonomous_result:
                 session.add_to_history(
                     "assistant",
@@ -785,7 +797,14 @@ class DeileAgent:
                 type=StreamEventType.STAGE,
                 stage=get_stage_message("check_workflow", "initial"),
             )
-            workflow_needed = await self._should_create_workflow(user_input, parse_result)
+            # Sub-DEILEs pulam workflow path também — esse caminho executa
+            # tools OPACAMENTE (sem yieldar TOOL_USE_END/TOOL_RESULT pro
+            # caller), o que deixaria o painel multipanel sem atividade
+            # mesmo com sub-DEILE trabalhando. Issue #257 round 4.
+            if skip_autonomous:
+                workflow_needed = False
+            else:
+                workflow_needed = await self._should_create_workflow(user_input, parse_result)
 
             if workflow_needed and self.workflow_executor:
                 yield UnifiedStreamEvent(
