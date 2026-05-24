@@ -1,0 +1,88 @@
+{
+  "model": "deepseek:deepseek-v4-flash",
+  "results": [
+    {
+      "pid": "A1",
+      "category": "catalog",
+      "skill_name": "python",
+      "prompt": "Tenho uma dúvida geral sobre Python: qual é a melhor prática para lidar com CancelledError em código async? Responda em 2 linhas.",
+      "pass_criterion": "invoke_skill_called",
+      "duration_s": 3.442774534225464,
+      "invoke_skill_called": false,
+      "invoke_skill_arg": null,
+      "tool_calls": [],
+      "response_preview": "Em Python 3.11+, `asyncio.CancelledError` agora é subclasse de `BaseException`, não de `Exception` — então ele **não** é acidentalmente capturado por `except Exception`. A melhor prática é nunca engol",
+      "body_marker_present": false,
+      "passed": false,
+      "error": null
+    },
+    {
+      "pid": "A2",
+      "category": "catalog",
+      "skill_name": "typescript",
+      "prompt": "Pergunta rápida sobre TypeScript: para um lookup keyed, devo usar Record<string, T> ou Map? Responda em 2 linhas.",
+      "pass_criterion": "invoke_skill_called",
+      "duration_s": 2.2772560119628906,
+      "invoke_skill_called": false,
+      "invoke_skill_arg": null,
+      "tool_calls": [],
+      "response_preview": "`Record<string, T>` é ideal para objetos fixos/conhecidos em tempo de compilação com tipagem estática e sintaxe literal (`{...}`). Use `Map` quando precisar de chaves não-string, iteração performática",
+      "body_marker_present": false,
+      "passed": false,
+      "error": null
+    },
+    {
+      "pid": "A3",
+      "category": "catalog",
+      "skill_name": "tdd",
+      "prompt": "Vou começar um módulo novo de processamento de pagamentos. Me descreva em 3 linhas seu ciclo de TDD.",
+      "pass_criterion": "invoke_skill_called",
+      "duration_s": 5.440046787261963,
+      "invoke_skill_called": false,
+      "invoke_skill_arg": null,
+      "tool_calls": [],
+      "response_preview": "Claro. O ciclo TDD para esse módulo novo seria:\n\n1. **🔴 Vermelho** — Escreva um teste que falhe *antes* de qualquer implementação: por exemplo, `test_criar_pagamento_com_cartao_valido_deve_retornar_tr",
+      "body_marker_present": true,
+      "passed": false,
+      "error": null
+    },
+    {
+      "pid": "B1",
+      "category": "auto-trigger",
+      "skill_name": "python",
+      "prompt": "Estou revisando o arquivo deile/__version__.py — me lembre qual é a regra do projeto para tratar CancelledError, em 2 linhas.",
+      "pass_criterion": "body_marker_in_response",
+      "duration_s": 12.489765644073486,
+      "invoke_skill_called": false,
+      "invoke_skill_arg": null,
+      "tool_calls": [
+        "read_file",
+        "find_in_files",
+        "read_file",
+        "read_file",
+        "find_in_files"
+      ],
+      "response_preview": "Vou buscar a referência no código para ser preciso.Ótima pergunta. Eis a regra documentada no projeto:\n\n**`asyncio.CancelledError`** — Nunca capturar sem re-raise (fonte: `docs/system_design/03-PRINCI",
+      "body_marker_present": true,
+      "passed": true,
+      "error": null
+    },
+    {
+      "pid": "C1",
+      "category": "explicit",
+      "skill_name": "python",
+      "prompt": "Antes de responder, chame a tool invoke_skill com name=\"python\" e use o conteúdo retornado para responder: qual a regra do projeto sobre CancelledError? Responda em 1 linha citando a recomendação literal da skill.",
+      "pass_criterion": "invoke_skill_called",
+      "duration_s": 3.305394411087036,
+      "invoke_skill_called": true,
+      "invoke_skill_arg": "python",
+      "tool_calls": [
+        "invoke_skill"
+      ],
+      "response_preview": "A regra do projeto sobre `CancelledError` é: **\"Always re-raise `asyncio.CancelledError` from any `except` block — swallowing it leaks tasks.\"**",
+      "body_marker_present": true,
+      "passed": true,
+      "error": null
+    }
+  ]
+}
