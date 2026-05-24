@@ -39,7 +39,7 @@ import logging
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, ClassVar, List, Optional, TextIO
+from typing import Any, Callable, ClassVar, List, Literal, Optional, TextIO
 
 from deile.config.settings import get_settings
 
@@ -59,10 +59,28 @@ def _get_budget_s() -> float:
     return float(getattr(get_settings(), "subagent_budget_s", 600.0))
 
 
-# Re-exportado por compat com callers existentes (tool schema, testes). É
-# uma propriedade *snapshot-on-import* — para o caminho enforcement use
-# :func:`_get_budget_s` que respeita override em runtime.
-MAX_SUBAGENT_BUDGET_S: float = _get_budget_s()
+def get_max_subagent_budget_s() -> float:
+    """Public accessor — retorna o budget global *em runtime* (NT2 — iter-3).
+
+    Substitui o constante snapshot-on-import ``MAX_SUBAGENT_BUDGET_S`` que
+    fixava o valor no momento do primeiro ``import`` do módulo, ignorando
+    qualquer override posterior via env (``DEILE_SUBAGENT_BUDGET_S``) ou
+    ``~/.deile/settings.json``. Callers (tool schema, testes) devem chamar
+    esta função em vez de ler a constante.
+
+    Implementação delega a :func:`_get_budget_s`, que já encapsula a
+    leitura via :func:`get_settings` (Pilar 9 — configuração centralizada).
+    """
+    return _get_budget_s()
+
+
+# Mantido como atributo private *snapshot-on-import* só para retrocompat
+# com callers/testes que importavam o nome — não deve ser usado em código
+# novo. Novos callers devem usar :func:`get_max_subagent_budget_s`.
+_MAX_SUBAGENT_BUDGET_S_SNAPSHOT: float = _get_budget_s()
+
+
+CancellationReason = Literal["user_esc", "budget_exceeded", "parent_cancel"]
 
 
 @dataclass
@@ -74,6 +92,12 @@ class SubAgentResult:
     ok_count: int
     error_count: int
     cancelled: bool = False
+    # NT5 (iter-3 review): discrimina a razão do cancelamento. Antes
+    # ``cancelled=True`` conflate três caminhos distintos (ESC do usuário,
+    # budget global estourado, cancel injetado pelo parent) — observabilidade
+    # fraca, debugger/auditor não distingue causa raiz. ``None`` quando
+    # ``cancelled=False``.
+    cancellation_reason: Optional[CancellationReason] = None
     # Buffer agregado do stdout/stderr capturado durante a execução. Útil para
     # diagnóstico em testes e potencialmente para um modo de "ver logs brutos"
     # no painel focado (próxima iteração).
@@ -98,7 +122,13 @@ class SubAgentResult:
             f"{self.error_count} erro · {self.elapsed_s:.1f}s total"
         )
         if self.cancelled:
-            header += " · cancelado pelo usuário"
+            # NT5 (iter-3): discrimina a razão para o LLM/auditor.
+            reason_label = {
+                "user_esc": "cancelado pelo usuário (ESC)",
+                "budget_exceeded": "cancelado por budget estourado",
+                "parent_cancel": "cancelado pelo caller (parent)",
+            }.get(self.cancellation_reason or "", "cancelado")
+            header += f" · {reason_label}"
         lines.append(header)
         for st in self.states:
             glyph = {"ok": "✅", "error": "❌", "cancelled": "⏹"}.get(st.status, "•")
@@ -125,11 +155,21 @@ class SubAgentResult:
         """
         lines: List[str] = []
         status_emoji = "✅" if self.ok_global else ("⏹" if self.cancelled else "⚠️")
-        lines.append(
+        header = (
             f"{status_emoji} **Sub-DEILEs paralelos** · "
             f"{self.ok_count} ok · {self.error_count} erro · "
             f"{self.elapsed_s:.1f}s total"
         )
+        if self.cancelled and self.cancellation_reason:
+            # NT5 (iter-3): inclui razão tipada no markdown — replay/audit
+            # via /resume vê qual cancel-path foi seguido.
+            reason_label = {
+                "user_esc": "ESC do usuário",
+                "budget_exceeded": "budget estourado",
+                "parent_cancel": "cancelado pelo caller",
+            }.get(self.cancellation_reason, self.cancellation_reason)
+            header += f" · _{reason_label}_"
+        lines.append(header)
         lines.append("")
         for st in self.states:
             glyph = {"ok": "✅", "error": "❌", "cancelled": "⏹"}.get(st.status, "•")
@@ -181,7 +221,13 @@ def _get_capture_buffer_max_bytes() -> int:
     return int(getattr(get_settings(), "subagent_capture_buffer_max_bytes", 256 * 1024))
 
 
-_CAPTURE_BUFFER_MAX_BYTES: int = _get_capture_buffer_max_bytes()
+# NT3 (iter-3 review): a constante ``_CAPTURE_BUFFER_MAX_BYTES_SNAPSHOT``
+# é capturada no momento do import — overrides posteriores via env/settings
+# eram ignorados pelo default do ``_CappedBuffer``. Mantida como private
+# para retrocompat em testes que importavam o nome; ``_CappedBuffer`` agora
+# usa ``None`` como sentinel e resolve via :func:`_get_capture_buffer_max_bytes`
+# em cada instância (lazy — respeita override em runtime).
+_CAPTURE_BUFFER_MAX_BYTES_SNAPSHOT: int = _get_capture_buffer_max_bytes()
 
 
 class _CappedBuffer:
@@ -193,11 +239,19 @@ class _CappedBuffer:
     pra deixar claro pra debug que algo foi cortado.
 
     Issue #257 round 3 — substitui o ``StringIO`` unbounded original (C5).
+
+    NT3 (iter-3 review): ``max_bytes=None`` (default) faz o limite ser
+    resolvido lazy via :func:`_get_capture_buffer_max_bytes`, respeitando
+    overrides em runtime (env/settings). Antes, o default era o snapshot
+    capturado no momento do ``import`` do módulo — overrides posteriores
+    eram silenciosamente ignorados.
     """
 
     __slots__ = ("_chunks", "_size", "_max", "_truncated")
 
-    def __init__(self, max_bytes: int = _CAPTURE_BUFFER_MAX_BYTES) -> None:
+    def __init__(self, max_bytes: Optional[int] = None) -> None:
+        if max_bytes is None:
+            max_bytes = _get_capture_buffer_max_bytes()
         self._chunks: list = []
         self._size: int = 0
         self._max: int = max(0, int(max_bytes))
@@ -278,7 +332,12 @@ class SubAgentOrchestrator:
     # (testes loop-per-test, CLI ``_run_self_install`` + ``_run_oneshot``)
     # quebrava com ``RuntimeError: ... is bound to a different event loop``.
     # ``_get_capture_lock()`` agora cria/troca o lock conforme o loop muda.
+    #
+    # NT1 (iter-3 review): rastreamos o ``id(loop)`` que originalmente criou
+    # o lock em vez de inspecionar ``Lock._loop`` (CPython-private). Mesma
+    # semântica, sem depender de API interna instável.
     _CAPTURE_LOCK: ClassVar[Optional[asyncio.Lock]] = None
+    _CAPTURE_LOCK_LOOP_ID: ClassVar[Optional[int]] = None
 
     def __init__(
         self,
@@ -301,19 +360,27 @@ class SubAgentOrchestrator:
         que originalmente bindou o lock anterior. Garante que múltiplos
         ``asyncio.run()`` independentes (CLI sub-comandos, pytest loop-per-
         test) não esbarrem em ``RuntimeError: bound to a different loop``.
+
+        NT1 (iter-3 review): rastreia o ``id(loop)`` em vez de inspecionar
+        ``Lock._loop`` (API privada do CPython). Mesma semântica, sem
+        depender de internals que podem mudar entre versões.
         """
         try:
             loop = asyncio.get_running_loop()
+            loop_id: Optional[int] = id(loop)
         except RuntimeError:  # pragma: no cover — só chamado de async
-            loop = None
-        lock = cls._CAPTURE_LOCK
-        needs_new = lock is None
-        if not needs_new and loop is not None:
-            bound = getattr(lock, "_loop", None)
-            if bound is not None and bound is not loop:
-                needs_new = True
+            loop_id = None
+        needs_new = cls._CAPTURE_LOCK is None
+        if (
+            not needs_new
+            and loop_id is not None
+            and cls._CAPTURE_LOCK_LOOP_ID is not None
+            and cls._CAPTURE_LOCK_LOOP_ID != loop_id
+        ):
+            needs_new = True
         if needs_new:
             cls._CAPTURE_LOCK = asyncio.Lock()
+            cls._CAPTURE_LOCK_LOOP_ID = loop_id
         return cls._CAPTURE_LOCK
 
     async def run(self, tasks: List[SubAgentTask]) -> SubAgentResult:
@@ -464,6 +531,11 @@ class SubAgentOrchestrator:
                         asyncio.gather(*runner_tasks, return_exceptions=True),
                         timeout=5.0,
                     )
+                # NT6 (iter-3 review): Python 3.11+ aliases
+                # ``asyncio.TimeoutError`` para o ``TimeoutError`` built-in;
+                # ambos são capturados pra manter compat com 3.9-3.10
+                # (per pyproject.toml ``requires-python = ">=3.9"``), onde
+                # são classes distintas.
                 except (asyncio.TimeoutError, TimeoutError):
                     pending = [t for t in runner_tasks if not t.done()]
                     logger.error(
@@ -477,6 +549,9 @@ class SubAgentOrchestrator:
                             asyncio.gather(renderer_task, return_exceptions=True),
                             timeout=2.0,
                         )
+                    # NT6 (iter-3): mesmo motivo do bloco acima — manter
+                    # compat com Python 3.9-3.10 onde ``asyncio.TimeoutError``
+                    # ≠ ``TimeoutError``.
                     except (asyncio.TimeoutError, TimeoutError):
                         logger.warning(
                             "SubAgentOrchestrator: renderer ignored cancel after 2s"
@@ -546,12 +621,24 @@ class SubAgentOrchestrator:
         elapsed = time.monotonic() - start
         ok_count = sum(1 for s in states if s.status == "ok")
         error_count = sum(1 for s in states if s.status in ("error", "cancelled"))
+        # NT5 (iter-3 review): discrimina razão do cancel ao popular
+        # ``SubAgentResult.cancellation_reason``. ``budget_exceeded`` ganha
+        # precedência sobre ``user_esc`` — se o budget estourou enquanto o
+        # usuário também apertou ESC, a causa raiz é o budget (o ESC pode
+        # ter vindo em reação ao painel travado). ``parent_cancel`` nunca
+        # atinge este return: ``outer_cancelled`` força ``raise`` acima.
+        cancellation_reason: Optional[CancellationReason] = None
+        if budget_exceeded:
+            cancellation_reason = "budget_exceeded"
+        elif cancelled:
+            cancellation_reason = "user_esc"
         return SubAgentResult(
             states=states,
             elapsed_s=elapsed,
             ok_count=ok_count,
             error_count=error_count,
             cancelled=cancelled or budget_exceeded,
+            cancellation_reason=cancellation_reason,
             captured_stdout=(captured_out.getvalue() if captured_out else ""),
             captured_stderr=(captured_err.getvalue() if captured_err else ""),
         )
@@ -598,7 +685,7 @@ class SubAgentOrchestrator:
 
 
 __all__ = [
-    "MAX_SUBAGENT_BUDGET_S",
     "SubAgentOrchestrator",
     "SubAgentResult",
+    "get_max_subagent_budget_s",
 ]

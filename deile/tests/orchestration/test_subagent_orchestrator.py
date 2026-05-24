@@ -441,6 +441,7 @@ def test_lazy_capture_lock_per_event_loop():
 
     # Limpa qualquer lock-state prévio de outro teste.
     SubAgentOrchestrator._CAPTURE_LOCK = None
+    SubAgentOrchestrator._CAPTURE_LOCK_LOOP_ID = None
 
     # Rodar em dois loops sucessivos — antes seria RuntimeError no segundo.
     r1 = asyncio.run(_scenario())
@@ -519,3 +520,98 @@ async def test_renderer_task_awaited_before_stdout_restore():
     assert result.ok_count == 2
     # Stdout restaurado ao final
     assert _sys.stdout is saved_stdout
+
+
+# ─── NT5 (iter-3): SubAgentResult.cancellation_reason discrimina cancel paths ─
+
+
+async def test_cancellation_reason_is_none_on_happy_path():
+    """NT5: ``cancellation_reason=None`` quando não houve cancel."""
+    class _NoopRunner:
+        async def run_one(self, state, *, on_event):
+            state.status = "ok"
+            state.started_at = time.monotonic()
+            state.finished_at = time.monotonic()
+
+    orch = SubAgentOrchestrator(_NoopRunner(), max_parallel=2, capture_output=False)
+    result = await orch.run(_mk_tasks(2))
+    assert result.cancelled is False
+    assert result.cancellation_reason is None
+
+
+async def test_cancellation_reason_budget_exceeded(monkeypatch):
+    """NT5: budget global estourado → ``cancellation_reason='budget_exceeded'``
+    (precedência sobre user_esc, pois o budget é causa raiz).
+    """
+    monkeypatch.setattr(
+        "deile.orchestration.subagents.orchestrator._get_budget_s",
+        lambda: 0.15,
+    )
+
+    class _HangRunner:
+        async def run_one(self, state, *, on_event):
+            state.status = "running"
+            state.started_at = time.monotonic()
+            try:
+                await asyncio.sleep(10.0)
+            except asyncio.CancelledError:
+                state.status = "cancelled"
+                state.finished_at = time.monotonic()
+                raise
+
+    orch = SubAgentOrchestrator(_HangRunner(), max_parallel=2, capture_output=False)
+    result = await orch.run(_mk_tasks(2))
+    assert result.cancelled is True
+    assert result.cancellation_reason == "budget_exceeded"
+    # Consolidated summary deve refletir a razão.
+    summary = result.consolidated_summary()
+    assert "budget" in summary.lower()
+
+
+async def test_cancellation_reason_user_esc():
+    """NT5: ESC do usuário (renderer.cancelled=True) → ``cancellation_reason='user_esc'``."""
+    class _FastRunner:
+        async def run_one(self, state, *, on_event):
+            state.status = "running"
+            state.started_at = time.monotonic()
+            await asyncio.sleep(0.02)
+            state.status = "ok"
+            state.finished_at = time.monotonic()
+
+    class _EscRenderer:
+        def __init__(self, states, broadcast, real_stdout=None):
+            self.cancelled = True  # simula ESC já apertado
+
+        async def run(self):
+            # Termina rápido; ESC já foi sinalizado.
+            await asyncio.sleep(0.01)
+
+    def _factory(states, broadcast, real_stdout=None):
+        return _EscRenderer(states, broadcast, real_stdout)
+
+    orch = SubAgentOrchestrator(
+        _FastRunner(),
+        max_parallel=2,
+        renderer_factory=_factory,
+        capture_output=False,
+    )
+    result = await orch.run(_mk_tasks(2))
+    assert result.cancelled is True
+    assert result.cancellation_reason == "user_esc"
+    # Markdown summary inclui a razão.
+    md = result.markdown_summary()
+    assert "ESC" in md or "esc" in md.lower()
+
+
+async def test_cancellation_reason_field_in_dataclass_signature():
+    """NT5: o campo ``cancellation_reason`` aceita os literais válidos e
+    default None — garante que SubAgentResult não regrediu a assinatura.
+    """
+    from deile.orchestration.subagents.orchestrator import SubAgentResult
+    r = SubAgentResult(states=[], elapsed_s=0.0, ok_count=0, error_count=0)
+    assert r.cancellation_reason is None
+    r2 = SubAgentResult(
+        states=[], elapsed_s=0.0, ok_count=0, error_count=1,
+        cancelled=True, cancellation_reason="user_esc",
+    )
+    assert r2.cancellation_reason == "user_esc"

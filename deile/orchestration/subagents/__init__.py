@@ -19,15 +19,14 @@ LLM-facing em :mod:`deile.tools.dispatch_parallel_subagents`.
 from .constants import HISTORY_MARKER_KEY, is_display_only_entry
 from .events import (SubAgentEvent, SubAgentEventKind, SubAgentState,
                      SubAgentStatus, SubAgentTask)
-from .orchestrator import (MAX_SUBAGENT_BUDGET_S, SubAgentOrchestrator,
-                           SubAgentResult)
+from .orchestrator import (SubAgentOrchestrator, SubAgentResult,
+                           get_max_subagent_budget_s)
 from .runner import (LocalSubAgentRunner, SubAgentRunner, WorkerSubAgentRunner,
                      resolve_runner)
 
 __all__ = [
     "HISTORY_MARKER_KEY",
     "LocalSubAgentRunner",
-    "MAX_SUBAGENT_BUDGET_S",
     "SubAgentEvent",
     "SubAgentEventKind",
     "SubAgentOrchestrator",
@@ -37,6 +36,7 @@ __all__ = [
     "SubAgentStatus",
     "SubAgentTask",
     "WorkerSubAgentRunner",
+    "get_max_subagent_budget_s",
     "is_display_only_entry",
     "resolve_runner",
 ]

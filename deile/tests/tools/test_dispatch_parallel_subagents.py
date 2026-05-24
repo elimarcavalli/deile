@@ -480,6 +480,53 @@ async def test_tool_schema_is_well_formed():
     ] is False
 
 
+async def test_session_lock_lru_does_not_evict_the_just_touched_session(monkeypatch):
+    """MN1 (iter-3): a eviction LRU NUNCA pode remover o ``session_id`` que
+    acabou de ser inserido/tocado.
+
+    Edge case: se TODAS as entradas anteriores estiverem ``locked()``, o loop
+    chegaria à recém-inserida e a removeria (ela tem o ``id`` no ``ordered_ids``
+    e está livre). Outro caller concorrente para o MESMO session_id, ao buscar
+    o lock, encontraria ``None`` e criaria um lock NOVO — quebrando o mutex
+    per-sessão. O guard ``if sid == session_id: continue`` impede esse caminho.
+    """
+    # Cap pequeno + TODAS as entradas anteriores travadas pra forçar
+    # o cenário onde a única entrada livre é a recém-tocada.
+    monkeypatch.setattr(DispatchParallelSubagentsTool, "_SESSION_LOCKS_MAX", 2)
+
+    # 3 sessions PRÉ-existentes — todas LOCKED.
+    locked_sids = ["old_a", "old_b", "old_c"]
+    locked_locks = []
+    for sid in locked_sids:
+        lk = asyncio.Lock()
+        await lk.acquire()
+        DispatchParallelSubagentsTool._SESSION_LOCKS[sid] = lk
+        locked_locks.append(lk)
+    try:
+        # Pede um novo lock — vai inserir "fresh" (4 total) e disparar eviction
+        # com excess=2. Sem o guard MN1, a varredura pularia old_a/old_b/old_c
+        # (locked), chegaria em "fresh" (livre) e removeria — depois um caller
+        # concorrente para "fresh" criaria um lock NOVO.
+        fresh_lock = await DispatchParallelSubagentsTool._get_session_lock("fresh")
+        assert fresh_lock is not None
+
+        # Pede o MESMO session_id novamente. Deve retornar o MESMO lock
+        # (mutex per-sessão preservado).
+        same_lock = await DispatchParallelSubagentsTool._get_session_lock("fresh")
+        assert same_lock is fresh_lock, (
+            "MN1 quebrado: a entrada recém-tocada foi evicted, e a próxima "
+            "chamada criou um lock NOVO — outro caller concorrente para o "
+            "mesmo session_id teria seu próprio mutex (race condition)."
+        )
+
+        # "fresh" continua presente; o cap foi violado (overshoot transitório
+        # esperado quando todas as outras estão locked — comportamento MA1).
+        assert "fresh" in DispatchParallelSubagentsTool._SESSION_LOCKS
+    finally:
+        for lk in locked_locks:
+            lk.release()
+
+
 async def test_session_lock_lru_eviction_skips_locked_without_break(monkeypatch):
     """MA1 (iter-2): a eviction LRU não pode parar no primeiro lock-em-uso —
     deve PULAR (continue) e seguir evictando os não-locked subsequentes.
@@ -511,6 +558,69 @@ async def test_session_lock_lru_eviction_skips_locked_without_break(monkeypatch)
         assert len(DispatchParallelSubagentsTool._SESSION_LOCKS) == 3
     finally:
         locks[0].release()
+
+
+async def test_audit_terminal_event_is_cancelled_when_orchestrator_raises_cancellederror(monkeypatch):
+    """MN3 (iter-3): quando ``orchestrator.run()`` propaga CancelledError
+    (parent cancel), o evento terminal de auditoria deve ter ``result='cancelled'``
+    em vez do default ``'failure'``.
+
+    Antes, o handler do ``execute()`` capturava só ``Exception`` no try
+    externo; CancelledError pulava o bloco que mapeia ``result.cancelled``
+    em ``audit_result``, e o ``finally`` emitia com o default 'failure' —
+    perda de fidelidade do desfecho real.
+    """
+    captured: list[dict] = []
+
+    class _FakeAuditLogger:
+        def log_event(self, **kwargs):
+            captured.append(kwargs)
+
+    fake_logger = _FakeAuditLogger()
+    import deile.security.audit_logger as audit_mod
+    monkeypatch.setattr(audit_mod, "get_audit_logger", lambda: fake_logger)
+
+    async def _cancel_run(self, tasks):
+        # Simula parent-cancel propagando do orchestrator.
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(
+        "deile.orchestration.subagents.SubAgentOrchestrator.run",
+        _cancel_run,
+    )
+
+    class _StubRunner:
+        pass
+    monkeypatch.setattr(
+        "deile.tools.dispatch_parallel_subagents.resolve_runner",
+        lambda *a, **kw: _StubRunner(),
+    )
+
+    tool = DispatchParallelSubagentsTool()
+    ctx = ToolContext(
+        user_input="",
+        parsed_args={"subtasks": [_valid_subtask(1), _valid_subtask(2)]},
+        session_data={"session_id": "mn3-cancel-audit", "_agent": object()},
+    )
+
+    # A tool deve propagar CancelledError (Pilar 03 §6).
+    with pytest.raises(asyncio.CancelledError):
+        await tool.execute(ctx)
+
+    # Mesmo com a exceção, o ``finally`` deve ter emitido o terminal
+    # com result='cancelled' (não 'failure').
+    tool_events = [
+        e for e in captured
+        if e.get("tool_name") == "dispatch_parallel_subagents"
+    ]
+    results = [e.get("result") for e in tool_events]
+    assert "accepted" in results, "admission audit ausente"
+    assert "cancelled" in results, (
+        f"MN3 quebrado: esperava terminal 'cancelled', got {results}"
+    )
+    assert "failure" not in results, (
+        "MN3 regressão: terminal não pode ser 'failure' quando o caller cancela"
+    )
 
 
 async def test_audit_emits_terminal_event(monkeypatch):
@@ -576,6 +686,8 @@ async def test_audit_emits_terminal_event(monkeypatch):
     results = [e.get("result") for e in tool_events]
     assert "accepted" in results
     assert "success" in results
-    # Pilar 4: actor == self.name (não literal hard-coded).
+    # NT4 (iter-3): actor é o papel ('tool'), tool_name é a identidade
+    # específica via self.name — não-redundantes (antes eram iguais).
     for e in tool_events:
-        assert e.get("actor") == "dispatch_parallel_subagents"
+        assert e.get("actor") == "tool"
+        assert e.get("tool_name") == "dispatch_parallel_subagents"

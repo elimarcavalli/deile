@@ -33,7 +33,6 @@ Security model (defence in depth):
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import hmac
 import json
 import logging
@@ -45,7 +44,7 @@ import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Dict, Optional
 
 # Resume-mode helpers (issue #254). Sibling module under infra/k8s — the worker
 # runs with this directory on sys.path (set by the entrypoint / Dockerfile), so
@@ -165,48 +164,6 @@ def _evict_old_tasks_if_needed() -> None:
     excess = len(_TASKS) - _TASKS_MAX
     for tid, _ in terminal_ids[:excess]:
         _TASKS.pop(tid, None)
-
-
-# ---- EventBus subscription helper --------------------------------------------
-
-
-@contextlib.contextmanager
-def _event_bus_subscription(handler: Callable):
-    """Subscribe ``handler`` to the singleton EventBus for the lifetime of
-    the context, guaranteeing unsubscribe on exit (B3 — iter-2 review).
-
-    Encapsulates the init+cleanup pair so future contributors cannot
-    accidentally leak handlers (the prior pattern duplicated state
-    management — bus/_on_event lived as plain locals reset both BEFORE
-    the try and inside the except, which is fragile under refactor).
-
-    Yields the bus instance (or None when unavailable). Cleanup is best-
-    effort: failures during unsubscribe are logged at debug level and
-    never propagate.
-    """
-    bus = None
-    try:
-        from deile.events.event_bus import get_event_bus
-        bus = get_event_bus()
-        if hasattr(bus, "subscribe_all"):
-            bus.subscribe_all(handler)
-        elif hasattr(bus, "subscribe"):
-            try:
-                bus.subscribe("*", handler)
-            except Exception:
-                pass
-    except Exception:
-        logger.debug("event bus hook unavailable", exc_info=True)
-        bus = None
-    try:
-        yield bus
-    finally:
-        if bus is not None:
-            try:
-                if hasattr(bus, "unsubscribe_all"):
-                    bus.unsubscribe_all(handler)
-            except Exception:  # noqa: BLE001 — cleanup never breaks dispatch
-                logger.debug("event bus unsubscribe failed", exc_info=True)
 
 
 # ---- Bot integration (for status messages) -----------------------------------

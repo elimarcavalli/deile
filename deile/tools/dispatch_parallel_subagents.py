@@ -109,7 +109,12 @@ class DispatchParallelSubagentsTool(Tool):
     # ``asyncio.Lock()`` em escopo de classe ficaria bound ao loop do primeiro
     # ``__aenter__``, quebrando em testes / processos que usam múltiplos
     # ``asyncio.run()`` invocados em loops distintos.
+    #
+    # NT1 (iter-3 review): trocamos a inspeção de ``getattr(lock, "_loop", ...)``
+    # (CPython-private) por rastreio explícito do ``id(loop)`` que criou o lock.
+    # Mesma semântica, sem depender de API interna que pode mudar entre versões.
     _SESSION_LOCKS_GUARD: Optional[asyncio.Lock] = None
+    _SESSION_LOCKS_GUARD_LOOP_ID: Optional[int] = None
 
     @property
     def name(self) -> str:
@@ -331,6 +336,17 @@ class DispatchParallelSubagentsTool(Tool):
                     audit_result = "success"
                 else:
                     audit_result = "failure"
+            except asyncio.CancelledError:
+                # MN3 (iter-3 review): quando o caller cancela esta corrotina
+                # (parent_cancel via ESC ou worker shutdown), ``orchestrator.run``
+                # propaga ``CancelledError`` em vez de retornar. Sem este handler,
+                # o ``audit_result`` ficaria em ``'failure'`` (default), perdendo
+                # fidelidade — o desfecho real é ``'cancelled'``. Pilar 03 §6:
+                # CancelledError NUNCA é capturada sem re-raise; o ``finally``
+                # abaixo emite o evento terminal com o vocabulário correto, e
+                # então re-raise propaga até o caller.
+                audit_result = "cancelled"
+                raise
             finally:
                 terminal_details = dict(audit_details)
                 if result is not None:
@@ -398,6 +414,13 @@ class DispatchParallelSubagentsTool(Tool):
         Pilar 8 (segurança) — toda ação tool-driven precisa de trilha
         auditável. ``tool_name=self.name`` (Pilar 4 — Tools resolvem
         identidade pelo registry, sem string literal).
+
+        NT4 (iter-3 review): ``actor`` é o papel/categoria (``'tool'``),
+        e ``tool_name`` é a identidade específica via ``self.name``. Antes
+        os dois carregavam o mesmo valor — redundância sem ganho de
+        informação. Outros emissores no projeto seguem este padrão de
+        ``actor`` como papel (``'system'``, ``'secrets_scanner'``,
+        ``'plan_manager'``) distinto de ``tool_name``.
         """
         try:
             from deile.security.audit_logger import (AuditEventType,
@@ -411,7 +434,7 @@ class DispatchParallelSubagentsTool(Tool):
             get_audit_logger().log_event(
                 event_type=AuditEventType.TOOL_EXECUTION,
                 severity=severity,
-                actor=self.name,
+                actor="tool",
                 resource=f"session:{session_id}",
                 action=action,
                 result=result,
@@ -437,22 +460,28 @@ class DispatchParallelSubagentsTool(Tool):
         levanta ``RuntimeError: ... is bound to a different event loop``.
         Resolve criando o lock no primeiro acesso *do loop corrente* e
         re-criando se o loop mudou.
+
+        NT1 (iter-3 review): em vez de inspecionar ``Lock._loop`` (API privada
+        do CPython, sem garantia de estabilidade entre versões), guardamos o
+        ``id(loop)`` que originalmente criou o lock e comparamos com o ``id``
+        do loop corrente. Mesma semântica, sem depender de internals.
         """
         try:
             loop = asyncio.get_running_loop()
+            loop_id: Optional[int] = id(loop)
         except RuntimeError:  # pragma: no cover — chamado fora de async
-            loop = None
-        guard = cls._SESSION_LOCKS_GUARD
-        # Cria novo lock se nunca foi criado OU se está bound a um loop
-        # diferente do atual. ``asyncio.Lock`` em 3.10+ guarda referência
-        # ao loop em ``_loop`` (frequentemente None até primeiro uso).
-        needs_new = guard is None
-        if not needs_new and loop is not None:
-            bound = getattr(guard, "_loop", None)
-            if bound is not None and bound is not loop:
-                needs_new = True
+            loop_id = None
+        needs_new = cls._SESSION_LOCKS_GUARD is None
+        if (
+            not needs_new
+            and loop_id is not None
+            and cls._SESSION_LOCKS_GUARD_LOOP_ID is not None
+            and cls._SESSION_LOCKS_GUARD_LOOP_ID != loop_id
+        ):
+            needs_new = True
         if needs_new:
             cls._SESSION_LOCKS_GUARD = asyncio.Lock()
+            cls._SESSION_LOCKS_GUARD_LOOP_ID = loop_id
         return cls._SESSION_LOCKS_GUARD
 
     @classmethod
@@ -471,6 +500,12 @@ class DispatchParallelSubagentsTool(Tool):
         que o cap, pulando as travadas (``continue``) e removendo as livres;
         se TODAS estiverem travadas, aceita overshoot temporário com um
         ``logger.warning``.
+
+        MN1 (iter-3 review): NUNCA evict o ``session_id`` que acabou de ser
+        criado/tocado. Edge case: se todas as entradas anteriores estiverem
+        ``locked()``, o loop poderia chegar à recém-inserida e removê-la,
+        permitindo que um caller concorrente para o MESMO session_id criasse
+        um lock NOVO — quebrando o mutex per-sessão.
         """
         async with cls._get_locks_guard():
             lock = cls._SESSION_LOCKS.get(session_id)
@@ -492,6 +527,11 @@ class DispatchParallelSubagentsTool(Tool):
                 for sid in ordered_ids:
                     if removed >= excess:
                         break
+                    # MN1: nunca evict o session_id recém-inserido/tocado —
+                    # outro caller concorrente para o mesmo sid criaria um
+                    # lock NOVO, quebrando mutex per-sessão.
+                    if sid == session_id:
+                        continue
                     candidate = cls._SESSION_LOCKS.get(sid)
                     if candidate is None:
                         continue
