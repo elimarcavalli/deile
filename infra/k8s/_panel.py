@@ -371,9 +371,15 @@ class ActivityRow:
 def _activity_from_data(data: Optional[PanelData], limit: int = 8) -> List[ActivityRow]:
     if data is None:
         return [ActivityRow(*row) for row in demo.ACTIVITY[:limit]]
+    # Combina eventos k8s + locais ordenando por timestamp desc — assim a
+    # UI mostra atividade real seja qual for a fonte. Locais ganham
+    # actor='local' (setado em LocalLogsState para diferenciar de pipeline).
+    pool = list(data.pipeline.get().events)
+    if data.local_logs is not None:
+        pool.extend(data.local_logs.get().events)
+    pool.sort(key=lambda ev: ev.ts, reverse=True)
     rows: List[ActivityRow] = []
-    ps = data.pipeline.get()
-    for ev in reversed(ps.events[-limit:]):
+    for ev in pool[:limit]:
         rows.append(ActivityRow(
             hhmmss=ev.hhmmss,
             actor=ev.actor,
@@ -397,6 +403,65 @@ class PodRow:
     last_activity: str
     doing_now: str
     busy: bool = False
+
+
+def _local_process_rows(data: Optional[PanelData]) -> List[PodRow]:
+    """Adapta `LocalProcessInfo` em `PodRow` (mesmo schema da tabela de pods).
+
+    Permite o PodPickerView e o painel LOCAL PROCESSES reutilizarem o
+    layout existente sem casos especiais — a UI vê só "rows" e usa o
+    `role` (`local-*`) para colorir/dispatchar drill-in.
+
+    Fonte do "doing now" por PID (issue #303): consulta primeiro o
+    `LocalInstancesProvider` (state files publicados por cada processo).
+    Se o PID tem snapshot, usa-o (atribuição correta por processo).
+    Caso contrário, cai no log global do `LocalLogsProvider` —
+    fallback de compat com processos legacy que ainda não publicam estado.
+    Sem nenhuma das fontes, mostra cmdline + busy via CPU.
+    """
+    if data is None or data.local_processes is None:
+        return []
+    procs = data.local_processes.get()
+    if not procs:
+        return []
+    instances = (data.local_instances.get()
+                 if getattr(data, "local_instances", None) is not None
+                 else {})
+    log_state = (data.local_logs.get()
+                 if data.local_logs is not None else None)
+    now = datetime.now(timezone.utc)
+    rows: List[PodRow] = []
+    for p in procs:
+        snap = instances.get(p.pid)
+        if snap is not None:
+            # Caminho preferencial: state file deste PID exato. Bug resolvido —
+            # cada linha mostra o que SEU processo está fazendo.
+            doing = snap.doing_now_label
+            ref_ts = snap.current_action_started_at or snap.last_heartbeat_at
+            if ref_ts is not None:
+                last = _fmt_age((now - ref_ts).total_seconds()) + " ago"
+            else:
+                last = "—"
+            busy = snap.current_action_kind in {"tool_execution", "llm_call"}
+        elif log_state is not None and log_state.last_action_age_s is not None:
+            # Fallback de compat: log global. Perde a atribuição por PID
+            # (mesmo texto pra todos), mas é melhor que vazio.
+            last = _fmt_age(log_state.last_action_age_s) + " ago"
+            doing = log_state.last_action_summary[:48] or "idle"
+            busy = log_state.last_action_age_s < 60
+        else:
+            last = "—"
+            doing = p.cmd[:48] if p.cmd else "idle"
+            busy = p.cpu_pct >= 1.0
+        icon = "⚡" if busy else "●"
+        # `status` reusa coluna; mostramos RSS pra dar densidade de info.
+        rows.append(PodRow(
+            icon=icon, name=p.name, role=p.role,
+            status=p.rss_human, age=p.age_human,
+            restarts=f"{p.cpu_pct:.0f}%",
+            last_activity=last, doing_now=doing, busy=busy,
+        ))
+    return rows
 
 
 def _pod_rows(data: Optional[PanelData]) -> List[PodRow]:
@@ -451,7 +516,7 @@ def _pod_rows(data: Optional[PanelData]) -> List[PodRow]:
 # estilo visual sem duplicar código.
 
 def _head_panel(view_title: str, app: "PanelApp") -> Panel:
-    """Cabeçalho com cluster + namespace + image + relógio + cadência."""
+    """Cabeçalho dinâmico: modo (k8s/local/híbrido) + namespace + clock + cadência."""
     paused = " ⏸ pausado" if app.paused else ""
     speed = "" if app.refresh_mult == 1.0 else f" ×{app.refresh_mult:g}"
     clock = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -463,11 +528,23 @@ def _head_panel(view_title: str, app: "PanelApp") -> Panel:
     head.append(clock, style="dim")
     head.append(f"  ·  refresh {app.current_refresh_s:.1f}s{speed}{paused}",
                 style="dim yellow" if app.paused else "dim")
-    sub = Text(
-        "cluster: rancher-desktop (k3s)   namespace: deile   "
-        "image: deile-stack:local",
-        style="dim",
-    )
+    # Linha 2: contexto efetivo. Usa o RuntimeContext quando há `data`; em
+    # modo demo cai no rótulo fixo histórico.
+    if app.data is not None:
+        ctx = app.data.context
+        mode_style = ("bold green" if ctx.mode_label.startswith("k8s + local")
+                      else "bold cyan" if "k8s" in ctx.mode_label
+                      else "bold yellow" if "local" in ctx.mode_label
+                      else "bold red")
+        sub = Text.assemble(
+            ("mode: ", "dim"), (ctx.mode_label, mode_style),
+            ("   cluster: ", "dim"), (ctx.cluster_label, "dim"),
+            ("   namespace: ", "dim"), (ctx.namespace, "bold"),
+            ("   repo: ", "dim"), (ctx.repo or "—", "dim"),
+        )
+    else:
+        sub = Text("mode: demo (mocks)   cluster: —   namespace: —",
+                   style="dim yellow")
     pieces: List[RenderableType] = [head, sub]
     # Toasts efêmeros (snapshot salvo, etc) aparecem como linha extra
     # discreta no head — não quebram o layout das views.
@@ -510,14 +587,38 @@ class DashboardView(View):
 
     def render(self, app: "PanelApp") -> RenderableType:
         layout = Layout()
-        layout.split_column(
+        local_rows = _local_process_rows(self.data)
+        has_locals = bool(local_rows)
+        k8s_on = (self.data is not None and self.data.context is not None
+                  and self.data.context.k8s_available)
+        # Três layouts possíveis no slot superior:
+        # - híbrido (k8s + local): split lado a lado (PODS | LOCAL)
+        # - só local: LOCAL ocupa o slot inteiro (PODS estaria vazio)
+        # - só k8s (ou demo): PODS ocupa o slot inteiro (layout legado)
+        children = [
             Layout(_head_panel(self.title, app), name="head", size=4),
-            Layout(self._pods_panel(), name="pods", size=10),
+        ]
+        if has_locals and k8s_on:
+            children.append(Layout(name="top_row", size=10))
+        elif has_locals:
+            children.append(Layout(
+                self._local_processes_panel(local_rows),
+                name="local", size=10,
+            ))
+        else:
+            children.append(Layout(self._pods_panel(), name="pods", size=10))
+        children.extend([
             Layout(name="middle", size=8),
             Layout(self._activity_panel(), name="activity"),
             Layout(name="bottom", size=5),
             Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
-        )
+        ])
+        layout.split_column(*children)
+        if has_locals and k8s_on:
+            layout["top_row"].split_row(
+                Layout(self._pods_panel()),
+                Layout(self._local_processes_panel(local_rows)),
+            )
         layout["middle"].split_row(
             Layout(self._pipeline_panel()),
             Layout(self._alerts_panel()),
@@ -556,6 +657,29 @@ class DashboardView(View):
         return Panel(tbl, title="[bold]PODS[/bold]",
                      title_align="left", border_style="cyan")
 
+    def _local_processes_panel(self, rows: List[PodRow]) -> Panel:
+        """Painel paralelo ao PODS para processos DEILE no host."""
+        tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
+        tbl.add_column(" ", width=2, no_wrap=True)
+        tbl.add_column("pid/role", style="bold")
+        tbl.add_column("rss", width=6)
+        tbl.add_column("up", width=5)
+        tbl.add_column("cpu", width=5, justify="right")
+        tbl.add_column("doing now", no_wrap=False)
+        for p in rows:
+            icon_style = "bold yellow" if p.busy else "green"
+            doing_style = "bold yellow" if p.busy else "dim"
+            tbl.add_row(
+                Text(p.icon, style=icon_style),
+                p.name,
+                Text(p.status, style="dim"),
+                p.age,
+                p.restarts,
+                Text(p.doing_now, style=doing_style),
+            )
+        return Panel(tbl, title="[bold]LOCAL PROCESSES[/bold] (host)",
+                     title_align="left", border_style="magenta")
+
     def _pipeline_panel(self) -> Panel:
         if self.data is None:
             running = demo.PIPELINE["running_for_human"]
@@ -575,6 +699,15 @@ class DashboardView(View):
             summary = ps.last_action_summary
             dispatches = ps.dispatches_24h
             mentions = ps.mentions_24h
+            # Fallback elegante quando o pipeline k8s não tem dados (ex:
+            # rodando só localmente). Usa o LocalLogsState como proxy do
+            # "pipeline" — quem está orquestrando.
+            if (ps.last_action_ts is None
+                    and self.data.local_logs is not None):
+                ls = self.data.local_logs.get()
+                if ls.last_action_ts is not None:
+                    last_age = _fmt_age(ls.last_action_age_s) + " ago (local)"
+                    summary = ls.last_action_summary
             snap = self.data.github.get()
             issue_states = snap.issue_states
             pr_states = snap.pr_states
@@ -796,20 +929,76 @@ class _LogStreamer:
 
 
 class PodPickerView(View):
-    """Lista pods selecionável com setas / Enter abre o PodWatch."""
+    """Lista pods selecionável + ações de ciclo-de-vida.
+
+    Hotkeys (além do enter pra abrir o PodWatch):
+
+    - ``x`` — encerra o pod/processo selecionado (k8s: ``kubectl delete pod``;
+      local: SIGTERM com escalation SIGKILL após 5s).
+    - ``r`` — rollout restart do Deployment do pod (só k8s; em local mostra
+      "não suportado").
+    - ``R`` — rollout restart de TODOS os 4 deployments do stack k8s, em
+      paralelo declarativo (loop best-effort: uma falha não aborta as
+      demais).
+
+    Toda ação destrutiva passa por confirmação inline ([y] confirma /
+    qualquer outra cancela) e emite ``AuditEvent(COMMAND_EXECUTED)``.
+    """
 
     name = "pod-picker"
     title = "Selecionar pod"
     refresh_s = 1.0
 
-    HOTKEYS = "[↑/↓] navega   [enter] entra   [esc] volta   [q] sai"
+    HOTKEYS = (
+        "[↑/↓] navega   [enter] entra   "
+        "[x] kill   [r] restart   [R] restart-all-k8s   "
+        "[esc] volta   [q] sai"
+    )
 
     def __init__(self, data: Optional[PanelData] = None):
         self.data = data
         self.cursor = 0
+        # Confirmação inline: None = ocioso; "x"/"r"/"R" = aguardando [y]/[n].
+        # Quando setado, o handler pula a navegação até resolver.
+        self.confirm_action: Optional[str] = None
+        # Texto do último resultado pra renderizar no panel de feedback;
+        # ``last_ok`` controla a cor (verde ok / vermelho erro / amarelo info).
+        self.last_msg: str = ""
+        self.last_ok: Optional[bool] = None
 
     def _rows(self) -> List[PodRow]:
-        return _pod_rows(self.data)
+        """Lista pods do cluster + processos locais (na ordem natural)."""
+        return _pod_rows(self.data) + _local_process_rows(self.data)
+
+    @staticmethod
+    def _deployment_for_role(role: str) -> Optional[str]:
+        """Mapeia role do pod k8s pro nome do Deployment.
+
+        Retorna None para roles locais (``local-*``) ou desconhecidas —
+        sinal para o handler de ``r`` recusar a ação.
+        """
+        mapping = {
+            "pipeline": "deile-pipeline",
+            "worker":   "deile-worker",
+            "bot":      "deilebot",
+            "shell":    "deile-shell",
+        }
+        return mapping.get(role)
+
+    @staticmethod
+    def _pid_from_local_row(row: PodRow) -> Optional[int]:
+        """Extrai PID de um row local — formato ``local-<role>#<pid>``.
+
+        Retorna None se o formato não bater (defensivo; nunca deve
+        acontecer na prática porque ``LocalProcessInfo.name`` sempre
+        produz essa forma).
+        """
+        if not row.name or "#" not in row.name:
+            return None
+        try:
+            return int(row.name.rsplit("#", 1)[1])
+        except (ValueError, IndexError):
+            return None
 
     def render(self, app: "PanelApp") -> RenderableType:
         rows = self._rows()
@@ -835,42 +1024,344 @@ class PodPickerView(View):
                 p.age,
                 Text(p.doing_now, style="dim"),
             )
+
+        # Painel de confirmação OU feedback da última ação. Mutuamente
+        # exclusivos — a confirmação aparece enquanto está pendente, e
+        # depois o feedback fica visível até a próxima ação (ou refresh).
+        confirm_panel = self._confirm_panel(rows)
+
+        body = Layout(name="body")
+        if confirm_panel is not None:
+            body.split_column(
+                Layout(Panel(tbl, title="[bold]escolha um pod para assistir[/bold]",
+                             title_align="left", border_style="cyan"),
+                       name="list"),
+                Layout(confirm_panel, name="confirm", size=7),
+            )
+        else:
+            body.update(Panel(tbl,
+                              title="[bold]escolha um pod para assistir[/bold]",
+                              title_align="left", border_style="cyan"))
+
         layout = Layout()
         layout.split_column(
             Layout(_head_panel(self.title, app), name="head", size=4),
-            Layout(Panel(tbl, title="[bold]escolha um pod para assistir[/bold]",
-                         title_align="left", border_style="cyan"),
-                   name="body"),
+            body,
             Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
         )
         return layout
 
+    def _confirm_panel(self, rows: List[PodRow]) -> Optional[Panel]:
+        """Renderiza o painel de confirmação OU o feedback da última ação."""
+        if self.confirm_action is not None:
+            text = self._describe_pending(rows)
+            again = self.confirm_action
+            return Panel(
+                Text.from_markup(
+                    text + "\n\n[bold yellow]Confirma?[/bold yellow] "
+                    f"[bold green][y][/bold green] ou [bold green][{again}][/bold green] "
+                    "novamente aplica  /  qualquer outra cancela",
+                ),
+                title="[bold]CONFIRMAR AÇÃO[/bold]",
+                title_align="left", border_style="yellow",
+            )
+        if self.last_msg:
+            border = ("green" if self.last_ok is True
+                      else "red" if self.last_ok is False
+                      else "yellow")
+            style = ("bold green" if self.last_ok is True
+                     else "bold red" if self.last_ok is False
+                     else "bold yellow")
+            return Panel(
+                Text(self.last_msg, style=style),
+                title="[bold]ÚLTIMA AÇÃO[/bold]",
+                title_align="left", border_style=border,
+            )
+        return None
+
+    def _describe_pending(self, rows: List[PodRow]) -> str:
+        """Texto humano do que vai ser executado se o operador confirmar."""
+        if self.confirm_action == "R":
+            return (
+                "[bold]rollout restart ALL[/bold] — todos os 4 deployments k8s "
+                "(deile-pipeline, deile-worker, deilebot, deile-shell).\n"
+                "Cada Deployment respeita sua strategy (RollingUpdate / Recreate)."
+            )
+        if not rows:
+            return "(nenhum pod selecionado)"
+        row = rows[min(self.cursor, len(rows) - 1)]
+        if self.confirm_action == "x":
+            if row.role.startswith("local-"):
+                pid = self._pid_from_local_row(row)
+                return (
+                    f"[bold]kill local[/bold] pid={pid} "
+                    f"([cyan]{row.name}[/cyan])\n"
+                    "SIGTERM, com escalation pra SIGKILL após 5s se ignorado."
+                )
+            return (
+                f"[bold]kubectl delete pod[/bold] [cyan]{row.name}[/cyan] "
+                f"(role={row.role})\n"
+                "O Deployment vai recriar o pod em segundos."
+            )
+        if self.confirm_action == "r":
+            dep = self._deployment_for_role(row.role)
+            return (
+                f"[bold]kubectl rollout restart deployment/{dep}[/bold] "
+                f"(pod selecionado: [cyan]{row.name}[/cyan])\n"
+                "Reinicia TODOS os pods deste Deployment com a strategy do manifest."
+            )
+        return f"ação desconhecida: {self.confirm_action!r}"
+
     def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
+        # Resolução de confirmação SEMPRE primeiro — outras teclas ficam
+        # mortas até o operador decidir. Padrão alinhado com ActionsView /
+        # ModelSwitcherView.
+        if self.confirm_action is not None:
+            return self._handle_confirmation(key)
+
         rows = self._rows()
         n = len(rows)
-        if n == 0:
-            return ActionResult()
-        if key in ("UP", "k"):
+        if key in ("UP", "k") and n:
             self.cursor = (self.cursor - 1) % n
             return ActionResult.refresh()
-        if key in ("DOWN", "j"):
+        if key in ("DOWN", "j") and n:
             self.cursor = (self.cursor + 1) % n
             return ActionResult.refresh()
-        if key in ("\r", "\n"):
+        if key in ("\r", "\n") and n:
             pod = rows[self.cursor]
             return ActionResult.nav("pod-watch", pod_name=pod.name,
                                     pod_role=pod.role)
+
+        # Ações destrutivas — abrem confirmação. ``R`` (maiúsculo) cobre
+        # restart-all independente da row selecionada; ``x``/``r`` operam
+        # na row sob o cursor (e exigem que haja alguma).
+        if key == "R":
+            self.last_msg = ""
+            self.last_ok = None
+            self.confirm_action = "R"
+            return ActionResult.refresh()
+        if key in ("x", "r"):
+            if n == 0:
+                self.last_msg = "nenhum pod selecionável"
+                self.last_ok = False
+                return ActionResult.refresh()
+            row = rows[self.cursor]
+            # ``r`` em row local não é suportado (não há "rollout" de PID;
+            # use ``x`` pra matar e o operador re-executa manualmente).
+            if key == "r" and row.role.startswith("local-"):
+                self.last_msg = (
+                    f"restart não suportado em processo local "
+                    f"({row.name}) — use [x] pra matar"
+                )
+                self.last_ok = False
+                return ActionResult.refresh()
+            self.last_msg = ""
+            self.last_ok = None
+            self.confirm_action = key
+            return ActionResult.refresh()
         return ActionResult()
+
+    def _handle_confirmation(self, key: str) -> ActionResult:
+        """Aplica ou cancela a ação pendente.
+
+        Aceita confirmação por:
+          1. ``y`` — universal (igual ao padrão de outras views).
+          2. Repetir a própria tecla da ação (``x x``, ``r r``, ``R R``) —
+             double-tap muscle-memory: o operador apertou ``x`` querendo
+             matar, apertar ``x`` de novo confirma sem mover a mão.
+
+        Qualquer outra tecla cancela (default-deny preservado).
+        """
+        action = self.confirm_action
+        if key == "y" or key == action:
+            try:
+                self._apply(action)
+            finally:
+                self.confirm_action = None
+            return ActionResult.refresh()
+        from _panel_data import _audit_pod_action  # noqa: PLC0415
+        _audit_pod_action(
+            action or "?", resource="pending-confirmation",
+            result="cancelled",
+            detail=f"operador cancelou ({key!r})",
+        )
+        self.confirm_action = None
+        self.last_msg = "cancelado pelo operador"
+        self.last_ok = None
+        return ActionResult.refresh()
+
+    def _apply(self, action: Optional[str]) -> None:
+        """Executa a ação destrutiva confirmada e popula last_msg/last_ok."""
+        if self.data is None:
+            self.last_msg = "modo demo — nenhuma ação aplicada"
+            self.last_ok = False
+            return
+        from _panel_data import (delete_pod,  # noqa: PLC0415
+                                  kill_local_pid,
+                                  rollout_restart_all,
+                                  rollout_restart_deployment)
+
+        rows = self._rows()
+        if action == "R":
+            results = rollout_restart_all()
+            all_ok = all(ok for _, ok, _ in results)
+            self.last_ok = all_ok
+            self.last_msg = " | ".join(
+                f"{dep}: {'OK' if ok else 'FAIL'} ({m[:40]})"
+                for dep, ok, m in results
+            )
+            return
+        if not rows:
+            self.last_msg = "lista vazia — nada a aplicar"
+            self.last_ok = False
+            return
+        row = rows[min(self.cursor, len(rows) - 1)]
+        if action == "x":
+            if row.role.startswith("local-"):
+                pid = self._pid_from_local_row(row)
+                if pid is None:
+                    self.last_msg = f"PID inválido na linha {row.name!r}"
+                    self.last_ok = False
+                    return
+                ok, msg = kill_local_pid(pid)
+            else:
+                ok, msg = delete_pod(row.name)
+            self.last_ok = ok
+            self.last_msg = msg
+            return
+        if action == "r":
+            dep = self._deployment_for_role(row.role)
+            if dep is None:
+                self.last_msg = (
+                    f"role {row.role!r} não tem Deployment associado"
+                )
+                self.last_ok = False
+                return
+            ok, msg = rollout_restart_deployment(dep)
+            self.last_ok = ok
+            self.last_msg = msg
+            return
+        self.last_msg = f"ação desconhecida: {action!r}"
+        self.last_ok = False
+
+
+class _LocalLogTailer:
+    """Equivalente ao `_LogStreamer` mas para `~/.deile/logs/deile.log`.
+
+    Usa `tail -F` (segue rotação) quando disponível; caso ausente, faz
+    polling-from-end manual num thread. Encerra com SIGTERM/SIGKILL como
+    o `_LogStreamer`. Buffer rolling com mesma API (`snapshot`, `buf`).
+    """
+
+    def __init__(self, log_path: Path, tail_lines: int = 50,
+                 maxlen: int = 400):
+        tail = shutil.which("tail")
+        self._cmd = ([tail, "-F", "-n", str(tail_lines), str(log_path)]
+                     if tail else None)
+        self._log_path = log_path
+        self.buf: Deque[str] = deque(maxlen=maxlen)
+        self._proc: Optional[subprocess.Popen] = None
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+        self._maxlen = maxlen
+
+    def start(self) -> None:
+        if self._proc is not None or self._thread is not None:
+            return
+        if self._cmd is not None:
+            try:
+                self._proc = subprocess.Popen(
+                    self._cmd, stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, text=True, bufsize=1,
+                )
+            except OSError as exc:
+                self.buf.append(f"[ERRO] tail falhou: {exc}")
+                self._proc = None
+            else:
+                self._thread = threading.Thread(
+                    target=self._reader, daemon=True,
+                    name="local-log-tail",
+                )
+                self._thread.start()
+                return
+        # Fallback Python puro — polling do EOF a cada 0.5s.
+        self._thread = threading.Thread(
+            target=self._poll_loop, daemon=True, name="local-log-poll",
+        )
+        self._thread.start()
+
+    def _reader(self) -> None:
+        if self._proc is None or self._proc.stdout is None:
+            return
+        for line in self._proc.stdout:
+            if self._stop.is_set():
+                break
+            self.buf.append(line.rstrip())
+
+    def _poll_loop(self) -> None:
+        last_size = 0
+        if self._log_path.is_file():
+            try:
+                last_size = self._log_path.stat().st_size
+            except OSError:
+                last_size = 0
+        while not self._stop.is_set():
+            try:
+                size = self._log_path.stat().st_size if self._log_path.is_file() else 0
+            except OSError:
+                size = 0
+            if size > last_size:
+                try:
+                    with self._log_path.open("rb") as fh:
+                        fh.seek(last_size)
+                        chunk = fh.read(size - last_size).decode(
+                            "utf-8", errors="replace",
+                        )
+                except OSError:
+                    chunk = ""
+                for ln in chunk.splitlines():
+                    if self._stop.is_set():
+                        break
+                    self.buf.append(ln)
+                last_size = size
+            elif size < last_size:
+                # Arquivo rotacionado — reseta o offset.
+                last_size = 0
+            self._stop.wait(timeout=0.5)
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._proc is not None:
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                try:
+                    self._proc.kill()
+                    self._proc.wait(timeout=0.5)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+            except OSError:
+                pass
+            self._proc = None
+        self._thread = None
+
+    def snapshot(self, n: int = 30) -> List[str]:
+        return list(self.buf)[-n:]
+
+
+def _is_local_role(role: str) -> bool:
+    """Helper compartilhado: identifica roles locais (`local-*`)."""
+    return role.startswith("local-")
 
 
 class PodWatchView(View):
-    """Drill-in num pod: header + log live via kubectl logs -f.
+    """Drill-in num pod (ou processo local): header + log live.
 
-    Fase 4 entrega o log streaming e o cabeçalho com o estado atual do
-    pod (via PodsProvider) + busy/idle do worker (via WorkerProvider).
-    Resources (cpu/mem via metrics-server) e o `.deile-progress.md`
-    ficam para refinamento em fase posterior — exigem `kubectl top` /
-    `kubectl exec` extras que valem encapsular como sub-providers.
+    K8s: `kubectl logs -f <pod> --tail=40 --timestamps` via `_LogStreamer`.
+    Local: `tail -F ~/.deile/logs/deile.log` via `_LocalLogTailer`
+    (fallback Python puro se `tail` ausente). Cabeçalho mostra estado
+    do pod (k8s) ou metadados do processo (local-*).
     """
 
     name = "pod-watch"
@@ -884,7 +1375,7 @@ class PodWatchView(View):
         self.data = data
         self.pod_name: str = ""
         self.pod_role: str = ""
-        self.streamer: Optional[_LogStreamer] = None
+        self.streamer: Optional[Any] = None  # _LogStreamer ou _LocalLogTailer
         self.following: bool = True
         # Health-checks lotam o buffer em workers ociosos; por default escondemos.
         self.hide_health: bool = True
@@ -902,10 +1393,23 @@ class PodWatchView(View):
         payload = getattr(app, "last_payload", {}) or {}
         self.pod_name = payload.get("pod_name", "")
         self.pod_role = payload.get("pod_role", "")
-        kubectl = kubectl_bin()
-        if not self.pod_name or kubectl is None:
+        if not self.pod_name:
             return
-        self.streamer = _LogStreamer(kubectl, "deile", self.pod_name,
+        # Dispatch por role: locais → tail de log local; k8s → kubectl logs -f.
+        if _is_local_role(self.pod_role):
+            if self.data is not None and self.data.context is not None:
+                log_path = self.data.context.logs_dir / "deile.log"
+                self.streamer = _LocalLogTailer(log_path, tail_lines=40,
+                                                maxlen=400)
+                self.streamer.start()
+            return
+        kubectl = kubectl_bin()
+        if kubectl is None:
+            return
+        ns = (self.data.context.namespace
+              if self.data is not None and self.data.context is not None
+              else "deile")
+        self.streamer = _LogStreamer(kubectl, ns, self.pod_name,
                                      tail=40, maxlen=400)
         self.streamer.start()
 
@@ -917,6 +1421,9 @@ class PodWatchView(View):
     def _header_body(self) -> RenderableType:
         if self.data is None:
             return Text("(modo demo — sem dados reais do pod)", style="dim yellow")
+        # Locais: lê do LocalProcessesProvider, formato diferente do PodInfo.
+        if _is_local_role(self.pod_role):
+            return self._local_header_body()
         pod = next((p for p in self.data.pods.get() if p.name == self.pod_name), None)
         if pod is None:
             return Text(f"pod `{self.pod_name}` não encontrado.", style="red")
@@ -949,6 +1456,37 @@ class PodWatchView(View):
                 (_fmt_age(wstate.last_activity_s) + " ago"
                  if wstate.last_activity_s is not None else "—", "bold"),
             ))
+        return Group(*lines)
+
+    def _local_header_body(self) -> RenderableType:
+        """Cabeçalho do drill-in para processo local (não k8s)."""
+        if self.data is None or self.data.local_processes is None:
+            return Text("(sem provider local — modo k8s-only?)", style="dim")
+        procs = self.data.local_processes.get()
+        proc = next((p for p in procs if p.name == self.pod_name), None)
+        if proc is None:
+            return Text(
+                f"processo `{self.pod_name}` não encontrado "
+                "(pode ter terminado).",
+                style="red",
+            )
+        lines = [
+            Text.assemble(
+                ("pid: ", "dim"), (str(proc.pid), "bold"),
+                ("   role: ", "dim"), (proc.role, "bold cyan"),
+                ("   cpu: ", "dim"), (f"{proc.cpu_pct:.1f}%", "bold"),
+                ("   rss: ", "dim"), (proc.rss_human, "bold"),
+            ),
+            Text.assemble(
+                ("uptime: ", "dim"), (proc.age_human, "bold"),
+                ("   source: ", "dim"),
+                (str(self.data.context.logs_dir / "deile.log"), "dim"),
+            ),
+            Text.assemble(
+                ("cmd: ", "dim"),
+                (proc.cmd[:120], "dim italic"),
+            ),
+        ]
         return Group(*lines)
 
     def _log_panel(self) -> Panel:
@@ -1432,16 +1970,67 @@ class NotifierEchoView(View):
 
     def _fetch_lines(self) -> List[Dict[str, Any]]:
         # Lê do NotifierProvider (cache TTL 5s) — antes fazia kubectl direto
-        # por render, gerando 12 chamadas/min.
-        if self.data is None or self.data.notifier is None:
-            return []
-        raw_lines = self.data.notifier.get()
+        # por render, gerando 12 chamadas/min. Quando o LocalAuditProvider
+        # está ativo (modo local), mescla os eventos do audit-log local
+        # com os do pod do bot — assim uma execução híbrida (bot local +
+        # k8s pipeline) vê I/O dos dois lados na mesma tela.
         events: List[Dict[str, Any]] = []
-        for line in raw_lines:
-            ev = self._parse_line(line)
-            if ev is not None:
-                events.append(ev)
+        if self.data is not None and self.data.notifier is not None:
+            for line in self.data.notifier.get():
+                ev = self._parse_line(line)
+                if ev is not None:
+                    events.append(ev)
+        if self.data is not None and self.data.local_audit is not None:
+            for ev in self.data.local_audit.get():
+                # Marca origem para a tabela mostrar fonte.
+                if isinstance(ev, dict):
+                    ev = dict(ev)
+                    ev.setdefault("_source", "local")
+                    events.append(ev)
+        # Ordena por `ts` quando presente; eventos sem ts ficam no fim.
+        def _sort_key(ev: Dict[str, Any]) -> str:
+            return str(ev.get("ts") or ev.get("timestamp") or "")
+        events.sort(key=_sort_key)
         return events
+
+    @staticmethod
+    def _normalize_event(ev: Dict[str, Any]) -> tuple:
+        """Extrai (ts, name, status, detail) de evento k8s/bot OU local.
+
+        Bot/k8s shape:    `{ts, event, payload, ...}`
+        Local-audit shape:`{timestamp, event_type, result, actor, details, ...}`
+        """
+        ts_raw = ev.get("ts") or ev.get("timestamp") or ""
+        ts = str(ts_raw)[-19:]
+        # Nome: prefere `event` (bot), depois `event_type` (audit local).
+        # Audit local complementa com `actor` quando útil (ex:
+        # "security_policy_changed [panel:set_preferred_model]").
+        name = str(ev.get("event") or ev.get("event_type") or ev.get("message") or "—")
+        actor = ev.get("actor")
+        if actor and "event" not in ev:
+            name = f"{name} [{actor}]"
+        # Status:
+        # 1) Audit local tem `result` semântico (completed/allowed/denied/failed)
+        # 2) Bot infere do nome do evento (sent/received/failed)
+        result = ev.get("result")
+        if result:
+            status = ({"completed": "OK", "allowed": "OK",
+                       "denied": "DENY", "cancelled": "DENY",
+                       "failed": "FAIL"}.get(str(result).lower(), "—"))
+        elif "sent" in name or "received" in name:
+            status = "OK"
+        elif "failed" in name:
+            status = "FAIL"
+        else:
+            status = "—"
+        # Detail: tenta `payload` (bot) ou `details` (audit local) ou
+        # cai em `resource` (audit local quando details está vazio).
+        payload = ev.get("payload") or ev.get("details") or {}
+        if payload and isinstance(payload, dict):
+            detail = ", ".join(f"{k}={v}" for k, v in payload.items())
+        else:
+            detail = str(ev.get("resource") or "")
+        return ts, name, status, detail
 
     @staticmethod
     def _parse_line(line: str) -> Optional[Dict[str, Any]]:
@@ -1473,35 +2062,36 @@ class NotifierEchoView(View):
             return None
 
     def render(self, app: "PanelApp") -> RenderableType:
-        # Usa o NotifierProvider via _fetch_lines (cache + parse JSON
-        # robusto). Antes desta resolução de merge, render lia direto
-        # de `data.audit` (BotAuditProvider, parser estrito) que foi
-        # substituído pelo NotifierProvider (linhas cruas + parser
-        # JSON-first com fallback regex).
+        # Renderiza eventos vindos de DUAS fontes (campos diferentes):
+        # - k8s/bot audit: `ts`, `event`, `payload`, status implícito no
+        #   nome do evento (`sent`/`received`/`failed`)
+        # - local audit (security_audit.log): `timestamp`, `event_type`,
+        #   `result` (`completed`/`allowed`/`denied`/`failed`), `details`,
+        #   `actor` (e.g. `panel:set_preferred_model`)
+        # `_normalize_event` produz uma tupla uniforme (ts, name, status,
+        # detail) que cobre ambos sem perder informação.
         events = self._fetch_lines()
         if not events:
             body: RenderableType = Text(
-                "Nenhum evento `deilebot.audit` recente.\n\n"
-                "Quando o bot recebe ou envia mensagens, este painel mostra\n"
-                "evento + payload (op, reason, channel, etc).",
+                "Nenhum evento de audit recente.\n\n"
+                "Aparece aqui: I/O do bot (DM enviada/recebida) E qualquer\n"
+                "ação privilegiada do painel local (trocar modelo, ações\n"
+                "destrutivas), via ~/.deile/logs/security_audit.log.",
                 style="dim",
             )
         else:
             tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
             tbl.add_column("ts", width=20, style="dim")
-            tbl.add_column("event", width=22, style="bold")
+            tbl.add_column("event", width=26, style="bold")
             tbl.add_column("status", width=10)
             tbl.add_column("detail")
             for ev in events[-20:]:
-                ts = (ev.get("ts", "") or "")[-19:]
-                name = ev.get("event") or ev.get("message", "")
-                ok = "OK" if "sent" in name or "received" in name else \
-                     "FAIL" if "failed" in name else "—"
-                ok_style = "green" if ok == "OK" else \
-                           "red" if ok == "FAIL" else "dim"
-                payload = ev.get("payload") or {}
-                detail = ", ".join(f"{k}={v}" for k, v in payload.items())
-                tbl.add_row(ts, name, Text(ok, style=f"bold {ok_style}"),
+                ts, name, status, detail = self._normalize_event(ev)
+                ok_style = ("green" if status == "OK"
+                            else "red" if status == "FAIL"
+                            else "yellow" if status == "DENY"
+                            else "dim")
+                tbl.add_row(ts, name, Text(status, style=f"bold {ok_style}"),
                             Text(detail[:60], style="dim"))
             body = tbl
         layout = Layout()
@@ -1654,26 +2244,87 @@ class ActionsView(View):
         self.last_action: str = ""
         self.confirm_for: Optional[_ActionSpec] = None
 
-    @staticmethod
-    def _actions() -> List[_ActionSpec]:
-        # `python3 infra/k8s/deploy.py` resolvido em runtime — o painel vive
-        # dentro do mesmo repo.
+    def _actions(self) -> List[_ActionSpec]:
+        """Ações disponíveis no contexto vigente.
+
+        K8s: lista completa quando `k8s_available`; apenas `status` (a
+        única não-mutadora) quando cluster ausente — evita oferecer
+        `restart`/`down`/etc que falhariam sem cluster.
+
+        Locais: aparecem quando `context.local_available` — operações de
+        inspeção (tail/open dir/ps). Não-mutadoras por padrão.
+
+        Limite prático de 9 itens visíveis (hotkeys [1-9] no
+        `handle_key`); o conjunto k8s+local cabe naturalmente porque um
+        deles é reduzido quando o outro não está disponível.
+        """
         repo_root = str(Path(__file__).resolve().parent.parent.parent)
         py = sys.executable
         deploy = f"{repo_root}/infra/k8s/deploy.py"
+        k8s_on = (self.data is not None and self.data.context is not None
+                  and self.data.context.k8s_available)
         # `--yes` pula confirmação interna do deploy.py — a confirmação aqui
         # é nossa, na view, antes de chamar.
-        return [
-            _ActionSpec("status",            [py, deploy, "k8s", "status"]),
-            _ActionSpec("restart",           [py, deploy, "k8s", "restart", "--yes"], mutates=True),
-            _ActionSpec("build (no restart)",[py, deploy, "k8s", "build", "--yes"], mutates=True),
-            _ActionSpec("build + restart",   [py, deploy, "k8s", "build", "--restart", "--yes"], mutates=True),
-            _ActionSpec("up (provisiona)",   [py, deploy, "k8s", "up", "--yes"], mutates=True),
-            _ActionSpec("stop (scale 0)",    [py, deploy, "k8s", "stop", "--yes"], mutates=True),
-            _ActionSpec("start (scale 1)",   [py, deploy, "k8s", "start", "--yes"], mutates=True),
-            _ActionSpec("test (Job one-shot)",[py, deploy, "k8s", "test", "--yes"], mutates=True),
-            _ActionSpec("DOWN (apaga ns)",   [py, deploy, "k8s", "down", "--yes"], destructive=True, mutates=True),
-        ]
+        if k8s_on:
+            actions: List[_ActionSpec] = [
+                _ActionSpec("status",             [py, deploy, "k8s", "status"]),
+                _ActionSpec("restart",            [py, deploy, "k8s", "restart", "--yes"], mutates=True),
+                _ActionSpec("build (no restart)", [py, deploy, "k8s", "build", "--yes"], mutates=True),
+                _ActionSpec("build + restart",    [py, deploy, "k8s", "build", "--restart", "--yes"], mutates=True),
+                _ActionSpec("up (provisiona)",    [py, deploy, "k8s", "up", "--yes"], mutates=True),
+                _ActionSpec("stop (scale 0)",     [py, deploy, "k8s", "stop", "--yes"], mutates=True),
+                _ActionSpec("start (scale 1)",    [py, deploy, "k8s", "start", "--yes"], mutates=True),
+                _ActionSpec("test (Job one-shot)",[py, deploy, "k8s", "test", "--yes"], mutates=True),
+                _ActionSpec("DOWN (apaga ns)",    [py, deploy, "k8s", "down", "--yes"], destructive=True, mutates=True),
+            ]
+        else:
+            # Sem k8s: só status (que dirá "cluster inacessível" — útil
+            # como verificação rápida); resto fica oculto.
+            actions = [
+                _ActionSpec("status (k8s offline)", [py, deploy, "k8s", "status"]),
+            ]
+        actions.extend(self._local_actions())
+        return actions[:9]  # respeita o limite de hotkeys [1-9]
+
+    def _local_actions(self) -> List[_ActionSpec]:
+        """Ações local-mode — só listadas quando há contexto/local disponível."""
+        if (self.data is None or self.data.context is None
+                or not self.data.context.local_available):
+            return []
+        ctx = self.data.context
+        opener = shutil.which("open") or shutil.which("xdg-open")
+        tail = shutil.which("tail")
+        ps = shutil.which("ps")
+        actions: List[_ActionSpec] = []
+        if tail is not None:
+            actions.append(_ActionSpec(
+                "[local] tail deile.log (n=80)",
+                [tail, "-n", "80", str(ctx.logs_dir / "deile.log")],
+                audit_action="local_tail_log",
+            ))
+            actions.append(_ActionSpec(
+                "[local] tail security_audit (n=40)",
+                [tail, "-n", "40", str(ctx.logs_dir / "security_audit.log")],
+                audit_action="local_tail_audit",
+            ))
+        if ps is not None:
+            actions.append(_ActionSpec(
+                "[local] ps deile-like",
+                [ps, "-axo", "pid,pcpu,rss,etime,command"],
+                audit_action="local_ps",
+            ))
+        if opener is not None:
+            actions.append(_ActionSpec(
+                "[local] open logs dir",
+                [opener, str(ctx.logs_dir)],
+                audit_action="local_open_logs",
+            ))
+            actions.append(_ActionSpec(
+                "[local] open sessions dir",
+                [opener, str(ctx.sessions_dir)],
+                audit_action="local_open_sessions",
+            ))
+        return actions
 
     def render(self, app: "PanelApp") -> RenderableType:
         actions = self._actions()
@@ -1837,6 +2488,35 @@ class ModelSwitcherView(View):
     def render(self, app: "PanelApp") -> RenderableType:
         models = self._models()
         current = self._current()
+
+        # Sem k8s, troca via `kubectl set env` não roda — mostra aviso
+        # honesto em vez de prometer ação que falharia silenciosa.
+        k8s_on = (self.data is not None and self.data.context is not None
+                  and self.data.context.k8s_available)
+        if not k8s_on and self.data is not None:
+            body = Group(
+                Align.center(Text("Modelo de runtime — só k8s",
+                                  style="bold yellow")),
+                Text(),
+                Align.center(Text(
+                    "A troca usa `kubectl set env deploy/...` (rollout).",
+                    style="dim")),
+                Align.center(Text(
+                    "Em modo local, ajuste o modelo via `model_providers.yaml`",
+                    style="dim")),
+                Align.center(Text(
+                    "ou via `DEILE_PREFERRED_MODEL` no seu shell.",
+                    style="dim")),
+                Text(),
+                Align.center(Text("[esc] volta", style="dim")),
+            )
+            layout = Layout()
+            layout.split_column(
+                Layout(_head_panel(self.title, app), name="head", size=4),
+                Layout(Panel(body, border_style="dim"), name="body"),
+                Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
+            )
+            return layout
 
         # Header com targets + valor atual
         target_pretty = {"worker": "deile-worker",
@@ -2004,10 +2684,11 @@ class ModelSwitcherView(View):
             for dep in deployments:
                 prev_slugs[dep] = current_snap.get(dep)
 
+        ns = self.data.context.namespace if self.data.context else "deile"
         results: List[tuple] = []
         rolled_back: List[str] = []
         for dep in deployments:
-            ok, msg = pd_set_preferred_model(dep, slug)
+            ok, msg = pd_set_preferred_model(dep, slug, namespace=ns)
             results.append((dep, ok, msg))
             # `len(deployments) > 1` é implícito: para `len == 1`,
             # `results[:-1]` é sempre vazio, logo `any(...)` é False.
@@ -2024,7 +2705,7 @@ class ModelSwitcherView(View):
                         # (era default-do-settings). Registra no alerta final.
                         rolled_back.append(f"{prev_dep}:sem-prev")
                         continue
-                    rb_ok, rb_msg = pd_set_preferred_model(prev_dep, prev)
+                    rb_ok, rb_msg = pd_set_preferred_model(prev_dep, prev, namespace=ns)
                     status = "rb-ok" if rb_ok else "rb-fail"
                     # Inclui prefixo curto do output (até 30 chars) — útil
                     # pra distinguir "kubectl ausente" de "permission denied"
@@ -2274,6 +2955,12 @@ class PanelApp:
             self.settings.refresh_mult = max(self.settings.refresh_mult / 2, 0.25)
             return True
         if key == "r":
+            # PodPickerView reivindica `r` como "rollout restart do pod
+            # selecionado". Cedemos a tecla pra view — o operador ainda
+            # pode forçar refresh via `+`/`-` (cadência) ou aguardar o
+            # próximo tick. Demais views mantêm o comportamento original.
+            if self.current_view.name == "pod-picker":
+                return False
             self._last_render = 0.0       # força próximo tick a renderizar
             if self.data is not None:
                 self.data.force_refresh_all()
@@ -2383,25 +3070,40 @@ def _build_views(data: Optional[PanelData] = None) -> Dict[str, View]:
     }
 
 
-def run_panel() -> int:
+def run_panel(context: "Optional[Any]" = None,
+              force_demo: bool = False) -> int:
     """Entry point chamado pelo `deploy.py panel`.
 
-    Tenta levantar os providers reais (kubectl/gh/SQLite). Se `kubectl`
-    não existe, cai em modo demo (mocks) com aviso — UI ainda abre.
+    Levanta os providers reais. Suporta 3 modos:
+
+    1. **K8s + local** (default): detecta automaticamente kubectl/cluster
+       e processos locais, mostra tudo lado a lado.
+    2. **Forçado** via `context` (com `k8s_force=True` ou `local_force=True`).
+    3. **Demo** (`force_demo=True`): mocks puros, útil quando nada está
+       no ar e o operador quer ver a UX.
+
+    Diferente da versão anterior, **não cai em demo automaticamente** —
+    se k8s estiver fora mas há logs locais, o painel renderiza só os
+    locais (modo "local only"). Demo agora exige opt-in explícito.
     """
-    try:
-        data: Optional[PanelData] = PanelData.default()
-        # Toque inicial pra detectar fonte morta cedo (sem custo perceptível —
-        # o provider mais pesado é o gh, mas cai em fallback se falhar).
-        data.pods.get()
-    except Exception:  # noqa: BLE001
-        # Sem log, falhas de bootstrap (kubectl absent, gh com auth ruim,
-        # PyYAML missing etc.) cairiam silenciosamente em modo demo,
-        # confundindo o operador que vê dados sintéticos sem saber por quê.
-        logger.warning(
-            "falha bootstrap providers, caindo em modo demo", exc_info=True,
-        )
-        data = None
+    # Import local para evitar import circular no topo.
+    from _panel_data import RuntimeContext  # noqa: PLC0415
+
+    if force_demo:
+        data: Optional[PanelData] = None
+    else:
+        ctx = context if context is not None else RuntimeContext.detect()
+        try:
+            data = PanelData.from_context(ctx)
+            # Toque inicial pra detectar fontes mortas cedo sem custo
+            # perceptível (cada provider cai em fallback se falhar).
+            data.pods.get()
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "falha bootstrap providers, caindo em modo demo",
+                exc_info=True,
+            )
+            data = None
 
     app = PanelApp(_build_views(data), data=data)
     try:

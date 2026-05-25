@@ -78,8 +78,11 @@ class AuditLogger:
         self.log_file = self.log_dir / log_file
         self.session_id = self._generate_session_id()
         
-        # Ensure log directory exists
-        self.log_dir.mkdir(exist_ok=True)
+        # Ensure log directory exists. ``parents=True`` is required because the
+        # default location is ``~/.deile/logs`` and the ``~/.deile`` parent does
+        # not exist on fresh installs — without it the constructor raised
+        # ``FileNotFoundError`` and prevented the security module from loading.
+        self.log_dir.mkdir(parents=True, exist_ok=True)
         
         # Setup structured logging
         self.logger = logging.getLogger("deile.security.audit")

@@ -1,6 +1,6 @@
 # 04 — Modelo de Componentes
 
-> Interfaces e registries dos quatro tipos de componentes plugáveis: **Tools, Commands, Parsers, Personas**. Catalogações e contagens em [`00-VISAO-GERAL.md`](00-VISAO-GERAL.md). Templates em [`12-PADROES-CODIGO.md`](12-PADROES-CODIGO.md).
+> Interfaces e registries dos cinco tipos de componentes plugáveis: **Tools, Commands, Parsers, Personas, Skills**. Catalogações e contagens em [`00-VISAO-GERAL.md`](00-VISAO-GERAL.md). Templates em [`12-PADROES-CODIGO.md`](12-PADROES-CODIGO.md).
 
 ## Tools
 
@@ -154,6 +154,72 @@ As cinco tools abaixo expõem o pipeline e o agendador para o LLM, permitindo qu
 | Integração com memória | `deile/personas/memory/integration.py` | Python |
 | Integração com auditoria | `deile/personas/audit_integration.py` | Python |
 
+## Skills
+
+> Unidade composável de expertise — arquivo Markdown com frontmatter YAML que pode entrar no prompt automaticamente (via `triggers`) **ou** ser invocada explicitamente pelo LLM (tool `invoke_skill`) **ou** disparada manualmente pelo usuário (slash command `/<name>`). Decisão #34 em [`DECISOES.md`](DECISOES.md).
+
+### Interface (em `deile/skills/base.py` e `deile/skills/loader.py`)
+
+| Símbolo | Tipo | Papel |
+|---|---|---|
+| `Skill` | dataclass | `name`, `description`, `body`, `triggers`, `priority`, `source`, `kind`, `source_path`. Campo `content` é alias de `body` |
+| `SkillTrigger` | dataclass frozen | `file_globs`, `code_block_langs`, `keywords`, `file_content_patterns`. Vazio = skill só responde a invocação explícita |
+| `parse_skill_text(text, path, *, source, kind, force_uppercase_name)` | função | Parser tolerante — retorna `Skill` ou `None` com warning. Aceita CRLF |
+| `SkillLoader` | classe | `load_file(path)` (lança `SkillLoadError`) + `load_directory(dir)` (skip-with-warning) |
+| `SkillSelectionContext` | dataclass frozen | Entrada do router por turno: `user_input` + `file_references` |
+| `BootstrapResult` | dataclass | `router` + `watcher` (opcional) — devolvido por `bootstrap_skills_with_handle` |
+
+### Registry (`SkillRegistry` em `deile/skills/registry.py`)
+
+| Aspecto | Detalhe |
+|---|---|
+| Acessor singleton | `get_skill_registry()` — thread-safe (double-checked locking) |
+| Thread-safety | Cada mutação/leitura é guardada por `RLock`. `replace_all(skills)` faz swap atômico — readers nunca veem estado parcial durante hot-reload |
+| Localização das skills | Cinco diretórios em ordem de prioridade crescente: `deile/skills/library/` (bundled) → `~/.deile/skills/` → `~/.claude/commands/` (UPPERCASE) → `<cwd>/.deile/skills/` → `<cwd>/.claude/commands/` (UPPERCASE) + extras de `SettingsManager` |
+| Override | Source posterior substitui anterior em colisão de nome — projeto pode sobrescrever bundled, usuário pode sobrescrever projeto |
+| Auto-discovery | `bootstrap_skills(...)` em `deile/skills/bootstrap.py` resolve via `default_scan_order()` |
+
+### Router (`SkillRouter` em `deile/skills/router.py`)
+
+| Operação | Método | Notas |
+|---|---|---|
+| Seleção por turno | `select_skills(SkillSelectionContext)` | Avalia os 4 tipos de trigger; ordena por `(-priority, name)`; corta em `max_skills_per_turn` (default 4, configurável em `skills.yaml`) |
+| Renderização do bloco ativo | `render_block(skills)` | Gera `## Active Skills` + body de cada skill, anexado ao system prompt |
+| Renderização do catálogo | `render_catalog(exclude_names)` | Gera `## Available Skills` com diretiva imperativa + exemplo concreto + listagem (`name`/`description`/trigger hint) das skills não-disparadas |
+| Triggers suportados | — | `file_globs` (glob fnmatch), `code_block_langs` (case-insensitive), `keywords` (word-boundary regex), `file_content_patterns` (regex MULTILINE, 4 KiB de sample por arquivo, cache por turno, **path-traversal containment** via `_resolve_within`) |
+
+### Hot-reload (`SkillsWatcher` em `deile/skills/watcher.py`)
+
+| Aspecto | Detalhe |
+|---|---|
+| Tecnologia | `watchdog.observers.Observer` (mesma stack de `deile/plugins/hot_loader.py`) |
+| Diretórios observados | Os mesmos resolvidos por `default_scan_order()` que existirem em disco |
+| Debounce | `threading.Timer` 0,5 s coalesce bursts de write do editor |
+| Serialização | `_RELOAD_LOCK` impede reloads sobrepostos (manual + watcher, ou dois eventos durante rescan) |
+| Atomicidade | `reload_registry` → `SkillRegistry.replace_all(skills)` em um único lock |
+| Ciclo | `start()` retorna `False` + warning quando watchdog indisponível ou nenhum diretório existe; `stop()` é idempotente e dá join no observer |
+
+### Acesso pelo LLM — function-call tools (`deile/tools/skill_tools.py`)
+
+| Tool | Propósito |
+|---|---|
+| `list_skills` | Retorna catálogo machine-readable (todas as skills + descrição + dica de trigger) |
+| `invoke_skill(name)` | Retorna o body da skill nomeada. Erro com lista de até 25 nomes disponíveis (hint para `list_skills` se mais) quando o nome não existe |
+
+Ambas são auto-descobertas via `DEFAULT_TOOL_PACKAGES` — `deile/tools/skill_tools.py` está na lista.
+
+### Slash commands
+
+`deile/commands/skill_loader.py` é um **shim de backward-compat**. Delega para `deile.skills` mas:
+
+- Filtra skills `source=="bundled"` antes do bridge — bundled não vira `/<name>` (só auto-trigger + tool)
+- Pre-detecta colisões com built-ins antes do bridge para que o warning saia do logger deste módulo (testes legados patcham `sl_mod.logger.warning`)
+- Exporta `SkillDefinition` (alias de `Skill`), `_normalize_name`, `_parse_skill_file`, `_VALID_NAME_RE`, `_FRONTMATTER_RE`, `_list_md_files` que testes antigos importam diretamente
+
+### Comando `/skills` (já existia)
+
+`deile/commands/builtin/skills_command.py` gerencia paths extras via `SettingsManager.add_skills_path` / `remove_skills_path` (escopo `global` ou `project`). O comando aciona `agent.reload_skills()` para hot-reload pós-mudança.
+
 ## Como adicionar um novo componente
 
 > Templates concretos em [`12-PADROES-CODIGO.md`](12-PADROES-CODIGO.md).
@@ -164,3 +230,4 @@ As cinco tools abaixo expõem o pipeline e o agendador para o LLM, permitindo qu
 | Slash command | Subclasse de `SlashCommand` em `deile/commands/builtin/`, definir `name`, `description`, `aliases`, implementar `async execute()`; o registry descobre |
 | Parser | Subclasse de `Parser` (ou `RegexParser`) em `deile/parsers/`, implementar `can_parse` (rápido, síncrono) e `parse` (síncrono); opcionalmente `parse_async` para I/O; definir `priority`; registrar |
 | Persona | Criar instrução em `deile/personas/instructions/<id>.md` e config em `deile/personas/library/<id>.yaml`; mapeamento em `deile/config/persona_config.yaml` |
+| Skill | Criar `*.md` com frontmatter (`name`, `description`, `triggers`, `priority`) num dos 5 diretórios de scan; **nenhum código Python**. Hot-reload pega em 0,5 s |

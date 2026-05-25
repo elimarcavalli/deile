@@ -5,13 +5,12 @@ Cobre:
   * Parser de argumentos da linha de comando do slash
   * build_prompt() — contém todos os dados coletados (assert do "o prompt
     do LLM inclui os dados coletados")
-  * execute() — fluxo completo com mocks de git/gh + ModelRouter
+  * execute() — fluxo completo com mocks de git/GitHubClient + ModelRouter
   * Falhas claras quando o repo não é git ou gh não está autenticado
 """
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 from datetime import timedelta
@@ -23,6 +22,7 @@ import pytest
 from rich.console import Console
 
 from deile.commands.base import CommandContext, CommandResult
+from deile.commands.builtin import _git_helpers as gh
 from deile.commands.builtin import standup_command as sc
 from deile.commands.builtin.standup_command import (StandupCommand,
                                                     StandupData, build_prompt,
@@ -80,6 +80,38 @@ def _run_git(cwd: Path, *args: str) -> None:
             "GIT_COMMITTER_EMAIL": "standup@example.com",
         },
     )
+
+
+class _FakeCompleted:
+    def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = ""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class _FakeGitHubClient:
+    """Substituto in-process para :class:`GitHubClient` nos testes do command.
+
+    Após o refator do item CLEAN_ARCH, ``collect_prs``/``collect_issues``
+    delegam ao adapter — então os testes verificam a chamada ao adapter,
+    não a invocação crua de ``gh``. ``repo`` é validado igual à classe real
+    para preservar a regra de shape ``owner/name``.
+    """
+
+    def __init__(self, repo: str, prs: Optional[List[dict]] = None, issues: Optional[List[dict]] = None):
+        self.repo = repo
+        self._prs = list(prs or [])
+        self._issues = list(issues or [])
+        self.pr_calls: List[str] = []
+        self.issue_calls: List[str] = []
+
+    async def list_prs_updated_since(self, since_iso: str, *, limit: int = 100) -> List[dict]:
+        self.pr_calls.append(since_iso)
+        return self._prs
+
+    async def list_issues_updated_since(self, since_iso: str, *, limit: int = 100) -> List[dict]:
+        self.issue_calls.append(since_iso)
+        return self._issues
 
 
 # ---------------------------------------------------------------------------
@@ -253,15 +285,8 @@ class TestBuildPrompt:
 
 
 # ---------------------------------------------------------------------------
-# Coleta com mock de subprocess
+# Coleta — commits (subprocess git) e PRs/issues (via GitHubClient)
 # ---------------------------------------------------------------------------
-
-
-class _FakeCompleted:
-    def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = ""):
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
 
 
 class TestCollectCommits:
@@ -301,96 +326,107 @@ class TestCollectCommits:
 
 
 class TestCollectPRs:
-    def test_parses_gh_json(self, monkeypatch):
-        payload = json.dumps(
-            [
-                {
-                    "number": 284,
-                    "title": "retry backoff",
-                    "state": "MERGED",
-                    "author": {"login": "alice"},
-                    "url": "https://github.com/x/y/pull/284",
-                    "updatedAt": "2025-05-22T10:00:00Z",
-                },
-                {
-                    "number": 277,
-                    "title": "tier router",
-                    "state": "OPEN",
-                    "author": {"login": "carol"},
-                    "url": "https://github.com/x/y/pull/277",
-                    "updatedAt": "2025-05-22T11:00:00Z",
-                },
-            ]
-        )
-        calls: List[List[str]] = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            return _FakeCompleted(0, payload)
-
-        monkeypatch.setattr(sc.subprocess, "run", fake_run)
-        prs = collect_prs("2025-05-22T05:00:00Z")
+    async def test_delegates_to_github_client(self):
+        payload = [
+            {
+                "number": 284,
+                "title": "retry backoff",
+                "state": "MERGED",
+                "author": "alice",
+                "url": "https://github.com/x/y/pull/284",
+                "updated_at": "2025-05-22T10:00:00Z",
+            },
+            {
+                "number": 277,
+                "title": "tier router",
+                "state": "OPEN",
+                "author": "carol",
+                "url": "https://github.com/x/y/pull/277",
+                "updated_at": "2025-05-22T11:00:00Z",
+            },
+        ]
+        client = _FakeGitHubClient("x/y", prs=payload)
+        prs = await collect_prs(client, "2025-05-22T05:00:00Z")
         assert len(prs) == 2
         assert prs[0]["number"] == 284
         assert prs[0]["author"] == "alice"
         assert prs[0]["state"] == "MERGED"
-        # Sanity: gh pr list --state all --search updated:>=...
-        assert calls[0][0:3] == ["gh", "pr", "list"]
-        assert "--state" in calls[0]
-        joined = " ".join(calls[0])
-        assert "updated:>=2025-05-22T05:00:00Z" in joined
+        # Sanity: a janela `since_iso` realmente chegou ao adapter.
+        assert client.pr_calls == ["2025-05-22T05:00:00Z"]
 
-    def test_empty_output(self, monkeypatch):
-        monkeypatch.setattr(sc.subprocess, "run", lambda *a, **kw: _FakeCompleted(0, ""))
-        assert collect_prs("2025-05-22T05:00:00Z") == []
-
-    def test_invalid_json_returns_empty(self, monkeypatch):
-        monkeypatch.setattr(sc.subprocess, "run", lambda *a, **kw: _FakeCompleted(0, "not json"))
-        assert collect_prs("2025-05-22T05:00:00Z") == []
-
-    def test_author_none_safe(self, monkeypatch):
-        payload = json.dumps(
-            [
-                {
-                    "number": 1,
-                    "title": "x",
-                    "state": "OPEN",
-                    "author": None,
-                    "url": "",
-                    "updatedAt": "",
-                }
-            ]
-        )
-        monkeypatch.setattr(sc.subprocess, "run", lambda *a, **kw: _FakeCompleted(0, payload))
-        prs = collect_prs("2025-05-22T05:00:00Z")
-        assert prs[0]["author"] == "?"
+    async def test_empty_passthrough(self):
+        client = _FakeGitHubClient("x/y", prs=[])
+        assert await collect_prs(client, "2025-05-22T05:00:00Z") == []
 
 
 class TestCollectIssues:
-    def test_parses_gh_json(self, monkeypatch):
-        payload = json.dumps(
-            [
-                {
-                    "number": 286,
-                    "title": "/standup",
-                    "state": "OPEN",
-                    "author": {"login": "elimar"},
-                    "url": "",
-                    "updatedAt": "2025-05-22T05:00:00Z",
-                }
-            ]
-        )
-        calls: List[List[str]] = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            return _FakeCompleted(0, payload)
-
-        monkeypatch.setattr(sc.subprocess, "run", fake_run)
-        issues = collect_issues("2025-05-22T05:00:00Z")
+    async def test_delegates_to_github_client(self):
+        payload = [
+            {
+                "number": 286,
+                "title": "/standup",
+                "state": "OPEN",
+                "author": "elimar",
+                "url": "",
+                "updated_at": "2025-05-22T05:00:00Z",
+            }
+        ]
+        client = _FakeGitHubClient("x/y", issues=payload)
+        issues = await collect_issues(client, "2025-05-22T05:00:00Z")
         assert len(issues) == 1
         assert issues[0]["number"] == 286
-        assert calls[0][0:3] == ["gh", "issue", "list"]
+        assert client.issue_calls == ["2025-05-22T05:00:00Z"]
+
+
+# ---------------------------------------------------------------------------
+# _resolve_repo_from_git — parsing do remote origin
+# ---------------------------------------------------------------------------
+
+
+class TestResolveRepo:
+    def test_https_url(self, monkeypatch):
+        monkeypatch.setattr(
+            sc.subprocess,
+            "run",
+            lambda *a, **kw: _FakeCompleted(0, "https://github.com/owner/name\n"),
+        )
+        assert sc._resolve_repo_from_git() == "owner/name"
+
+    def test_https_url_with_dot_git(self, monkeypatch):
+        monkeypatch.setattr(
+            sc.subprocess,
+            "run",
+            lambda *a, **kw: _FakeCompleted(0, "https://github.com/owner/name.git\n"),
+        )
+        assert sc._resolve_repo_from_git() == "owner/name"
+
+    def test_ssh_url(self, monkeypatch):
+        monkeypatch.setattr(
+            sc.subprocess,
+            "run",
+            lambda *a, **kw: _FakeCompleted(0, "git@github.com:owner/name.git\n"),
+        )
+        assert sc._resolve_repo_from_git() == "owner/name"
+
+    def test_unknown_host_raises(self, monkeypatch):
+        monkeypatch.setattr(
+            sc.subprocess,
+            "run",
+            lambda *a, **kw: _FakeCompleted(0, "git@bitbucket.org:owner/name.git\n"),
+        )
+        with pytest.raises(CommandError) as exc_info:
+            sc._resolve_repo_from_git()
+        assert "remote origin" in str(exc_info.value).lower()
+
+    def test_no_remote_raises(self, monkeypatch):
+        monkeypatch.setattr(
+            sc.subprocess,
+            "run",
+            lambda *a, **kw: _FakeCompleted(128, "", "fatal: No such remote"),
+        )
+        with pytest.raises(CommandError) as exc_info:
+            sc._resolve_repo_from_git()
+        assert "remote origin" in str(exc_info.value).lower()
 
 
 # ---------------------------------------------------------------------------
@@ -401,37 +437,37 @@ class TestCollectIssues:
 class TestEnsureChecks:
     def test_not_git_raises(self, monkeypatch, tmp_path: Path):
         # shutil.which("git") presente, mas rev-parse retorna != 0
-        monkeypatch.setattr(sc.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+        monkeypatch.setattr(gh.shutil, "which", lambda exe: f"/usr/bin/{exe}")
         monkeypatch.setattr(
-            sc.subprocess,
+            gh.subprocess,
             "run",
             lambda *a, **kw: _FakeCompleted(128, "", "fatal: not a git repo"),
         )
         with pytest.raises(CommandError) as exc_info:
-            sc._ensure_git_repo()
+            sc.ensure_git_repo()
         assert "git" in str(exc_info.value).lower()
 
     def test_git_not_installed(self, monkeypatch):
-        monkeypatch.setattr(sc.shutil, "which", lambda exe: None)
+        monkeypatch.setattr(gh.shutil, "which", lambda exe: None)
         with pytest.raises(CommandError) as exc_info:
-            sc._ensure_git_repo()
+            sc.ensure_git_repo()
         assert "git" in str(exc_info.value).lower()
 
     def test_gh_not_installed(self, monkeypatch):
-        monkeypatch.setattr(sc.shutil, "which", lambda exe: None if exe == "gh" else f"/usr/bin/{exe}")
+        monkeypatch.setattr(gh.shutil, "which", lambda exe: None if exe == "gh" else f"/usr/bin/{exe}")
         with pytest.raises(CommandError) as exc_info:
-            sc._ensure_gh_available()
+            sc.ensure_gh_authenticated()
         assert "gh" in str(exc_info.value).lower() or "github cli" in str(exc_info.value).lower()
 
     def test_gh_not_authenticated(self, monkeypatch):
-        monkeypatch.setattr(sc.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+        monkeypatch.setattr(gh.shutil, "which", lambda exe: f"/usr/bin/{exe}")
         monkeypatch.setattr(
-            sc.subprocess,
+            gh.subprocess,
             "run",
             lambda *a, **kw: _FakeCompleted(1, "", "You are not logged into any GitHub hosts."),
         )
         with pytest.raises(CommandError) as exc_info:
-            sc._ensure_gh_available()
+            sc.ensure_gh_authenticated()
         assert "auten" in str(exc_info.value).lower() or "auth" in str(exc_info.value).lower()
 
 
@@ -476,7 +512,11 @@ class TestExecute:
         """Mock de coleta + ModelRouter; valida que o prompt do LLM
         contém os dados coletados e que a tool (router.select_provider +
         provider.generate) é chamada."""
-        monkeypatch.setattr(sc, "collect_standup_data", lambda spec, **kw: fake_data)
+
+        async def fake_collect(spec, **kw):
+            return fake_data
+
+        monkeypatch.setattr(sc, "collect_standup_data", fake_collect)
 
         captured_prompts: List[str] = []
 
@@ -510,7 +550,11 @@ class TestExecute:
 
     async def test_calls_real_router_via_generate_narrative(self, monkeypatch, fake_data):
         """Garante que generate_narrative() de fato bate em router/provider."""
-        monkeypatch.setattr(sc, "collect_standup_data", lambda spec, **kw: fake_data)
+
+        async def fake_collect(spec, **kw):
+            return fake_data
+
+        monkeypatch.setattr(sc, "collect_standup_data", fake_collect)
 
         # Mock do router + provider
         class FakeResponse:
@@ -545,18 +589,21 @@ class TestExecute:
         rendered = _render(result.content)
         assert "Narrativa real do provedor" in rendered
 
-    async def test_invalid_since_returns_error(self, monkeypatch, fake_data):
+    async def test_invalid_since_returns_error(self, monkeypatch):
         # Nem chega a coletar (falha no parse_since dentro de collect_standup_data)
         monkeypatch.setattr(sc.subprocess, "run", lambda *a, **kw: _FakeCompleted(0, ""))
+        # Stub das checagens para garantir que o parse_since falhe primeiro.
+        monkeypatch.setattr(sc, "ensure_git_repo", lambda *a, **kw: Path("/tmp"))
+        monkeypatch.setattr(sc, "ensure_gh_authenticated", lambda: None)
         cmd = StandupCommand()
         with pytest.raises(CommandError):
             await cmd.execute(_ctx("--since=24m"))
 
     async def test_not_in_git_repo(self, monkeypatch, tmp_path: Path):
         # shutil.which retorna paths, mas rev-parse falha
-        monkeypatch.setattr(sc.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+        monkeypatch.setattr(gh.shutil, "which", lambda exe: f"/usr/bin/{exe}")
         monkeypatch.setattr(
-            sc.subprocess,
+            gh.subprocess,
             "run",
             lambda *a, **kw: _FakeCompleted(128, "", "fatal: not a git repo"),
         )
@@ -572,16 +619,16 @@ class TestExecute:
         assert "git" in str(exc_info.value).lower()
 
     async def test_gh_not_authenticated(self, monkeypatch):
-        # git ok (true), gh auth status falha
+        # git ok (resolve_repo_root → show-toplevel), gh auth status falha
         def fake_run(cmd, **kwargs):
-            if cmd[:3] == ["git", "rev-parse", "--is-inside-work-tree"]:
-                return _FakeCompleted(0, "true\n")
+            if cmd[:3] == ["git", "rev-parse", "--show-toplevel"]:
+                return _FakeCompleted(0, "/tmp/fake-repo\n")
             if cmd[:3] == ["gh", "auth", "status"]:
                 return _FakeCompleted(1, "", "not logged in")
             return _FakeCompleted(0, "")
 
-        monkeypatch.setattr(sc.shutil, "which", lambda exe: f"/usr/bin/{exe}")
-        monkeypatch.setattr(sc.subprocess, "run", fake_run)
+        monkeypatch.setattr(gh.shutil, "which", lambda exe: f"/usr/bin/{exe}")
+        monkeypatch.setattr(gh.subprocess, "run", fake_run)
 
         cmd = StandupCommand()
         with pytest.raises(CommandError) as exc_info:
@@ -592,7 +639,7 @@ class TestExecute:
     async def test_default_since_is_24h(self, monkeypatch, fake_data):
         captured_specs: List[str] = []
 
-        def fake_collect(spec, **kw):
+        async def fake_collect(spec, **kw):
             captured_specs.append(spec)
             return StandupData(since_spec=spec, since_iso="2025-05-22T05:00:00Z")
 

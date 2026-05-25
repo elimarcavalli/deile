@@ -1,6 +1,5 @@
 """Agent Orchestrator principal do DEILE"""
 
-import asyncio
 import logging
 import re
 import time
@@ -8,12 +7,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import Enum
 from pathlib import Path
-from typing import (TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional,
-                    Tuple)
-
-if TYPE_CHECKING:
-    from .models.stream_events import UnifiedStreamEvent
-    from .proactive_analyzer import ProactiveIntent
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from .exceptions import DEILEError, ModelError
 
@@ -36,8 +30,9 @@ from ..storage.logs import get_logger
 from ..tools.base import ToolContext, ToolResult, ToolStatus
 from ..tools.registry import ToolRegistry, get_tool_registry
 from ..ui.display_manager import DisplayManager
-from ..ui.stage_cascade import cascade_until
-from ..ui.stage_messages import get_stage_message
+from . import validation_gate as _validation_gate
+from .agent_autonomous import AgentAutonomousMixin
+from .agent_streaming import AgentStreamingMixin
 from .context_manager import ContextManager
 from .intent_analyzer import get_intent_analyzer
 from .models.router import ModelRouter
@@ -86,6 +81,72 @@ def _normalize_history_content(content: Any) -> str:
         return cap.get().strip()
     except Exception:
         return str(content)
+
+
+def _open_turn_span(
+    *,
+    session_id: str,
+    turn_number: int,
+    persona: str,
+    input_length: int,
+) -> Tuple[Any, Any]:
+    """Abre o span ``deile.turn`` manualmente (sem ``with``).
+
+    Devolve ``(span_cm, span)`` — ambos ``None`` se observability falhou.
+    Pareado com :func:`_finalize_turn_span` que fecha o CM no ``finally``.
+    O span é aberto fora do ``with`` para não re-indentar o turno inteiro
+    (mantém os ``async for`` e ``return`` no nível atual).
+    """
+    try:
+        from deile.observability import get_tracer  # noqa: PLC0415
+        span_cm = get_tracer().turn(
+            session_id=str(session_id),
+            turn_number=int(turn_number),
+            persona=persona,
+            model="",
+            input_length=int(input_length),
+        )
+        return span_cm, span_cm.__enter__()
+    except Exception:  # noqa: BLE001 — observability nunca quebra o turn
+        return None, None
+
+
+def _record_turn_error(span: Any, exc: BaseException, component: str) -> None:
+    """Marca o span do turn como ERROR e incrementa o counter ``deile.errors.total``.
+
+    Best-effort — observability nunca quebra o turn (princípio 11 + Fase 1).
+    Usado pelo ``process_input``/``process_input_stream``: o span é criado
+    fora do try, então qualquer except do turn passa por aqui antes do raise.
+    """
+    if span is not None:
+        try:
+            from opentelemetry.trace import Status, StatusCode  # noqa: PLC0415
+            span.set_status(Status(StatusCode.ERROR, description=type(exc).__name__))
+            span.record_exception(exc)
+        except Exception:  # noqa: BLE001 — observability nunca quebra
+            pass
+    try:
+        from deile.observability import get_metrics  # noqa: PLC0415
+        get_metrics().record_error(type(exc).__name__, component)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _finalize_turn_span(span_cm: Any, duration_ms: int, persona: str) -> None:
+    """Sai do CM do turn, registra a histogram de duração e ignora qualquer falha.
+
+    Chamado no ``finally`` do turno — depois da resposta normal OU do except.
+    """
+    if span_cm is not None:
+        try:
+            span_cm.__exit__(None, None, None)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        from deile.observability import get_metrics  # noqa: PLC0415
+        get_metrics().record_turn_duration(persona=persona or "unknown", duration_ms=duration_ms)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _is_permanent_provider_error(exc: Exception) -> bool:
@@ -330,7 +391,7 @@ class AgentResponse:
         return len(self.tool_results) > 0
 
 
-class DeileAgent:
+class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
     """Orquestrador principal do DEILE
     
     Coordena a interação entre parsers, tools, context manager e modelos de IA
@@ -370,6 +431,7 @@ class DeileAgent:
         self._sessions: Dict[str, AgentSession] = {}
         self._request_count = 0
         self._skill_loader = None  # set by _auto_discover_components; used by reload_skills()
+        self._skills_watcher = None  # set by _auto_discover_components; stopped in shutdown()
 
         # Initialize PersonaManager - será inicializado via async initialize()
         self.persona_manager: Optional[PersonaManager] = None
@@ -387,10 +449,6 @@ class DeileAgent:
 
         # Auto-discover tools, parsers, and commands
         self._auto_discover_components()
-
-        # CORREÇÃO: Registra model providers se não há nenhum
-        if len(self.model_router.providers) == 0:
-            self._register_default_providers()
 
         # Surface UI opcional para tools que abrem renderers próprios
         # (issue #257: ``dispatch_parallel_subagents`` abre um painel Rich
@@ -475,7 +533,23 @@ class DeileAgent:
         start_time = time.time()
         self._status = AgentStatus.PROCESSING
         self._request_count += 1
-        
+        # Issue #303 — conta turno no runtime state (singleton, best-effort).
+        try:
+            from deile.runtime.instance_state import get_instance_state
+            get_instance_state().update_stats(turns=1)
+        except Exception:  # noqa: BLE001 — runtime state nunca pode quebrar a turn
+            pass
+
+        # Issue #303 fase 4 — span pai do turn (deile.turn). Aberto via helper
+        # que faz ``__enter__`` manual (sem ``with``) para não re-indentar o
+        # método inteiro; ``__exit__`` vem em ``_finalize_turn_span`` no finally.
+        _turn_span_cm, _turn_span = _open_turn_span(
+            session_id=session_id,
+            turn_number=self._request_count,
+            persona=str(self.current_persona) if getattr(self, "current_persona", None) else "",
+            input_length=len(user_input or ""),
+        )
+
         try:
             # Bot-hooks: extract optional kwargs added in plano DEILE fase 2.
             # These are stashed in session.context_data so context_manager and
@@ -577,12 +651,14 @@ class DeileAgent:
             if _pending_rc:
                 _history_meta["reasoning_content"] = _pending_rc
             session.add_to_history("assistant", response_content, _history_meta)
-            
+
             self._status = AgentStatus.IDLE
             return response
-            
+
         except Exception as e:
             self._status = AgentStatus.ERROR
+            # Issue #303 fase 4 — registra erro no span/metrics (best-effort).
+            _record_turn_error(_turn_span, e, component="process_input")
             # BudgetExceeded gets a structured, user-actionable response (no stack-trace dump)
             if isinstance(e, _BudgetExceeded):
                 friendly = (
@@ -623,592 +699,14 @@ class DeileAgent:
                 error=e,
                 execution_time=time.time() - start_time
             )
-
-    async def process_input_stream(
-        self,
-        user_input: str,
-        session_id: str = "default",
-        **kwargs,
-    ) -> AsyncIterator["UnifiedStreamEvent"]:
-        """Stream the same turn that ``process_input`` would produce — but as
-        ``UnifiedStreamEvent`` objects so the UI can render text deltas and
-        tool calls as they happen.
-
-        Slash commands, autonomous processing, workflow paths and budget /
-        configuration errors are surfaced as a single TEXT_DELTA + USAGE_FINAL
-        (or a single ERROR) — they don't stream natively. The chat-with-tools
-        path is the one that exhibits real progressive disclosure: the
-        ``ToolLoopExecutor`` forwards every text/tool event and emits
-        TOOL_RESULT after each tool invocation.
-        """
-        from deile.core.models.stream_events import (ModelUsageSnapshot,
-                                                     StreamEventType,
-                                                     UnifiedStreamEvent)
-
-        start_time = time.time()
-        self._status = AgentStatus.PROCESSING
-        self._request_count += 1
-
-        try:
-            # Issue #257 — sub-DEILEs invocados pelo LocalSubAgentRunner devem
-            # IR DIRETO para o tool-loop. O caminho autônomo (linha ~745) é
-            # uma fast-path que sintetiza resposta sem invocar tools, e o
-            # painel multipanel não vê eventos de tool, ficando "(sem atividade
-            # ainda)" o turno inteiro — confirmado em teste end-to-end real
-            # com deepseek-v4-flash (log /tmp/deile-clean.txt).
-            skip_autonomous = bool(kwargs.pop("_skip_autonomous", False))
-            session = self._get_or_create_session(session_id, **kwargs)
-            session.update_activity()
-            session.add_to_history("user", user_input)
-
-            # Slash commands — non-streaming, emit aggregated text once.
-            # Unknown /commands fall through to the LLM as natural language.
-            _stripped_input = user_input.strip()
-            _slash_cmd_name = _stripped_input[1:].split()[0] if _stripped_input.startswith('/') and _stripped_input[1:] else ""
-            if _slash_cmd_name and self.command_registry.has_command(_slash_cmd_name):
-                cmd_name = _slash_cmd_name
-                # Map command name to a specific scenario key when one exists.
-                # Strip command suffixes like "/patch-apply" → "patch_apply".
-                _normalized = cmd_name.replace("-", "_").lower()
-                _slash_key_map = {
-                    "plan": "slash_plan",
-                    "p": "slash_plan",
-                    "run": "slash_run",
-                    "sandbox": "slash_sandbox",
-                    "memory": "slash_memory",
-                    "compact": "slash_compact",
-                    "patch_apply": "slash_patch_apply",
-                    "patch_generate": "slash_patch_generate",
-                    "apply": "slash_patch_apply",
-                    "help": "slash_help",
-                    "model": "slash_model_list",
-                    "tools": "slash_tools",
-                    "logs": "slash_logs",
-                    "diff": "slash_diff",
-                    "permissions": "slash_permissions",
-                    "config": "slash_config",
-                    "status": "slash_status",
-                    "clear": "slash_clear",
-                    "cls": "slash_clear",
-                    "cost": "slash_cost",
-                    "context": "slash_context",
-                }
-                _slash_key = _slash_key_map.get(_normalized, "slash_generic")
-                _slash_ctx: Dict[str, Any] = (
-                    {} if _slash_key != "slash_generic" else {"cmd": cmd_name}
-                )
-                # Cascade so the user sees label evolution if the slash work
-                # blocks for >3s/10s/30s (e.g. /plan create on a heavy ticket,
-                # /sandbox docker setup, /memory compact, etc.).
-                _slash_response_holder: List[Any] = [None]
-
-                async def _run_slash() -> Any:
-                    return await self._process_slash_command(
-                        user_input.strip(), session, start_time
-                    )
-
-                async for _item in cascade_until(
-                    _run_slash(),
-                    message_key=_slash_key,
-                    **_slash_ctx,
-                ):
-                    if isinstance(_item, tuple) and _item and _item[0] == "result":
-                        _slash_response_holder[0] = _item[1]
-                    elif isinstance(_item, UnifiedStreamEvent):
-                        yield _item
-                response = _slash_response_holder[0]
-                if response.content:
-                    # Slash commands may return Rich renderables (Table,
-                    # Panel, etc. — e.g. /model list returns a Table) OR
-                    # plain text. We forward each kind through its own
-                    # event type so the renderer can let Rich's
-                    # width-aware layout run at the ACTUAL terminal width.
-                    # Previously we flattened renderables to a fixed-width
-                    # text snapshot and yielded TEXT_DELTA, which the
-                    # renderer then passed through Markdown() — Markdown
-                    # read the box-drawing chars as paragraphs and
-                    # word-wrapped them, shattering the table layout.
-                    payload = response.content
-                    if isinstance(payload, str):
-                        yield UnifiedStreamEvent(
-                            type=StreamEventType.TEXT_DELTA, text=payload
-                        )
-                    else:
-                        yield UnifiedStreamEvent(
-                            type=StreamEventType.RICH_RENDERABLE,
-                            renderable=payload,
-                        )
-                yield UnifiedStreamEvent(
-                    type=StreamEventType.USAGE_FINAL, usage=ModelUsageSnapshot()
-                )
-                self._status = AgentStatus.IDLE
-                return
-
-            # Autonomous path — non-streaming. Sub-DEILEs pulam essa via
-            # (skip_autonomous=True via kwarg) para garantir que tool events
-            # cheguem ao LocalSubAgentRunner alimentar o painel multipanel.
-            if skip_autonomous:
-                autonomous_result = None
-            else:
-                yield UnifiedStreamEvent(
-                    type=StreamEventType.STAGE,
-                    stage=get_stage_message("autonomous_process", "initial"),
-                )
-                autonomous_result = await self.process_autonomous_request(user_input, session)
-            if autonomous_result:
-                session.add_to_history(
-                    "assistant",
-                    autonomous_result,
-                    {
-                        "autonomous": True,
-                        "execution_time": time.time() - start_time,
-                    },
-                )
-                yield UnifiedStreamEvent(
-                    type=StreamEventType.TEXT_DELTA, text=autonomous_result
-                )
-                yield UnifiedStreamEvent(
-                    type=StreamEventType.USAGE_FINAL, usage=ModelUsageSnapshot()
-                )
-                self._status = AgentStatus.IDLE
-                return
-
-            yield UnifiedStreamEvent(
-                type=StreamEventType.STAGE,
-                stage=get_stage_message("parse_input", "initial"),
-            )
-            parse_result = await self._parse_input(user_input, session)
-
-            yield UnifiedStreamEvent(
-                type=StreamEventType.STAGE,
-                stage=get_stage_message("proactive_tools", "initial"),
-            )
-            # Stream proactive tool executions so the user sees each one (name +
-            # args + result) instead of just a generic stage spinner. The stream
-            # yields UnifiedStreamEvents AND a final ("results", list) sentinel.
-            proactive_results: List[ToolResult] = []
-            async for _item in self._execute_proactive_tools_stream(user_input, session):
-                if isinstance(_item, tuple) and _item and _item[0] == "results":
-                    proactive_results = _item[1]
-                elif isinstance(_item, UnifiedStreamEvent):
-                    yield _item
-
-            yield UnifiedStreamEvent(
-                type=StreamEventType.STAGE,
-                stage=get_stage_message("check_workflow", "initial"),
-            )
-            # Sub-DEILEs pulam workflow path também — esse caminho executa
-            # tools OPACAMENTE (sem yieldar TOOL_USE_END/TOOL_RESULT pro
-            # caller), o que deixaria o painel multipanel sem atividade
-            # mesmo com sub-DEILE trabalhando. Issue #257 round 4.
-            if skip_autonomous:
-                workflow_needed = False
-            else:
-                workflow_needed = await self._should_create_workflow(user_input, parse_result)
-
-            if workflow_needed and self.workflow_executor:
-                yield UnifiedStreamEvent(
-                    type=StreamEventType.STAGE,
-                    stage=get_stage_message("workflow_execute", "initial", steps="?"),
-                )
-                response_content, tool_results = await self._process_with_workflow(
-                    user_input, parse_result, session
-                )
-                if response_content:
-                    yield UnifiedStreamEvent(
-                        type=StreamEventType.TEXT_DELTA, text=response_content
-                    )
-                yield UnifiedStreamEvent(
-                    type=StreamEventType.USAGE_FINAL, usage=ModelUsageSnapshot()
-                )
-                # Persist
-                _hist_meta = {
-                    "tool_results": len(tool_results),
-                    "parse_status": parse_result.status.value if parse_result else None,
-                    "workflow": True,
-                }
-                session.add_to_history("assistant", response_content, _hist_meta)
-                self._status = AgentStatus.IDLE
-                return
-
-            # Main path: stream chat-with-tools via ToolLoopExecutor.
-            # ``text_segments`` armazena listas de TEXT_DELTAs entre tool calls —
-            # uma lista por "segmento de texto". Tool entre texto vira fronteira:
-            # ``[ [pre-tool deltas], [post-tool deltas] ]``. Ao final, juntamos
-            # cada segmento e separamos com ``\n\n``. Sem isso, frases coladas:
-            # `"Vou ler.Pronto."` em vez de `"Vou ler.\n\nPronto."` (issue #257
-            # round 5 — replay /resume mostrava "frase grudada em frase").
-            text_segments: List[List[str]] = [[]]
-            collected_tool_results: List[ToolResult] = []
-
-            async for event in self._stream_chat_with_tools(
-                user_input, parse_result, session
-            ):
-                yield event
-                if event.type is StreamEventType.TEXT_DELTA and event.text:
-                    text_segments[-1].append(event.text)
-                elif event.type is StreamEventType.TOOL_USE_END:
-                    # Tool vai rodar — fecha o segmento atual; o próximo texto
-                    # abre um novo segmento. Só inicia segmento NOVO se o atual
-                    # tem conteúdo (evita ``\n\n`` no início da resposta).
-                    if text_segments[-1]:
-                        text_segments.append([])
-                elif event.type is StreamEventType.USAGE_FINAL and event.reasoning_content:
-                    # Non-tool final turn: capture reasoning_content so it is included
-                    # in history metadata and echoed back on the next turn.
-                    session.context_data["_last_reasoning_content"] = event.reasoning_content
-                elif event.type is StreamEventType.TOOL_RESULT:
-                    # Preserve original ToolResult.metadata that the executor copied into
-                    # event.tool_metadata. Critical for the validation gate, which inspects
-                    # post_write_validation_required / post_write_validation_command set by
-                    # write_file. Stream-only fields (function_name/tool_call_id/iteration)
-                    # are merged on top so they always win over any legacy collisions.
-                    _meta: Dict[str, Any] = dict(event.tool_metadata or {})
-                    _meta["function_name"] = event.tool_name
-                    _meta["tool_call_id"] = event.tool_call_id
-                    _meta["iteration"] = event.iteration
-                    tr = ToolResult(
-                        status=ToolStatus.SUCCESS
-                        if event.tool_status == "success"
-                        else ToolStatus.ERROR,
-                        message=event.tool_result_summary or "",
-                        data=event.tool_result_data,
-                        metadata=_meta,
-                    )
-                    collected_tool_results.append(tr)
-
-            # Junta os segmentos com ``\n\n`` — preserva no histórico a
-            # estrutura visual original (texto-tool-texto vira parágrafos
-            # separados). Segmentos vazios filtrados; trim no fim de cada
-            # segmento para não duplicar quebras de linha.
-            content = "\n\n".join(
-                "".join(seg).rstrip() for seg in text_segments if any(s.strip() for s in seg)
-            )
-
-            # Validation gate — runs once at end. Pass only `collected_tool_results`
-            # (the iterative tool-loop output) to match the non-streaming path at
-            # process_input(): proactive_results must NOT influence the gate's
-            # "validated" detection, otherwise a proactive bash_execute could
-            # falsely satisfy the post-write-validation requirement of an
-            # unrelated write_file the model issued during the streamed turn.
-            # Emit STAGE so the user sees feedback during the potentially slow retry.
-            # validation_check covers the cheap detection path (synchronous regex
-            # + metadata inspection). When the gate triggers a retry, switch to
-            # the validation_retry cascade so the user sees label evolution
-            # during the LLM round-trip — issue #39 P0.
-            #
-            # Only emit the STAGE spinner when the gate might actually fire:
-            # - tool calls present (potential unvalidated writes to check), OR
-            # - short response with a promise pattern (anti-hallucination check).
-            # For pure text responses (no tools, no promises) the gate exits in
-            # < 1 ms — emitting the spinner is noise and can interfere with the
-            # terminal's last text chunk rendering.
-            _gate_might_fire = bool(collected_tool_results) or (
-                len(content) <= 500
-                and self._contains_promise_pattern(content)
-            )
-            if _gate_might_fire:
-                yield UnifiedStreamEvent(
-                    type=StreamEventType.STAGE,
-                    stage=get_stage_message("validation_check", "initial"),
-                )
-
-            _gate_holder: List[Any] = [None]
-
-            async def _run_gate() -> tuple:
-                return await self._apply_validation_gate(
-                    user_input=user_input,
-                    parse_result=parse_result,
-                    session=session,
-                    content=content,
-                    tool_results=collected_tool_results,
-                )
-
-            async for _item in cascade_until(
-                _run_gate(),
-                message_key="validation_retry",
-            ):
-                if isinstance(_item, tuple) and _item and _item[0] == "result":
-                    _gate_holder[0] = _item[1]
-                elif isinstance(_item, UnifiedStreamEvent):
-                    yield _item
-            gated_content, gated_tool_results = _gate_holder[0]
-            if gated_content != content:
-                # _apply_validation_gate returns the retry's standalone reply
-                # (see agent.py: `return new_content, …`), not `content + addendum`.
-                # `content` was already streamed to the user as TEXT_DELTA events,
-                # so emitting `gated_content` alone would leave two answers on
-                # screen (the original now-invalidated reply plus the retry).
-                # Prepend a one-line marker — rendered inside the yellow panel
-                # by the streaming renderer — telling the user this corrected
-                # reply REPLACES the prior streamed response.
-                marker = (
-                    "A resposta anterior declarou conclusão sem rodar a validação "
-                    "exigida (sintaxe / execução). Esta versão a SUBSTITUI e mostra "
-                    "a validação real.\n\n"
-                )
-                yield UnifiedStreamEvent(
-                    type=StreamEventType.TEXT_DELTA,
-                    text=marker + gated_content,
-                    source="validation_gate",
-                )
-
-            # Match non-streaming history_meta semantics: `tool_results` reports the
-            # FULL turn count (proactive + iterative + gate retry), and
-            # `proactive_results` is the per-bucket subcount.
-            _history_meta: Dict[str, Any] = {
-                "tool_results": len(proactive_results) + len(gated_tool_results),
-                "proactive_results": len(proactive_results),
-                "parse_status": parse_result.status.value if parse_result else None,
-                "function_calling_enabled": True,
-                "streaming": True,
-            }
-            _pending_rc = session.context_data.pop("_last_reasoning_content", None)
-            if _pending_rc:
-                _history_meta["reasoning_content"] = _pending_rc
-            session.add_to_history("assistant", gated_content, _history_meta)
-            self._status = AgentStatus.IDLE
-            return
-
-        except Exception as exc:
-            self._status = AgentStatus.ERROR
-            self.logger.error(
-                f"Streaming turn failed: {exc}", exc_info=True
-            )
-            # Surface BudgetExceeded / FORCED_MODEL with structured metadata
-            # the UI can use to render Rich panels.
-            err_meta: Dict[str, Any] = {"error_type": type(exc).__name__}
-            if isinstance(exc, _BudgetExceeded):
-                err_meta["budget_exceeded"] = True
-                err_meta["provider_id"] = getattr(exc, "provider_id", None)
-                err_meta["limit_type"] = getattr(exc, "limit_type", None)
-            if isinstance(exc, ModelError) and getattr(exc, "error_code", "") == "FORCED_MODEL_NOT_REGISTERED":
-                err_meta["forced_model_not_registered"] = True
-                err_meta["error_code"] = "FORCED_MODEL_NOT_REGISTERED"
-            err_meta["message"] = str(exc)
-            yield UnifiedStreamEvent(
-                type=StreamEventType.ERROR,
-                error_envelope=err_meta,
-            )
-            return
-
-    async def _stream_chat_with_tools(
-        self,
-        user_input: str,
-        parse_result: Optional[ParseResult],
-        session: AgentSession,
-    ) -> AsyncIterator["UnifiedStreamEvent"]:
-        """Stream the chat-with-tools loop for a single provider.
-
-        Reuses ``_process_iterative_function_calling``'s setup (tier classify,
-        provider selection, budget guard, message conversion) but routes the
-        tool-loop through ``ToolLoopExecutor`` instead of the provider's own
-        ``chat_with_tools`` (which is non-streaming).
-
-        Cascade across providers is intentionally NOT applied on the streaming
-        path: a stream interrupted mid-render can't be cleanly re-issued
-        against a different provider without confusing UX. If the streaming
-        provider fails, the ERROR event is forwarded; the consumer can
-        re-issue the turn.
-        """
-        from deile.core.models.base import ModelMessage as _MM
-        from deile.core.models.stream_events import (StreamEventType,
-                                                     UnifiedStreamEvent)
-        from deile.core.tool_loop_executor import ToolLoopExecutor
-        from deile.events.event_bus import Event, EventPriority, EventType
-
-        self._status = AgentStatus.GENERATING_RESPONSE
-
-        yield UnifiedStreamEvent(
-            type=StreamEventType.STAGE,
-            stage=get_stage_message("build_context", "initial"),
-        )
-        context = await self.context_manager.build_context(
-            user_input=user_input,
-            parse_result=parse_result,
-            tool_results=[],
-            session=session,
-        )
-
-        # Tier classification (best-effort)
-        yield UnifiedStreamEvent(
-            type=StreamEventType.STAGE,
-            stage=get_stage_message("analyze_intent", "initial"),
-        )
-        model_tier: Optional[Any] = None
-        try:
-            from deile.core.intent_tier_mapper import classify_tier
-            intent_result = await self.intent_analyzer.analyze(
-                user_input=user_input,
-                parse_result=parse_result,
-                session_context={},
-            )
-            model_tier = classify_tier(intent_result)
-            session.context_data["_current_tier"] = model_tier.value
-        except Exception:
-            model_tier = None
-
-        # Provider selection — honors forced/preferred/default/router.
-        yield UnifiedStreamEvent(
-            type=StreamEventType.STAGE,
-            stage=get_stage_message("select_provider", "initial"),
-        )
-        model_provider, forced, _, _ = _select_configured_model_provider(
-            self.model_router, session
-        )
-        if model_provider is None:
-            model_provider = await self.model_router.select_provider(
-                context=context, session=session, tier=model_tier,
-            )
-
-        # Budget guard
-        yield UnifiedStreamEvent(
-            type=StreamEventType.STAGE,
-            stage=get_stage_message("budget_guard", "initial"),
-        )
-        try:
-            from deile.storage.usage_repository import (BudgetExceeded,
-                                                        BudgetGuard,
-                                                        get_usage_repository)
-            _guard: Any = getattr(self, "_budget_guard_singleton", None)
-            if _guard is None:
-                _yaml = Path(__file__).resolve().parents[1] / "config" / "model_providers.yaml"
-                try:
-                    self._budget_guard_singleton = BudgetGuard.from_yaml(
-                        _yaml, get_usage_repository()
-                    )
-                    _guard = self._budget_guard_singleton
-                except Exception:
-                    self._budget_guard_singleton = False
-            if _guard:
-                _guard.check_all(
-                    session_id=session.session_id,
-                    provider_id=model_provider.provider_id,
-                )
-        except BudgetExceeded:
-            raise
-
-        _record_model_used(session, model_provider)
-
-        # Build messages from context + register tools
-        system_instruction = None
-        raw_messages: List[Any] = []
-        if isinstance(context, dict):
-            system_instruction = context.get("system_instruction")
-            raw_messages = context.get("messages", [])
-
-        messages_for_provider: List[_MM] = []
-        for m in raw_messages:
-            if isinstance(m, _MM):
-                messages_for_provider.append(m)
-            elif isinstance(m, dict):
-                role = str(m.get("role", "user"))
-                content_raw = m.get("content", "")
-                msg_metadata = m.get("metadata", {}) or {}
-                messages_for_provider.append(
-                    _MM(role=role, content=content_raw, metadata=msg_metadata)  # type: ignore[arg-type]
-                )
-        if not messages_for_provider:
-            messages_for_provider = [_MM(role="user", content=user_input)]
-
-        tools = [
-            t.schema for t in self.tool_registry.list_enabled()
-            if getattr(t, "schema", None) is not None
-        ]
-
-        # EventBus publisher — best-effort, non-blocking.
-        async def _publish_tool_event(kind: str, name: str, **kw: Any) -> None:
-            try:
-                from deile.events.event_bus import \
-                    get_event_bus  # type: ignore
-                bus = get_event_bus()
-                kind_to_event = {
-                    "invoked": EventType.TOOL_INVOKED,
-                    "completed": EventType.TOOL_COMPLETED,
-                    "failed": EventType.TOOL_FAILED,
-                }
-                evt_type = kind_to_event.get(kind)
-                if evt_type is None:
-                    return
-                event = Event(
-                    event_type=evt_type,
-                    source=f"agent:{model_provider.provider_id}",
-                    data={"tool_name": name, **kw},
-                    priority=EventPriority.LOW,
-                )
-                asyncio.create_task(bus.publish(event))
-            except Exception:
-                pass
-
-        executor = ToolLoopExecutor(
-            tool_registry=self.tool_registry,
-            event_publisher=_publish_tool_event,
-        )
-        _provider_label = (
-            getattr(model_provider, "model_name", None)
-            or getattr(model_provider, "provider_id", None)
-            or "model"
-        )
-        yield UnifiedStreamEvent(
-            type=StreamEventType.STAGE,
-            stage=get_stage_message("connect_model", "initial", model=_provider_label),
-        )
-        async for event in executor.run(
-            provider=model_provider,
-            messages=messages_for_provider,
-            tools=tools,
-            system_instruction=system_instruction,
-            working_directory=str(session.working_directory),
-            session_data=session.context_data,
-        ):
-            yield event
-
-    async def process_stream(
-        self,
-        user_input: str,
-        session_id: str = "default",
-        **kwargs
-    ) -> AsyncIterator[str]:
-        """Processa entrada com resposta em streaming
-        
-        Args:
-            user_input: Entrada do usuário
-            session_id: ID da sessão
-            **kwargs: Parâmetros adicionais
-            
-        Yields:
-            str: Chunks da resposta
-        """
-        self._status = AgentStatus.PROCESSING
-        
-        try:
-            # Obtém ou cria sessão
-            session = self._get_or_create_session(session_id, **kwargs)
-            session.update_activity()
-            
-            # Parsing e execução de tools
-            parse_result = await self._parse_input(user_input, session)
-            tool_results = await self._execute_tools(parse_result, session)
-            
-            # Streaming da resposta
-            self._status = AgentStatus.GENERATING_RESPONSE
-            async for chunk in self._generate_response_stream(
-                user_input, parse_result, tool_results, session
-            ):
-                yield chunk
-            
-        except Exception as e:
-            self._status = AgentStatus.ERROR
-            if isinstance(e, _BudgetExceeded):
-                yield (
-                    f"\n[Budget limit reached ({getattr(e, 'limit_type', 'unknown')}): {str(e)}\n"
-                    f"Use /model budget to view limits.]\n"
-                )
-            else:
-                yield f"Error: {str(e)}"
         finally:
-            self._status = AgentStatus.IDLE
-    
+            # Issue #303 fase 4 — fecha o span do turn + métrica de duração.
+            _finalize_turn_span(
+                _turn_span_cm,
+                duration_ms=int((time.time() - start_time) * 1000),
+                persona=str(self.current_persona) if getattr(self, "current_persona", None) else "",
+            )
+
     def get_session(self, session_id: str) -> Optional[AgentSession]:
         """Obtém sessão por ID"""
         return self._sessions.get(session_id)
@@ -1308,140 +806,6 @@ class DeileAgent:
             if hasattr(session, 'clear_history'):
                 session.clear_history()
     
-    async def process_input_structured(
-        self,
-        user_input: str,
-        session_id: str = "default",
-        *,
-        extra_system_prompt: Any = None,
-        bot_context: Any = None,
-        **kwargs,
-    ):
-        """Bot-friendly variant: run process_input, parse output to MarkupAST."""
-        from deile.core.bot_streaming import StructuredResponse, ToolCallRecord
-        from deile.ui.markup import MarkdownToASTParser
-
-        response = await self.process_input(
-            user_input,
-            session_id=session_id,
-            extra_system_prompt=extra_system_prompt,
-            bot_context=bot_context,
-            **kwargs,
-        )
-        text = response.content or ""
-        ast = MarkdownToASTParser().parse(text)
-        tool_calls = []
-        for tr in getattr(response, "tool_results", []) or []:
-            tool_calls.append(
-                ToolCallRecord(
-                    name=getattr(tr, "tool_name", "") or "unknown",
-                    ok=getattr(tr, "is_success", True),
-                    elapsed_ms=int(getattr(tr, "execution_time", 0.0) * 1000),
-                )
-            )
-        elapsed_ms = int(getattr(response, "execution_time", 0.0) * 1000)
-        model_used = ""
-        try:
-            model_used = (response.metadata or {}).get("model_used", "") or ""
-        except Exception:
-            pass
-        return StructuredResponse(
-            text=text,
-            markup=ast,
-            tool_calls=tool_calls,
-            elapsed_ms=elapsed_ms,
-            model_used=model_used,
-            status=getattr(response.status, "value", "idle"),
-        )
-
-    async def process_input_stream_chunks(
-        self,
-        user_input: str,
-        session_id: str = "default",
-        *,
-        extra_system_prompt: Any = None,
-        bot_context: Any = None,
-        **kwargs,
-    ):
-        """Adapt UnifiedStreamEvent -> StreamChunk for bot consumers.
-
-        Always emits `done` as the last chunk; on fatal error, emits `error` then `done`.
-        """
-        from deile.core.bot_streaming import StreamChunk
-        from deile.ui.markup import MarkdownToASTParser
-
-        # Stash bot params on session before streaming consumer reads them.
-        session_kwargs = dict(kwargs)
-        if extra_system_prompt is not None or bot_context is not None:
-            session = self._get_or_create_session(session_id, **session_kwargs)
-            if extra_system_prompt is not None:
-                from deile.core.bot_hooks import sanitize_extra_system_prompt
-                session.context_data["extra_system_prompt"] = sanitize_extra_system_prompt(
-                    str(extra_system_prompt)
-                )
-            if bot_context is not None:
-                session.context_data["bot_context"] = dict(bot_context)
-            session_kwargs.pop("working_directory", None)
-
-        accumulated_text = ""
-        last_model = ""
-        last_error: Any = None
-        try:
-            async for evt in self.process_input_stream(
-                user_input, session_id=session_id, **session_kwargs
-            ):
-                etype = getattr(evt, "type", None)
-                if etype is None:
-                    continue
-                name = getattr(etype, "name", None) or getattr(etype, "value", str(etype))
-                if name in ("TEXT_DELTA", "text_delta"):
-                    text = getattr(evt, "text", "") or ""
-                    if text:
-                        accumulated_text += text
-                        yield StreamChunk(
-                            "text", {"text": text, "incremental": True}
-                        )
-                elif name in ("TOOL_INVOKED", "tool_invoked"):
-                    yield StreamChunk(
-                        "tool_call_started",
-                        {
-                            "tool_name": getattr(evt, "tool_name", "") or "",
-                            "args_preview": str(getattr(evt, "tool_args", ""))[:120],
-                        },
-                    )
-                elif name in ("TOOL_RESULT", "tool_result"):
-                    yield StreamChunk(
-                        "tool_call_finished",
-                        {
-                            "tool_name": getattr(evt, "tool_name", "") or "",
-                            "ok": getattr(evt, "ok", True),
-                            "elapsed_ms": int(getattr(evt, "elapsed_ms", 0) or 0),
-                        },
-                    )
-                elif name in ("USAGE_FINAL", "usage_final"):
-                    usage = getattr(evt, "usage", None)
-                    last_model = getattr(usage, "model", "") if usage else ""
-                elif name in ("ERROR", "error"):
-                    last_error = {
-                        "type": getattr(evt, "error_type", "") or "Error",
-                        "message": getattr(evt, "error_message", "") or "",
-                    }
-        except Exception as e:  # noqa: BLE001
-            last_error = {"type": type(e).__name__, "message": str(e)}
-
-        if last_error is not None:
-            yield StreamChunk("error", last_error)
-        ast = MarkdownToASTParser().parse(accumulated_text)
-        yield StreamChunk(
-            "done",
-            {
-                "text": accumulated_text,
-                "markup": ast,
-                "elapsed_ms": 0,
-                "model_used": last_model,
-            },
-        )
-
     async def get_or_create_session(
         self,
         session_id: str,
@@ -1548,6 +912,13 @@ class DeileAgent:
             except Exception:
                 pass
             self._session_store = None
+        watcher = getattr(self, "_skills_watcher", None)
+        if watcher is not None:
+            try:
+                watcher.stop()
+            except Exception:
+                pass
+            self._skills_watcher = None
 
     # Métodos privados
 
@@ -1682,17 +1053,20 @@ class DeileAgent:
             return None
     
     async def _execute_tools(
-        self, 
-        parse_result: Optional[ParseResult], 
+        self,
+        parse_result: Optional[ParseResult],
         session: AgentSession
     ) -> List[ToolResult]:
         """Fase 2: Execução de tools baseada no parsing"""
         if not parse_result or not parse_result.tool_requests:
             return []
-        
+
         self._status = AgentStatus.EXECUTING_TOOL
         tool_results = []
-        
+        # Issue #303 — singleton de runtime state; publish_action é best-effort.
+        from deile.runtime.instance_state import get_instance_state
+        _istate = get_instance_state()
+
         for tool_name in parse_result.tool_requests:
             try:
                 # Cria contexto para a tool. Bot mode propaga bot_context para
@@ -1706,16 +1080,31 @@ class DeileAgent:
                     file_list=parse_result.file_references,
                     extra={"bot_context": dict(_bot_ctx)} if _bot_ctx else {},
                 )
-                
+
+                # Issue #303 — publica intenção; tool_name é safe (não args).
+                try:
+                    _istate.update_action(
+                        "tool_execution",
+                        detail=tool_name,
+                        session_id=session.session_id,
+                    )
+                except Exception:  # noqa: BLE001 — runtime state é observability
+                    pass
+
                 # Executa a tool
                 result = await self.tool_registry.execute_tool(tool_name, context)
                 tool_results.append(result)
-                
+
                 # Display tool result using DisplayManager - SOLVES SITUAÇÃO 2 & 3
                 self.display_manager.display_tool_result(tool_name, result)
-                
+
+                try:
+                    _istate.update_stats(tool_calls=1)
+                except Exception:  # noqa: BLE001
+                    pass
+
                 # self.logger.info(f"Tool {tool_name} executed: {result.status.value}")
-                
+
             except Exception as e:
                 error_result = ToolResult(
                     status=ToolStatus.ERROR,
@@ -1724,10 +1113,23 @@ class DeileAgent:
                 )
                 tool_results.append(error_result)
                 self.logger.error(f"Tool execution failed: {e}")
-        
+                try:
+                    _istate.update_stats(errors=1)
+                except Exception:  # noqa: BLE001
+                    pass
+            finally:
+                try:
+                    _istate.clear_action()
+                except Exception:  # noqa: BLE001
+                    pass
+
         return tool_results
     
-    # TODO(streaming-cleanup): legacy non-streaming tool-loop. Once the streaming path proves stable in production (Settings.streaming_enabled is True by default), migrate remaining callers and delete this method along with provider.chat_with_tools.
+    # Non-streaming tool-loop. Still active when the streaming path bails out
+    # or when a caller explicitly requests non-streaming behavior. All providers
+    # registered via ``bootstrap_providers()`` implement either ``chat_with_tools``
+    # (Anthropic, OpenAI, DeepSeek, Gemini) or the Gemini chat-session pair, so
+    # providers without either path raise ``ModelError`` explicitly.
     async def _process_iterative_function_calling(
         self,
         user_input: str,
@@ -1800,19 +1202,15 @@ class DeileAgent:
                 logger.debug("BudgetGuard non-fatal: %s", _budget_err)
 
             # Observability: log provider selection
-            try:
-                from deile.storage.debug_logger import get_debug_logger
-                await get_debug_logger().log_router_event(
-                    "provider_selected",
-                    {
-                        "provider_id": model_provider.provider_id,
-                        "model_id": getattr(model_provider, "model_name", "unknown"),
-                        "tier": getattr(model_tier, "value", "unknown"),
-                        "session_id": session.session_id,
-                    },
-                )
-            except Exception:
-                pass
+            await _emit_router_event(
+                "provider_selected",
+                {
+                    "provider_id": model_provider.provider_id,
+                    "model_id": getattr(model_provider, "model_name", "unknown"),
+                    "tier": getattr(model_tier, "value", "unknown"),
+                    "session_id": session.session_id,
+                },
+            )
 
             _t0 = time.time()
 
@@ -1833,14 +1231,13 @@ class DeileAgent:
 
                 message_content: Any = user_input
                 if isinstance(context, dict) and "file_data_parts" in context:
+                    from .models.gemini_provider import GeminiProvider
                     message_parts: List[Any] = [user_input]
                     for file_data in context["file_data_parts"]:
                         if "file_data" in file_data:
                             file_uri = file_data["file_data"]["file_uri"]
-                            import google.genai.types as genai_types
-                            file_obj = genai_types.File(
-                                name=file_uri.split('/')[-1],
-                                uri=file_uri,
+                            file_obj = GeminiProvider.build_file_attachment_part(
+                                file_uri=file_uri,
                                 mime_type=file_data["file_data"].get("mime_type", "text/plain"),
                             )
                             message_parts.append(file_obj)
@@ -1888,18 +1285,14 @@ class DeileAgent:
                     raise
 
                 # Observability — completion event for Gemini path too
-                try:
-                    from deile.storage.debug_logger import get_debug_logger
-                    await get_debug_logger().log_router_event(
-                        "provider_call_completed",
-                        {
-                            "provider_id": model_provider.provider_id,
-                            "tool_calls": len(tool_results),
-                            "latency_ms": int((time.time() - _t0) * 1000),
-                        },
-                    )
-                except Exception:
-                    pass
+                await _emit_router_event(
+                    "provider_call_completed",
+                    {
+                        "provider_id": model_provider.provider_id,
+                        "tool_calls": len(tool_results),
+                        "latency_ms": int((time.time() - _t0) * 1000),
+                    },
+                )
 
                 logger.info("Chat session completed with %d tool execution(s)", len(tool_results))
                 _record_model_used(session, model_provider)
@@ -2040,18 +1433,14 @@ class DeileAgent:
                 latency_ms = int((time.time() - _t0) * 1000)
 
                 # Observability — completion event
-                try:
-                    from deile.storage.debug_logger import get_debug_logger
-                    await get_debug_logger().log_router_event(
-                        "provider_call_completed",
-                        {
-                            "provider_id": model_provider.provider_id,
-                            "tool_calls": len(tool_results_raw),
-                            "latency_ms": latency_ms,
-                        },
-                    )
-                except Exception:
-                    pass
+                await _emit_router_event(
+                    "provider_call_completed",
+                    {
+                        "provider_id": model_provider.provider_id,
+                        "tool_calls": len(tool_results_raw),
+                        "latency_ms": latency_ms,
+                    },
+                )
 
                 tool_results: List[ToolResult] = [
                     tr for tr in tool_results_raw if isinstance(tr, ToolResult)
@@ -2068,31 +1457,50 @@ class DeileAgent:
                 return content, tool_results
 
             else:
-                # Fallback para providers sem suporte a tools
-                logger.debug("Using legacy function calling approach")
-                return await self._process_legacy_function_calling(user_input, parse_result, session)
+                # Defensive — unreachable by construction: every provider registered via
+                # bootstrap_providers() (Anthropic/OpenAI/DeepSeek/Gemini) inherits
+                # ``BaseModelProvider.chat_with_tools``, so the ``elif hasattr(..., 'chat_with_tools')``
+                # branch above always matches. This ``else`` only fires if a custom provider
+                # explicitly overrides hasattr() to return False, which is not a supported pattern.
+                provider_id = getattr(model_provider, "provider_id", type(model_provider).__name__)
+                model_name = getattr(model_provider, "model_name", None) or getattr(
+                    model_provider, "model_id", "unknown"
+                )
+                logger.error(
+                    "Provider %s (model=%s) implements neither chat_with_tools nor the Gemini "
+                    "chat-session pair — bootstrap_providers() should never register such a provider",
+                    provider_id,
+                    model_name,
+                )
+                raise ModelError(
+                    f"Provider '{provider_id}' (model={model_name}) does not support function calling.",
+                    error_code="PROVIDER_NO_TOOL_SUPPORT",
+                )
 
         except Exception as e:
             # BudgetExceeded and structured ModelErrors must reach the caller — they carry
             # context the CLI uses to render Rich panels. _BudgetExceeded is module-level (line 18).
             if isinstance(e, _BudgetExceeded):
                 # Emit observability event then propagate
-                try:
-                    from deile.storage.debug_logger import get_debug_logger
-                    await get_debug_logger().log_router_event(
-                        "budget_exceeded",
-                        {
-                            "session_id": session.session_id,
-                            "provider_id": getattr(e, "provider_id", "unknown"),
-                            "limit_type": getattr(e, "limit_type", "unknown"),
-                            "message": str(e),
-                        },
-                    )
-                except Exception:
-                    pass
+                await _emit_router_event(
+                    "budget_exceeded",
+                    {
+                        "session_id": session.session_id,
+                        "provider_id": getattr(e, "provider_id", "unknown"),
+                        "limit_type": getattr(e, "limit_type", "unknown"),
+                        "message": str(e),
+                    },
+                )
                 raise
-            # FORCED_MODEL_NOT_REGISTERED also propagates so process_input can build a structured response
-            if isinstance(e, ModelError) and getattr(e, "error_code", "") == "FORCED_MODEL_NOT_REGISTERED":
+            # Structured ModelErrors that the CLI renders as Rich panels must propagate.
+            # FORCED_MODEL_NOT_REGISTERED: user-forced model is missing from the registry.
+            # PROVIDER_NO_TOOL_SUPPORT: defensive — bootstrap_providers() should never register
+            # a provider lacking both chat_with_tools and the Gemini session pair, but if it does
+            # we want process_input to surface the misconfiguration instead of swallowing it.
+            if isinstance(e, ModelError) and getattr(e, "error_code", "") in (
+                "FORCED_MODEL_NOT_REGISTERED",
+                "PROVIDER_NO_TOOL_SUPPORT",
+            ):
                 raise
             from deile.core.models.errors import ProviderInvocationError
             if isinstance(e, ProviderInvocationError) and e.envelope.is_context_length_exceeded:
@@ -2110,53 +1518,23 @@ class DeileAgent:
     # ------------------------------------------------------------------
     # Validation gate (anti-hallucination + post-write enforcement)
     # ------------------------------------------------------------------
+    #
+    # The implementation lives in ``deile.core.validation_gate`` (SRP / god-
+    # object refactor). The methods below are thin wrappers preserving the
+    # observable API used by the test suite and by ``self.…`` call sites
+    # inside the streaming/legacy code paths.
 
-    _PROMISE_PATTERNS = [
-        # Portuguese — actions the model commonly promises but skips
-        r"\bvou\s+(?:testar|rodar|executar|validar|verificar|instalar|conferir|checar)\b",
-        r"\b(?:testar|rodar|executar|validar|verificar|instalar)\s+(?:agora|isso|isto|esse|essa)\b",
-        r"\bdeixa\s+eu\s+(?:testar|rodar|executar|validar|verificar)\b",
-        r"\bvamos\s+(?:testar|rodar|executar|validar|verificar)\b",
-        # English
-        r"\b(?:I'?ll|I\s+will|let\s+me)\s+(?:test|run|verify|check|install|validate|execute)\b",
-        r"\b(?:testing|running|executing|validating|verifying|installing)\s+(?:it|that|now|this)\b",
-    ]
+    @staticmethod
+    def _contains_promise_pattern(text: str) -> bool:
+        """Delegate to ``validation_gate.contains_promise_pattern``."""
+        return _validation_gate.contains_promise_pattern(text)
 
-    _VALIDATION_TOOL_NAMES = {
-        "bash_execute", "python_execute", "run_tests",
-    }
-
-    @classmethod
-    def _contains_promise_pattern(cls, text: str) -> bool:
-        if not text:
-            return False
-        # cache compiled patterns lazily on the class
-        compiled = getattr(cls, "_PROMISE_RE", None)
-        if compiled is None:
-            compiled = [re.compile(p, re.IGNORECASE) for p in cls._PROMISE_PATTERNS]
-            cls._PROMISE_RE = compiled
-        return any(rx.search(text) for rx in compiled)
-
-    @classmethod
+    @staticmethod
     def _detect_unvalidated_writes(
-        cls, tool_results: List[ToolResult]
+        tool_results: List[ToolResult],
     ) -> List[ToolResult]:
-        """Return write_file results for executable files that lack a following validation tool call."""
-        # All write_file results that the tool flagged as needing validation
-        flagged_writes = [
-            tr for tr in tool_results
-            if tr.metadata.get("post_write_validation_required") is True
-        ]
-        if not flagged_writes:
-            return []
-        # Any subsequent execution tool counts as "the model tried to validate"
-        validated = any(
-            tr.metadata.get("function_name") in cls._VALIDATION_TOOL_NAMES
-            for tr in tool_results
-        )
-        if validated:
-            return []
-        return flagged_writes
+        """Delegate to ``validation_gate.detect_unvalidated_writes``."""
+        return _validation_gate.detect_unvalidated_writes(tool_results)
 
     async def _apply_validation_gate(
         self,
@@ -2167,123 +1545,21 @@ class DeileAgent:
         content: str,
         tool_results: List[ToolResult],
     ) -> tuple[str, List[ToolResult]]:
-        """Re-invoke the model once if it wrote executable code without testing
-        or promised an action without taking it. Persona-side rules already ask
-        for this; the gate is the deterministic enforcement layer.
+        """Delegate to ``validation_gate.apply_validation_gate``.
 
-        Recursion is impossible: the gate marks the session, runs at most one
-        retry, and clears the marker. If the retry still violates, the result
-        is returned to the user unaltered — surfacing the failure rather than
-        masking it.
+        The retry callback is bound to ``self._process_iterative_function_calling``
+        so the module never has to import ``DeileAgent`` (circular-import
+        hazard).
         """
-        # Single-shot per turn — and re-entry from a workflow path also skips
-        if session.context_data.get("_validation_gate_active"):
-            return content, tool_results
-
-        unvalidated = self._detect_unvalidated_writes(tool_results)
-        # Promise gate only fires on SHORT replies — long explanations may use
-        # "vamos testar a hipótese" / "let me check" rhetorically without
-        # actually intending to invoke a tool. The gate's value is catching
-        # the model saying "vou rodar agora!" and stopping cold.
-        promise_without_action = (
-            not tool_results
-            and len(content) <= 500
-            and self._contains_promise_pattern(content)
+        return await _validation_gate.apply_validation_gate(
+            user_input=user_input,
+            parse_result=parse_result,
+            session=session,
+            content=content,
+            tool_results=tool_results,
+            retry=self._process_iterative_function_calling,
         )
 
-        if not unvalidated and not promise_without_action:
-            return content, tool_results
-
-        if unvalidated:
-            paths = [tr.metadata.get("file_path", "?") for tr in unvalidated]
-            cmds = [
-                tr.metadata.get("post_write_validation_command")
-                for tr in unvalidated
-                if tr.metadata.get("post_write_validation_command")
-            ]
-            cmd_block = "\n".join(f"  - {c}" for c in cmds) if cmds else "  (none suggested)"
-            gate_prompt = (
-                "[INTERNAL_VALIDATION_GATE] You wrote the following executable file(s) "
-                "but did not validate them in the same turn:\n"
-                f"  {', '.join(paths)}\n\n"
-                "Per the Definition of Done, you MUST validate now using the tools. "
-                "Suggested validation commands (run via bash_execute):\n"
-                f"{cmd_block}\n\n"
-                "If validation fails (exit code != 0 or stderr non-empty), diagnose "
-                "and fix the file with write_file, then re-validate. Use pip_install "
-                "for any ModuleNotFoundError. Only after exit 0 do you report the "
-                "task complete to the user — and the report MUST include the actual "
-                "validation output, not a summary."
-            )
-        else:
-            gate_prompt = (
-                "[INTERNAL_VALIDATION_GATE] Your previous response promised an action "
-                "(test / run / install / validate) but no tool was invoked in that "
-                "turn. Per the anti-hallucination rule in your persona, that is a "
-                "policy violation. Either invoke the tool now to fulfill the promise, "
-                "or revise the answer to not promise. Do not produce a final answer "
-                "until the action is actually taken."
-            )
-
-        # Persist the pre-gate assistant turn so the model sees the gap
-        session.add_to_history("assistant", content, {"validation_gate_pre": True})
-        session.add_to_history("user", gate_prompt, {"validation_gate": True})
-        session.context_data["_validation_gate_active"] = True
-        try:
-            new_content, new_tool_results = await self._process_iterative_function_calling(
-                user_input=gate_prompt,
-                parse_result=parse_result,
-                session=session,
-            )
-        finally:
-            session.context_data.pop("_validation_gate_active", None)
-
-        return new_content, list(tool_results) + list(new_tool_results)
-
-
-    async def _process_legacy_function_calling(
-        self,
-        user_input: str,
-        parse_result: Optional[ParseResult],
-        session: AgentSession
-    ) -> tuple[str, List[ToolResult]]:
-        """Fallback para providers sem Chat Session support"""
-        try:
-            # Executa tools se foram identificadas no parsing
-            tool_results = await self._execute_tools(parse_result, session)
-            
-            # Prepara contexto com tool results
-            context = await self.context_manager.build_context(
-                user_input=user_input,
-                parse_result=parse_result,
-                tool_results=tool_results,
-                session=session
-            )
-            
-            # Seleciona modelo apropriado
-            model_provider = await self.model_router.select_provider(
-                context=context,
-                session=session
-            )
-            
-            # Gera resposta simples
-            if isinstance(context, dict):
-                messages = context.get("messages", [])
-                system_instruction = context.get("system_instruction")
-            else:
-                messages = [context] if hasattr(context, 'content') else []
-                system_instruction = "You are DEILE, a helpful AI assistant."
-            
-            response = await model_provider.generate(
-                messages=messages,
-                system_instruction=system_instruction
-            )
-            
-            return response.content, tool_results
-            
-        except Exception as e:
-            self.logger.error(f"Legacy function calling failed: {e}")
-            return f"I encountered an error during processing: {str(e)}", []
 
     async def _should_create_workflow(self, user_input: str, parse_result: Optional[ParseResult]) -> bool:
         """Determina se deve criar workflow automaticamente usando análise de intenção avançada
@@ -2294,6 +1570,15 @@ class DeileAgent:
         - Análise semântica com embeddings
         - Sistema de confiança probabilística
         - Cache e métricas de performance
+
+        **Degradação em falha:** se `IntentAnalyzer.analyze()` lançar exceção
+        (embedding offline, cache corrompido, etc.), este método retorna `False`
+        (no-workflow) por design. Esta é a opção #2 documentada na issue #308:
+        `IntentAnalyzer` é a única árvore de decisão para essa pergunta — manter
+        um fallback heurístico paralelo (legacy keyword-matching) violava SSOT e
+        divergia ao longo do tempo. Como workflows são caros (multi-step +
+        aprovação), o default conservador "não criar workflow" é mais seguro
+        que adivinhar. NÃO reintroduza fallback heurístico sem revisitar #308.
         """
         try:
             # Prepara contexto da sessão para análise mais precisa
@@ -2336,11 +1621,12 @@ class DeileAgent:
             return requires_workflow
 
         except Exception as e:
-            logger.error(f"Error in intent analysis for workflow detection: {e}")
-            logger.warning("Falling back to legacy workflow detection logic")
-
-            # Fallback para lógica legacy simplificada em caso de erro
-            return await self._legacy_workflow_detection(user_input, parse_result)
+            logger.error(
+                "Intent analysis failed for workflow detection: %s — defaulting to no-workflow",
+                e,
+                exc_info=True,
+            )
+            return False
 
     async def _prepare_session_context_for_intent_analysis(self) -> Dict[str, Any]:
         """Prepara contexto da sessão para análise de intenção mais precisa"""
@@ -2382,27 +1668,6 @@ class DeileAgent:
 
         # Remove duplicatas mantendo ordem
         return list(dict.fromkeys(topics))
-
-    async def _legacy_workflow_detection(self, user_input: str, parse_result: Optional[ParseResult]) -> bool:
-        """Lógica legacy simplificada para detecção de workflow (fallback)"""
-        try:
-            user_input_lower = user_input.lower()
-
-            # Palavras-chave críticas que sempre indicam workflow
-            critical_keywords = ['implementar', 'implement', 'criar sistema', 'create system', 'desenvolver']
-            has_critical_keyword = any(keyword in user_input_lower for keyword in critical_keywords)
-
-            # Múltiplas tools sempre indicam workflow
-            multiple_tools = parse_result and len(parse_result.tool_requests or []) > 1
-
-            # Complexidade básica
-            is_complex = len(user_input.split()) > 15
-
-            return has_critical_keyword or multiple_tools or is_complex
-
-        except Exception as e:
-            logger.error(f"Error in legacy workflow detection: {e}")
-            return False  # Default conservador
 
     async def _process_with_workflow(
         self,
@@ -2485,180 +1750,6 @@ class DeileAgent:
             # Fallback para processamento tradicional
             return await self._process_iterative_function_calling(user_input, parse_result, session)
 
-    async def _generate_response_with_function_calling_legacy(
-        self,
-        user_input: str,
-        parse_result: Optional[ParseResult],
-        tool_results: List[ToolResult],
-        session: AgentSession
-    ) -> str:
-        """Fase 3: Geração de resposta usando o modelo de IA com Function Calling"""
-        self._status = AgentStatus.GENERATING_RESPONSE
-        
-        try:
-            # Prepara contexto para o modelo com suporte a file_data
-            context = await self.context_manager.build_context(
-                user_input=user_input,
-                parse_result=parse_result,
-                tool_results=tool_results,
-                session=session
-            )
-            
-            # Seleciona modelo apropriado
-            model_provider = await self.model_router.select_provider(
-                context=context,
-                session=session
-            )
-            
-            # Prepara execution context para Function Calling
-            execution_context = self._create_execution_context(session, context)
-            
-            # Gera resposta com Function Calling
-            if isinstance(context, dict):
-                messages = context.get("messages", [])
-                system_instruction = context.get("system_instruction")
-                file_data_parts = context.get("file_data_parts", [])
-            else:
-                # Fallback se context não é dict
-                messages = [context] if hasattr(context, 'content') else []
-                system_instruction = "You are DEILE, a helpful AI assistant."
-                file_data_parts = []
-            
-            # Log função calling info
-            logger.debug(f"Function calling enabled with {len(file_data_parts)} file parts")
-            
-            response = await model_provider.generate(
-                messages=messages,
-                system_instruction=system_instruction,
-                execution_context=execution_context
-            )
-            
-            return response.content
-            
-        except Exception as e:
-            self.logger.error(f"Response generation with Function Calling failed: {e}")
-            return f"I encountered an error generating a response: {str(e)}"
-    
-    def _create_execution_context(self, session: AgentSession, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Cria contexto de execução para Function Calling"""
-        return {
-            "session_id": session.session_id,
-            "working_directory": str(session.working_directory),
-            "user_id": session.user_id,
-            "session_data": session.context_data,
-            "context_metadata": context.get("metadata", {}),
-            "file_data_available": len(context.get("file_data_parts", [])) > 0
-        }
-
-    async def _generate_response_legacy(
-        self,
-        user_input: str,
-        parse_result: Optional[ParseResult],
-        tool_results: List[ToolResult],
-        session: AgentSession
-    ) -> str:
-        """LEGACY: Geração de resposta sem Function Calling (compatibilidade)"""
-        self._status = AgentStatus.GENERATING_RESPONSE
-        
-        try:
-            # Prepara contexto para o modelo
-            context = await self.context_manager.build_context(
-                user_input=user_input,
-                parse_result=parse_result,
-                tool_results=tool_results,
-                session=session
-            )
-            
-            # Seleciona modelo apropriado
-            model_provider = await self.model_router.select_provider(
-                context=context,
-                session=session
-            )
-            
-            # Gera resposta
-            if isinstance(context, dict):
-                messages = context.get("messages", [])
-                system_instruction = context.get("system_instruction")
-            else:
-                # Fallback se context não é dict
-                messages = [context] if hasattr(context, 'content') else []
-                system_instruction = "You are DEILE, a helpful AI assistant."
-            
-            response = await model_provider.generate(
-                messages=messages,
-                system_instruction=system_instruction
-            )
-            
-            return response.content
-            
-        except Exception as e:
-            self.logger.error(f"Response generation failed: {e}")
-            return f"I encountered an error generating a response: {str(e)}"
-    
-    async def _generate_response_stream(
-        self,
-        user_input: str,
-        parse_result: Optional[ParseResult],
-        tool_results: List[ToolResult],
-        session: AgentSession
-    ) -> AsyncIterator[str]:
-        """Geração de resposta em streaming — consome UnifiedStreamEvent de qualquer provider."""
-        from deile.core.models.stream_events import (StreamEventType,
-                                                     UnifiedStreamEvent)
-
-        try:
-            context = await self.context_manager.build_context(
-                user_input=user_input,
-                parse_result=parse_result,
-                tool_results=tool_results,
-                session=session
-            )
-
-            model_provider = await self.model_router.select_provider(
-                context=context,
-                session=session
-            )
-
-            if isinstance(context, dict):
-                messages = context.get("messages", [])
-                system_instruction = context.get("system_instruction")
-            else:
-                messages = []
-                system_instruction = "You are DEILE, a helpful AI assistant."
-
-            async for event in model_provider.generate_stream(
-                messages=messages,
-                system_instruction=system_instruction
-            ):
-                if not isinstance(event, UnifiedStreamEvent):
-                    # Legacy provider yields raw str — pass through
-                    if isinstance(event, str):
-                        yield event
-                    continue
-
-                if event.type == StreamEventType.TEXT_DELTA:
-                    if event.text:
-                        yield event.text
-
-                elif event.type == StreamEventType.TOOL_USE_START:
-                    if event.tool_name:
-                        yield f"\n[tool: {event.tool_name}]\n"
-
-                elif event.type == StreamEventType.TOOL_USE_END:
-                    yield "\n"
-
-                elif event.type == StreamEventType.USAGE_FINAL:
-                    # Consumed silently — usage recording handled elsewhere
-                    pass
-
-                elif event.type == StreamEventType.ERROR:
-                    env = event.error_envelope
-                    msg = str(env) if env else "unknown streaming error"
-                    yield f"\n[error: {msg}]\n"
-
-        except Exception as e:
-            yield f"Error in streaming response: {str(e)}"
-    
     def reload_skills(self) -> int:
         """Re-scan all skill directories and hot-reload the command registry.
 
@@ -2685,10 +1776,15 @@ class DeileAgent:
             self.command_registry.auto_discover_builtin_commands()
             self.command_registry.load_commands_from_config()
 
-            # Load user/project skills as slash commands
+            # Load user/project skills as slash commands AND start hot-reload.
+            # The unified skills subsystem owns both — keeping them wired in
+            # one place ensures the watcher and the slash-command bridge see
+            # the exact same scan order.
             try:
                 from ..commands.settings_manager import SettingsManager
                 from ..commands.skill_loader import SkillLoader
+                from ..skills.watcher import SkillsWatcher
+
                 project_dir = getattr(self.settings, "working_directory", None)
                 _settings_mgr = SettingsManager(
                     project_dir=Path(project_dir) if project_dir else None
@@ -2697,9 +1793,40 @@ class DeileAgent:
                     project_dir=project_dir,
                     settings_manager=_settings_mgr,
                 )
-                skill_loader.load_into_registry(self.command_registry)
+                invocable_count = skill_loader.load_into_registry(self.command_registry)
                 # Store for hot-reload via /skills add|remove
                 self._skill_loader = skill_loader
+
+                # Visible boot summary so the operator sees in the launch log
+                # how many skills came from where — bundled (auto-trigger +
+                # invoke_skill), user/project (those + slash /<name>). Counts
+                # via the unified registry to include bundled, which the
+                # loader hides by design (legacy slash-command contract).
+                from ..skills.registry import get_skill_registry
+                _by_src: dict = {}
+                for _sk in get_skill_registry().list_all():
+                    _by_src[_sk.source] = _by_src.get(_sk.source, 0) + 1
+                self.logger.info(
+                    "Skills carregadas: total=%d (%s); %d invocáveis como /<nome>",
+                    sum(_by_src.values()),
+                    ", ".join(f"{k}={v}" for k, v in sorted(_by_src.items())) or "vazio",
+                    invocable_count,
+                )
+
+                # The watcher uses the SAME extras the loader saw, so a path
+                # added via /skills add is watched too. Failures here are
+                # non-fatal — the agent still works without hot-reload.
+                try:
+                    self._skills_watcher = SkillsWatcher(
+                        project_dir=Path(project_dir) if project_dir else None,
+                        extra_paths=[
+                            p for p in _settings_mgr.get_all_skills_paths() if p.is_dir()
+                        ],
+                        command_registry=self.command_registry,
+                    )
+                    self._skills_watcher.start()
+                except Exception as _watcher_exc:
+                    self.logger.warning("Skills hot-reload not started: %s", _watcher_exc)
             except Exception as _skill_exc:
                 self.logger.warning("Skill loading failed: %s", _skill_exc)
 
@@ -2710,29 +1837,6 @@ class DeileAgent:
         except Exception as e:
             self.logger.warning(f"Auto-discovery failed: {e}")
     
-    def _register_default_providers(self) -> None:
-        """Registra model providers padrão se nenhum estiver configurado"""
-        try:
-            # Registra GeminiProvider se API key disponível
-            import os
-            if os.getenv("GOOGLE_API_KEY"):
-                from .models.gemini_provider import GeminiProvider
-                gemini_provider = GeminiProvider()
-                self.model_router.register_provider(
-                    provider=gemini_provider,
-                    priority=1,
-                    cost_per_token=0.000125  # Custo aproximado
-                )
-                logger.info("Registered GeminiProvider")
-
-            # Adicione outros providers aqui no futuro
-            # if os.getenv("OPENAI_API_KEY"):
-            #     from .models.openai_provider import OpenAIProvider
-            #     ...
-
-        except Exception as e:
-            logger.warning(f"Failed to register default model providers: {e}")
-
     async def _execute_proactive_tools(self, user_input: str, session: AgentSession) -> List[ToolResult]:
         """Wrapper sem streaming — drena o stream e devolve só os ToolResults.
 
@@ -2933,157 +2037,6 @@ class DeileAgent:
 
         except Exception as e:
             logger.warning(f"Some persona integration features unavailable: {e}")
-
-    # =============================================
-    # AUTONOMOUS FUNCTIONALITY (PHASE 4)
-    # =============================================
-
-    async def process_autonomous_request(self, user_input: str, session: 'AgentSession') -> Optional[str]:
-        """
-        Process autonomous requests with intelligent file resolution
-
-        This is the main entry point for autonomous functionality that enables
-        DEILE to handle natural language file references like "read the readme"
-        without requiring exact filenames from the user.
-        """
-        if not self.proactive_analyzer:
-            return None
-
-        try:
-            # Analyze if this requires autonomous processing
-            intents = await self.proactive_analyzer.analyze_enhanced(user_input)
-
-            if not intents:
-                return None
-
-            # Filter for autonomous-eligible intents
-            autonomous_intents = [intent for intent in intents if intent.autonomous_eligible]
-
-            if not autonomous_intents:
-                return None
-
-            logger.info(f"Found {len(autonomous_intents)} autonomous intent(s)")
-
-            # Execute the highest priority autonomous intent
-            highest_priority = max(autonomous_intents, key=lambda x: x.priority)
-
-            return await self._execute_autonomous_intent(highest_priority, session)
-
-        except Exception as e:
-            logger.error(f"Error in autonomous processing: {e}")
-            return None
-
-    async def _execute_autonomous_intent(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
-        """Execute an autonomous intent with intelligent error recovery"""
-        try:
-            if intent.action == ProactiveAction.READ_FILE and intent.resolved_file:
-                return await self._autonomous_read_file(intent, session)
-
-            elif intent.action == ProactiveAction.CHAIN_LIST_AND_READ:
-                return await self._autonomous_chain_list_and_read(intent, session)
-
-            elif intent.action == ProactiveAction.SUGGEST_ALTERNATIVES:
-                return await self._autonomous_suggest_alternatives(intent, session)
-
-            else:
-                # Fallback to regular proactive execution
-                tool_name = self._map_proactive_action_to_tool(intent.action)
-                if tool_name:
-                    return await self._execute_proactive_tool(tool_name, intent.target, session)
-
-        except Exception as e:
-            logger.error(f"Error executing autonomous intent {intent.action}: {e}")
-
-            # Try alternative resolution if available
-            if intent.chained_actions:
-                for fallback_intent in intent.chained_actions:
-                    result = await self._execute_autonomous_intent(fallback_intent, session)
-                    if result:
-                        return result
-
-        return None
-
-    async def _autonomous_read_file(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
-        """Autonomously read a file using resolved file match"""
-        if not intent.resolved_file:
-            return None
-
-        try:
-            # Execute read_file tool with resolved path
-            file_path = str(intent.resolved_file.path)
-            result = await self._execute_proactive_tool("read_file", file_path, session)
-
-            if result and intent.resolved_file.confidence < 1.0:
-                # Add context about the resolution for transparency
-                confidence_msg = f"\n\n*Autonomously resolved '{intent.target}' → '{intent.resolved_file.path.name}' (confidence: {intent.resolved_file.confidence:.1%})*"
-                result = result + confidence_msg
-
-            return result
-
-        except Exception as e:
-            logger.error(f"Error in autonomous read: {e}")
-            return None
-
-    async def _autonomous_suggest_alternatives(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
-        """Provide intelligent alternatives when file resolution fails"""
-        try:
-            # Get file resolver instance
-            from .file_resolver import get_file_resolver
-            file_resolver = get_file_resolver(Path.cwd())
-
-            # Get alternative suggestions
-            suggestions = file_resolver.suggest_alternatives(intent.target, max_suggestions=5)
-
-            if not suggestions:
-                return f"❌ No files matching '{intent.target}' found in current directory."
-
-            # Format suggestions nicely
-            suggestion_text = f"🔍 Couldn't find exact match for '{intent.target}'. Here are some alternatives:\n\n"
-
-            for i, match in enumerate(suggestions, 1):
-                confidence = f"({match.confidence:.1%})" if match.confidence < 1.0 else ""
-                suggestion_text += f"{i}. **{match.path.name}** {confidence}\n   └─ {match.reason}\n\n"
-
-            suggestion_text += "💡 *Tip: Try being more specific, or ask me to read one of these files directly.*"
-
-            return suggestion_text
-
-        except Exception as e:
-            logger.error(f"Error generating alternatives: {e}")
-            return None
-
-    async def _autonomous_chain_list_and_read(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
-        """Chain list files → resolve → read operations autonomously"""
-        try:
-            # First, list files to help with resolution
-            list_result = await self._execute_proactive_tool("list_files", ".", session)
-
-            if not list_result:
-                return None
-
-            # Get file resolver and try to find the best match
-            from .file_resolver import get_file_resolver
-            file_resolver = get_file_resolver(Path.cwd())
-
-            best_match = file_resolver.get_best_match(intent.target, min_confidence=0.7)
-
-            if best_match:
-                # Found a good match, read it
-                read_result = await self._execute_proactive_tool("read_file", str(best_match.path), session)
-
-                if read_result:
-                    # Combine list + read results with resolution context
-                    resolution_context = f"🎯 *Found and read '{best_match.path.name}' (confidence: {best_match.confidence:.1%})*\n\n"
-                    return list_result + "\n\n" + resolution_context + read_result
-
-            else:
-                # No good match, provide alternatives
-                alternatives = await self._autonomous_suggest_alternatives(intent, session)
-                return list_result + "\n\n" + (alternatives or "❌ No matching files found.")
-
-        except Exception as e:
-            logger.error(f"Error in chain operation: {e}")
-            return None
 
     def enable_persona_enhancement(self, persona_manager: PersonaManager = None) -> None:
         """Enable persona enhancement for this agent"""

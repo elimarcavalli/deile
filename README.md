@@ -321,6 +321,7 @@ Tutorial passo-a-passo, troubleshooting, modelo de ameaça e operação:
 | 🛠️ REGISTRO     | Extensível de ferramentas     | `deile/tools/registry.py`                                                         |
 | 📜 COMANDOS      | Slash registráveis            | `deile/commands/registry.py`, `commands/builtin/`                                 |
 | 🎭 PERSONAS      | Dinâmicas via YAML+Markdown   | `deile/personas/library/`, `deile/personas/instructions/`                         |
+| 🧩 SKILLS        | MD-driven, hot-reload, 4 triggers, `invoke_skill` tool | `deile/skills/`, `deile/tools/skill_tools.py`              |
 | 🧠 MEMÓRIA       | Quatro camadas                | `deile/memory/*.py`                                                               |
 | 🔒 PERMISSÕES    | Auditoria e scan de segredos  | `deile/security/*.py`                                                             |
 | 💾 PERSISTÊNCIA  | SQLite (tasks + uso)          | `deile/orchestration/sqlite_task_manager.py`, `deile/storage/usage_repository.py` |
@@ -332,7 +333,7 @@ Tutorial passo-a-passo, troubleshooting, modelo de ameaça e operação:
 
 ## 🏗️ Arquitetura e camadas
 
-DEILE segue arquitetura por camadas, com registries para artefatos extensíveis (tools, commands, parsers, personas).
+DEILE segue arquitetura por camadas, com registries para artefatos extensíveis (tools, commands, parsers, personas, skills).
 
 
 | Camada                 | Pacote                             | Responsabilidade                                     |
@@ -422,6 +423,8 @@ Todas em `deile/tools/` e registradas via `register_tool`:
 | `process_tool`         | process_tool.py       | Inspecionar processos                              |
 | `tokenizer`            | tokenizer_tool.py     | Estimar tokens/analisar contexto                   |
 | `slash_command_executor`| slash_command_executor.py | Disparar comandos slash                      |
+| `list_skills`          | skill_tools.py        | Catálogo machine-readable de todas as skills carregadas |
+| `invoke_skill`         | skill_tools.py        | Carrega o body de uma skill por nome (LLM puxa sob demanda) |
 
 ## 📊 Comandos slash
 
@@ -444,6 +447,7 @@ Os comandos slash do DEILE (em `deile/commands/builtin/`):
 /permissions      # Gerenciar permissões
 /plan             # Operar planos de execução
 /run              # Executar run orquestrado
+/skills           # list/add/remove paths de skills (ver seção 🧩)
 /tools            # Listar ferramentas disponíveis
 /stop             # Cancelar operação corrente
 /approve          # Aprovar etapa pendente
@@ -452,6 +456,8 @@ Os comandos slash do DEILE (em `deile/commands/builtin/`):
 /sandbox          # Status do toggle de sandbox (informativo)
 /welcome          # Tela de boas-vindas
 ```
+
+> Além dos built-ins acima, **toda skill carregada vira `/<name>`** automaticamente (exceto as bundled em `deile/skills/library/`, que ficam disponíveis só via auto-trigger e `invoke_skill`). Skills de `~/.claude/commands/` ficam UPPERCASE.
 
 ---
 
@@ -465,6 +471,60 @@ Personas MD-driven:
 - 🛠️ Infra (`deile/personas/`): loader, builder, manager, etc.
 
 Modificar `instructions/*.md` altera o comportamento sem tocar em Python. Os YAMLs definem nome/persona_id/capacidades.
+
+---
+
+## 🧩 Sistema de skills
+
+Skills são unidades composáveis de expertise em Markdown puro (sem código). O loader escaneia todas as fontes abaixo em ordem de prioridade crescente — em colisão de nome o source mais alto vence (project sobrescreve user que sobrescreve bundled, com `INFO` log):
+
+| Origem | Caminho | Comportamento |
+|---|---|---|
+| Bundled | `deile/skills/library/**/*.md` | Vai no pacote DEILE; PR no repo |
+| Usuário pessoal | `~/.deile/skills/*.md` | Visível em qualquer projeto seu |
+| Usuário (Claude compat) | `~/.claude/commands/*.md` | Mesmo formato; nome registrado em UPPERCASE (`kind=command`) |
+| Projeto | `<cwd>/.deile/skills/*.md` | Versionada no git, viaja junto com o repo |
+| Projeto (Claude compat) | `<cwd>/.claude/commands/*.md` | UPPERCASE (`kind=command`) |
+| Configurada via YAML | `library_paths:` em `deile/config/skills.yaml` | Lista explícita de paths absolutos ou relativos ao repo |
+| Configurada via REPL | `/skills add <path> [--scope global\|project]` | Persistida em `~/.deile/settings.json` (global) ou `.deile/settings.json` (projeto) |
+
+### Como o LLM usa cada skill
+
+Três caminhos simultâneos e independentes:
+
+- **Auto-injeção no system prompt** — quando uma `trigger` casa para o turno (até `max_per_turn=4`, ordenadas por `(-priority, name)`):
+  - `file_globs` — match `fnmatch` no basename ou path completo
+  - `code_block_langs` — fence ``` ```python ``` no input, case-insensitive
+  - `keywords` — word-boundary regex (não confunde "rust" com "trust")
+  - `file_content_patterns` — regex em 4 KiB de cada arquivo referenciado, **contido ao `project_root`** (security)
+- **Function-call tools** `invoke_skill(name)` e `list_skills` — auto-descobertas via `DEFAULT_TOOL_PACKAGES`. O catálogo no system prompt mostra ao LLM o que existe; ele puxa skills que não dispararam por trigger
+- **Slash command `/<name>`** — invocação explícita pelo usuário com argumentos opcionais
+
+### Configuração e ergonomia
+
+- `deile/config/skills.yaml`: `enabled`, `max_per_turn`, `library_paths`, `extension_map`, `basename_map`
+- Comando `/skills` no REPL: `list` (mostra paths ativos), `add` e `remove` (gerencia paths extras com escopo `global` ou `project`)
+- **Hot-reload** via `watchdog`: dropar/editar/remover um `.md` reflete no agente em 0,5 s, sem restart (debounce coalesce bursts do editor; swap atômico no `SkillRegistry`)
+
+### Formato
+
+```markdown
+---
+name: rust                          # opcional; default = stem do arquivo (normalizado)
+description: |
+  Regras do projeto sobre Rust — ownership, async/Tokio. Sobrescreve
+  qualquer conselho genérico do treinamento.
+triggers:                           # tudo opcional; vazio = só responde a /<name> ou invoke_skill
+  file_globs: ["*.rs", "Cargo.toml"]
+  code_block_langs: [rust]
+  keywords: ["ownership", "tokio"]
+  file_content_patterns: ['^use tokio::']
+priority: 50                        # int; default 0. Maior aparece primeiro no ranking
+---
+# Body em Markdown puro — entra no prompt ou é devolvido por invoke_skill.
+```
+
+Bundled out-of-the-box: `python`, `typescript`, `tdd`. Detalhes em [`docs/system_design/04-MODELO-COMPONENTES.md`](docs/system_design/04-MODELO-COMPONENTES.md) e template completo em [`docs/system_design/12-PADROES-CODIGO.md`](docs/system_design/12-PADROES-CODIGO.md). Decisão #34 em [`docs/system_design/DECISOES.md`](docs/system_design/DECISOES.md).
 
 ---
 
@@ -570,6 +630,7 @@ Principais caminhos:
 - `deile/config/intent_patterns.yaml` — Padrões de intenção
 - `deile/config/persona_config.yaml` — Defaults de persona
 - `deile/config/commands.yaml` — Defaults de comandos
+- `deile/config/skills.yaml` — Sistema de skills (`enabled`, `max_per_turn`, `library_paths`, `extension_map`)
 - `deile/config/profiles/autonomous_agent.yaml` — Perfil autonomous
 - `deile/config/profiles/enterprise.yaml` — Perfil enterprise
 
@@ -757,6 +818,7 @@ git push origin feature/nome-feature
 | ⌨️ Slash command        | `deile/commands/builtin/<nome>.py`                                | Registre no `CommandRegistry`                    |
 | 🗂️ Parser               | `deile/parsers/<nome>.py`                                         | Siga o contrato base                             |
 | 🧑‍🎤 Persona              | `personas/instructions/` e `personas/library/`                    | MD/YAML                                          |
+| 🧩 Skill                | `~/.deile/skills/`, `.deile/skills/`, ou `deile/skills/library/`  | MD com frontmatter — sem Python; hot-reload automático |
 | 🧠 Provider de LLM      | `core/models/`                                                    | Registre em `bootstrap.py` + YAML dos modelos    |
 
 ### 🐛 Reportando bugs/features/refatorações

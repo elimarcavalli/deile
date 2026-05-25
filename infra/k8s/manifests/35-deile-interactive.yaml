@@ -52,10 +52,13 @@ spec:
             - { name: HOME, value: /home/deile }
             - { name: PYTHONUNBUFFERED, value: "1" }
             - { name: DEILE_BOT_ENDPOINT, value: "http://deilebot.deile.svc.cluster.local:8765" }
-            - { name: DEILE_BOT_APPROVAL_AUTO, value: "1" }
             - { name: DEILE_DEFAULT_PERSONA, value: developer }
             # Full toolset — see header for rationale.
             - { name: DEILE_WRAPPER_TOOL_WHITELIST, value: "all" }
+            # approval.auto=true vem de /etc/deile/settings.json via ConfigMap
+            # deile-runtime-config (manifest 47) — substitui
+            # DEILE_BOT_APPROVAL_AUTO depreciada (issue #111).
+            - { name: DEILE_SETTINGS_FILE, value: "/etc/deile/settings.json" }
           volumeMounts:
             - { name: deile-secrets, mountPath: /run/secrets/deile, readOnly: true }
             - { name: home, mountPath: /home/deile }
@@ -65,6 +68,11 @@ spec:
             - name: bot-config
               mountPath: /home/deile/config/deilebot.yaml
               subPath: deilebot.yaml
+              readOnly: true
+            # settings.json layered (issue #111) — ver DEILE_SETTINGS_FILE env.
+            - name: runtime-config
+              mountPath: /etc/deile/settings.json
+              subPath: shell-settings.json
               readOnly: true
           resources:
             requests: { cpu: "50m", memory: "256Mi" }
@@ -82,6 +90,10 @@ spec:
         - name: bot-config
           configMap:
             name: bot-config
+            defaultMode: 292  # 0o444 — read-only inside pod
+        - name: runtime-config
+          configMap:
+            name: deile-runtime-config
             defaultMode: 292  # 0o444 — read-only inside pod
         # ── Persistent home (optional) ───────────────────────────────────────
         # By default /home/deile is an ephemeral emptyDir. To persist cloned

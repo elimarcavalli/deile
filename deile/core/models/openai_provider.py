@@ -155,36 +155,40 @@ class OpenAIProvider(ModelProvider):
         system_instruction = self._compose_system_instruction(system_instruction)
         oai_msgs = self._to_openai_messages(messages, system_instruction)
 
-        try:
-            response = await self._client.chat.completions.create(
-                model=self.model_name,
-                messages=oai_msgs,
-                max_completion_tokens=kwargs.pop("max_tokens", DEFAULT_MAX_OUTPUT_TOKENS),
-                **kwargs,
-            )
-        except openai.APIError as exc:
-            raise ProviderInvocationError(_make_envelope(exc, self.provider_id, self.model_name)) from exc
+        # Issue #303 fase 4 — span deile.llm.call.
+        with self._llm_span() as _span:
+            try:
+                response = await self._client.chat.completions.create(
+                    model=self.model_name,
+                    messages=oai_msgs,
+                    max_completion_tokens=kwargs.pop("max_tokens", DEFAULT_MAX_OUTPUT_TOKENS),
+                    **kwargs,
+                )
+            except openai.APIError as exc:
+                self._set_llm_span_error(_span, exc)
+                raise ProviderInvocationError(_make_envelope(exc, self.provider_id, self.model_name)) from exc
 
-        text = response.choices[0].message.content or ""
-        prompt_tokens = response.usage.prompt_tokens if response.usage else 0
-        completion_tokens = response.usage.completion_tokens if response.usage else 0
-        cached = self._extract_cached_tokens(response)
-        usage = ModelUsage(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=prompt_tokens + completion_tokens,
-            cached_tokens=cached,
-            request_time=time.time() - start,
-        )
-        usage.cost_estimate = self.estimate_cost(usage)
-        self._update_stats(usage)
-        return ModelResponse(
-            content=text,
-            model_name=self.model_name,
-            usage=usage,
-            raw_response=response,
-            finish_reason=response.choices[0].finish_reason,
-        )
+            text = response.choices[0].message.content or ""
+            prompt_tokens = response.usage.prompt_tokens if response.usage else 0
+            completion_tokens = response.usage.completion_tokens if response.usage else 0
+            cached = self._extract_cached_tokens(response)
+            usage = ModelUsage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+                cached_tokens=cached,
+                request_time=time.time() - start,
+            )
+            usage.cost_estimate = self.estimate_cost(usage)
+            self._update_stats(usage)
+            self._set_llm_span_usage(_span, usage, latency_ms=int((time.time() - start) * 1000))
+            return ModelResponse(
+                content=text,
+                model_name=self.model_name,
+                usage=usage,
+                raw_response=response,
+                finish_reason=response.choices[0].finish_reason,
+            )
 
     # ------------------------------------------------------------------
     # chat_with_tools()
@@ -220,24 +224,42 @@ class OpenAIProvider(ModelProvider):
                 create_kwargs["tools"] = oai_tools
                 create_kwargs["tool_choice"] = "auto"
 
-            try:
-                response = await self._client.chat.completions.create(**create_kwargs)
-            except openai.APIError as exc:
-                env = _make_envelope(exc, self.provider_id, self.model_name)
-                await self._record_failed_usage(
-                    session_id=kwargs.get("session_id", "default"),
-                    start_time=start,
-                    prompt_tokens=total_prompt,
-                    completion_tokens=total_completion,
-                    cached_tokens=total_cached,
-                    error_envelope=env,
-                )
-                raise ProviderInvocationError(env) from exc
+            # Issue #303 fase 4 — 1 iteração = 1 deile.llm.call span.
+            with self._llm_span() as _it_span:
+                _it_start = time.time()
+                try:
+                    response = await self._client.chat.completions.create(**create_kwargs)
+                except openai.APIError as exc:
+                    self._set_llm_span_error(_it_span, exc)
+                    env = _make_envelope(exc, self.provider_id, self.model_name)
+                    await self._record_failed_usage(
+                        session_id=kwargs.get("session_id", "default"),
+                        start_time=start,
+                        prompt_tokens=total_prompt,
+                        completion_tokens=total_completion,
+                        cached_tokens=total_cached,
+                        error_envelope=env,
+                    )
+                    raise ProviderInvocationError(env) from exc
 
-            if response.usage:
-                total_prompt += response.usage.prompt_tokens
-                total_completion += response.usage.completion_tokens
-                total_cached += self._extract_cached_tokens(response)
+                if response.usage:
+                    _iter_in = response.usage.prompt_tokens
+                    _iter_out = response.usage.completion_tokens
+                    _iter_cached = self._extract_cached_tokens(response)
+                    _iter_usage = ModelUsage(
+                        prompt_tokens=_iter_in,
+                        completion_tokens=_iter_out,
+                        total_tokens=_iter_in + _iter_out,
+                        cached_tokens=_iter_cached,
+                    )
+                    _iter_usage.cost_estimate = self.estimate_cost(_iter_usage)
+                    self._set_llm_span_usage(
+                        _it_span, _iter_usage,
+                        latency_ms=int((time.time() - _it_start) * 1000),
+                    )
+                    total_prompt += _iter_in
+                    total_completion += _iter_out
+                    total_cached += _iter_cached
 
             msg = response.choices[0].message
             if msg.content:
@@ -508,9 +530,39 @@ class OpenAIProvider(ModelProvider):
     @staticmethod
     def _extract_cached_tokens(response: Any) -> int:
         try:
-            return response.usage.prompt_tokens_details.cached_tokens or 0
+            value = response.usage.prompt_tokens_details.cached_tokens or 0
         except AttributeError:
             return 0
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    def estimate_cost(self, usage: ModelUsage) -> float:
+        """OpenAI/DeepSeek-aware cost.
+
+        Both providers report ``prompt_tokens`` as the FULL input total — the
+        cached subset is reported separately (``prompt_tokens_details.cached_tokens``
+        for OpenAI; ``prompt_cache_hit_tokens`` for DeepSeek). The base
+        ``estimate_cost`` charges ``prompt_tokens`` at the full rate AND
+        ``cached_tokens`` at the cached rate, double-counting the cached
+        portion. Here we treat ``prompt_tokens`` as a superset and only charge
+        the non-cached remainder at the full rate.
+        """
+        p = self.pricing
+        if p is None:
+            return 0.0
+        cached = usage.cached_tokens or 0
+        non_cached_input = max(usage.prompt_tokens - cached, 0)
+        input_cost = (non_cached_input / 1_000_000) * p.input_per_1m_usd
+        output_cost = (usage.completion_tokens / 1_000_000) * p.output_per_1m_usd
+        cached_cost = 0.0
+        if cached and p.cached_input_per_1m_usd is not None:
+            cached_cost = (cached / 1_000_000) * p.cached_input_per_1m_usd
+        elif cached:
+            # No cached price published → charge cached portion at full rate.
+            cached_cost = (cached / 1_000_000) * p.input_per_1m_usd
+        return round(input_cost + output_cost + cached_cost, 8)
 
     async def _execute_tool(
         self, name: str, args: Dict[str, Any]

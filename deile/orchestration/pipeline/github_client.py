@@ -61,6 +61,81 @@ def _labels_from_gh(item: dict) -> Tuple[str, ...]:
     return tuple(out)
 
 
+def _parse_gh_jq_output(out: Optional[str], *, log_label: str) -> List[dict]:
+    """Normaliza output do ``gh api --jq`` em ``List[dict]``.
+
+    ``gh api --jq`` muda o formato conforme o número de matches do filtro:
+
+    - **0 matches**  → string vazia (ou apenas whitespace)
+    - **1 match**    → objeto JSON puro (sem array wrapper)
+    - **2+ matches** → NDJSON (objetos separados por ``\\n``, sem array wrapper)
+
+    O ``json.loads`` direto sobre NDJSON levanta
+    ``JSONDecodeError("Extra data: line 2 column 1 ...")``. Esta função
+    resolve os 3 casos transparentemente. Para o caso (3) usa
+    ``JSONDecoder.raw_decode`` em loop — mais robusto que ``splitlines()``
+    porque tolera ``\\n`` dentro de strings JSON (que ``--jq`` não emite
+    hoje, mas defensividade barata).
+
+    Linhas/objetos malformados são logados em WARNING (com ``log_label``
+    pra contexto) e pulados — política igual aos outros parsers do módulo
+    (vide ``list_prs_with_review_requests``, ``search_items_mentioning``).
+    """
+    text = (out or "").strip()
+    if not text:
+        return []
+    decoder = json.JSONDecoder()
+    items: List[dict] = []
+    idx = 0
+    n = len(text)
+    while idx < n:
+        # Pula whitespace entre objetos (NDJSON usa `\n`, mas tolera tabs/espaços).
+        while idx < n and text[idx].isspace():
+            idx += 1
+        if idx >= n:
+            break
+        try:
+            obj, end = decoder.raw_decode(text, idx)
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "%s: skipping malformed JSON at char %d: %s",
+                log_label, idx, exc,
+            )
+            return items
+        if isinstance(obj, list):
+            # Caso array — desempacota e adiciona dicts elemento-a-elemento.
+            for item in obj:
+                if isinstance(item, dict):
+                    items.append(item)
+        elif isinstance(obj, dict):
+            items.append(obj)
+        # Outros tipos (string, número, bool, null) são ignorados — o filtro
+        # `--jq` deste módulo só produz objetos ou arrays de objetos.
+        idx = end
+    return items
+
+
+def _standup_item_from_gh_json(item: dict) -> dict:
+    """Normalise a ``gh pr/issue list`` JSON item to the standup shape.
+
+    Flattens ``author`` (which can be ``{"login": ...}`` or ``None``) to a
+    plain string and remaps ``updatedAt`` to snake_case. Used by
+    :meth:`GitHubClient.list_prs_updated_since` and
+    :meth:`GitHubClient.list_issues_updated_since` — both consumed by the
+    ``/standup`` slash command, which only needs basic display fields.
+    """
+    author = item.get("author")
+    author_name = author.get("login") if isinstance(author, dict) else "?"
+    return {
+        "number": item.get("number"),
+        "title": item.get("title"),
+        "state": item.get("state"),
+        "author": author_name,
+        "url": item.get("url", ""),
+        "updated_at": item.get("updatedAt", ""),
+    }
+
+
 @dataclass(frozen=True)
 class IssueRef:
     number: int
@@ -660,12 +735,16 @@ class GitHubClient:
         except GhCommandError as exc:
             logger.warning("list_prs_with_review_requests failed: %s", exc)
             return []
-        data = json.loads(out or "[]")
-        # gh api --jq may return a single object when there is exactly 1 match.
-        if isinstance(data, dict):
-            data = [data]
+        # `gh api --jq` produz formatos diferentes conforme o número de matches:
+        #   0 matches  → string vazia
+        #   1 match    → objeto JSON puro (sem array wrapper)
+        #   2+ matches → NDJSON (objetos separados por `\n`, sem array wrapper)
+        # `json.loads()` direto quebra no caso NDJSON com:
+        #   "Extra data: line 2 column 1 (char N)"
+        # Helper abaixo normaliza os 3 formatos em `List[dict]`.
+        items = _parse_gh_jq_output(out, log_label="list_prs_with_review_requests")
         result: List[PrRef] = []
-        for item in data:
+        for item in items:
             try:
                 result.append(PrRef.from_gh_json(item))
             except (KeyError, TypeError, ValueError) as exc:
@@ -751,6 +830,47 @@ class GitHubClient:
                 len(seen), offset + page_size,
             )
         return result
+
+    async def list_prs_updated_since(
+        self, since_iso: str, *, limit: int = 100
+    ) -> List[dict]:
+        """Return PRs updated since *since_iso* (ISO-8601 UTC) — any state.
+
+        Used by ``/standup`` to enumerate recent PR activity in the window.
+        Returns plain dicts (already normalised: ``author`` flattened to its
+        ``login`` string, ``updated_at`` keyed in snake_case) because the
+        consumer only needs basic display fields, not the full ``PrRef``
+        wrapper. ``[]`` is returned on any ``gh`` failure (logged at WARNING).
+        """
+        return await self._list_refs(
+            "pr", "list",
+            "--repo", self.repo,
+            "--state", "all",
+            "--search", f"updated:>={since_iso}",
+            "--limit", str(limit),
+            "--json", "number,title,state,author,url,updatedAt",
+            factory=_standup_item_from_gh_json,
+            log_label="list_prs_updated_since",
+        )
+
+    async def list_issues_updated_since(
+        self, since_iso: str, *, limit: int = 100
+    ) -> List[dict]:
+        """Return issues updated since *since_iso* (ISO-8601 UTC) — any state.
+
+        Companion of :meth:`list_prs_updated_since` for ``/standup``. Returns
+        plain dicts with the same shape; ``[]`` on any ``gh`` failure.
+        """
+        return await self._list_refs(
+            "issue", "list",
+            "--repo", self.repo,
+            "--state", "all",
+            "--search", f"updated:>={since_iso}",
+            "--limit", str(limit),
+            "--json", "number,title,state,author,url,updatedAt",
+            factory=_standup_item_from_gh_json,
+            log_label="list_issues_updated_since",
+        )
 
     async def list_recently_merged_prs(self, *, limit: int = 20) -> List[PrRef]:
         """Return recently merged PRs, ordered most-recent-first.

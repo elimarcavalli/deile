@@ -343,7 +343,12 @@ def k8s_up(args: dict) -> int:
             return 1
 
     ui.info("aplicando ConfigMap, PVCs, Deployments e Services")
-    for manifest in ("15-bot-config.yaml", "19-bot-data-pvc.yaml",
+    # ConfigMaps PRIMEIRO — Pods montam essas chaves; aplicar antes evita
+    # CreateContainerConfigError no primeiro rollout. ``47-deile-runtime-config``
+    # carrega o settings.json layered (issue #111) consumido por pipeline /
+    # worker / shell em ~/.deile/settings.json.
+    for manifest in ("15-bot-config.yaml", "47-deile-runtime-config.yaml",
+                     "19-bot-data-pvc.yaml",
                      "20-bot-deployment.yaml", "35-deile-interactive.yaml",
                      "41-worker-pvc.yaml", "45-deile-worker-deployment.yaml",
                      "46-deile-pipeline-deployment.yaml"):
@@ -471,19 +476,102 @@ def k8s_logs(args: dict) -> int:
 # ===== k8s: test (Job one-shot) ==============================================
 
 def k8s_panel(args: dict) -> int:
-    """Sobe o painel TUI ao vivo de monitoramento da stack."""
-    kubectl = _kubectl()
-    if kubectl is None or not cluster_reachable():
-        ui.err("cluster Kubernetes inacessível.")
-        ui.info("Rode `deploy.py k8s up` para subir a stack antes do painel.")
+    """Sobe o painel TUI ao vivo (k8s + local + GitHub + custos).
+
+    Suporta CLI flags via `args["extra"]` (encadeados em `deploy.py k8s
+    panel <flags>`):
+
+      --namespace <ns>          Namespace k8s (default: deile)
+      --pipeline-deploy <name>  Default: deile-pipeline
+      --worker-deploy <name>    Default: deile-worker
+      --bot-deploy <name>       Default: deilebot
+      --repo <owner/repo>       Repo GitHub (default: derivado do origin)
+      --usage-db <path>         SQLite de custos (default: ~/.deile/db/usage.db)
+      --logs-dir <path>         Diretório de logs locais (default: ~/.deile/logs)
+      --k8s-only                Não detecta processos locais nem tail de logs
+      --local-only              Não tenta kubectl (mesmo se disponível)
+      --demo                    Mocks puros (não toca fontes reais)
+
+    Diferente da versão anterior, **não exige cluster k8s** — se k8s
+    estiver fora, o painel ainda abre em "local only" (lê
+    `~/.deile/logs/` + `~/.deile/db/usage.db` + processos locais).
+    """
+    from _panel import run_panel  # import tardio: rich só é carregado se usado
+    from _panel_data import RuntimeContext
+
+    overrides, demo_flag = _parse_panel_flags(args.get("extra") or [])
+    # Validação leve antes de bootar — operador erra `--namespace` (sem valor),
+    # melhor avisar antes que o painel abra com defaults silenciosos.
+    if "_error" in overrides:
+        ui.err(overrides["_error"])
+        return 64
+    ctx = RuntimeContext.detect(**overrides)
+    # K8s não é mais obrigatório, mas avisa quando o operador pediu
+    # explicitamente k8s e ele não está disponível.
+    if ctx.k8s_force and not ctx.k8s_available:
+        ui.err("--k8s-only setado mas cluster inacessível.")
+        ui.info("Rode `deploy.py k8s up` ou remova --k8s-only.")
         return 1
-    if not namespace_exists():
-        ui.warn(f"namespace `{NS}` ausente — a stack não está no ar.")
-        ui.info("Rode `deploy.py k8s up` primeiro.")
+    if not ctx.k8s_available and not ctx.local_available and not demo_flag:
+        ui.warn("Nem k8s nem rastros locais detectados.")
+        ui.info("Use --demo pra ver a UI com dados sintéticos, "
+                "ou inicie DEILE/k8s primeiro.")
         return 1
     # `panel` é inspeção pura (não muta nada); sem `announce_plan`.
-    from _panel import run_panel  # import tardio: rich só é carregado se usado
-    return run_panel()
+    return run_panel(context=ctx, force_demo=demo_flag)
+
+
+_PANEL_FLAG_VALUE = {
+    "--namespace": "namespace",
+    "--pipeline-deploy": "pipeline_deploy",
+    "--worker-deploy": "worker_deploy",
+    "--bot-deploy": "bot_deploy",
+    "--shell-deploy": "shell_deploy",
+    "--repo": "repo",
+    "--usage-db": "usage_db",
+    "--logs-dir": "logs_dir",
+    "--sessions-dir": "sessions_dir",
+    "--cluster-label": "cluster_label",
+    "--image-label": "image_label",
+}
+_PANEL_FLAG_BOOL = {
+    "--k8s-only": "k8s_force",
+    "--local-only": "local_force",
+}
+
+
+def _parse_panel_flags(extra: List[str]) -> tuple:
+    """Decodifica os flags do `panel` para um dict de overrides + demo flag.
+
+    Devolve `({field: value, ...}, demo_bool)` ou `{"_error": msg}` se
+    algum flag vier sem valor.
+    """
+    overrides: Dict[str, object] = {}
+    demo = False
+    i = 0
+    while i < len(extra):
+        a = extra[i]
+        if a == "--demo":
+            demo = True
+            i += 1
+            continue
+        if a in _PANEL_FLAG_BOOL:
+            overrides[_PANEL_FLAG_BOOL[a]] = True
+            i += 1
+            continue
+        if a in _PANEL_FLAG_VALUE:
+            if i + 1 >= len(extra):
+                return {"_error": f"flag `{a}` exige um valor"}, False
+            field = _PANEL_FLAG_VALUE[a]
+            val: object = extra[i + 1]
+            if field in ("usage_db", "logs_dir", "sessions_dir"):
+                from pathlib import Path as _P
+                val = _P(str(val)).expanduser()
+            overrides[field] = val
+            i += 2
+            continue
+        return {"_error": f"flag desconhecido: `{a}`"}, False
+    return overrides, demo
 
 
 def k8s_test(args: dict) -> int:
@@ -535,7 +623,20 @@ if token_file.exists():
     token = token_file.read_text().strip()
     creds = home / ".git-credentials"
     fd = os.open(str(creds), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+    # ``os.fdopen`` can raise (invalid mode, OOM building the wrapper)
+    # before the ``with`` block takes ownership of ``fd``. Without this
+    # guard, a failing fdopen would leak ``fd`` — an open FD to a
+    # credentials file — for the process's lifetime. Same defensive
+    # pattern already used in wrapper.py:205–213.
+    try:
+        wrapper = os.fdopen(fd, "w", encoding="utf-8")
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    with wrapper as fh:
         fh.write("https://oauth2:" + token + "@github.com\n")
     subprocess.run(["git", "config", "--global", "credential.helper", "store"],
                    check=False)

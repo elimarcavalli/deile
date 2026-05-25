@@ -179,11 +179,50 @@ def _bot_facade():
     return facade if facade.is_available else None
 
 
+def _is_synthetic_snowflake(value: Optional[str]) -> bool:
+    """True quando ``value`` não é um snowflake Discord (= não-numérico).
+
+    Discord snowflakes são strings de só dígitos (até 19 caracteres em 2026).
+    Qualquer outro formato indica um ID sintético, criado por outra camada
+    para identificar trabalho fora do contexto Discord.
+
+    Casos de IDs sintéticos no DEILE:
+
+    1. **channel_id sintético** — o pipeline (``WorkerImplementer``) e o
+       subagent runner usam ``pipeline-issue-299``, ``pipeline-pr-123`` ou
+       ``cli:<session>:<task>`` para isolar sandboxes por unidade de trabalho
+       sem associá-las a um canal real.
+    2. **user_message_id sintético** — o slash command ``/deile``
+       (``deilebot.foundation.slash_dispatch.build_envelope``) gera
+       ``slash-<timestamp_ms>`` quando o caller não passa um message_id
+       real, porque interactions Discord não são mensagens addressable.
+
+    Em ambos os casos, qualquer tentativa de postar/editar/reagir nesses
+    IDs falharia no ``int(snowflake)`` do adapter Discord — gerando
+    ``outbound_failed`` no audit do bot ou 502 Bad Gateway no cliente.
+    O guard centralizado garante que ``_post/_edit/_react`` no-op silently
+    quando QUALQUER um dos snowflakes (channel ou message) é sintético.
+    """
+    return not (value or "").isdigit()
+
+
+# Mantido como alias para compat: nome anterior era específico de channel,
+# mas a regra é a mesma para qualquer snowflake. Documentado para que o
+# leitor saiba que pode ser usado tanto pra channel_id quanto message_id.
+_is_synthetic_channel = _is_synthetic_snowflake
+
+
 async def _post_status_message(channel_id: str, text: str) -> Optional[str]:
     """Post a fresh message to the user's channel via control-plane.
 
     Returns message_id, or None if the call fails (we degrade silently).
     """
+    if _is_synthetic_snowflake(channel_id):
+        # Pipeline/subagent dispatch: sem canal real, sem status UI.
+        logger.debug(
+            "skipping status post: synthetic channel_id=%s", channel_id,
+        )
+        return None
     try:
         facade = _bot_facade()
         if facade is None:
@@ -197,6 +236,10 @@ async def _post_status_message(channel_id: str, text: str) -> Optional[str]:
 
 
 async def _edit_status_message(channel_id: str, message_id: str, text: str) -> bool:
+    if _is_synthetic_snowflake(channel_id) or _is_synthetic_snowflake(message_id):
+        # message_id sintético acontece quando o caller perdeu o ID real
+        # do status post (raro) ou quando a edit é tentada num ID legado.
+        return False
     try:
         facade = _bot_facade()
         if facade is None:
@@ -213,6 +256,17 @@ async def _edit_status_message(channel_id: str, message_id: str, text: str) -> b
 
 
 async def _react(channel_id: str, message_id: str, emoji: str) -> bool:
+    # ``user_message_id`` chega como ``slash-<ts_ms>`` quando o /deile slash
+    # command não tem mensagem real subjacente (somente interaction). Reagir
+    # nele falharia no ``int(message_id)`` do adapter Discord (ValueError)
+    # → ProviderError → 502. Sem o guard, o cliente vê retries em loop e
+    # o operador vê "react failed" sem entender o motivo.
+    if _is_synthetic_snowflake(channel_id) or _is_synthetic_snowflake(message_id):
+        logger.debug(
+            "skipping react: synthetic channel=%s message=%s",
+            channel_id, message_id,
+        )
+        return False
     try:
         facade = _bot_facade()
         if facade is None:
@@ -550,12 +604,14 @@ async def _run_task(
             prompt = _build_prompt(brief, workdir, history or "")
 
             # Hook the agent's event bus if available, to feed progress.
-            # Bug fix: previous code used bus.subscribe(_on_event) (1 arg)
-            # but the real signature is subscribe(event_type, handler).
-            # Now we use subscribe_all for catch-all + async handler.
-            # B3 (PR #295 review): the handler is later unsubscribed in the
-            # `finally` block — sem isso, dispatches acumulam handlers no
-            # singleton EventBus e o fan-out vira O(N) sob carga.
+            # IMPORTANT: store the handler reference so we can unsubscribe
+            # in the finally block. Each _run_task registered a fresh
+            # closure; ``EventBus.subscribe_all`` keeps strong refs in
+            # ``_wildcard_handlers``, so under sustained dispatch the list
+            # grew unbounded — each new event invoked every stale handler
+            # (O(N²) CPU), each closure held the dead task's
+            # ``progress_lines`` (memory growth), and progress lines could
+            # leak across tasks. (PR #295 review B3, PR #298 worker_server.)
             bus = None
             _on_event = None
             try:
@@ -583,11 +639,12 @@ async def _run_task(
                     bus.subscribe_all(_on_event)
                 elif hasattr(bus, "subscribe"):
                     # Some EventBus signatures take (event_type, handler) —
-                    # try a sensible catch-all key if available.
+                    # try a sensible catch-all key if available. ``_on_event``
+                    # keeps the reference so the finally block can unsubscribe.
                     try:
                         bus.subscribe("*", _on_event)
                     except Exception:
-                        pass
+                        _on_event = None
             except Exception:
                 logger.debug("event bus hook unavailable", exc_info=True)
                 bus = None

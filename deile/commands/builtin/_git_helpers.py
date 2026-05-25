@@ -5,6 +5,10 @@ estavam duplicadas entre :mod:`loc_command`, :mod:`standup_command` e
 :mod:`todo_command` — cada arquivo trazia sua própria variante de
 ``git ls-files`` e ``git rev-parse``, com tratamento de erro divergente.
 
+Também centraliza *gates* de pré-requisito (``ensure_git_repo`` e
+``ensure_gh_authenticated``) para qualquer comando que dependa de um
+repositório git válido ou de ``gh`` CLI autenticada.
+
 Cada helper retorna um valor previsível ou levanta :class:`CommandError`
 com mensagem PT-BR; nenhum log próprio é emitido para que o caller
 possa decidir o nível de verbosidade.
@@ -12,6 +16,7 @@ possa decidir o nível de verbosidade.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -67,3 +72,39 @@ def resolve_repo_root(*, timeout: int = 10) -> Path:
     if result.returncode != 0:
         raise CommandError("Não foi possível determinar a raiz do repositório git")
     return Path(result.stdout.strip())
+
+
+def ensure_git_repo(cwd: str | Path | None = None) -> Path:
+    """Garante que ``git`` está instalado e que o CWD é um repositório git.
+
+    Retorna o ``Path`` da raiz do repositório (reaproveita
+    :func:`resolve_repo_root`). Levanta :class:`CommandError` com mensagem
+    PT-BR quando ``git`` não está disponível no host ou o diretório não
+    pertence a um repositório.
+    """
+    if not shutil.which("git"):
+        raise CommandError("Git não está instalado.")
+    try:
+        return resolve_repo_root()
+    except CommandError as exc:
+        # Reescreve a mensagem técnica de resolve_repo_root para algo
+        # mais amigável no contexto do gate (mantém PT-BR).
+        raise CommandError("O diretório atual não é um repositório git.") from exc
+
+
+def ensure_gh_authenticated() -> None:
+    """Garante que a ``gh`` CLI está instalada e autenticada.
+
+    Levanta :class:`CommandError` com mensagem PT-BR quando ``gh`` não
+    está instalada ou ``gh auth status`` retorna código de saída
+    diferente de zero.
+    """
+    if not shutil.which("gh"):
+        raise CommandError("GitHub CLI (gh) não está instalada.")
+    res = subprocess.run(
+        ["gh", "auth", "status"],
+        capture_output=True,
+        text=True,
+    )
+    if res.returncode != 0:
+        raise CommandError("CLI do GitHub (gh) não está autenticada.")

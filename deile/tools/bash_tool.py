@@ -72,73 +72,97 @@ class BashExecuteTool(SyncTool):
         command_lower = command.lower()
         return any(cmd in command_lower for cmd in interactive_commands)
     
-    def _execute_with_pty_unix(self, 
+    def _execute_with_pty_unix(self,
                               command: str,
                               working_dir: Path,
                               env: Dict[str, str],
                               timeout: float) -> Tuple[str, str, int, bool]:
         """Execute command with PTY on Unix systems"""
-        
+
         try:
             import pty
             import select
 
             # Create master and slave PTY
             master_fd, slave_fd = pty.openpty()
-            
-            # Start process with PTY
-            process = subprocess.Popen(
-                command,
-                shell=True,  # nosec B602 — intentional: BashExecuteTool is a shell-execution primitive; command passes security assessment before reaching here
-                cwd=working_dir,
-                env=env,
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                preexec_fn=os.setsid
-            )
-            
-            # Close slave fd in parent
-            os.close(slave_fd)
-            
-            # Read from master with timeout
-            output_buffer = []
-            start_time = time.time()
-            
-            while True:
-                # Check if process is still running
-                poll_result = process.poll()
-                if poll_result is not None:
-                    break
-                
-                # Check timeout
-                if time.time() - start_time > timeout:
-                    process.terminate()
-                    process.wait(timeout=5)
-                    raise TimeoutError(f"Command timed out after {timeout} seconds")
-                
-                # Check for data to read
-                ready, _, _ = select.select([master_fd], [], [], 1.0)
-                if ready:
-                    try:
-                        data = os.read(master_fd, 1024).decode('utf-8', errors='replace')
-                        if data:
-                            output_buffer.append(data)
-                            # Real-time output (tee functionality)
-                            if self._should_show_output():
-                                print(data, end='', flush=True)
-                    except OSError:
+            process = None
+            try:
+                # Start process with PTY
+                process = subprocess.Popen(
+                    command,
+                    shell=True,  # nosec B602 — intentional: BashExecuteTool is a shell-execution primitive; command passes security assessment before reaching here
+                    cwd=working_dir,
+                    env=env,
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    preexec_fn=os.setsid
+                )
+
+                # Close slave fd in parent — child holds the only ref now.
+                os.close(slave_fd)
+                slave_fd = -1  # marker: don't double-close in finally
+
+                # Read from master with timeout
+                output_buffer = []
+                start_time = time.time()
+
+                while True:
+                    # Check if process is still running
+                    poll_result = process.poll()
+                    if poll_result is not None:
                         break
-            
-            # Close master fd
-            os.close(master_fd)
-            
-            # Wait for process to complete
-            exit_code = process.wait()
-            output = ''.join(output_buffer)
-            
-            return output, "", exit_code, True  # PTY used
-            
+
+                    # Check timeout
+                    if time.time() - start_time > timeout:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=5)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait()
+                        raise TimeoutError(f"Command timed out after {timeout} seconds")
+
+                    # Check for data to read
+                    ready, _, _ = select.select([master_fd], [], [], 1.0)
+                    if ready:
+                        try:
+                            data = os.read(master_fd, 1024).decode('utf-8', errors='replace')
+                            if data:
+                                output_buffer.append(data)
+                                # Real-time output (tee functionality)
+                                if self._should_show_output():
+                                    print(data, end='', flush=True)
+                        except OSError:
+                            break
+
+                # Wait for process to complete
+                exit_code = process.wait()
+                output = ''.join(output_buffer)
+
+                return output, "", exit_code, True  # PTY used
+            finally:
+                # Always close PTY fds and reap the subprocess so we don't
+                # leak file descriptors on TimeoutError / unexpected errors.
+                # Before this fix, a TimeoutError raised inside the loop
+                # escaped the function without closing ``master_fd`` —
+                # repeated timeouts exhausted the FD table.
+                if slave_fd != -1:
+                    try:
+                        os.close(slave_fd)
+                    except OSError:
+                        pass
+                try:
+                    os.close(master_fd)
+                except OSError:
+                    pass
+                if process is not None and process.poll() is None:
+                    try:
+                        process.kill()
+                        process.wait(timeout=2)
+                    except Exception:  # noqa: BLE001 - best effort cleanup
+                        pass
+
         except Exception as e:
             logger.error(f"PTY execution failed: {e}")
             # Fallback to regular subprocess

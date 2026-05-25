@@ -1,28 +1,42 @@
-"""Data providers do painel TUI — kubectl, gh, SQLite — com cache TTL.
+"""Data providers do painel TUI — kubectl, gh, SQLite, ps, tail — com cache TTL.
 
 Cada provider expõe um `get()` que devolve um dataclass tipado e fica
 silenciosamente vazio quando a fonte está indisponível (cluster down, gh
 sem auth, DB ausente). A camada de view (`_panel.py`) lê dos `get()` sem
-saber se veio do cluster ou do fallback.
+saber se veio do cluster, do host local ou do fallback.
 
-Cache: cada provider tem `Cache[T]` com TTL próprio (3-60s). `get(force=True)`
+Cache: cada provider tem `Cache[T]` com TTL próprio (1-300s). `get(force=True)`
 re-busca; chamadas posteriores dentro do TTL retornam o valor cacheado.
-Não usa threads — a leitura é lazy, o custo de cada `kubectl/gh/sqlite` é
-absorvido pelo loop principal do `PanelApp` que renderiza em cadência
-calma (3s default).
+O `BackgroundRefresher` (em `_panel.py`) chama `maybe_refresh` em loop
+para manter os caches frescos sem bloquear a UI.
+
+`RuntimeContext` (no topo) carrega: namespace, deploy names, paths e
+flags k8s/local — permite o painel rodar:
+- **K8s** (defaults): equivalente ao comportamento legado.
+- **Local**: `python3 deile.py` no host — `LocalProcessesProvider`,
+  `LocalLogsProvider` (tail de `~/.deile/logs/deile.log`),
+  `LocalAuditProvider` (tail de `security_audit.log`).
+- **Híbrido**: detecta ambos e renderiza lado a lado.
+- **Demo** (`--demo`): bypassa fontes reais, mostra mocks.
 
 Fontes:
-- pods + recursos:  `kubectl -n deile get pods -o json`
-- pipeline:         `kubectl logs deploy/deile-pipeline --tail=200 --timestamps`
+- pods + recursos:  `kubectl -n <ns> get pods -o json`
+- pipeline:         `kubectl logs deploy/<pipeline-deploy> --tail=200 --timestamps`
 - worker (por pod): `kubectl logs <pod> --tail=200 --timestamps`
 - issues + PRs:     `gh api /repos/<repo>/issues?state=open`
-- custos:           `~/.deile/db/usage.db` (UsageRepository)
+- custos:           `<usage_db>` (SQLite — default `~/.deile/db/usage.db`)
+- processos locais: `ps -axo pid,pcpu,rss,etime,command`
+- logs locais:      tail-from-end de `<logs_dir>/deile.log` (até 64KB)
+- audit local:      tail-from-end de `<logs_dir>/security_audit.log`
+- instâncias:       `<runtime_dir>/*.json` (state files publicados por instâncias
+                    DEILE rodando no host — issue #303)
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import sqlite3
@@ -51,6 +65,17 @@ _MODEL_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$")
 # Argumento `deployment` de `set_preferred_model` vai direto em argv —
 # whitelist impede qualquer outro alvo (acidental ou malicioso).
 _ALLOWED_DEPLOYMENTS = frozenset({"deile-worker", "deile-pipeline"})
+# Deployments do stack inteiro (alvos das ações de ciclo-de-vida do painel:
+# delete pod, rollout restart). Distinto de _ALLOWED_DEPLOYMENTS, que cobre
+# só a troca de modelo (worker + pipeline). Aqui incluímos também bot/shell.
+_ALLOWED_DEPLOYMENTS_FULL = frozenset({
+    "deile-pipeline", "deile-worker", "deilebot", "deile-shell",
+})
+# Pod name: snowflake-ish letras-minúsculas + dígitos + hífen (validação
+# leve para argv); até 253 chars (limite DNS-1123). Validado antes de
+# chegar em qualquer ``kubectl delete pod`` — sem espaços, sem barra,
+# sem flags.
+_POD_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,251}[a-z0-9])?$")
 
 
 def _detect_default_repo() -> str:
@@ -81,6 +106,132 @@ def _detect_default_repo() -> str:
 
 REPO_DEFAULT = _detect_default_repo()
 USAGE_DB = Path.home() / ".deile" / "db" / "usage.db"
+LOGS_DIR = Path.home() / ".deile" / "logs"
+SESSIONS_DIR = Path.home() / ".deile" / "sessions"
+# Diretório onde instâncias DEILE publicam seu `<instance_id>.json` (state
+# file por processo, atualizado em volta de tools/heartbeat — issue #303).
+# Override-able via `DEILE_RUNTIME_DIR` env var; `LocalInstancesProvider`
+# resolve a env no construtor (não no import) para os testes poderem
+# manipular `monkeypatch.setenv` antes da instanciação.
+RUNTIME_DIR = Path.home() / ".deile" / "run"
+
+
+# ===== runtime context ======================================================
+#
+# `RuntimeContext` é a fonte única de verdade da configuração de execução
+# do painel: namespace k8s, deployment names, paths locais e modo
+# (k8s/local/híbrido/demo). Substitui as constantes `NS`/`DEPLOY` que
+# antes eram hardcoded — os providers continuam tendo defaults, mas o
+# `PanelData.from_context(...)` injeta os valores efetivos.
+#
+# A detecção de modo é lazy (em `k8s_available` e `local_available`) — a
+# mesma instância pode mudar de comportamento se o operador subir o
+# cluster ou matar o processo local enquanto o painel está aberto.
+
+# Padrões que marcam um processo do host como "DEILE-like". Ordem
+# importa: o mais específico primeiro (bot/pipeline antes do CLI
+# genérico `deile.py`). O fallback `_LOCAL_PROCESS_RE` aceita qualquer
+# `python ... (deile|deilebot)` — útil para detecção em `local_available`.
+_LOCAL_PROCESS_PATTERNS: List[tuple] = [
+    (re.compile(r"-m\s+deilebot(\b|\.)", re.IGNORECASE), "local-bot"),
+    (re.compile(r"deilebot.*\brun\b", re.IGNORECASE), "local-bot"),
+    (re.compile(r"-m\s+deile\.orchestration", re.IGNORECASE), "local-pipeline"),
+    (re.compile(r"-m\s+deile\.pipeline", re.IGNORECASE), "local-pipeline"),
+    (re.compile(r"(?:^|/| )deile\.py(?:\s|$)"), "local-deile"),
+    (re.compile(r"-m\s+deile(\b|\.)", re.IGNORECASE), "local-deile"),
+]
+_LOCAL_PROCESS_RE = re.compile(r"python.*\b(deile|deilebot)\b", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class RuntimeContext:
+    """Configuração de execução do painel — detectada ou explícita.
+
+    Resolve namespace, deployment names, paths e modo (k8s/local/demo) num
+    objeto imutável que os providers consomem. Defaults batem com o
+    layout `infra/k8s/manifests/` (namespace `deile`, deployments
+    `deile-pipeline`/`deile-worker`/`deilebot`/`deile-shell`).
+
+    Use `RuntimeContext.detect(**overrides)` para construir aplicando
+    overrides do CLI (`--namespace`, `--pipeline-deploy`, etc).
+    """
+
+    namespace: str = "deile"
+    pipeline_deploy: str = "deile-pipeline"
+    worker_deploy: str = "deile-worker"
+    bot_deploy: str = "deilebot"
+    shell_deploy: str = "deile-shell"
+    repo: str = ""
+    usage_db: Path = field(default_factory=lambda: USAGE_DB)
+    logs_dir: Path = field(default_factory=lambda: LOGS_DIR)
+    sessions_dir: Path = field(default_factory=lambda: SESSIONS_DIR)
+    cluster_label: str = "rancher-desktop (k3s)"
+    image_label: str = "deile-stack:local"
+    k8s_force: bool = False
+    local_force: bool = False
+    demo: bool = False
+
+    @classmethod
+    def detect(cls, **overrides: Any) -> "RuntimeContext":
+        """Constrói o contexto, resolvendo defaults quando overrides faltam."""
+        repo = overrides.pop("repo", None) or _detect_default_repo()
+        return cls(repo=repo, **overrides)
+
+    @property
+    def k8s_available(self) -> bool:
+        """`True` se kubectl está no PATH/Rancher e --local-only não foi setado."""
+        if self.local_force or self.demo:
+            return False
+        return kubectl_bin() is not None
+
+    @property
+    def local_available(self) -> bool:
+        """`True` se há vestígios de DEILE no host (log, DB ou processo)."""
+        if self.k8s_force or self.demo:
+            return False
+        if self.logs_dir.is_dir() or self.usage_db.is_file():
+            return True
+        return _has_local_deile_process()
+
+    @property
+    def mode_label(self) -> str:
+        """Rótulo curto para o header do painel."""
+        if self.demo:
+            return "demo (mocks)"
+        k = self.k8s_available
+        ll = self.local_available
+        if k and ll:
+            return "k8s + local"
+        if k:
+            return "k8s only"
+        if ll:
+            return "local only"
+        return "vazio (sem fontes)"
+
+
+def _has_local_deile_process() -> bool:
+    """Detecta processo `python ... (deile|deilebot)` no host.
+
+    Usa `ps -axo command=` (POSIX). Falha silenciosa se `ps` ausente — o
+    callsite (`RuntimeContext.local_available`) cai pro fallback de
+    "tem logs/DB?".
+    """
+    ps = shutil.which("ps")
+    if ps is None:
+        return False
+    try:
+        out = subprocess.run(
+            [ps, "-axo", "command="],
+            capture_output=True, text=True, timeout=2.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if out.returncode != 0:
+        return False
+    for line in out.stdout.splitlines():
+        if _LOCAL_PROCESS_RE.search(line):
+            return True
+    return False
 
 
 # ===== cache ================================================================
@@ -264,14 +415,27 @@ class _KubectlProviderMixin:
 
     Operador pode ter instalado kubectl depois do painel abrir — toda
     chamada de fetch tenta re-resolver se a referência local ainda é None.
+
+    Provider pode ser desabilitado (`enabled=False`) para o caso
+    `--local-only`: `_fetch` é interceptado por `_check_enabled`, que
+    levanta `RuntimeError("k8s disabled")` antes do subprocess. O
+    `Cache` captura e devolve o fallback (`[]`, `{}`, `PipelineState()`,
+    etc) — UI vê os painéis vazios em vez de dados do cluster, sem
+    chamar `kubectl` desnecessariamente.
     """
 
     _kubectl: Optional[str]
+    _enabled: bool = True
 
     def _resolve_kubectl(self) -> Optional[str]:
         if self._kubectl is None:
             self._kubectl = kubectl_bin()
         return self._kubectl
+
+    def _check_enabled(self) -> None:
+        """Raise para o Cache cair em fallback quando provider desabilitado."""
+        if not self._enabled:
+            raise RuntimeError("k8s desabilitado (--local-only)")
 
 
 def _fmt_age(seconds: Optional[float]) -> str:
@@ -313,11 +477,14 @@ _ROLE_BY_APP = {
 
 
 class PodsProvider(_KubectlProviderMixin):
-    """Lista os pods do namespace `deile` em forma tipada."""
+    """Lista os pods do namespace em forma tipada (default `deile`)."""
 
-    def __init__(self, ttl_s: float = 1.0):
+    def __init__(self, ttl_s: float = 1.0, namespace: str = NS,
+                 enabled: bool = True):
         # 1s: `kubectl get pods` local <50ms, sem custo perceptível.
         self._kubectl = kubectl_bin()
+        self._namespace = namespace
+        self._enabled = enabled
         self._cache: Cache[List[PodInfo]] = Cache(ttl_s, self._fetch, fallback=[])
 
     @property
@@ -328,11 +495,12 @@ class PodsProvider(_KubectlProviderMixin):
         return self._cache.get(force)
 
     def _fetch(self) -> List[PodInfo]:
+        self._check_enabled()
         self._resolve_kubectl()
         if self._kubectl is None:
             raise RuntimeError("kubectl não encontrado")
         data = _capture_json(
-            [self._kubectl, "-n", NS, "get", "pods", "-o", "json"],
+            [self._kubectl, "-n", self._namespace, "get", "pods", "-o", "json"],
             timeout=4.0,
         )
         if data is None:
@@ -475,12 +643,17 @@ class PipelineState:
 class PipelineProvider(_KubectlProviderMixin):
     """Lê os últimos N segundos de log do deile-pipeline e classifica."""
 
-    DEPLOY = "deile-pipeline"
+    DEPLOY = "deile-pipeline"  # default histórico; override via __init__
     TAIL_LINES = 200
 
-    def __init__(self, ttl_s: float = 2.0):
+    def __init__(self, ttl_s: float = 2.0,
+                 namespace: str = NS, deploy: Optional[str] = None,
+                 enabled: bool = True):
         # 2s: `kubectl logs --tail=200` ~200ms; balanceado entre vivo e custo.
         self._kubectl = kubectl_bin()
+        self._namespace = namespace
+        self._deploy = deploy or self.DEPLOY
+        self._enabled = enabled
         self._cache: Cache[PipelineState] = Cache(
             ttl_s, self._fetch, fallback=PipelineState(),
         )
@@ -493,17 +666,18 @@ class PipelineProvider(_KubectlProviderMixin):
         return self._cache.get(force)
 
     def _fetch(self) -> PipelineState:
+        self._check_enabled()
         self._resolve_kubectl()
         if self._kubectl is None:
             raise RuntimeError("kubectl não encontrado")
         text = _capture_text(
-            [self._kubectl, "-n", NS, "logs",
-             f"deploy/{self.DEPLOY}",
+            [self._kubectl, "-n", self._namespace, "logs",
+             f"deploy/{self._deploy}",
              f"--tail={self.TAIL_LINES}", "--timestamps"],
             timeout=5.0,
         )
         if text is None:
-            raise RuntimeError(f"kubectl logs {self.DEPLOY} falhou")
+            raise RuntimeError(f"kubectl logs {self._deploy} falhou")
         return self._parse(text)
 
     def _parse(self, text: str) -> PipelineState:
@@ -580,12 +754,17 @@ _WORKER_BUSY_WINDOW_S = 90  # se houve POST /v1/dispatch nos últimos 90s, está
 class WorkerProvider(_KubectlProviderMixin):
     """Por pod worker, deduz busy/idle do log."""
 
-    LABEL_SELECTOR = "app=deile-worker"
+    LABEL_SELECTOR_FMT = "app={deploy}"
     TAIL_LINES = 200
 
-    def __init__(self, ttl_s: float = 2.0):
+    def __init__(self, ttl_s: float = 2.0,
+                 namespace: str = NS, worker_deploy: str = "deile-worker",
+                 enabled: bool = True):
         # 2s: N `kubectl logs` (1 por worker) — só roda em background.
         self._kubectl = kubectl_bin()
+        self._namespace = namespace
+        self._worker_deploy = worker_deploy
+        self._enabled = enabled
         self._cache: Cache[Dict[str, WorkerState]] = Cache(
             ttl_s, self._fetch, fallback={},
         )
@@ -598,12 +777,14 @@ class WorkerProvider(_KubectlProviderMixin):
         return self._cache.get(force)
 
     def _fetch(self) -> Dict[str, WorkerState]:
+        self._check_enabled()
         self._resolve_kubectl()
         if self._kubectl is None:
             raise RuntimeError("kubectl não encontrado")
+        selector = self.LABEL_SELECTOR_FMT.format(deploy=self._worker_deploy)
         names_raw = _capture_text(
-            [self._kubectl, "-n", NS, "get", "pods",
-             "-l", self.LABEL_SELECTOR,
+            [self._kubectl, "-n", self._namespace, "get", "pods",
+             "-l", selector,
              "-o", "jsonpath={.items[*].metadata.name}"],
             timeout=4.0,
         )
@@ -613,7 +794,7 @@ class WorkerProvider(_KubectlProviderMixin):
         states: Dict[str, WorkerState] = {}
         for name in pod_names:
             text = _capture_text(
-                [self._kubectl, "-n", NS, "logs", name,
+                [self._kubectl, "-n", self._namespace, "logs", name,
                  f"--tail={self.TAIL_LINES}", "--timestamps"],
                 timeout=4.0,
             ) or ""
@@ -946,10 +1127,13 @@ class CurrentModelProvider(_KubectlProviderMixin):
 
     DEFAULT_DEPLOYMENTS = ("deile-worker", "deile-pipeline")
 
-    def __init__(self, deployments=DEFAULT_DEPLOYMENTS, ttl_s: float = 3.0):
+    def __init__(self, deployments=DEFAULT_DEPLOYMENTS, ttl_s: float = 3.0,
+                 namespace: str = NS, enabled: bool = True):
         # 3s: 1 `kubectl get -o json` por deployment (~100ms cada).
         self._kubectl = kubectl_bin()
+        self._namespace = namespace
         self._deployments = tuple(deployments)
+        self._enabled = enabled
         self._cache: Cache[Dict[str, Optional[str]]] = Cache(
             ttl_s, self._fetch, fallback={d: None for d in deployments},
         )
@@ -958,17 +1142,26 @@ class CurrentModelProvider(_KubectlProviderMixin):
     def last_error(self) -> Optional[str]:
         return self._cache.last_error
 
+    @property
+    def namespace(self) -> str:
+        return self._namespace
+
+    @property
+    def deployments(self) -> tuple:
+        return self._deployments
+
     def get(self, force: bool = False) -> Dict[str, Optional[str]]:
         return self._cache.get(force)
 
     def _fetch(self) -> Dict[str, Optional[str]]:
+        self._check_enabled()
         self._resolve_kubectl()
         if self._kubectl is None:
             raise RuntimeError("kubectl não encontrado")
         out: Dict[str, Optional[str]] = {}
         for dep in self._deployments:
             data = _capture_json(
-                [self._kubectl, "-n", NS, "get",
+                [self._kubectl, "-n", self._namespace, "get",
                  f"deployment/{dep}", "-o", "json"],
                 timeout=4.0,
             )
@@ -989,6 +1182,7 @@ class CurrentModelProvider(_KubectlProviderMixin):
 
 def _audit_security_policy_change(
     deployment: str, slug: str, *, result: str, detail: str,
+    namespace: str = NS,
 ) -> None:
     """Emite AuditEvent(SECURITY_POLICY_CHANGED) para a troca de modelo.
 
@@ -1015,7 +1209,7 @@ def _audit_security_policy_change(
             event_type=AuditEventType.SECURITY_POLICY_CHANGED,
             severity=severity,
             actor="panel:set_preferred_model",
-            resource=f"deployment:{NS}/{deployment}:DEILE_PREFERRED_MODEL",
+            resource=f"deployment:{namespace}/{deployment}:DEILE_PREFERRED_MODEL",
             action="kubectl_set_env",
             result=result,
             details={"slug": slug, "detail": detail[:200]},
@@ -1025,7 +1219,8 @@ def _audit_security_policy_change(
 
 
 def set_preferred_model(deployment: str, slug: str,
-                        timeout: float = 15.0) -> tuple:
+                        timeout: float = 15.0,
+                        namespace: str = NS) -> tuple:
     """Aplica `DEILE_PREFERRED_MODEL=<slug>` no Deployment.
 
     `kubectl set env` modifica a spec do Deployment, o que dispara
@@ -1045,6 +1240,7 @@ def set_preferred_model(deployment: str, slug: str,
         _audit_security_policy_change(
             safe_dep, safe_slug,
             result="denied", detail="deployment fora da whitelist",
+            namespace=namespace,
         )
         allowed = ", ".join(sorted(_ALLOWED_DEPLOYMENTS))
         return False, (
@@ -1055,28 +1251,32 @@ def set_preferred_model(deployment: str, slug: str,
         _audit_security_policy_change(
             deployment, safe_slug,
             result="denied", detail="slug inválido",
+            namespace=namespace,
         )
         return False, "slug inválido — recusado por validação"
     kubectl = kubectl_bin()
     if kubectl is None:
         _audit_security_policy_change(
             deployment, slug, result="failed", detail="kubectl não encontrado",
+            namespace=namespace,
         )
         return False, "kubectl não encontrado"
     # Audit ANTES de executar — registra a intenção, ainda que o
     # subprocess depois falhe ou trave.
     _audit_security_policy_change(
         deployment, slug, result="allowed", detail="executando kubectl set env",
+        namespace=namespace,
     )
     try:
         proc = subprocess.run(
-            [kubectl, "-n", NS, "set", "env", f"deploy/{deployment}",
+            [kubectl, "-n", namespace, "set", "env", f"deploy/{deployment}",
              f"DEILE_PREFERRED_MODEL={slug}"],
             capture_output=True, text=True, timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         _audit_security_policy_change(
             deployment, slug, result="failed", detail=f"subprocess: {exc}",
+            namespace=namespace,
         )
         return False, f"falha ao executar kubectl: {exc}"
     if proc.returncode != 0:
@@ -1084,11 +1284,301 @@ def set_preferred_model(deployment: str, slug: str,
         _audit_security_policy_change(
             deployment, slug, result="failed",
             detail=f"rc={proc.returncode} {err}",
+            namespace=namespace,
         )
         return False, err
     msg = (proc.stdout or "rollout disparado").strip()
     _audit_security_policy_change(
         deployment, slug, result="completed", detail=msg,
+        namespace=namespace,
+    )
+    return True, msg
+
+
+# ===== Pod lifecycle actions (delete / rollout / kill local) ================
+#
+# Operações disparadas pelo PodPickerView (hotkeys [x]/[r]/[R]). Cada uma:
+#
+#   1. Valida argumentos contra whitelist/regex ANTES de chegar em argv.
+#   2. Emite audit `OPERATION_EXECUTED` (allowed→completed / denied / failed).
+#   3. Retorna ``(ok: bool, msg: str)`` para a view renderizar feedback.
+#
+# A construção segue o mesmo padrão de ``set_preferred_model`` — funções puras
+# testáveis sem montar UI.
+
+def _audit_pod_action(
+    action: str, resource: str, *, result: str, detail: str,
+    namespace: str = NS,
+) -> None:
+    """Emite AuditEvent(COMMAND_EXECUTED) para ações de ciclo-de-vida.
+
+    Espelha ``_audit_security_policy_change`` (segredos não são logados;
+    apenas action/resource/result/detail). Usa COMMAND_EXECUTED por casar
+    semanticamente com kubectl/os.kill — ações executando comandos
+    externos contra recursos identificáveis. Silencioso quando o audit
+    logger não está importável; nunca bloqueia a ação.
+    """
+    try:
+        from deile.security.audit_logger import (  # noqa: PLC0415
+            AuditEventType, SeverityLevel, get_audit_logger)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "audit logger indisponível para %s: %s", action, exc,
+        )
+        return
+    severity = (SeverityLevel.INFO
+                if result in ("allowed", "completed", "cancelled")
+                else SeverityLevel.WARNING)
+    try:
+        get_audit_logger().log_event(
+            event_type=AuditEventType.COMMAND_EXECUTED,
+            severity=severity,
+            actor=f"panel:{action}",
+            resource=resource,
+            action=action,
+            result=result,
+            details={"detail": detail[:200], "namespace": namespace},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("falha emitindo AuditEvent: %s", exc)
+
+
+def delete_pod(pod_name: str, *, namespace: str = NS,
+               timeout: float = 15.0) -> tuple:
+    """``kubectl delete pod <name>`` com validação e audit.
+
+    O Deployment correspondente vai recriar o Pod em segundos — equivale
+    a "restart só desse pod". Para reiniciar TODOS os pods do mesmo
+    Deployment, use ``rollout_restart_deployment``.
+    """
+    safe = pod_name if isinstance(pod_name, str) else repr(pod_name)
+    resource = f"pod:{namespace}/{safe}"
+    if not isinstance(pod_name, str) or not _POD_NAME_RE.match(pod_name):
+        _audit_pod_action(
+            "delete_pod", resource, result="denied",
+            detail="pod_name inválido", namespace=namespace,
+        )
+        return False, "pod_name inválido — recusado por validação"
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        _audit_pod_action(
+            "delete_pod", resource, result="failed",
+            detail="kubectl não encontrado", namespace=namespace,
+        )
+        return False, "kubectl não encontrado"
+    _audit_pod_action(
+        "delete_pod", resource, result="allowed",
+        detail="executando kubectl delete pod", namespace=namespace,
+    )
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", namespace, "delete", "pod", pod_name],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _audit_pod_action(
+            "delete_pod", resource, result="failed",
+            detail=f"subprocess: {exc}", namespace=namespace,
+        )
+        return False, f"falha ao executar kubectl: {exc}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl delete pod falhou").strip()
+        _audit_pod_action(
+            "delete_pod", resource, result="failed",
+            detail=f"rc={proc.returncode} {err}", namespace=namespace,
+        )
+        return False, err
+    msg = (proc.stdout or "pod deletado").strip()
+    _audit_pod_action(
+        "delete_pod", resource, result="completed",
+        detail=msg, namespace=namespace,
+    )
+    return True, msg
+
+
+def rollout_restart_deployment(deployment: str, *,
+                               namespace: str = NS,
+                               timeout: float = 15.0) -> tuple:
+    """``kubectl rollout restart deployment/<name>`` com whitelist + audit.
+
+    Reinicia TODOS os pods do Deployment (respeitando a strategy do
+    manifest — RollingUpdate ou Recreate). Whitelist restrita aos 4
+    deployments do stack (``_ALLOWED_DEPLOYMENTS_FULL``) bloqueia qualquer
+    alvo fora dali.
+    """
+    safe = deployment if isinstance(deployment, str) else repr(deployment)
+    resource = f"deployment:{namespace}/{safe}"
+    if deployment not in _ALLOWED_DEPLOYMENTS_FULL:
+        _audit_pod_action(
+            "rollout_restart", resource, result="denied",
+            detail="deployment fora da whitelist", namespace=namespace,
+        )
+        allowed = ", ".join(sorted(_ALLOWED_DEPLOYMENTS_FULL))
+        return False, (
+            f"deployment '{deployment}' não permitido — "
+            f"esperado um de: {allowed}"
+        )
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        _audit_pod_action(
+            "rollout_restart", resource, result="failed",
+            detail="kubectl não encontrado", namespace=namespace,
+        )
+        return False, "kubectl não encontrado"
+    _audit_pod_action(
+        "rollout_restart", resource, result="allowed",
+        detail="executando kubectl rollout restart", namespace=namespace,
+    )
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", namespace, "rollout", "restart",
+             f"deployment/{deployment}"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _audit_pod_action(
+            "rollout_restart", resource, result="failed",
+            detail=f"subprocess: {exc}", namespace=namespace,
+        )
+        return False, f"falha ao executar kubectl: {exc}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "rollout restart falhou").strip()
+        _audit_pod_action(
+            "rollout_restart", resource, result="failed",
+            detail=f"rc={proc.returncode} {err}", namespace=namespace,
+        )
+        return False, err
+    msg = (proc.stdout or "rollout disparado").strip()
+    _audit_pod_action(
+        "rollout_restart", resource, result="completed",
+        detail=msg, namespace=namespace,
+    )
+    return True, msg
+
+
+def rollout_restart_all(*, namespace: str = NS,
+                        timeout: float = 15.0) -> List[tuple]:
+    """Dispara ``rollout restart`` para CADA deployment k8s do stack.
+
+    Best-effort por deployment — uma falha NÃO aborta as demais (cada
+    rollout é independente; é melhor reiniciar 3 de 4 do que 0). Retorna
+    a lista `[(deployment, ok, msg), ...]` na ordem da whitelist
+    determinística (sort), para o caller agregar e exibir.
+    """
+    out: List[tuple] = []
+    for dep in sorted(_ALLOWED_DEPLOYMENTS_FULL):
+        ok, msg = rollout_restart_deployment(
+            dep, namespace=namespace, timeout=timeout,
+        )
+        out.append((dep, ok, msg))
+    return out
+
+
+def kill_local_pid(pid: int, *, sig: str = "SIGTERM",
+                   timeout: float = 5.0) -> tuple:
+    """Envia ``sig`` (SIGTERM por default) para o processo local ``pid``.
+
+    Validações:
+
+    1. PID positivo (> 1 — proíbe 0, init, negativos).
+    2. PID pertence ao mesmo USER que roda o painel — nunca toca processo
+       alheio (defesa em profundidade; se o painel rodar privilegiado por
+       acidente, ainda restringe ao escopo natural do operador).
+    3. ``sig`` numa whitelist pequena (SIGTERM / SIGKILL) — evita usar
+       sinais raros (SIGUSR1, etc) que poderiam corromper estado.
+
+    Se o processo não morrer em ``timeout`` segundos após SIGTERM, faz
+    SIGKILL como segundo passo (mesmo padrão que ``_LogStreamer.stop``).
+    Retorna ``(ok, msg)`` — view só renderiza.
+    """
+    import os
+    import signal as _signal
+    resource = f"local-pid:{pid}"
+    allowed_signals = {"SIGTERM": _signal.SIGTERM, "SIGKILL": _signal.SIGKILL}
+    if sig not in allowed_signals:
+        _audit_pod_action(
+            "kill_local_pid", resource, result="denied",
+            detail=f"sig '{sig}' fora da whitelist",
+        )
+        return False, f"sinal '{sig}' não permitido"
+    if not isinstance(pid, int) or pid <= 1:
+        _audit_pod_action(
+            "kill_local_pid", resource, result="denied",
+            detail=f"pid inválido ({pid!r})",
+        )
+        return False, f"pid inválido: {pid!r}"
+    # Ownership check (defense in depth). psutil.AccessDenied no fetch
+    # do uid é tratado como "não posso ver → não posso matar".
+    try:
+        import psutil  # noqa: PLC0415
+        proc = psutil.Process(pid)
+        proc_uid = proc.uids().real
+        my_uid = os.getuid()
+        if proc_uid != my_uid:
+            _audit_pod_action(
+                "kill_local_pid", resource, result="denied",
+                detail=f"pid pertence a uid={proc_uid}, painel é uid={my_uid}",
+            )
+            return False, (
+                f"pid {pid} pertence a outro usuário (uid={proc_uid})"
+            )
+    except psutil.NoSuchProcess:
+        _audit_pod_action(
+            "kill_local_pid", resource, result="failed",
+            detail="processo não existe (já morreu?)",
+        )
+        return False, f"processo {pid} não existe"
+    except psutil.AccessDenied as exc:
+        _audit_pod_action(
+            "kill_local_pid", resource, result="denied",
+            detail=f"psutil acesso negado: {exc}",
+        )
+        return False, f"acesso negado ao pid {pid}"
+    except Exception as exc:  # noqa: BLE001
+        _audit_pod_action(
+            "kill_local_pid", resource, result="failed",
+            detail=f"psutil falhou: {exc}",
+        )
+        return False, f"erro inspecionando pid {pid}: {exc}"
+    _audit_pod_action(
+        "kill_local_pid", resource, result="allowed",
+        detail=f"enviando {sig} (escalation: SIGKILL após {timeout}s)",
+    )
+    try:
+        os.kill(pid, allowed_signals[sig])
+    except ProcessLookupError:
+        _audit_pod_action(
+            "kill_local_pid", resource, result="failed",
+            detail="ProcessLookupError no os.kill",
+        )
+        return False, "processo desapareceu antes do sinal chegar"
+    except PermissionError as exc:
+        _audit_pod_action(
+            "kill_local_pid", resource, result="failed",
+            detail=f"PermissionError: {exc}",
+        )
+        return False, f"sem permissão para matar pid {pid}"
+    # Espera o processo morrer; se não morrer em ``timeout``, escala SIGKILL.
+    if sig == "SIGTERM":
+        try:
+            proc.wait(timeout=timeout)
+            msg = f"pid {pid} encerrado via SIGTERM"
+        except psutil.TimeoutExpired:
+            try:
+                os.kill(pid, _signal.SIGKILL)
+                msg = f"pid {pid} forçado via SIGKILL (SIGTERM ignorado)"
+            except ProcessLookupError:
+                msg = f"pid {pid} morreu durante escalation"
+            except PermissionError as exc:
+                _audit_pod_action(
+                    "kill_local_pid", resource, result="failed",
+                    detail=f"escalation negada: {exc}",
+                )
+                return False, f"sem permissão na escalation: {exc}"
+    else:
+        msg = f"pid {pid} encerrado via {sig}"
+    _audit_pod_action(
+        "kill_local_pid", resource, result="completed", detail=msg,
     )
     return True, msg
 
@@ -1103,11 +1593,16 @@ class NotifierProvider(_KubectlProviderMixin):
     NotifierEchoView refresha em 5s; era 12 chamadas/min sem cache).
     """
 
-    BOT_DEPLOY = "deilebot"
+    BOT_DEPLOY = "deilebot"  # default; override via __init__
     TAIL = 500
 
-    def __init__(self, ttl_s: float = 5.0):
+    def __init__(self, ttl_s: float = 5.0,
+                 namespace: str = NS, deploy: Optional[str] = None,
+                 enabled: bool = True):
         self._kubectl = kubectl_bin()
+        self._namespace = namespace
+        self._deploy = deploy or self.BOT_DEPLOY
+        self._enabled = enabled
         self._cache: Cache[List[str]] = Cache(ttl_s, self._fetch, fallback=[])
 
     @property
@@ -1118,26 +1613,902 @@ class NotifierProvider(_KubectlProviderMixin):
         return self._cache.get(force)
 
     def _fetch(self) -> List[str]:
+        self._check_enabled()
         self._resolve_kubectl()
         if self._kubectl is None:
             raise RuntimeError("kubectl não encontrado")
         text = _capture_text(
-            [self._kubectl, "-n", NS, "logs",
-             f"deploy/{self.BOT_DEPLOY}", f"--tail={self.TAIL}"],
+            [self._kubectl, "-n", self._namespace, "logs",
+             f"deploy/{self._deploy}", f"--tail={self.TAIL}"],
             timeout=5.0,
         )
         if text is None:
-            raise RuntimeError("kubectl logs deilebot falhou")
+            raise RuntimeError(f"kubectl logs {self._deploy} falhou")
         if len(text) > MAX_LOG_BYTES:
             text = text[-MAX_LOG_BYTES:]
         return text.splitlines()
+
+
+# ===== Local mode providers =================================================
+#
+# Esses providers cobrem o caso "DEILE rodando direto no host (sem k8s)".
+# Inspecionam:
+#   - `ps` para detectar processos `python ... (deile|deilebot)`
+#   - tail-from-end de `~/.deile/logs/deile.log` (até 64KB)
+#   - tail-from-end de `~/.deile/logs/security_audit.log` (JSONL)
+#
+# Convenção: cada provider falha gracioso quando a fonte está vazia (sem
+# `ps`, sem arquivo, sem permissão). O `last_error` fica preenchido para
+# a UI mostrar como aviso no canto, mas o painel continua respondendo.
+
+@dataclass
+class LocalProcessInfo:
+    pid: int
+    role: str        # 'local-deile' | 'local-pipeline' | 'local-bot' | 'local-other'
+    cmd: str         # cmdline truncado
+    cpu_pct: float
+    rss_kb: int
+    etime_s: int     # uptime em segundos
+
+    @property
+    def name(self) -> str:
+        """Nome estável para a UI — usado como chave de seleção."""
+        return f"{self.role}#{self.pid}"
+
+    @property
+    def age_human(self) -> str:
+        return _fmt_age(float(self.etime_s))
+
+    @property
+    def rss_human(self) -> str:
+        """RSS em MB legível (KB → MB)."""
+        return f"{self.rss_kb / 1024:.0f}MB" if self.rss_kb else "—"
+
+
+def _parse_etime(s: str) -> int:
+    """Converte `ps -o etime`: `[[DD-]HH:]MM:SS` → segundos.
+
+    Formatos válidos: `01:23`, `12:34:56`, `2-03:04:05`. Aceita lixo
+    devolvendo 0 — pra não derrubar o parser do _fetch.
+    """
+    if "-" in s:
+        d, rest = s.split("-", 1)
+        try:
+            days = int(d)
+        except ValueError:
+            return 0
+        s = rest
+    else:
+        days = 0
+    parts = s.split(":")
+    try:
+        if len(parts) == 3:
+            h, m, sec = (int(parts[0]), int(parts[1]), int(parts[2]))
+        elif len(parts) == 2:
+            h, m, sec = (0, int(parts[0]), int(parts[1]))
+        else:
+            return 0
+    except ValueError:
+        return 0
+    return days * 86400 + h * 3600 + m * 60 + sec
+
+
+def _classify_local_process(cmd: str) -> Optional[str]:
+    """Devolve role (`local-*`) ou None se a linha não é DEILE-like."""
+    for pat, role in _LOCAL_PROCESS_PATTERNS:
+        if pat.search(cmd):
+            return role
+    if _LOCAL_PROCESS_RE.search(cmd):
+        return "local-other"
+    return None
+
+
+class LocalProcessesProvider:
+    """Detecta processos DEILE/deilebot rodando no host.
+
+    Usa `ps -axo pid,pcpu,rss,etime,command` (POSIX) — sem dependência
+    externa (psutil opcional não-usado). Cacheia com TTL 2s para alinhar
+    com `PodsProvider` (mesma frequência de refresh visual).
+
+    Falha gracioso: `ps` ausente, comando devolve erro, ou nenhum
+    processo casa → lista vazia + `last_error` preenchido.
+    """
+
+    def __init__(self, ttl_s: float = 2.0):
+        self._cache: Cache[List[LocalProcessInfo]] = Cache(
+            ttl_s, self._fetch, fallback=[],
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> List[LocalProcessInfo]:
+        return self._cache.get(force)
+
+    def _fetch(self) -> List[LocalProcessInfo]:
+        ps = shutil.which("ps")
+        if ps is None:
+            raise RuntimeError("ps não encontrado")
+        try:
+            out = subprocess.run(
+                [ps, "-axo", "pid=,pcpu=,rss=,etime=,command="],
+                capture_output=True, text=True, timeout=4.0,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(f"ps falhou: {exc}") from exc
+        if out.returncode != 0:
+            raise RuntimeError(f"ps retornou rc={out.returncode}")
+        results: List[LocalProcessInfo] = []
+        my_pid = os.getpid()
+        for line in out.stdout.splitlines():
+            info = self._parse_line(line)
+            if info is None:
+                continue
+            # Filtra o próprio processo do painel — `python ... infra/k8s/deploy.py
+            # k8s panel` casa o padrão genérico `deile` e poluiria a lista.
+            if info.pid == my_pid:
+                continue
+            results.append(info)
+        # Ordem: deile > pipeline > bot > other; depois pid asc.
+        order = {"local-deile": 0, "local-pipeline": 1,
+                 "local-bot": 2, "local-other": 3}
+        results.sort(key=lambda p: (order.get(p.role, 9), p.pid))
+        return results
+
+    @staticmethod
+    def _parse_line(line: str) -> Optional[LocalProcessInfo]:
+        # 4 first tokens are fixed-width, command is the remainder.
+        parts = line.split(None, 4)
+        if len(parts) < 5:
+            return None
+        pid_s, cpu_s, rss_s, etime_s, cmd = parts
+        role = _classify_local_process(cmd)
+        if role is None:
+            return None
+        try:
+            pid = int(pid_s)
+        except ValueError:
+            return None
+        try:
+            cpu_pct = float(cpu_s)
+        except ValueError:
+            cpu_pct = 0.0
+        try:
+            rss_kb = int(rss_s)
+        except ValueError:
+            rss_kb = 0
+        return LocalProcessInfo(
+            pid=pid, role=role, cmd=cmd.strip(),
+            cpu_pct=cpu_pct, rss_kb=rss_kb,
+            etime_s=_parse_etime(etime_s),
+        )
+
+
+# ----- Local logs (deile.log) -----
+
+_LOG_TAIL_BYTES = 64 * 1024  # 64KB ≈ 400-500 linhas; suficiente para feed vivo
+
+# Formato canônico do logging.FileHandler do DEILE:
+# `2026-05-23 19:39:01,234 - module.name - LEVEL - message`
+_DEILE_LOG_TS_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[,.]?\d*)"
+    r"\s*-?\s*(.*)$",
+)
+
+
+def _parse_local_log_line(line: str) -> Optional[LogLine]:
+    """Decoder leniente para `~/.deile/logs/deile.log` (Python logging)."""
+    m = _DEILE_LOG_TS_RE.match(line)
+    if not m:
+        return None
+    ts_str = m.group(1).replace(",", ".").replace(" ", "T")
+    try:
+        ts = datetime.fromisoformat(ts_str)
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        # `deile.log` usa hora local — assume timezone do sistema.
+        local_tz = datetime.now().astimezone().tzinfo
+        ts = ts.replace(tzinfo=local_tz)
+    return LogLine(ts=ts, body=m.group(2))
+
+
+@dataclass
+class LocalLogsState:
+    """Equivalente ao PipelineState para o `~/.deile/logs/deile.log`."""
+    log_path: str = ""
+    last_action_ts: Optional[datetime] = None
+    last_action_summary: str = "—"
+    events: List[ActivityEvent] = field(default_factory=list)
+    raw_lines: int = 0
+    file_size_kb: int = 0
+
+    @property
+    def last_action_age_s(self) -> Optional[float]:
+        if self.last_action_ts is None:
+            return None
+        return (datetime.now(_UTC) - self.last_action_ts).total_seconds()
+
+
+def _tail_file_bytes(path: Path, n_bytes: int) -> str:
+    """Lê os últimos `n_bytes` de `path` (UTF-8 leniente).
+
+    Descarta a primeira linha potencialmente incompleta se o offset > 0.
+    Devolve string vazia se o arquivo está vazio ou inacessível.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return ""
+    if size == 0:
+        return ""
+    offset = max(0, size - n_bytes)
+    try:
+        with path.open("rb") as fh:
+            fh.seek(offset)
+            blob = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    if offset > 0 and "\n" in blob:
+        blob = blob.split("\n", 1)[1]
+    return blob
+
+
+class LocalLogsProvider:
+    """Tail leniente de `~/.deile/logs/deile.log` + classify.
+
+    Lê só os últimos `_LOG_TAIL_BYTES` (~64KB) — não importa quão
+    grande o arquivo seja (já vi 25MB em produção). Cache TTL 2s para
+    UI parecer viva sem martelar disco.
+    """
+
+    def __init__(self, log_path: Path, ttl_s: float = 2.0):
+        self._log_path = log_path
+        self._cache: Cache[LocalLogsState] = Cache(
+            ttl_s, self._fetch, fallback=LocalLogsState(log_path=str(log_path)),
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> LocalLogsState:
+        return self._cache.get(force)
+
+    def _fetch(self) -> LocalLogsState:
+        state = LocalLogsState(log_path=str(self._log_path))
+        if not self._log_path.is_file():
+            return state
+        try:
+            state.file_size_kb = int(self._log_path.stat().st_size / 1024)
+        except OSError:
+            state.file_size_kb = 0
+        blob = _tail_file_bytes(self._log_path, _LOG_TAIL_BYTES)
+        if not blob:
+            return state
+        for raw in blob.splitlines():
+            state.raw_lines += 1
+            ll = _parse_local_log_line(raw)
+            if ll is None:
+                continue
+            # Reusa o classificador do pipeline — os bodies têm o mesmo
+            # formato (mesmo logger do DEILE, com ou sem prefixo kubectl).
+            ev = _classify_pipeline_line(ll)
+            if ev is None:
+                continue
+            state.last_action_ts = ll.ts
+            state.last_action_summary = ev.detail[:80]
+            ev_local = ActivityEvent(
+                ts=ll.ts, actor="local", action=ev.action,
+                target=ev.target, detail=ev.detail,
+            )
+            state.events.append(ev_local)
+        state.events = state.events[-60:]
+        return state
+
+
+# ----- Local audit (security_audit.log) -----
+
+class LocalAuditProvider:
+    """Tail do `~/.deile/logs/security_audit.log` (uma linha = um AuditEvent JSON).
+
+    Parser tenta JSON puro (formato canônico do AuditLogger); cai pro
+    extract `{...}` inline se o arquivo for misturado com linhas
+    prefixadas pelo runtime. Retorna eventos já parseados como dicts.
+    """
+
+    def __init__(self, audit_path: Path, ttl_s: float = 3.0,
+                 tail_kb: int = 64):
+        self._audit_path = audit_path
+        self._tail_bytes = tail_kb * 1024
+        self._cache: Cache[List[Dict[str, Any]]] = Cache(
+            ttl_s, self._fetch, fallback=[],
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> List[Dict[str, Any]]:
+        return self._cache.get(force)
+
+    def _fetch(self) -> List[Dict[str, Any]]:
+        if not self._audit_path.is_file():
+            return []
+        blob = _tail_file_bytes(self._audit_path, self._tail_bytes)
+        if not blob:
+            return []
+        events: List[Dict[str, Any]] = []
+        for line in blob.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            ev = _parse_audit_line(line)
+            if ev is not None:
+                events.append(ev)
+        # Mantém só os 100 mais recentes; suficiente pra UI rolar.
+        return events[-100:]
+
+
+def _parse_audit_line(line: str) -> Optional[Dict[str, Any]]:
+    """Tenta JSON puro; fallback: extrai o `{...}` inline."""
+    if line.startswith("{"):
+        try:
+            obj = json.loads(line)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+    brace = line.find("{")
+    if brace < 0:
+        return None
+    try:
+        obj = json.loads(line[brace:])
+        return obj if isinstance(obj, dict) else None
+    except json.JSONDecodeError:
+        return None
+
+
+# ----- Local instances (state files publicados por processo) ----------------
+#
+# Cada instância DEILE rodando no host publica um state file JSON em
+# `<runtime_dir>/<instance_id>.json` (Agent A, issue #303). Esse provider
+# lê esses arquivos e expõe um snapshot por PID — assim o painel mostra
+# `current_action` por processo (em vez do summary global do log, que era
+# o mesmo texto pra todos os PIDs — o bug que esta feature resolve).
+#
+# Contrato com Agent A (schema_version=1): cada arquivo contém pelo menos
+# `pid`, `instance_id`, `role`, `started_at`, `last_heartbeat_at`,
+# `current_action` (ou null), `stats`. Mudanças de schema bumpam
+# `schema_version` — versões desconhecidas são puladas (forward compat).
+#
+# GC: arquivos órfãos (PID já não existe) aparecem em crashes. O provider
+# faz `unlink` silencioso no `_fetch` — evita lista poluída e mantém o
+# diretório limpo sem precisar de cron externo.
+
+# Schema atual suportado. Aumentar quando o contrato com Agent A mudar
+# de forma incompatível (campo renomeado/removido).
+_INSTANCE_SCHEMA_VERSION = 1
+# Limite default para considerar um state file "stale": last_heartbeat
+# muito velho sugere que o processo morreu sem cleanup ou o publisher
+# travou. UI pode dim a linha; provider mantém na lista.
+_INSTANCE_STALE_AFTER_S = 30.0
+# Cap para o tamanho de detail/model — evita render-cost surpresa por
+# campos inflados, e mantém doing_now_label curto na tabela.
+_INSTANCE_DETAIL_MAX = 48
+_INSTANCE_MODEL_MAX = 48
+
+
+def _pid_alive(pid: int) -> bool:
+    """`True` se o PID está vivo (UNIX).
+
+    Cópia local da função canônica em `deile/runtime/instance_state.py`
+    (Agent A, issue #303) — duplicada **intencionalmente** para manter
+    `infra/k8s/_panel*.py` rodável sem o pacote `deile` instalado
+    (mesma convenção do `audit_logger` import com fallback). Se Agent A
+    refatorar a semântica de pid_alive, sincronizar aqui.
+
+    Implementação: `os.kill(pid, 0)` — sinal 0 só checa permissão de
+    enviar, não envia nada. ProcessLookupError = morto; PermissionError
+    = vivo mas inacessível (assume vivo, pra não derrubar uma instância
+    real que rodou sob outro usuário).
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # PID existe mas não temos permissão de sinalizar — alguém de outro
+        # uid rodando DEILE no mesmo host. Vivo até prova em contrário.
+        return True
+    except OSError:
+        return False
+
+
+def _parse_iso_ts(s: Optional[str]) -> Optional[datetime]:
+    """Parse ISO8601 com `+00:00` ou `Z` (formato escrito por Agent A)."""
+    if not s or not isinstance(s, str):
+        return None
+    s2 = s.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(s2)
+    except ValueError:
+        return None
+
+
+@dataclass
+class InstanceSnapshot:
+    """Snapshot tipado de um state file `<runtime_dir>/<id>.json`.
+
+    Expõe somente os campos consumidos pela UI — campos extras do JSON
+    são silenciosamente ignorados (forward compat com Agent A adicionando
+    metadados).
+
+    Texto de `current_action` é truncado em `_INSTANCE_DETAIL_MAX` chars
+    no parse — manter a tabela "doing now" sempre curta sem trabalho de
+    render. `doing_now_label` é texto puro (sem emoji) por convenção do
+    projeto: o painel evita emojis salvo opt-in explícito.
+    """
+
+    instance_id: str
+    pid: int
+    role: str
+    started_at: Optional[datetime]
+    last_heartbeat_at: Optional[datetime]
+    current_action_kind: str          # 'idle' quando current_action is None
+    current_action_detail: str        # '' quando current_action is None
+    current_action_started_at: Optional[datetime]
+    current_action_model: str         # '' quando faltar
+    stats_tokens_in: int
+    stats_tokens_out: int
+    stats_cost_usd: float
+    stats_turns: int
+    stats_tool_calls: int
+    stats_errors: int
+    stale: bool                       # True quando last_heartbeat > stale_after_s
+
+    @property
+    def doing_now_label(self) -> str:
+        """Texto curto pra coluna 'doing now' da tabela LOCAL PROCESSES.
+
+        Mapeamento (sem emoji):
+        - `idle`             → "idle"
+        - `starting`         → "starting…"
+        - `shutting_down`    → "shutting down"
+        - `tool_execution`   → "tool: <detail>"
+        - `llm_call`         → "llm: <model-or-detail>"
+        - desconhecido       → "<kind>: <detail>" (forward-compat)
+        """
+        kind = self.current_action_kind or "idle"
+        detail = self.current_action_detail or ""
+        if kind == "idle":
+            return "idle"
+        if kind == "starting":
+            return "starting…"
+        if kind == "shutting_down":
+            return "shutting down"
+        if kind == "tool_execution":
+            return f"tool: {detail}" if detail else "tool"
+        if kind == "llm_call":
+            label = self.current_action_model or detail
+            return f"llm: {label}" if label else "llm"
+        # Forward-compat: kind desconhecida vira `<kind>: <detail>` cru.
+        return f"{kind}: {detail}".rstrip(": ").strip()
+
+
+def _snapshot_from_payload(
+    payload: Dict[str, Any], *, now: datetime, stale_after_s: float,
+) -> Optional[InstanceSnapshot]:
+    """Constrói `InstanceSnapshot` a partir do dict carregado do JSON.
+
+    Retorna None se o payload não casa o `schema_version` esperado ou
+    falta o `pid` (mínimo absoluto para indexar). Demais campos têm
+    default sensato — Agent A pode escrever `stats` parcial sem quebrar.
+    """
+    try:
+        sv = int(payload.get("schema_version", 0))
+    except (TypeError, ValueError):
+        sv = 0
+    if sv != _INSTANCE_SCHEMA_VERSION:
+        return None
+    pid_raw = payload.get("pid")
+    try:
+        pid = int(pid_raw) if pid_raw is not None else 0
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0:
+        return None
+    last_hb = _parse_iso_ts(payload.get("last_heartbeat_at"))
+    stale = False
+    if last_hb is not None:
+        age = (now - last_hb).total_seconds()
+        stale = age > stale_after_s
+    action = payload.get("current_action") or {}
+    if not isinstance(action, dict):
+        action = {}
+    kind = str(action.get("kind") or "idle")
+    detail = str(action.get("detail") or "")[:_INSTANCE_DETAIL_MAX]
+    model = str(action.get("model") or "")[:_INSTANCE_MODEL_MAX]
+    action_started = _parse_iso_ts(action.get("started_at"))
+    stats = payload.get("stats") or {}
+    if not isinstance(stats, dict):
+        stats = {}
+    return InstanceSnapshot(
+        instance_id=str(payload.get("instance_id") or f"pid-{pid}"),
+        pid=pid,
+        role=str(payload.get("role") or ""),
+        started_at=_parse_iso_ts(payload.get("started_at")),
+        last_heartbeat_at=last_hb,
+        current_action_kind=kind,
+        current_action_detail=detail,
+        current_action_started_at=action_started,
+        current_action_model=model,
+        stats_tokens_in=_safe_int(stats.get("tokens_in")),
+        stats_tokens_out=_safe_int(stats.get("tokens_out")),
+        stats_cost_usd=_safe_float(stats.get("cost_usd")),
+        stats_turns=_safe_int(stats.get("turns")),
+        stats_tool_calls=_safe_int(stats.get("tool_calls")),
+        stats_errors=_safe_int(stats.get("errors")),
+        stale=stale,
+    )
+
+
+def _safe_int(v: Any) -> int:
+    try:
+        return int(v) if v is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_float(v: Any) -> float:
+    try:
+        return float(v) if v is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _try_load_status_client():
+    """Importa :class:`StatusClient` se o pacote ``deile`` estiver disponível.
+
+    O painel é desenhado pra rodar standalone (sem `pip install -e .`),
+    então a integração com Fase 2 da issue #303 é best-effort: se o
+    import falha, caímos no caminho legado (state file) sem reclamar.
+    """
+    try:
+        from deile.runtime.status_server import StatusClient  # noqa: PLC0415
+        return StatusClient
+    except Exception:  # noqa: BLE001 — degradação silenciosa
+        return None
+
+
+_STATUS_CLIENT_CLS = _try_load_status_client()
+
+
+class LocalInstancesProvider:
+    """Lê `<runtime_dir>/*.json` (e opcionalmente o Unix socket Fase 2)
+    e devolve snapshots por PID.
+
+    Caminho preferencial (Fase 2 — issue #303): se o pacote `deile` está
+    importável (`StatusClient` disponível) E existe um socket
+    `<runtime_dir>/<instance_id>.sock`, o snapshot vem dele — mostra
+    estado mais fresco que o último flush do state file (current_action
+    pode estar segundos atrás no file mas é instantâneo no socket).
+    Em qualquer falha (socket ausente, timeout, payload inválido) caímos
+    no caminho legado: leitura do state file. Comportamento legado
+    é preservado para painéis rodando sem `deile` instalado.
+
+    Cada arquivo é o state file de uma instância DEILE rodando no host
+    (publicado pelo Agent A — issue #303). O provider parseia, valida o
+    `schema_version`, e faz GC silencioso de arquivos órfãos (PID morto).
+
+    Async-First (princípio §1): `_fetch` faz I/O síncrono (listdir +
+    file reads pequenos, ~1KB cada). Aceitável porque o cache TTL é
+    chamado em thread separada (`BackgroundRefresher`) — nunca bloqueia
+    o render. Mesma convenção dos demais providers locais.
+
+    Trade-off: leituras não-atômicas (Agent A escreve `os.replace` ATÔMICO,
+    mas leitor pode pegar a versão antiga ou nova entre frames — never
+    parcial). JSON malformado é skipped + logged WARN; não derruba o
+    diretório inteiro.
+
+    Cache TTL default 2s — state files mudam rápido (heartbeat ~2s + cada
+    tool execution dispara update). Maior que isso e a UI fica visivelmente
+    parada; menor e martelaria o filesystem.
+    """
+
+    def __init__(self, runtime_dir: Optional[Path] = None,
+                 ttl_s: float = 2.0,
+                 stale_after_s: float = _INSTANCE_STALE_AFTER_S,
+                 socket_timeout_s: float = 0.25,
+                 prefer_socket: bool = True):
+        # Resolução lazy: env var > param > default global. Faz lookup no
+        # construtor (não no import) para os testes poderem monkeypatchar
+        # `DEILE_RUNTIME_DIR` antes de instanciar o provider.
+        if runtime_dir is None:
+            env = os.environ.get("DEILE_RUNTIME_DIR")
+            runtime_dir = Path(env) if env else RUNTIME_DIR
+        self._runtime_dir = runtime_dir
+        self._stale_after_s = stale_after_s
+        self._socket_timeout_s = socket_timeout_s
+        # `prefer_socket=False` força o caminho legado — útil em testes
+        # do próprio provider que querem isolar a leitura do file.
+        self._prefer_socket = bool(prefer_socket) and _STATUS_CLIENT_CLS is not None
+        self._cache: Cache[Dict[int, InstanceSnapshot]] = Cache(
+            ttl_s, self._fetch, fallback={},
+        )
+
+    @property
+    def runtime_dir(self) -> Path:
+        return self._runtime_dir
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> Dict[int, InstanceSnapshot]:
+        """Mapa PID → snapshot. Vazio quando o diretório não existe."""
+        return self._cache.get(force)
+
+    def _fetch(self) -> Dict[int, InstanceSnapshot]:
+        if not self._runtime_dir.is_dir():
+            return {}
+        out: Dict[int, InstanceSnapshot] = {}
+        now = datetime.now(_UTC)
+        # `glob('*.json')` evita carregar arquivos temporários que Agent A
+        # use durante o `os.replace` atômico (tmp + rename, padrão POSIX).
+        # `registry.json` é da Fase 3 (índice de instances) — schema
+        # diferente, lido pelo `LocalRegistryProvider`; pular aqui evita
+        # "instance file invalid payload (no pid?)" no log.
+        try:
+            entries = [
+                p for p in self._runtime_dir.glob("*.json")
+                if p.name != "registry.json"
+            ]
+        except OSError as exc:
+            # Permissão / FS corrompido — propaga como last_error.
+            raise RuntimeError(f"listdir {self._runtime_dir}: {exc}") from exc
+        for path in entries:
+            snap = self._load_one(path, now=now)
+            if snap is None:
+                continue
+            # Conflito (dois state files apontando o mesmo PID — caso muito
+            # raro de race entre crash + restart muito rápido) é resolvido
+            # mantendo o de heartbeat mais recente.
+            existing = out.get(snap.pid)
+            if existing is None:
+                out[snap.pid] = snap
+                continue
+            old_hb = existing.last_heartbeat_at
+            new_hb = snap.last_heartbeat_at
+            if new_hb is not None and (old_hb is None or new_hb > old_hb):
+                out[snap.pid] = snap
+        self._gc_orphan_sockets(out)
+        return out
+
+    def _gc_orphan_sockets(self, alive: Dict[int, "InstanceSnapshot"]) -> None:
+        """Remove sockets cujo state file sumiu (instance morta sem cleanup
+        do socket — caso `kill -9` ou crash de event loop pré-atexit).
+
+        Sem este GC, `~/.deile/run/` acumula `.sock` órfãos
+        indefinidamente — operador vê leftovers no `ls`, e até pode
+        confundir clients que tentem conectar num socket "morto".
+        """
+        try:
+            sockets = list(self._runtime_dir.glob("*.sock"))
+        except OSError:
+            return
+        live_stems = {f"{s.instance_id}" for s in alive.values()}
+        for sock in sockets:
+            if sock.stem in live_stems:
+                continue
+            self._unlink_quietly(sock)
+
+    def _load_one(self, path: Path,
+                  *, now: datetime) -> Optional[InstanceSnapshot]:
+        # Caminho preferencial (Fase 2): se o socket está vivo, puxamos
+        # diretamente — estado mais novo que o último flush. O socket
+        # path é derivado do nome do file: `<id>.json` ↔ `<id>.sock`.
+        payload = self._try_fetch_via_socket(path)
+        if payload is None:
+            try:
+                raw = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                # Arquivo pode ter sumido entre `glob` e `read` — não loga
+                # como warning, é caso normal de Agent A reescrevendo.
+                logger.debug("instance file vanished: %s (%s)", path, exc)
+                return None
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "instance file malformed, skipping: %s (%s)", path, exc,
+                )
+                return None
+            if not isinstance(payload, dict):
+                logger.warning(
+                    "instance file not a JSON object, skipping: %s", path,
+                )
+                return None
+        # Schema-check ANTES de mexer em PID — versões futuras podem ter
+        # renomeado `pid` e ainda assim ser "válidas" pra Agent A.
+        try:
+            schema_version = int(payload.get("schema_version", 0))
+        except (TypeError, ValueError):
+            schema_version = 0
+        if schema_version != _INSTANCE_SCHEMA_VERSION:
+            logger.warning(
+                "instance file schema_version=%s unsupported (expected %s): %s",
+                schema_version, _INSTANCE_SCHEMA_VERSION, path,
+            )
+            return None
+        snap = _snapshot_from_payload(
+            payload, now=now, stale_after_s=self._stale_after_s,
+        )
+        if snap is None:
+            logger.warning(
+                "instance file invalid payload (no pid?), skipping: %s", path,
+            )
+            return None
+        # GC: PID morto → unlink silencioso do state file E do socket
+        # par (mesma stem). Best-effort: se o unlink falhar (permissão,
+        # FS readonly), apenas pulamos o snapshot — próximo tick tenta
+        # de novo. Sockets órfãos sem state file correspondente são
+        # cobertos por `_gc_orphan_sockets` no fim do `_fetch`.
+        if not _pid_alive(snap.pid):
+            self._unlink_quietly(path)
+            self._unlink_quietly(path.with_suffix(".sock"))
+            return None
+        return snap
+
+    @staticmethod
+    def _unlink_quietly(path: Path) -> None:
+        """Remove ``path`` ignorando FileNotFoundError; loga outros OSError."""
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.debug("GC unlink failed for %s: %s (will retry)", path, exc)
+
+    def _try_fetch_via_socket(self, path: Path) -> Optional[Dict[str, Any]]:
+        """Tenta puxar o snapshot do socket `<id>.sock` ao lado de `<id>.json`.
+
+        Retorna None silenciosamente em qualquer falha — caller cai no
+        caminho legado (state file). Pré-requisito: `StatusClient` no
+        path (`deile` instalado) e socket existindo no diretório.
+        """
+        if not self._prefer_socket or _STATUS_CLIENT_CLS is None:
+            return None
+        sock_path = path.with_suffix(".sock")
+        if not sock_path.exists():
+            return None
+        try:
+            client = _STATUS_CLIENT_CLS(
+                sock_path, timeout_s=self._socket_timeout_s,
+            )
+            return client.status()
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.debug("socket fetch failed for %s: %s", sock_path, exc)
+            return None
+
+
+# ----- Local registry (Fase 3 — issue #303) ---------------------------------
+#
+# Provider opcional que lê `<runtime_dir>/registry.json` (compartilhado por
+# todos os processos DEILE rodando no host) e devolve a lista de entries
+# vivas. Útil pro painel mostrar uma linha "fleet" no header — "3 DEILE
+# instances running" — sem precisar varrer o filesystem direto.
+#
+# Em paridade com `LocalInstancesProvider`: melhor tentar via `Registry` do
+# pacote `deile` (que aplica file-lock e GC). Quando o pacote não está
+# disponível, caímos numa leitura crua, sem GC e sem lock. O painel usa a
+# lista só pra exibir contagem/lista — concorrência fica pra quem escreve.
+
+
+def _try_load_registry_cls():
+    """Importa :class:`Registry` se o pacote ``deile`` estiver disponível."""
+    try:
+        from deile.runtime.registry import (Registry,  # noqa: PLC0415
+                                            RegistryEntry)
+        return Registry, RegistryEntry
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+_REGISTRY_CLS, _REGISTRY_ENTRY_CLS = _try_load_registry_cls()
+
+
+@dataclass
+class RegistrySnapshot:
+    """Snapshot do registry — N entries vivas, mais um summary p/ header."""
+    entries: List[Any] = field(default_factory=list)  # List[RegistryEntry]
+    instances: int = 0
+
+    @classmethod
+    def empty(cls) -> "RegistrySnapshot":
+        return cls(entries=[], instances=0)
+
+
+class LocalRegistryProvider:
+    """Lê `<runtime_dir>/registry.json` e expõe a lista de instâncias vivas.
+
+    Quando o pacote `deile` está disponível, usa o :class:`Registry`
+    completo (aplica file-lock + GC). Caso contrário, faz leitura crua
+    do JSON (read-only, sem mutar o arquivo).
+
+    Cache TTL default 3s — entries mudam pouco (só em start/stop de
+    processo), valor maior reduz contenção no lock sem perceptível
+    impacto na UI.
+    """
+
+    def __init__(self, runtime_dir: Optional[Path] = None,
+                 ttl_s: float = 3.0):
+        if runtime_dir is None:
+            env = os.environ.get("DEILE_RUNTIME_DIR")
+            runtime_dir = Path(env) if env else RUNTIME_DIR
+        self._runtime_dir = runtime_dir
+        self._registry_path = runtime_dir / "registry.json"
+        self._cache: Cache[RegistrySnapshot] = Cache(
+            ttl_s, self._fetch, fallback=RegistrySnapshot.empty(),
+        )
+
+    @property
+    def runtime_dir(self) -> Path:
+        return self._runtime_dir
+
+    @property
+    def registry_path(self) -> Path:
+        return self._registry_path
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> RegistrySnapshot:
+        return self._cache.get(force)
+
+    def _fetch(self) -> RegistrySnapshot:
+        if _REGISTRY_CLS is not None:
+            try:
+                reg = _REGISTRY_CLS(registry_path=self._registry_path)
+                entries = reg.list(gc=True)
+                return RegistrySnapshot(entries=list(entries),
+                                        instances=len(entries))
+            except Exception as exc:  # noqa: BLE001 — fallback p/ leitura crua
+                logger.debug("Registry.list falhou: %s; usando leitura crua.", exc)
+        # Fallback sem mutação — sem GC, sem lock; só pra exibir.
+        if not self._registry_path.exists():
+            return RegistrySnapshot.empty()
+        try:
+            payload = json.loads(self._registry_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return RegistrySnapshot.empty()
+        if not isinstance(payload, dict):
+            return RegistrySnapshot.empty()
+        raw_entries = payload.get("instances", [])
+        if not isinstance(raw_entries, list):
+            return RegistrySnapshot.empty()
+        # Não temos a classe RegistryEntry no fallback — devolvemos os
+        # dicts diretamente. Quem consome trata via .get() ou indexação.
+        return RegistrySnapshot(entries=list(raw_entries),
+                                instances=len(raw_entries))
 
 
 # ===== Aggregate hub ========================================================
 
 @dataclass
 class PanelData:
-    """Conjunto de providers consumidos pela UI."""
+    """Conjunto de providers consumidos pela UI.
+
+    `context` é a fonte única de verdade da configuração (namespace,
+    paths, modo). Providers k8s sempre presentes (falham gracioso se
+    cluster ausente); locais opcionais (None quando não detectados).
+    """
+    context: RuntimeContext
     pods: PodsProvider
     pipeline: PipelineProvider
     workers: WorkerProvider
@@ -1146,24 +2517,89 @@ class PanelData:
     models: ModelsProvider
     current_model: CurrentModelProvider
     notifier: NotifierProvider
+    local_processes: Optional[LocalProcessesProvider] = None
+    local_logs: Optional[LocalLogsProvider] = None
+    local_audit: Optional[LocalAuditProvider] = None
+    # Per-PID `current_action` (issue #303). Quando presente, o adapter
+    # `_local_process_rows` prefere este provider ao fallback do log
+    # global — assim cada processo DEILE mostra seu próprio "doing now"
+    # em vez do mesmo texto compartilhado.
+    local_instances: Optional["LocalInstancesProvider"] = None
+    # Fleet view (issue #303 — Fase 3). Lê o registry compartilhado para
+    # exibir contagem de DEILE instances no header. Opcional — quando
+    # ausente, o painel só mostra a tabela LOCAL PROCESSES.
+    local_registry: Optional["LocalRegistryProvider"] = None
+
+    @classmethod
+    def from_context(cls, context: RuntimeContext) -> "PanelData":
+        """Constrói o aggregator usando overrides do `RuntimeContext`.
+
+        Locais são instanciados apenas se `context.local_available` —
+        evita ler `ps` ou abrir arquivos quando o operador forçou
+        `--k8s-only` (ou está em demo).
+        """
+        local_on = context.local_available
+        local_procs = LocalProcessesProvider() if local_on else None
+        local_logs = (LocalLogsProvider(context.logs_dir / "deile.log")
+                      if local_on else None)
+        local_audit = (LocalAuditProvider(context.logs_dir / "security_audit.log")
+                       if local_on else None)
+        # `LocalInstancesProvider` é independente da existência do dir
+        # — se vazio, retorna {} (sem erro). Por isso pendurado no mesmo
+        # `local_on` que os demais (operador em --k8s-only não quer ver
+        # nada vindo do host).
+        local_instances = LocalInstancesProvider() if local_on else None
+        # `LocalRegistryProvider` segue a mesma regra — desabilitado em
+        # `--k8s-only`. Fleet view só faz sentido quando o painel está
+        # observando processos locais.
+        local_registry = LocalRegistryProvider() if local_on else None
+        # `enabled=context.k8s_available` faz os providers k8s curto-circuitarem
+        # via `_check_enabled`/`Cache.fallback` quando o modo é local-only
+        # (sem custo de subprocess `kubectl`).
+        k8s_on = context.k8s_available
+        return cls(
+            context=context,
+            pods=PodsProvider(namespace=context.namespace, enabled=k8s_on),
+            pipeline=PipelineProvider(namespace=context.namespace,
+                                      deploy=context.pipeline_deploy,
+                                      enabled=k8s_on),
+            workers=WorkerProvider(namespace=context.namespace,
+                                   worker_deploy=context.worker_deploy,
+                                   enabled=k8s_on),
+            # `context.repo` pode vir vazio se o operador construiu o
+            # ctx direto (sem `.detect()`) — resolve no fallback global.
+            github=GitHubProvider(repo=context.repo or REPO_DEFAULT),
+            costs=CostsProvider(db_path=context.usage_db),
+            models=ModelsProvider(),
+            current_model=CurrentModelProvider(
+                namespace=context.namespace,
+                deployments=(context.worker_deploy, context.pipeline_deploy),
+                enabled=k8s_on,
+            ),
+            notifier=NotifierProvider(namespace=context.namespace,
+                                      deploy=context.bot_deploy,
+                                      enabled=k8s_on),
+            local_processes=local_procs,
+            local_logs=local_logs,
+            local_audit=local_audit,
+            local_instances=local_instances,
+            local_registry=local_registry,
+        )
 
     @classmethod
     def default(cls, repo: str = REPO_DEFAULT) -> "PanelData":
-        return cls(
-            pods=PodsProvider(),
-            pipeline=PipelineProvider(),
-            workers=WorkerProvider(),
-            github=GitHubProvider(repo=repo),
-            costs=CostsProvider(),
-            models=ModelsProvider(),
-            current_model=CurrentModelProvider(),
-            notifier=NotifierProvider(),
-        )
+        """Backwards-compat: contexto padrão (namespace `deile`)."""
+        return cls.from_context(RuntimeContext.detect(repo=repo))
 
     def _all_providers(self) -> tuple:
         """Ordem usada por `force_refresh_all` e `errors`."""
-        return (self.pods, self.pipeline, self.workers, self.github,
+        base = (self.pods, self.pipeline, self.workers, self.github,
                 self.costs, self.models, self.current_model, self.notifier)
+        locals_ = tuple(p for p in (self.local_processes, self.local_logs,
+                                    self.local_audit, self.local_instances,
+                                    self.local_registry)
+                        if p is not None)
+        return base + locals_
 
     def force_refresh_all(self) -> None:
         """Hotkey [r]: marca todos os caches como vencidos sem bloquear.
@@ -1176,13 +2612,34 @@ class PanelData:
             p._cache.invalidate()  # noqa: SLF001 (intentional internal)
 
     def errors(self) -> List[tuple]:
-        """Lista provider name + último erro, pra UI mostrar discretamente."""
-        names = ("pods", "pipeline", "workers", "github", "costs",
-                 "models", "current_model", "notifier")
+        """Lista provider name + último erro, pra UI mostrar discretamente.
+
+        Filtra erros "esperados" (`k8s desabilitado` em modo local-only e
+        `kubectl não encontrado` quando o operador não tem cluster) —
+        eles seriam ruído visual no painel ALERTS sem trazer informação.
+        """
+        names = ["pods", "pipeline", "workers", "github", "costs",
+                 "models", "current_model", "notifier"]
+        if self.local_processes is not None:
+            names.append("local_processes")
+        if self.local_logs is not None:
+            names.append("local_logs")
+        if self.local_audit is not None:
+            names.append("local_audit")
+        if self.local_instances is not None:
+            names.append("local_instances")
+        if self.local_registry is not None:
+            names.append("local_registry")
         out: List[tuple] = []
         for name, p in zip(names, self._all_providers()):
-            if p.last_error:
-                out.append((name, p.last_error))
+            err = p.last_error
+            if not err:
+                continue
+            # "k8s desabilitado" e "kubectl não encontrado" são esperados —
+            # não viram alerta.
+            if "k8s desabilitado" in err or "kubectl não encontrado" in err:
+                continue
+            out.append((name, err))
         return out
 
 

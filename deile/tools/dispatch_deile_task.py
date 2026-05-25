@@ -55,6 +55,7 @@ from deile.infrastructure.deile_worker_client import (
     build_dispatch_payload, summarize_dispatch_response,
     validate_dispatch_payload)
 
+from ._dispatch_cooldown import is_in_cooldown, prune_expired, record_dispatch
 from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
                    ToolSchema)
 
@@ -190,13 +191,7 @@ class DispatchDeileTaskTool(Tool):
         without racing against a coroutine that owns its lock.
         """
         cutoff = cls._DISPATCH_COOLDOWN_S * cls._CLEANUP_FACTOR
-        stale = [
-            cid
-            for cid, ts in cls._LAST_DISPATCH.items()
-            if (now - ts) > cutoff
-        ]
-        for cid in stale:
-            cls._LAST_DISPATCH.pop(cid, None)
+        prune_expired(cls._LAST_DISPATCH, cutoff, now)
         # Drop locks for channels no longer tracked AND not currently
         # held. The ``lock.locked()`` check is essential: another
         # coroutine may still own its lock while we prune.
@@ -288,8 +283,11 @@ class DispatchDeileTaskTool(Tool):
             async with self._CHANNEL_LOCKS[channel_id]:
                 now = time.monotonic()
                 self._prune_expired_dispatch_entries(now)
-                last = self._LAST_DISPATCH.get(channel_id)
-                if last is not None and (now - last) < self._DISPATCH_COOLDOWN_S:
+                if is_in_cooldown(
+                    self._LAST_DISPATCH, channel_id,
+                    self._DISPATCH_COOLDOWN_S, now,
+                ):
+                    last = self._LAST_DISPATCH[channel_id]
                     remaining = self._DISPATCH_COOLDOWN_S - (now - last)
                     return ToolResult.error_result(
                         f"dispatch já feito há {now - last:.0f}s nesse canal; "
@@ -303,7 +301,7 @@ class DispatchDeileTaskTool(Tool):
                 # concurrent retry observes the timestamp. If the client
                 # later raises a pre-network failure (auth/transport
                 # missing), the timestamp is ROLLED BACK below.
-                self._LAST_DISPATCH[channel_id] = now
+                record_dispatch(self._LAST_DISPATCH, channel_id, now)
 
             try:
                 data = await self._worker_client.dispatch(payload, wait=wait)

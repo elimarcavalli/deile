@@ -78,6 +78,11 @@ REVIEW_CONCLUDED = "~review:concluida"
 # governed by the cursor). A human removes it to force a re-handle.
 MENTION_DONE = "~mention:processado"
 
+# Follow-ups handling -----------------------------------------------------
+# Marker label posted by the pipeline after processing follow-ups on a merged
+# PR, to enforce idempotency across ticks of the standalone follow_ups stage.
+FOLLOW_UPS_PROCESSED = "~follow_ups:processed"
+
 # Refinement gate ---------------------------------------------------------
 # Universal "needs refinement" flag (no ``~`` prefix on purpose: a human applies
 # it by hand too). The critique stage adds it to a ``~workflow:nova`` issue whose

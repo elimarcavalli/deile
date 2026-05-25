@@ -465,6 +465,14 @@ class WorkingMemory:
                 break
             except Exception as e:
                 logger.error(f"Erro no loop de limpeza da working memory: {e}")
+                # Sem o sleep, uma falha persistente (e.g. mutação concorrente
+                # durante iteração de self._entries) transformava o loop em um
+                # hot-loop que comia CPU. Espelha o intervalo do
+                # MemoryManager._consolidation_loop quando ele falha (60s).
+                try:
+                    await asyncio.sleep(60)
+                except asyncio.CancelledError:
+                    break
 
     async def shutdown(self) -> None:
         """Finaliza a working memory"""

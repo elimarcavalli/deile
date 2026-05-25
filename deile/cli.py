@@ -18,20 +18,32 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-import shutil
-import subprocess
 import sys
-import sysconfig
-import tempfile
 import threading
 import time
 import uuid
-import venv as _venv  # noqa: N812 — local alias for testability (patched as deile.cli._venv)
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
                                        SWITCH_SESSION_KEY)
+
+# Re-export the self-install layer (moved to deile/cli_install.py for SRP) so
+# the public surface used by tests and external callers stays stable:
+# `from deile.cli import _user_scripts_dir`, `patch("deile.cli._run_self_install")`,
+# etc. The actual logic now lives in cli_install.py.
+from .cli_install import \
+    _create_venv_with_deile  # noqa: F401,E402  (re-export)
+from .cli_install import \
+    _ensure_scripts_dir_on_path  # noqa: F401,E402  (re-export)
+from .cli_install import _link_global_command  # noqa: F401,E402  (re-export)
+from .cli_install import _pip_run  # noqa: F401,E402  (re-export)
+from .cli_install import _prompt_install_mode  # noqa: F401,E402  (re-export)
+from .cli_install import _run_self_install  # noqa: F401,E402  (re-export)
+from .cli_install import \
+    _run_self_install_async  # noqa: F401,E402  (re-export)
+from .cli_install import _user_scripts_dir  # noqa: F401,E402  (re-export)
+from .cli_install import _wrapper_target_dir  # noqa: F401,E402  (re-export)
 
 # ── package root (where deile/ lives) ───────────────────────────────────────
 _PACKAGE_ROOT = Path(__file__).parent.resolve()
@@ -39,7 +51,6 @@ _PROJECT_ROOT = _PACKAGE_ROOT.parent  # repo root when editable, same when insta
 _ENV_KEY_NAMES = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY")
 
 # ── install helpers — module-level constants ─────────────────────────────────
-_KNOWN_SHELLS = frozenset({"zsh", "bash", "fish"})
 _TTY = sys.stdout.isatty()
 _RESET = "\033[0m" if _TTY else ""
 _BOLD = "\033[1m" if _TTY else ""
@@ -275,13 +286,28 @@ class _DeileCLI:
         self.default_session: object = None
         self.ui: object = None
         self.config_manager: object = None
+        # Issue #303 — estado vivo por-processo (heartbeat + status server
+        # task gerenciadas aqui para que ``run_interactive`` consiga
+        # cancelá-las limpas no shutdown). Fases 2/3 sobem juntas: a lista
+        # de tasks vem de ``InstanceState.start_async_tasks`` (1 = heartbeat;
+        # 2 = heartbeat + status server quando POSIX e habilitado).
+        self.instance_state: object = None
+        self._instance_state_tasks: List[asyncio.Task] = []
 
     async def initialize(self) -> bool:
         from deile.config.manager import ConfigManager
         from deile.config.settings import get_settings
         from deile.core.models.bootstrap import bootstrap_providers
         from deile.core.models.router import get_model_router
+        from deile.runtime.instance_state import get_instance_state
         from deile.ui import ConsoleUIManager, UITheme
+
+        # Issue #303 — publica state file antes de qualquer trabalho. Já marca
+        # ``starting`` para que o painel veja o processo subindo, e agenda a
+        # task de heartbeat depois que o event loop está rodando (estamos
+        # dentro de um ``async def``, então ``asyncio.create_task`` funciona).
+        self.instance_state = get_instance_state(role="cli")
+        self.instance_state.update_action("starting", detail="bootstrap")
 
         self.settings = get_settings()
         # Override working_directory to cwd
@@ -336,6 +362,18 @@ class _DeileCLI:
             )
             with self.ui.show_loading("Mapeando workspace..."):
                 self.ui.setup_file_completion(self._get_project_files())
+
+            # Issue #303 — bootstrap finalizado: limpa ``starting`` e agenda
+            # heartbeat + status server (Fase 2). As tasks ficam retidas em
+            # ``self._instance_state_tasks`` para que ``run_interactive``
+            # possa cancelá-las limpas no shutdown (evita warning de "task
+            # pendente" quando o atexit dispara). Em Windows ou quando o
+            # status server falha, ``start_async_tasks`` devolve só o
+            # heartbeat — comportamento legado preservado.
+            self.instance_state.clear_action()
+            self._instance_state_tasks = (
+                await self.instance_state.start_async_tasks()
+            )
             return True
 
         except Exception as exc:
@@ -347,12 +385,23 @@ class _DeileCLI:
     _IGNORE_DIRS = frozenset({"__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build", ".deile"})
 
     def _get_project_files(self) -> list[str]:
-        wd = Path(self.settings.working_directory)
-        files = [
-            str(path.relative_to(wd)).replace("\\", "/")
-            for path in wd.rglob("*")
-            if path.is_file() and not any(d in path.parts for d in self._IGNORE_DIRS)
-        ]
+        # ``resolve()`` normalizes ``..`` and symlinks so ``relative_to(wd)``
+        # below cannot mismatch lexically against ``wd.rglob()`` paths
+        # (which the OS reports as fully-resolved). Without it, an unresolved
+        # working_directory would crash the listcomp with ValueError and
+        # silently break tab-completion.
+        wd = Path(self.settings.working_directory).resolve()
+        files = []
+        for path in wd.rglob("*"):
+            if not path.is_file():
+                continue
+            if any(d in path.parts for d in self._IGNORE_DIRS):
+                continue
+            try:
+                files.append(str(path.relative_to(wd)).replace("\\", "/"))
+            except ValueError:
+                # Defensive: filesystem-level symlinks may still slip through.
+                continue
         return sorted(files)[:500]
 
     # Sentinel returned by get_user_input() when the user presses ESC ESC on
@@ -645,6 +694,44 @@ class _DeileCLI:
             ))
         except Exception as exc:
             self.ui.display_error(f"Ocorreu um erro fatal no loop principal: {exc}")
+        finally:
+            # Issue #303 — encerra o heartbeat antes do atexit, evitando que o
+            # warning "Task was destroyed but it is pending" aparece quando o
+            # event loop fecha com a task viva.
+            await self._shutdown_instance_state()
+
+    async def _shutdown_instance_state(self) -> None:
+        """Cancela heartbeat + status server e fecha o state file. Idempotente."""
+        if self.instance_state is not None:
+            try:
+                self.instance_state.update_action("shutting_down")
+            except Exception:  # noqa: BLE001 — shutdown não deve levantar
+                pass
+            # Fase 2 (issue #303): para o status server limpo (await ``stop()``)
+            # ANTES de cancelar a task ``serve_forever`` — ``server.close()``
+            # dispara o break interno e a task termina sem precisar de cancel.
+            server = getattr(self.instance_state, "status_server", None)
+            if server is not None:
+                try:
+                    await server.stop()
+                except Exception:  # noqa: BLE001 — best-effort no shutdown
+                    pass
+        for task in list(self._instance_state_tasks):
+            if task is None or task.done():
+                continue
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass  # esperado — solicitamos esta cancelação
+            except Exception:  # noqa: BLE001 — best-effort no shutdown
+                pass
+        self._instance_state_tasks = []
+        if self.instance_state is not None:
+            try:
+                self.instance_state.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # ── pipeline autostart helper ────────────────────────────────────────────────
@@ -729,440 +816,6 @@ async def _run_oneshot(message: str, forced_model: Optional[str] = None) -> int:
     _print_oneshot_content(response.content)
     status = response.status.value if hasattr(response.status, "value") else str(response.status)
     return 0 if status != "error" else 1
-
-
-# ── install helpers ──────────────────────────────────────────────────────────
-
-
-def _user_scripts_dir() -> Path:
-    """Return the directory where `pip install --user` places console scripts.
-
-    Picks the right sysconfig scheme per platform:
-      - Linux:        posix_user           → ~/.local/bin
-      - macOS (framework Python):
-                      osx_framework_user   → ~/Library/Python/X.Y/bin
-      - Windows:      nt_user              → %APPDATA%\\Python\\PythonXY\\Scripts
-    """
-    if hasattr(sysconfig, "get_preferred_scheme"):
-        scheme = sysconfig.get_preferred_scheme("user")
-    elif os.name == "nt":
-        scheme = "nt_user"
-    elif sys.platform == "darwin" and getattr(sys, "_framework", ""):
-        scheme = "osx_framework_user"
-    else:
-        scheme = "posix_user"
-    return Path(sysconfig.get_path("scripts", scheme=scheme))
-
-
-def _wrapper_target_dir() -> Path:
-    """Pick the directory where the global `deile` wrapper should land.
-
-    On POSIX, prefer ~/.local/bin (commonly already on PATH). On Windows or if
-    ~/.local/bin is unusable, fall back to the sysconfig user-scripts dir.
-    """
-    if os.name == "nt":
-        return _user_scripts_dir()
-    return Path.home() / ".local" / "bin"
-
-
-async def _pip_run(*args: str, step: str, sanitized_path: Optional[str] = None) -> None:
-    """Run a pip sub-command; raise DEILEInstallError on non-zero exit."""
-    from deile.core.exceptions import DEILEInstallError
-
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        stderr_text = (stderr or b"").decode("utf-8", errors="replace")[:500]
-        raise DEILEInstallError(
-            f"pip {step} failed (rc={proc.returncode}): {stderr_text}",
-            step=step,
-            sanitized_path=sanitized_path,
-        )
-
-
-async def _create_venv_with_deile(venv_dir: Path, repo_root: Path, mode_label: str) -> Path:
-    """Ensure an isolated venv at ``venv_dir`` has DEILE + deps installed.
-
-    Steps (idempotent):
-      1. Create the venv if missing.
-      2. Upgrade pip.
-      3. Install ``requirements.txt`` (frozen versions — same set the bootstrap uses).
-      4. Register the deile package editable with ``--no-deps`` so the
-         ``deile`` console script is created without disturbing pinned deps.
-
-    Returns the absolute path to ``<venv>/bin/deile`` (or ``Scripts\\deile.exe``).
-    """
-    from deile.core.exceptions import DEILEInstallError
-
-    # Canonicalize paths to prevent injection / traversal (Pilar 08)
-    try:
-        venv_dir = venv_dir.resolve()
-        repo_root = repo_root.resolve()
-    except OSError as exc:
-        raise DEILEInstallError(
-            f"failed to resolve path: {exc}",
-            step="resolve_paths",
-            sanitized_path=venv_dir.name,
-        ) from exc
-
-    # Safety: ensure venv_dir is within a reasonable location
-    home = Path.home().resolve()
-    if not (str(venv_dir).startswith(str(repo_root)) or str(venv_dir).startswith(str(home))):
-        raise DEILEInstallError(
-            "venv_dir is outside allowed locations (must be under repo or home)",
-            step="validate_venv_path",
-        )
-
-    venv_py = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-
-    try:
-        if not venv_py.exists():
-            print(f"[{mode_label}] Creating venv…")
-            venv_dir.parent.mkdir(parents=True, exist_ok=True)
-            await asyncio.to_thread(
-                _venv.EnvBuilder(with_pip=True).create, str(venv_dir)
-            )
-        else:
-            print(f"[{mode_label}] Reusing existing venv")
-
-        print(f"[{mode_label}] Upgrading pip…")
-        await _pip_run(
-            str(venv_py), "-m", "pip", "install",
-            "--disable-pip-version-check", "-q", "--upgrade", "pip",
-            step="upgrade_pip", sanitized_path=venv_dir.name,
-        )
-
-        requirements = repo_root / "requirements.txt"
-        if requirements.exists():
-            print(f"[{mode_label}] Installing dependencies from {requirements.name}…")
-            await _pip_run(
-                str(venv_py), "-m", "pip", "install",
-                "--disable-pip-version-check", "-r", str(requirements),
-                step="install_deps", sanitized_path=requirements.name,
-            )
-        else:
-            print(f"[{mode_label}] WARNING: no requirements.txt — skipping dep install")
-
-        print(f"[{mode_label}] Registering DEILE entry script (editable, no-deps)…")
-        await _pip_run(
-            str(venv_py), "-m", "pip", "install",
-            "--disable-pip-version-check", "-q", "--no-deps", "-e", str(repo_root),
-            step="install_editable",
-        )
-
-        deile_script = venv_dir / ("Scripts/deile.exe" if os.name == "nt" else "bin/deile")
-        if not deile_script.exists():
-            raise DEILEInstallError(
-                "console script not created",
-                step="verify_script",
-                sanitized_path=deile_script.name,
-            )
-        return deile_script
-
-    except DEILEInstallError:
-        raise
-    except Exception as exc:
-        raise DEILEInstallError(
-            f"venv creation failed: {exc}",
-            step="create_venv",
-            sanitized_path=venv_dir.name,
-        ) from exc
-
-
-def _link_global_command(target_dir: Path, source_script: Path, *, force: bool = False) -> Path:
-    """Create the user-facing `deile` shim that points at ``source_script``.
-
-    On POSIX: a symlink at ``target_dir/deile``.
-    On Windows: a ``.cmd`` shim that execs the source script.
-
-    If a file/symlink already exists at the target, we ask before replacing
-    (or replace silently when ``force=True``).
-    """
-    from deile.core.exceptions import DEILEInstallError
-
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / ("deile.cmd" if os.name == "nt" else "deile")
-
-    if target.exists() or target.is_symlink():
-        existing = "symlink" if target.is_symlink() else "regular file"
-        if not force:
-            try:
-                ans = input(f"  {target.name} already exists ({existing}). Replace? [Y/n]: ").strip().lower()
-            except (KeyboardInterrupt, EOFError):
-                ans = "n"
-            if ans not in ("", "y", "yes"):
-                raise DEILEInstallError(
-                    "refusing to overwrite existing shim",
-                    step="link_command",
-                    sanitized_path=target.name,
-                )
-        try:
-            target.unlink()
-        except OSError as exc:
-            raise DEILEInstallError(
-                f"could not remove existing shim: {exc}",
-                step="unlink_old_shim",
-                sanitized_path=target.name,
-            ) from exc
-
-    if os.name == "nt":
-        target.write_text(f'@echo off\r\n"{source_script}" %*\r\n', encoding="utf-8")
-    else:
-        try:
-            target.symlink_to(source_script)
-        except OSError as exc:
-            raise DEILEInstallError(
-                f"could not create symlink: {exc}",
-                step="create_symlink",
-                sanitized_path=target.name,
-            ) from exc
-    return target
-
-
-def _ensure_scripts_dir_on_path(scripts_dir: Path) -> tuple[bool, Optional[Path], str]:
-    """Append ``export PATH=...`` to the user's shell rc file if not already there.
-
-    Returns (modified, rc_path, fallback_hint):
-      modified=True            → rc file was edited.
-      modified=False, rc set, hint==""  → already configured in rc; just needs reload.
-      modified=False, rc=None  → could not auto-edit (Windows / unknown shell);
-                                 caller should print fallback_hint.
-      modified=False, rc set, hint!=""  → tried but failed (perm/IO); print hint.
-
-    Security (Pilar 08):
-      - The rc file path is resolved to canonical form (no symlink traversal).
-      - Writing is atomic: tempfile in same directory, then os.replace().
-      - The check for already-configured is line-by-line (not substring match).
-
-    """
-    from deile.core.exceptions import DEILEInstallError
-
-    # double-quote would break `export PATH="..."` syntax; newline would split the rc line.
-    scripts_dir_str = str(scripts_dir)
-    if '"' in scripts_dir_str or "\n" in scripts_dir_str:
-        return (
-            False, None,
-            f"Path contains unsupported characters for auto-configuration.\n"
-            f"Add manually:\n    export PATH=\"{scripts_dir_str}:$PATH\""
-        )
-
-    export_line_posix = f'export PATH="{scripts_dir}:$PATH"'
-
-    if os.name == "nt":
-        hint = (
-            f'PowerShell: $env:Path = "{scripts_dir};$env:Path"\n'
-            "  (persist via System Properties → Environment Variables)"
-        )
-        return (False, None, hint)
-
-    shell = os.path.basename(os.environ.get("SHELL", ""))
-    if shell not in _KNOWN_SHELLS:
-        return (False, None, f'Add to your shell rc:\n    {export_line_posix}')
-
-    home = Path.home().resolve()  # canonical home
-
-    if shell == "zsh":
-        rc = (home / ".zshrc").resolve()
-        export_line = export_line_posix
-    elif shell == "bash":
-        rc = (home / (".bash_profile" if sys.platform == "darwin" else ".bashrc")).resolve()
-        export_line = export_line_posix
-    else:  # fish
-        rc = (home / ".config" / "fish" / "config.fish").resolve()
-        export_line = f'set -gx PATH "{scripts_dir}" $PATH'
-
-    # Safety: rc file must be within $HOME (prevent symlink traversal out of home)
-    if not str(rc).startswith(str(home)):
-        raise DEILEInstallError(
-            "rc file resolves outside of home directory",
-            step="validate_rc_path",
-            sanitized_path=rc.name,
-        )
-
-    try:
-        existing = rc.read_text(encoding="utf-8") if rc.exists() else ""
-    except OSError as exc:
-        return (False, rc, f"Could not read {rc.name}: {exc}.\nAdd manually:\n    {export_line}")
-
-    # ── Idempotency: line-by-line check (not substring) ──
-    for line in existing.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            continue  # skip commented-out lines
-        if scripts_dir_str in stripped and "PATH" in stripped.upper():
-            return (False, rc, "")  # already configured
-
-    marker = "# Added by `deile --install` — places the `deile` command on PATH\n"
-    new_content = (existing.rstrip("\n") + "\n\n" if existing else "") + marker + export_line + "\n"
-
-    # ── Atomic write: tempfile in same directory, then os.replace ──
-    try:
-        rc.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(dir=str(rc.parent), prefix=".deile_rc_", suffix=".tmp")
-        try:
-            os.write(fd, new_content.encode("utf-8"))
-        finally:
-            os.close(fd)
-        os.replace(tmp_path, str(rc))  # atomic on POSIX
-    except OSError as exc:
-        raise DEILEInstallError(
-            f"Could not write {rc.name}: {exc}",
-            step="write_rc_file",
-            sanitized_path=rc.name,
-        ) from exc
-
-    return (True, rc, "")
-
-
-def _prompt_install_mode() -> Optional[str]:
-    """Interactively pick install mode. Returns 'global', 'local', or None."""
-    print()
-    print("Install mode:")
-    print()
-    print("  [g] Global  — isolated venv at ~/.deile/venv/")
-    print("                Recommended. DEILE deps don't touch your system or user-site Python.")
-    print("                Works no matter where you cd to.")
-    print()
-    print("  [l] Local   — uses this repo's .venv/")
-    print("                The `deile` command points at this specific clone. If you")
-    print("                move or delete this directory, the command stops working.")
-    print()
-    print("  [q] Quit")
-    print()
-    while True:
-        try:
-            choice = input("Choice [g/l/q] (default g): ").strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            print()
-            return None
-        if choice in ("", "g", "global"):
-            return "global"
-        if choice in ("l", "local"):
-            return "local"
-        if choice in ("q", "quit", "exit"):
-            return None
-        print(f"Unrecognized choice: {choice!r}. Please answer g, l, or q.")
-
-
-async def _run_self_install_async(mode: Optional[str] = None) -> int:
-    """Install DEILE so `deile` is reachable from any working directory.
-
-    Two modes (interactive prompt unless ``mode`` is provided):
-
-      global → creates an isolated venv at ~/.deile/venv/ that is dedicated
-               to DEILE. Your system / user-site Python is untouched.
-
-      local  → uses <repo>/.venv/ (created on the fly if missing). The
-               `deile` command is bound to *this* clone of the repo.
-
-    Both modes drop a thin shim at ~/.local/bin/deile (POSIX) or
-    %USERPROFILE%/.../Scripts/deile.cmd (Windows) so the command works from
-    any directory without polluting site-packages.
-    """
-    from deile.core.exceptions import DEILEInstallError
-
-    repo_root = _PROJECT_ROOT
-
-    if mode is None:
-        mode = _prompt_install_mode()
-        if mode is None:
-            print("Cancelled.")
-            return 1
-
-    if mode == "global":
-        venv_dir = Path.home() / ".deile" / "venv"
-    elif mode == "local":
-        venv_dir = repo_root / ".venv"
-    else:
-        print(f"ERROR: unknown install mode {mode!r} (expected 'global' or 'local').", file=sys.stderr)
-        return 2
-
-    print()
-    print(f"Installing DEILE — mode: {mode}")
-    print(f"  repo: {repo_root}")
-
-    created_venv: Optional[Path] = None
-
-    try:
-        deile_script = await _create_venv_with_deile(venv_dir, repo_root, mode)
-        # Capture resolved path for rollback; success guarantees venv exists.
-        created_venv = deile_script.parent.parent
-    except DEILEInstallError as exc:
-        detail = exc.sanitized_path or "unknown"
-        print(f"ERROR: {exc.message} ({detail})", file=sys.stderr)
-        return 1
-
-    target_dir = _wrapper_target_dir()
-    try:
-        wrapper = _link_global_command(target_dir, deile_script)
-    except DEILEInstallError as exc:
-        # Roll back the venv to avoid a partially-installed state (Princípio 9).
-        if created_venv is not None:
-            shutil.rmtree(created_venv, ignore_errors=True)
-        detail = exc.sanitized_path or "unknown"
-        print(f"ERROR: {exc.message} ({detail}) — rolled back venv.", file=sys.stderr)
-        return 1
-
-    print()
-    print("DEILE installed successfully.")
-    print(f"  shim:   {wrapper.name} (in {wrapper.parent})")
-    print("  target: venv")
-
-    if os.name != "nt":
-        which = await asyncio.to_thread(
-            subprocess.run,
-            ["/usr/bin/env", "which", "deile"],
-            text=True, capture_output=True, check=False,
-        )
-        if which.returncode == 0:
-            found_path = Path(which.stdout.strip())
-            try:
-                on_path_now = found_path.resolve() == wrapper.resolve()
-            except OSError:
-                on_path_now = False
-            if not on_path_now and found_path.exists():
-                print(
-                    f"Note: `which deile` returned {found_path.name!r} which does not "
-                    "point to the newly installed wrapper. You may have a stale binary."
-                )
-        else:
-            on_path_now = False
-    else:
-        on_path_now = False
-
-    if on_path_now:
-        print()
-        print("Try: deile --help")
-        return 0
-
-    print()
-    try:
-        modified, rc_path, hint = _ensure_scripts_dir_on_path(target_dir)
-    except DEILEInstallError as exc:
-        print(f"Note: could not auto-configure PATH ({exc.message}).")
-        print(f"Add {target_dir.name} to your PATH manually.")
-        return 0
-
-    if modified:
-        print(f"Added PATH export to {rc_path.name}.")
-        print(f"Run:  source {rc_path}   (or open a new terminal)")
-        print("Then: deile --help")
-    elif rc_path is not None and not hint:
-        print(f"PATH already configured in {rc_path.name}, but not in current shell session.")
-        print(f"Run:  source {rc_path}   (or open a new terminal)")
-        print("Then: deile --help")
-    else:
-        print(hint)
-    return 0
-
-
-def _run_self_install(mode: Optional[str] = None) -> int:
-    """Synchronous wrapper around _run_self_install_async for CLI entry point."""
-    return asyncio.run(_run_self_install_async(mode))
 
 
 # ── command-flag dispatch (issue #126) ───────────────────────────────────────
@@ -1306,7 +959,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--model",
         dest="model",
         metavar="PROVIDER:MODEL_ID",
-        help="Force a specific model (e.g. deepseek:deepseek-v4-flash).",
+        help="Force a specific model (e.g. deepseek:deepseek-v4-pro).",
     )
     parser.add_argument(
         "--install",

@@ -79,8 +79,22 @@ spec:
             # creates entries no DB mas nunca dispara — runner fica off.
             - name: DEILE_CRON_AUTOSTART
               value: "1"
-            - name: DEILE_CRON_DB_PATH
-              value: "/home/deile/data/cron.db"
+            # ``cron.db_path`` (= /home/deile/data/cron.db) vem por dois
+            # caminhos convergentes:
+            #   1. ``deilebot/cli.py`` + ``providers/discord/adapter.py``
+            #      leem ``os.environ.get("DEILE_CRON_DB_PATH", "data/cron.db")``
+            #      — sem a env var, caem no default ``data/cron.db`` que
+            #      ``workingDir=/home/deile`` resolve para o mesmo path.
+            #   2. ``deile.config.settings`` (importado pelo bot ao registrar
+            #      messaging tools) lê ``cron.db_path`` do JSON layered
+            #      apontado por DEILE_SETTINGS_FILE → bot-settings.json no
+            #      ConfigMap (manifest 47).
+            # Removemos ``DEILE_CRON_DB_PATH`` do env porque ela é
+            # depreciada (issue #111) e fica obsoleta com os dois caminhos
+            # acima — sem a remoção, o boot do deile importado pelo bot
+            # emitiria WARNING a cada restart.
+            - name: DEILE_SETTINGS_FILE
+              value: "/etc/deile/settings.json"
           ports:
             - name: control-plane
               containerPort: 8765
@@ -110,6 +124,13 @@ spec:
             - name: bot-config
               mountPath: /home/deile/config/deilebot.yaml
               subPath: deilebot.yaml
+              readOnly: true
+            # DEILE settings layered (issue #111) — ver DEILE_SETTINGS_FILE.
+            # Mantém ``~/.deile/`` writable pra logs/runs/sessions do DEILE
+            # importado por messaging tools.
+            - name: runtime-config
+              mountPath: /etc/deile/settings.json
+              subPath: bot-settings.json
               readOnly: true
           readinessProbe:
             httpGet:
@@ -158,6 +179,10 @@ spec:
           configMap:
             name: bot-config
             defaultMode: 292   # 0o444 — read-only, world readable inside pod
+        - name: runtime-config
+          configMap:
+            name: deile-runtime-config
+            defaultMode: 292   # 0o444
         # /home/deile is ephemeral (logs, cache).
         - name: home
           emptyDir:

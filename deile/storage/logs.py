@@ -35,8 +35,16 @@ def _ensure_initialized() -> None:
             handler = logging.FileHandler(log_dir / "deile.log", encoding="utf-8")
         except OSError:
             handler = logging.StreamHandler()
+        # `[%(process)d]` indispensável quando múltiplos processos DEILE
+        # escrevem no MESMO `~/.deile/logs/deile.log` (caso normal — o
+        # FileHandler em append-mode é process-safe no POSIX porque cada
+        # write() em fd com O_APPEND é atômico até PIPE_BUF=4096 bytes).
+        # Sem o PID, atribuição de linha→processo no painel TUI ficava
+        # impossível (motivou toda a arquitetura runtime/InstanceState).
         handler.setFormatter(
-            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+            logging.Formatter(
+                "%(asctime)s [%(process)d] [%(levelname)s] %(name)s: %(message)s"
+            )
         )
         logger.addHandler(handler)
         logger.setLevel(logging.INFO)
