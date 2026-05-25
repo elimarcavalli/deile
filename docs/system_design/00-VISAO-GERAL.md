@@ -62,6 +62,8 @@
 | Modelos | YAML | seção `models:` em `deile/config/model_providers.yaml` |
 | Personas (instruções) | filesystem | `ls deile/personas/instructions/*.md` |
 | Personas (configurações) | filesystem | `ls deile/personas/library/*.yaml` |
+| Skills bundled | filesystem | `find deile/skills/library -name '*.md'` |
+| Skills do usuário / projeto | filesystem | `find ~/.deile/skills <cwd>/.deile/skills -name '*.md' 2>/dev/null` (mais paths em `SettingsManager.get_all_skills_paths()`) |
 | Profiles de configuração | filesystem | `ls deile/config/profiles/*.yaml` |
 
 ## Decisões — tabela-resumo
@@ -104,6 +106,7 @@
 | 32 | Roteamento de menção/atribuição por papel (`process_mentions` é roteador): issue+assignee/body → injeta `~workflow:nova`; PR+assignee → review+merge; PR+reviewer-só → revisa e devolve ao autor sem mergear; comment → atende ao pedido. Idempotência cross-tick via `~mention:processado`; review de PR sob a persona `reviewer` (quality-gate SOLID/SRP/segurança, não só testes verdes) — issues #253/#261 | V1 | Fluxo (05), Componentes (04), Segurança (08) |
 | 33 | Triagem de PR só rotula `~review:pendente` em branch que o monitor revisaria (`auto/issue-*`, ou qualquer com `enable_review_human_prs`); lock `~batch:` na classificação só é reivindicado quando `shard_count>1` (monitor único não gera churn) — PR #264 | V1 patch | Arquitetura (02), Princípios (03) |
 | 34 | Sub-DEILEs paralelos em sessão CLI (decomposição autônoma): tool `dispatch_parallel_subagents` → `SubAgentOrchestrator` (asyncio.gather/return_exceptions) com runner pluggable (Local in-process default; Worker via HTTP `wait=False`+polling) + painel Rich Live multipanel ~5 linhas/frente com foco básico por tecla numérica; novo endpoint `GET /v1/progress/{task_id}` no `deile-worker` para snapshot mid-flight — issue #257 | V1 | Arquitetura (02), Componentes (04), Fluxo (05) |
+| 35 | Sistema unificado de **Skills** como quinto componente plugável (MD com frontmatter YAML, sem código Python): scan de 5 diretórios (bundled + user + claude/commands + project + extras), três caminhos de ativação (auto-injeção no system prompt via `triggers`, function-call `invoke_skill`/`list_skills`, slash `/<name>`), hot-reload por `watchdog` com swap atômico via `SkillRegistry.replace_all`, path-traversal containment em `file_content_patterns`, registry singleton thread-safe (`RLock` + double-checked locking) — PR #296 | V1 | Componentes (04), Fluxo (05), Padrões de código (12) |
 
 ## Estado dos pilares
 

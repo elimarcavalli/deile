@@ -371,6 +371,7 @@ class DeileAgent:
         self._sessions: Dict[str, AgentSession] = {}
         self._request_count = 0
         self._skill_loader = None  # set by _auto_discover_components; used by reload_skills()
+        self._skills_watcher = None  # set by _auto_discover_components; stopped in shutdown()
 
         # Initialize PersonaManager - será inicializado via async initialize()
         self.persona_manager: Optional[PersonaManager] = None
@@ -994,6 +995,20 @@ class DeileAgent:
             session=session,
         )
 
+        # Surface auto-triggered skills so the user sees which project-specific
+        # rules are contributing to the answer. ContextManager._build_skills_block
+        # stashes the active skill names on session.context_data['_active_skills']
+        # — auto-injection would otherwise be invisible (the body lands in the
+        # system prompt with no UI signal).
+        _active_skills = session.context_data.get("_active_skills") if session else None
+        if _active_skills:
+            yield UnifiedStreamEvent(
+                type=StreamEventType.STAGE,
+                stage=get_stage_message(
+                    "skills_active", "initial", names=", ".join(_active_skills)
+                ),
+            )
+
         # Tier classification (best-effort)
         yield UnifiedStreamEvent(
             type=StreamEventType.STAGE,
@@ -1466,6 +1481,13 @@ class DeileAgent:
             except Exception:
                 pass
             self._session_store = None
+        watcher = getattr(self, "_skills_watcher", None)
+        if watcher is not None:
+            try:
+                watcher.stop()
+            except Exception:
+                pass
+            self._skills_watcher = None
 
     # Métodos privados
 
@@ -2312,10 +2334,15 @@ class DeileAgent:
             self.command_registry.auto_discover_builtin_commands()
             self.command_registry.load_commands_from_config()
 
-            # Load user/project skills as slash commands
+            # Load user/project skills as slash commands AND start hot-reload.
+            # The unified skills subsystem owns both — keeping them wired in
+            # one place ensures the watcher and the slash-command bridge see
+            # the exact same scan order.
             try:
                 from ..commands.settings_manager import SettingsManager
                 from ..commands.skill_loader import SkillLoader
+                from ..skills.watcher import SkillsWatcher
+
                 project_dir = getattr(self.settings, "working_directory", None)
                 _settings_mgr = SettingsManager(
                     project_dir=Path(project_dir) if project_dir else None
@@ -2324,9 +2351,40 @@ class DeileAgent:
                     project_dir=project_dir,
                     settings_manager=_settings_mgr,
                 )
-                skill_loader.load_into_registry(self.command_registry)
+                invocable_count = skill_loader.load_into_registry(self.command_registry)
                 # Store for hot-reload via /skills add|remove
                 self._skill_loader = skill_loader
+
+                # Visible boot summary so the operator sees in the launch log
+                # how many skills came from where — bundled (auto-trigger +
+                # invoke_skill), user/project (those + slash /<name>). Counts
+                # via the unified registry to include bundled, which the
+                # loader hides by design (legacy slash-command contract).
+                from ..skills.registry import get_skill_registry
+                _by_src: dict = {}
+                for _sk in get_skill_registry().list_all():
+                    _by_src[_sk.source] = _by_src.get(_sk.source, 0) + 1
+                self.logger.info(
+                    "Skills carregadas: total=%d (%s); %d invocáveis como /<nome>",
+                    sum(_by_src.values()),
+                    ", ".join(f"{k}={v}" for k, v in sorted(_by_src.items())) or "vazio",
+                    invocable_count,
+                )
+
+                # The watcher uses the SAME extras the loader saw, so a path
+                # added via /skills add is watched too. Failures here are
+                # non-fatal — the agent still works without hot-reload.
+                try:
+                    self._skills_watcher = SkillsWatcher(
+                        project_dir=Path(project_dir) if project_dir else None,
+                        extra_paths=[
+                            p for p in _settings_mgr.get_all_skills_paths() if p.is_dir()
+                        ],
+                        command_registry=self.command_registry,
+                    )
+                    self._skills_watcher.start()
+                except Exception as _watcher_exc:
+                    self.logger.warning("Skills hot-reload not started: %s", _watcher_exc)
             except Exception as _skill_exc:
                 self.logger.warning("Skill loading failed: %s", _skill_exc)
 

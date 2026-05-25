@@ -41,6 +41,7 @@ DEFAULT_TOOL_PACKAGES = [
     "deile.tools.worktree_tool",
     "deile.tools.dispatch_deile_task",
     "deile.tools.dispatch_parallel_subagents",
+    "deile.tools.skill_tools",
 ]
 
 

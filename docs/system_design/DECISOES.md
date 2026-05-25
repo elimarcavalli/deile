@@ -427,6 +427,25 @@
 
 ---
 
+## Decisão #35 — Sistema unificado de Skills como quinto componente plugável
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 |
+| Pilar dono | 04-Componentes, 05-Fluxo, 12-Padrões de código |
+| Decisão | **Skill = arquivo Markdown com frontmatter YAML**, sem código Python. Vive em um de 5 diretórios escaneados em ordem de prioridade crescente (bundled em `deile/skills/library/` → `~/.deile/skills/` → `~/.claude/commands/` UPPERCASE → `<cwd>/.deile/skills/` → `<cwd>/.claude/commands/` UPPERCASE + extras de `SettingsManager`). Três caminhos de ativação simultâneos: (a) **auto-injeção** no system prompt do turno quando uma `trigger` casa (`file_globs`, `code_block_langs`, `keywords`, `file_content_patterns`), via `SkillRouter.select_skills` chamado por `ContextManager._build_skills_block`; (b) **function-call tools** `invoke_skill(name)` e `list_skills` em `deile/tools/skill_tools.py` (auto-descobertos via `DEFAULT_TOOL_PACKAGES`) que o LLM pode chamar quando vê no catálogo (`SkillRouter.render_catalog`) uma skill aplicável ao tópico; (c) **slash command** `/<name>` para invocação explícita do usuário, via shim de backward-compat `deile/commands/skill_loader.py`. `SkillRegistry` é singleton thread-safe (`RLock` + double-checked locking; `replace_all` para swap atômico durante hot-reload). `SkillsWatcher` (`watchdog.Observer`) refaz o registry em 0,5 s a cada `.md` event, serializado por `_RELOAD_LOCK`. Path-traversal containment em `file_content_patterns` via `router._resolve_within` impede que skill maliciosa probe `/etc/passwd` por crafted `file_references`. |
+| Evidência | `deile/skills/` (10 módulos: base, loader, discovery, registry, router, watcher, bootstrap, slash_command_bridge, config, language_detector); `deile/skills/library/{languages/python,languages/typescript,practices/tdd}.md` (skills bundled); `deile/tools/skill_tools.py` (InvokeSkillTool + ListSkillsTool); `deile/commands/skill_loader.py` (shim legacy); `deile/core/agent.py` (boot do `SkillsWatcher` em `_auto_discover_components` + `stop()` em `shutdown`); `deile/core/context_manager.py:_build_skills_block` (injeção no system prompt). Testes: `deile/tests/skills/` (209 testes) + `deile/tests/test_skill_loader.py` + `deile/tests/commands/test_skills_command.py`. PR #296. |
+| Motivação | (1) Permitir que o usuário/projeto adicione expertise específica do projeto **sem mudar código Python** (paridade com Claude Code skills/`.claude/commands/`); (2) unificar o que antes eram dois sistemas distintos (slash commands legados do PR #41 e skills "especialistas" novas) num único registry — evita duplicação de loader, override e parsing; (3) três caminhos de ativação cobrem três casos de uso reais: auto-injeção para skills que cobrem padrões frequentes do projeto, `invoke_skill` para o LLM puxar sob demanda quando vê o catálogo, slash command para invocação explícita pelo usuário; (4) o catálogo no system prompt (com diretiva imperativa + exemplo concreto) é o que dispara o `invoke_skill` espontâneo do LLM — empiricamente validado em 4/5 probes contra `deepseek:deepseek-v4-flash`. |
+| Fora do escopo | (1) Extração automática de `file_references` de texto livre (limitação pré-existente do `FileParser` — não bloqueia auto-trigger por `file_globs` quando o parser sí extrai); (2) sandbox de execução para skills (skills só injetam texto; não rodam código); (3) versionamento/depend tree entre skills. |
+
+### Histórico
+
+| Data | Mudança |
+|---|---|
+| Inicial (PR #296) | Sistema unificado entregue, com diretrizes de hardening (thread-safety, path traversal, CRLF, bool priority, missing-config-defaults-enabled) e simplificação (cut de ~660 linhas vs primeira iteração; `bootstrap_skills_with_handle` como canonical entry point, `bootstrap_skills` como wrapper legacy) |
+
+---
+
 ## Como adicionar uma nova decisão
 
 | # | Passo |
