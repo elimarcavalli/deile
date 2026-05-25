@@ -21,7 +21,10 @@ hallucinate where a file ended up.
 
 from __future__ import annotations
 
+import importlib
+import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -662,3 +665,125 @@ def test_delete_file_parent_relative_hints_bash(tmp_path):
     assert result.is_error
     assert "OUTSIDE" in result.message or "outside" in result.message.lower()
     assert "bash_execute" in result.message
+
+
+# ---------------------------------------------------------------------------
+# 6. Windows-specific platform branches (issue #283)
+#
+# `_path_resolution.py` has two Windows-conditional code paths that the
+# Linux CI never executes:
+#   * `_PYTHON_LAUNCHER = "python" if sys.platform == "win32" else "python3"`
+#     → drives every post-write validation hint (`.py`, `.json`, `.yaml`).
+#   * `_WINDOWS_DRIVE_RE` → strips `C:\foo`, `D:/bar`, etc. so a path the
+#     LLM copy-pasted from a Windows transcript still resolves correctly.
+#
+# These tests mock `sys.platform`, reload the module so the constant is
+# rebuilt, and assert the hint command + regex behave correctly per-platform.
+# ---------------------------------------------------------------------------
+
+
+def _reload_path_resolution_with_platform(target_platform: str):
+    """Reimport `_path_resolution` under a forced `sys.platform`.
+
+    `_PYTHON_LAUNCHER` is captured at import time, so changing
+    `sys.platform` after the fact would not affect it. The test patches
+    `sys.platform`, drops the cached module, and reimports — then yields the
+    fresh module to the caller. Cleanup happens in a `finally` block so the
+    rest of the suite sees the real module afterwards.
+    """
+    sys.modules.pop("deile.tools._path_resolution", None)
+    try:
+        with patch.object(sys, "platform", target_platform):
+            return importlib.import_module("deile.tools._path_resolution")
+    finally:
+        # Restore the real module so subsequent tests use the real impl.
+        sys.modules.pop("deile.tools._path_resolution", None)
+        importlib.import_module("deile.tools._path_resolution")
+
+
+def test_python_launcher_is_python_on_windows():
+    module = _reload_path_resolution_with_platform("win32")
+    assert module._PYTHON_LAUNCHER == "python"
+
+
+def test_python_launcher_is_python3_on_linux():
+    module = _reload_path_resolution_with_platform("linux")
+    assert module._PYTHON_LAUNCHER == "python3"
+
+
+def test_python_launcher_is_python3_on_macos():
+    module = _reload_path_resolution_with_platform("darwin")
+    assert module._PYTHON_LAUNCHER == "python3"
+
+
+def test_post_write_hint_uses_python_on_windows():
+    """`.py` files on Windows get `python -m py_compile`, not `python3`."""
+    module = _reload_path_resolution_with_platform("win32")
+
+    hint = module._post_write_validation_hint("script.py")
+    assert hint is not None
+    assert hint["kind"] == "python_syntax"
+    assert hint["command"] == "python -m py_compile script.py"
+    assert "python3" not in hint["command"]
+
+
+def test_post_write_hint_uses_python3_on_linux():
+    """Negative control: Linux still uses `python3`."""
+    module = _reload_path_resolution_with_platform("linux")
+
+    hint = module._post_write_validation_hint("script.py")
+    assert hint is not None
+    assert hint["command"] == "python3 -m py_compile script.py"
+
+
+def test_post_write_json_hint_uses_python_launcher_on_windows():
+    """JSON and YAML hints inherit `_PYTHON_LAUNCHER` too — verify Windows."""
+    module = _reload_path_resolution_with_platform("win32")
+
+    json_hint = module._post_write_validation_hint("data.json")
+    assert json_hint is not None
+    assert json_hint["command"].startswith("python ")
+    assert "python3" not in json_hint["command"]
+
+    yaml_hint = module._post_write_validation_hint("config.yaml")
+    assert yaml_hint is not None
+    assert yaml_hint["command"].startswith("python ")
+
+
+@pytest.mark.parametrize(
+    "drive_path, expected_remainder",
+    [
+        ("C:\\Users\\foo.py", "Users\\foo.py"),
+        ("D:/data/bar.py", "data/bar.py"),
+        ("c:\\\\baz.py", "baz.py"),
+        ("Z:/x.py", "x.py"),
+        ("a:/y", "y"),
+    ],
+)
+def test_windows_drive_regex_strips_drive_prefix(drive_path, expected_remainder):
+    """`_WINDOWS_DRIVE_RE` matches `<letter>:` followed by one+ slashes/backslashes."""
+    from deile.tools._path_resolution import _WINDOWS_DRIVE_RE
+
+    match = _WINDOWS_DRIVE_RE.match(drive_path)
+    assert match is not None, f"expected regex to match {drive_path!r}"
+
+    stripped = _WINDOWS_DRIVE_RE.sub("", drive_path)
+    assert stripped == expected_remainder
+
+
+@pytest.mark.parametrize(
+    "non_drive_path",
+    [
+        "foo.py",
+        "/tmp/foo",
+        "src/main.py",
+        "@foo.py",
+        "1:invalid",  # leading digit, not a drive letter
+        ":",  # no letter
+    ],
+)
+def test_windows_drive_regex_does_not_match_non_drive_paths(non_drive_path):
+    """Negative control: paths that aren't Windows drives must not match."""
+    from deile.tools._path_resolution import _WINDOWS_DRIVE_RE
+
+    assert _WINDOWS_DRIVE_RE.match(non_drive_path) is None
