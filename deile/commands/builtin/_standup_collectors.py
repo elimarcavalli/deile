@@ -67,11 +67,15 @@ def parse_args(args: str) -> str:
 def _ensure_git_repo() -> None:
     if not shutil.which("git"):
         raise CommandError("Git não está instalado.")
-    res = subprocess.run(
-        ["git", "rev-parse", "--is-inside-work-tree"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        res = subprocess.run(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise CommandError("git rev-parse excedeu o timeout (10s).") from exc
     if res.returncode != 0:
         raise CommandError("O diretório atual não é um repositório git.")
 
@@ -79,21 +83,29 @@ def _ensure_git_repo() -> None:
 def _ensure_gh_available() -> None:
     if not shutil.which("gh"):
         raise CommandError("GitHub CLI (gh) não está instalada.")
-    res = subprocess.run(
-        ["gh", "auth", "status"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        res = subprocess.run(
+            ["gh", "auth", "status"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise CommandError("gh auth status excedeu o timeout (15s).") from exc
     if res.returncode != 0:
         raise CommandError("CLI do GitHub (gh) não está autenticada.")
 
 
 def collect_commits(since_iso: str) -> List[Dict[str, str]]:
-    res = subprocess.run(
-        ["git", "log", f"--since={since_iso}", "--format=%h\x1f%an\x1f%s"],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        res = subprocess.run(
+            ["git", "log", f"--since={since_iso}", "--format=%h\x1f%an\x1f%s"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return []
     if res.returncode != 0:
         return []
     commits = []
@@ -115,21 +127,25 @@ def _collect_gh_items(verb: str, since_iso: str) -> List[Dict[str, Any]]:
     de autor. Devolve ``[]`` em qualquer falha (returncode != 0 ou JSON
     inválido) — o caller decide se isso é um erro.
     """
-    res = subprocess.run(
-        [
-            "gh",
-            verb,
-            "list",
-            "--state",
-            "all",
-            "--search",
-            f"updated:>={since_iso}",
-            "--json",
-            "number,title,state,author,url,updatedAt",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        res = subprocess.run(
+            [
+                "gh",
+                verb,
+                "list",
+                "--state",
+                "all",
+                "--search",
+                f"updated:>={since_iso}",
+                "--json",
+                "number,title,state,author,url,updatedAt",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        return []
     if res.returncode != 0:
         return []
     try:

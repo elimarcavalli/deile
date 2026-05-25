@@ -31,6 +31,13 @@ _MARKDOWN_REASON_LABELS = {
 
 _STATUS_GLYPHS = {"ok": "✅", "error": "❌", "cancelled": "⏹"}
 
+# Header status emojis para markdown_summary (escolhido por ok_global vs cancelled).
+# Mantidos como constantes nomeadas para facilitar um futuro modo "no-emoji"
+# (terminal limitado, logs estruturados, internacionalização).
+_HEADER_OK_EMOJI = "✅"
+_HEADER_CANCELLED_EMOJI = "⏹"
+_HEADER_WARN_EMOJI = "⚠️"
+
 
 def render_consolidated(result: "SubAgentResult") -> str:
     """Resumo curto agregado para o LLM (≤2KB).
@@ -76,7 +83,10 @@ def render_markdown(result: "SubAgentResult") -> str:
     Markdown), então deve usar formatação rica e legível.
     """
     lines: List[str] = []
-    status_emoji = "✅" if result.ok_global else ("⏹" if result.cancelled else "⚠️")
+    status_emoji = (
+        _HEADER_OK_EMOJI if result.ok_global
+        else (_HEADER_CANCELLED_EMOJI if result.cancelled else _HEADER_WARN_EMOJI)
+    )
     header = (
         f"{status_emoji} **Sub-DEILEs paralelos** · "
         f"{result.ok_count} ok · {result.error_count} erro · "
