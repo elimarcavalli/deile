@@ -1,28 +1,40 @@
-"""Data providers do painel TUI — kubectl, gh, SQLite — com cache TTL.
+"""Data providers do painel TUI — kubectl, gh, SQLite, ps, tail — com cache TTL.
 
 Cada provider expõe um `get()` que devolve um dataclass tipado e fica
 silenciosamente vazio quando a fonte está indisponível (cluster down, gh
 sem auth, DB ausente). A camada de view (`_panel.py`) lê dos `get()` sem
-saber se veio do cluster ou do fallback.
+saber se veio do cluster, do host local ou do fallback.
 
-Cache: cada provider tem `Cache[T]` com TTL próprio (3-60s). `get(force=True)`
+Cache: cada provider tem `Cache[T]` com TTL próprio (1-300s). `get(force=True)`
 re-busca; chamadas posteriores dentro do TTL retornam o valor cacheado.
-Não usa threads — a leitura é lazy, o custo de cada `kubectl/gh/sqlite` é
-absorvido pelo loop principal do `PanelApp` que renderiza em cadência
-calma (3s default).
+O `BackgroundRefresher` (em `_panel.py`) chama `maybe_refresh` em loop
+para manter os caches frescos sem bloquear a UI.
+
+`RuntimeContext` (no topo) carrega: namespace, deploy names, paths e
+flags k8s/local — permite o painel rodar:
+- **K8s** (defaults): equivalente ao comportamento legado.
+- **Local**: `python3 deile.py` no host — `LocalProcessesProvider`,
+  `LocalLogsProvider` (tail de `~/.deile/logs/deile.log`),
+  `LocalAuditProvider` (tail de `security_audit.log`).
+- **Híbrido**: detecta ambos e renderiza lado a lado.
+- **Demo** (`--demo`): bypassa fontes reais, mostra mocks.
 
 Fontes:
-- pods + recursos:  `kubectl -n deile get pods -o json`
-- pipeline:         `kubectl logs deploy/deile-pipeline --tail=200 --timestamps`
+- pods + recursos:  `kubectl -n <ns> get pods -o json`
+- pipeline:         `kubectl logs deploy/<pipeline-deploy> --tail=200 --timestamps`
 - worker (por pod): `kubectl logs <pod> --tail=200 --timestamps`
 - issues + PRs:     `gh api /repos/<repo>/issues?state=open`
-- custos:           `~/.deile/db/usage.db` (UsageRepository)
+- custos:           `<usage_db>` (SQLite — default `~/.deile/db/usage.db`)
+- processos locais: `ps -axo pid,pcpu,rss,etime,command`
+- logs locais:      tail-from-end de `<logs_dir>/deile.log` (até 64KB)
+- audit local:      tail-from-end de `<logs_dir>/security_audit.log`
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import sqlite3
@@ -81,6 +93,126 @@ def _detect_default_repo() -> str:
 
 REPO_DEFAULT = _detect_default_repo()
 USAGE_DB = Path.home() / ".deile" / "db" / "usage.db"
+LOGS_DIR = Path.home() / ".deile" / "logs"
+SESSIONS_DIR = Path.home() / ".deile" / "sessions"
+
+
+# ===== runtime context ======================================================
+#
+# `RuntimeContext` é a fonte única de verdade da configuração de execução
+# do painel: namespace k8s, deployment names, paths locais e modo
+# (k8s/local/híbrido/demo). Substitui as constantes `NS`/`DEPLOY` que
+# antes eram hardcoded — os providers continuam tendo defaults, mas o
+# `PanelData.from_context(...)` injeta os valores efetivos.
+#
+# A detecção de modo é lazy (em `k8s_available` e `local_available`) — a
+# mesma instância pode mudar de comportamento se o operador subir o
+# cluster ou matar o processo local enquanto o painel está aberto.
+
+# Padrões que marcam um processo do host como "DEILE-like". Ordem
+# importa: o mais específico primeiro (bot/pipeline antes do CLI
+# genérico `deile.py`). O fallback `_LOCAL_PROCESS_RE` aceita qualquer
+# `python ... (deile|deilebot)` — útil para detecção em `local_available`.
+_LOCAL_PROCESS_PATTERNS: List[tuple] = [
+    (re.compile(r"-m\s+deilebot(\b|\.)", re.IGNORECASE), "local-bot"),
+    (re.compile(r"deilebot.*\brun\b", re.IGNORECASE), "local-bot"),
+    (re.compile(r"-m\s+deile\.orchestration", re.IGNORECASE), "local-pipeline"),
+    (re.compile(r"-m\s+deile\.pipeline", re.IGNORECASE), "local-pipeline"),
+    (re.compile(r"(?:^|/| )deile\.py(?:\s|$)"), "local-deile"),
+    (re.compile(r"-m\s+deile(\b|\.)", re.IGNORECASE), "local-deile"),
+]
+_LOCAL_PROCESS_RE = re.compile(r"python.*\b(deile|deilebot)\b", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class RuntimeContext:
+    """Configuração de execução do painel — detectada ou explícita.
+
+    Resolve namespace, deployment names, paths e modo (k8s/local/demo) num
+    objeto imutável que os providers consomem. Defaults batem com o
+    layout `infra/k8s/manifests/` (namespace `deile`, deployments
+    `deile-pipeline`/`deile-worker`/`deilebot`/`deile-shell`).
+
+    Use `RuntimeContext.detect(**overrides)` para construir aplicando
+    overrides do CLI (`--namespace`, `--pipeline-deploy`, etc).
+    """
+
+    namespace: str = "deile"
+    pipeline_deploy: str = "deile-pipeline"
+    worker_deploy: str = "deile-worker"
+    bot_deploy: str = "deilebot"
+    shell_deploy: str = "deile-shell"
+    repo: str = ""
+    usage_db: Path = field(default_factory=lambda: USAGE_DB)
+    logs_dir: Path = field(default_factory=lambda: LOGS_DIR)
+    sessions_dir: Path = field(default_factory=lambda: SESSIONS_DIR)
+    cluster_label: str = "rancher-desktop (k3s)"
+    image_label: str = "deile-stack:local"
+    k8s_force: bool = False
+    local_force: bool = False
+    demo: bool = False
+
+    @classmethod
+    def detect(cls, **overrides: Any) -> "RuntimeContext":
+        """Constrói o contexto, resolvendo defaults quando overrides faltam."""
+        repo = overrides.pop("repo", None) or _detect_default_repo()
+        return cls(repo=repo, **overrides)
+
+    @property
+    def k8s_available(self) -> bool:
+        """`True` se kubectl está no PATH/Rancher e --local-only não foi setado."""
+        if self.local_force or self.demo:
+            return False
+        return kubectl_bin() is not None
+
+    @property
+    def local_available(self) -> bool:
+        """`True` se há vestígios de DEILE no host (log, DB ou processo)."""
+        if self.k8s_force or self.demo:
+            return False
+        if self.logs_dir.is_dir() or self.usage_db.is_file():
+            return True
+        return _has_local_deile_process()
+
+    @property
+    def mode_label(self) -> str:
+        """Rótulo curto para o header do painel."""
+        if self.demo:
+            return "demo (mocks)"
+        k = self.k8s_available
+        ll = self.local_available
+        if k and ll:
+            return "k8s + local"
+        if k:
+            return "k8s only"
+        if ll:
+            return "local only"
+        return "vazio (sem fontes)"
+
+
+def _has_local_deile_process() -> bool:
+    """Detecta processo `python ... (deile|deilebot)` no host.
+
+    Usa `ps -axo command=` (POSIX). Falha silenciosa se `ps` ausente — o
+    callsite (`RuntimeContext.local_available`) cai pro fallback de
+    "tem logs/DB?".
+    """
+    ps = shutil.which("ps")
+    if ps is None:
+        return False
+    try:
+        out = subprocess.run(
+            [ps, "-axo", "command="],
+            capture_output=True, text=True, timeout=2.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if out.returncode != 0:
+        return False
+    for line in out.stdout.splitlines():
+        if _LOCAL_PROCESS_RE.search(line):
+            return True
+    return False
 
 
 # ===== cache ================================================================
@@ -264,14 +396,27 @@ class _KubectlProviderMixin:
 
     Operador pode ter instalado kubectl depois do painel abrir — toda
     chamada de fetch tenta re-resolver se a referência local ainda é None.
+
+    Provider pode ser desabilitado (`enabled=False`) para o caso
+    `--local-only`: `_fetch` é interceptado por `_check_enabled`, que
+    levanta `RuntimeError("k8s disabled")` antes do subprocess. O
+    `Cache` captura e devolve o fallback (`[]`, `{}`, `PipelineState()`,
+    etc) — UI vê os painéis vazios em vez de dados do cluster, sem
+    chamar `kubectl` desnecessariamente.
     """
 
     _kubectl: Optional[str]
+    _enabled: bool = True
 
     def _resolve_kubectl(self) -> Optional[str]:
         if self._kubectl is None:
             self._kubectl = kubectl_bin()
         return self._kubectl
+
+    def _check_enabled(self) -> None:
+        """Raise para o Cache cair em fallback quando provider desabilitado."""
+        if not self._enabled:
+            raise RuntimeError("k8s desabilitado (--local-only)")
 
 
 def _fmt_age(seconds: Optional[float]) -> str:
@@ -313,11 +458,14 @@ _ROLE_BY_APP = {
 
 
 class PodsProvider(_KubectlProviderMixin):
-    """Lista os pods do namespace `deile` em forma tipada."""
+    """Lista os pods do namespace em forma tipada (default `deile`)."""
 
-    def __init__(self, ttl_s: float = 1.0):
+    def __init__(self, ttl_s: float = 1.0, namespace: str = NS,
+                 enabled: bool = True):
         # 1s: `kubectl get pods` local <50ms, sem custo perceptível.
         self._kubectl = kubectl_bin()
+        self._namespace = namespace
+        self._enabled = enabled
         self._cache: Cache[List[PodInfo]] = Cache(ttl_s, self._fetch, fallback=[])
 
     @property
@@ -328,11 +476,12 @@ class PodsProvider(_KubectlProviderMixin):
         return self._cache.get(force)
 
     def _fetch(self) -> List[PodInfo]:
+        self._check_enabled()
         self._resolve_kubectl()
         if self._kubectl is None:
             raise RuntimeError("kubectl não encontrado")
         data = _capture_json(
-            [self._kubectl, "-n", NS, "get", "pods", "-o", "json"],
+            [self._kubectl, "-n", self._namespace, "get", "pods", "-o", "json"],
             timeout=4.0,
         )
         if data is None:
@@ -475,12 +624,17 @@ class PipelineState:
 class PipelineProvider(_KubectlProviderMixin):
     """Lê os últimos N segundos de log do deile-pipeline e classifica."""
 
-    DEPLOY = "deile-pipeline"
+    DEPLOY = "deile-pipeline"  # default histórico; override via __init__
     TAIL_LINES = 200
 
-    def __init__(self, ttl_s: float = 2.0):
+    def __init__(self, ttl_s: float = 2.0,
+                 namespace: str = NS, deploy: Optional[str] = None,
+                 enabled: bool = True):
         # 2s: `kubectl logs --tail=200` ~200ms; balanceado entre vivo e custo.
         self._kubectl = kubectl_bin()
+        self._namespace = namespace
+        self._deploy = deploy or self.DEPLOY
+        self._enabled = enabled
         self._cache: Cache[PipelineState] = Cache(
             ttl_s, self._fetch, fallback=PipelineState(),
         )
@@ -493,17 +647,18 @@ class PipelineProvider(_KubectlProviderMixin):
         return self._cache.get(force)
 
     def _fetch(self) -> PipelineState:
+        self._check_enabled()
         self._resolve_kubectl()
         if self._kubectl is None:
             raise RuntimeError("kubectl não encontrado")
         text = _capture_text(
-            [self._kubectl, "-n", NS, "logs",
-             f"deploy/{self.DEPLOY}",
+            [self._kubectl, "-n", self._namespace, "logs",
+             f"deploy/{self._deploy}",
              f"--tail={self.TAIL_LINES}", "--timestamps"],
             timeout=5.0,
         )
         if text is None:
-            raise RuntimeError(f"kubectl logs {self.DEPLOY} falhou")
+            raise RuntimeError(f"kubectl logs {self._deploy} falhou")
         return self._parse(text)
 
     def _parse(self, text: str) -> PipelineState:
@@ -580,12 +735,17 @@ _WORKER_BUSY_WINDOW_S = 90  # se houve POST /v1/dispatch nos últimos 90s, está
 class WorkerProvider(_KubectlProviderMixin):
     """Por pod worker, deduz busy/idle do log."""
 
-    LABEL_SELECTOR = "app=deile-worker"
+    LABEL_SELECTOR_FMT = "app={deploy}"
     TAIL_LINES = 200
 
-    def __init__(self, ttl_s: float = 2.0):
+    def __init__(self, ttl_s: float = 2.0,
+                 namespace: str = NS, worker_deploy: str = "deile-worker",
+                 enabled: bool = True):
         # 2s: N `kubectl logs` (1 por worker) — só roda em background.
         self._kubectl = kubectl_bin()
+        self._namespace = namespace
+        self._worker_deploy = worker_deploy
+        self._enabled = enabled
         self._cache: Cache[Dict[str, WorkerState]] = Cache(
             ttl_s, self._fetch, fallback={},
         )
@@ -598,12 +758,14 @@ class WorkerProvider(_KubectlProviderMixin):
         return self._cache.get(force)
 
     def _fetch(self) -> Dict[str, WorkerState]:
+        self._check_enabled()
         self._resolve_kubectl()
         if self._kubectl is None:
             raise RuntimeError("kubectl não encontrado")
+        selector = self.LABEL_SELECTOR_FMT.format(deploy=self._worker_deploy)
         names_raw = _capture_text(
-            [self._kubectl, "-n", NS, "get", "pods",
-             "-l", self.LABEL_SELECTOR,
+            [self._kubectl, "-n", self._namespace, "get", "pods",
+             "-l", selector,
              "-o", "jsonpath={.items[*].metadata.name}"],
             timeout=4.0,
         )
@@ -613,7 +775,7 @@ class WorkerProvider(_KubectlProviderMixin):
         states: Dict[str, WorkerState] = {}
         for name in pod_names:
             text = _capture_text(
-                [self._kubectl, "-n", NS, "logs", name,
+                [self._kubectl, "-n", self._namespace, "logs", name,
                  f"--tail={self.TAIL_LINES}", "--timestamps"],
                 timeout=4.0,
             ) or ""
@@ -946,10 +1108,13 @@ class CurrentModelProvider(_KubectlProviderMixin):
 
     DEFAULT_DEPLOYMENTS = ("deile-worker", "deile-pipeline")
 
-    def __init__(self, deployments=DEFAULT_DEPLOYMENTS, ttl_s: float = 3.0):
+    def __init__(self, deployments=DEFAULT_DEPLOYMENTS, ttl_s: float = 3.0,
+                 namespace: str = NS, enabled: bool = True):
         # 3s: 1 `kubectl get -o json` por deployment (~100ms cada).
         self._kubectl = kubectl_bin()
+        self._namespace = namespace
         self._deployments = tuple(deployments)
+        self._enabled = enabled
         self._cache: Cache[Dict[str, Optional[str]]] = Cache(
             ttl_s, self._fetch, fallback={d: None for d in deployments},
         )
@@ -958,17 +1123,26 @@ class CurrentModelProvider(_KubectlProviderMixin):
     def last_error(self) -> Optional[str]:
         return self._cache.last_error
 
+    @property
+    def namespace(self) -> str:
+        return self._namespace
+
+    @property
+    def deployments(self) -> tuple:
+        return self._deployments
+
     def get(self, force: bool = False) -> Dict[str, Optional[str]]:
         return self._cache.get(force)
 
     def _fetch(self) -> Dict[str, Optional[str]]:
+        self._check_enabled()
         self._resolve_kubectl()
         if self._kubectl is None:
             raise RuntimeError("kubectl não encontrado")
         out: Dict[str, Optional[str]] = {}
         for dep in self._deployments:
             data = _capture_json(
-                [self._kubectl, "-n", NS, "get",
+                [self._kubectl, "-n", self._namespace, "get",
                  f"deployment/{dep}", "-o", "json"],
                 timeout=4.0,
             )
@@ -989,6 +1163,7 @@ class CurrentModelProvider(_KubectlProviderMixin):
 
 def _audit_security_policy_change(
     deployment: str, slug: str, *, result: str, detail: str,
+    namespace: str = NS,
 ) -> None:
     """Emite AuditEvent(SECURITY_POLICY_CHANGED) para a troca de modelo.
 
@@ -1015,7 +1190,7 @@ def _audit_security_policy_change(
             event_type=AuditEventType.SECURITY_POLICY_CHANGED,
             severity=severity,
             actor="panel:set_preferred_model",
-            resource=f"deployment:{NS}/{deployment}:DEILE_PREFERRED_MODEL",
+            resource=f"deployment:{namespace}/{deployment}:DEILE_PREFERRED_MODEL",
             action="kubectl_set_env",
             result=result,
             details={"slug": slug, "detail": detail[:200]},
@@ -1025,7 +1200,8 @@ def _audit_security_policy_change(
 
 
 def set_preferred_model(deployment: str, slug: str,
-                        timeout: float = 15.0) -> tuple:
+                        timeout: float = 15.0,
+                        namespace: str = NS) -> tuple:
     """Aplica `DEILE_PREFERRED_MODEL=<slug>` no Deployment.
 
     `kubectl set env` modifica a spec do Deployment, o que dispara
@@ -1045,6 +1221,7 @@ def set_preferred_model(deployment: str, slug: str,
         _audit_security_policy_change(
             safe_dep, safe_slug,
             result="denied", detail="deployment fora da whitelist",
+            namespace=namespace,
         )
         allowed = ", ".join(sorted(_ALLOWED_DEPLOYMENTS))
         return False, (
@@ -1055,28 +1232,32 @@ def set_preferred_model(deployment: str, slug: str,
         _audit_security_policy_change(
             deployment, safe_slug,
             result="denied", detail="slug inválido",
+            namespace=namespace,
         )
         return False, "slug inválido — recusado por validação"
     kubectl = kubectl_bin()
     if kubectl is None:
         _audit_security_policy_change(
             deployment, slug, result="failed", detail="kubectl não encontrado",
+            namespace=namespace,
         )
         return False, "kubectl não encontrado"
     # Audit ANTES de executar — registra a intenção, ainda que o
     # subprocess depois falhe ou trave.
     _audit_security_policy_change(
         deployment, slug, result="allowed", detail="executando kubectl set env",
+        namespace=namespace,
     )
     try:
         proc = subprocess.run(
-            [kubectl, "-n", NS, "set", "env", f"deploy/{deployment}",
+            [kubectl, "-n", namespace, "set", "env", f"deploy/{deployment}",
              f"DEILE_PREFERRED_MODEL={slug}"],
             capture_output=True, text=True, timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         _audit_security_policy_change(
             deployment, slug, result="failed", detail=f"subprocess: {exc}",
+            namespace=namespace,
         )
         return False, f"falha ao executar kubectl: {exc}"
     if proc.returncode != 0:
@@ -1084,11 +1265,13 @@ def set_preferred_model(deployment: str, slug: str,
         _audit_security_policy_change(
             deployment, slug, result="failed",
             detail=f"rc={proc.returncode} {err}",
+            namespace=namespace,
         )
         return False, err
     msg = (proc.stdout or "rollout disparado").strip()
     _audit_security_policy_change(
         deployment, slug, result="completed", detail=msg,
+        namespace=namespace,
     )
     return True, msg
 
@@ -1103,11 +1286,16 @@ class NotifierProvider(_KubectlProviderMixin):
     NotifierEchoView refresha em 5s; era 12 chamadas/min sem cache).
     """
 
-    BOT_DEPLOY = "deilebot"
+    BOT_DEPLOY = "deilebot"  # default; override via __init__
     TAIL = 500
 
-    def __init__(self, ttl_s: float = 5.0):
+    def __init__(self, ttl_s: float = 5.0,
+                 namespace: str = NS, deploy: Optional[str] = None,
+                 enabled: bool = True):
         self._kubectl = kubectl_bin()
+        self._namespace = namespace
+        self._deploy = deploy or self.BOT_DEPLOY
+        self._enabled = enabled
         self._cache: Cache[List[str]] = Cache(ttl_s, self._fetch, fallback=[])
 
     @property
@@ -1118,26 +1306,374 @@ class NotifierProvider(_KubectlProviderMixin):
         return self._cache.get(force)
 
     def _fetch(self) -> List[str]:
+        self._check_enabled()
         self._resolve_kubectl()
         if self._kubectl is None:
             raise RuntimeError("kubectl não encontrado")
         text = _capture_text(
-            [self._kubectl, "-n", NS, "logs",
-             f"deploy/{self.BOT_DEPLOY}", f"--tail={self.TAIL}"],
+            [self._kubectl, "-n", self._namespace, "logs",
+             f"deploy/{self._deploy}", f"--tail={self.TAIL}"],
             timeout=5.0,
         )
         if text is None:
-            raise RuntimeError("kubectl logs deilebot falhou")
+            raise RuntimeError(f"kubectl logs {self._deploy} falhou")
         if len(text) > MAX_LOG_BYTES:
             text = text[-MAX_LOG_BYTES:]
         return text.splitlines()
+
+
+# ===== Local mode providers =================================================
+#
+# Esses providers cobrem o caso "DEILE rodando direto no host (sem k8s)".
+# Inspecionam:
+#   - `ps` para detectar processos `python ... (deile|deilebot)`
+#   - tail-from-end de `~/.deile/logs/deile.log` (até 64KB)
+#   - tail-from-end de `~/.deile/logs/security_audit.log` (JSONL)
+#
+# Convenção: cada provider falha gracioso quando a fonte está vazia (sem
+# `ps`, sem arquivo, sem permissão). O `last_error` fica preenchido para
+# a UI mostrar como aviso no canto, mas o painel continua respondendo.
+
+@dataclass
+class LocalProcessInfo:
+    pid: int
+    role: str        # 'local-deile' | 'local-pipeline' | 'local-bot' | 'local-other'
+    cmd: str         # cmdline truncado
+    cpu_pct: float
+    rss_kb: int
+    etime_s: int     # uptime em segundos
+
+    @property
+    def name(self) -> str:
+        """Nome estável para a UI — usado como chave de seleção."""
+        return f"{self.role}#{self.pid}"
+
+    @property
+    def age_human(self) -> str:
+        return _fmt_age(float(self.etime_s))
+
+    @property
+    def rss_human(self) -> str:
+        """RSS em MB legível (KB → MB)."""
+        return f"{self.rss_kb / 1024:.0f}MB" if self.rss_kb else "—"
+
+
+def _parse_etime(s: str) -> int:
+    """Converte `ps -o etime`: `[[DD-]HH:]MM:SS` → segundos.
+
+    Formatos válidos: `01:23`, `12:34:56`, `2-03:04:05`. Aceita lixo
+    devolvendo 0 — pra não derrubar o parser do _fetch.
+    """
+    if "-" in s:
+        d, rest = s.split("-", 1)
+        try:
+            days = int(d)
+        except ValueError:
+            return 0
+        s = rest
+    else:
+        days = 0
+    parts = s.split(":")
+    try:
+        if len(parts) == 3:
+            h, m, sec = (int(parts[0]), int(parts[1]), int(parts[2]))
+        elif len(parts) == 2:
+            h, m, sec = (0, int(parts[0]), int(parts[1]))
+        else:
+            return 0
+    except ValueError:
+        return 0
+    return days * 86400 + h * 3600 + m * 60 + sec
+
+
+def _classify_local_process(cmd: str) -> Optional[str]:
+    """Devolve role (`local-*`) ou None se a linha não é DEILE-like."""
+    for pat, role in _LOCAL_PROCESS_PATTERNS:
+        if pat.search(cmd):
+            return role
+    if _LOCAL_PROCESS_RE.search(cmd):
+        return "local-other"
+    return None
+
+
+class LocalProcessesProvider:
+    """Detecta processos DEILE/deilebot rodando no host.
+
+    Usa `ps -axo pid,pcpu,rss,etime,command` (POSIX) — sem dependência
+    externa (psutil opcional não-usado). Cacheia com TTL 2s para alinhar
+    com `PodsProvider` (mesma frequência de refresh visual).
+
+    Falha gracioso: `ps` ausente, comando devolve erro, ou nenhum
+    processo casa → lista vazia + `last_error` preenchido.
+    """
+
+    def __init__(self, ttl_s: float = 2.0):
+        self._cache: Cache[List[LocalProcessInfo]] = Cache(
+            ttl_s, self._fetch, fallback=[],
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> List[LocalProcessInfo]:
+        return self._cache.get(force)
+
+    def _fetch(self) -> List[LocalProcessInfo]:
+        ps = shutil.which("ps")
+        if ps is None:
+            raise RuntimeError("ps não encontrado")
+        try:
+            out = subprocess.run(
+                [ps, "-axo", "pid=,pcpu=,rss=,etime=,command="],
+                capture_output=True, text=True, timeout=4.0,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(f"ps falhou: {exc}") from exc
+        if out.returncode != 0:
+            raise RuntimeError(f"ps retornou rc={out.returncode}")
+        results: List[LocalProcessInfo] = []
+        my_pid = os.getpid()
+        for line in out.stdout.splitlines():
+            info = self._parse_line(line)
+            if info is None:
+                continue
+            # Filtra o próprio processo do painel — `python ... infra/k8s/deploy.py
+            # k8s panel` casa o padrão genérico `deile` e poluiria a lista.
+            if info.pid == my_pid:
+                continue
+            results.append(info)
+        # Ordem: deile > pipeline > bot > other; depois pid asc.
+        order = {"local-deile": 0, "local-pipeline": 1,
+                 "local-bot": 2, "local-other": 3}
+        results.sort(key=lambda p: (order.get(p.role, 9), p.pid))
+        return results
+
+    @staticmethod
+    def _parse_line(line: str) -> Optional[LocalProcessInfo]:
+        # 4 first tokens are fixed-width, command is the remainder.
+        parts = line.split(None, 4)
+        if len(parts) < 5:
+            return None
+        pid_s, cpu_s, rss_s, etime_s, cmd = parts
+        role = _classify_local_process(cmd)
+        if role is None:
+            return None
+        try:
+            pid = int(pid_s)
+        except ValueError:
+            return None
+        try:
+            cpu_pct = float(cpu_s)
+        except ValueError:
+            cpu_pct = 0.0
+        try:
+            rss_kb = int(rss_s)
+        except ValueError:
+            rss_kb = 0
+        return LocalProcessInfo(
+            pid=pid, role=role, cmd=cmd.strip(),
+            cpu_pct=cpu_pct, rss_kb=rss_kb,
+            etime_s=_parse_etime(etime_s),
+        )
+
+
+# ----- Local logs (deile.log) -----
+
+_LOG_TAIL_BYTES = 64 * 1024  # 64KB ≈ 400-500 linhas; suficiente para feed vivo
+
+# Formato canônico do logging.FileHandler do DEILE:
+# `2026-05-23 19:39:01,234 - module.name - LEVEL - message`
+_DEILE_LOG_TS_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}[,.]?\d*)"
+    r"\s*-?\s*(.*)$",
+)
+
+
+def _parse_local_log_line(line: str) -> Optional[LogLine]:
+    """Decoder leniente para `~/.deile/logs/deile.log` (Python logging)."""
+    m = _DEILE_LOG_TS_RE.match(line)
+    if not m:
+        return None
+    ts_str = m.group(1).replace(",", ".").replace(" ", "T")
+    try:
+        ts = datetime.fromisoformat(ts_str)
+    except ValueError:
+        return None
+    if ts.tzinfo is None:
+        # `deile.log` usa hora local — assume timezone do sistema.
+        local_tz = datetime.now().astimezone().tzinfo
+        ts = ts.replace(tzinfo=local_tz)
+    return LogLine(ts=ts, body=m.group(2))
+
+
+@dataclass
+class LocalLogsState:
+    """Equivalente ao PipelineState para o `~/.deile/logs/deile.log`."""
+    log_path: str = ""
+    last_action_ts: Optional[datetime] = None
+    last_action_summary: str = "—"
+    events: List[ActivityEvent] = field(default_factory=list)
+    raw_lines: int = 0
+    file_size_kb: int = 0
+
+    @property
+    def last_action_age_s(self) -> Optional[float]:
+        if self.last_action_ts is None:
+            return None
+        return (datetime.now(_UTC) - self.last_action_ts).total_seconds()
+
+
+def _tail_file_bytes(path: Path, n_bytes: int) -> str:
+    """Lê os últimos `n_bytes` de `path` (UTF-8 leniente).
+
+    Descarta a primeira linha potencialmente incompleta se o offset > 0.
+    Devolve string vazia se o arquivo está vazio ou inacessível.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return ""
+    if size == 0:
+        return ""
+    offset = max(0, size - n_bytes)
+    try:
+        with path.open("rb") as fh:
+            fh.seek(offset)
+            blob = fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    if offset > 0 and "\n" in blob:
+        blob = blob.split("\n", 1)[1]
+    return blob
+
+
+class LocalLogsProvider:
+    """Tail leniente de `~/.deile/logs/deile.log` + classify.
+
+    Lê só os últimos `_LOG_TAIL_BYTES` (~64KB) — não importa quão
+    grande o arquivo seja (já vi 25MB em produção). Cache TTL 2s para
+    UI parecer viva sem martelar disco.
+    """
+
+    def __init__(self, log_path: Path, ttl_s: float = 2.0):
+        self._log_path = log_path
+        self._cache: Cache[LocalLogsState] = Cache(
+            ttl_s, self._fetch, fallback=LocalLogsState(log_path=str(log_path)),
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> LocalLogsState:
+        return self._cache.get(force)
+
+    def _fetch(self) -> LocalLogsState:
+        state = LocalLogsState(log_path=str(self._log_path))
+        if not self._log_path.is_file():
+            return state
+        try:
+            state.file_size_kb = int(self._log_path.stat().st_size / 1024)
+        except OSError:
+            state.file_size_kb = 0
+        blob = _tail_file_bytes(self._log_path, _LOG_TAIL_BYTES)
+        if not blob:
+            return state
+        for raw in blob.splitlines():
+            state.raw_lines += 1
+            ll = _parse_local_log_line(raw)
+            if ll is None:
+                continue
+            # Reusa o classificador do pipeline — os bodies têm o mesmo
+            # formato (mesmo logger do DEILE, com ou sem prefixo kubectl).
+            ev = _classify_pipeline_line(ll)
+            if ev is None:
+                continue
+            state.last_action_ts = ll.ts
+            state.last_action_summary = ev.detail[:80]
+            ev_local = ActivityEvent(
+                ts=ll.ts, actor="local", action=ev.action,
+                target=ev.target, detail=ev.detail,
+            )
+            state.events.append(ev_local)
+        state.events = state.events[-60:]
+        return state
+
+
+# ----- Local audit (security_audit.log) -----
+
+class LocalAuditProvider:
+    """Tail do `~/.deile/logs/security_audit.log` (uma linha = um AuditEvent JSON).
+
+    Parser tenta JSON puro (formato canônico do AuditLogger); cai pro
+    extract `{...}` inline se o arquivo for misturado com linhas
+    prefixadas pelo runtime. Retorna eventos já parseados como dicts.
+    """
+
+    def __init__(self, audit_path: Path, ttl_s: float = 3.0,
+                 tail_kb: int = 64):
+        self._audit_path = audit_path
+        self._tail_bytes = tail_kb * 1024
+        self._cache: Cache[List[Dict[str, Any]]] = Cache(
+            ttl_s, self._fetch, fallback=[],
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> List[Dict[str, Any]]:
+        return self._cache.get(force)
+
+    def _fetch(self) -> List[Dict[str, Any]]:
+        if not self._audit_path.is_file():
+            return []
+        blob = _tail_file_bytes(self._audit_path, self._tail_bytes)
+        if not blob:
+            return []
+        events: List[Dict[str, Any]] = []
+        for line in blob.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            ev = _parse_audit_line(line)
+            if ev is not None:
+                events.append(ev)
+        # Mantém só os 100 mais recentes; suficiente pra UI rolar.
+        return events[-100:]
+
+
+def _parse_audit_line(line: str) -> Optional[Dict[str, Any]]:
+    """Tenta JSON puro; fallback: extrai o `{...}` inline."""
+    if line.startswith("{"):
+        try:
+            obj = json.loads(line)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+    brace = line.find("{")
+    if brace < 0:
+        return None
+    try:
+        obj = json.loads(line[brace:])
+        return obj if isinstance(obj, dict) else None
+    except json.JSONDecodeError:
+        return None
 
 
 # ===== Aggregate hub ========================================================
 
 @dataclass
 class PanelData:
-    """Conjunto de providers consumidos pela UI."""
+    """Conjunto de providers consumidos pela UI.
+
+    `context` é a fonte única de verdade da configuração (namespace,
+    paths, modo). Providers k8s sempre presentes (falham gracioso se
+    cluster ausente); locais opcionais (None quando não detectados).
+    """
+    context: RuntimeContext
     pods: PodsProvider
     pipeline: PipelineProvider
     workers: WorkerProvider
@@ -1146,24 +1682,67 @@ class PanelData:
     models: ModelsProvider
     current_model: CurrentModelProvider
     notifier: NotifierProvider
+    local_processes: Optional[LocalProcessesProvider] = None
+    local_logs: Optional[LocalLogsProvider] = None
+    local_audit: Optional[LocalAuditProvider] = None
+
+    @classmethod
+    def from_context(cls, context: RuntimeContext) -> "PanelData":
+        """Constrói o aggregator usando overrides do `RuntimeContext`.
+
+        Locais são instanciados apenas se `context.local_available` —
+        evita ler `ps` ou abrir arquivos quando o operador forçou
+        `--k8s-only` (ou está em demo).
+        """
+        local_on = context.local_available
+        local_procs = LocalProcessesProvider() if local_on else None
+        local_logs = (LocalLogsProvider(context.logs_dir / "deile.log")
+                      if local_on else None)
+        local_audit = (LocalAuditProvider(context.logs_dir / "security_audit.log")
+                       if local_on else None)
+        # `enabled=context.k8s_available` faz os providers k8s curto-circuitarem
+        # via `_check_enabled`/`Cache.fallback` quando o modo é local-only
+        # (sem custo de subprocess `kubectl`).
+        k8s_on = context.k8s_available
+        return cls(
+            context=context,
+            pods=PodsProvider(namespace=context.namespace, enabled=k8s_on),
+            pipeline=PipelineProvider(namespace=context.namespace,
+                                      deploy=context.pipeline_deploy,
+                                      enabled=k8s_on),
+            workers=WorkerProvider(namespace=context.namespace,
+                                   worker_deploy=context.worker_deploy,
+                                   enabled=k8s_on),
+            # `context.repo` pode vir vazio se o operador construiu o
+            # ctx direto (sem `.detect()`) — resolve no fallback global.
+            github=GitHubProvider(repo=context.repo or REPO_DEFAULT),
+            costs=CostsProvider(db_path=context.usage_db),
+            models=ModelsProvider(),
+            current_model=CurrentModelProvider(
+                namespace=context.namespace,
+                deployments=(context.worker_deploy, context.pipeline_deploy),
+                enabled=k8s_on,
+            ),
+            notifier=NotifierProvider(namespace=context.namespace,
+                                      deploy=context.bot_deploy,
+                                      enabled=k8s_on),
+            local_processes=local_procs,
+            local_logs=local_logs,
+            local_audit=local_audit,
+        )
 
     @classmethod
     def default(cls, repo: str = REPO_DEFAULT) -> "PanelData":
-        return cls(
-            pods=PodsProvider(),
-            pipeline=PipelineProvider(),
-            workers=WorkerProvider(),
-            github=GitHubProvider(repo=repo),
-            costs=CostsProvider(),
-            models=ModelsProvider(),
-            current_model=CurrentModelProvider(),
-            notifier=NotifierProvider(),
-        )
+        """Backwards-compat: contexto padrão (namespace `deile`)."""
+        return cls.from_context(RuntimeContext.detect(repo=repo))
 
     def _all_providers(self) -> tuple:
         """Ordem usada por `force_refresh_all` e `errors`."""
-        return (self.pods, self.pipeline, self.workers, self.github,
+        base = (self.pods, self.pipeline, self.workers, self.github,
                 self.costs, self.models, self.current_model, self.notifier)
+        locals_ = tuple(p for p in (self.local_processes, self.local_logs,
+                                    self.local_audit) if p is not None)
+        return base + locals_
 
     def force_refresh_all(self) -> None:
         """Hotkey [r]: marca todos os caches como vencidos sem bloquear.
@@ -1176,13 +1755,30 @@ class PanelData:
             p._cache.invalidate()  # noqa: SLF001 (intentional internal)
 
     def errors(self) -> List[tuple]:
-        """Lista provider name + último erro, pra UI mostrar discretamente."""
-        names = ("pods", "pipeline", "workers", "github", "costs",
-                 "models", "current_model", "notifier")
+        """Lista provider name + último erro, pra UI mostrar discretamente.
+
+        Filtra erros "esperados" (`k8s desabilitado` em modo local-only e
+        `kubectl não encontrado` quando o operador não tem cluster) —
+        eles seriam ruído visual no painel ALERTS sem trazer informação.
+        """
+        names = ["pods", "pipeline", "workers", "github", "costs",
+                 "models", "current_model", "notifier"]
+        if self.local_processes is not None:
+            names.append("local_processes")
+        if self.local_logs is not None:
+            names.append("local_logs")
+        if self.local_audit is not None:
+            names.append("local_audit")
         out: List[tuple] = []
         for name, p in zip(names, self._all_providers()):
-            if p.last_error:
-                out.append((name, p.last_error))
+            err = p.last_error
+            if not err:
+                continue
+            # "k8s desabilitado" e "kubectl não encontrado" são esperados —
+            # não viram alerta.
+            if "k8s desabilitado" in err or "kubectl não encontrado" in err:
+                continue
+            out.append((name, err))
         return out
 
 

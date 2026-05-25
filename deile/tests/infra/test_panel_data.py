@@ -830,3 +830,329 @@ class TestPodRowsAdapter:
         d.pipeline.get.return_value = ps
         rows = panel._pod_rows(d)
         assert rows == []
+
+
+# ===== Universal mode (k8s + local) =========================================
+#
+# Tests cobrem a Fase "painel universal" (issue de evolução da PR
+# #294 — `--namespace`, processos locais, tail de logs locais, audit
+# local). Nenhum mock de dados visíveis ao usuário; só fixtures de
+# arquivos tmp + monkeypatch de `ps`/`kubectl`.
+
+class TestRuntimeContext:
+    def test_detect_defaults(self):
+        ctx = pd.RuntimeContext.detect()
+        assert ctx.namespace == "deile"
+        assert ctx.pipeline_deploy == "deile-pipeline"
+        assert ctx.worker_deploy == "deile-worker"
+        assert ctx.bot_deploy == "deilebot"
+        assert ctx.repo  # detectado do origin OU fallback "elimarcavalli/deile"
+
+    def test_detect_with_overrides(self):
+        ctx = pd.RuntimeContext.detect(
+            namespace="my-ns",
+            pipeline_deploy="p1",
+            worker_deploy="w1",
+            repo="org/repo",
+        )
+        assert ctx.namespace == "my-ns"
+        assert ctx.pipeline_deploy == "p1"
+        assert ctx.worker_deploy == "w1"
+        assert ctx.repo == "org/repo"
+
+    def test_demo_disables_modes(self):
+        ctx = pd.RuntimeContext(demo=True)
+        assert ctx.k8s_available is False
+        assert ctx.local_available is False
+        assert ctx.mode_label == "demo (mocks)"
+
+    def test_k8s_force_blocks_local(self, monkeypatch):
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: "/k")
+        ctx = pd.RuntimeContext(k8s_force=True)
+        assert ctx.k8s_available is True
+        assert ctx.local_available is False
+
+    def test_local_force_blocks_k8s(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: "/k")
+        # logs_dir existe → local_available=True
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        ctx = pd.RuntimeContext(local_force=True, logs_dir=logs)
+        assert ctx.k8s_available is False
+        assert ctx.local_available is True
+
+    def test_mode_label_hybrid(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: "/k")
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        ctx = pd.RuntimeContext(logs_dir=logs,
+                                usage_db=tmp_path / "no.db")
+        assert ctx.mode_label == "k8s + local"
+
+
+class TestLocalProcessesProvider:
+    """Mocka `ps` via patch de `subprocess.run` para validar parsing."""
+
+    def _ps_output(self, lines: List[str]) -> str:
+        return "\n".join(lines) + "\n"
+
+    def test_classify_local_process(self):
+        assert pd._classify_local_process("python3 deile.py") == "local-deile"
+        assert pd._classify_local_process(
+            "/usr/bin/python -m deilebot run --provider discord"
+        ) == "local-bot"
+        assert pd._classify_local_process(
+            "python -m deile.orchestration.pipeline.monitor"
+        ) == "local-pipeline"
+        assert pd._classify_local_process("/usr/bin/python -m other") is None
+        # Generic fallback: any python+deile mention.
+        assert pd._classify_local_process(
+            "python /opt/something/deile-helper.py"
+        ) == "local-other"
+
+    def test_parse_etime(self):
+        assert pd._parse_etime("01:23") == 83
+        assert pd._parse_etime("12:34:56") == 12 * 3600 + 34 * 60 + 56
+        assert pd._parse_etime("2-03:04:05") == 2 * 86400 + 3 * 3600 + 4 * 60 + 5
+        assert pd._parse_etime("garbage") == 0
+
+    def test_fetch_parses_and_filters_panel_pid(self, monkeypatch):
+        provider = pd.LocalProcessesProvider()
+        # Inclui o próprio PID para garantir que é filtrado.
+        import os as _os
+        mine = _os.getpid()
+        fake_ps = (
+            f"  {mine}    0.0  6144  00:01 python infra/k8s/deploy.py panel\n"
+            "   123    1.5  4096  10:00 python3 deile.py\n"
+            "   456    0.0  2048  01:23:45 python -m deilebot run\n"
+            "   789    0.0  1024  03-12:00:00 python -m deile.orchestration.x\n"
+        )
+        mock_proc = MagicMock(returncode=0, stdout=fake_ps, stderr="")
+        monkeypatch.setattr(pd.shutil, "which", lambda b: "/bin/ps" if b == "ps" else None)
+        with patch("subprocess.run", return_value=mock_proc):
+            procs = provider.get()
+        # 3 esperados (123, 456, 789) — o próprio painel filtrado.
+        assert len(procs) == 3
+        pids = [p.pid for p in procs]
+        assert mine not in pids
+        # Ordem: deile > pipeline > bot
+        assert procs[0].role == "local-deile"
+        assert procs[0].pid == 123
+        assert procs[1].role == "local-pipeline"
+        assert procs[2].role == "local-bot"
+
+    def test_fetch_no_ps_raises_into_fallback(self, monkeypatch):
+        provider = pd.LocalProcessesProvider()
+        monkeypatch.setattr(pd.shutil, "which", lambda b: None)
+        # Sem `ps` → fetcher raise; Cache devolve fallback (lista vazia).
+        assert provider.get() == []
+        assert "ps" in (provider.last_error or "")
+
+
+class TestLocalLogsProvider:
+    def test_returns_empty_when_file_missing(self, tmp_path):
+        log = tmp_path / "missing.log"
+        provider = pd.LocalLogsProvider(log)
+        state = provider.get()
+        assert state.events == []
+        assert state.last_action_ts is None
+
+    def test_tails_and_classifies(self, tmp_path):
+        log = tmp_path / "deile.log"
+        log.write_text(
+            "2026-05-23 19:39:01,234 - deile.foo - INFO - hello\n"
+            "2026-05-23 19:39:05,123 - deile.bar - INFO - "
+            "deile.orchestration.pipeline.stages something happened\n"
+            "2026-05-23 19:39:06,000 - deile.x - INFO - "
+            "worker dispatch starting\n",
+            encoding="utf-8",
+        )
+        provider = pd.LocalLogsProvider(log)
+        state = provider.get()
+        # Pelo menos 1 evento classificado (stages e dispatch reconhecidos).
+        assert state.raw_lines >= 3
+        assert state.events  # pelo menos 1 classificado
+        actions = {ev.action for ev in state.events}
+        assert {"stages", "dispatch"} & actions
+        # Todos os eventos locais ganham actor='local'.
+        assert all(ev.actor == "local" for ev in state.events)
+
+    def test_tail_only_reads_last_64kb(self, tmp_path):
+        log = tmp_path / "big.log"
+        # Grava ~200KB de lixo + 1 linha boa no fim → garante que tail
+        # leu só o final (não trava em arquivo grande).
+        junk = "x" * 1000
+        with log.open("w", encoding="utf-8") as fh:
+            for _ in range(200):
+                fh.write(junk + "\n")
+            fh.write("2026-05-23 19:39:01,000 - x - INFO - "
+                     "worker dispatch completed\n")
+        provider = pd.LocalLogsProvider(log)
+        state = provider.get()
+        # File size em KB com divisão int — 200*1001 bytes ≈ 195KB.
+        assert state.file_size_kb >= 100
+        # A última linha (dispatch completed) DEVE ter sido capturada
+        # apesar do arquivo ser muito maior que o tail de 64KB.
+        assert any("dispatch" in ev.detail for ev in state.events)
+
+
+class TestLocalAuditProvider:
+    def test_parses_jsonl(self, tmp_path):
+        audit = tmp_path / "security_audit.log"
+        # 2 linhas puras de JSON + 1 inválida (skip) + 1 inline-puro
+        # (`json.loads` aceita o JSON do brace ao fim porque o `}` é
+        # final).
+        audit.write_text(
+            '{"event_type":"TOOL_EXECUTION","ts":"2026-05-23T19:39:01",'
+            '"action":"k8s_status","result":"allowed"}\n'
+            '{"event_type":"SECURITY_POLICY_CHANGED","ts":"2026-05-23T19:39:02",'
+            '"action":"kubectl_set_env","result":"completed"}\n'
+            'INVALID LINE\n'
+            'prefix runtime - '
+            '{"event_type":"TOOL_EXECUTION","result":"completed"}\n',
+            encoding="utf-8",
+        )
+        provider = pd.LocalAuditProvider(audit)
+        events = provider.get()
+        assert len(events) == 3
+        assert events[0]["event_type"] == "TOOL_EXECUTION"
+        assert events[1]["event_type"] == "SECURITY_POLICY_CHANGED"
+        # 3º veio do brace-extract — confirma o fallback funcional.
+        assert events[2]["result"] == "completed"
+
+    def test_handles_missing_file(self, tmp_path):
+        provider = pd.LocalAuditProvider(tmp_path / "absent.log")
+        assert provider.get() == []
+
+
+class TestPanelDataFromContext:
+    """`PanelData.from_context` wira providers com namespace override."""
+
+    def test_k8s_namespace_propagates(self, tmp_path):
+        # `k8s_force=True` força local_available=False sem depender da
+        # ausência de logs/DB/processos no host (o teste pode rodar num
+        # ambiente onde DEILE está rodando).
+        ctx = pd.RuntimeContext(
+            namespace="custom",
+            pipeline_deploy="my-pipeline",
+            worker_deploy="my-worker",
+            bot_deploy="my-bot",
+            usage_db=tmp_path / "u.db",
+            logs_dir=tmp_path / "no-logs",
+            k8s_force=True,
+        )
+        data = pd.PanelData.from_context(ctx)
+        # local_available=False → providers locais não criados.
+        assert data.local_processes is None
+        assert data.local_logs is None
+        assert data.local_audit is None
+        # Namespace propagou.
+        assert data.pods._namespace == "custom"
+        assert data.pipeline._namespace == "custom"
+        assert data.pipeline._deploy == "my-pipeline"
+        assert data.workers._namespace == "custom"
+        assert data.workers._worker_deploy == "my-worker"
+        assert data.notifier._namespace == "custom"
+        assert data.notifier._deploy == "my-bot"
+        assert data.current_model.namespace == "custom"
+
+    def test_local_providers_created_when_available(self, tmp_path):
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        ctx = pd.RuntimeContext(
+            logs_dir=logs,
+            usage_db=tmp_path / "u.db",
+        )
+        data = pd.PanelData.from_context(ctx)
+        assert data.local_processes is not None
+        assert data.local_logs is not None
+        assert data.local_audit is not None
+
+    def test_k8s_providers_disabled_in_local_only(self, monkeypatch, tmp_path):
+        """`--local-only` (k8s_force=False + kubectl ausente OU local_force=True)
+        deve fazer providers k8s retornarem fallback SEM chamar subprocess."""
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        ctx = pd.RuntimeContext(
+            local_force=True, logs_dir=logs, usage_db=tmp_path / "u.db",
+        )
+        data = pd.PanelData.from_context(ctx)
+        # Intercepta `subprocess.run` para detectar QUALQUER chamada
+        # (qualquer chamada significa que o `enabled=False` falhou).
+        calls = []
+        real_run = pd.subprocess.run
+        def _trap(cmd, *a, **kw):
+            calls.append(cmd)
+            return real_run(cmd, *a, **kw)
+        monkeypatch.setattr(pd.subprocess, "run", _trap)
+        # Toca cada provider k8s — deve cair em fallback imediato.
+        assert data.pods.get() == []
+        assert data.pipeline.get().events == []
+        assert data.workers.get() == {}
+        assert data.notifier.get() == []
+        # NENHUMA chamada kubectl deve ter saído.
+        kubectl_calls = [c for c in calls if c and "kubectl" in str(c[0])]
+        assert kubectl_calls == []
+        # Errors filtrados: "k8s desabilitado" não vira alerta.
+        assert data.errors() == []
+
+    def test_set_preferred_model_uses_namespace(self, monkeypatch):
+        """set_preferred_model com namespace custom deve passar pro kubectl."""
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: "/bin/kubectl")
+        captured: List[List[str]] = []
+        def _fake_run(cmd, **kw):
+            captured.append(cmd)
+            return MagicMock(returncode=0, stdout="ok\n", stderr="")
+        with patch("subprocess.run", side_effect=_fake_run):
+            ok, _ = pd.set_preferred_model(
+                "deile-worker",
+                "anthropic:claude-opus-4-7",
+                namespace="my-namespace",
+            )
+        assert ok is True
+        assert captured and captured[0][:3] == ["/bin/kubectl", "-n", "my-namespace"]
+
+
+class TestDeployFlags:
+    """Parser de flags do `deploy.py k8s panel` (universal mode)."""
+
+    @pytest.fixture(scope="class", autouse=True)
+    def _ensure_deploy_on_path(self):
+        # `deploy.py` já está em `infra/k8s/` (mesmo dir do _panel_data) —
+        # o sys.path setado no topo do arquivo cobre.
+        yield
+
+    def test_parses_value_flags(self):
+        import deploy  # noqa: PLC0415
+        ov, demo = deploy._parse_panel_flags(
+            ["--namespace", "x", "--repo", "o/r", "--pipeline-deploy", "p"]
+        )
+        assert ov == {"namespace": "x", "repo": "o/r", "pipeline_deploy": "p"}
+        assert demo is False
+
+    def test_parses_bool_flags(self):
+        import deploy  # noqa: PLC0415
+        ov, demo = deploy._parse_panel_flags(["--k8s-only"])
+        assert ov == {"k8s_force": True}
+        ov, _ = deploy._parse_panel_flags(["--local-only"])
+        assert ov == {"local_force": True}
+        ov, demo = deploy._parse_panel_flags(["--demo"])
+        assert ov == {}
+        assert demo is True
+
+    def test_paths_resolved(self):
+        import deploy  # noqa: PLC0415
+        ov, _ = deploy._parse_panel_flags(["--usage-db", "/tmp/u.db"])
+        assert isinstance(ov["usage_db"], Path)
+        assert str(ov["usage_db"]).endswith("u.db")
+
+    def test_rejects_missing_value(self):
+        import deploy  # noqa: PLC0415
+        err, _ = deploy._parse_panel_flags(["--namespace"])
+        assert "_error" in err
+        assert "namespace" in err["_error"]
+
+    def test_rejects_unknown_flag(self):
+        import deploy  # noqa: PLC0415
+        err, _ = deploy._parse_panel_flags(["--never-seen"])
+        assert "_error" in err
