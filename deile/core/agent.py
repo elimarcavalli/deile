@@ -7,11 +7,7 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import Enum
 from pathlib import Path
-from typing import (TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional,
-                    Tuple)
-
-if TYPE_CHECKING:
-    from .proactive_analyzer import ProactiveIntent
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from .exceptions import DEILEError, ModelError
 
@@ -35,6 +31,7 @@ from ..tools.base import ToolContext, ToolResult, ToolStatus
 from ..tools.registry import ToolRegistry, get_tool_registry
 from ..ui.display_manager import DisplayManager
 from . import validation_gate as _validation_gate
+from .agent_autonomous import AgentAutonomousMixin
 from .agent_streaming import AgentStreamingMixin
 from .context_manager import ContextManager
 from .intent_analyzer import get_intent_analyzer
@@ -328,7 +325,7 @@ class AgentResponse:
         return len(self.tool_results) > 0
 
 
-class DeileAgent(AgentStreamingMixin):
+class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
     """Orquestrador principal do DEILE
     
     Coordena a interação entre parsers, tools, context manager e modelos de IA
@@ -386,10 +383,6 @@ class DeileAgent(AgentStreamingMixin):
 
         # Auto-discover tools, parsers, and commands
         self._auto_discover_components()
-
-        # CORREÇÃO: Registra model providers se não há nenhum
-        if len(self.model_router.providers) == 0:
-            self._register_default_providers()
 
         # Surface UI opcional para tools que abrem renderers próprios
         # (issue #257: ``dispatch_parallel_subagents`` abre um painel Rich
@@ -1091,19 +1084,15 @@ class DeileAgent(AgentStreamingMixin):
                 logger.debug("BudgetGuard non-fatal: %s", _budget_err)
 
             # Observability: log provider selection
-            try:
-                from deile.storage.debug_logger import get_debug_logger
-                await get_debug_logger().log_router_event(
-                    "provider_selected",
-                    {
-                        "provider_id": model_provider.provider_id,
-                        "model_id": getattr(model_provider, "model_name", "unknown"),
-                        "tier": getattr(model_tier, "value", "unknown"),
-                        "session_id": session.session_id,
-                    },
-                )
-            except Exception:
-                pass
+            await _emit_router_event(
+                "provider_selected",
+                {
+                    "provider_id": model_provider.provider_id,
+                    "model_id": getattr(model_provider, "model_name", "unknown"),
+                    "tier": getattr(model_tier, "value", "unknown"),
+                    "session_id": session.session_id,
+                },
+            )
 
             _t0 = time.time()
 
@@ -1178,18 +1167,14 @@ class DeileAgent(AgentStreamingMixin):
                     raise
 
                 # Observability — completion event for Gemini path too
-                try:
-                    from deile.storage.debug_logger import get_debug_logger
-                    await get_debug_logger().log_router_event(
-                        "provider_call_completed",
-                        {
-                            "provider_id": model_provider.provider_id,
-                            "tool_calls": len(tool_results),
-                            "latency_ms": int((time.time() - _t0) * 1000),
-                        },
-                    )
-                except Exception:
-                    pass
+                await _emit_router_event(
+                    "provider_call_completed",
+                    {
+                        "provider_id": model_provider.provider_id,
+                        "tool_calls": len(tool_results),
+                        "latency_ms": int((time.time() - _t0) * 1000),
+                    },
+                )
 
                 logger.info("Chat session completed with %d tool execution(s)", len(tool_results))
                 _record_model_used(session, model_provider)
@@ -1330,18 +1315,14 @@ class DeileAgent(AgentStreamingMixin):
                 latency_ms = int((time.time() - _t0) * 1000)
 
                 # Observability — completion event
-                try:
-                    from deile.storage.debug_logger import get_debug_logger
-                    await get_debug_logger().log_router_event(
-                        "provider_call_completed",
-                        {
-                            "provider_id": model_provider.provider_id,
-                            "tool_calls": len(tool_results_raw),
-                            "latency_ms": latency_ms,
-                        },
-                    )
-                except Exception:
-                    pass
+                await _emit_router_event(
+                    "provider_call_completed",
+                    {
+                        "provider_id": model_provider.provider_id,
+                        "tool_calls": len(tool_results_raw),
+                        "latency_ms": latency_ms,
+                    },
+                )
 
                 tool_results: List[ToolResult] = [
                     tr for tr in tool_results_raw if isinstance(tr, ToolResult)
@@ -1383,19 +1364,15 @@ class DeileAgent(AgentStreamingMixin):
             # context the CLI uses to render Rich panels. _BudgetExceeded is module-level (line 18).
             if isinstance(e, _BudgetExceeded):
                 # Emit observability event then propagate
-                try:
-                    from deile.storage.debug_logger import get_debug_logger
-                    await get_debug_logger().log_router_event(
-                        "budget_exceeded",
-                        {
-                            "session_id": session.session_id,
-                            "provider_id": getattr(e, "provider_id", "unknown"),
-                            "limit_type": getattr(e, "limit_type", "unknown"),
-                            "message": str(e),
-                        },
-                    )
-                except Exception:
-                    pass
+                await _emit_router_event(
+                    "budget_exceeded",
+                    {
+                        "session_id": session.session_id,
+                        "provider_id": getattr(e, "provider_id", "unknown"),
+                        "limit_type": getattr(e, "limit_type", "unknown"),
+                        "message": str(e),
+                    },
+                )
                 raise
             # Structured ModelErrors that the CLI renders as Rich panels must propagate.
             # FORCED_MODEL_NOT_REGISTERED: user-forced model is missing from the registry.
@@ -1742,29 +1719,6 @@ class DeileAgent(AgentStreamingMixin):
         except Exception as e:
             self.logger.warning(f"Auto-discovery failed: {e}")
     
-    def _register_default_providers(self) -> None:
-        """Registra model providers padrão se nenhum estiver configurado"""
-        try:
-            # Registra GeminiProvider se API key disponível
-            import os
-            if os.getenv("GOOGLE_API_KEY"):
-                from .models.gemini_provider import GeminiProvider
-                gemini_provider = GeminiProvider()
-                self.model_router.register_provider(
-                    provider=gemini_provider,
-                    priority=1,
-                    cost_per_token=0.000125  # Custo aproximado
-                )
-                logger.info("Registered GeminiProvider")
-
-            # Adicione outros providers aqui no futuro
-            # if os.getenv("OPENAI_API_KEY"):
-            #     from .models.openai_provider import OpenAIProvider
-            #     ...
-
-        except Exception as e:
-            logger.warning(f"Failed to register default model providers: {e}")
-
     async def _execute_proactive_tools(self, user_input: str, session: AgentSession) -> List[ToolResult]:
         """Wrapper sem streaming — drena o stream e devolve só os ToolResults.
 
@@ -1965,157 +1919,6 @@ class DeileAgent(AgentStreamingMixin):
 
         except Exception as e:
             logger.warning(f"Some persona integration features unavailable: {e}")
-
-    # =============================================
-    # AUTONOMOUS FUNCTIONALITY (PHASE 4)
-    # =============================================
-
-    async def process_autonomous_request(self, user_input: str, session: 'AgentSession') -> Optional[str]:
-        """
-        Process autonomous requests with intelligent file resolution
-
-        This is the main entry point for autonomous functionality that enables
-        DEILE to handle natural language file references like "read the readme"
-        without requiring exact filenames from the user.
-        """
-        if not self.proactive_analyzer:
-            return None
-
-        try:
-            # Analyze if this requires autonomous processing
-            intents = await self.proactive_analyzer.analyze_enhanced(user_input)
-
-            if not intents:
-                return None
-
-            # Filter for autonomous-eligible intents
-            autonomous_intents = [intent for intent in intents if intent.autonomous_eligible]
-
-            if not autonomous_intents:
-                return None
-
-            logger.info(f"Found {len(autonomous_intents)} autonomous intent(s)")
-
-            # Execute the highest priority autonomous intent
-            highest_priority = max(autonomous_intents, key=lambda x: x.priority)
-
-            return await self._execute_autonomous_intent(highest_priority, session)
-
-        except Exception as e:
-            logger.error(f"Error in autonomous processing: {e}")
-            return None
-
-    async def _execute_autonomous_intent(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
-        """Execute an autonomous intent with intelligent error recovery"""
-        try:
-            if intent.action == ProactiveAction.READ_FILE and intent.resolved_file:
-                return await self._autonomous_read_file(intent, session)
-
-            elif intent.action == ProactiveAction.CHAIN_LIST_AND_READ:
-                return await self._autonomous_chain_list_and_read(intent, session)
-
-            elif intent.action == ProactiveAction.SUGGEST_ALTERNATIVES:
-                return await self._autonomous_suggest_alternatives(intent, session)
-
-            else:
-                # Fallback to regular proactive execution
-                tool_name = self._map_proactive_action_to_tool(intent.action)
-                if tool_name:
-                    return await self._execute_proactive_tool(tool_name, intent.target, session)
-
-        except Exception as e:
-            logger.error(f"Error executing autonomous intent {intent.action}: {e}")
-
-            # Try alternative resolution if available
-            if intent.chained_actions:
-                for fallback_intent in intent.chained_actions:
-                    result = await self._execute_autonomous_intent(fallback_intent, session)
-                    if result:
-                        return result
-
-        return None
-
-    async def _autonomous_read_file(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
-        """Autonomously read a file using resolved file match"""
-        if not intent.resolved_file:
-            return None
-
-        try:
-            # Execute read_file tool with resolved path
-            file_path = str(intent.resolved_file.path)
-            result = await self._execute_proactive_tool("read_file", file_path, session)
-
-            if result and intent.resolved_file.confidence < 1.0:
-                # Add context about the resolution for transparency
-                confidence_msg = f"\n\n*Autonomously resolved '{intent.target}' → '{intent.resolved_file.path.name}' (confidence: {intent.resolved_file.confidence:.1%})*"
-                result = result + confidence_msg
-
-            return result
-
-        except Exception as e:
-            logger.error(f"Error in autonomous read: {e}")
-            return None
-
-    async def _autonomous_suggest_alternatives(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
-        """Provide intelligent alternatives when file resolution fails"""
-        try:
-            # Get file resolver instance
-            from .file_resolver import get_file_resolver
-            file_resolver = get_file_resolver(Path.cwd())
-
-            # Get alternative suggestions
-            suggestions = file_resolver.suggest_alternatives(intent.target, max_suggestions=5)
-
-            if not suggestions:
-                return f"❌ No files matching '{intent.target}' found in current directory."
-
-            # Format suggestions nicely
-            suggestion_text = f"🔍 Couldn't find exact match for '{intent.target}'. Here are some alternatives:\n\n"
-
-            for i, match in enumerate(suggestions, 1):
-                confidence = f"({match.confidence:.1%})" if match.confidence < 1.0 else ""
-                suggestion_text += f"{i}. **{match.path.name}** {confidence}\n   └─ {match.reason}\n\n"
-
-            suggestion_text += "💡 *Tip: Try being more specific, or ask me to read one of these files directly.*"
-
-            return suggestion_text
-
-        except Exception as e:
-            logger.error(f"Error generating alternatives: {e}")
-            return None
-
-    async def _autonomous_chain_list_and_read(self, intent: 'ProactiveIntent', session: 'AgentSession') -> Optional[str]:
-        """Chain list files → resolve → read operations autonomously"""
-        try:
-            # First, list files to help with resolution
-            list_result = await self._execute_proactive_tool("list_files", ".", session)
-
-            if not list_result:
-                return None
-
-            # Get file resolver and try to find the best match
-            from .file_resolver import get_file_resolver
-            file_resolver = get_file_resolver(Path.cwd())
-
-            best_match = file_resolver.get_best_match(intent.target, min_confidence=0.7)
-
-            if best_match:
-                # Found a good match, read it
-                read_result = await self._execute_proactive_tool("read_file", str(best_match.path), session)
-
-                if read_result:
-                    # Combine list + read results with resolution context
-                    resolution_context = f"🎯 *Found and read '{best_match.path.name}' (confidence: {best_match.confidence:.1%})*\n\n"
-                    return list_result + "\n\n" + resolution_context + read_result
-
-            else:
-                # No good match, provide alternatives
-                alternatives = await self._autonomous_suggest_alternatives(intent, session)
-                return list_result + "\n\n" + (alternatives or "❌ No matching files found.")
-
-        except Exception as e:
-            logger.error(f"Error in chain operation: {e}")
-            return None
 
     def enable_persona_enhancement(self, persona_manager: PersonaManager = None) -> None:
         """Enable persona enhancement for this agent"""
