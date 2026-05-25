@@ -3065,9 +3065,12 @@ class StageModelsView(View):
                 catalog_tbl.add_column("tier", width=8)
                 catalog_tbl.add_column("$/1M in", justify="right",
                                        style="green")
+                catalog_tbl.add_column("$/1M out", justify="right",
+                                       style="green")
                 for m in self._models():
                     catalog_tbl.add_row(m.slug, m.tier,
-                                        f"${m.input_cost_per_1m:.2f}")
+                                        f"${m.input_cost_per_1m:.2f}",
+                                        f"${m.output_cost_per_1m:.2f}")
                 catalog_panel = Panel(
                     catalog_tbl,
                     title="[bold]CATÁLOGO[/bold]",
