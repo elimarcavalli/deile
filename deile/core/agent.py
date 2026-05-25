@@ -1645,10 +1645,11 @@ class DeileAgent:
         
         return tool_results
     
-    # Legacy non-streaming tool-loop. Still active when the streaming path
-    # bails out or when a caller explicitly requests non-streaming behavior.
-    # Kept in service of providers that do not implement chat_with_tools yet
-    # (the fallback at the bottom hits ``_process_legacy_function_calling``).
+    # Non-streaming tool-loop. Still active when the streaming path bails out
+    # or when a caller explicitly requests non-streaming behavior. All providers
+    # registered via ``bootstrap_providers()`` implement either ``chat_with_tools``
+    # (Anthropic, OpenAI, DeepSeek, Gemini) or the Gemini chat-session pair, so
+    # providers without either path raise ``ModelError`` explicitly.
     async def _process_iterative_function_calling(
         self,
         user_input: str,
@@ -1988,9 +1989,25 @@ class DeileAgent:
                 return content, tool_results
 
             else:
-                # Fallback para providers sem suporte a tools
-                logger.debug("Using legacy function calling approach")
-                return await self._process_legacy_function_calling(user_input, parse_result, session)
+                # Defensive — unreachable by construction: every provider registered via
+                # bootstrap_providers() (Anthropic/OpenAI/DeepSeek/Gemini) inherits
+                # ``BaseModelProvider.chat_with_tools``, so the ``elif hasattr(..., 'chat_with_tools')``
+                # branch above always matches. This ``else`` only fires if a custom provider
+                # explicitly overrides hasattr() to return False, which is not a supported pattern.
+                provider_id = getattr(model_provider, "provider_id", type(model_provider).__name__)
+                model_name = getattr(model_provider, "model_name", None) or getattr(
+                    model_provider, "model_id", "unknown"
+                )
+                logger.error(
+                    "Provider %s (model=%s) implements neither chat_with_tools nor the Gemini "
+                    "chat-session pair — bootstrap_providers() should never register such a provider",
+                    provider_id,
+                    model_name,
+                )
+                raise ModelError(
+                    f"Provider '{provider_id}' (model={model_name}) does not support function calling.",
+                    error_code="PROVIDER_NO_TOOL_SUPPORT",
+                )
 
         except Exception as e:
             # BudgetExceeded and structured ModelErrors must reach the caller — they carry
@@ -2011,8 +2028,15 @@ class DeileAgent:
                 except Exception:
                     pass
                 raise
-            # FORCED_MODEL_NOT_REGISTERED also propagates so process_input can build a structured response
-            if isinstance(e, ModelError) and getattr(e, "error_code", "") == "FORCED_MODEL_NOT_REGISTERED":
+            # Structured ModelErrors that the CLI renders as Rich panels must propagate.
+            # FORCED_MODEL_NOT_REGISTERED: user-forced model is missing from the registry.
+            # PROVIDER_NO_TOOL_SUPPORT: defensive — bootstrap_providers() should never register
+            # a provider lacking both chat_with_tools and the Gemini session pair, but if it does
+            # we want process_input to surface the misconfiguration instead of swallowing it.
+            if isinstance(e, ModelError) and getattr(e, "error_code", "") in (
+                "FORCED_MODEL_NOT_REGISTERED",
+                "PROVIDER_NO_TOOL_SUPPORT",
+            ):
                 raise
             from deile.core.models.errors import ProviderInvocationError
             if isinstance(e, ProviderInvocationError) and e.envelope.is_context_length_exceeded:
@@ -2073,50 +2097,6 @@ class DeileAgent:
         )
 
 
-    async def _process_legacy_function_calling(
-        self,
-        user_input: str,
-        parse_result: Optional[ParseResult],
-        session: AgentSession
-    ) -> tuple[str, List[ToolResult]]:
-        """Fallback para providers sem Chat Session support"""
-        try:
-            # Executa tools se foram identificadas no parsing
-            tool_results = await self._execute_tools(parse_result, session)
-            
-            # Prepara contexto com tool results
-            context = await self.context_manager.build_context(
-                user_input=user_input,
-                parse_result=parse_result,
-                tool_results=tool_results,
-                session=session
-            )
-            
-            # Seleciona modelo apropriado
-            model_provider = await self.model_router.select_provider(
-                context=context,
-                session=session
-            )
-            
-            # Gera resposta simples
-            if isinstance(context, dict):
-                messages = context.get("messages", [])
-                system_instruction = context.get("system_instruction")
-            else:
-                messages = [context] if hasattr(context, 'content') else []
-                system_instruction = "You are DEILE, a helpful AI assistant."
-            
-            response = await model_provider.generate(
-                messages=messages,
-                system_instruction=system_instruction
-            )
-            
-            return response.content, tool_results
-            
-        except Exception as e:
-            self.logger.error(f"Legacy function calling failed: {e}")
-            return f"I encountered an error during processing: {str(e)}", []
-
     async def _should_create_workflow(self, user_input: str, parse_result: Optional[ParseResult]) -> bool:
         """Determina se deve criar workflow automaticamente usando análise de intenção avançada
 
@@ -2126,6 +2106,15 @@ class DeileAgent:
         - Análise semântica com embeddings
         - Sistema de confiança probabilística
         - Cache e métricas de performance
+
+        **Degradação em falha:** se `IntentAnalyzer.analyze()` lançar exceção
+        (embedding offline, cache corrompido, etc.), este método retorna `False`
+        (no-workflow) por design. Esta é a opção #2 documentada na issue #308:
+        `IntentAnalyzer` é a única árvore de decisão para essa pergunta — manter
+        um fallback heurístico paralelo (legacy keyword-matching) violava SSOT e
+        divergia ao longo do tempo. Como workflows são caros (multi-step +
+        aprovação), o default conservador "não criar workflow" é mais seguro
+        que adivinhar. NÃO reintroduza fallback heurístico sem revisitar #308.
         """
         try:
             # Prepara contexto da sessão para análise mais precisa
@@ -2168,11 +2157,12 @@ class DeileAgent:
             return requires_workflow
 
         except Exception as e:
-            logger.error(f"Error in intent analysis for workflow detection: {e}")
-            logger.warning("Falling back to legacy workflow detection logic")
-
-            # Fallback para lógica legacy simplificada em caso de erro
-            return await self._legacy_workflow_detection(user_input, parse_result)
+            logger.error(
+                "Intent analysis failed for workflow detection: %s — defaulting to no-workflow",
+                e,
+                exc_info=True,
+            )
+            return False
 
     async def _prepare_session_context_for_intent_analysis(self) -> Dict[str, Any]:
         """Prepara contexto da sessão para análise de intenção mais precisa"""
@@ -2214,27 +2204,6 @@ class DeileAgent:
 
         # Remove duplicatas mantendo ordem
         return list(dict.fromkeys(topics))
-
-    async def _legacy_workflow_detection(self, user_input: str, parse_result: Optional[ParseResult]) -> bool:
-        """Lógica legacy simplificada para detecção de workflow (fallback)"""
-        try:
-            user_input_lower = user_input.lower()
-
-            # Palavras-chave críticas que sempre indicam workflow
-            critical_keywords = ['implementar', 'implement', 'criar sistema', 'create system', 'desenvolver']
-            has_critical_keyword = any(keyword in user_input_lower for keyword in critical_keywords)
-
-            # Múltiplas tools sempre indicam workflow
-            multiple_tools = parse_result and len(parse_result.tool_requests or []) > 1
-
-            # Complexidade básica
-            is_complex = len(user_input.split()) > 15
-
-            return has_critical_keyword or multiple_tools or is_complex
-
-        except Exception as e:
-            logger.error(f"Error in legacy workflow detection: {e}")
-            return False  # Default conservador
 
     async def _process_with_workflow(
         self,
