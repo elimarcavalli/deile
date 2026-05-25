@@ -1,11 +1,18 @@
-"""Standup Command — narrativa do dia (commits + PRs + issues)."""
+"""Standup Command — narrativa do dia (commits + PRs + issues).
 
-import asyncio
-import re
-import subprocess
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+Responsabilidade única deste módulo: dispatch + render Rich + LLM call.
+Parsing de CLI e coleta de git/gh foram extraídos para
+``_standup_collectors`` (Pilar 03 §1 — coleta async; Pilar 03 §2 —
+PRs/issues passam pelo :class:`GitHubClient`, não invocam ``gh``
+diretamente; Pilar 03 §8 — single responsibility por unidade).
+
+Re-exportamos os símbolos coletores no namespace deste módulo para
+preservar a superfície pública que ``test_standup_command.py`` importa
+diretamente — assim a refatoração é puramente interna.
+"""
+
+import shutil  # noqa: F401 — re-exportado para `monkeypatch.setattr(sc.shutil, ...)`
+import subprocess  # noqa: F401 — re-exportado para `monkeypatch.setattr(sc.subprocess, ...)`
 
 from rich.panel import Panel
 from rich.text import Text
@@ -13,182 +20,31 @@ from rich.text import Text
 from ...core.exceptions import CommandError
 from ...core.models.base import ModelMessage
 from ...core.models.router import get_model_router
-from ...orchestration.pipeline.github_client import GitHubClient
 from ..base import CommandContext, CommandResult, DirectCommand
-from ._git_helpers import ensure_gh_authenticated, ensure_git_repo
 from ._shared import emit_audit_event, wrap_command_errors
+from ._standup_collectors import (StandupData, _resolve_repo_from_git,
+                                  build_prompt, collect_commits,
+                                  collect_issues, collect_prs,
+                                  collect_standup_data,
+                                  ensure_gh_authenticated, ensure_git_repo,
+                                  parse_args, parse_since)
 
-
-@dataclass
-class StandupData:
-    since_spec: str
-    since_iso: str
-    commits: List[Dict[str, str]] = field(default_factory=list)
-    prs: List[Dict[str, Any]] = field(default_factory=list)
-    issues: List[Dict[str, Any]] = field(default_factory=list)
-
-
-def parse_since(duration: str) -> timedelta:
-    if not duration:
-        raise CommandError("Duração vazia.")
-    match = re.match(r"^\s*(\d+)([hdwHDW])\s*$", duration)
-    if not match:
-        raise CommandError(f"Duração inválida: {duration}. Use formato como 24h, 3d, 1w.")
-    val, unit = int(match.group(1)), match.group(2).lower()
-    if val == 0:
-        raise CommandError("Duração não pode ser zero.")
-    if unit == "h":
-        return timedelta(hours=val)
-    elif unit == "d":
-        return timedelta(days=val)
-    elif unit == "w":
-        return timedelta(weeks=val)
-    raise CommandError(f"Unidade inválida: {unit}")
-
-
-def parse_args(args: str) -> str:
-    args = args.strip()
-    if not args:
-        return "24h"
-    if args.startswith("--since="):
-        return args.split("=", 1)[1].strip()
-    if args.startswith("--since "):
-        return args.split(" ", 1)[1].strip()
-    if args.startswith("--"):
-        raise CommandError(f"Flag desconhecida: {args}")
-    return "24h"
-
-
-# Reconhece tanto SSH (``git@github.com:owner/name(.git)?``) quanto HTTPS
-# (``https://github.com/owner/name(.git)?``). Em ambos os casos captura o
-# par ``owner/name`` — único shape aceito por :class:`GitHubClient`.
-_REMOTE_RE = re.compile(
-    r"(?:git@github\.com:|https?://github\.com/)"
-    r"(?P<repo>[A-Za-z0-9._-]+/[A-Za-z0-9._-]+?)"
-    r"(?:\.git)?/?$"
-)
-
-
-def _resolve_repo_from_git(cwd: Optional[str] = None) -> str:
-    """Inferir ``owner/name`` a partir de ``git remote get-url origin``.
-
-    O ``/standup`` precisa saber qual repo GitHub consultar via ``gh``; ao
-    invés de exigir configuração explícita, derivamos do ``remote origin``
-    do repositório git atual. Aceita os dois formatos canônicos (HTTPS e
-    SSH). Levanta :class:`CommandError` em PT-BR quando o remote não
-    existe ou não casa com um repo do GitHub — o caller decide se isso
-    interrompe a execução.
-    """
-    try:
-        res = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-        raise CommandError(
-            "não consegui detectar o repo GitHub a partir do remote origin"
-        ) from exc
-
-    if res.returncode != 0:
-        raise CommandError(
-            "não consegui detectar o repo GitHub a partir do remote origin"
-        )
-
-    url = (res.stdout or "").strip()
-    match = _REMOTE_RE.search(url)
-    if not match:
-        raise CommandError(
-            "não consegui detectar o repo GitHub a partir do remote origin"
-        )
-    return match.group("repo")
-
-
-def collect_commits(since_iso: str) -> List[Dict[str, str]]:
-    res = subprocess.run(
-        ["git", "log", f"--since={since_iso}", "--format=%h\x1f%an\x1f%s"],
-        capture_output=True,
-        text=True,
-    )
-    if res.returncode != 0:
-        return []
-    commits = []
-    for line in res.stdout.strip().split("\n"):
-        if not line:
-            continue
-        parts = line.split("\x1f")
-        if len(parts) >= 3:
-            commits.append({"hash": parts[0], "author": parts[1], "title": parts[2]})
-    return commits
-
-
-async def collect_prs(client: GitHubClient, since_iso: str) -> List[Dict[str, Any]]:
-    """Lista PRs atualizados desde ``since_iso`` via :class:`GitHubClient`.
-
-    A integração com ``gh`` (subprocess, JSON, normalização de autor) vive
-    no adapter da camada de pipeline — o comando só consome a forma já
-    normalizada. Falha do ``gh`` é logada pelo adapter e devolvida como
-    lista vazia (preservando o comportamento original do command).
-    """
-    return await client.list_prs_updated_since(since_iso)
-
-
-async def collect_issues(client: GitHubClient, since_iso: str) -> List[Dict[str, Any]]:
-    """Lista issues atualizadas desde ``since_iso`` via :class:`GitHubClient`."""
-    return await client.list_issues_updated_since(since_iso)
-
-
-async def collect_standup_data(since_spec: str) -> StandupData:
-    ensure_git_repo()
-    ensure_gh_authenticated()
-
-    delta = parse_since(since_spec)
-    since_date = datetime.now(timezone.utc) - delta
-    since_iso = since_date.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    repo = _resolve_repo_from_git()
-    client = GitHubClient(repo)
-
-    # ``collect_commits`` ainda usa ``git`` síncrono — mantém em thread para
-    # não bloquear o loop; os métodos do GitHubClient já são nativamente async.
-    commits = await asyncio.to_thread(collect_commits, since_iso)
-    prs = await collect_prs(client, since_iso)
-    issues = await collect_issues(client, since_iso)
-
-    return StandupData(
-        since_spec=since_spec,
-        since_iso=since_iso,
-        commits=commits,
-        prs=prs,
-        issues=issues,
-    )
-
-
-def build_prompt(data: StandupData) -> str:
-    prompt = f"Gere um resumo de standup em PT-BR para as últimas {data.since_spec} (desde {data.since_iso}).\n"
-    prompt += "O resumo deve ter no máximo 8 linhas no corpo principal, seguido de bullets de Destaques.\n\n"
-
-    prompt += f"Commits ({len(data.commits)}):\n"
-    if not data.commits:
-        prompt += "- (nenhum)\n"
-    for c in data.commits:
-        prompt += f"- {c['hash']} por {c['author']}: {c['title']}\n"
-
-    prompt += f"\nPull Requests ({len(data.prs)}):\n"
-    if not data.prs:
-        prompt += "- (nenhuma)\n"
-    for pr in data.prs:
-        prompt += f"- #{pr['number']} [{pr['state']}] por {pr['author']}: {pr['title']}\n"
-
-    prompt += f"\nIssues ({len(data.issues)}):\n"
-    if not data.issues:
-        prompt += "- (nenhuma)\n"
-    for issue in data.issues:
-        prompt += f"- #{issue['number']} [{issue['state']}] por {issue['author']}: {issue['title']}\n"
-
-    return prompt
+__all__ = [
+    "StandupCommand",
+    "StandupData",
+    "_resolve_repo_from_git",
+    "build_prompt",
+    "collect_commits",
+    "collect_issues",
+    "collect_prs",
+    "collect_standup_data",
+    "ensure_gh_authenticated",
+    "ensure_git_repo",
+    "generate_narrative",
+    "get_model_router",
+    "parse_args",
+    "parse_since",
+]
 
 
 async def generate_narrative(prompt: str) -> str:
@@ -222,8 +78,9 @@ class StandupCommand(DirectCommand):
         self._emit_audit_event(context)
 
         since_spec = parse_args(context.args)
-        # collect_standup_data é async: chama GitHubClient diretamente
-        # e isola o git (síncrono) em asyncio.to_thread internamente.
+        # `collect_standup_data` é async: PRs/issues passam pelo GitHubClient
+        # (que já é assíncrono) e `git log` roda em `asyncio.to_thread` dentro
+        # do coletor — o event loop não bloqueia em nenhum trecho.
         data = await collect_standup_data(since_spec)
         prompt = build_prompt(data)
 

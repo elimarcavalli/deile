@@ -535,7 +535,20 @@ if token_file.exists():
     token = token_file.read_text().strip()
     creds = home / ".git-credentials"
     fd = os.open(str(creds), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+    # ``os.fdopen`` can raise (invalid mode, OOM building the wrapper)
+    # before the ``with`` block takes ownership of ``fd``. Without this
+    # guard, a failing fdopen would leak ``fd`` — an open FD to a
+    # credentials file — for the process's lifetime. Same defensive
+    # pattern already used in wrapper.py:205–213.
+    try:
+        wrapper = os.fdopen(fd, "w", encoding="utf-8")
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    with wrapper as fh:
         fh.write("https://oauth2:" + token + "@github.com\n")
     subprocess.run(["git", "config", "--global", "credential.helper", "store"],
                    check=False)

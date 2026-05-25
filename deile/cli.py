@@ -28,17 +28,29 @@ from typing import Optional
 from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
                                        SWITCH_SESSION_KEY)
 
-from .cli_install import (  # noqa: F401 — re-exports kept for backwards compatibility (callers & tests still import from deile.cli)
-    _create_venv_with_deile, _ensure_scripts_dir_on_path, _link_global_command,
-    _pip_run, _prompt_install_mode, _run_self_install, _run_self_install_async,
-    _user_scripts_dir, _wrapper_target_dir)
+# Re-export the self-install layer (moved to deile/cli_install.py for SRP) so
+# the public surface used by tests and external callers stays stable:
+# `from deile.cli import _user_scripts_dir`, `patch("deile.cli._run_self_install")`,
+# etc. The actual logic now lives in cli_install.py.
+from .cli_install import \
+    _create_venv_with_deile  # noqa: F401,E402  (re-export)
+from .cli_install import \
+    _ensure_scripts_dir_on_path  # noqa: F401,E402  (re-export)
+from .cli_install import _link_global_command  # noqa: F401,E402  (re-export)
+from .cli_install import _pip_run  # noqa: F401,E402  (re-export)
+from .cli_install import _prompt_install_mode  # noqa: F401,E402  (re-export)
+from .cli_install import _run_self_install  # noqa: F401,E402  (re-export)
+from .cli_install import \
+    _run_self_install_async  # noqa: F401,E402  (re-export)
+from .cli_install import _user_scripts_dir  # noqa: F401,E402  (re-export)
+from .cli_install import _wrapper_target_dir  # noqa: F401,E402  (re-export)
 
 # ── package root (where deile/ lives) ───────────────────────────────────────
 _PACKAGE_ROOT = Path(__file__).parent.resolve()
 _PROJECT_ROOT = _PACKAGE_ROOT.parent  # repo root when editable, same when installed
 _ENV_KEY_NAMES = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY")
 
-# ── TTY color helpers (used by env-recovery wizard) ──────────────────────────
+# ── install helpers — module-level constants ─────────────────────────────────
 _TTY = sys.stdout.isatty()
 _RESET = "\033[0m" if _TTY else ""
 _BOLD = "\033[1m" if _TTY else ""
@@ -321,6 +333,15 @@ class _DeileCLI:
                     working_directory=self.settings.working_directory,
                 )
 
+                # Issue #257 — surface o console da CLI ao agente para que
+                # tools que abrem renderers próprios (dispatch_parallel_
+                # subagents) possam usá-lo. No-op em ambiente sem UI Rich.
+                try:
+                    if hasattr(self.agent, "set_ui_console") and hasattr(self.ui, "console"):
+                        self.agent.set_ui_console(self.ui.console)
+                except Exception:
+                    pass
+
             self.ui.setup_hybrid_completion(
                 working_directory=str(self.settings.working_directory)
             )
@@ -337,12 +358,23 @@ class _DeileCLI:
     _IGNORE_DIRS = frozenset({"__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build", ".deile"})
 
     def _get_project_files(self) -> list[str]:
-        wd = Path(self.settings.working_directory)
-        files = [
-            str(path.relative_to(wd)).replace("\\", "/")
-            for path in wd.rglob("*")
-            if path.is_file() and not any(d in path.parts for d in self._IGNORE_DIRS)
-        ]
+        # ``resolve()`` normalizes ``..`` and symlinks so ``relative_to(wd)``
+        # below cannot mismatch lexically against ``wd.rglob()`` paths
+        # (which the OS reports as fully-resolved). Without it, an unresolved
+        # working_directory would crash the listcomp with ValueError and
+        # silently break tab-completion.
+        wd = Path(self.settings.working_directory).resolve()
+        files = []
+        for path in wd.rglob("*"):
+            if not path.is_file():
+                continue
+            if any(d in path.parts for d in self._IGNORE_DIRS):
+                continue
+            try:
+                files.append(str(path.relative_to(wd)).replace("\\", "/"))
+            except ValueError:
+                # Defensive: filesystem-level symlinks may still slip through.
+                continue
         return sorted(files)[:500]
 
     # Sentinel returned by get_user_input() when the user presses ESC ESC on
@@ -420,10 +452,25 @@ class _DeileCLI:
             await self.ui.display_streaming_turn(event_stream)
             return False
 
+        # M13 (PR #295 review): registra o termios *cooked* ANTES de
+        # `setcbreak` rodar dentro de `_watch`. Sem isto, quando o painel
+        # de sub-DEILEs invoca `claim_stdin_for_panel` o cbreak já está
+        # ativo e o snapshot atexit restauraria cbreak no shutdown.
+        from .ui._stdin_owner import panel_owns_stdin, prime_termios_snapshot
+        try:
+            prime_termios_snapshot(original_termios=saved)
+        except Exception:
+            pass  # best-effort — atexit fallback still protects
+
         def _watch() -> None:
             try:
                 tty.setcbreak(sys.stdin.fileno())
                 while not esc_event.is_set():
+                    if panel_owns_stdin():
+                        # Outro consumidor (painel de sub-DEILEs) tem prioridade.
+                        # Não fazemos `read(1)` — os bytes vão pro painel.
+                        time.sleep(0.1)
+                        continue
                     r, _, _ = _select.select([sys.stdin], [], [], 0.1)
                     if not r:
                         continue

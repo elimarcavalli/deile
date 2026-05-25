@@ -1,16 +1,21 @@
-"""Streaming methods extracted from DeileAgent.
+"""Streaming-path methods extracted from :class:`DeileAgent`.
 
-This mixin owns the streaming-path methods (``process_input_stream``,
+DeileAgent grew with multiple responsibilities (lifecycle, parsing, tool
+orchestration, streaming, autonomy, persona integration, bot adapters).
+The streaming-pipeline methods (``process_input_stream``,
 ``_stream_chat_with_tools``, ``process_input_structured``,
-``process_input_stream_chunks``) so ``deile/core/agent.py`` stays focused on
-lifecycle, orchestration and the non-streaming ``process_input`` path. The
-mixin relies on attributes/methods provided by ``DeileAgent`` (``self.X``);
-it is not usable standalone.
+``process_input_stream_chunks``) live in this mixin so ``agent.py`` stays
+focused on orchestration. DeileAgent inherits the mixin — call sites
+remain unchanged because attribute lookup follows MRO.
+
+The mixin accesses agent state via ``self.``; module-level helpers
+(``AgentStatus``, ``_BudgetExceeded``, ``_record_model_used``,
+``_select_configured_model_provider``) live in ``deile.core.agent`` and are
+imported lazily inside each method to avoid a circular import at module load.
 """
 
 from __future__ import annotations
 
-import asyncio
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional
@@ -27,15 +32,7 @@ if TYPE_CHECKING:
 
 
 class AgentStreamingMixin:
-    """Streaming-pipeline methods of :class:`DeileAgent`.
-
-    Methods here read state from ``self`` exactly as they did when they lived
-    on the concrete class — instance attributes (``self.tool_registry``,
-    ``self.context_manager``, ``self._status``, ...) and sibling methods
-    (``self._parse_input``, ``self._apply_validation_gate``, ...) are
-    resolved via the MRO when ``DeileAgent(AgentStreamingMixin)`` is
-    instantiated.
-    """
+    """Streaming-pipeline methods for :class:`DeileAgent`."""
 
     async def process_input_stream(
         self,
@@ -54,14 +51,10 @@ class AgentStreamingMixin:
         ``ToolLoopExecutor`` forwards every text/tool event and emits
         TOOL_RESULT after each tool invocation.
         """
-        # Local imports keep agent.py import-time light and avoid pulling
-        # stream_events into modules that only need the non-streaming path.
         from deile.core.models.stream_events import (ModelUsageSnapshot,
                                                      StreamEventType,
                                                      UnifiedStreamEvent)
 
-        # Imported lazily to avoid a circular import (agent_streaming is
-        # imported by agent.py, and AgentStatus lives in agent.py).
         from .agent import AgentStatus, _BudgetExceeded
 
         start_time = time.time()
@@ -374,11 +367,12 @@ class AgentStreamingMixin:
             )
             return
 
+
     async def _stream_chat_with_tools(
         self,
         user_input: str,
         parse_result: Optional[ParseResult],
-        session: "AgentSession",
+        session: AgentSession,
     ) -> AsyncIterator["UnifiedStreamEvent"]:
         """Stream the chat-with-tools loop for a single provider.
 
@@ -414,6 +408,20 @@ class AgentStreamingMixin:
             tool_results=[],
             session=session,
         )
+
+        # Surface auto-triggered skills so the user sees which project-specific
+        # rules are contributing to the answer. ContextManager._build_skills_block
+        # stashes the active skill names on session.context_data['_active_skills']
+        # — auto-injection would otherwise be invisible (the body lands in the
+        # system prompt with no UI signal).
+        _active_skills = session.context_data.get("_active_skills") if session else None
+        if _active_skills:
+            yield UnifiedStreamEvent(
+                type=StreamEventType.STAGE,
+                stage=get_stage_message(
+                    "skills_active", "initial", names=", ".join(_active_skills)
+                ),
+            )
 
         # Tier classification (best-effort)
         yield UnifiedStreamEvent(
@@ -521,7 +529,12 @@ class AgentStreamingMixin:
                     data={"tool_name": name, **kw},
                     priority=EventPriority.LOW,
                 )
-                asyncio.create_task(bus.publish(event))
+                # Await directly instead of create_task to avoid the weak-ref
+                # GC trap (loop only holds weakrefs to Tasks → fire-and-forget
+                # can vanish mid-flight under GC pressure during long tool
+                # loops). ``bus.publish`` only enqueues — it's effectively
+                # constant-time and won't block the tool loop measurably.
+                await bus.publish(event)
             except Exception:
                 pass
 
@@ -547,6 +560,7 @@ class AgentStreamingMixin:
             session_data=session.context_data,
         ):
             yield event
+
 
     async def process_input_structured(
         self,
@@ -593,6 +607,7 @@ class AgentStreamingMixin:
             model_used=model_used,
             status=getattr(response.status, "value", "idle"),
         )
+
 
     async def process_input_stream_chunks(
         self,
@@ -681,3 +696,4 @@ class AgentStreamingMixin:
                 "model_used": last_model,
             },
         )
+

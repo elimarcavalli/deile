@@ -1,16 +1,16 @@
-"""Self-install helpers for the ``deile`` console script.
+"""DEILE self-install logic — extracted from `deile/cli.py` (SRP).
 
-Extracted from ``deile/cli.py`` to keep the CLI entry point focused on
-``main()`` / ``_DeileCLI`` orchestration. The functions here implement the
-``deile --install`` flow: pick a target directory, create an isolated venv,
-install DEILE + its frozen requirements with ``pip``, drop a thin shim onto
-``PATH`` (POSIX symlink or Windows ``.cmd``), and optionally append a
-``PATH`` export to the user's shell rc file.
+This module owns the install path for the `deile` console command:
+  * venv creation (`_create_venv_with_deile`)
+  * pip orchestration (`_pip_run`)
+  * wrapper shim creation (`_link_global_command`)
+  * PATH auto-configuration (`_ensure_scripts_dir_on_path`)
+  * scripts-dir discovery (`_user_scripts_dir`, `_wrapper_target_dir`)
+  * interactive mode selection (`_prompt_install_mode`)
+  * top-level driver (`_run_self_install_async` / `_run_self_install`)
 
-All functions take explicit arguments so they remain unit-testable without
-spinning up the rest of the CLI. The public synchronous entry point is
-``_run_self_install`` (kept as private-prefixed name because ``cli.py`` is
-the only intended caller — re-imports it as a local symbol).
+`deile/cli.py` re-exports the public symbols so import paths and tests that
+reference `deile.cli.<fn>` keep working.
 """
 
 from __future__ import annotations
@@ -26,14 +26,15 @@ import venv as _venv  # noqa: N812 — local alias for testability (patched as d
 from pathlib import Path
 from typing import Optional
 
-# ── package root (where deile/ lives) ───────────────────────────────────────
-# Locally derived so this module does not depend on ``cli.py`` (avoids an
-# import cycle: ``cli`` imports ``cli_install`` at module load).
+# ── package roots (mirror cli.py — keep in sync) ────────────────────────────
 _PACKAGE_ROOT = Path(__file__).parent.resolve()
 _PROJECT_ROOT = _PACKAGE_ROOT.parent  # repo root when editable, same when installed
 
 # ── install helpers — module-level constants ─────────────────────────────────
 _KNOWN_SHELLS = frozenset({"zsh", "bash", "fish"})
+
+
+# ── install helpers ──────────────────────────────────────────────────────────
 
 
 def _user_scripts_dir() -> Path:

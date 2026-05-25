@@ -84,11 +84,13 @@ class LocCommand(DirectCommand):
         return count
 
     def _collect_stats(self, cwd: str) -> dict:
-        """Coleta estatísticas do código-base (I/O síncrono).
+        """Coleta estatísticas do código-base — I/O bloqueante isolado.
 
-        Bloqueia em ``git ls-files``, ``os.path.isfile``, ``open()`` em todos
-        os arquivos versionados e ``os.walk`` na pasta de testes. Deve ser
-        invocado via ``asyncio.to_thread`` a partir de ``execute()``.
+        Executa ``git ls-files``, abre cada arquivo versionado para contar
+        linhas e varre ``deile/tests`` com ``os.walk`` + ``open`` para contar
+        funções de teste. Todo o trabalho é síncrono e bloqueante; o
+        ``execute()`` despacha esta função via ``asyncio.to_thread`` para
+        não travar o event loop (pilar 03 §1).
         """
         files = self._get_git_files(cwd)
 
@@ -117,7 +119,7 @@ class LocCommand(DirectCommand):
         total_tests = self._count_tests(cwd)
 
         return {
-            "lang_stats": dict(lang_stats),
+            "lang_stats": lang_stats,
             "file_sizes": file_sizes,
             "total_files": total_files,
             "total_lines": total_lines,
@@ -128,9 +130,11 @@ class LocCommand(DirectCommand):
         """Renderiza estatísticas do código-base."""
         cwd = context.working_directory or os.getcwd()
 
-        # I/O síncrono (subprocess/disk) — proteger o event loop
+        # Toda coleta (git ls-files + open por arquivo + os.walk +
+        # open por arquivo de teste) é I/O bloqueante; off-load para
+        # uma worker thread mantém o event loop responsivo
+        # (pilar 03 §1, alinhado com /todo).
         stats = await asyncio.to_thread(self._collect_stats, cwd)
-
         lang_stats = stats["lang_stats"]
         file_sizes = stats["file_sizes"]
         total_files = stats["total_files"]
@@ -149,8 +153,8 @@ class LocCommand(DirectCommand):
         table.add_column("Arquivos", justify="right", style="green")
         table.add_column("Linhas", justify="right", style="yellow")
         
-        for lang, stats in sorted_langs:
-            table.add_row(lang, str(stats["files"]), str(stats["lines"]))
+        for lang, lang_row in sorted_langs:
+            table.add_row(lang, str(lang_row["files"]), str(lang_row["lines"]))
             
         # --- Top 5 Arquivos ---
         top_files_text = Text()

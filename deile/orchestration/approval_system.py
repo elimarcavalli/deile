@@ -9,7 +9,6 @@ Author: DEILE
 """
 
 import asyncio
-import json
 import logging
 import time
 import uuid
@@ -17,6 +16,8 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
+
+from ..storage.aio_fileio import read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -144,13 +145,17 @@ class ApprovalRule:
         
         return True
 
+
 class ApprovalSystem:
     """Approval workflow management system"""
     
     def __init__(self, approvals_dir: Path = None):
         """Initialize approval system"""
         self.approvals_dir = approvals_dir or Path("APPROVALS")
-        self.approvals_dir.mkdir(exist_ok=True)
+        # ``parents=True`` so a caller-supplied multi-level path doesn't raise
+        # FileNotFoundError; default ``Path("APPROVALS")`` is a single segment
+        # under cwd so the new flag is also harmless there.
+        self.approvals_dir.mkdir(parents=True, exist_ok=True)
         
         # Active requests
         self.pending_requests: Dict[str, ApprovalRequest] = {}
@@ -427,9 +432,8 @@ class ApprovalSystem:
             for request_file in self.approvals_dir.glob("*.json"):
                 if len(requests) >= limit:
                     break
-                
-                with open(request_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
+
+                data = await read_json(request_file)
                 
                 # Skip if already in pending
                 if data.get('request_id') in self.pending_requests:
@@ -515,31 +519,24 @@ class ApprovalSystem:
             future.cancel()
     
     async def _save_request(self, request: ApprovalRequest):
-        """Save request to storage"""
-        
+        """Save request to storage. I/O is offloaded by ``write_json``."""
         request_file = self.approvals_dir / f"{request.request_id}.json"
-        
+
         try:
-            with open(request_file, 'w', encoding='utf-8') as f:
-                json.dump(request.to_dict(), f, indent=2, ensure_ascii=False)
-                
+            await write_json(request_file, request.to_dict())
         except Exception as e:
             logger.error(f"Failed to save approval request {request.request_id}: {e}")
             raise
-    
+
     async def _load_request(self, request_id: str) -> Optional[ApprovalRequest]:
-        """Load request from storage"""
-        
+        """Load request from storage (offloaded to a worker thread)."""
         request_file = self.approvals_dir / f"{request_id}.json"
         if not request_file.exists():
             return None
-        
+
         try:
-            with open(request_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
+            data = await read_json(request_file)
             return ApprovalRequest.from_dict(data)
-            
         except Exception as e:
             logger.error(f"Failed to load approval request {request_id}: {e}")
             return None

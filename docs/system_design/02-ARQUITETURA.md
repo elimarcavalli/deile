@@ -59,7 +59,7 @@
 | `personas/` | `BasePersona`, `BaseAutonomousPersona`, `PersonaManager`, `PersonaLoader`, `instruction_loader`, `builder`, `context`, `library/` (YAMLs), `instructions/` (MDs), `memory/integration.py` |
 | `config/` | `Settings` (singleton via `get_settings()`), `ConfigManager`, YAMLs (`api_config`, `commands`, `intent_patterns`, `model_providers`, `persona_config`, `system_config`), `profiles/` |
 | `events/` | `EventBus`, `Event`, `EventType`, `EventPriority`; handlers de eventos |
-| `storage/` | `logs`, `debug_logger`, `embeddings`, `usage_repository` (com `BudgetGuard` e `BudgetExceeded`) |
+| `storage/` | `logs`, `debug_logger`, `embeddings`, `usage_repository` (com `BudgetGuard` e `BudgetExceeded`), `aio_fileio` (helpers `read_json`/`write_json`/`write_text` que envolvem `asyncio.to_thread` — usados por `orchestration/` para não bloquear o event loop) |
 | `infrastructure/` | Adapters externos (ex.: `google_file_api`), monitoring |
 | `plugins/` | `plugin_manager`, `dependency_resolver`, `hot_loader` (via `watchdog`), `marketplace`, `sandbox` (`PluginSandbox` — skeleton, não isola; ver issue #54) |
 | `evolution/` | `self_analyzer`, `code_modifier`, `improvement_loop` (gated atrás de `experimental=True`), `benchmarker`, `rollback_manager` |

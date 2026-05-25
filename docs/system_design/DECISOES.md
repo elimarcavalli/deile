@@ -414,6 +414,51 @@
 
 ---
 
+## Decisão #34 — Sub-DEILEs paralelos em sessão CLI (decomposição autônoma)
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 |
+| Pilar dono | 02-Arquitetura, 04-Componentes, 05-Fluxo |
+| Decisão | Durante uma sessão interativa CLI, o DEILE pode decompor autonomamente uma solicitação em sub-tarefas independentes e substanciais e disparar **N sub-DEILEs em paralelo** (cada um com sessão limpa). A LLM chama a tool **`dispatch_parallel_subagents`** com uma lista de 2-5 `{description, prompt, persona?, model?}`. A tool delega ao **`SubAgentOrchestrator`** (asyncio.gather + return_exceptions=True, padrão do `pipeline/stages.py:1050`), que escolhe o runner por config (`subagent_runner`): **`LocalSubAgentRunner`** (default — in-process via `DeileAgent.process_input_stream` com `session_id` próprio por sub-tarefa) ou **`WorkerSubAgentRunner`** (delega ao `deile-worker` via `DeileWorkerClient.dispatch(wait=False)` + polling de `GET /v1/progress/{task_id}`, novo endpoint mid-flight). A UX é um painel Rich Live multipanel (~5 linhas/frente, refresh 6Hz) com **foco básico** (tecla numérica abre a ficha com `description`/`prompt`/`persona`/`model`/`task_id` + tail do stream; ESC volta). Falha de uma frente não cancela siblings. A consolidação final é responsabilidade da LLM principal (recebe o resumo agregado pelo tool). |
+| Evidência | `deile/orchestration/subagents/{__init__,orchestrator,runner,events}.py`; `deile/tools/dispatch_parallel_subagents.py`; `deile/ui/subagent_panel.py`; `deile/infrastructure/deile_worker_client.py` (`get_progress`/`get_result`); `infra/k8s/worker_server.py` (endpoint `GET /v1/progress/{task_id}` + progresso mid-flight no `_TASKS[id]`); `deile/personas/instructions/developer.md` (heurística "quando paralelizar"); testes em `deile/tests/orchestration/test_subagent_*`, `deile/tests/tools/test_dispatch_parallel_subagents.py`, `deile/tests/ui/test_subagent_panel.py`, `deile/tests/infra/test_worker_progress_endpoint.py` — issue #257 |
+| Motivação | (1) Tarefas decomponíveis (refator multi-módulo, geração de testes multi-arquivo, doc + impl separáveis) caem do tempo sequencial ao tempo da frente mais lenta; (2) infra de workers (`dispatch_deile_task` + `deile-worker`) subutilizada por depender de Discord — agora também serve a sessão CLI; (3) experiência: o usuário **vê** o DEILE em múltiplas frentes (bash/tool atual por painel, contador), o que dá percepção de potência e confiança; (4) runner pluggable atende dois ambientes (laptop local — runner local sem infra; pod no cluster — runner worker reusando o load-balancer multi-réplica). |
+| Fora do escopo | Decomposição recursiva (sub-DEILE que dispara outros — limitado a 1 nível); garantias transacionais entre sub-tarefas (workspace compartilhado no runner local — conflito de escrita é risco a tratar, não resolvido aqui); SSE real-time puro (polling de snapshot é aceitável conforme proposta de viabilidade da issue); paralelismo entre requisições de usuários distintos. |
+
+---
+
+## Decisão #35 — Sistema unificado de Skills como quinto componente plugável
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 |
+| Pilar dono | 04-Componentes, 05-Fluxo, 12-Padrões de código |
+| Decisão | **Skill = arquivo Markdown com frontmatter YAML**, sem código Python. Vive em um de 5 diretórios escaneados em ordem de prioridade crescente (bundled em `deile/skills/library/` → `~/.deile/skills/` → `~/.claude/commands/` UPPERCASE → `<cwd>/.deile/skills/` → `<cwd>/.claude/commands/` UPPERCASE + extras de `SettingsManager`). Três caminhos de ativação simultâneos: (a) **auto-injeção** no system prompt do turno quando uma `trigger` casa (`file_globs`, `code_block_langs`, `keywords`, `file_content_patterns`), via `SkillRouter.select_skills` chamado por `ContextManager._build_skills_block`; (b) **function-call tools** `invoke_skill(name)` e `list_skills` em `deile/tools/skill_tools.py` (auto-descobertos via `DEFAULT_TOOL_PACKAGES`) que o LLM pode chamar quando vê no catálogo (`SkillRouter.render_catalog`) uma skill aplicável ao tópico; (c) **slash command** `/<name>` para invocação explícita do usuário, via shim de backward-compat `deile/commands/skill_loader.py`. `SkillRegistry` é singleton thread-safe (`RLock` + double-checked locking; `replace_all` para swap atômico durante hot-reload). `SkillsWatcher` (`watchdog.Observer`) refaz o registry em 0,5 s a cada `.md` event, serializado por `_RELOAD_LOCK`. Path-traversal containment em `file_content_patterns` via `router._resolve_within` impede que skill maliciosa probe `/etc/passwd` por crafted `file_references`. |
+| Evidência | `deile/skills/` (10 módulos: base, loader, discovery, registry, router, watcher, bootstrap, slash_command_bridge, config, language_detector); `deile/skills/library/{languages/python,languages/typescript,practices/tdd}.md` (skills bundled); `deile/tools/skill_tools.py` (InvokeSkillTool + ListSkillsTool); `deile/commands/skill_loader.py` (shim legacy); `deile/core/agent.py` (boot do `SkillsWatcher` em `_auto_discover_components` + `stop()` em `shutdown`); `deile/core/context_manager.py:_build_skills_block` (injeção no system prompt). Testes: `deile/tests/skills/` (209 testes) + `deile/tests/test_skill_loader.py` + `deile/tests/commands/test_skills_command.py`. PR #296. |
+| Motivação | (1) Permitir que o usuário/projeto adicione expertise específica do projeto **sem mudar código Python** (paridade com Claude Code skills/`.claude/commands/`); (2) unificar o que antes eram dois sistemas distintos (slash commands legados do PR #41 e skills "especialistas" novas) num único registry — evita duplicação de loader, override e parsing; (3) três caminhos de ativação cobrem três casos de uso reais: auto-injeção para skills que cobrem padrões frequentes do projeto, `invoke_skill` para o LLM puxar sob demanda quando vê o catálogo, slash command para invocação explícita pelo usuário; (4) o catálogo no system prompt (com diretiva imperativa + exemplo concreto) é o que dispara o `invoke_skill` espontâneo do LLM — empiricamente validado em 4/5 probes contra `deepseek:deepseek-v4-flash`. |
+| Fora do escopo | (1) Extração automática de `file_references` de texto livre (limitação pré-existente do `FileParser` — não bloqueia auto-trigger por `file_globs` quando o parser sí extrai); (2) sandbox de execução para skills (skills só injetam texto; não rodam código); (3) versionamento/depend tree entre skills. |
+
+### Histórico
+
+| Data | Mudança |
+|---|---|
+| Inicial (PR #296) | Sistema unificado entregue, com diretrizes de hardening (thread-safety, path traversal, CRLF, bool priority, missing-config-defaults-enabled) e simplificação (cut de ~660 linhas vs primeira iteração; `bootstrap_skills_with_handle` como canonical entry point, `bootstrap_skills` como wrapper legacy) |
+
+---
+
+## Decisão #36 — Helpers `aio_fileio` em `deile/storage/` para isolar I/O bloqueante de paths `async`
+
+| Campo | Valor |
+|---|---|
+| Versão | V1 patch |
+| Pilar dono | 03-Princípios, 02-Arquitetura |
+| Decisão | I/O bloqueante (`open()`, `json.dump`, `json.load`, `f.write`) chamado de dentro de `async def` viola o princípio 03 §1 ("I/O bloqueante proibido em contexto async"). Onde múltiplos subpacotes precisam do mesmo round-trip (JSON dict, texto), centralizar em `deile/storage/aio_fileio.py` (`read_json` / `write_json` / `write_text`) — cada helper é um one-liner `await asyncio.to_thread(<sync_fn>, ...)`. Subpacotes consomem via `from deile.storage.aio_fileio import ...`, não redefinem helpers locais. Formatos domain-specific (JSONL append em `semantic_memory`, mutação de estrutura YAML em `config/manager`) ficam **locais** — pertencem ao domínio que conhece o esquema, não ao módulo genérico. |
+| Evidência | `deile/storage/aio_fileio.py` (3 funções públicas); call sites em `deile/orchestration/approval_system.py` (`_save_request`, `_load_request`, `list_requests`) e `deile/orchestration/plan_manager.py` (`load_plan`, `list_plans`, `_save_plan`, `_save_plan_markdown`); auditoria que motivou a fix em `docs/system_design/03-PRINCIPIOS-ARQUITETURAIS.md` §1. |
+| Motivação | (1) Cumprir o princípio inegociável de async-first sem proliferação de helpers `_read_json` privados em cada arquivo (5 cópias near-idênticas antes da consolidação); (2) Reuso máximo + SRP: o módulo expõe apenas os primitivos genéricos, formatos especializados permanecem com seu dono lógico. |
+| Histórico | Introduzido durante o bug-audit PR #298 (sweep com 4 auditores sonnet) — eliminou 5 helpers duplicados em `approval_system.py` e `plan_manager.py`. |
+
+---
+
 ## Como adicionar uma nova decisão
 
 | # | Passo |

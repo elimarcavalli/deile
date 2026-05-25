@@ -115,10 +115,55 @@ def _read_auth_token() -> str:
 
 # A single-process registry of recent tasks. Survives until pod restart;
 # results live in the PVC under /home/deile/work/<id>/result.json anyway.
+# Issue #257 round 3: cap em ``_TASKS_MAX`` para evitar crescimento ilimitado
+# sob carga prolongada — evicção FIFO da entrada mais antiga TERMINAL (ok não
+# é None) preservando todas as tasks em execução.
 _TASKS: Dict[str, Dict[str, Any]] = {}
+_TASKS_MAX: int = int(os.environ.get("DEILE_WORKER_MAX_INMEM_TASKS", "500"))
 _TASK_LOCK = asyncio.Lock()  # MVP: serialize CWD-coupled work
 _AGENT = None
 _AGENT_LOCK = asyncio.Lock()
+
+# B2 (PR #295 review): strong refs para background tasks geradas em
+# ``dispatch_handler`` quando ``wait=False``. ``asyncio.create_task`` mantém
+# apenas weak refs internamente (issue #298); sem capturar a task num
+# container, o GC pode coletá-la a meio caminho. Padrão idêntico ao usado
+# em ``workflow_executor.py`` (``_running_loops``).
+_BG_DISPATCH_TASKS: "set[asyncio.Task]" = set()
+
+# M10 (PR #295 review): task_ids são gerados internamente como
+# ``uuid.uuid4().hex[:_TASK_ID_LEN]`` (12 chars hex). Validamos com regex
+# estrita antes de tocar filesystem ou usar como key, defendendo contra
+# path traversal (`/v1/progress/../../etc/passwd`).
+#
+# Iter-2 review: extracted _TASK_ID_LEN — antes a regex era hard-coded
+# com ``{12}`` enquanto a geração usava ``[:12]``. Drift silencioso
+# (regex rejeitaria task_ids legítimos) é evitado compartilhando a
+# constante; a regex é built a partir dela.
+_TASK_ID_LEN: int = 12
+_TASK_ID_RE = re.compile(rf"^[a-f0-9]{{{_TASK_ID_LEN}}}$")
+
+
+def _evict_old_tasks_if_needed() -> None:
+    """Quando ``_TASKS`` excede ``_TASKS_MAX``, descarta as entradas terminais
+    mais antigas (preserva execuções em andamento). Best-effort; chamado em
+    ``dispatch_handler`` na admissão de novas tasks.
+    """
+    if len(_TASKS) <= _TASKS_MAX:
+        return
+    # Lista candidatas: ok já não é None (terminal) e tem ``finished_at``.
+    terminal_ids = [
+        (tid, state.get("finished_at", ""))
+        for tid, state in _TASKS.items()
+        if state.get("ok") is not None
+    ]
+    if not terminal_ids:
+        # Todas em execução — não evita o crescimento, mas preserva trabalho.
+        return
+    terminal_ids.sort(key=lambda t: t[1])  # mais antigas primeiro
+    excess = len(_TASKS) - _TASKS_MAX
+    for tid, _ in terminal_ids[:excess]:
+        _TASKS.pop(tid, None)
 
 
 # ---- Bot integration (for status messages) -----------------------------------
@@ -457,11 +502,23 @@ async def _run_task(
     if user_message_id:
         await _react(channel_id, user_message_id, "🔧")
 
-    progress_lines: list[str] = []
+    # Issue #257: expor progresso mid-flight via _TASKS[task_id] para que
+    # ``GET /v1/progress/{task_id}`` retorne snapshot ao polling do
+    # WorkerSubAgentRunner. progress_lines vira referência ao mesmo objeto.
+    _tstate = _TASKS.setdefault(task_id, {})
+    _tstate.setdefault("task_id", task_id)
+    _tstate.setdefault("started_at", datetime.now(timezone.utc).isoformat())
+    _tstate.setdefault("brief", brief)
+    _tstate["_mono_start"] = start
+    _tstate["phase"] = "▶️  inicializando..."
+    _tstate["current_activity"] = ""
+    _tstate["progress_lines"] = []
+    progress_lines = _tstate["progress_lines"]
     last_edit_t = 0.0
 
     async def maybe_edit(force: bool = False, phase: str = "▶️  trabalhando..."):
         nonlocal last_edit_t
+        _tstate["phase"] = phase
         now = time.monotonic()
         if not status_msg_id:
             return
@@ -493,9 +550,16 @@ async def _run_task(
             prompt = _build_prompt(brief, workdir, history or "")
 
             # Hook the agent's event bus if available, to feed progress.
-            # Bug fix: previous code used bus.subscribe(_on_event) (1 arg)
-            # but the real signature is subscribe(event_type, handler).
-            # Now we use subscribe_all for catch-all + async handler.
+            # IMPORTANT: store the handler reference so we can unsubscribe
+            # in the finally block. Each _run_task registered a fresh
+            # closure; ``EventBus.subscribe_all`` keeps strong refs in
+            # ``_wildcard_handlers``, so under sustained dispatch the list
+            # grew unbounded — each new event invoked every stale handler
+            # (O(N²) CPU), each closure held the dead task's
+            # ``progress_lines`` (memory growth), and progress lines could
+            # leak across tasks. (PR #295 review B3, PR #298 worker_server.)
+            bus = None
+            _on_event = None
             try:
                 from deile.events.event_bus import get_event_bus
                 bus = get_event_bus()
@@ -509,7 +573,11 @@ async def _run_task(
                             tn = payload.get("tool") or payload.get("tool_name")
                             if tn:
                                 label = f"{name}:{tn}"
-                        progress_lines.append(label[:120])
+                        short = label[:120]
+                        progress_lines.append(short)
+                        # Issue #257: expor "atividade atual" para o polling
+                        # do WorkerSubAgentRunner (GET /v1/progress/{id}).
+                        _tstate["current_activity"] = short
                     except Exception:  # noqa: BLE001 — never break the bus
                         pass
 
@@ -517,13 +585,16 @@ async def _run_task(
                     bus.subscribe_all(_on_event)
                 elif hasattr(bus, "subscribe"):
                     # Some EventBus signatures take (event_type, handler) —
-                    # try a sensible catch-all key if available.
+                    # try a sensible catch-all key if available. ``_on_event``
+                    # keeps the reference so the finally block can unsubscribe.
                     try:
                         bus.subscribe("*", _on_event)
                     except Exception:
-                        pass
+                        _on_event = None
             except Exception:
                 logger.debug("event bus hook unavailable", exc_info=True)
+                bus = None
+                _on_event = None
 
             kwargs: Dict[str, Any] = {"session_id": session_id}
             if persona:
@@ -578,6 +649,15 @@ async def _run_task(
             logger.exception("task %s failed", task_id)
             loop_ended = resume.LOOP_ERROR
         finally:
+            # B3 (PR #295 review): desinscreve o handler do EventBus singleton.
+            # Sem isto handlers stale acumulam pinando estado (memory leak +
+            # O(N) por evento × N dispatches passados).
+            if bus is not None and _on_event is not None:
+                try:
+                    if hasattr(bus, "unsubscribe_all"):
+                        bus.unsubscribe_all(_on_event)
+                except Exception:  # noqa: BLE001 — cleanup never breaks dispatch
+                    logger.debug("event bus unsubscribe failed", exc_info=True)
             # Resume bookkeeping (issue #254) — computed WHILE cwd is still the
             # workspace so git sees ``./repo``. Wrapped so a failure here never
             # breaks the dispatch; on the non-pipeline path it is a no-op.
@@ -721,7 +801,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     # Resume context — present only on pipeline dispatches (issue #254).
     resume_ctx = _parse_resume_ctx(body)
 
-    task_id = uuid.uuid4().hex[:12]
+    task_id = uuid.uuid4().hex[:_TASK_ID_LEN]
+    _evict_old_tasks_if_needed()
     _TASKS[task_id] = {
         "task_id": task_id,
         "ok": None,
@@ -745,20 +826,47 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     else:
         # Fire-and-forget — caller polls /v1/result/{id}
         async def _bg():
+            # Iter-2 review: handle CancelledError separately so that loop
+            # shutdown still writes a terminal state to _TASKS (otherwise
+            # ``ok`` stays ``None`` forever and pollers loop indefinitely).
             try:
                 _TASKS[task_id] = await _run_task(task_id, brief, channel_id, user_message_id, persona,
                                                   attachments, history, resume_ctx=resume_ctx)
+            except asyncio.CancelledError:
+                _TASKS[task_id] = {
+                    **_TASKS.get(task_id, {"task_id": task_id}),
+                    "ok": False,
+                    "error": "task cancelled",
+                }
+                raise
             except Exception as exc:
                 _TASKS[task_id] = {
                     "task_id": task_id, "ok": False,
                     "error": f"{type(exc).__name__}: {exc}",
                 }
-        asyncio.create_task(_bg())
+        # B2 (PR #295 review): guarda strong ref para a task em background.
+        # asyncio mantém apenas weak refs internamente; sem o set + callback,
+        # o GC pode coletar a task antes de ela completar.
+        bg_task = asyncio.create_task(_bg())
+        _BG_DISPATCH_TASKS.add(bg_task)
+        bg_task.add_done_callback(_BG_DISPATCH_TASKS.discard)
         return web.json_response({"task_id": task_id, "status": "running"}, status=202)
 
 
-async def result_handler(request: web.Request) -> web.Response:
-    task_id = request.match_info["task_id"]
+def _lookup_task_state(task_id: str):
+    """Resolve a task state from memory or the persisted ``.results`` PVC file.
+
+    Returns ``(state, error_response)``: exactly one is non-``None``.
+    ``state`` is a dict; ``error_response`` is a ready-to-return
+    :class:`aiohttp.web.Response`. Shared by ``result_handler`` and
+    ``progress_handler`` to keep validation + lookup + disk-fallback in
+    one place (M10 — PR #295 review).
+    """
+    if not _TASK_ID_RE.match(task_id):
+        return None, web.json_response(
+            {"error": {"code": "BAD_REQUEST", "message": "invalid task_id format"}},
+            status=400,
+        )
     state = _TASKS.get(task_id)
     if state is None:
         # Try to load from disk (PVC persists results across restarts).
@@ -769,11 +877,58 @@ async def result_handler(request: web.Request) -> web.Response:
             except Exception:
                 state = None
     if state is None:
-        return web.json_response(
+        return None, web.json_response(
             {"error": {"code": "NOT_FOUND", "message": f"task {task_id} unknown"}},
             status=404,
         )
-    return web.json_response(state)
+    return state, None
+
+
+async def result_handler(request: web.Request) -> web.Response:
+    task_id = request.match_info["task_id"]
+    state, error = _lookup_task_state(task_id)
+    if error is not None:
+        return error
+    # Strip internal-only keys (_mono_start) before returning to the client.
+    payload = {k: v for k, v in state.items() if not k.startswith("_")}
+    return web.json_response(payload)
+
+
+async def progress_handler(request: web.Request) -> web.Response:
+    """``GET /v1/progress/{task_id}`` — snapshot mid-flight (issue #257).
+
+    Diferente do ``result_handler``, retorna apenas os campos relevantes para
+    polling de UI multipanel (last 30 ``progress_lines``, ``phase``,
+    ``current_activity``, ``elapsed_s`` corrente). Para tasks terminais
+    inclui ``ok`` e ``files`` — o caller pode então buscar o resultado
+    completo via ``/v1/result/{task_id}``.
+    """
+    task_id = request.match_info["task_id"]
+    state, error = _lookup_task_state(task_id)
+    if error is not None:
+        return error
+
+    ok = state.get("ok")
+    # elapsed: usa _mono_start enquanto rodando; depois, elapsed_s gravado.
+    if ok is None and "_mono_start" in state:
+        elapsed = time.monotonic() - state["_mono_start"]
+    else:
+        elapsed = state.get("elapsed_s", 0.0)
+
+    lines = state.get("progress_lines") or []
+    if not isinstance(lines, list):
+        lines = []
+    return web.json_response({
+        "task_id": task_id,
+        "ok": ok,
+        "phase": state.get("phase"),
+        "current_activity": state.get("current_activity"),
+        "progress_lines": list(lines)[-30:],
+        "started_at": state.get("started_at"),
+        "elapsed_s": elapsed,
+        "files": state.get("files", []),
+        "error": state.get("error"),
+    })
 
 
 def build_app(auth_token: str) -> web.Application:
@@ -782,6 +937,8 @@ def build_app(auth_token: str) -> web.Application:
     app.router.add_get("/v1/health", health_handler)
     app.router.add_post("/v1/dispatch", dispatch_handler)
     app.router.add_get("/v1/result/{task_id}", result_handler)
+    # Issue #257 — snapshot mid-flight para polling do CLI multipanel.
+    app.router.add_get("/v1/progress/{task_id}", progress_handler)
     return app
 
 

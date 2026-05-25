@@ -34,6 +34,7 @@ from ..storage.logs import get_logger
 from ..tools.base import ToolContext, ToolResult, ToolStatus
 from ..tools.registry import ToolRegistry, get_tool_registry
 from ..ui.display_manager import DisplayManager
+from . import validation_gate as _validation_gate
 from .agent_streaming import AgentStreamingMixin
 from .context_manager import ContextManager
 from .intent_analyzer import get_intent_analyzer
@@ -329,15 +330,9 @@ class AgentResponse:
 
 class DeileAgent(AgentStreamingMixin):
     """Orquestrador principal do DEILE
-
+    
     Coordena a interação entre parsers, tools, context manager e modelos de IA
     implementando o padrão Mediator para centralizar a lógica de orquestração.
-
-    The streaming-pipeline methods (``process_input_stream``,
-    ``_stream_chat_with_tools``, ``process_input_structured``,
-    ``process_input_stream_chunks``) live in :class:`AgentStreamingMixin`
-    (see ``agent_streaming.py``) — call sites are unchanged because the
-    mixin is inherited here.
     """
     
     def __init__(
@@ -373,6 +368,7 @@ class DeileAgent(AgentStreamingMixin):
         self._sessions: Dict[str, AgentSession] = {}
         self._request_count = 0
         self._skill_loader = None  # set by _auto_discover_components; used by reload_skills()
+        self._skills_watcher = None  # set by _auto_discover_components; stopped in shutdown()
 
         # Initialize PersonaManager - será inicializado via async initialize()
         self.persona_manager: Optional[PersonaManager] = None
@@ -394,6 +390,24 @@ class DeileAgent(AgentStreamingMixin):
         # CORREÇÃO: Registra model providers se não há nenhum
         if len(self.model_router.providers) == 0:
             self._register_default_providers()
+
+        # Surface UI opcional para tools que abrem renderers próprios
+        # (issue #257: ``dispatch_parallel_subagents`` abre um painel Rich
+        # Live multiplexado durante a execução). A CLI seta isso via
+        # :meth:`set_ui_console` logo após construir o agente; quando o
+        # agente roda fora de um CLI (e.g. worker pod), o atributo
+        # permanece ``None`` e a tool roda em modo headless.
+        self._ui_console = None
+
+    def set_ui_console(self, console) -> None:
+        """Registra o ``rich.console.Console`` da UI para tools que precisem dele.
+
+        Issue #257 — a tool ``dispatch_parallel_subagents`` consulta isso
+        via ``session.context_data["_console"]`` para abrir o painel
+        multiplexado ao vivo. Setar ``None`` desabilita a UI (modo headless,
+        e.g. testes).
+        """
+        self._ui_console = console
 
     async def initialize(self) -> None:
         """Inicializa componentes assíncronos do agente"""
@@ -609,7 +623,6 @@ class DeileAgent(AgentStreamingMixin):
                 execution_time=time.time() - start_time
             )
 
-
     def get_session(self, session_id: str) -> Optional[AgentSession]:
         """Obtém sessão por ID"""
         return self._sessions.get(session_id)
@@ -709,7 +722,6 @@ class DeileAgent(AgentStreamingMixin):
             if hasattr(session, 'clear_history'):
                 session.clear_history()
     
-
     async def get_or_create_session(
         self,
         session_id: str,
@@ -816,14 +828,38 @@ class DeileAgent(AgentStreamingMixin):
             except Exception:
                 pass
             self._session_store = None
+        watcher = getattr(self, "_skills_watcher", None)
+        if watcher is not None:
+            try:
+                watcher.stop()
+            except Exception:
+                pass
+            self._skills_watcher = None
 
     # Métodos privados
 
     def _get_or_create_session(self, session_id: str, **kwargs) -> AgentSession:
-        """Obtém sessão existente ou cria nova"""
+        """Obtém sessão existente ou cria nova.
+
+        Sempre injeta a referência ao próprio agente (``_agent``) e ao
+        console de UI (``_console``, opcional) no ``context_data`` da sessão
+        para tools que precisem desses handles — por exemplo
+        ``dispatch_parallel_subagents`` (issue #257), que spawna sub-DEILEs
+        in-process e abre seu próprio Rich Live multipanel.
+        """
         if session_id not in self._sessions:
-            return self.create_session(session_id, **kwargs)
-        return self._sessions[session_id]
+            session = self.create_session(session_id, **kwargs)
+        else:
+            session = self._sessions[session_id]
+        # Re-injection em cada turn é barata (apenas escreve no dict) e
+        # sobrevive a substituições de console em testes. ``getattr`` defensivo
+        # pq fixtures de teste constroem o agente via ``__new__`` (skip __init__).
+        session.context_data["_agent"] = self
+        _console = getattr(self, "_ui_console", None)
+        if _console is not None:
+            session.context_data["_console"] = _console
+        session.context_data["session_id"] = session_id
+        return session
     
     async def _process_slash_command(self, user_input: str, session: AgentSession, start_time: float) -> AgentResponse:
         """Processa comando slash diretamente"""
@@ -978,7 +1014,11 @@ class DeileAgent(AgentStreamingMixin):
         
         return tool_results
     
-    # TODO(streaming-cleanup): legacy non-streaming tool-loop. Once the streaming path proves stable in production (Settings.streaming_enabled is True by default), migrate remaining callers and delete this method along with provider.chat_with_tools.
+    # Non-streaming tool-loop. Still active when the streaming path bails out
+    # or when a caller explicitly requests non-streaming behavior. All providers
+    # registered via ``bootstrap_providers()`` implement either ``chat_with_tools``
+    # (Anthropic, OpenAI, DeepSeek, Gemini) or the Gemini chat-session pair, so
+    # providers without either path raise ``ModelError`` explicitly.
     async def _process_iterative_function_calling(
         self,
         user_input: str,
@@ -1084,11 +1124,13 @@ class DeileAgent(AgentStreamingMixin):
 
                 message_content: Any = user_input
                 if isinstance(context, dict) and "file_data_parts" in context:
+                    from .models.gemini_provider import GeminiProvider
                     message_parts: List[Any] = [user_input]
                     for file_data in context["file_data_parts"]:
                         if "file_data" in file_data:
-                            file_obj = model_provider.format_user_file_part(
-                                file_uri=file_data["file_data"]["file_uri"],
+                            file_uri = file_data["file_data"]["file_uri"]
+                            file_obj = GeminiProvider.build_file_attachment_part(
+                                file_uri=file_uri,
                                 mime_type=file_data["file_data"].get("mime_type", "text/plain"),
                             )
                             message_parts.append(file_obj)
@@ -1316,9 +1358,25 @@ class DeileAgent(AgentStreamingMixin):
                 return content, tool_results
 
             else:
-                # Fallback para providers sem suporte a tools
-                logger.debug("Using legacy function calling approach")
-                return await self._process_legacy_function_calling(user_input, parse_result, session)
+                # Defensive — unreachable by construction: every provider registered via
+                # bootstrap_providers() (Anthropic/OpenAI/DeepSeek/Gemini) inherits
+                # ``BaseModelProvider.chat_with_tools``, so the ``elif hasattr(..., 'chat_with_tools')``
+                # branch above always matches. This ``else`` only fires if a custom provider
+                # explicitly overrides hasattr() to return False, which is not a supported pattern.
+                provider_id = getattr(model_provider, "provider_id", type(model_provider).__name__)
+                model_name = getattr(model_provider, "model_name", None) or getattr(
+                    model_provider, "model_id", "unknown"
+                )
+                logger.error(
+                    "Provider %s (model=%s) implements neither chat_with_tools nor the Gemini "
+                    "chat-session pair — bootstrap_providers() should never register such a provider",
+                    provider_id,
+                    model_name,
+                )
+                raise ModelError(
+                    f"Provider '{provider_id}' (model={model_name}) does not support function calling.",
+                    error_code="PROVIDER_NO_TOOL_SUPPORT",
+                )
 
         except Exception as e:
             # BudgetExceeded and structured ModelErrors must reach the caller — they carry
@@ -1339,8 +1397,15 @@ class DeileAgent(AgentStreamingMixin):
                 except Exception:
                     pass
                 raise
-            # FORCED_MODEL_NOT_REGISTERED also propagates so process_input can build a structured response
-            if isinstance(e, ModelError) and getattr(e, "error_code", "") == "FORCED_MODEL_NOT_REGISTERED":
+            # Structured ModelErrors that the CLI renders as Rich panels must propagate.
+            # FORCED_MODEL_NOT_REGISTERED: user-forced model is missing from the registry.
+            # PROVIDER_NO_TOOL_SUPPORT: defensive — bootstrap_providers() should never register
+            # a provider lacking both chat_with_tools and the Gemini session pair, but if it does
+            # we want process_input to surface the misconfiguration instead of swallowing it.
+            if isinstance(e, ModelError) and getattr(e, "error_code", "") in (
+                "FORCED_MODEL_NOT_REGISTERED",
+                "PROVIDER_NO_TOOL_SUPPORT",
+            ):
                 raise
             from deile.core.models.errors import ProviderInvocationError
             if isinstance(e, ProviderInvocationError) and e.envelope.is_context_length_exceeded:
@@ -1358,53 +1423,23 @@ class DeileAgent(AgentStreamingMixin):
     # ------------------------------------------------------------------
     # Validation gate (anti-hallucination + post-write enforcement)
     # ------------------------------------------------------------------
+    #
+    # The implementation lives in ``deile.core.validation_gate`` (SRP / god-
+    # object refactor). The methods below are thin wrappers preserving the
+    # observable API used by the test suite and by ``self.…`` call sites
+    # inside the streaming/legacy code paths.
 
-    _PROMISE_PATTERNS = [
-        # Portuguese — actions the model commonly promises but skips
-        r"\bvou\s+(?:testar|rodar|executar|validar|verificar|instalar|conferir|checar)\b",
-        r"\b(?:testar|rodar|executar|validar|verificar|instalar)\s+(?:agora|isso|isto|esse|essa)\b",
-        r"\bdeixa\s+eu\s+(?:testar|rodar|executar|validar|verificar)\b",
-        r"\bvamos\s+(?:testar|rodar|executar|validar|verificar)\b",
-        # English
-        r"\b(?:I'?ll|I\s+will|let\s+me)\s+(?:test|run|verify|check|install|validate|execute)\b",
-        r"\b(?:testing|running|executing|validating|verifying|installing)\s+(?:it|that|now|this)\b",
-    ]
+    @staticmethod
+    def _contains_promise_pattern(text: str) -> bool:
+        """Delegate to ``validation_gate.contains_promise_pattern``."""
+        return _validation_gate.contains_promise_pattern(text)
 
-    _VALIDATION_TOOL_NAMES = {
-        "bash_execute", "python_execute", "run_tests",
-    }
-
-    @classmethod
-    def _contains_promise_pattern(cls, text: str) -> bool:
-        if not text:
-            return False
-        # cache compiled patterns lazily on the class
-        compiled = getattr(cls, "_PROMISE_RE", None)
-        if compiled is None:
-            compiled = [re.compile(p, re.IGNORECASE) for p in cls._PROMISE_PATTERNS]
-            cls._PROMISE_RE = compiled
-        return any(rx.search(text) for rx in compiled)
-
-    @classmethod
+    @staticmethod
     def _detect_unvalidated_writes(
-        cls, tool_results: List[ToolResult]
+        tool_results: List[ToolResult],
     ) -> List[ToolResult]:
-        """Return write_file results for executable files that lack a following validation tool call."""
-        # All write_file results that the tool flagged as needing validation
-        flagged_writes = [
-            tr for tr in tool_results
-            if tr.metadata.get("post_write_validation_required") is True
-        ]
-        if not flagged_writes:
-            return []
-        # Any subsequent execution tool counts as "the model tried to validate"
-        validated = any(
-            tr.metadata.get("function_name") in cls._VALIDATION_TOOL_NAMES
-            for tr in tool_results
-        )
-        if validated:
-            return []
-        return flagged_writes
+        """Delegate to ``validation_gate.detect_unvalidated_writes``."""
+        return _validation_gate.detect_unvalidated_writes(tool_results)
 
     async def _apply_validation_gate(
         self,
@@ -1415,123 +1450,21 @@ class DeileAgent(AgentStreamingMixin):
         content: str,
         tool_results: List[ToolResult],
     ) -> tuple[str, List[ToolResult]]:
-        """Re-invoke the model once if it wrote executable code without testing
-        or promised an action without taking it. Persona-side rules already ask
-        for this; the gate is the deterministic enforcement layer.
+        """Delegate to ``validation_gate.apply_validation_gate``.
 
-        Recursion is impossible: the gate marks the session, runs at most one
-        retry, and clears the marker. If the retry still violates, the result
-        is returned to the user unaltered — surfacing the failure rather than
-        masking it.
+        The retry callback is bound to ``self._process_iterative_function_calling``
+        so the module never has to import ``DeileAgent`` (circular-import
+        hazard).
         """
-        # Single-shot per turn — and re-entry from a workflow path also skips
-        if session.context_data.get("_validation_gate_active"):
-            return content, tool_results
-
-        unvalidated = self._detect_unvalidated_writes(tool_results)
-        # Promise gate only fires on SHORT replies — long explanations may use
-        # "vamos testar a hipótese" / "let me check" rhetorically without
-        # actually intending to invoke a tool. The gate's value is catching
-        # the model saying "vou rodar agora!" and stopping cold.
-        promise_without_action = (
-            not tool_results
-            and len(content) <= 500
-            and self._contains_promise_pattern(content)
+        return await _validation_gate.apply_validation_gate(
+            user_input=user_input,
+            parse_result=parse_result,
+            session=session,
+            content=content,
+            tool_results=tool_results,
+            retry=self._process_iterative_function_calling,
         )
 
-        if not unvalidated and not promise_without_action:
-            return content, tool_results
-
-        if unvalidated:
-            paths = [tr.metadata.get("file_path", "?") for tr in unvalidated]
-            cmds = [
-                tr.metadata.get("post_write_validation_command")
-                for tr in unvalidated
-                if tr.metadata.get("post_write_validation_command")
-            ]
-            cmd_block = "\n".join(f"  - {c}" for c in cmds) if cmds else "  (none suggested)"
-            gate_prompt = (
-                "[INTERNAL_VALIDATION_GATE] You wrote the following executable file(s) "
-                "but did not validate them in the same turn:\n"
-                f"  {', '.join(paths)}\n\n"
-                "Per the Definition of Done, you MUST validate now using the tools. "
-                "Suggested validation commands (run via bash_execute):\n"
-                f"{cmd_block}\n\n"
-                "If validation fails (exit code != 0 or stderr non-empty), diagnose "
-                "and fix the file with write_file, then re-validate. Use pip_install "
-                "for any ModuleNotFoundError. Only after exit 0 do you report the "
-                "task complete to the user — and the report MUST include the actual "
-                "validation output, not a summary."
-            )
-        else:
-            gate_prompt = (
-                "[INTERNAL_VALIDATION_GATE] Your previous response promised an action "
-                "(test / run / install / validate) but no tool was invoked in that "
-                "turn. Per the anti-hallucination rule in your persona, that is a "
-                "policy violation. Either invoke the tool now to fulfill the promise, "
-                "or revise the answer to not promise. Do not produce a final answer "
-                "until the action is actually taken."
-            )
-
-        # Persist the pre-gate assistant turn so the model sees the gap
-        session.add_to_history("assistant", content, {"validation_gate_pre": True})
-        session.add_to_history("user", gate_prompt, {"validation_gate": True})
-        session.context_data["_validation_gate_active"] = True
-        try:
-            new_content, new_tool_results = await self._process_iterative_function_calling(
-                user_input=gate_prompt,
-                parse_result=parse_result,
-                session=session,
-            )
-        finally:
-            session.context_data.pop("_validation_gate_active", None)
-
-        return new_content, list(tool_results) + list(new_tool_results)
-
-
-    async def _process_legacy_function_calling(
-        self,
-        user_input: str,
-        parse_result: Optional[ParseResult],
-        session: AgentSession
-    ) -> tuple[str, List[ToolResult]]:
-        """Fallback para providers sem Chat Session support"""
-        try:
-            # Executa tools se foram identificadas no parsing
-            tool_results = await self._execute_tools(parse_result, session)
-            
-            # Prepara contexto com tool results
-            context = await self.context_manager.build_context(
-                user_input=user_input,
-                parse_result=parse_result,
-                tool_results=tool_results,
-                session=session
-            )
-            
-            # Seleciona modelo apropriado
-            model_provider = await self.model_router.select_provider(
-                context=context,
-                session=session
-            )
-            
-            # Gera resposta simples
-            if isinstance(context, dict):
-                messages = context.get("messages", [])
-                system_instruction = context.get("system_instruction")
-            else:
-                messages = [context] if hasattr(context, 'content') else []
-                system_instruction = "You are DEILE, a helpful AI assistant."
-            
-            response = await model_provider.generate(
-                messages=messages,
-                system_instruction=system_instruction
-            )
-            
-            return response.content, tool_results
-            
-        except Exception as e:
-            self.logger.error(f"Legacy function calling failed: {e}")
-            return f"I encountered an error during processing: {str(e)}", []
 
     async def _should_create_workflow(self, user_input: str, parse_result: Optional[ParseResult]) -> bool:
         """Determina se deve criar workflow automaticamente usando análise de intenção avançada
@@ -1542,6 +1475,15 @@ class DeileAgent(AgentStreamingMixin):
         - Análise semântica com embeddings
         - Sistema de confiança probabilística
         - Cache e métricas de performance
+
+        **Degradação em falha:** se `IntentAnalyzer.analyze()` lançar exceção
+        (embedding offline, cache corrompido, etc.), este método retorna `False`
+        (no-workflow) por design. Esta é a opção #2 documentada na issue #308:
+        `IntentAnalyzer` é a única árvore de decisão para essa pergunta — manter
+        um fallback heurístico paralelo (legacy keyword-matching) violava SSOT e
+        divergia ao longo do tempo. Como workflows são caros (multi-step +
+        aprovação), o default conservador "não criar workflow" é mais seguro
+        que adivinhar. NÃO reintroduza fallback heurístico sem revisitar #308.
         """
         try:
             # Prepara contexto da sessão para análise mais precisa
@@ -1584,11 +1526,12 @@ class DeileAgent(AgentStreamingMixin):
             return requires_workflow
 
         except Exception as e:
-            logger.error(f"Error in intent analysis for workflow detection: {e}")
-            logger.warning("Falling back to legacy workflow detection logic")
-
-            # Fallback para lógica legacy simplificada em caso de erro
-            return await self._legacy_workflow_detection(user_input, parse_result)
+            logger.error(
+                "Intent analysis failed for workflow detection: %s — defaulting to no-workflow",
+                e,
+                exc_info=True,
+            )
+            return False
 
     async def _prepare_session_context_for_intent_analysis(self) -> Dict[str, Any]:
         """Prepara contexto da sessão para análise de intenção mais precisa"""
@@ -1630,27 +1573,6 @@ class DeileAgent(AgentStreamingMixin):
 
         # Remove duplicatas mantendo ordem
         return list(dict.fromkeys(topics))
-
-    async def _legacy_workflow_detection(self, user_input: str, parse_result: Optional[ParseResult]) -> bool:
-        """Lógica legacy simplificada para detecção de workflow (fallback)"""
-        try:
-            user_input_lower = user_input.lower()
-
-            # Palavras-chave críticas que sempre indicam workflow
-            critical_keywords = ['implementar', 'implement', 'criar sistema', 'create system', 'desenvolver']
-            has_critical_keyword = any(keyword in user_input_lower for keyword in critical_keywords)
-
-            # Múltiplas tools sempre indicam workflow
-            multiple_tools = parse_result and len(parse_result.tool_requests or []) > 1
-
-            # Complexidade básica
-            is_complex = len(user_input.split()) > 15
-
-            return has_critical_keyword or multiple_tools or is_complex
-
-        except Exception as e:
-            logger.error(f"Error in legacy workflow detection: {e}")
-            return False  # Default conservador
 
     async def _process_with_workflow(
         self,
@@ -1733,116 +1655,6 @@ class DeileAgent(AgentStreamingMixin):
             # Fallback para processamento tradicional
             return await self._process_iterative_function_calling(user_input, parse_result, session)
 
-    async def _generate_response_with_function_calling_legacy(
-        self,
-        user_input: str,
-        parse_result: Optional[ParseResult],
-        tool_results: List[ToolResult],
-        session: AgentSession
-    ) -> str:
-        """Fase 3: Geração de resposta usando o modelo de IA com Function Calling"""
-        self._status = AgentStatus.GENERATING_RESPONSE
-        
-        try:
-            # Prepara contexto para o modelo com suporte a file_data
-            context = await self.context_manager.build_context(
-                user_input=user_input,
-                parse_result=parse_result,
-                tool_results=tool_results,
-                session=session
-            )
-            
-            # Seleciona modelo apropriado
-            model_provider = await self.model_router.select_provider(
-                context=context,
-                session=session
-            )
-            
-            # Prepara execution context para Function Calling
-            execution_context = self._create_execution_context(session, context)
-            
-            # Gera resposta com Function Calling
-            if isinstance(context, dict):
-                messages = context.get("messages", [])
-                system_instruction = context.get("system_instruction")
-                file_data_parts = context.get("file_data_parts", [])
-            else:
-                # Fallback se context não é dict
-                messages = [context] if hasattr(context, 'content') else []
-                system_instruction = "You are DEILE, a helpful AI assistant."
-                file_data_parts = []
-            
-            # Log função calling info
-            logger.debug(f"Function calling enabled with {len(file_data_parts)} file parts")
-            
-            response = await model_provider.generate(
-                messages=messages,
-                system_instruction=system_instruction,
-                execution_context=execution_context
-            )
-            
-            return response.content
-            
-        except Exception as e:
-            self.logger.error(f"Response generation with Function Calling failed: {e}")
-            return f"I encountered an error generating a response: {str(e)}"
-    
-    def _create_execution_context(self, session: AgentSession, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Cria contexto de execução para Function Calling"""
-        return {
-            "session_id": session.session_id,
-            "working_directory": str(session.working_directory),
-            "user_id": session.user_id,
-            "session_data": session.context_data,
-            "context_metadata": context.get("metadata", {}),
-            "file_data_available": len(context.get("file_data_parts", [])) > 0
-        }
-
-    async def _generate_response_legacy(
-        self,
-        user_input: str,
-        parse_result: Optional[ParseResult],
-        tool_results: List[ToolResult],
-        session: AgentSession
-    ) -> str:
-        """LEGACY: Geração de resposta sem Function Calling (compatibilidade)"""
-        self._status = AgentStatus.GENERATING_RESPONSE
-        
-        try:
-            # Prepara contexto para o modelo
-            context = await self.context_manager.build_context(
-                user_input=user_input,
-                parse_result=parse_result,
-                tool_results=tool_results,
-                session=session
-            )
-            
-            # Seleciona modelo apropriado
-            model_provider = await self.model_router.select_provider(
-                context=context,
-                session=session
-            )
-            
-            # Gera resposta
-            if isinstance(context, dict):
-                messages = context.get("messages", [])
-                system_instruction = context.get("system_instruction")
-            else:
-                # Fallback se context não é dict
-                messages = [context] if hasattr(context, 'content') else []
-                system_instruction = "You are DEILE, a helpful AI assistant."
-            
-            response = await model_provider.generate(
-                messages=messages,
-                system_instruction=system_instruction
-            )
-            
-            return response.content
-            
-        except Exception as e:
-            self.logger.error(f"Response generation failed: {e}")
-            return f"I encountered an error generating a response: {str(e)}"
-
     def reload_skills(self) -> int:
         """Re-scan all skill directories and hot-reload the command registry.
 
@@ -1869,10 +1681,15 @@ class DeileAgent(AgentStreamingMixin):
             self.command_registry.auto_discover_builtin_commands()
             self.command_registry.load_commands_from_config()
 
-            # Load user/project skills as slash commands
+            # Load user/project skills as slash commands AND start hot-reload.
+            # The unified skills subsystem owns both — keeping them wired in
+            # one place ensures the watcher and the slash-command bridge see
+            # the exact same scan order.
             try:
                 from ..commands.settings_manager import SettingsManager
                 from ..commands.skill_loader import SkillLoader
+                from ..skills.watcher import SkillsWatcher
+
                 project_dir = getattr(self.settings, "working_directory", None)
                 _settings_mgr = SettingsManager(
                     project_dir=Path(project_dir) if project_dir else None
@@ -1881,9 +1698,40 @@ class DeileAgent(AgentStreamingMixin):
                     project_dir=project_dir,
                     settings_manager=_settings_mgr,
                 )
-                skill_loader.load_into_registry(self.command_registry)
+                invocable_count = skill_loader.load_into_registry(self.command_registry)
                 # Store for hot-reload via /skills add|remove
                 self._skill_loader = skill_loader
+
+                # Visible boot summary so the operator sees in the launch log
+                # how many skills came from where — bundled (auto-trigger +
+                # invoke_skill), user/project (those + slash /<name>). Counts
+                # via the unified registry to include bundled, which the
+                # loader hides by design (legacy slash-command contract).
+                from ..skills.registry import get_skill_registry
+                _by_src: dict = {}
+                for _sk in get_skill_registry().list_all():
+                    _by_src[_sk.source] = _by_src.get(_sk.source, 0) + 1
+                self.logger.info(
+                    "Skills carregadas: total=%d (%s); %d invocáveis como /<nome>",
+                    sum(_by_src.values()),
+                    ", ".join(f"{k}={v}" for k, v in sorted(_by_src.items())) or "vazio",
+                    invocable_count,
+                )
+
+                # The watcher uses the SAME extras the loader saw, so a path
+                # added via /skills add is watched too. Failures here are
+                # non-fatal — the agent still works without hot-reload.
+                try:
+                    self._skills_watcher = SkillsWatcher(
+                        project_dir=Path(project_dir) if project_dir else None,
+                        extra_paths=[
+                            p for p in _settings_mgr.get_all_skills_paths() if p.is_dir()
+                        ],
+                        command_registry=self.command_registry,
+                    )
+                    self._skills_watcher.start()
+                except Exception as _watcher_exc:
+                    self.logger.warning("Skills hot-reload not started: %s", _watcher_exc)
             except Exception as _skill_exc:
                 self.logger.warning("Skill loading failed: %s", _skill_exc)
 
