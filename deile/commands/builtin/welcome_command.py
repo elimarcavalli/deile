@@ -140,9 +140,9 @@ class WelcomeCommand(DirectCommand):
             show_header=True,
             header_style="bold yellow",
         )
-        qs_table.add_column("Ação", style="cyan", width=25)
-        qs_table.add_column("Comando", style="green", width=22)
-        qs_table.add_column("Descrição", style="white", width=30)
+        qs_table.add_column("Ação", style="cyan")
+        qs_table.add_column("Comando", style="green")
+        qs_table.add_column("Descrição", style="white")
         for entry in quick_start:
             qs_table.add_row(entry["descricao"], f"/{entry['nome']}", entry["acao"])
 

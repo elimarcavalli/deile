@@ -82,9 +82,9 @@ class PermissionsCommand(DirectCommand):
             level_counts[lv] = level_counts.get(lv, 0) + 1
 
         overview = Table(title="🛡️ Visão Geral de Permissões", show_header=False)
-        overview.add_column("Métrica", style="bold cyan", width=20)
-        overview.add_column("Valor", style="green", width=15)
-        overview.add_column("Detalhes", style="dim", width=30)
+        overview.add_column("Métrica", style="bold cyan")
+        overview.add_column("Valor", style="green")
+        overview.add_column("Detalhes", style="dim")
         overview.add_row("Total de Regras", str(total), "Regras de segurança ativas")
         overview.add_row("Habilitadas", str(enabled), "Aplicadas atualmente")
         overview.add_row("Desabilitadas", str(disabled), "Temporariamente inativas")
@@ -149,12 +149,12 @@ class PermissionsCommand(DirectCommand):
             show_header=True,
             header_style="bold cyan",
         )
-        table.add_column("ID", style="cyan", width=15)
-        table.add_column("Nome", style="white", width=20)
-        table.add_column("Tipo", style="yellow", width=10)
-        table.add_column("Nível", style="red", width=10)
-        table.add_column("Status", style="blue", width=8)
-        table.add_column("Prioridade", style="magenta", width=10)
+        table.add_column("ID", style="cyan")
+        table.add_column("Nome", style="white")
+        table.add_column("Tipo", style="yellow")
+        table.add_column("Nível", style="red")
+        table.add_column("Status", style="blue")
+        table.add_column("Prioridade", style="magenta")
 
         for rule in sorted(rules, key=lambda r: r.priority):
             status = "✅ On" if rule.enabled else "❌ Off"
@@ -174,8 +174,8 @@ class PermissionsCommand(DirectCommand):
             raise CommandError(f"Regra '{rule_id}' não encontrada")
 
         table = Table(title=f"🛡️ Regra: {rule.name}", show_header=False)
-        table.add_column("Propriedade", style="bold cyan", width=18)
-        table.add_column("Valor", style="white", width=40)
+        table.add_column("Propriedade", style="bold cyan")
+        table.add_column("Valor", style="white")
         table.add_row("ID", rule.id)
         table.add_row("Nome", rule.name)
         table.add_row("Descrição", rule.description)
@@ -208,8 +208,8 @@ class PermissionsCommand(DirectCommand):
         result_text = "PERMITIDO" if allowed else "NEGADO"
 
         table = Table(title=f"{icon} Verificação de Permissão — {result_text}", show_header=False)
-        table.add_column("Propriedade", style="bold cyan", width=15)
-        table.add_column("Valor", style=color, width=35)
+        table.add_column("Propriedade", style="bold cyan")
+        table.add_column("Valor", style=color)
         table.add_row("Tool", tool)
         table.add_row("Recurso", resource)
         table.add_row("Ação", action)
@@ -389,11 +389,11 @@ class PermissionsCommand(DirectCommand):
             )
 
         table = Table(title=f"🔍 Log de Auditoria de Permissões ({len(events)} eventos)", show_header=True, header_style="bold cyan")
-        table.add_column("Timestamp", style="dim", width=20)
-        table.add_column("Tipo", style="cyan", width=22)
-        table.add_column("Actor", style="yellow", width=15)
-        table.add_column("Recurso", style="white", width=20)
-        table.add_column("Resultado", style="green", width=12)
+        table.add_column("Timestamp", style="dim")
+        table.add_column("Tipo", style="cyan")
+        table.add_column("Actor", style="yellow")
+        table.add_column("Recurso", style="white")
+        table.add_column("Resultado", style="green")
 
         for event in events[-limit:]:
             ts = event.timestamp.strftime("%Y-%m-%d %H:%M:%S") if hasattr(event.timestamp, "strftime") else str(event.timestamp)[:19]

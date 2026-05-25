@@ -249,7 +249,7 @@ class DisplayManager:
         
         table = Table(title="🔍 Search Results", show_header=True, header_style="blue bold")
         table.add_column("File", style="cyan", no_wrap=True)
-        table.add_column("Line", justify="right", style="yellow", width=6)
+        table.add_column("Line", justify="right", style="yellow")
         table.add_column("Match", style="white")
         
         matches = results.get("matches", [])

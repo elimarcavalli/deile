@@ -134,11 +134,11 @@ class PatchCommand(DirectCommand):
         
         # Create table of available patches
         table = Table(title=f"📦 Available Patches ({len(patch_files)} files)", show_header=True, header_style="bold green")
-        table.add_column("Filename", style="cyan", width=25)
-        table.add_column("Plan ID", style="yellow", width=10)
-        table.add_column("Created", style="dim", width=16)
-        table.add_column("Size", style="blue", width=8)
-        table.add_column("Action", style="magenta", width=20)
+        table.add_column("Filename", style="cyan")
+        table.add_column("Plan ID", style="yellow")
+        table.add_column("Created", style="dim")
+        table.add_column("Size", style="blue")
+        table.add_column("Action", style="magenta")
         
         for patch_file in patch_files:
             # Extract plan ID from filename

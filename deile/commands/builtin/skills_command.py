@@ -132,9 +132,9 @@ class SkillsCommand(DirectCommand):
             border_style="cyan",
             row_styles=["", "dim"],
         )
-        table.add_column("Scope", style="bold magenta", width=10)
+        table.add_column("Scope", style="bold magenta")
         table.add_column("Path", style="bright_green")
-        table.add_column("Exists?", width=8, justify="center")
+        table.add_column("Exists?", justify="center")
 
         for scope in ("global", "project"):
             for raw in mgr.list_skills_paths(scope):

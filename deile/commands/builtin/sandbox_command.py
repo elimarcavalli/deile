@@ -57,9 +57,9 @@ class SandboxCommand(DirectCommand):
         status_color = "green" if self.sandbox_enabled else "red"
 
         status_table = Table(title=f"{status_emoji} Sandbox Status", show_header=False)
-        status_table.add_column("Property", style="bold cyan", width=20)
-        status_table.add_column("Value", style=status_color, width=25)
-        status_table.add_column("Description", style="dim", width=30)
+        status_table.add_column("Property", style="bold cyan")
+        status_table.add_column("Value", style=status_color)
+        status_table.add_column("Description", style="dim")
 
         status_table.add_row("Mode", f"{status_emoji} {status_text}", "Toggle state (informational only)")
         status_table.add_row("Isolation", "None", "No real isolation in either mode")
@@ -139,9 +139,9 @@ class SandboxCommand(DirectCommand):
             show_header=True,
             header_style="bold yellow",
         )
-        config_table.add_column("Setting", style="cyan", width=20)
-        config_table.add_column("Value", style="white", width=25)
-        config_table.add_column("Description", style="dim", width=35)
+        config_table.add_column("Setting", style="cyan")
+        config_table.add_column("Value", style="white")
+        config_table.add_column("Description", style="dim")
 
         config_table.add_row("Execution Mode", "Host (no isolation)", "Tools run with DEILE's privileges")
         config_table.add_row("File System", "Unrestricted", "Access controlled by `/permissions`")

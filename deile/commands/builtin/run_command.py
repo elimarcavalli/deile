@@ -72,11 +72,11 @@ class RunCommand(DirectCommand):
         
         # Create table of running plans
         table = Table(title="🔄 Currently Running Plans", show_header=True, header_style="bold cyan")
-        table.add_column("Plan ID", style="cyan", width=10)
-        table.add_column("Title", style="white", width=30)
-        table.add_column("Progress", style="green", width=15)
-        table.add_column("Current Step", style="yellow", width=25)
-        table.add_column("Started", style="dim", width=16)
+        table.add_column("Plan ID", style="cyan")
+        table.add_column("Title", style="white")
+        table.add_column("Progress", style="green")
+        table.add_column("Current Step", style="yellow")
+        table.add_column("Started", style="dim")
         
         for plan in plans:
             # Get detailed status

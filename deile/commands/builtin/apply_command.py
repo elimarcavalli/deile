@@ -111,9 +111,9 @@ class ApplyCommand(DirectCommand):
             show_header=True,
             header_style="bold blue",
         )
-        table.add_column("Filename", style="cyan", width=30)
-        table.add_column("Location", style="yellow", width=15)
-        table.add_column("Size", style="blue", width=12)
+        table.add_column("Filename", style="cyan")
+        table.add_column("Location", style="yellow")
+        table.add_column("Size", style="blue")
 
         for patch_file in patch_files:
             location = "PATCHES/" if patch_file.parent.name == PATCHES_DIR.name else "current"

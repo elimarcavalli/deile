@@ -64,9 +64,9 @@ class HelpCommand(DirectCommand):
                 return CommandResult.success_result(panel, "rich")
 
             table = Table(title="📚 DEILE Commands (Main Names Only)", box=box.ROUNDED)
-            table.add_column("Command", style="cyan", width=15)
-            table.add_column("Description", style="white", width=40)
-            table.add_column("Type", style="yellow", width=10)
+            table.add_column("Command", style="cyan")
+            table.add_column("Description", style="white")
+            table.add_column("Type", style="yellow")
             for command in registry.get_enabled_commands():
                 cmd_type = "LLM" if command.has_prompt_template else "Direct"
                 table.add_row(f"/{command.name}", command.description, cmd_type)
