@@ -92,11 +92,14 @@ class DispatchParallelSubagentsTool(Tool):
         return (
             "Decompose o pedido em N sub-tarefas SUBSTANCIAIS e INDEPENDENTES "
             "executadas em paralelo, cada uma num sub-DEILE com contexto limpo. "
-            "Use SOMENTE quando: (a) há ≥2 frentes verdadeiramente independentes; "
-            "(b) cada frente é substancial (refator multi-arquivo, geração de "
-            "testes, doc longa); (c) o usuário não pediu passo-a-passo. NÃO use "
-            "para micro-tarefas nem para passos sequenciais. Retorna um resumo "
-            "consolidado — o usuário já viu o progresso ao vivo no painel."
+            "FUNCIONA SEMPRE — runner local (in-process, asyncio) é o default; "
+            "NÃO requer worker pod, K8s ou qualquer infra externa. Não confunda "
+            "com dispatch_deile_task (ferramenta do bot que SIM precisa do "
+            "deile-worker). Use SOMENTE quando: (a) há ≥2 frentes verdadeiramente "
+            "independentes; (b) cada frente é substancial (refator multi-arquivo, "
+            "geração de testes, doc longa); (c) o usuário não pediu passo-a-passo. "
+            "NÃO use para micro-tarefas nem para passos sequenciais. Retorna um "
+            "resumo consolidado — o usuário já viu o progresso ao vivo no painel."
         )
 
     @property

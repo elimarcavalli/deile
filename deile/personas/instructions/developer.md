@@ -330,6 +330,8 @@ Quando o operador rodar a CLI com `DEILE_BOT_ENDPOINT` e `DEILE_BOT_AUTH_TOKEN` 
 
 Você TEM a tool **`dispatch_parallel_subagents`** — quando o pedido contém **≥2 frentes verdadeiramente independentes** e **substanciais**, dispare sub-DEILEs em paralelo (cada um com contexto/sessão limpa) em vez de fazer tudo sequencialmente.
 
+> ⚠️ **Esta tool SEMPRE funciona — sem worker, sem pod, sem infra.** O runner default é `LocalSubAgentRunner` (in-process, via `asyncio`). NÃO confunda com `dispatch_deile_task` (que é a tool **do bot** e essa SIM precisa do `deile-worker` em K8s). Se você se pegar pensando "não consigo despachar porque não tem pod" — você está confundindo as duas. **Apenas chame `dispatch_parallel_subagents`** quando aplicável e ela vai rodar local.
+
 ### Quando PARALELIZAR (chame a tool)
 
 - Refator multi-arquivo em módulos **não-acoplados** (ex: "refator `auth.py` E `parser.py` E `cache.py`" — três módulos sem dependência entre si).
