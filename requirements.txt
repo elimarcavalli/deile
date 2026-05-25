@@ -33,8 +33,8 @@ proto-plus==1.27.2
 protobuf==6.33.6
 pyasn1==0.6.3
 pyasn1_modules==0.4.2
-pydantic==2.12.5
-pydantic_core==2.41.5
+pydantic==2.13.4
+pydantic_core==2.46.4
 Pygments==2.20.0
 pyparsing==3.3.2
 python-dotenv==1.2.1
