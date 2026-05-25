@@ -51,16 +51,23 @@ spec:
             - { name: HOME,                          value: /home/deile }
             - { name: PYTHONUNBUFFERED,              value: "1" }
             - { name: PYTHONDONTWRITEBYTECODE,       value: "1" }
-            # Dispatch implement/review work to the worker (DEILE-to-DEILE).
-            - { name: DEILE_PIPELINE_DISPATCH_MODE,  value: "deile_worker" }
+            # Endpoints (não-deprecados) continuam via env — são leitura direta
+            # (não-DEILE_* legacy) e a configuração layered ainda não cobre
+            # ``DEILE_WORKER_ENDPOINT`` / ``DEILE_BOT_ENDPOINT``.
             - { name: DEILE_WORKER_ENDPOINT,         value: "http://deile-worker.deile.svc.cluster.local:8766" }
-            - { name: DEILE_PIPELINE_REPO,           value: "elimarcavalli/deile" }
-            - { name: DEILE_PIPELINE_POLL_INTERVAL,  value: "60" }
-            # Notifier posts pipeline progress to Discord via the bot control
-            # plane. notify_user_id (DEILE_PIPELINE_NOTIFY_USER_ID) is left
-            # unset by default — set it to a Discord user id to receive DMs.
             - { name: DEILE_BOT_ENDPOINT,            value: "http://deilebot.deile.svc.cluster.local:8765" }
-            - { name: DEILE_BOT_APPROVAL_AUTO,       value: "1" }
+            # Aponta o settings layered pra fora do home (montado read-only
+            # pelo ConfigMap deile-runtime-config / manifest 47). Substitui
+            # ``DEILE_PIPELINE_*`` e ``DEILE_BOT_APPROVAL_AUTO`` depreciadas
+            # pela issue #111. Mantemos o JSON em /etc/deile/ em vez de
+            # ~/.deile/ porque montar subPath em ~/.deile/ tornaria o
+            # diretório read-only pelo user 10001, quebrando ~/.deile/logs/,
+            # ~/.deile/run/, ~/.deile/sessions/.
+            - { name: DEILE_SETTINGS_FILE,           value: "/etc/deile/settings.json" }
+            #
+            # Para receber DMs do notifier, adicione "pipeline.notify_user_id":
+            # "<discord-id>" em pipeline-settings.json (manifest 47).
+            #
             # Client-side dispatch timeout MUST match the worker's task timeout
             # (45-deile-worker-deployment.yaml :: DEILE_WORKER_TASK_TIMEOUT_S),
             # otherwise the client times out before the worker finishes — observed
@@ -75,6 +82,12 @@ spec:
             - { name: worker-bearer,  mountPath: /run/secrets/worker, readOnly: true }
             - { name: home,           mountPath: /home/deile }
             - { name: tmp,            mountPath: /tmp }
+            # settings.json layered (issue #111). Apontado pelo env var
+            # DEILE_SETTINGS_FILE para evitar collision com ~/.deile/ writable.
+            - name: runtime-config
+              mountPath: /etc/deile/settings.json
+              subPath: pipeline-settings.json
+              readOnly: true
           resources:
             requests: { cpu: "50m", memory: "128Mi" }
             limits:   { cpu: "500m", memory: "512Mi" }
@@ -91,3 +104,7 @@ spec:
         - { name: worker-bearer, secret: { secretName: worker-bearer,  defaultMode: 288 } }
         - { name: home,          emptyDir: { sizeLimit: "256Mi" } }
         - { name: tmp,           emptyDir: { medium: Memory, sizeLimit: "64Mi" } }
+        - name: runtime-config
+          configMap:
+            name: deile-runtime-config
+            defaultMode: 292   # 0o444 — read-only inside pod

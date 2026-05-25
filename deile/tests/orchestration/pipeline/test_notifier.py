@@ -2,12 +2,34 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import deile.orchestration.pipeline.notifier as notifier_module
 from deile.orchestration.pipeline.notifier import DiscordNotifier
+
+
+def _stub_settings(user_id: str = ""):
+    """Return a fake ``get_settings`` callable that exposes a chosen user id.
+
+    Isolates the test from the operator's actual ``~/.deile/settings.json``
+    (which may legitimately set ``pipeline.notify_user_id`` since the env-var
+    deprecation in issue #111 — env-only stubs are no longer sufficient).
+    """
+    def _factory():
+        return SimpleNamespace(pipeline_notify_user_id=user_id)
+    return _factory
 
 
 class TestNotifierEnabled:
     def test_disabled_when_no_user_id(self, monkeypatch):
         monkeypatch.delenv("DEILE_PIPELINE_NOTIFY_USER_ID", raising=False)
+        # Also stub the layered settings (issue #111: notify_user_id now lives
+        # in ~/.deile/settings.json, not the env var). Without this stub the
+        # test reads the operator's real settings and false-passes/fails
+        # depending on their config.
+        monkeypatch.setattr(
+            "deile.config.settings.get_settings", _stub_settings(""),
+        )
         n = DiscordNotifier()
         assert not n.enabled
 
@@ -16,7 +38,14 @@ class TestNotifierEnabled:
         assert n.enabled
 
     def test_user_id_from_env(self, monkeypatch):
+        # Notifier reads user_id via get_settings().pipeline_notify_user_id —
+        # which IS populated from DEILE_PIPELINE_NOTIFY_USER_ID at boot but
+        # only on the singleton's first build. Stub the layered settings
+        # directly so the test doesn't depend on import order.
         monkeypatch.setenv("DEILE_PIPELINE_NOTIFY_USER_ID", "42")
+        monkeypatch.setattr(
+            "deile.config.settings.get_settings", _stub_settings("42"),
+        )
         n = DiscordNotifier()
         assert n.user_id == "42"
 

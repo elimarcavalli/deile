@@ -343,7 +343,12 @@ def k8s_up(args: dict) -> int:
             return 1
 
     ui.info("aplicando ConfigMap, PVCs, Deployments e Services")
-    for manifest in ("15-bot-config.yaml", "19-bot-data-pvc.yaml",
+    # ConfigMaps PRIMEIRO — Pods montam essas chaves; aplicar antes evita
+    # CreateContainerConfigError no primeiro rollout. ``47-deile-runtime-config``
+    # carrega o settings.json layered (issue #111) consumido por pipeline /
+    # worker / shell em ~/.deile/settings.json.
+    for manifest in ("15-bot-config.yaml", "47-deile-runtime-config.yaml",
+                     "19-bot-data-pvc.yaml",
                      "20-bot-deployment.yaml", "35-deile-interactive.yaml",
                      "41-worker-pvc.yaml", "45-deile-worker-deployment.yaml",
                      "46-deile-pipeline-deployment.yaml"):
