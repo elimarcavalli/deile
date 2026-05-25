@@ -189,6 +189,9 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     "subagent.max_parallel": ("subagent_max_parallel", _to_pos_int),
     "subagent.poll_interval_s": ("subagent_poll_interval_s", float),
     "subagent.budget_s": ("subagent_budget_s", float),
+    "subagent.capture_buffer_max_bytes": (
+        "subagent_capture_buffer_max_bytes", _to_pos_int,
+    ),
     # Trust boundary (issue #125): allowlist of directories whose
     # ``./.deile/settings.json`` is honored as the project layer.
     "trust.project_layer_dirs": ("trust_project_layer_dirs", _to_str_list),
@@ -357,6 +360,11 @@ class Settings:
     # Teto global de tempo da invocação do tool `dispatch_parallel_subagents`
     # (M2/M11 — issue #295 review). Default = 10min = mesmo budget do worker.
     subagent_budget_s: float = 600.0
+    # Cap (em bytes) do buffer de captura de stdout/stderr por sub-DEILE
+    # (item 10). Default histórico = 256 KiB. Overridable via env
+    # ``DEILE_SUBAGENT_CAPTURE_BUFFER_MAX_BYTES`` ou JSON
+    # ``subagent.capture_buffer_max_bytes``.
+    subagent_capture_buffer_max_bytes: int = 256 * 1024
 
     # Cron
     cron_db_path: Optional[Path] = None
@@ -891,6 +899,7 @@ _ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any], bool], ...] = (
     ("DEILE_SUBAGENT_MAX_PARALLEL",          "subagent_max_parallel",          _int_floor(1),     False),
     ("DEILE_SUBAGENT_POLL_INTERVAL_S",       "subagent_poll_interval_s",       float,             False),
     ("DEILE_SUBAGENT_BUDGET_S",              "subagent_budget_s",              float,             False),
+    ("DEILE_SUBAGENT_CAPTURE_BUFFER_MAX_BYTES", "subagent_capture_buffer_max_bytes", _int_floor(1), False),
 )
 
 
