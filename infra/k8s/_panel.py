@@ -929,21 +929,76 @@ class _LogStreamer:
 
 
 class PodPickerView(View):
-    """Lista pods selecionável com setas / Enter abre o PodWatch."""
+    """Lista pods selecionável + ações de ciclo-de-vida.
+
+    Hotkeys (além do enter pra abrir o PodWatch):
+
+    - ``x`` — encerra o pod/processo selecionado (k8s: ``kubectl delete pod``;
+      local: SIGTERM com escalation SIGKILL após 5s).
+    - ``r`` — rollout restart do Deployment do pod (só k8s; em local mostra
+      "não suportado").
+    - ``R`` — rollout restart de TODOS os 4 deployments do stack k8s, em
+      paralelo declarativo (loop best-effort: uma falha não aborta as
+      demais).
+
+    Toda ação destrutiva passa por confirmação inline ([y] confirma /
+    qualquer outra cancela) e emite ``AuditEvent(COMMAND_EXECUTED)``.
+    """
 
     name = "pod-picker"
     title = "Selecionar pod"
     refresh_s = 1.0
 
-    HOTKEYS = "[↑/↓] navega   [enter] entra   [esc] volta   [q] sai"
+    HOTKEYS = (
+        "[↑/↓] navega   [enter] entra   "
+        "[x] kill   [r] restart   [R] restart-all-k8s   "
+        "[esc] volta   [q] sai"
+    )
 
     def __init__(self, data: Optional[PanelData] = None):
         self.data = data
         self.cursor = 0
+        # Confirmação inline: None = ocioso; "x"/"r"/"R" = aguardando [y]/[n].
+        # Quando setado, o handler pula a navegação até resolver.
+        self.confirm_action: Optional[str] = None
+        # Texto do último resultado pra renderizar no panel de feedback;
+        # ``last_ok`` controla a cor (verde ok / vermelho erro / amarelo info).
+        self.last_msg: str = ""
+        self.last_ok: Optional[bool] = None
 
     def _rows(self) -> List[PodRow]:
         """Lista pods do cluster + processos locais (na ordem natural)."""
         return _pod_rows(self.data) + _local_process_rows(self.data)
+
+    @staticmethod
+    def _deployment_for_role(role: str) -> Optional[str]:
+        """Mapeia role do pod k8s pro nome do Deployment.
+
+        Retorna None para roles locais (``local-*``) ou desconhecidas —
+        sinal para o handler de ``r`` recusar a ação.
+        """
+        mapping = {
+            "pipeline": "deile-pipeline",
+            "worker":   "deile-worker",
+            "bot":      "deilebot",
+            "shell":    "deile-shell",
+        }
+        return mapping.get(role)
+
+    @staticmethod
+    def _pid_from_local_row(row: PodRow) -> Optional[int]:
+        """Extrai PID de um row local — formato ``local-<role>#<pid>``.
+
+        Retorna None se o formato não bater (defensivo; nunca deve
+        acontecer na prática porque ``LocalProcessInfo.name`` sempre
+        produz essa forma).
+        """
+        if not row.name or "#" not in row.name:
+            return None
+        try:
+            return int(row.name.rsplit("#", 1)[1])
+        except (ValueError, IndexError):
+            return None
 
     def render(self, app: "PanelApp") -> RenderableType:
         rows = self._rows()
@@ -969,32 +1024,225 @@ class PodPickerView(View):
                 p.age,
                 Text(p.doing_now, style="dim"),
             )
+
+        # Painel de confirmação OU feedback da última ação. Mutuamente
+        # exclusivos — a confirmação aparece enquanto está pendente, e
+        # depois o feedback fica visível até a próxima ação (ou refresh).
+        confirm_panel = self._confirm_panel(rows)
+
+        body = Layout(name="body")
+        if confirm_panel is not None:
+            body.split_column(
+                Layout(Panel(tbl, title="[bold]escolha um pod para assistir[/bold]",
+                             title_align="left", border_style="cyan"),
+                       name="list"),
+                Layout(confirm_panel, name="confirm", size=7),
+            )
+        else:
+            body.update(Panel(tbl,
+                              title="[bold]escolha um pod para assistir[/bold]",
+                              title_align="left", border_style="cyan"))
+
         layout = Layout()
         layout.split_column(
             Layout(_head_panel(self.title, app), name="head", size=4),
-            Layout(Panel(tbl, title="[bold]escolha um pod para assistir[/bold]",
-                         title_align="left", border_style="cyan"),
-                   name="body"),
+            body,
             Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
         )
         return layout
 
+    def _confirm_panel(self, rows: List[PodRow]) -> Optional[Panel]:
+        """Renderiza o painel de confirmação OU o feedback da última ação."""
+        if self.confirm_action is not None:
+            text = self._describe_pending(rows)
+            again = self.confirm_action
+            return Panel(
+                Text.from_markup(
+                    text + "\n\n[bold yellow]Confirma?[/bold yellow] "
+                    f"[bold green][y][/bold green] ou [bold green][{again}][/bold green] "
+                    "novamente aplica  /  qualquer outra cancela",
+                ),
+                title="[bold]CONFIRMAR AÇÃO[/bold]",
+                title_align="left", border_style="yellow",
+            )
+        if self.last_msg:
+            border = ("green" if self.last_ok is True
+                      else "red" if self.last_ok is False
+                      else "yellow")
+            style = ("bold green" if self.last_ok is True
+                     else "bold red" if self.last_ok is False
+                     else "bold yellow")
+            return Panel(
+                Text(self.last_msg, style=style),
+                title="[bold]ÚLTIMA AÇÃO[/bold]",
+                title_align="left", border_style=border,
+            )
+        return None
+
+    def _describe_pending(self, rows: List[PodRow]) -> str:
+        """Texto humano do que vai ser executado se o operador confirmar."""
+        if self.confirm_action == "R":
+            return (
+                "[bold]rollout restart ALL[/bold] — todos os 4 deployments k8s "
+                "(deile-pipeline, deile-worker, deilebot, deile-shell).\n"
+                "Cada Deployment respeita sua strategy (RollingUpdate / Recreate)."
+            )
+        if not rows:
+            return "(nenhum pod selecionado)"
+        row = rows[min(self.cursor, len(rows) - 1)]
+        if self.confirm_action == "x":
+            if row.role.startswith("local-"):
+                pid = self._pid_from_local_row(row)
+                return (
+                    f"[bold]kill local[/bold] pid={pid} "
+                    f"([cyan]{row.name}[/cyan])\n"
+                    "SIGTERM, com escalation pra SIGKILL após 5s se ignorado."
+                )
+            return (
+                f"[bold]kubectl delete pod[/bold] [cyan]{row.name}[/cyan] "
+                f"(role={row.role})\n"
+                "O Deployment vai recriar o pod em segundos."
+            )
+        if self.confirm_action == "r":
+            dep = self._deployment_for_role(row.role)
+            return (
+                f"[bold]kubectl rollout restart deployment/{dep}[/bold] "
+                f"(pod selecionado: [cyan]{row.name}[/cyan])\n"
+                "Reinicia TODOS os pods deste Deployment com a strategy do manifest."
+            )
+        return f"ação desconhecida: {self.confirm_action!r}"
+
     def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
+        # Resolução de confirmação SEMPRE primeiro — outras teclas ficam
+        # mortas até o operador decidir. Padrão alinhado com ActionsView /
+        # ModelSwitcherView.
+        if self.confirm_action is not None:
+            return self._handle_confirmation(key)
+
         rows = self._rows()
         n = len(rows)
-        if n == 0:
-            return ActionResult()
-        if key in ("UP", "k"):
+        if key in ("UP", "k") and n:
             self.cursor = (self.cursor - 1) % n
             return ActionResult.refresh()
-        if key in ("DOWN", "j"):
+        if key in ("DOWN", "j") and n:
             self.cursor = (self.cursor + 1) % n
             return ActionResult.refresh()
-        if key in ("\r", "\n"):
+        if key in ("\r", "\n") and n:
             pod = rows[self.cursor]
             return ActionResult.nav("pod-watch", pod_name=pod.name,
                                     pod_role=pod.role)
+
+        # Ações destrutivas — abrem confirmação. ``R`` (maiúsculo) cobre
+        # restart-all independente da row selecionada; ``x``/``r`` operam
+        # na row sob o cursor (e exigem que haja alguma).
+        if key == "R":
+            self.last_msg = ""
+            self.last_ok = None
+            self.confirm_action = "R"
+            return ActionResult.refresh()
+        if key in ("x", "r"):
+            if n == 0:
+                self.last_msg = "nenhum pod selecionável"
+                self.last_ok = False
+                return ActionResult.refresh()
+            row = rows[self.cursor]
+            # ``r`` em row local não é suportado (não há "rollout" de PID;
+            # use ``x`` pra matar e o operador re-executa manualmente).
+            if key == "r" and row.role.startswith("local-"):
+                self.last_msg = (
+                    f"restart não suportado em processo local "
+                    f"({row.name}) — use [x] pra matar"
+                )
+                self.last_ok = False
+                return ActionResult.refresh()
+            self.last_msg = ""
+            self.last_ok = None
+            self.confirm_action = key
+            return ActionResult.refresh()
         return ActionResult()
+
+    def _handle_confirmation(self, key: str) -> ActionResult:
+        """Aplica ou cancela a ação pendente.
+
+        Aceita confirmação por:
+          1. ``y`` — universal (igual ao padrão de outras views).
+          2. Repetir a própria tecla da ação (``x x``, ``r r``, ``R R``) —
+             double-tap muscle-memory: o operador apertou ``x`` querendo
+             matar, apertar ``x`` de novo confirma sem mover a mão.
+
+        Qualquer outra tecla cancela (default-deny preservado).
+        """
+        action = self.confirm_action
+        if key == "y" or key == action:
+            try:
+                self._apply(action)
+            finally:
+                self.confirm_action = None
+            return ActionResult.refresh()
+        from _panel_data import _audit_pod_action  # noqa: PLC0415
+        _audit_pod_action(
+            action or "?", resource="pending-confirmation",
+            result="cancelled",
+            detail=f"operador cancelou ({key!r})",
+        )
+        self.confirm_action = None
+        self.last_msg = "cancelado pelo operador"
+        self.last_ok = None
+        return ActionResult.refresh()
+
+    def _apply(self, action: Optional[str]) -> None:
+        """Executa a ação destrutiva confirmada e popula last_msg/last_ok."""
+        if self.data is None:
+            self.last_msg = "modo demo — nenhuma ação aplicada"
+            self.last_ok = False
+            return
+        from _panel_data import (delete_pod,  # noqa: PLC0415
+                                  kill_local_pid,
+                                  rollout_restart_all,
+                                  rollout_restart_deployment)
+
+        rows = self._rows()
+        if action == "R":
+            results = rollout_restart_all()
+            all_ok = all(ok for _, ok, _ in results)
+            self.last_ok = all_ok
+            self.last_msg = " | ".join(
+                f"{dep}: {'OK' if ok else 'FAIL'} ({m[:40]})"
+                for dep, ok, m in results
+            )
+            return
+        if not rows:
+            self.last_msg = "lista vazia — nada a aplicar"
+            self.last_ok = False
+            return
+        row = rows[min(self.cursor, len(rows) - 1)]
+        if action == "x":
+            if row.role.startswith("local-"):
+                pid = self._pid_from_local_row(row)
+                if pid is None:
+                    self.last_msg = f"PID inválido na linha {row.name!r}"
+                    self.last_ok = False
+                    return
+                ok, msg = kill_local_pid(pid)
+            else:
+                ok, msg = delete_pod(row.name)
+            self.last_ok = ok
+            self.last_msg = msg
+            return
+        if action == "r":
+            dep = self._deployment_for_role(row.role)
+            if dep is None:
+                self.last_msg = (
+                    f"role {row.role!r} não tem Deployment associado"
+                )
+                self.last_ok = False
+                return
+            ok, msg = rollout_restart_deployment(dep)
+            self.last_ok = ok
+            self.last_msg = msg
+            return
+        self.last_msg = f"ação desconhecida: {action!r}"
+        self.last_ok = False
 
 
 class _LocalLogTailer:
@@ -2707,6 +2955,12 @@ class PanelApp:
             self.settings.refresh_mult = max(self.settings.refresh_mult / 2, 0.25)
             return True
         if key == "r":
+            # PodPickerView reivindica `r` como "rollout restart do pod
+            # selecionado". Cedemos a tecla pra view — o operador ainda
+            # pode forçar refresh via `+`/`-` (cadência) ou aguardar o
+            # próximo tick. Demais views mantêm o comportamento original.
+            if self.current_view.name == "pod-picker":
+                return False
             self._last_render = 0.0       # força próximo tick a renderizar
             if self.data is not None:
                 self.data.force_refresh_all()

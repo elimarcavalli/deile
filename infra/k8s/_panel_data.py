@@ -65,6 +65,17 @@ _MODEL_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$")
 # Argumento `deployment` de `set_preferred_model` vai direto em argv —
 # whitelist impede qualquer outro alvo (acidental ou malicioso).
 _ALLOWED_DEPLOYMENTS = frozenset({"deile-worker", "deile-pipeline"})
+# Deployments do stack inteiro (alvos das ações de ciclo-de-vida do painel:
+# delete pod, rollout restart). Distinto de _ALLOWED_DEPLOYMENTS, que cobre
+# só a troca de modelo (worker + pipeline). Aqui incluímos também bot/shell.
+_ALLOWED_DEPLOYMENTS_FULL = frozenset({
+    "deile-pipeline", "deile-worker", "deilebot", "deile-shell",
+})
+# Pod name: snowflake-ish letras-minúsculas + dígitos + hífen (validação
+# leve para argv); até 253 chars (limite DNS-1123). Validado antes de
+# chegar em qualquer ``kubectl delete pod`` — sem espaços, sem barra,
+# sem flags.
+_POD_NAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,251}[a-z0-9])?$")
 
 
 def _detect_default_repo() -> str:
@@ -1280,6 +1291,294 @@ def set_preferred_model(deployment: str, slug: str,
     _audit_security_policy_change(
         deployment, slug, result="completed", detail=msg,
         namespace=namespace,
+    )
+    return True, msg
+
+
+# ===== Pod lifecycle actions (delete / rollout / kill local) ================
+#
+# Operações disparadas pelo PodPickerView (hotkeys [x]/[r]/[R]). Cada uma:
+#
+#   1. Valida argumentos contra whitelist/regex ANTES de chegar em argv.
+#   2. Emite audit `OPERATION_EXECUTED` (allowed→completed / denied / failed).
+#   3. Retorna ``(ok: bool, msg: str)`` para a view renderizar feedback.
+#
+# A construção segue o mesmo padrão de ``set_preferred_model`` — funções puras
+# testáveis sem montar UI.
+
+def _audit_pod_action(
+    action: str, resource: str, *, result: str, detail: str,
+    namespace: str = NS,
+) -> None:
+    """Emite AuditEvent(COMMAND_EXECUTED) para ações de ciclo-de-vida.
+
+    Espelha ``_audit_security_policy_change`` (segredos não são logados;
+    apenas action/resource/result/detail). Usa COMMAND_EXECUTED por casar
+    semanticamente com kubectl/os.kill — ações executando comandos
+    externos contra recursos identificáveis. Silencioso quando o audit
+    logger não está importável; nunca bloqueia a ação.
+    """
+    try:
+        from deile.security.audit_logger import (  # noqa: PLC0415
+            AuditEventType, SeverityLevel, get_audit_logger)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "audit logger indisponível para %s: %s", action, exc,
+        )
+        return
+    severity = (SeverityLevel.INFO
+                if result in ("allowed", "completed", "cancelled")
+                else SeverityLevel.WARNING)
+    try:
+        get_audit_logger().log_event(
+            event_type=AuditEventType.COMMAND_EXECUTED,
+            severity=severity,
+            actor=f"panel:{action}",
+            resource=resource,
+            action=action,
+            result=result,
+            details={"detail": detail[:200], "namespace": namespace},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("falha emitindo AuditEvent: %s", exc)
+
+
+def delete_pod(pod_name: str, *, namespace: str = NS,
+               timeout: float = 15.0) -> tuple:
+    """``kubectl delete pod <name>`` com validação e audit.
+
+    O Deployment correspondente vai recriar o Pod em segundos — equivale
+    a "restart só desse pod". Para reiniciar TODOS os pods do mesmo
+    Deployment, use ``rollout_restart_deployment``.
+    """
+    safe = pod_name if isinstance(pod_name, str) else repr(pod_name)
+    resource = f"pod:{namespace}/{safe}"
+    if not isinstance(pod_name, str) or not _POD_NAME_RE.match(pod_name):
+        _audit_pod_action(
+            "delete_pod", resource, result="denied",
+            detail="pod_name inválido", namespace=namespace,
+        )
+        return False, "pod_name inválido — recusado por validação"
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        _audit_pod_action(
+            "delete_pod", resource, result="failed",
+            detail="kubectl não encontrado", namespace=namespace,
+        )
+        return False, "kubectl não encontrado"
+    _audit_pod_action(
+        "delete_pod", resource, result="allowed",
+        detail="executando kubectl delete pod", namespace=namespace,
+    )
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", namespace, "delete", "pod", pod_name],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _audit_pod_action(
+            "delete_pod", resource, result="failed",
+            detail=f"subprocess: {exc}", namespace=namespace,
+        )
+        return False, f"falha ao executar kubectl: {exc}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl delete pod falhou").strip()
+        _audit_pod_action(
+            "delete_pod", resource, result="failed",
+            detail=f"rc={proc.returncode} {err}", namespace=namespace,
+        )
+        return False, err
+    msg = (proc.stdout or "pod deletado").strip()
+    _audit_pod_action(
+        "delete_pod", resource, result="completed",
+        detail=msg, namespace=namespace,
+    )
+    return True, msg
+
+
+def rollout_restart_deployment(deployment: str, *,
+                               namespace: str = NS,
+                               timeout: float = 15.0) -> tuple:
+    """``kubectl rollout restart deployment/<name>`` com whitelist + audit.
+
+    Reinicia TODOS os pods do Deployment (respeitando a strategy do
+    manifest — RollingUpdate ou Recreate). Whitelist restrita aos 4
+    deployments do stack (``_ALLOWED_DEPLOYMENTS_FULL``) bloqueia qualquer
+    alvo fora dali.
+    """
+    safe = deployment if isinstance(deployment, str) else repr(deployment)
+    resource = f"deployment:{namespace}/{safe}"
+    if deployment not in _ALLOWED_DEPLOYMENTS_FULL:
+        _audit_pod_action(
+            "rollout_restart", resource, result="denied",
+            detail="deployment fora da whitelist", namespace=namespace,
+        )
+        allowed = ", ".join(sorted(_ALLOWED_DEPLOYMENTS_FULL))
+        return False, (
+            f"deployment '{deployment}' não permitido — "
+            f"esperado um de: {allowed}"
+        )
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        _audit_pod_action(
+            "rollout_restart", resource, result="failed",
+            detail="kubectl não encontrado", namespace=namespace,
+        )
+        return False, "kubectl não encontrado"
+    _audit_pod_action(
+        "rollout_restart", resource, result="allowed",
+        detail="executando kubectl rollout restart", namespace=namespace,
+    )
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", namespace, "rollout", "restart",
+             f"deployment/{deployment}"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _audit_pod_action(
+            "rollout_restart", resource, result="failed",
+            detail=f"subprocess: {exc}", namespace=namespace,
+        )
+        return False, f"falha ao executar kubectl: {exc}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "rollout restart falhou").strip()
+        _audit_pod_action(
+            "rollout_restart", resource, result="failed",
+            detail=f"rc={proc.returncode} {err}", namespace=namespace,
+        )
+        return False, err
+    msg = (proc.stdout or "rollout disparado").strip()
+    _audit_pod_action(
+        "rollout_restart", resource, result="completed",
+        detail=msg, namespace=namespace,
+    )
+    return True, msg
+
+
+def rollout_restart_all(*, namespace: str = NS,
+                        timeout: float = 15.0) -> List[tuple]:
+    """Dispara ``rollout restart`` para CADA deployment k8s do stack.
+
+    Best-effort por deployment — uma falha NÃO aborta as demais (cada
+    rollout é independente; é melhor reiniciar 3 de 4 do que 0). Retorna
+    a lista `[(deployment, ok, msg), ...]` na ordem da whitelist
+    determinística (sort), para o caller agregar e exibir.
+    """
+    out: List[tuple] = []
+    for dep in sorted(_ALLOWED_DEPLOYMENTS_FULL):
+        ok, msg = rollout_restart_deployment(
+            dep, namespace=namespace, timeout=timeout,
+        )
+        out.append((dep, ok, msg))
+    return out
+
+
+def kill_local_pid(pid: int, *, sig: str = "SIGTERM",
+                   timeout: float = 5.0) -> tuple:
+    """Envia ``sig`` (SIGTERM por default) para o processo local ``pid``.
+
+    Validações:
+
+    1. PID positivo (> 1 — proíbe 0, init, negativos).
+    2. PID pertence ao mesmo USER que roda o painel — nunca toca processo
+       alheio (defesa em profundidade; se o painel rodar privilegiado por
+       acidente, ainda restringe ao escopo natural do operador).
+    3. ``sig`` numa whitelist pequena (SIGTERM / SIGKILL) — evita usar
+       sinais raros (SIGUSR1, etc) que poderiam corromper estado.
+
+    Se o processo não morrer em ``timeout`` segundos após SIGTERM, faz
+    SIGKILL como segundo passo (mesmo padrão que ``_LogStreamer.stop``).
+    Retorna ``(ok, msg)`` — view só renderiza.
+    """
+    import os
+    import signal as _signal
+    resource = f"local-pid:{pid}"
+    allowed_signals = {"SIGTERM": _signal.SIGTERM, "SIGKILL": _signal.SIGKILL}
+    if sig not in allowed_signals:
+        _audit_pod_action(
+            "kill_local_pid", resource, result="denied",
+            detail=f"sig '{sig}' fora da whitelist",
+        )
+        return False, f"sinal '{sig}' não permitido"
+    if not isinstance(pid, int) or pid <= 1:
+        _audit_pod_action(
+            "kill_local_pid", resource, result="denied",
+            detail=f"pid inválido ({pid!r})",
+        )
+        return False, f"pid inválido: {pid!r}"
+    # Ownership check (defense in depth). psutil.AccessDenied no fetch
+    # do uid é tratado como "não posso ver → não posso matar".
+    try:
+        import psutil  # noqa: PLC0415
+        proc = psutil.Process(pid)
+        proc_uid = proc.uids().real
+        my_uid = os.getuid()
+        if proc_uid != my_uid:
+            _audit_pod_action(
+                "kill_local_pid", resource, result="denied",
+                detail=f"pid pertence a uid={proc_uid}, painel é uid={my_uid}",
+            )
+            return False, (
+                f"pid {pid} pertence a outro usuário (uid={proc_uid})"
+            )
+    except psutil.NoSuchProcess:
+        _audit_pod_action(
+            "kill_local_pid", resource, result="failed",
+            detail="processo não existe (já morreu?)",
+        )
+        return False, f"processo {pid} não existe"
+    except psutil.AccessDenied as exc:
+        _audit_pod_action(
+            "kill_local_pid", resource, result="denied",
+            detail=f"psutil acesso negado: {exc}",
+        )
+        return False, f"acesso negado ao pid {pid}"
+    except Exception as exc:  # noqa: BLE001
+        _audit_pod_action(
+            "kill_local_pid", resource, result="failed",
+            detail=f"psutil falhou: {exc}",
+        )
+        return False, f"erro inspecionando pid {pid}: {exc}"
+    _audit_pod_action(
+        "kill_local_pid", resource, result="allowed",
+        detail=f"enviando {sig} (escalation: SIGKILL após {timeout}s)",
+    )
+    try:
+        os.kill(pid, allowed_signals[sig])
+    except ProcessLookupError:
+        _audit_pod_action(
+            "kill_local_pid", resource, result="failed",
+            detail="ProcessLookupError no os.kill",
+        )
+        return False, "processo desapareceu antes do sinal chegar"
+    except PermissionError as exc:
+        _audit_pod_action(
+            "kill_local_pid", resource, result="failed",
+            detail=f"PermissionError: {exc}",
+        )
+        return False, f"sem permissão para matar pid {pid}"
+    # Espera o processo morrer; se não morrer em ``timeout``, escala SIGKILL.
+    if sig == "SIGTERM":
+        try:
+            proc.wait(timeout=timeout)
+            msg = f"pid {pid} encerrado via SIGTERM"
+        except psutil.TimeoutExpired:
+            try:
+                os.kill(pid, _signal.SIGKILL)
+                msg = f"pid {pid} forçado via SIGKILL (SIGTERM ignorado)"
+            except ProcessLookupError:
+                msg = f"pid {pid} morreu durante escalation"
+            except PermissionError as exc:
+                _audit_pod_action(
+                    "kill_local_pid", resource, result="failed",
+                    detail=f"escalation negada: {exc}",
+                )
+                return False, f"sem permissão na escalation: {exc}"
+    else:
+        msg = f"pid {pid} encerrado via {sig}"
+    _audit_pod_action(
+        "kill_local_pid", resource, result="completed", detail=msg,
     )
     return True, msg
 
