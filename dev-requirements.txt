@@ -9,4 +9,4 @@ bandit==1.9.3
 coverage==7.11.0
 isort==6.1.0
 radon==6.0.1
-black==25.9.0
+black==25.11.0
