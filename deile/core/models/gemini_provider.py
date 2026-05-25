@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
+from google.genai._api_client import BaseApiClient as _GenaiBaseApiClient
 from google.genai.types import (AutomaticFunctionCallingConfig,
                                 GenerateContentConfig, HttpOptions, Tool)
 
@@ -24,6 +25,65 @@ from .tool_execution import (OUTCOME_EXCEPTION, OUTCOME_NOT_FOUND,
                              resolve_and_execute_tool)
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Defensive monkey-patch: google-genai aclose() AttributeError
+# ---------------------------------------------------------------------------
+#
+# google-genai 1.47.0 has a bug in BaseApiClient.aclose():
+#
+#     async def aclose(self) -> None:
+#         await self._async_httpx_client.aclose()
+#         if self._aiohttp_session:
+#             await self._aiohttp_session.close()
+#
+# The async httpx client is LAZY-INITIALIZED (only created on the first async
+# request). If the BaseApiClient is GC'd before any async request fires —
+# common during bootstrap when we register a Gemini provider but exercise
+# only DeepSeek/Anthropic — ``self._async_httpx_client`` doesn't exist yet
+# and ``aclose()`` raises ``AttributeError``. Worse, ``aclose()`` runs
+# as a Task on the event loop (scheduled by ``__del__``), and the exception
+# never gets retrieved, producing:
+#
+#     ERROR asyncio Task exception was never retrieved
+#     future: <Task finished name='Task-N' coro=<BaseApiClient.aclose() done...>
+#         exception=AttributeError("'BaseApiClient' object has no attribute
+#         '_async_httpx_client'")>
+#
+# Two such errors at every worker boot (observed in deile-worker pod logs).
+# The fix upstream needs ``hasattr`` guards (and presumably exists in 2.x,
+# but the major bump is breaking). The local fix is a defensive wrapper that
+# preserves the close-if-initialized semantics and silently no-ops the
+# missing-attribute case — which is exactly what aclose() means anyway.
+#
+# Idempotent (won't re-patch if our marker is present).
+
+def _install_genai_aclose_guard() -> None:
+    if getattr(_GenaiBaseApiClient.aclose, "_deile_guarded", False):
+        return
+    _original_aclose = _GenaiBaseApiClient.aclose
+
+    async def _safe_aclose(self) -> None:
+        try:
+            await _original_aclose(self)
+        except AttributeError as exc:
+            # SDK bug — referencing a lazy attribute that was never created.
+            # Nothing to close, so the close completed trivially.
+            if "_async_httpx_client" in str(exc) or "_aiohttp_session" in str(exc):
+                logger.debug(
+                    "google-genai aclose: lazy client never initialized "
+                    "(%s) — safe no-op",
+                    exc,
+                )
+                return
+            raise
+
+    _safe_aclose._deile_guarded = True  # type: ignore[attr-defined]
+    _GenaiBaseApiClient.aclose = _safe_aclose  # type: ignore[method-assign]
+
+
+_install_genai_aclose_guard()
 
 
 def _stringify_for_model(value: Any) -> Any:
