@@ -358,12 +358,23 @@ class _DeileCLI:
     _IGNORE_DIRS = frozenset({"__pycache__", ".git", "node_modules", ".venv", "venv", "dist", "build", ".deile"})
 
     def _get_project_files(self) -> list[str]:
-        wd = Path(self.settings.working_directory)
-        files = [
-            str(path.relative_to(wd)).replace("\\", "/")
-            for path in wd.rglob("*")
-            if path.is_file() and not any(d in path.parts for d in self._IGNORE_DIRS)
-        ]
+        # ``resolve()`` normalizes ``..`` and symlinks so ``relative_to(wd)``
+        # below cannot mismatch lexically against ``wd.rglob()`` paths
+        # (which the OS reports as fully-resolved). Without it, an unresolved
+        # working_directory would crash the listcomp with ValueError and
+        # silently break tab-completion.
+        wd = Path(self.settings.working_directory).resolve()
+        files = []
+        for path in wd.rglob("*"):
+            if not path.is_file():
+                continue
+            if any(d in path.parts for d in self._IGNORE_DIRS):
+                continue
+            try:
+                files.append(str(path.relative_to(wd)).replace("\\", "/"))
+            except ValueError:
+                # Defensive: filesystem-level symlinks may still slip through.
+                continue
         return sorted(files)[:500]
 
     # Sentinel returned by get_user_input() when the user presses ESC ESC on

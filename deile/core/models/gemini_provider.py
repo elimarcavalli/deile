@@ -1135,10 +1135,13 @@ class GeminiProvider(ModelProvider):
     def _process_messages_for_gemini(self, messages: List[ModelMessage]) -> List[Dict[str, Any]]:
         """Converte ``ModelMessage`` em ``contents`` para o Google GenAI SDK.
 
-        Mapeia roles num único passo (``assistant`` preservado, demais viram
-        ``user``), descarta mensagens ``system`` — tratadas via
-        ``system_instruction`` — e normaliza ``content`` em ``parts``
-        (string/objeto único → lista de parts; lista multi-modal mantida).
+        Mapeia ``assistant`` para o role ``model`` que o SDK do Google GenAI
+        exige (única alternativa válida a ``user`` — a documentação oficial
+        lista somente ``user`` e ``model``; mandar ``assistant`` causa
+        400 ``Please use a valid role: user, model``). Mensagens ``system``
+        são descartadas (tratadas via ``system_instruction``). ``content`` é
+        normalizado em ``parts`` (string/objeto único → lista de parts; lista
+        multi-modal mantida).
         """
         contents: List[Dict[str, Any]] = []
 
@@ -1146,7 +1149,7 @@ class GeminiProvider(ModelProvider):
             if message.role == "system":
                 # System messages são tratadas na system_instruction.
                 continue
-            role = "assistant" if message.role == "assistant" else "user"
+            role = "model" if message.role == "assistant" else "user"
 
             # Processa content (pode ser string ou lista de parts)
             if isinstance(message.content, str):

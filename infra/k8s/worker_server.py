@@ -550,12 +550,14 @@ async def _run_task(
             prompt = _build_prompt(brief, workdir, history or "")
 
             # Hook the agent's event bus if available, to feed progress.
-            # Bug fix: previous code used bus.subscribe(_on_event) (1 arg)
-            # but the real signature is subscribe(event_type, handler).
-            # Now we use subscribe_all for catch-all + async handler.
-            # B3 (PR #295 review): the handler is later unsubscribed in the
-            # `finally` block — sem isso, dispatches acumulam handlers no
-            # singleton EventBus e o fan-out vira O(N) sob carga.
+            # IMPORTANT: store the handler reference so we can unsubscribe
+            # in the finally block. Each _run_task registered a fresh
+            # closure; ``EventBus.subscribe_all`` keeps strong refs in
+            # ``_wildcard_handlers``, so under sustained dispatch the list
+            # grew unbounded — each new event invoked every stale handler
+            # (O(N²) CPU), each closure held the dead task's
+            # ``progress_lines`` (memory growth), and progress lines could
+            # leak across tasks. (PR #295 review B3, PR #298 worker_server.)
             bus = None
             _on_event = None
             try:
@@ -583,11 +585,12 @@ async def _run_task(
                     bus.subscribe_all(_on_event)
                 elif hasattr(bus, "subscribe"):
                     # Some EventBus signatures take (event_type, handler) —
-                    # try a sensible catch-all key if available.
+                    # try a sensible catch-all key if available. ``_on_event``
+                    # keeps the reference so the finally block can unsubscribe.
                     try:
                         bus.subscribe("*", _on_event)
                     except Exception:
-                        pass
+                        _on_event = None
             except Exception:
                 logger.debug("event bus hook unavailable", exc_info=True)
                 bus = None

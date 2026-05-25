@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -152,6 +153,15 @@ class EventBus:
         }
         self._processing_times: List[float] = []
 
+        # Tracking de events processados para ``publish_and_wait`` poder
+        # sincronizar com o término dos handlers. Bounded: mantemos só os
+        # últimos N IDs (FIFO via deque) para não vazar memória em runs
+        # longos. Antes deste fix, ``_is_event_processed`` retornava ``True``
+        # incondicionalmente — ``publish_and_wait`` retornava True antes
+        # mesmo do worker ter pego o evento da fila.
+        self._processed_event_ids: deque[str] = deque(maxlen=10_000)
+        self._processed_lookup: set[str] = set()
+
         # Rate limiting
         self._rate_limits: Dict[str, Dict[str, Any]] = {}  # source -> config
 
@@ -212,11 +222,12 @@ class EventBus:
     def unsubscribe_all(self, handler: EventHandler) -> bool:
         """Remove handler wildcard registrado via :meth:`subscribe_all`.
 
-        Issue #295 review (B3): subscribers wildcard que não são removidos
-        após o dispatch terminar acumulam no singleton de processo. Como o
-        EventBus dispara para todos os wildcard handlers a cada evento, o
-        custo cresce O(N) por evento × N dispatches passados que não
-        limparam — efetivamente um vazamento.
+        Sem este método, cada caller (ex.: ``worker_server._run_task``)
+        que registra um wildcard handler por dispatch o acumula no
+        singleton de processo. Como o EventBus dispara para todos os
+        wildcard handlers a cada evento, o custo cresce O(N) por evento
+        × N dispatches passados que não limparam — vazamento efetivo
+        (issue #295 review B3, PR #298 caught no worker_server).
 
         Returns:
             True se o handler foi removido, False se não estava registrado.
@@ -372,6 +383,20 @@ class EventBus:
             # Atualiza média
             self._stats["average_processing_time"] = sum(self._processing_times) / len(self._processing_times)
 
+            # Marca como processado para ``publish_and_wait``.
+            self._mark_event_processed(event.event_id)
+
+    def _mark_event_processed(self, event_id: str) -> None:
+        """Record that an event finished processing (bounded FIFO)."""
+        if event_id in self._processed_lookup:
+            return
+        if len(self._processed_event_ids) == self._processed_event_ids.maxlen:
+            # Drop oldest from both structures atomically.
+            evicted = self._processed_event_ids[0]
+            self._processed_lookup.discard(evicted)
+        self._processed_event_ids.append(event_id)
+        self._processed_lookup.add(event_id)
+
     async def _execute_handler(self, handler: EventHandler, event: Event) -> None:
         """Executa um handler específico com timeout"""
         try:
@@ -408,9 +433,14 @@ class EventBus:
         logger.warning(f"Evento {event.event_id} movido para dead letter: {reason}")
 
     def _is_event_processed(self, event_id: str) -> bool:
-        """Verifica se evento foi processado (simplificado)"""
-        # Em uma implementação real, manteria estado dos eventos
-        return True
+        """Verifica se evento foi processado.
+
+        Consultado por ``publish_and_wait``. Antes deste fix, retornava
+        ``True`` incondicionalmente — sincronizar via ``publish_and_wait``
+        era impossível: a função saía no primeiro tick do loop antes do
+        worker pegar o evento da fila.
+        """
+        return event_id in self._processed_lookup
 
     async def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas do event bus"""

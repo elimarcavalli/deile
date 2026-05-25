@@ -160,6 +160,9 @@ def test_messages_to_gemini_user_input_empty(provider):
 # ---------------------------------------------------------------------------
 
 def test_process_messages_for_gemini_maps_roles_and_skips_system(provider):
+    """Google GenAI SDK accepts ONLY 'user' and 'model' as roles —
+    'assistant' would trip a 400 from the server. We map ``assistant`` →
+    ``model`` here so multi-turn history is accepted."""
     messages = [
         ModelMessage(role="system", content="sys"),
         ModelMessage(role="user", content="hello"),
@@ -168,7 +171,7 @@ def test_process_messages_for_gemini_maps_roles_and_skips_system(provider):
     contents = provider._process_messages_for_gemini(messages)
     assert contents == [
         {"role": "user", "parts": [{"text": "hello"}]},
-        {"role": "assistant", "parts": [{"text": "hi there"}]},
+        {"role": "model", "parts": [{"text": "hi there"}]},
     ]
 
 

@@ -37,6 +37,10 @@ class DeepSeekProvider(OpenAIProvider):
     def _extract_cached_tokens(response: Any) -> int:
         """DeepSeek exposes prompt_cache_hit_tokens instead of prompt_tokens_details."""
         try:
-            return getattr(response.usage, "prompt_cache_hit_tokens", None) or 0
+            value = getattr(response.usage, "prompt_cache_hit_tokens", None) or 0
         except AttributeError:
+            return 0
+        try:
+            return int(value)
+        except (TypeError, ValueError):
             return 0

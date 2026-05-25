@@ -5,6 +5,40 @@ All notable changes to the DEILE project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — System-wide bug audit (PR #298)
+
+### Fixed
+- **Critical — `AuditLogger` crash on fresh install**: `mkdir(exist_ok=True)` lacked `parents=True`; default `~/.deile/logs` failed when `~/.deile` didn't exist, blocking the whole security module from loading. (`deile/security/audit_logger.py`)
+- **Critical — Hot-reload de plugins morto**: `PluginFileHandler.on_modified` rodava no thread do `watchdog.Observer`; `asyncio.create_task` lançava `RuntimeError` silenciosamente. `HotLoader.start` agora captura o loop e usa `run_coroutine_threadsafe`. (`deile/plugins/hot_loader.py`)
+- **High — `PlanManager` step timeout não-funcional**: `_run_tool_with_params` era `async def` sem `await`, delegava ao bridge síncrono que bloqueava o loop em `Future.result()` — `asyncio.wait_for(timeout=step.timeout)` perdia o budget. Agora invoca `tool.execute()` direto (com validação de schema preservada). (`deile/orchestration/plan_manager.py`)
+- **High — `ToolResult` attribute access broken em PlanManager/WorkflowExecutor**: referências a `.success`/`.output`/`.error_message` (que não existem em `ToolResult` — usar `is_success`/`data`/`message`); plans nunca completavam um step. (`deile/orchestration/plan_manager.py`, `deile/orchestration/workflow_executor.py`)
+- **High — `stop_on_failure` ignorado**: `break` saía só do loop interno; o `while True` externo continuava. Agora também marca `_stop_flags[plan.id]`. (`deile/orchestration/plan_manager.py`)
+- **High — OpenAI/DeepSeek cost double-counted cached tokens**: `prompt_tokens` da OpenAI inclui o subset cached; a fórmula base cobrava ambos. Override em `OpenAIProvider.estimate_cost` (herdado pelo DeepSeek). (`deile/core/models/openai_provider.py`, `deepseek_provider.py`)
+- **High — Fire-and-forget tasks GC-able**: `MemoryManager` e `agent.py` usavam `asyncio.create_task(...)` sem ref forte; o loop só mantém weakref. Agora `MemoryManager._spawn_background` mantém um `Set[Task]`; `agent._publish_tool_event` faz `await` direto. (`deile/memory/memory_manager.py`, `deile/core/agent.py`)
+- **High — `CircuitBreaker.is_open` mutava state**: transicionava OPEN→HALF_OPEN consumindo o probe slot; com duplicate provider_ids no cascade ficava preso. `is_open` agora é read-only; `TierRouter.select` chama `allow_request` no commit. (`deile/core/models/tier_router.py`)
+- **High — `EventBus.publish_and_wait` stub retornando True**: `_is_event_processed` era hardcoded `return True`. Tracker FIFO bounded (10k) registra event_ids ao final de `_process_event`. (`deile/events/event_bus.py`)
+- **High — EventBus wildcard subscription leak no worker**: `worker_server._run_task` registrava handler por dispatch sem `unsubscribe_all` (não existia). API nova + cleanup no `finally`. (`deile/events/event_bus.py`, `infra/k8s/worker_server.py`)
+- **High — Sync I/O em `async def`** (princípio 03 §1): `debug_logger.log_router_event`, `approval_system._save/_load_request`, `plan_manager.load/list/save_plan`, `semantic_memory.store_knowledge`, `config/manager._persist_persona_config_change`. Todos movidos para `asyncio.to_thread` via novo helper compartilhado `deile/storage/aio_fileio.py`.
+- **Medium — Gemini role `"assistant"` inválido**: SDK Google GenAI aceita só `user`/`model`. Multi-turn quebrava com 400. (`deile/core/models/gemini_provider.py`)
+- **Medium — `MemoryConsolidator.consolidate_all` reportava `expired_cleaned=0` sempre**: `get_stats()` já fazia cleanup antes da chamada do consolidator. Agora captura `entries_before` antes do cleanup. (`deile/memory/memory_consolidation.py`)
+- **Medium — `WorkingMemory._cleanup_loop` hot-loop em erro persistente**: sem sleep no `except`. Agora 60s de recovery sleep. (`deile/memory/working_memory.py`)
+- **Medium — `bash_tool` PTY `master_fd` leak em TimeoutError**: cleanup só rodava no caminho feliz. Wrapped em try/finally + reap do subprocess. (`deile/tools/bash_tool.py`)
+- **Medium — `SearchTool` perdia matches para paths fora do `cwd`**: `relative_to(Path.cwd())` lançava `ValueError` não capturado, dropava silenciosamente todas as matches do arquivo. (`deile/tools/search_tool.py`)
+- **Medium — `SecretsScanner.redact_text` corrompia comprimento**: `redaction_char * len(matched_text)` (curto) substituía `[start_pos:end_pos]` (full match). Agora span-based. (`deile/security/secrets_scanner.py`)
+- **Medium — `SemanticMemory.store_knowledge` mutava dict do caller**: agora copia antes de adicionar `stored_at`. (`deile/memory/semantic_memory.py`)
+- **Medium — Round-robin não-atômico**: `idx = self._cursor; self._cursor += 1` permitia colisão sob `asyncio.gather`. Migrado para `itertools.count`. (`deile/core/models/routing_strategies.py`)
+- **Medium — `active_requests` nunca decrementado**: contador crescia indefinidamente, quebrando `LEAST_BUSY`/`LOAD_BALANCED`. Estratégias migradas para `total_requests` (monotônico-correto). (`deile/core/models/routing_strategies.py`)
+- **Medium — `infra/k8s/deploy.py` FD leak em `os.fdopen`**: falha no wrap deixava FD aberto pro arquivo de credenciais. (`infra/k8s/deploy.py`)
+- **Medium — `mkdir` sem `parents=True`** em `plugins/marketplace.py` e `orchestration/approval_system.py`.
+- **Medium — `relative_to` sem guard** em `tools/_file_listing.py`, `cli.py:_get_project_files`, `parsers/file_parser.py:get_suggestions` (autocomplete silenciosamente vazio).
+
+### Added
+- **`deile/storage/aio_fileio.py`** — utilitário compartilhado com `read_json` / `write_json` / `write_text` (cada um envolve `asyncio.to_thread`), usado por `orchestration/approval_system.py` e `orchestration/plan_manager.py`. Ver Decisão #34.
+- **`EventBus.unsubscribe_all(handler)`** — API simétrica a `subscribe_all`; usada pelo `worker_server` no cleanup pós-dispatch.
+- **`MemoryManager._spawn_background(coro, name=...)`** — helper que mantém hard reference da task em um `Set` e loga exceções não-cancelamento via `done_callback`.
+- Bateria de **~70 testes de regressão novos** cobrindo cada um dos 23 bugs corrigidos, sob `deile/tests/{events,memory,plugins,orchestration,security,tools,core/models}/`.
+- Validação live **`deile/tests/might/llm_validation/validate_deepseek.py`** (opt-in via `DEEPSEEK_LIVE=1`) — round-trip real cobrindo basic generate, cost-cached formula, multi-turn, streaming, e loop liveness sob PlanManager. Custo <$0.001 por execução.
+
 ## [5.1.0] — Multi-Provider Model Router
 
 ### Added

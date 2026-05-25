@@ -54,7 +54,10 @@ class PluginMarketplace:
         try:
             # Simula instalação
             plugin_dir = target_dir / plugin_id
-            plugin_dir.mkdir(exist_ok=True)
+            # ``parents=True`` so a caller-supplied ``target_dir`` that
+            # doesn't exist yet (custom path, fresh install) doesn't raise
+            # FileNotFoundError. Same fix-pattern as AuditLogger.
+            plugin_dir.mkdir(parents=True, exist_ok=True)
 
             # Cria manifest mock
             manifest = {

@@ -374,8 +374,20 @@ class SearchTool(SyncTool):
                     for i in range(line_num, end_idx):
                         context_lines.append(f"{i+1:4d}: {lines[i].rstrip()}")
                     
+                    # ``relative_to`` raises ``ValueError`` when the file is
+                    # not under the cwd (e.g. user asks for ``path="/var/log"``).
+                    # That exception is NOT in the except list below — it
+                    # escapes ``_search_file_optimized`` and is swallowed by
+                    # the broad ``except Exception`` in the futures loop,
+                    # silently dropping ALL matches for that file. Fall back
+                    # to the absolute path in that case so the user still gets
+                    # results, just with the full path.
+                    try:
+                        display_path = str(file_path.relative_to(Path.cwd()))
+                    except ValueError:
+                        display_path = str(file_path)
                     search_match = SearchMatch(
-                        file_path=str(file_path.relative_to(Path.cwd())),
+                        file_path=display_path,
                         line_number=line_num,
                         line_content=line.rstrip(),
                         match_text=match_obj.group(0),

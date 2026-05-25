@@ -1115,7 +1115,12 @@ class DeileAgent:
                     data={"tool_name": name, **kw},
                     priority=EventPriority.LOW,
                 )
-                asyncio.create_task(bus.publish(event))
+                # Await directly instead of create_task to avoid the weak-ref
+                # GC trap (loop only holds weakrefs to Tasks → fire-and-forget
+                # can vanish mid-flight under GC pressure during long tool
+                # loops). ``bus.publish`` only enqueues — it's effectively
+                # constant-time and won't block the tool loop measurably.
+                await bus.publish(event)
             except Exception:
                 pass
 
