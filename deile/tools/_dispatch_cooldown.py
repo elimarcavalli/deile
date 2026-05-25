@@ -28,7 +28,6 @@ def prune_expired(
     store: Dict[str, float],
     cooldown_s: float,
     now: float,
-    max_entries: Optional[int] = None,
 ) -> None:
     """Drop entries in ``store`` whose timestamp is older than ``cooldown_s``.
 
@@ -36,20 +35,10 @@ def prune_expired(
     ``now - ts > cooldown_s`` is removed. Callers that want to retain
     entries for several cooldown periods (typical "keep around for
     debugging" pattern) pass ``cooldown_s = base_cooldown * factor``.
-
-    If ``max_entries`` is given and the store still exceeds it after
-    pruning expired entries, the oldest remaining entries are dropped
-    until the size is within the cap.
     """
     stale = [k for k, ts in store.items() if (now - ts) > cooldown_s]
     for k in stale:
         store.pop(k, None)
-    if max_entries is not None and len(store) > max_entries:
-        # Sort by timestamp ascending (oldest first) and drop the excess.
-        excess = len(store) - max_entries
-        oldest = sorted(store.items(), key=lambda kv: kv[1])[:excess]
-        for k, _ in oldest:
-            store.pop(k, None)
 
 
 def is_in_cooldown(

@@ -1645,7 +1645,10 @@ class DeileAgent:
         
         return tool_results
     
-    # TODO(streaming-cleanup): legacy non-streaming tool-loop. Once the streaming path proves stable in production (Settings.streaming_enabled is True by default), migrate remaining callers and delete this method along with provider.chat_with_tools.
+    # Legacy non-streaming tool-loop. Still active when the streaming path
+    # bails out or when a caller explicitly requests non-streaming behavior.
+    # Kept in service of providers that do not implement chat_with_tools yet
+    # (the fallback at the bottom hits ``_process_legacy_function_calling``).
     async def _process_iterative_function_calling(
         self,
         user_input: str,
