@@ -76,13 +76,13 @@ class DiffCommand(DirectCommand):
         
         # Create summary table
         table = Table(title="📊 Recent Plan Changes", show_header=True, header_style="bold blue")
-        table.add_column("Plan ID", style="cyan", width=10)
-        table.add_column("Title", style="white", width=25)
-        table.add_column("Status", style="green", width=12)
-        table.add_column("Changes", style="yellow", width=12)
-        table.add_column("Files", style="blue", width=8)
-        table.add_column("Duration", style="dim", width=10)
-        table.add_column("Action", style="magenta", width=18)
+        table.add_column("Plan ID", style="cyan")
+        table.add_column("Title", style="white")
+        table.add_column("Status", style="green")
+        table.add_column("Changes", style="yellow")
+        table.add_column("Files", style="blue")
+        table.add_column("Duration", style="dim")
+        table.add_column("Action", style="magenta")
         
         for plan in recent_plans[:10]:  # Show last 10 plans
             # Mock data for changes (in real implementation, would analyze artifacts)

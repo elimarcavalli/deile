@@ -837,7 +837,12 @@ class TestExportSecurity:
         with pytest.raises(CommandError, match="Formato inválido"):
             await cmd.execute(_ctx("export output.txt xml"))
 
-    async def test_path_traversal_rejected_via_double_dot(self):
+    async def test_path_traversal_rejected_via_double_dot(self, tmp_path, monkeypatch):
+        # chdir to an empty tmp_path so the assert below isn't polluted by
+        # an existing `../../.env` in the surrounding filesystem (e.g. when
+        # running the suite from a worktree under `.worktrees/<name>/`,
+        # where `../../.env` resolves back to the project root's `.env`).
+        monkeypatch.chdir(tmp_path)
         al = _fresh_audit_logger()
         cmd = _cmd_with_logger(al)
         # ../../.env should be stripped to .env, written inside log_dir — not crash
@@ -847,7 +852,8 @@ class TestExportSecurity:
         import os
         assert not os.path.exists("../../.env")
 
-    async def test_absolute_path_resolved_to_log_dir(self):
+    async def test_absolute_path_resolved_to_log_dir(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
         al = _fresh_audit_logger()
         cmd = _cmd_with_logger(al)
         result = await cmd.execute(_ctx("export /etc/cron.d/pwned"))

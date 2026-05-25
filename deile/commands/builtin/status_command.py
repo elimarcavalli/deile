@@ -197,9 +197,9 @@ class StatusCommand(DirectCommand):
     async def _show_system_status(self, context: CommandContext) -> CommandResult:
         info = collect_system_info()
         table = Table(title="💻 Informações Detalhadas do Sistema", show_header=True, header_style="bold green")
-        table.add_column("Componente", style="cyan", width=20)
-        table.add_column("Valor", style="white", width=30)
-        table.add_column("Detalhes", style="dim", width=25)
+        table.add_column("Componente", style="cyan")
+        table.add_column("Valor", style="white")
+        table.add_column("Detalhes", style="dim")
         if "error" not in info:
             table.add_row("Versão DEILE", info["deile_version"], "Versão atual")
             table.add_row("Python", info["python_version"], sys.executable)
@@ -224,9 +224,9 @@ class StatusCommand(DirectCommand):
             tier_router = get_tier_router()
 
             table = Table(title="🤖 Provedores de IA Registrados", show_header=True, header_style="bold cyan")
-            table.add_column("Chave", style="cyan", width=35)
-            table.add_column("Provedor", style="white", width=15)
-            table.add_column("Modelo", style="green", width=25)
+            table.add_column("Chave", style="cyan")
+            table.add_column("Provedor", style="white")
+            table.add_column("Modelo", style="green")
 
             providers = router.providers
             if not providers:
@@ -264,9 +264,9 @@ class StatusCommand(DirectCommand):
                 show_header=True,
                 header_style="bold yellow",
             )
-            table.add_column("Nome", style="cyan", width=25)
-            table.add_column("Categoria", style="yellow", width=15)
-            table.add_column("Status", style="green", width=10)
+            table.add_column("Nome", style="cyan")
+            table.add_column("Categoria", style="yellow")
+            table.add_column("Status", style="green")
 
             for tool in sorted(registry.list_all(), key=lambda t: t.name):
                 status_icon = "✅" if tool.name in enabled_names else "❌"
@@ -318,9 +318,9 @@ class StatusCommand(DirectCommand):
             )
 
         table = Table(title="💾 Uso de Memória por Camada", show_header=True, header_style="bold blue")
-        table.add_column("Camada", style="cyan", width=25)
-        table.add_column("Entradas", style="green", width=12, justify="right")
-        table.add_column("Tamanho (MB)", style="yellow", width=15, justify="right")
+        table.add_column("Camada", style="cyan")
+        table.add_column("Entradas", style="green", justify="right")
+        table.add_column("Tamanho (MB)", style="yellow", justify="right")
 
         components = usage.get("components", {})
         for layer_name, layer_stats in components.items():
@@ -348,10 +348,10 @@ class StatusCommand(DirectCommand):
                 show_header=True,
                 header_style="bold magenta",
             )
-            table.add_column("ID", style="cyan", width=20)
-            table.add_column("Título", style="white", width=25)
-            table.add_column("Status", style="yellow", width=12)
-            table.add_column("Passos", style="green", width=15)
+            table.add_column("ID", style="cyan")
+            table.add_column("Título", style="white")
+            table.add_column("Status", style="yellow")
+            table.add_column("Passos", style="green")
 
             for plan_data in all_plans:
                 plan_id = plan_data.get("id", "?")[:18]
@@ -406,10 +406,10 @@ class StatusCommand(DirectCommand):
         }
 
         table = Table(title="🌐 Conectividade com Provedores", show_header=True, header_style="bold cyan")
-        table.add_column("Provedor", style="cyan", width=20)
-        table.add_column("Host", style="dim", width=40)
-        table.add_column("Status", style="green", width=12)
-        table.add_column("Latência (ms)", style="yellow", width=15, justify="right")
+        table.add_column("Provedor", style="cyan")
+        table.add_column("Host", style="dim")
+        table.add_column("Status", style="green")
+        table.add_column("Latência (ms)", style="yellow", justify="right")
 
         for pid, (ok, latency) in sorted(probe_results.items()):
             host = hosts_to_probe.get(pid, "?")
@@ -429,8 +429,8 @@ class StatusCommand(DirectCommand):
         usage_info = collect_usage_summary(session_id)
 
         table = Table(title="📊 Performance do Sistema", show_header=True, header_style="bold green")
-        table.add_column("Métrica", style="cyan", width=25)
-        table.add_column("Valor", style="white", width=20)
+        table.add_column("Métrica", style="cyan")
+        table.add_column("Valor", style="white")
 
         table.add_row("CPU (%)", f"{perf_info.get('cpu_percent', 0):.1f}%")
         table.add_row("Memória usada (%)", f"{perf_info.get('memory_percent', 0):.1f}%")
