@@ -292,6 +292,16 @@ class View(ABC):
     def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
         return ActionResult()
 
+    def intercepts_key(self, key: str) -> bool:
+        """Allow the view to short-circuit a global hotkey.
+
+        Returning True for *key* tells the dispatcher to deliver it to
+        :meth:`handle_key` instead of running the global handler. Useful
+        when a view has a modal state that must consume ESC (close modal)
+        before the global ESC (pop view) fires.
+        """
+        return False
+
 
 # ===== alerts engine ========================================================
 #
@@ -2909,6 +2919,17 @@ class StageModelsView(View):
         self.mode: Optional[tuple] = None
         self.picker_cursor: int = 0
 
+    def on_unmount(self, app: "PanelApp") -> None:
+        # Re-entry should always land on the stage list, never on a stale
+        # picker modal that the operator dismissed by leaving the view.
+        self.mode = None
+        self.picker_cursor = 0
+
+    def intercepts_key(self, key: str) -> bool:
+        # ESC inside a modal must close the modal (handled by our own
+        # _handle_picker_key / _handle_clear_confirm_key), not pop the view.
+        return key == "ESC" and self.mode is not None
+
     # --- data accessors --------------------------------------------------
 
     def _entries(self) -> List:
@@ -3475,7 +3496,14 @@ class PanelApp:
                 key = keys.read(timeout=0.05)
                 consumed = False
                 if key:
-                    if self._handle_global(key):
+                    # Views can short-circuit a global hotkey (e.g. ESC inside
+                    # a modal must close the modal before global ESC pops view).
+                    if self.current_view.intercepts_key(key):
+                        result = self.current_view.handle_key(key, self)
+                        self._apply(result)
+                        if result.kind != Action.NOOP:
+                            consumed = True
+                    elif self._handle_global(key):
                         consumed = True
                     else:
                         result = self.current_view.handle_key(key, self)

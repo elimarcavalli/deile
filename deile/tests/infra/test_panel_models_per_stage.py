@@ -322,3 +322,38 @@ class TestStageModelsViewKeyHandling:
         view.handle_key("n", app)
         assert view.mode is None
         assert view.last_ok is False
+
+    def test_esc_inside_modal_does_not_pop_view(self):
+        """Regression: pressing ESC while picker is open must close the
+        modal, not pop the StageModelsView off the app stack."""
+        from _panel import DashboardView, PanelApp, StageModelsView
+        dash = DashboardView(data=None)
+        view = StageModelsView(data=None)
+        app = PanelApp(views={"dashboard": dash, "stage-models": view},
+                       root="dashboard", data=None)
+        app.push("stage-models")
+        assert app.current_view is view
+        view.mode = ("set", "implement")
+        # ESC must be intercepted by the view — never reach _handle_global
+        assert view.intercepts_key("ESC") is True
+        view.handle_key("ESC", app)
+        assert view.mode is None
+        assert app.current_view is view  # still on stage-models, not popped
+
+    def test_esc_outside_modal_does_not_intercept(self):
+        """ESC while browsing (no modal) must fall through to global ESC
+        so the operator can leave the view normally."""
+        view, _ = self._new_view()
+        assert view.mode is None
+        assert view.intercepts_key("ESC") is False
+
+    def test_on_unmount_resets_modal_state(self):
+        """Re-entering the view must land on the stage list, even if the
+        operator was inside a picker when they last left (e.g. via [q] or
+        global hotkey while the modal was open)."""
+        view, app = self._new_view()
+        view.mode = ("set", "implement")
+        view.picker_cursor = 3
+        view.on_unmount(app)
+        assert view.mode is None
+        assert view.picker_cursor == 0
