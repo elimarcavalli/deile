@@ -29,14 +29,22 @@ _MARKDOWN_REASON_LABELS = {
     "parent_cancel": "cancelado pelo caller",
 }
 
-_STATUS_GLYPHS = {"ok": "✅", "error": "❌", "cancelled": "⏹"}
-
-# Header status emojis para markdown_summary (escolhido por ok_global vs cancelled).
-# Mantidos como constantes nomeadas para facilitar um futuro modo "no-emoji"
-# (terminal limitado, logs estruturados, internacionalização).
+# Emoji constants — single source of truth so render functions don't sprinkle
+# hardcoded glyphs across the module (item 6 — nit). _STATUS_GLYPHS is keyed by
+# SubAgentState.status (used by both renderers); the header summary picks one
+# based on aggregate state (success / cancelled / warning).
+# Kept as named constants to facilitate a future "no-emoji" mode (limited
+# terminal, structured logs, internationalization).
 _HEADER_OK_EMOJI = "✅"
 _HEADER_CANCELLED_EMOJI = "⏹"
 _HEADER_WARN_EMOJI = "⚠️"
+_STATUS_ERROR_EMOJI = "❌"
+
+_STATUS_GLYPHS = {
+    "ok": _HEADER_OK_EMOJI,
+    "error": _STATUS_ERROR_EMOJI,
+    "cancelled": _HEADER_CANCELLED_EMOJI,
+}
 
 
 def render_consolidated(result: "SubAgentResult") -> str:

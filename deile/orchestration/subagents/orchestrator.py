@@ -52,6 +52,10 @@ from .runner import SubAgentRunner
 # Aliases para retrocompat — testes importam estes nomes privados (item 9 —
 # SRP extract). A classe/função canônica vive em ``_capture``; mantemos os
 # nomes históricos exportados deste módulo para não quebrar importadores.
+#
+# Removal criterion: drop when ``grep -r '_CappedBuffer\|_get_capture_buffer_max_bytes'
+# --include='*.py' deile/`` shows zero hits outside this module. As of 2026-05-25
+# only ``deile/tests/orchestration/test_subagent_orchestrator.py`` consumes them.
 _CappedBuffer = CappedBuffer
 _get_capture_buffer_max_bytes = get_capture_buffer_max_bytes
 
@@ -81,12 +85,6 @@ def get_max_subagent_budget_s() -> float:
     leitura via :func:`get_settings` (Pilar 9 — configuração centralizada).
     """
     return _get_budget_s()
-
-
-# Mantido como atributo private *snapshot-on-import* só para retrocompat
-# com callers/testes que importavam o nome — não deve ser usado em código
-# novo. Novos callers devem usar :func:`get_max_subagent_budget_s`.
-_MAX_SUBAGENT_BUDGET_S_SNAPSHOT: float = _get_budget_s()
 
 
 CancellationReason = Literal["user_esc", "budget_exceeded", "parent_cancel"]
@@ -145,19 +143,6 @@ class _Broadcast:
                 cb(evt)
             except Exception:  # noqa: BLE001 — never break runner on UI bugs
                 logger.exception("SubAgentEvent subscriber raised")
-
-
-# NT3 (iter-3 review): a constante ``_CAPTURE_BUFFER_MAX_BYTES_SNAPSHOT``
-# é capturada no momento do import — overrides posteriores via env/settings
-# eram ignorados pelo default do ``_CappedBuffer``. Mantida como private
-# para retrocompat em testes que importavam o nome; ``_CappedBuffer`` agora
-# usa ``None`` como sentinel e resolve via :func:`_get_capture_buffer_max_bytes`
-# em cada instância (lazy — respeita override em runtime).
-#
-# Item 9 (SRP extract): a classe ``CappedBuffer`` e o helper foram extraídos
-# para :mod:`deile.orchestration.subagents._capture`. Mantemos o snapshot
-# aqui apenas porque historicamente é importado por callers/testes.
-_CAPTURE_BUFFER_MAX_BYTES_SNAPSHOT: int = _get_capture_buffer_max_bytes()
 
 
 class SubAgentOrchestrator:
