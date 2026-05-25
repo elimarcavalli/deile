@@ -1372,7 +1372,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--model",
         dest="model",
         metavar="PROVIDER:MODEL_ID",
-        help="Force a specific model (e.g. deepseek:deepseek-v4-flash).",
+        help="Force a specific model (e.g. deepseek:deepseek-v4-pro).",
     )
     parser.add_argument(
         "--install",

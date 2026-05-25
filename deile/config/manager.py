@@ -143,7 +143,7 @@ class CommandConfig:
 @dataclass
 class DeileConfig:
     """Configuração completa do DEILE"""
-    default_model: Optional[str] = None  # e.g. "deepseek:deepseek-v4-flash"; None = routing automático
+    default_model: Optional[str] = None  # e.g. "deepseek:deepseek-v4-pro"; None = routing automático
     gemini: GeminiConfig = field(default_factory=GeminiConfig)
     system: SystemConfig = field(default_factory=SystemConfig)
     ui: UIConfig = field(default_factory=UIConfig)
