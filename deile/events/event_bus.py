@@ -220,13 +220,17 @@ class EventBus:
                 logger.debug(f"Handler removido de {event_type.value}")
 
     def unsubscribe_all(self, handler: EventHandler) -> bool:
-        """Remove um handler wildcard previamente registrado via ``subscribe_all``.
+        """Remove handler wildcard registrado via :meth:`subscribe_all`.
 
-        Retorna True se algo foi removido, False caso contrário. Sem este
-        método, cada caller (ex.: worker_server._run_task) que adicionasse um
-        wildcard handler em cada dispatch ficava acumulando closures —
-        memória crescia, e cada ``publish`` ainda invocava todos os
-        handlers stale, com custo O(N²) ao longo da vida do processo.
+        Sem este método, cada caller (ex.: ``worker_server._run_task``)
+        que registra um wildcard handler por dispatch o acumula no
+        singleton de processo. Como o EventBus dispara para todos os
+        wildcard handlers a cada evento, o custo cresce O(N) por evento
+        × N dispatches passados que não limparam — vazamento efetivo
+        (issue #295 review B3, PR #298 caught no worker_server).
+
+        Returns:
+            True se o handler foi removido, False se não estava registrado.
         """
         try:
             self._wildcard_handlers.remove(handler)

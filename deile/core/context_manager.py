@@ -9,9 +9,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..memory.memory_manager import MemoryManager
+from ..orchestration.subagents.constants import is_display_only_entry
 from ..parsers.base import ParseResult
 from ..personas.instruction_loader import InstructionLoader
 from ..personas.manager import PersonaManager
+from ..skills.bootstrap import bootstrap_skills
+from ..skills.router import SkillRouter, SkillSelectionContext
 from ..storage.embeddings import EmbeddingStore
 from ..tools.base import ToolResult
 from .deile_md_loader import \
@@ -107,6 +110,13 @@ class ContextWindow:
 
 
 class ContextManager:
+    # Class-level defaults so ``ContextManager.__new__(ContextManager)``
+    # (the test pattern that bypasses ``__init__``) still has these attrs
+    # available — the skills bootstrap reads them on every turn and would
+    # otherwise AttributeError + fall into the build_context exception path.
+    _skills_bootstrapped: bool = False
+    _skill_router: Optional[SkillRouter] = None
+
     """Context Manager enterprise-grade para DEILE 2.0 ULTRA
 
     Integra novo sistema de personas e memory architecture híbrida:
@@ -134,6 +144,12 @@ class ContextManager:
 
         # CORREÇÃO BG003: Instruction Loader para carregar de arquivos MD
         self.instruction_loader = InstructionLoader()
+
+        # Skills router — lazily bootstrapped on first use so the cost is only
+        # paid when context is actually built. ``None`` once bootstrap has run
+        # means the subsystem is disabled or empty.
+        self._skill_router: Optional[SkillRouter] = None
+        self._skills_bootstrapped: bool = False
 
         # Estatísticas
         self._context_builds = 0
@@ -167,13 +183,21 @@ class ContextManager:
             # adicionou a entrada "user" do turno corrente em add_to_history()
             # antes de chamar build_context, então conversation_history sempre
             # termina com a mensagem atual do usuário.
+            #
+            # Issue #257: entradas marcadas como "display-only" (resumo do painel
+            # de sub-DEILEs paralelos) são FILTRADAS aqui — elas existem apenas
+            # para que ``replay_history`` possa re-renderizar o painel no
+            # ``/resume``, mas mandar para o provider quebra alternância
+            # user/assistant (Anthropic 400, OpenAI percepção corrompida).
             messages: List[Dict[str, Any]] = []
             if session is not None and getattr(session, "conversation_history", None):
                 for entry in session.conversation_history:
+                    entry_meta = entry.get("metadata") or {}
+                    if is_display_only_entry(entry_meta):
+                        continue
                     role = entry.get("role", "user")
                     content = entry.get("content", "")
                     msg_dict: Dict[str, Any] = {"role": role, "content": content}
-                    entry_meta = entry.get("metadata") or {}
                     if entry_meta:
                         msg_dict["metadata"] = entry_meta
                     messages.append(msg_dict)
@@ -277,6 +301,13 @@ class ContextManager:
                     # Issue #62: Prefixa camadas DEILE.md (Core → User → CWD)
                     base_instruction = await _prepend_deile_md_layers(base_instruction, working_directory)
 
+                    # Skills layer: aditiva, depois da persona e das regras DEILE.md.
+                    skills_block = await self._build_skills_block(
+                        parse_result, session, working_directory=working_directory
+                    )
+                    if skills_block:
+                        base_instruction += f"\n\n{skills_block}"
+
                     # Adiciona contexto de arquivos
                     file_context = await self._build_file_context(session, **kwargs)
                     if file_context:
@@ -289,11 +320,12 @@ class ContextManager:
 
         # Fallback para instrução de arquivo MD
         logger.debug("Using fallback system instruction from MD file (PersonaManager not available)")
-        return await self._build_fallback_system_instruction(session, **kwargs)
+        return await self._build_fallback_system_instruction(parse_result, session, **kwargs)
 
     async def _build_fallback_system_instruction(
         self,
-        session: Optional[Any],
+        parse_result: Optional[ParseResult] = None,
+        session: Optional[Any] = None,
         **kwargs
     ) -> str:
         """CORREÇÃO BG003: Carrega instrução de arquivo MD (não mais hardcoded!)
@@ -311,12 +343,105 @@ class ContextManager:
         # Issue #62: Prefixa camadas DEILE.md (Core → User → CWD)
         base_instruction = await _prepend_deile_md_layers(base_instruction, working_directory)
 
+        # Skills layer também no fallback (mesma ordem do caminho com persona).
+        skills_block = await self._build_skills_block(
+            parse_result, session, working_directory=working_directory
+        )
+        if skills_block:
+            base_instruction += f"\n\n{skills_block}"
+
         # Adiciona contexto de arquivos se disponível
         file_context = await self._build_file_context(session, **kwargs)
         if file_context:
             base_instruction += f"\n\n📁 [ARQUIVOS DISPONÍVEIS NO PROJETO]\n{file_context}"
 
         return _merge_bot_extra(base_instruction, session)
+
+    async def _build_skills_block(
+        self,
+        parse_result: Optional[ParseResult],
+        session: Optional[Any],
+        working_directory: Optional[str] = None,
+    ) -> str:
+        """Resolve skills for this turn and render them as an appendable block.
+
+        Returns an empty string when the subsystem is disabled, no skills are
+        loaded, or no triggers fired. Bootstrap is lazy — the registry is
+        populated on the first call and reused afterwards.
+
+        The bootstrap is anchored on the session's ``working_directory`` (or
+        the caller-supplied ``working_directory`` kwarg) so the
+        ``SkillRouter``'s ``project_root`` matches the agent's actual project
+        — critical for the path-traversal containment in
+        ``file_content_patterns`` triggers, which would otherwise fall back
+        to the process CWD and accept arbitrary references when the user
+        launched DEILE from a different directory.
+        """
+        if not self._skills_bootstrapped:
+            self._skills_bootstrapped = True
+            try:
+                project_dir: Optional[Path] = None
+                session_wd = getattr(session, "working_directory", None) if session else None
+                if session_wd:
+                    project_dir = Path(session_wd)
+                elif working_directory:
+                    project_dir = Path(working_directory)
+                self._skill_router = await bootstrap_skills(project_dir=project_dir)
+            except Exception as exc:
+                logger.warning("skills: bootstrap failed (%s); subsystem disabled for session", exc)
+                self._skill_router = None
+
+        if self._skill_router is None:
+            return ""
+
+        # Pull the latest user input from the session for code-block detection.
+        user_input = ""
+        if session is not None and getattr(session, "conversation_history", None):
+            for entry in reversed(session.conversation_history):
+                if entry.get("role") == "user":
+                    content = entry.get("content", "")
+                    if isinstance(content, str):
+                        user_input = content
+                    break
+
+        file_refs = tuple(parse_result.file_references) if parse_result and parse_result.file_references else ()
+
+        context = SkillSelectionContext(user_input=user_input, file_references=file_refs)
+        try:
+            selected = self._skill_router.select_skills(context)
+        except Exception as exc:
+            logger.warning("skills: selection raised %s; skipping injection this turn", exc)
+            selected = []
+
+        # Stash the active skill names on the session so the streaming layer
+        # in ``DeileAgent`` can emit a STAGE event ("Skill ativa: <names>")
+        # before the LLM call — that's the only place where the user actually
+        # sees feedback that a skill is being used (auto-injection is
+        # otherwise invisible). Best-effort: a session without
+        # ``context_data`` is fine, we just skip the feedback.
+        if session is not None:
+            try:
+                session.context_data["_active_skills"] = [s.name for s in selected]
+            except Exception:
+                pass
+
+        # Always include the catalog (compact name+description list) so the LLM
+        # knows what's available and can pull a non-triggered skill via the
+        # ``invoke_skill`` tool. Auto-triggered skills are excluded from the
+        # catalog to avoid duplicating their full bodies right above.
+        excluded = {s.name for s in selected}
+        catalog = self._skill_router.render_catalog(exclude_names=excluded)
+        active_block = self._skill_router.render_block(selected) if selected else ""
+
+        if selected:
+            logger.info(
+                "skills: injecting %d active skill(s): %s",
+                len(selected),
+                ", ".join(s.name for s in selected),
+            )
+
+        parts = [p for p in (active_block, catalog) if p]
+        return "\n\n".join(parts)
     
     # Maximum characters for the file-context block injected into the system prompt.
     # Each LLM token is roughly 4 chars; keeping this at 8 000 chars ≈ 2 000 tokens —
