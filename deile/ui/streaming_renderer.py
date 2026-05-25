@@ -469,6 +469,11 @@ class StreamingRenderer:
                     self._console.print(Text.from_markup(
                         self._tool_summary_markup(b).lstrip("\n")
                     ))
+                # Blank line após o summary p/ separar visualmente do próximo
+                # bloco (texto do LLM, próxima tool, etc.) — alinhado com o
+                # padrão dos blocos não-direct-print. Issue #257 round 5
+                # (usuário pediu espaçamento entre ``⎿`` e o próximo conteúdo).
+                self._console.print()
                 b.summary_committed = True
 
     def _render_single_block(self, block: Any) -> Optional[Any]:

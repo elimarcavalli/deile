@@ -353,13 +353,20 @@ class SubAgentPanelRenderer:
         return self._compose_focus(self._focus)
 
     def _final_summary(self) -> Group:
-        """1 linha por sub-DEILE no fechamento — vai pra scrollback."""
+        """1 linha por sub-DEILE no fechamento — vai pra scrollback.
+
+        Espaçamento (issue #257 round 5):
+          * Linha em branco ANTES do header — separa do bloco anterior
+            (``● dispatch_parallel_subagents(...) running…``).
+          * SEM linha em branco entre header e items — adensar leitura,
+            usuário pediu explicitamente.
+        """
         rows: List = [
+            Text(""),
             Text.from_markup(
                 f"[bold cyan]🧩 Sub-DEILEs concluídos[/bold cyan] · "
                 f"{_fmt_mmss(time.monotonic() - self._start_t)} total"
             ),
-            Text(""),
         ]
         for st in self._states:
             glyph = _STATUS_GLYPH.get(st.status, "•")
