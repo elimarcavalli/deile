@@ -1989,14 +1989,23 @@ class DeileAgent:
                 return content, tool_results
 
             else:
+                # Defensive — unreachable by construction: every provider registered via
+                # bootstrap_providers() (Anthropic/OpenAI/DeepSeek/Gemini) inherits
+                # ``BaseModelProvider.chat_with_tools``, so the ``elif hasattr(..., 'chat_with_tools')``
+                # branch above always matches. This ``else`` only fires if a custom provider
+                # explicitly overrides hasattr() to return False, which is not a supported pattern.
                 provider_id = getattr(model_provider, "provider_id", type(model_provider).__name__)
+                model_name = getattr(model_provider, "model_name", None) or getattr(
+                    model_provider, "model_id", "unknown"
+                )
                 logger.error(
-                    "Provider %s implements neither chat_with_tools nor the Gemini "
+                    "Provider %s (model=%s) implements neither chat_with_tools nor the Gemini "
                     "chat-session pair — bootstrap_providers() should never register such a provider",
                     provider_id,
+                    model_name,
                 )
                 raise ModelError(
-                    f"Provider '{provider_id}' does not support function calling.",
+                    f"Provider '{provider_id}' (model={model_name}) does not support function calling.",
                     error_code="PROVIDER_NO_TOOL_SUPPORT",
                 )
 
@@ -2019,8 +2028,15 @@ class DeileAgent:
                 except Exception:
                     pass
                 raise
-            # FORCED_MODEL_NOT_REGISTERED also propagates so process_input can build a structured response
-            if isinstance(e, ModelError) and getattr(e, "error_code", "") == "FORCED_MODEL_NOT_REGISTERED":
+            # Structured ModelErrors that the CLI renders as Rich panels must propagate.
+            # FORCED_MODEL_NOT_REGISTERED: user-forced model is missing from the registry.
+            # PROVIDER_NO_TOOL_SUPPORT: defensive — bootstrap_providers() should never register
+            # a provider lacking both chat_with_tools and the Gemini session pair, but if it does
+            # we want process_input to surface the misconfiguration instead of swallowing it.
+            if isinstance(e, ModelError) and getattr(e, "error_code", "") in (
+                "FORCED_MODEL_NOT_REGISTERED",
+                "PROVIDER_NO_TOOL_SUPPORT",
+            ):
                 raise
             from deile.core.models.errors import ProviderInvocationError
             if isinstance(e, ProviderInvocationError) and e.envelope.is_context_length_exceeded:
@@ -2090,6 +2106,15 @@ class DeileAgent:
         - Análise semântica com embeddings
         - Sistema de confiança probabilística
         - Cache e métricas de performance
+
+        **Degradação em falha:** se `IntentAnalyzer.analyze()` lançar exceção
+        (embedding offline, cache corrompido, etc.), este método retorna `False`
+        (no-workflow) por design. Esta é a opção #2 documentada na issue #308:
+        `IntentAnalyzer` é a única árvore de decisão para essa pergunta — manter
+        um fallback heurístico paralelo (legacy keyword-matching) violava SSOT e
+        divergia ao longo do tempo. Como workflows são caros (multi-step +
+        aprovação), o default conservador "não criar workflow" é mais seguro
+        que adivinhar. NÃO reintroduza fallback heurístico sem revisitar #308.
         """
         try:
             # Prepara contexto da sessão para análise mais precisa
