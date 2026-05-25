@@ -71,6 +71,58 @@ Documentação completa: [`docs/2026-05-06_PIPELINE-AUTONOMO.md`](docs/2026-05-0
 
 ---
 
+## 🧩 Sub-DEILEs paralelos (decomposição em sessão CLI)
+
+Durante uma conversa interativa, o DEILE pode identificar autonomamente sub-tarefas **independentes e substanciais** dentro do seu pedido e dispará-las em paralelo — cada uma rodando num sub-DEILE com **sessão limpa** (contexto/histórico próprios). Você vê o progresso ao vivo num painel multipanel discreto.
+
+### Quando usar
+
+✅ "Refator módulo A E módulo B (não-acoplados)"  ·  "Gere testes pra X, Y e Z"  ·  "Escreva doc do módulo A e implemente feature em B"
+
+❌ Tarefas sequenciais ("primeiro X, depois Y") · micro-tarefas (<30s cada) · mesmo arquivo
+
+### Como funciona
+
+O LLM principal chama a tool `dispatch_parallel_subagents` com 2-5 sub-tarefas (description + prompt auto-contido + persona/model opcionais). O `SubAgentOrchestrator` dispara em paralelo (semaphore de `subagent_max_parallel`, default 3), respeitando budget global. Cada sub-DEILE roda no chat-with-tools loop direto (skip de autonomous/workflow paths) — então o painel mostra `⚙ bash_execute(...)`, `✓ write_file: 412 bytes`, `✎ texto-em-curso` em tempo real.
+
+```
+🧩 Decomposto em 2 frentes paralelas · 1 ok · 1/2 concluídas · 00:08
+
+╭─ ▶ sub-DEILE #1 · refatorar auth.py ──────────────────────────── 00:08 ──╮
+│ ⚙ bash_execute(pytest deile/tests/auth -q)                               │
+│ ✓ bash_execute: 5 passed in 0.04s                                        │
+│ ✎ aplicando guard clauses (3/5 funções)                                  │
+╰──────────────────────────────────────────────────────────────────────────╯
+
+╭─ ✅ sub-DEILE #2 · doc do módulo X ──────────────────────────────────────╮
+│ ✅ concluído · docs/x.md                                                  │
+╰──────────────────────────────────────────────────────────────────────────╯
+
+(toque 1-9 para focar · ESC: fecha painel)
+```
+
+Teclas: `1`-`9` foca uma frente (ficha completa com prompt, persona, model, task_id, files_touched + tail do stream); `ESC` volta ou fecha. Falha de uma frente NÃO cancela siblings. Stdout dos sub-DEILEs é capturado (não polui o terminal). O resumo final é gravado no histórico — `/resume` reconstrói o painel.
+
+### Runners pluggable
+
+- **`LocalSubAgentRunner`** (default) — in-process via `asyncio.create_task` + `wait FIRST_COMPLETED`. Funciona em qualquer ambiente (laptop, CI, pod), sem depender de infra.
+- **`WorkerSubAgentRunner`** — delega ao `deile-worker` via HTTP (`wait=False` + polling de `GET /v1/progress/{task_id}`). Isolamento real por processo separado. Habilite com `DEILE_SUBAGENT_RUNNER=worker`.
+
+Ambos herdam de `_BaseRunner` (template-method): o ciclo de vida (`running → STARTED → cancel/exception handling → mark_*`) é compartilhado.
+
+### Settings
+
+```bash
+DEILE_SUBAGENT_RUNNER=local|worker          # default: local
+DEILE_SUBAGENT_MAX_PARALLEL=3               # teto de concorrência por chamada
+DEILE_SUBAGENT_BUDGET_S=600                 # teto global de tempo (10min)
+DEILE_SUBAGENT_POLL_INTERVAL_S=0.8          # polling do WorkerSubAgentRunner
+```
+
+Detalhes técnicos completos: Decisão #34 em [`docs/system_design/DECISOES.md`](docs/system_design/DECISOES.md). Issue: [#257](https://github.com/elimarcavalli/deile/issues/257). Demo end-to-end: [`test-your-might/issue-257-demo/`](test-your-might/issue-257-demo/).
+
+---
+
 ## 🚀 Visão geral
 
 DEILE é um **agente de IA autônomo para desenvolvimento de software**, executado diretamente no terminal. Você conversa com ele em linguagem natural — em português ou inglês — e ele lê, escreve e edita arquivos do seu projeto, roda comandos, instala pacotes, executa testes, busca trechos no repositório, planeja tarefas e acompanha custo de uso, tudo dentro do diretório de trabalho atual.
@@ -99,6 +151,7 @@ As ferramentas disponíveis incluem `list_files`, `read_file`, `write_file`, `de
 | 💬 CONVERSA            | Conversa multi-turno com contexto e histórico de sessão.                 |
 | 🖼️ STREAMING UI       | Resposta em streaming com renderização incremental no terminal.          |
 | 🔁 LOOP DE FERRAMENTAS | Function calling iterativo até concluir a tarefa (com limite seguro).    |
+| 🧩 SUB-DEILES PARALELOS | Decompõe pedidos complexos em N sub-DEILEs em paralelo (sessões limpas), com painel multipanel ao vivo + foco por tecla — issue #257. |
 | 🛠️ EDIÇÃO DE CÓDIGO   | Lê, cria, edita, deleta e busca arquivos no repositório.                 |
 | ⚙️ EXECUÇÃO LOCAL      | Executa shell/Python, instala pacotes e roda testes/lint.                |
 | 🌐 ROTEAMENTO LLM      | Roteia entre 4 providers com fallback e seleção por tier.                |
@@ -263,6 +316,7 @@ Tutorial passo-a-passo, troubleshooting, modelo de ameaça e operação:
 | 🔄 STREAMING     | Unificado de eventos          | `deile/core/models/stream_events.py`                                              |
 | 🖼️ RENDERIZAÇÃO | Incremental de Markdown       | `deile/ui/streaming_renderer.py`                                                  |
 | 🔁 LOOP          | Iterativo de function calling | `deile/core/tool_loop_executor.py`                                                |
+| 🧩 SUB-DEILES    | Paralelos em sessão CLI       | `deile/orchestration/subagents/`, `deile/tools/dispatch_parallel_subagents.py`, `deile/ui/subagent_panel.py` |
 | 📨 BARRAMENTO    | Assíncrono de eventos         | `deile/events/event_bus.py`                                                       |
 | 🛠️ REGISTRO     | Extensível de ferramentas     | `deile/tools/registry.py`                                                         |
 | 📜 COMANDOS      | Slash registráveis            | `deile/commands/registry.py`, `commands/builtin/`                                 |
@@ -552,9 +606,15 @@ export ANTHROPIC_API_KEY=...
 export OPENAI_API_KEY=...
 export DEEPSEEK_API_KEY=...
 export GOOGLE_API_KEY=...
+
+# Sub-DEILEs paralelos (issue #257) — opcionais
+export DEILE_SUBAGENT_RUNNER=local         # local (default) | worker
+export DEILE_SUBAGENT_MAX_PARALLEL=3       # teto de concorrência
+export DEILE_SUBAGENT_BUDGET_S=600         # teto de tempo global (s)
+export DEILE_SUBAGENT_POLL_INTERVAL_S=0.8  # polling do worker runner
 ```
 
-Veja exemplos em `.env.example` — defina pelo menos uma.
+Veja exemplos em `.env.example` — defina pelo menos uma chave.
 
 ### Arquivos de configuração
 

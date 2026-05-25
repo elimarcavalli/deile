@@ -696,6 +696,11 @@ _JSON_ONLY_FIELD_MAP: Dict[str, str] = {
     "pipeline.dispatch_mode": "pipeline_dispatch_mode",
     "cron.db_path": "cron_db_path",
     "cron.poll_interval": "cron_poll_interval",
+    # Sub-DEILEs paralelos (issue #257)
+    "subagent.runner": "subagent_runner",
+    "subagent.max_parallel": "subagent_max_parallel",
+    "subagent.poll_interval_s": "subagent_poll_interval_s",
+    "subagent.budget_s": "subagent_budget_s",
     "agent.max_tool_iterations": "max_tool_iterations",
 }
 

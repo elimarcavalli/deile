@@ -346,12 +346,22 @@ class SubAgentPanelRenderer:
 
         period = 1.0 / self._refresh_hz
         try:
+            # ``redirect_stdout/stderr=False``: Rich Live, por padrão, faz
+            # ``sys.stdout = FileProxy(console)`` para que ``print()`` durante
+            # a Live apareça acima da região. AQUI isso é tóxico: o orquestrador
+            # já redirecionou sys.stdout para um buffer (suprimindo print() de
+            # sub-DEILEs), e Live SOBRESCREVERIA esse redirect, mandando print()
+            # do bash_tool diretamente para ``panel_console.file`` (= terminal
+            # real) — gera leak visível (issue #257 round 5). Mantemos o
+            # redirect do orquestrador intacto desabilitando o do Live.
             with Live(
                 self._render_frame(),
                 console=self._panel_console,
                 refresh_per_second=self._refresh_hz,
                 transient=False,
                 auto_refresh=False,
+                redirect_stdout=False,
+                redirect_stderr=False,
             ) as live:
                 while True:
                     self._frame += 1
@@ -406,13 +416,21 @@ class SubAgentPanelRenderer:
         return self._compose_focus(self._focus)
 
     def _final_summary(self) -> Group:
-        """1 linha por sub-DEILE no fechamento — vai pra scrollback."""
-        rows: List = []
-        rows.append(Text.from_markup(
-            f"[bold cyan]🧩 Sub-DEILEs concluídos[/bold cyan] · "
-            f"{_fmt_mmss(time.monotonic() - self._start_t)} total"
-        ))
-        rows.append(Text(""))
+        """1 linha por sub-DEILE no fechamento — vai pra scrollback.
+
+        Espaçamento (issue #257 round 5):
+          * Linha em branco ANTES do header — separa do bloco anterior
+            (``● dispatch_parallel_subagents(...) running…``).
+          * SEM linha em branco entre header e items — adensar leitura,
+            usuário pediu explicitamente.
+        """
+        rows: List = [
+            Text(""),
+            Text.from_markup(
+                f"[bold cyan]🧩 Sub-DEILEs concluídos[/bold cyan] · "
+                f"{_fmt_mmss(time.monotonic() - self._start_t)} total"
+            ),
+        ]
         for st in self._states:
             glyph = _STATUS_GLYPH.get(st.status, "•")
             style = _STATUS_STYLE.get(st.status, "white")

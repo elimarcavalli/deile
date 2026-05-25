@@ -79,6 +79,13 @@ class AgentStreamingMixin:
         )
 
         try:
+            # Issue #257 — sub-DEILEs invocados pelo LocalSubAgentRunner devem
+            # IR DIRETO para o tool-loop. O caminho autônomo (autonomous_process)
+            # e o workflow path são fast-paths que sintetizam resposta sem
+            # invocar tools, e o painel multipanel não vê eventos de tool,
+            # ficando "(sem atividade ainda)" o turno inteiro — confirmado em
+            # teste end-to-end real com deepseek-v4-flash.
+            skip_autonomous = bool(kwargs.pop("_skip_autonomous", False))
             session = self._get_or_create_session(session_id, **kwargs)
             session.update_activity()
             session.add_to_history("user", user_input)
@@ -166,12 +173,17 @@ class AgentStreamingMixin:
                 self._status = AgentStatus.IDLE
                 return
 
-            # Autonomous path — non-streaming.
-            yield UnifiedStreamEvent(
-                type=StreamEventType.STAGE,
-                stage=get_stage_message("autonomous_process", "initial"),
-            )
-            autonomous_result = await self.process_autonomous_request(user_input, session)
+            # Autonomous path — non-streaming. Sub-DEILEs pulam essa via
+            # (skip_autonomous=True via kwarg) para garantir que tool events
+            # cheguem ao LocalSubAgentRunner alimentar o painel multipanel.
+            if skip_autonomous:
+                autonomous_result = None
+            else:
+                yield UnifiedStreamEvent(
+                    type=StreamEventType.STAGE,
+                    stage=get_stage_message("autonomous_process", "initial"),
+                )
+                autonomous_result = await self.process_autonomous_request(user_input, session)
             if autonomous_result:
                 session.add_to_history(
                     "assistant",
@@ -214,7 +226,14 @@ class AgentStreamingMixin:
                 type=StreamEventType.STAGE,
                 stage=get_stage_message("check_workflow", "initial"),
             )
-            workflow_needed = await self._should_create_workflow(user_input, parse_result)
+            # Sub-DEILEs pulam workflow path também — esse caminho executa
+            # tools OPACAMENTE (sem yieldar TOOL_USE_END/TOOL_RESULT pro
+            # caller), o que deixaria o painel multipanel sem atividade
+            # mesmo com sub-DEILE trabalhando. Issue #257 round 4.
+            if skip_autonomous:
+                workflow_needed = False
+            else:
+                workflow_needed = await self._should_create_workflow(user_input, parse_result)
 
             if workflow_needed and self.workflow_executor:
                 yield UnifiedStreamEvent(
@@ -242,7 +261,13 @@ class AgentStreamingMixin:
                 return
 
             # Main path: stream chat-with-tools via ToolLoopExecutor.
-            text_parts: List[str] = []
+            # ``text_segments`` armazena listas de TEXT_DELTAs entre tool calls —
+            # uma lista por "segmento de texto". Tool entre texto vira fronteira:
+            # ``[ [pre-tool deltas], [post-tool deltas] ]``. Ao final, juntamos
+            # cada segmento e separamos com ``\n\n``. Sem isso, frases coladas:
+            # `"Vou ler.Pronto."` em vez de `"Vou ler.\n\nPronto."` (issue #257
+            # round 5 — replay /resume mostrava "frase grudada em frase").
+            text_segments: List[List[str]] = [[]]
             collected_tool_results: List[ToolResult] = []
 
             async for event in self._stream_chat_with_tools(
@@ -250,7 +275,13 @@ class AgentStreamingMixin:
             ):
                 yield event
                 if event.type is StreamEventType.TEXT_DELTA and event.text:
-                    text_parts.append(event.text)
+                    text_segments[-1].append(event.text)
+                elif event.type is StreamEventType.TOOL_USE_END:
+                    # Tool vai rodar — fecha o segmento atual; o próximo texto
+                    # abre um novo segmento. Só inicia segmento NOVO se o atual
+                    # tem conteúdo (evita ``\n\n`` no início da resposta).
+                    if text_segments[-1]:
+                        text_segments.append([])
                 elif event.type is StreamEventType.USAGE_FINAL and event.reasoning_content:
                     # Non-tool final turn: capture reasoning_content so it is included
                     # in history metadata and echoed back on the next turn.
@@ -275,7 +306,13 @@ class AgentStreamingMixin:
                     )
                     collected_tool_results.append(tr)
 
-            content = "".join(text_parts)
+            # Junta os segmentos com ``\n\n`` — preserva no histórico a
+            # estrutura visual original (texto-tool-texto vira parágrafos
+            # separados). Segmentos vazios filtrados; trim no fim de cada
+            # segmento para não duplicar quebras de linha.
+            content = "\n\n".join(
+                "".join(seg).rstrip() for seg in text_segments if any(s.strip() for s in seg)
+            )
 
             # Validation gate — runs once at end. Pass only `collected_tool_results`
             # (the iterative tool-loop output) to match the non-streaming path at

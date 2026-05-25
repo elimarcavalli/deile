@@ -110,6 +110,55 @@ def configured_agent(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_text_segments_around_tool_calls_get_paragraph_separator(configured_agent, tmp_path: Path):
+    """Issue #257 round 5: TEXT_DELTAs ANTES e DEPOIS de TOOL_USE_END devem
+    ser separados por ``\\n\\n`` no histórico — sem isso, frases ficavam
+    coladas em ``/resume`` (`"Vou ler.Pronto."` em vez de
+    `"Vou ler.\\n\\nPronto."`).
+
+    Patch direto em ``_stream_chat_with_tools`` para evitar invocar o
+    tool_loop_executor real (que exige tool registry funcional).
+    """
+    async def _fake_stream(*args, **kwargs):
+        yield UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="Vou ler o arquivo.")
+        yield UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="t1", tool_name="read_file",
+            arguments={"file_path": "x.py"},
+        )
+        yield UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="t1", tool_name="read_file",
+            tool_status="success", tool_result_summary="ok",
+        )
+        yield UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="Pronto, conferido.")
+        yield UnifiedStreamEvent(
+            type=StreamEventType.USAGE_FINAL,
+            usage=ModelUsageSnapshot(input_tokens=1, output_tokens=1),
+        )
+
+    configured_agent._stream_chat_with_tools = _fake_stream
+    session = configured_agent.create_session("seg", working_directory=str(tmp_path))
+
+    async for _ in configured_agent.process_input_stream(
+        user_input="hi", session_id=session.session_id
+    ):
+        pass
+
+    assistant_entries = [
+        e for e in session.conversation_history if e["role"] == "assistant"
+    ]
+    assert assistant_entries, "no assistant entry persisted"
+    content = assistant_entries[-1]["content"]
+    # Fronteira do tool inserida como \n\n
+    assert "Vou ler o arquivo." in content
+    assert "Pronto, conferido." in content
+    # Texto NÃO pode estar grudado
+    assert "Vou ler o arquivo.Pronto" not in content
+    assert "\n\n" in content
+
+
+@pytest.mark.asyncio
 async def test_streaming_turn_yields_text_and_usage(configured_agent, tmp_path: Path):
     fake = _FakeProvider(
         iterations=[
@@ -256,6 +305,74 @@ async def test_autonomous_path_yields_single_text(configured_agent, tmp_path: Pa
     types = [e.type for e in events]
     assert types == [StreamEventType.STAGE, StreamEventType.TEXT_DELTA, StreamEventType.USAGE_FINAL]
     assert events[1].text == "autonomous reply"
+
+
+@pytest.mark.asyncio
+async def test_skip_autonomous_kwarg_also_skips_workflow_path(configured_agent, tmp_path: Path):
+    """Issue #257 round 4: ``_skip_autonomous=True`` deve pular tanto o
+    autonomous path quanto o workflow path. O workflow path executa tools
+    OPACAMENTE (yieldando só TEXT_DELTA agregado), deixando o painel
+    multipanel sem atividade visível mesmo com sub-DEILE trabalhando.
+
+    Confirmado em teste end-to-end real (issue #257 round 4): sub-DEILEs
+    entravam no workflow path e o painel ficava '(sem atividade ainda)'
+    enquanto write_file/bash_execute rodavam internamente.
+    """
+    # Workflow seria criado normalmente
+    configured_agent._should_create_workflow = AsyncMock(return_value=True)
+    configured_agent.process_autonomous_request = AsyncMock(return_value=None)
+    fake = _FakeProvider(
+        iterations=[[
+            UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="tool path used"),
+            UnifiedStreamEvent(
+                type=StreamEventType.USAGE_FINAL,
+                usage=ModelUsageSnapshot(input_tokens=1, output_tokens=1),
+            ),
+        ]]
+    )
+    configured_agent.model_router.select_provider = AsyncMock(return_value=fake)
+    session = configured_agent.create_session("skip_wf", working_directory=str(tmp_path))
+
+    events = [
+        e async for e in configured_agent.process_input_stream(
+            user_input="multi-step task", session_id=session.session_id, _skip_autonomous=True,
+        )
+    ]
+    # Workflow predicate should NOT have been called (skipped before)
+    configured_agent._should_create_workflow.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_skip_autonomous_kwarg_bypasses_autonomous_path(configured_agent, tmp_path: Path):
+    """Issue #257 round 4: ``_skip_autonomous=True`` deve fazer
+    ``process_input_stream`` pular o caminho ``process_autonomous_request``
+    para ir direto ao tool-loop. Necessário para sub-DEILEs alimentarem o
+    painel multipanel com eventos TOOL_USE_END/TOOL_RESULT."""
+    # Configura autonomous para retornar resposta — mas o skip deve ignorar.
+    configured_agent.process_autonomous_request = AsyncMock(return_value="should NOT be used")
+    # Fake provider para a chat-with-tools path
+    fake = _FakeProvider(
+        iterations=[[
+            UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="tool path"),
+            UnifiedStreamEvent(
+                type=StreamEventType.USAGE_FINAL,
+                usage=ModelUsageSnapshot(input_tokens=1, output_tokens=1),
+            ),
+        ]]
+    )
+    configured_agent.model_router.select_provider = AsyncMock(return_value=fake)
+    session = configured_agent.create_session("skip_auto", working_directory=str(tmp_path))
+
+    events = [
+        e async for e in configured_agent.process_input_stream(
+            user_input="hi", session_id=session.session_id, _skip_autonomous=True,
+        )
+    ]
+    texts = [e.text for e in events if e.type is StreamEventType.TEXT_DELTA and e.text]
+    assert "should NOT be used" not in "".join(texts), \
+        "autonomous result leaked into stream despite _skip_autonomous=True"
+    # process_autonomous_request NÃO deve ter sido chamado
+    configured_agent.process_autonomous_request.assert_not_called()
 
 
 @pytest.mark.asyncio
