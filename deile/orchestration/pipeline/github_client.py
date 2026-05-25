@@ -61,6 +61,60 @@ def _labels_from_gh(item: dict) -> Tuple[str, ...]:
     return tuple(out)
 
 
+def _parse_gh_jq_output(out: Optional[str], *, log_label: str) -> List[dict]:
+    """Normaliza output do ``gh api --jq`` em ``List[dict]``.
+
+    ``gh api --jq`` muda o formato conforme o número de matches do filtro:
+
+    - **0 matches**  → string vazia (ou apenas whitespace)
+    - **1 match**    → objeto JSON puro (sem array wrapper)
+    - **2+ matches** → NDJSON (objetos separados por ``\\n``, sem array wrapper)
+
+    O ``json.loads`` direto sobre NDJSON levanta
+    ``JSONDecodeError("Extra data: line 2 column 1 ...")``. Esta função
+    resolve os 3 casos transparentemente. Para o caso (3) usa
+    ``JSONDecoder.raw_decode`` em loop — mais robusto que ``splitlines()``
+    porque tolera ``\\n`` dentro de strings JSON (que ``--jq`` não emite
+    hoje, mas defensividade barata).
+
+    Linhas/objetos malformados são logados em WARNING (com ``log_label``
+    pra contexto) e pulados — política igual aos outros parsers do módulo
+    (vide ``list_prs_with_review_requests``, ``search_items_mentioning``).
+    """
+    text = (out or "").strip()
+    if not text:
+        return []
+    decoder = json.JSONDecoder()
+    items: List[dict] = []
+    idx = 0
+    n = len(text)
+    while idx < n:
+        # Pula whitespace entre objetos (NDJSON usa `\n`, mas tolera tabs/espaços).
+        while idx < n and text[idx].isspace():
+            idx += 1
+        if idx >= n:
+            break
+        try:
+            obj, end = decoder.raw_decode(text, idx)
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "%s: skipping malformed JSON at char %d: %s",
+                log_label, idx, exc,
+            )
+            return items
+        if isinstance(obj, list):
+            # Caso array — desempacota e adiciona dicts elemento-a-elemento.
+            for item in obj:
+                if isinstance(item, dict):
+                    items.append(item)
+        elif isinstance(obj, dict):
+            items.append(obj)
+        # Outros tipos (string, número, bool, null) são ignorados — o filtro
+        # `--jq` deste módulo só produz objetos ou arrays de objetos.
+        idx = end
+    return items
+
+
 @dataclass(frozen=True)
 class IssueRef:
     number: int
@@ -660,12 +714,16 @@ class GitHubClient:
         except GhCommandError as exc:
             logger.warning("list_prs_with_review_requests failed: %s", exc)
             return []
-        data = json.loads(out or "[]")
-        # gh api --jq may return a single object when there is exactly 1 match.
-        if isinstance(data, dict):
-            data = [data]
+        # `gh api --jq` produz formatos diferentes conforme o número de matches:
+        #   0 matches  → string vazia
+        #   1 match    → objeto JSON puro (sem array wrapper)
+        #   2+ matches → NDJSON (objetos separados por `\n`, sem array wrapper)
+        # `json.loads()` direto quebra no caso NDJSON com:
+        #   "Extra data: line 2 column 1 (char N)"
+        # Helper abaixo normaliza os 3 formatos em `List[dict]`.
+        items = _parse_gh_jq_output(out, log_label="list_prs_with_review_requests")
         result: List[PrRef] = []
-        for item in data:
+        for item in items:
             try:
                 result.append(PrRef.from_gh_json(item))
             except (KeyError, TypeError, ValueError) as exc:

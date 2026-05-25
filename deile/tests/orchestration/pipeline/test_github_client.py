@@ -9,7 +9,7 @@ import pytest
 
 from deile.orchestration.pipeline.github_client import (
     CommentRef, GhCommandError, GitHubClient, IssueRef, MentionTrigger, PrRef,
-    compute_batch_id_for_number)
+    _parse_gh_jq_output, compute_batch_id_for_number)
 from deile.orchestration.pipeline.labels import (REVIEW_PENDING, WORKFLOW_NEW,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING)
@@ -461,4 +461,151 @@ class TestSearchItemsMentioning:
                           new=AsyncMock(side_effect=GhCommandError(("x",), 1, "", "err"))):
             issues, prs = await client.search_items_mentioning("@deile-one")
         assert issues == []
+        assert prs == []
+
+
+class TestParseGhJqOutput:
+    """Cobre o helper `_parse_gh_jq_output` que normaliza os 3 formatos
+    distintos do `gh api --jq` (vazio / objeto único / NDJSON). Bug
+    capturado em 25/mai/2026 no pipeline: NDJSON quebrava `json.loads`
+    com `Extra data: line 2 column 1 (char N)`.
+    """
+
+    def test_empty_string_returns_empty(self):
+        assert _parse_gh_jq_output("", log_label="t") == []
+
+    def test_none_returns_empty(self):
+        assert _parse_gh_jq_output(None, log_label="t") == []
+
+    def test_whitespace_only_returns_empty(self):
+        assert _parse_gh_jq_output("   \n  \t  ", log_label="t") == []
+
+    def test_single_object_parsed(self):
+        # gh api --jq devolve objeto puro quando há exatamente 1 match
+        out = _parse_gh_jq_output('{"number": 1, "title": "a"}', log_label="t")
+        assert out == [{"number": 1, "title": "a"}]
+
+    def test_ndjson_two_objects_parsed(self):
+        # O bug original: 2+ matches viram NDJSON, json.loads quebra
+        out = _parse_gh_jq_output(
+            '{"number": 1, "title": "a"}\n{"number": 2, "title": "b"}\n',
+            log_label="t",
+        )
+        assert len(out) == 2
+        assert out[0]["number"] == 1
+        assert out[1]["number"] == 2
+
+    def test_ndjson_many_objects(self):
+        # 10 objetos — confirma que o decoder.raw_decode em loop escala
+        payload = "\n".join(
+            json.dumps({"number": i, "title": f"pr-{i}"}) for i in range(10)
+        )
+        out = _parse_gh_jq_output(payload, log_label="t")
+        assert len(out) == 10
+        assert [item["number"] for item in out] == list(range(10))
+
+    def test_json_array_unpacked(self):
+        # Defensividade: alguns chamadores podem passar array — desempacotamos
+        out = _parse_gh_jq_output(
+            '[{"number": 1}, {"number": 2}, {"number": 3}]',
+            log_label="t",
+        )
+        assert len(out) == 3
+        assert out[2]["number"] == 3
+
+    def test_malformed_tail_logs_warning_and_returns_partial(self):
+        # Política: erros NÃO levantam; logam WARNING com log_label e
+        # devolvem o que conseguiu parsear. Caller decide se é fatal.
+        # Mocka `logger.warning` direto em vez de usar `caplog` — outros
+        # testes da suite mexem em `propagate` do logger `deile.*` no
+        # `get_logger`, o que quebra captura via fixture caplog. Mock
+        # direto é determinístico independente da ordem dos testes.
+        from deile.orchestration.pipeline import github_client as gh
+        with patch.object(gh.logger, "warning") as warn:
+            out = _parse_gh_jq_output(
+                '{"valid": true}\nNOT_JSON_AT_ALL\n', log_label="myfn",
+            )
+        assert out == [{"valid": True}]
+        warn.assert_called_once()
+        # `log_label` aparece como o primeiro %-arg da chamada de warning.
+        call_args = warn.call_args
+        positional = call_args.args
+        assert "myfn" in positional, \
+            f"esperava log_label 'myfn' nos args do warning; recebi {positional}"
+
+    def test_mixed_array_and_object_in_ndjson(self):
+        # Caso patológico (não esperado de --jq mas defensivo): mistura array+objeto
+        out = _parse_gh_jq_output(
+            '[{"a": 1}, {"a": 2}]\n{"a": 3}',
+            log_label="t",
+        )
+        assert [item["a"] for item in out] == [1, 2, 3]
+
+    def test_non_dict_non_list_skipped(self):
+        # `gh --jq` não emite scalars hoje, mas se vier "true" ou número, ignora
+        out = _parse_gh_jq_output(
+            '{"a": 1}\ntrue\n42\n{"b": 2}', log_label="t",
+        )
+        assert out == [{"a": 1}, {"b": 2}]
+
+
+class TestListPrsWithReviewRequestsBugFix:
+    """Regressão direta do bug do log da issue #303:
+    `mention poll (review requests) failed: Extra data: line 2 column 1 (char 272)`.
+
+    O método `list_prs_with_review_requests` fazia `json.loads(out)` direto,
+    quebrando em NDJSON (2+ PRs match). Fix via `_parse_gh_jq_output`.
+    """
+
+    async def test_two_review_requests_returned_as_ndjson(self):
+        client = GitHubClient("owner/name")
+        # NDJSON real reproduzido em produção (gh api --jq sempre emite
+        # objeto-por-linha quando o filtro produz N>1 items)
+        pr_a = {
+            "number": 297, "title": "PR A",
+            "url": "https://github.com/owner/name/pull/297",
+            "labels": ["~review:pendente"],
+            "headRefName": "auto/issue-1",
+            "baseRefName": "main",
+            "state": "open", "isDraft": False,
+        }
+        pr_b = {
+            "number": 298, "title": "PR B",
+            "url": "https://github.com/owner/name/pull/298",
+            "labels": [],
+            "headRefName": "auto/issue-2",
+            "baseRefName": "main",
+            "state": "open", "isDraft": False,
+        }
+        ndjson_payload = json.dumps(pr_a) + "\n" + json.dumps(pr_b) + "\n"
+
+        with patch.object(client, "_run_checked",
+                          new=AsyncMock(return_value=ndjson_payload)):
+            prs = await client.list_prs_with_review_requests("deile-one")
+
+        assert len(prs) == 2, "BUG: NDJSON quebrava antes do fix"
+        assert prs[0].number == 297
+        assert prs[1].number == 298
+
+    async def test_single_review_request_returned_as_object(self):
+        client = GitHubClient("owner/name")
+        pr = {
+            "number": 297, "title": "PR A",
+            "url": "https://github.com/owner/name/pull/297",
+            "labels": [],
+            "headRefName": "auto/issue-1",
+            "baseRefName": "main",
+            "state": "open", "isDraft": False,
+        }
+        with patch.object(client, "_run_checked",
+                          new=AsyncMock(return_value=json.dumps(pr))):
+            prs = await client.list_prs_with_review_requests("deile-one")
+        assert len(prs) == 1
+        assert prs[0].number == 297
+
+    async def test_zero_review_requests_returns_empty(self):
+        client = GitHubClient("owner/name")
+        with patch.object(client, "_run_checked",
+                          new=AsyncMock(return_value="")):
+            prs = await client.list_prs_with_review_requests("deile-one")
         assert prs == []
