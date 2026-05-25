@@ -255,6 +255,40 @@ class ClaudeImplementer(PipelineImplementer):
 
     name = "claude"
 
+    async def _run_in_worktree(
+        self,
+        monitor: "PipelineMonitor",
+        branch: str | None,
+        prompt: str,
+        *,
+        label: str,
+        force_recreate: bool = False,
+    ) -> WorkOutcome:
+        """Setup a worktree (if ``branch`` is given), then run ``claude``.
+
+        ``branch=None`` skips worktree setup and runs ``claude`` at
+        ``monitor.config.base_repo_path`` — used by the mention path which
+        has no per-issue branch.
+
+        Worktree creation failures become a failed ``WorkOutcome`` with the
+        ``worktree:`` prefix; ``label`` is used in the exception log.
+        """
+        if branch is None:
+            cwd = monitor.config.base_repo_path
+        else:
+            try:
+                worktree = await monitor.worktrees.create_branch_worktree(
+                    branch, force_recreate=force_recreate
+                )
+            except Exception as exc:  # noqa: BLE001 — surface as failed outcome
+                logger.exception("worktree setup for %s failed", label)
+                return WorkOutcome(
+                    ok=False, text="", error=f"worktree: {type(exc).__name__}: {exc}"
+                )
+            cwd = worktree.path
+        result = await monitor.claude.run(prompt, cwd=cwd)
+        return WorkOutcome(ok=result.ok, text=result.stdout, error=result.stderr.strip())
+
     async def implement(
         self, monitor: "PipelineMonitor", issue: "IssueRef", *, resume: bool = False
     ) -> WorkOutcome:
@@ -264,31 +298,21 @@ class ClaudeImplementer(PipelineImplementer):
         # ground-truth contract (that lives in the deile-worker path), so the
         # flag does not change behaviour here beyond the existing reuse.
         branch = monitor.branch_for_issue(issue.number)
-        try:
-            worktree = await monitor.worktrees.create_branch_worktree(
-                branch, force_recreate=False
-            )
-        except Exception as exc:  # noqa: BLE001 — surface as a failed outcome
-            logger.exception("worktree setup for #%s failed", issue.number)
-            return WorkOutcome(ok=False, text="", error=f"worktree: {type(exc).__name__}: {exc}")
         prompt = render_implement_prompt(
             monitor.config.repo, issue.number, issue.title, issue.body
         )
-        result = await monitor.claude.run(prompt, cwd=worktree.path)
-        return WorkOutcome(ok=result.ok, text=result.stdout, error=result.stderr.strip())
+        return await self._run_in_worktree(
+            monitor, branch, prompt, label=f"#{issue.number}"
+        )
 
     async def review(
         self, monitor: "PipelineMonitor", pr: "PrRef", *, resume: bool = False
     ) -> WorkOutcome:
         worktree_branch = pr.head_ref or f"pr/{pr.number}"
-        try:
-            wt = await monitor.worktrees.create_branch_worktree(worktree_branch)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("PR worktree #%s failed", pr.number)
-            return WorkOutcome(ok=False, text="", error=f"worktree: {type(exc).__name__}: {exc}")
         prompt = render_review_prompt(monitor.config.repo, pr.number, pr.title)
-        result = await monitor.claude.run(prompt, cwd=wt.path)
-        return WorkOutcome(ok=result.ok, text=result.stdout, error=result.stderr.strip())
+        return await self._run_in_worktree(
+            monitor, worktree_branch, prompt, label=f"PR #{pr.number}"
+        )
 
     async def mention(
         self,
@@ -305,8 +329,8 @@ class ClaudeImplementer(PipelineImplementer):
         prompt = _render_claude_mention_prompt(
             monitor.config.repo, ref, trigger_types or [], all_triggers or []
         )
-        result = await monitor.claude.run(prompt, cwd=monitor.config.base_repo_path)
-        return WorkOutcome(ok=result.ok, text=result.stdout, error=result.stderr.strip())
+        # mention runs at base_repo_path; no per-issue branch worktree.
+        return await self._run_in_worktree(monitor, None, prompt, label="mention")
 
 
 # ---------------------------------------------------------------------------
@@ -547,23 +571,15 @@ class WorkerImplementer(PipelineImplementer):
         head = (pr_ref.head_ref if pr_ref else "") or f"pr/{number}"
         pr_url_hint = pr_ref.url if pr_ref else ""
 
-        # review_only / work_merge / address all dispatch under the reviewer
-        # persona with a PR-scoped resume block; they differ only in the brief
-        # renderer and whether a merge is expected (work_merge is the only one
-        # that merges, and the only resume-aware brief).
-        reviewer_brief: Optional[str] = None
-        expect_merge = False
-        if mode == "review_only":
-            reviewer_brief = _render_worker_review_only_brief(repo, main, number)
-        elif mode == "work_merge":
-            reviewer_brief = (
-                _render_worker_review_resume_brief(repo, main, number)
-                if resume else _render_worker_review_brief(repo, main, number)
-            )
-            expect_merge = True
-        elif mode == "address":
-            reviewer_brief = _render_worker_pr_address_brief(repo, main, number)
-        if reviewer_brief is not None:
+        # PR-scoped reviewer modes dispatched under the ``reviewer`` persona
+        # with a resume block. ``work_merge`` is the only mode that merges and
+        # the only one resume-aware (uses the review-resume brief on retry).
+        if mode in _MENTION_REVIEWER_MODES:
+            brief_fn, expect_merge = _MENTION_REVIEWER_MODES[mode]
+            if mode == "work_merge" and resume:
+                reviewer_brief = _render_worker_review_resume_brief(repo, main, number)
+            else:
+                reviewer_brief = brief_fn(repo, main, number)
             return await self._dispatch(
                 reviewer_brief, channel_id=channel_id, persona="reviewer",
                 resume_block=_build_resume_block(
@@ -579,11 +595,38 @@ class WorkerImplementer(PipelineImplementer):
 
 
 # ---------------------------------------------------------------------------
+# Mention mode dispatch table
+# ---------------------------------------------------------------------------
+# (brief_renderer, expect_merge) for each PR-scoped reviewer mode used in
+# ``WorkerImplementer.mention``. ``work_merge`` is the only one that merges
+# *and* the only resume-aware mode (the resume brief is selected inline since
+# only that mode has a resume variant).
+_MENTION_REVIEWER_MODES = {
+    "review_only": (_render_worker_review_only_brief, False),
+    "work_merge":  (_render_worker_review_brief,      True),
+    "address":     (_render_worker_pr_address_brief,  False),
+}
+
+
+# ---------------------------------------------------------------------------
 # factory
 # ---------------------------------------------------------------------------
 
-_WORKER_ALIASES = frozenset({"deile_worker", "worker", "deile", "deile-worker"})
-_CLAUDE_ALIASES = frozenset({"claude", "claude_code", "claude-code"})
+WORKER_ALIASES = frozenset({"deile_worker", "worker", "deile", "deile-worker"})
+CLAUDE_ALIASES = frozenset({"claude", "claude_code", "claude-code"})
+
+# Backwards-compatible aliases for internal callers that used the underscored names.
+_WORKER_ALIASES = WORKER_ALIASES
+_CLAUDE_ALIASES = CLAUDE_ALIASES
+
+
+def is_claude_mode(dispatch_mode: Optional[str]) -> bool:
+    """Return True if ``dispatch_mode`` selects the Claude strategy.
+
+    Handles ``None``, empty, whitespace, and case variations uniformly so callers
+    don't reproduce the ``(mode or "claude").strip().lower() in (...)`` idiom.
+    """
+    return (dispatch_mode or "claude").strip().lower() in CLAUDE_ALIASES
 
 
 def build_implementer(

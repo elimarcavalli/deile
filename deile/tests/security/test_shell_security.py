@@ -9,8 +9,18 @@ random, urandom, stdout, stderr, stdin, tty, fd/*, pts/*).
 
 import pytest
 
-from deile.tools._shell_security import assess_risk, is_blocked
+from deile.tools._shell_security import assess_risk
 from deile.tools.base import SecurityLevel
+
+
+def _is_dangerous(command: str) -> bool:
+    """Test helper: True iff ``assess_risk`` classifies as DANGEROUS.
+
+    Replaces the removed ``is_blocked`` helper (which had no production caller
+    — only tests). ``assess_risk`` is the single authoritative classification
+    entry point per pilar 08 §1.
+    """
+    return assess_risk(command)[0] == SecurityLevel.DANGEROUS.value
 
 # ── Comandos inofensivos que NÃO devem ser bloqueados ──────────────────
 
@@ -101,7 +111,7 @@ class TestShellSecurityRedirectFix:
     @pytest.mark.parametrize("command", SAFE_REDIRECT_COMMANDS)
     def test_safe_redirects_not_blocked(self, command: str):
         """Redirecionamentos para pseudo-devices NÃO devem ser blocked."""
-        blocked = is_blocked(command)
+        blocked = _is_dangerous(command)
         assert not blocked, (
             f"Comando inofensivo bloqueado indevidamente:\n"
             f"  command: {command}"
@@ -121,7 +131,7 @@ class TestShellSecurityRedirectFix:
     @pytest.mark.parametrize("command", DANGEROUS_REDIRECT_COMMANDS)
     def test_dangerous_redirects_are_blocked(self, command: str):
         """Redirecionamentos para dispositivos de bloco DEVEM ser blocked."""
-        blocked = is_blocked(command)
+        blocked = _is_dangerous(command)
         assert blocked, (
             f"Comando perigoso NÃO bloqueado:\n"
             f"  command: {command}"
@@ -142,7 +152,7 @@ class TestIssue267Regression:
         assert level != SecurityLevel.DANGEROUS.value, (
             f"Comando da issue #267 ainda é classificado como DANGEROUS: {warnings}"
         )
-        assert not is_blocked(cmd), "Comando da issue #267 ainda está bloqueado"
+        assert not _is_dangerous(cmd), "Comando da issue #267 ainda está bloqueado"
 
     def test_all_pseudo_devices_allowed(self):
         """Todos os pseudo-devices seguros são permitidos em nível MODERATE."""
@@ -164,7 +174,7 @@ class TestIssue267Regression:
         ]
         for dev in pseudo_devices:
             cmd = f"echo test > {dev}"
-            assert not is_blocked(cmd), f"Pseudo-device {dev} foi bloqueado indevidamente"
+            assert not _is_dangerous(cmd), f"Pseudo-device {dev} foi bloqueado indevidamente"
             level, _ = assess_risk(cmd)
             assert level != SecurityLevel.DANGEROUS.value, (
                 f"Pseudo-device {dev} classificado como DANGEROUS"
@@ -190,7 +200,7 @@ class TestIssue267Regression:
         ]
         for dev in block_devices:
             cmd = f"echo test > {dev}"
-            assert is_blocked(cmd), f"Block device {dev} NÃO foi bloqueado"
+            assert _is_dangerous(cmd), f"Block device {dev} NÃO foi bloqueado"
             level, _ = assess_risk(cmd)
             assert level == SecurityLevel.DANGEROUS.value, (
                 f"Block device {dev} NÃO classificado como DANGEROUS"

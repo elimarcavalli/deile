@@ -93,6 +93,35 @@ class GeminiProvider(ModelProvider):
 
         return handle, gemini_config, api_key
 
+    @staticmethod
+    def build_file_attachment_part(
+        file_uri: str,
+        mime_type: str = "text/plain",
+        name: Optional[str] = None,
+    ) -> Any:
+        """Build a Gemini ``File`` part for a file attachment.
+
+        Encapsulates the ``google.genai.types.File(...)`` construction so callers
+        in ``deile/core/`` do not need to import the Gemini SDK directly
+        (Clean Architecture: SDK adapters belong to ``deile/core/models/``).
+
+        Args:
+            file_uri: URI returned by the Gemini File API upload (e.g.
+                ``files/abc123``).
+            mime_type: MIME type of the file; defaults to ``text/plain``.
+            name: Optional file name; defaults to the last path component of
+                ``file_uri``.
+
+        Returns:
+            A ``google.genai.types.File`` instance suitable for appending to a
+            multimodal message payload.
+        """
+        return types.File(
+            name=name if name is not None else file_uri.split("/")[-1],
+            uri=file_uri,
+            mime_type=mime_type,
+        )
+
     def __init__(
         self,
         gemini_config=None,
@@ -292,10 +321,10 @@ class GeminiProvider(ModelProvider):
             response = await self._generate_with_new_sdk(
                 processed_messages, system_instruction, config
             )
-            
+
             # Calcula tempo de execução
             execution_time = time.time() - start_time
-            
+
             # Log response se debug ativo
             if is_debug_enabled():
                 await self.debug_logger.log_response(
@@ -303,7 +332,23 @@ class GeminiProvider(ModelProvider):
                     execution_time=execution_time,
                     request_id=self.debug_logger.request_count
                 )
-            
+
+            # Persiste usage (idêntico ao contrato dos demais providers).
+            # `_generate_with_new_sdk` já preencheu `response.usage` com
+            # cost_estimate via `_extract_gemini_usage`; aqui só ajustamos
+            # `request_time` e gravamos.
+            try:
+                if response.usage is not None:
+                    response.usage.request_time = execution_time
+                    await self._record_usage(
+                        session_id=kwargs.get("session_id", "default"),
+                        usage=response.usage,
+                        latency_ms=int(execution_time * 1000),
+                        success=True,
+                    )
+            except Exception as exc:  # noqa: BLE001 — telemetry must never block
+                logger.debug("gemini usage record (generate) failed: %s", exc)
+
             return response
             
         except genai_errors.APIError as e:
@@ -320,6 +365,17 @@ class GeminiProvider(ModelProvider):
                     "error_type": envelope.error_type,
                 })
 
+            # Registra falha pra reports não esconderem custo de tentativas
+            # que erraram no meio (request foi enviado, o provedor cobra
+            # mesmo se a resposta veio com erro tipado).
+            await self._record_failed_usage(
+                session_id=kwargs.get("session_id", "default"),
+                start_time=start_time,
+                prompt_tokens=0,
+                completion_tokens=0,
+                cached_tokens=0,
+                error_envelope=envelope,
+            )
             raise ProviderInvocationError(envelope) from e
 
         except ProviderInvocationError:
@@ -414,13 +470,29 @@ class GeminiProvider(ModelProvider):
                     arguments=dict(call.get("args") or {}),
                 )
 
-            usage_metadata = getattr(response, "usage_metadata", None)
-            if usage_metadata is not None:
+            # Antes deste fix: `cached_tokens=0` e `cost_usd=0.0` hardcoded,
+            # e o `_record_usage` não era chamado — o snapshot ia pro
+            # USAGE_FINAL só pra ser ignorado pelo consumer no agent.py
+            # ("consumed silently"). Agora computa custo via _compute_cost,
+            # lê cached_content_token_count, e persiste antes do yield.
+            usage = self._extract_gemini_usage(response)
+            if usage.prompt_tokens or usage.completion_tokens:
+                try:
+                    await self._record_usage(
+                        session_id=kwargs.get("session_id", "default"),
+                        usage=usage,
+                        latency_ms=int(usage.request_time * 1000),
+                        success=True,
+                    )
+                except Exception as exc:  # noqa: BLE001 — telemetry must never block
+                    logger.debug(
+                        "gemini usage record (stream/tools) failed: %s", exc,
+                    )
                 snap = ModelUsageSnapshot(
-                    input_tokens=getattr(usage_metadata, "prompt_token_count", 0) or 0,
-                    output_tokens=getattr(usage_metadata, "candidates_token_count", 0) or 0,
-                    cached_tokens=0,
-                    cost_usd=0.0,
+                    input_tokens=usage.prompt_tokens,
+                    output_tokens=usage.completion_tokens,
+                    cached_tokens=usage.cached_tokens,
+                    cost_usd=usage.cost_estimate,
                     model=f"{self.provider_id}:{self.model_name}",
                 )
                 yield UnifiedStreamEvent(type=StreamEventType.USAGE_FINAL, usage=snap)
@@ -723,10 +795,16 @@ class GeminiProvider(ModelProvider):
 
         Creates an ephemeral in-process chat session (not cached in _chat_sessions) so
         the unified router can call this without needing to manage session lifecycle.
+
+        Persiste usage via `_record_usage` (sucesso) ou `_record_failed_usage`
+        (erro) seguindo o mesmo contrato dos Anthropic/OpenAI providers — sem
+        isso, a tabela `usage_records` nunca recebia entrada de
+        `provider_id='gemini'`.
         """
         import time as _time
 
         start = _time.time()
+        session_id = kwargs.get("session_id", "default")
         sys_instr = self._extract_system(messages, system_instruction)
         user_msg = self._messages_to_gemini_user_input(messages)
 
@@ -735,20 +813,41 @@ class GeminiProvider(ModelProvider):
             session_id=_session_key,
             system_instruction=sys_instr,
         )
-        text, tool_results = await self._gemini_chat_with_tools(
-            chat=chat,
-            message=user_msg,
-            working_directory=kwargs.get("working_directory", "."),
-            session_data=kwargs.get("session_data"),
-        )
+        try:
+            text, tool_results, usage = await self._gemini_chat_with_tools(
+                chat=chat,
+                message=user_msg,
+                working_directory=kwargs.get("working_directory", "."),
+                session_data=kwargs.get("session_data"),
+            )
+        except Exception as exc:
+            envelope = make_gemini_envelope(exc, self.provider_id, self.model_name)
+            await self._record_failed_usage(
+                session_id=session_id,
+                start_time=start,
+                prompt_tokens=0,
+                completion_tokens=0,
+                cached_tokens=0,
+                error_envelope=envelope,
+            )
+            self._chat_sessions.pop(_session_key, None)
+            # Preserva o contrato de exception do método: ProviderInvocationError
+            # com envelope tipado, igual aos demais providers.
+            raise ProviderInvocationError(envelope) from exc
+
         # Clean up the ephemeral session entry
         self._chat_sessions.pop(_session_key, None)
 
-        usage = ModelUsage(
-            prompt_tokens=0,
-            completion_tokens=0,
-            total_tokens=0,
-            request_time=_time.time() - start,
+        # Garante `request_time` aplicado mesmo se o loop não viu nenhum
+        # turno (caso degenerado: 0 iterations).
+        usage.request_time = _time.time() - start
+        latency_ms = int(usage.request_time * 1000)
+
+        await self._record_usage(
+            session_id=session_id,
+            usage=usage,
+            latency_ms=latency_ms,
+            success=True,
         )
         return text, tool_results, usage
 
@@ -764,7 +863,7 @@ class GeminiProvider(ModelProvider):
         working_directory: str = ".",
         max_iterations: Optional[int] = None,
         session_data: Optional[Dict[str, Any]] = None,
-    ) -> tuple[str, list]:
+    ) -> Tuple[str, list, "ModelUsage"]:
         """Envia ``message`` ao chat e roda o loop manual de function calling.
 
         Substitui o uso de AFC do SDK por um loop controlado:
@@ -790,6 +889,11 @@ class GeminiProvider(ModelProvider):
         cap = max_iterations if max_iterations is not None else self.MAX_TOOL_ITERATIONS
         tool_results: list = []
         text_chunks: list[str] = []
+        # Agregador de usage: somamos input/output/cached/cost de CADA
+        # `chat.send_message`. Cada turno traz o histórico inteiro de novo,
+        # então o `prompt_token_count` cresce monotonicamente — refletir
+        # isso fielmente no custo é justamente o que estava faltando antes.
+        agg_usage = ModelUsage()
         guard = make_guard(
             session_id=str((session_data or {}).get("session_id", "")) or None
         )
@@ -797,6 +901,9 @@ class GeminiProvider(ModelProvider):
 
         # send_message é síncrono no SDK — usamos to_thread para não bloquear o loop.
         response = await asyncio.to_thread(chat.send_message, message)
+        agg_usage = self._aggregate_usage(
+            agg_usage, self._extract_gemini_usage(response),
+        )
 
         for iteration in range(cap):
             function_calls = self._extract_function_calls(response)
@@ -844,6 +951,9 @@ class GeminiProvider(ModelProvider):
                 # appended will surface to the user.
                 break
             response = await asyncio.to_thread(chat.send_message, function_response_parts)
+            agg_usage = self._aggregate_usage(
+                agg_usage, self._extract_gemini_usage(response),
+            )
         else:
             # Loop esgotou o cap sem terminar — o modelo continua querendo chamar tools.
             logger.warning(
@@ -864,7 +974,62 @@ class GeminiProvider(ModelProvider):
             )
 
         final_text = "\n".join(t for t in text_chunks if t).strip()
-        return final_text, tool_results
+        # Caller decide o que fazer com `agg_usage` (persistir? agregar mais?).
+        return final_text, tool_results, agg_usage
+
+    # ---- usage / cost helpers (Gemini) -------------------------------------
+    #
+    # Antes destes helpers, GeminiProvider nunca chamava `_record_usage` nem
+    # computava `cost_estimate` — a tabela `usage_records` ficava sem
+    # nenhuma entrada de `provider_id='gemini'` e o painel TUI mostrava
+    # custos zerados. Estes helpers casam o que Anthropic/OpenAI fazem:
+    # extrai usage_metadata completo (incluindo cached_content_token_count),
+    # calcula custo via `_compute_cost` do catálogo, e permite somar
+    # ao longo do loop multi-turn de function calling.
+
+    def _extract_gemini_usage(
+        self, response: Any, request_time: float = 0.0,
+    ) -> ModelUsage:
+        """Converte `usage_metadata` do SDK Google GenAI num `ModelUsage`
+        com `cost_estimate` calculado.
+
+        Lê 4 campos da API do Gemini:
+        - prompt_token_count       → prompt_tokens
+        - candidates_token_count   → completion_tokens
+        - total_token_count        → total_tokens (fallback p/ prompt+comp)
+        - cached_content_token_count → cached_tokens (context caching)
+        """
+        md = getattr(response, "usage_metadata", None)
+        pt = (getattr(md, "prompt_token_count", 0) or 0) if md is not None else 0
+        ct = (getattr(md, "candidates_token_count", 0) or 0) if md is not None else 0
+        tt = (getattr(md, "total_token_count", 0) or 0) if md is not None else 0
+        cached = (
+            getattr(md, "cached_content_token_count", 0) or 0
+        ) if md is not None else 0
+        usage = ModelUsage(
+            prompt_tokens=int(pt),
+            completion_tokens=int(ct),
+            total_tokens=int(tt) or (int(pt) + int(ct)),
+            cached_tokens=int(cached),
+            request_time=float(request_time),
+        )
+        try:
+            usage.cost_estimate = self._compute_cost(usage)
+        except Exception as exc:  # noqa: BLE001 — never break the request on cost calc
+            logger.debug("Gemini cost calc failed: %s", exc)
+        return usage
+
+    @staticmethod
+    def _aggregate_usage(a: ModelUsage, b: ModelUsage) -> ModelUsage:
+        """Soma dois `ModelUsage` (multi-turn function calling)."""
+        return ModelUsage(
+            prompt_tokens=a.prompt_tokens + b.prompt_tokens,
+            completion_tokens=a.completion_tokens + b.completion_tokens,
+            total_tokens=a.total_tokens + b.total_tokens,
+            cached_tokens=a.cached_tokens + b.cached_tokens,
+            request_time=a.request_time + b.request_time,
+            cost_estimate=(a.cost_estimate or 0.0) + (b.cost_estimate or 0.0),
+        )
 
     @staticmethod
     def _extract_function_calls(response: Any) -> list[Dict[str, Any]]:
@@ -919,13 +1084,11 @@ class GeminiProvider(ModelProvider):
                 config=config,  # types.GenerateContentConfig(...) ou dict compatível
             )
             
-            # Extrai informações de uso
-            usage_metadata = getattr(response, 'usage_metadata', None)
-            usage = ModelUsage(
-                prompt_tokens=usage_metadata.prompt_token_count if usage_metadata else 0,
-                completion_tokens=usage_metadata.candidates_token_count if usage_metadata else 0,
-                total_tokens=usage_metadata.total_token_count if usage_metadata else 0
-            )
+            # Usa helper compartilhado: extrai prompt/candidates/cached, e
+            # calcula `cost_estimate` via `_compute_cost` do catálogo.
+            # Antes a montagem era inline e descartava
+            # `cached_content_token_count` (cache hits ficavam fora do custo).
+            usage = self._extract_gemini_usage(response)
             
             # Extrai conteúdo via helper que itera ``candidates[*].content.parts``
             # e pula parts não-textuais (thought_signature, function_call, etc.).

@@ -109,7 +109,7 @@ async def test_generate_stream_yields_unified_events(provider):
 async def test_unified_chat_with_tools_returns_triple(provider):
     """Unified chat_with_tools must return (str, list, ModelUsage)."""
     provider.create_chat_session = AsyncMock(return_value=MagicMock())
-    provider._gemini_chat_with_tools = AsyncMock(return_value=("answer", []))
+    provider._gemini_chat_with_tools = AsyncMock(return_value=("answer", [], __import__('deile.core.models.base', fromlist=['ModelUsage']).ModelUsage()))
 
     text, tool_results, usage = await provider.chat_with_tools(
         messages=[ModelMessage(role="user", content="hello")],
@@ -126,7 +126,7 @@ async def test_unified_chat_with_tools_returns_triple(provider):
 @pytest.mark.asyncio
 async def test_unified_chat_with_tools_text_passes_through(provider):
     provider.create_chat_session = AsyncMock(return_value=MagicMock())
-    provider._gemini_chat_with_tools = AsyncMock(return_value=("Paris is the capital", []))
+    provider._gemini_chat_with_tools = AsyncMock(return_value=("Paris is the capital", [], __import__('deile.core.models.base', fromlist=['ModelUsage']).ModelUsage()))
 
     text, _, _ = await provider.chat_with_tools(
         messages=[ModelMessage(role="user", content="Capital of France?")],

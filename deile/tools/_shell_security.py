@@ -83,11 +83,3 @@ def assess_risk(command: str) -> Tuple[str, List[str]]:
     if warnings:
         return SecurityLevel.MODERATE.value, warnings
     return SecurityLevel.SAFE.value, []
-
-
-def is_blocked(command: str) -> bool:
-    """True if `command` matches any DANGEROUS pattern (must be refused)."""
-    for pattern in _DANGEROUS_RE:
-        if pattern.search(command):
-            return True
-    return False

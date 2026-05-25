@@ -8,6 +8,7 @@ com linha, autor (via ``git blame``) e idade em dias.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import subprocess
@@ -17,8 +18,8 @@ from pathlib import Path
 from rich.table import Table
 from rich.text import Text
 
-from ...core.exceptions import CommandError
 from ..base import CommandContext, CommandResult, DirectCommand
+from ._git_helpers import git_ls_files, resolve_repo_root
 from ._shared import wrap_command_errors
 
 logger = logging.getLogger(__name__)
@@ -61,8 +62,12 @@ class TodoCommand(DirectCommand):
 
     @wrap_command_errors("todo", message_template="Falha ao executar /{name}: {exc}")
     async def execute(self, context: CommandContext) -> CommandResult:
-        repo_root = self._resolve_repo_root()
-        markers = self._scan_markers(repo_root)
+        # `_scan_markers` runs `git ls-files`, opens every tracked file, then
+        # runs `git blame --line-porcelain` per file with markers — all
+        # blocking subprocess+filesystem I/O. Off-loading the whole scan to a
+        # worker thread keeps the event loop responsive (pillar 03 §1).
+        repo_root = await asyncio.to_thread(self._resolve_repo_root)
+        markers = await asyncio.to_thread(self._scan_markers, repo_root)
         if not markers:
             msg = Text(
                 "Nenhum TODO/FIXME/HACK/XXX encontrado 🎉",
@@ -87,17 +92,7 @@ class TodoCommand(DirectCommand):
 
     @staticmethod
     def _resolve_repo_root() -> Path:
-        """Encontra a raiz do repo git a partir do CWD."""
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode == 0:
-                return Path(result.stdout.strip())
-        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-            raise CommandError(f"git rev-parse falhou: {exc}") from exc
-        raise CommandError("Não foi possível determinar a raiz do repositório git")
+        return resolve_repo_root()
 
     def _scan_markers(self, repo_root: Path) -> list[dict]:
         """Varre os arquivos versionados e retorna lista de marcadores encontrados.
@@ -147,21 +142,7 @@ class TodoCommand(DirectCommand):
 
     @staticmethod
     def _git_ls_files(repo_root: Path) -> list[str]:
-        """Retorna lista de paths relativos versionados via ``git ls-files``."""
-        try:
-            result = subprocess.run(
-                ["git", "ls-files"],
-                capture_output=True, text=True, timeout=30,
-                cwd=str(repo_root),
-            )
-            if result.returncode != 0:
-                raise CommandError(f"git ls-files falhou: {result.stderr.strip()}")
-            lines = result.stdout.strip().split("\n")
-            return [l for l in lines if l]
-        except subprocess.TimeoutExpired as exc:
-            raise CommandError(f"git ls-files timeout: {exc}") from exc
-        except FileNotFoundError as exc:
-            raise CommandError(f"git não encontrado: {exc}") from exc
+        return git_ls_files(repo_root)
 
     @staticmethod
     def _find_markers_in_text(rel_path: str, text: str) -> list[dict]:

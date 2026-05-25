@@ -141,13 +141,13 @@ def _to_pos_int(value: Any) -> int:
 # fields, with a converter for each. Unknown keys are silently ignored —
 # that's how future-compatible forward-compat works.
 #
-# P2-6: this map shares its key-space with ``_JSON_FIELD_MAP`` further below.
-# ``_OVERRIDE_HANDLERS`` is the strict, type-validating path used by
-# ``apply_overrides`` and ``Settings.load_from_file`` (issue #125 hardening).
-# ``_JSON_FIELD_MAP`` is the looser path used by ``_apply_nested_dict`` for
-# ``_load_layered_settings``. **MUST KEEP IN SYNC** — every key added to
-# one MUST also be added to the other (or, for fields without a strict
-# converter, only to ``_JSON_FIELD_MAP``).
+# This is the **single source of truth** for known dotted-keys with strict
+# type converters. ``apply_overrides`` and ``Settings.load_from_file`` use
+# it directly (strict path, issue #125 hardening). The looser path used by
+# ``_apply_nested_dict`` (see ``_JSON_FIELD_MAP`` below) derives the field
+# name from this map plus a small addendum of JSON-only keys
+# (``_JSON_ONLY_FIELD_MAP``) — adding a key here automatically makes it
+# accepted by the layered loader, without needing a parallel entry.
 _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     "logging.level": ("log_level", _to_log_level),
     "logging.to_file": ("log_to_file", _to_bool),
@@ -184,6 +184,14 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     # Refinement gate + parallel decomposition (issue #257)
     "pipeline.refine_max_attempts": ("pipeline_refine_max_attempts", _to_pos_int),
     "pipeline.max_parallel": ("pipeline_max_parallel", _to_pos_int),
+    # Sub-DEILEs paralelos (issue #257)
+    "subagent.runner": ("subagent_runner", lambda v: str(v).strip().lower()),
+    "subagent.max_parallel": ("subagent_max_parallel", _to_pos_int),
+    "subagent.poll_interval_s": ("subagent_poll_interval_s", float),
+    "subagent.budget_s": ("subagent_budget_s", float),
+    "subagent.capture_buffer_max_bytes": (
+        "subagent_capture_buffer_max_bytes", _to_pos_int,
+    ),
     # Trust boundary (issue #125): allowlist of directories whose
     # ``./.deile/settings.json`` is honored as the project layer.
     "trust.project_layer_dirs": ("trust_project_layer_dirs", _to_str_list),
@@ -339,6 +347,24 @@ class Settings:
     pipeline_resume_budget: int = 0
     pipeline_refine_max_attempts: int = 5
     pipeline_max_parallel: int = 2
+
+    # Sub-DEILEs paralelos em sessão CLI (issue #257)
+    # `subagent_runner`        — "local" (default; in-process via asyncio.gather de
+    #                            DeileAgent.process_input_stream em sessões limpas)
+    #                            ou "worker" (delega ao deile-worker HTTP).
+    # `subagent_max_parallel`  — teto de concorrência por chamada da tool.
+    # `subagent_poll_interval_s` — período de polling do WorkerSubAgentRunner.
+    subagent_runner: str = "local"
+    subagent_max_parallel: int = 3
+    subagent_poll_interval_s: float = 0.8
+    # Teto global de tempo da invocação do tool `dispatch_parallel_subagents`
+    # (M2/M11 — issue #295 review). Default = 10min = mesmo budget do worker.
+    subagent_budget_s: float = 600.0
+    # Cap (em bytes) do buffer de captura de stdout/stderr por sub-DEILE
+    # (item 10). Default histórico = 256 KiB. Overridable via env
+    # ``DEILE_SUBAGENT_CAPTURE_BUFFER_MAX_BYTES`` ou JSON
+    # ``subagent.capture_buffer_max_bytes``.
+    subagent_capture_buffer_max_bytes: int = 256 * 1024
 
     # Cron
     cron_db_path: Optional[Path] = None
@@ -637,39 +663,21 @@ def _load_json_file(path: Path) -> Dict[str, Any]:
         return {}
 
 
-# P2-6 / S-5: see the ``_OVERRIDE_HANDLERS`` "MUST KEEP IN SYNC" note above.
-# This map is the looser sibling used by ``_apply_nested_dict`` for layered
-# loading; ``_OVERRIDE_HANDLERS`` is the strict path used by ``apply_overrides``
-# and ``Settings.load_from_file``. Trust-boundary keys (issue #125) appear in
-# both — adding new keys here without a matching ``_OVERRIDE_HANDLERS`` entry
-# means the value bypasses strict converters and reaches ``_set_typed``
-# directly, which now refuses obvious type mismatches (issue #125 P1-1).
-_JSON_FIELD_MAP: Dict[str, str] = {
-    # flat JSON key → Settings attribute
+# Layered-loader addendum: dotted JSON keys that ARE accepted by the looser
+# ``_apply_nested_dict`` path but are NOT in the strict ``_OVERRIDE_HANDLERS``
+# above. These bypass strict converters and reach ``_set_typed`` directly,
+# which refuses obvious type mismatches (issue #125 P1-1) but does not run
+# the strict ValueError-on-unknown converters from ``_OVERRIDE_HANDLERS``.
+#
+# Keys here ARE NOT accepted by ``Settings.apply_overrides`` /
+# ``Settings.load_from_file`` (strict path) by design — they're typically
+# pipeline/cron/loop-guard knobs that travel via env vars or ad-hoc nested
+# layouts. Promote a key from here to ``_OVERRIDE_HANDLERS`` only when you
+# want it to gain a strict converter.
+_JSON_ONLY_FIELD_MAP: Dict[str, str] = {
     "debug.enabled": "debug_enabled",
     "model.preferred": "preferred_model",
     "model.vision_model": "vision_model",
-    "model.default_provider": "default_model_provider",
-    "model.max_context_tokens": "max_context_tokens",
-    "ui.streaming_enabled": "streaming_enabled",
-    "ui.show_tool_details": "show_tool_details",
-    "logging.level": "log_level",
-    "logging.to_file": "log_to_file",
-    "logging.max_size_mb": "log_file_max_size",
-    "logging.backup_count": "log_file_backup_count",
-    "caching.enabled": "enable_caching",
-    "caching.ttl_seconds": "cache_ttl",
-    "caching.parser_cache_enabled": "parser_cache_enabled",
-    "caching.parser_cache_ttl": "parser_cache_ttl",
-    "concurrency.max_concurrent_requests": "max_concurrent_requests",
-    "concurrency.request_timeout": "request_timeout",
-    "concurrency.max_tool_execution_time": "max_tool_execution_time",
-    "file_safety.enabled": "enable_file_safety_checks",
-    "file_safety.allowed_extensions": "allowed_file_extensions",
-    "file_safety.blocked_directories": "blocked_directories",
-    "file_safety.max_file_size_bytes": "max_file_size_bytes",
-    "file_safety.allow_all_types": "allow_all_file_types",
-    "file_safety.encoding_detection": "file_encoding_detection",
     "loop_guard.disabled": "loop_guard_disabled",
     "loop_guard.max_calls": "loop_guard_max_calls",
     "loop_guard.repeat_threshold": "loop_guard_repeat_threshold",
@@ -677,12 +685,8 @@ _JSON_FIELD_MAP: Dict[str, str] = {
     "loop_guard.window_threshold": "loop_guard_window_threshold",
     "loop_guard.no_progress": "loop_guard_no_progress",
     "approval.auto": "bot_approval_auto",
-    "deile_md.enabled": "deile_md_enabled",
-    "deile_md.cwd_filename": "deile_md_cwd_filename",
-    "deile_md.max_bytes": "deile_md_max_bytes",
     "skills_paths": "skills_paths",
     "profile.name": "profile_name",
-    "environment": "environment",
     "pipeline.base_path": "pipeline_base_path",
     "pipeline.repo": "pipeline_repo",
     "pipeline.poll_interval": "pipeline_poll_interval",
@@ -690,22 +694,51 @@ _JSON_FIELD_MAP: Dict[str, str] = {
     "pipeline.notify_user_id": "pipeline_notify_user_id",
     "pipeline.autostart": "pipeline_autostart",
     "pipeline.dispatch_mode": "pipeline_dispatch_mode",
-    "pipeline.resume_enabled": "pipeline_resume_enabled",
-    "pipeline.resume_interval": "pipeline_resume_interval",
-    "pipeline.resume_max_attempts": "pipeline_resume_max_attempts",
-    "pipeline.resume_budget": "pipeline_resume_budget",
     "cron.db_path": "cron_db_path",
     "cron.poll_interval": "cron_poll_interval",
     "agent.max_tool_iterations": "max_tool_iterations",
-    # Trust boundary (issue #125) — see ``_OVERRIDE_HANDLERS`` for the
-    # strict converters; this map covers the layered-loading path.
-    "trust.project_layer_dirs": "trust_project_layer_dirs",
-    "trust.project_layer_default": "trust_project_layer_default",
-    # Enterprise/security profile settings (issue #138)
-    "security.sandbox_code_execution": "sandbox_code_execution",
-    "security.encrypt_logs": "encrypt_logs",
-    "monitoring.generate_compliance_reports": "generate_compliance_reports",
 }
+
+
+def _build_json_field_map() -> Dict[str, str]:
+    """Derive the loose-path field map from ``_OVERRIDE_HANDLERS`` + addendum.
+
+    Every key in ``_OVERRIDE_HANDLERS`` whose Settings field is also reachable
+    via the layered loader is reused here for its field name (the converter is
+    dropped — the strict path runs converters, the loose path defers to
+    ``_set_typed``'s type coercion). The 4 strict-only keys (``debug``,
+    ``deile_md.user_path``, ``pipeline.max_parallel``,
+    ``pipeline.refine_max_attempts``) are intentionally NOT promoted to the
+    loose path — preserving the historical asymmetry. Keys exclusive to the
+    loose path live in ``_JSON_ONLY_FIELD_MAP``.
+
+    The two strict-only keys that historically had no loose-path twin
+    (``debug`` and ``deile_md.user_path``) are excluded explicitly so this
+    refactor is observably no-op vs. the previous hand-maintained mapping.
+    """
+    # Keys present strict-only by design — preserve historical asymmetry.
+    _STRICT_ONLY = {
+        "debug",
+        "deile_md.user_path",
+        "pipeline.max_parallel",
+        "pipeline.refine_max_attempts",
+    }
+    derived = {
+        key_path: field_name
+        for key_path, (field_name, _conv) in _OVERRIDE_HANDLERS.items()
+        if key_path not in _STRICT_ONLY
+    }
+    # Loose-only additions override never collide (the addendum has disjoint
+    # keys from _OVERRIDE_HANDLERS by construction), but use a single update
+    # for resilience to future edits.
+    derived.update(_JSON_ONLY_FIELD_MAP)
+    return derived
+
+
+# Cached at module load so ``_apply_nested_dict`` can do an O(1) lookup
+# without recomputing on every key. Treat as immutable from outside the
+# module.
+_JSON_FIELD_MAP: Dict[str, str] = _build_json_field_map()
 
 
 # P1-1: list-typed Settings attributes. ``_set_typed`` refuses to coerce a
@@ -807,6 +840,69 @@ def _set_typed(settings: "Settings", attr: str, value: Any) -> None:
         logger.warning("Cannot apply setting %s=%r: %s", attr, value, exc)
 
 
+def _env_bool(raw: str) -> bool:
+    """Lenient bool coercion for env vars: unknown → False.
+
+    Matches the dominant ``raw.strip().lower() in {"1","true","yes","on"}``
+    idiom used historically across DEILE_* boolean envs, and is more lenient
+    than the strict ``_to_bool`` (which raises on unknown strings).
+    """
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _int_floor(floor: int) -> Callable[[str], int]:
+    """Build a converter that parses int and clamps below to ``floor``."""
+    def _convert(raw: str) -> int:
+        return max(floor, int(raw))
+    return _convert
+
+
+def _resolved_path(raw: str) -> Path:
+    """Convert env-var raw string to absolute resolved Path."""
+    return Path(raw).resolve()
+
+
+# Table-driven env-var → settings attribute mapping. Each row converts the env
+# var's raw string with ``convert``; ValueError is swallowed (legacy behavior
+# preserved). ``deprecated=True`` rows emit a deprecation pointer to the
+# matching key in ``_DEILE_DEPRECATED_ENV_VARS`` (issue #111 migration path).
+_ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any], bool], ...] = (
+    # (env_var, settings_attr, converter, deprecated)
+    ("DEILE_DEBUG",                          "debug_enabled",                  _env_bool,         True),
+    ("DEILE_PREFERRED_MODEL",                "preferred_model",                str,               True),
+    ("DEILE_VISION_MODEL",                   "vision_model",                   str.strip,         True),
+    ("DEILE_BOT_APPROVAL_AUTO",              "bot_approval_auto",              _env_bool,         True),
+    ("DEILE_LOOP_GUARD_DISABLE",             "loop_guard_disabled",            _env_bool,         True),
+    ("DEILE_LOOP_GUARD_MAX_CALLS",           "loop_guard_max_calls",           _int_floor(1),     True),
+    ("DEILE_LOOP_GUARD_REPEAT_THRESHOLD",    "loop_guard_repeat_threshold",    _int_floor(1),     True),
+    ("DEILE_LOOP_GUARD_WINDOW_SIZE",         "loop_guard_window_size",         _int_floor(1),     True),
+    ("DEILE_LOOP_GUARD_WINDOW_THRESHOLD",    "loop_guard_window_threshold",    _int_floor(1),     True),
+    ("DEILE_LOOP_GUARD_NO_PROGRESS",         "loop_guard_no_progress",         _int_floor(1),     True),
+    ("DEILE_PIPELINE_BASE_PATH",             "pipeline_base_path",             _resolved_path,    True),
+    ("DEILE_PIPELINE_REPO",                  "pipeline_repo",                  str,               True),
+    ("DEILE_PIPELINE_NOTIFY_USER_ID",        "pipeline_notify_user_id",        str,               True),
+    ("DEILE_PIPELINE_POLL_INTERVAL",         "pipeline_poll_interval",         int,               True),
+    ("DEILE_PIPELINE_CLAUDE_TIMEOUT",        "pipeline_claude_timeout",        int,               True),
+    # PIPELINE_AUTOSTART is a current knob (no deprecation warning).
+    ("DEILE_PIPELINE_AUTOSTART",             "pipeline_autostart",             _env_bool,         False),
+    ("DEILE_PIPELINE_DISPATCH_MODE",         "pipeline_dispatch_mode",         lambda s: s.strip().lower(), True),
+    ("DEILE_PIPELINE_RESUME_ENABLED",        "pipeline_resume_enabled",        _env_bool,         True),
+    ("DEILE_PIPELINE_RESUME_INTERVAL",       "pipeline_resume_interval",       _int_floor(0),     True),
+    ("DEILE_PIPELINE_RESUME_MAX_ATTEMPTS",   "pipeline_resume_max_attempts",   _int_floor(1),     True),
+    ("DEILE_PIPELINE_RESUME_BUDGET",         "pipeline_resume_budget",         _int_floor(0),     True),
+    ("DEILE_CRON_DB_PATH",                   "cron_db_path",                   _resolved_path,    True),
+    ("DEILE_CRON_POLL_INTERVAL",             "cron_poll_interval",             int,               True),
+    # Current knob (no deprecation): agent tool-loop cap.
+    ("DEILE_MAX_TOOL_ITERATIONS",            "max_tool_iterations",            _int_floor(1),     False),
+    # Sub-DEILEs paralelos (issue #257) — current knobs, no deprecation.
+    ("DEILE_SUBAGENT_RUNNER",                "subagent_runner",                lambda s: s.strip().lower(), False),
+    ("DEILE_SUBAGENT_MAX_PARALLEL",          "subagent_max_parallel",          _int_floor(1),     False),
+    ("DEILE_SUBAGENT_POLL_INTERVAL_S",       "subagent_poll_interval_s",       float,             False),
+    ("DEILE_SUBAGENT_BUDGET_S",              "subagent_budget_s",              float,             False),
+    ("DEILE_SUBAGENT_CAPTURE_BUFFER_MAX_BYTES", "subagent_capture_buffer_max_bytes", _int_floor(1), False),
+)
+
+
 def _apply_env_overrides(settings: "Settings") -> None:
     """Apply DEILE_* env vars on top of JSON settings, with deprecation warnings."""
     env = os.environ.get
@@ -818,127 +914,17 @@ def _apply_env_overrides(settings: "Settings") -> None:
             json_key,
         )
 
-    # debug
-    raw = env("DEILE_DEBUG", "")
-    if raw:
-        _warn("DEILE_DEBUG", "debug.enabled")
-        settings.debug_enabled = raw.lower() in {"1", "true", "yes", "on"}
-
-    # model
-    raw = env("DEILE_PREFERRED_MODEL")
-    if raw:
-        _warn("DEILE_PREFERRED_MODEL", "model.preferred")
-        settings.preferred_model = raw
-
-    raw = env("DEILE_VISION_MODEL")
-    if raw:
-        _warn("DEILE_VISION_MODEL", "model.vision_model")
-        settings.vision_model = raw.strip()
-
-    # approval
-    raw = env("DEILE_BOT_APPROVAL_AUTO", "")
-    if raw:
-        _warn("DEILE_BOT_APPROVAL_AUTO", "approval.auto")
-        settings.bot_approval_auto = raw.strip().lower() in {"1", "true", "yes", "on"}
-
-    # loop_guard
-    raw = env("DEILE_LOOP_GUARD_DISABLE", "")
-    if raw:
-        _warn("DEILE_LOOP_GUARD_DISABLE", "loop_guard.disabled")
-        settings.loop_guard_disabled = raw.strip() in ("1", "true", "TRUE", "yes")
-
-    for env_var, attr, cast, default in (
-        ("DEILE_LOOP_GUARD_MAX_CALLS", "loop_guard_max_calls", int, 50),
-        ("DEILE_LOOP_GUARD_REPEAT_THRESHOLD", "loop_guard_repeat_threshold", int, 3),
-        ("DEILE_LOOP_GUARD_WINDOW_SIZE", "loop_guard_window_size", int, 5),
-        ("DEILE_LOOP_GUARD_WINDOW_THRESHOLD", "loop_guard_window_threshold", int, 3),
-        ("DEILE_LOOP_GUARD_NO_PROGRESS", "loop_guard_no_progress", int, 6),
-    ):
+    for env_var, attr, convert, deprecated in _ENV_OVERRIDES:
         raw = env(env_var)
-        if raw:
-            json_key = _DEILE_DEPRECATED_ENV_VARS.get(env_var, env_var)
-            _warn(env_var, json_key)
-            try:
-                setattr(settings, attr, max(1, cast(raw)))
-            except ValueError:
-                pass
-
-    # pipeline
-    raw = env("DEILE_PIPELINE_BASE_PATH")
-    if raw:
-        _warn("DEILE_PIPELINE_BASE_PATH", "pipeline.base_path")
-        settings.pipeline_base_path = Path(raw).resolve()
-
-    raw = env("DEILE_PIPELINE_REPO")
-    if raw:
-        _warn("DEILE_PIPELINE_REPO", "pipeline.repo")
-        settings.pipeline_repo = raw
-
-    raw = env("DEILE_PIPELINE_NOTIFY_USER_ID")
-    if raw:
-        _warn("DEILE_PIPELINE_NOTIFY_USER_ID", "pipeline.notify_user_id")
-        settings.pipeline_notify_user_id = raw
-
-    for env_var, attr, cast in (
-        ("DEILE_PIPELINE_POLL_INTERVAL", "pipeline_poll_interval", int),
-        ("DEILE_PIPELINE_CLAUDE_TIMEOUT", "pipeline_claude_timeout", int),
-    ):
-        raw = env(env_var)
-        if raw:
+        if not raw:
+            continue
+        if deprecated:
             _warn(env_var, _DEILE_DEPRECATED_ENV_VARS.get(env_var, env_var))
-            try:
-                setattr(settings, attr, int(raw))
-            except ValueError:
-                pass
-
-    raw = env("DEILE_PIPELINE_AUTOSTART")
-    if raw:
-        settings.pipeline_autostart = raw.lower().strip() in ("1", "true", "yes", "on")
-
-    raw = env("DEILE_PIPELINE_DISPATCH_MODE")
-    if raw:
-        _warn("DEILE_PIPELINE_DISPATCH_MODE", "pipeline.dispatch_mode")
-        settings.pipeline_dispatch_mode = raw.strip().lower()
-
-    # pipeline resume (issue #254)
-    raw = env("DEILE_PIPELINE_RESUME_ENABLED")
-    if raw:
-        _warn("DEILE_PIPELINE_RESUME_ENABLED", "pipeline.resume_enabled")
-        settings.pipeline_resume_enabled = raw.strip().lower() in ("1", "true", "yes", "on")
-
-    for env_var, attr, floor in (
-        ("DEILE_PIPELINE_RESUME_INTERVAL", "pipeline_resume_interval", 0),
-        ("DEILE_PIPELINE_RESUME_MAX_ATTEMPTS", "pipeline_resume_max_attempts", 1),
-        ("DEILE_PIPELINE_RESUME_BUDGET", "pipeline_resume_budget", 0),
-    ):
-        raw = env(env_var)
-        if raw:
-            _warn(env_var, _DEILE_DEPRECATED_ENV_VARS.get(env_var, env_var))
-            try:
-                setattr(settings, attr, max(floor, int(raw)))
-            except ValueError:
-                pass
-
-    # cron
-    raw = env("DEILE_CRON_DB_PATH")
-    if raw:
-        _warn("DEILE_CRON_DB_PATH", "cron.db_path")
-        settings.cron_db_path = Path(raw).resolve()
-
-    raw = env("DEILE_CRON_POLL_INTERVAL")
-    if raw:
-        _warn("DEILE_CRON_POLL_INTERVAL", "cron.poll_interval")
         try:
-            settings.cron_poll_interval = int(raw)
-        except ValueError:
-            pass
-
-    # Agent tool-loop cap — current knob (not deprecated), so no migration warning.
-    raw = env("DEILE_MAX_TOOL_ITERATIONS")
-    if raw:
-        try:
-            settings.max_tool_iterations = max(1, int(raw))
-        except ValueError:
+            setattr(settings, attr, convert(raw))
+        except (ValueError, TypeError):
+            # Legacy behavior: malformed env values are silently ignored, the
+            # default (or JSON layer value) stays in place.
             pass
 
 

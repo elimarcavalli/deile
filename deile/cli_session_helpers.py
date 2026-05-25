@@ -57,8 +57,15 @@ def replay_history(ui: Any, session: Any, history: list) -> None:
     (which prints the ``Deile >`` header). Non-string contents are normalized via
     ``_normalize_history_content`` to handle any Rich renderable that slipped
     through.
+
+    Issue #257: assistant entries with metadata flag ``subagent_panel_summary``
+    are rendered as a Rich :class:`Panel` instead of a regular response — this
+    is how the panel of parallel sub-DEILEs survives ``/resume`` without
+    relying on the LLM having written a textual consolidation.
     """
     from .core.agent import _normalize_history_content
+    from .orchestration.subagents.constants import HISTORY_MARKER_KEY
+
     ui.show_welcome(session)
     for entry in history:
         role = entry.get("role")
@@ -69,7 +76,42 @@ def replay_history(ui: Any, session: Any, history: list) -> None:
         if role == "user":
             ui.console.print(f"\n > {text}")
         elif role == "assistant":
-            ui.display_response(text, metadata=None)
+            meta = entry.get("metadata") or {}
+            if meta.get(HISTORY_MARKER_KEY):
+                _render_panel_summary(ui, text, meta)
+            else:
+                ui.display_response(text, metadata=None)
+
+
+def _render_panel_summary(ui: Any, markdown_text: str, meta: dict) -> None:
+    """Renderiza uma entrada de resumo de sub-DEILEs (issue #257) no /resume.
+
+    Usa um :class:`rich.panel.Panel` com borda cyan e título identificável
+    para que o usuário veja claramente que aquilo foi um disparo paralelo
+    e NÃO uma resposta direta do LLM. O conteúdo é Markdown renderizado.
+    """
+    from rich.markdown import Markdown
+    from rich.panel import Panel
+
+    ok = int(meta.get("ok_count", 0))
+    err = int(meta.get("error_count", 0))
+    elapsed = float(meta.get("elapsed_s", 0.0))
+    cancelled = bool(meta.get("cancelled", False))
+    n = int(meta.get("n_subtasks", ok + err))
+
+    title_parts = [f"🧩 Sub-DEILEs paralelos ({n} frentes)"]
+    if elapsed:
+        title_parts.append(f"{elapsed:.1f}s")
+    if cancelled:
+        title_parts.append("cancelado")
+    title = " · ".join(title_parts)
+    border = "green" if (err == 0 and not cancelled) else ("yellow" if cancelled else "red")
+    try:
+        body = Markdown(markdown_text)
+    except Exception:
+        body = markdown_text  # fallback raw text
+    ui.console.print()
+    ui.console.print(Panel(body, title=title, title_align="left", border_style=border))
 
 
 def check_session_switch(session: Any, agent: Any, ui: Any) -> Optional[Any]:

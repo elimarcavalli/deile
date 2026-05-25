@@ -198,22 +198,35 @@ MENTION_LABELS = (MENTION_DONE,)
 # labels are project-owned and created by the issue templates).
 REFINE_LABELS = (REFINAR,)
 
+# Label color palette. Each name encodes the semantic role on the timeline so
+# changing the palette is a 1-line edit (vs. a hex-grep across the dict) and
+# the meaning is visible in the LABEL_COLORS dict below.
+_COLOR_GREEN_PROGRESS = "0e8a16"   # active forward progress (new / pending / concluded)
+_COLOR_YELLOW_LOCK = "fbca04"      # transient lock state (reviewing / implementing)
+_COLOR_LAVENDER_REFINE = "d4c5f9"  # refinement bucket (intent refining + ad-hoc)
+_COLOR_ORANGE_WAITING = "d93f0b"   # paused, waiting on a human decision
+_COLOR_PURPLE_REVIEWED = "5319e7"  # scope clear, ready to dispatch
+_COLOR_BLUE_PR = "0052cc"          # PR opened (terminal pipeline state pre-merge)
+_COLOR_BLUE_DECOMPOSED = "1d76db"  # intent decomposed (epic open)
+_COLOR_RED_BLOCKED = "b60205"      # hard block, excluded from auto-resume
+_COLOR_LIGHT_BLUE_DONE = "c5def5"  # mention already processed (sticky marker)
+
 LABEL_COLORS = {
-    WORKFLOW_NEW: "0e8a16",
-    WORKFLOW_REVIEWING: "fbca04",
-    WORKFLOW_REFINING: "d4c5f9",
-    WORKFLOW_ARCHITECTURE: "fbca04",
-    WORKFLOW_WAITING: "d93f0b",
-    WORKFLOW_REVIEWED: "5319e7",
-    WORKFLOW_IMPLEMENTING: "fbca04",
-    WORKFLOW_PR: "0052cc",
-    WORKFLOW_DECOMPOSED: "1d76db",
-    WORKFLOW_BLOCKED: "b60205",
-    REVIEW_PENDING: "0e8a16",
-    REVIEW_IN_PROGRESS: "fbca04",
-    REVIEW_CONCLUDED: "0e8a16",
-    MENTION_DONE: "c5def5",
-    REFINAR: "d4c5f9",
+    WORKFLOW_NEW: _COLOR_GREEN_PROGRESS,
+    WORKFLOW_REVIEWING: _COLOR_YELLOW_LOCK,
+    WORKFLOW_REFINING: _COLOR_LAVENDER_REFINE,
+    WORKFLOW_ARCHITECTURE: _COLOR_YELLOW_LOCK,
+    WORKFLOW_WAITING: _COLOR_ORANGE_WAITING,
+    WORKFLOW_REVIEWED: _COLOR_PURPLE_REVIEWED,
+    WORKFLOW_IMPLEMENTING: _COLOR_YELLOW_LOCK,
+    WORKFLOW_PR: _COLOR_BLUE_PR,
+    WORKFLOW_DECOMPOSED: _COLOR_BLUE_DECOMPOSED,
+    WORKFLOW_BLOCKED: _COLOR_RED_BLOCKED,
+    REVIEW_PENDING: _COLOR_GREEN_PROGRESS,
+    REVIEW_IN_PROGRESS: _COLOR_YELLOW_LOCK,
+    REVIEW_CONCLUDED: _COLOR_GREEN_PROGRESS,
+    MENTION_DONE: _COLOR_LIGHT_BLUE_DONE,
+    REFINAR: _COLOR_LAVENDER_REFINE,
 }
 
 LABEL_DESCRIPTIONS = {

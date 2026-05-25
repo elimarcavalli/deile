@@ -61,6 +61,12 @@ spec:
             # unset by default — set it to a Discord user id to receive DMs.
             - { name: DEILE_BOT_ENDPOINT,            value: "http://deilebot.deile.svc.cluster.local:8765" }
             - { name: DEILE_BOT_APPROVAL_AUTO,       value: "1" }
+            # Client-side dispatch timeout MUST match the worker's task timeout
+            # (45-deile-worker-deployment.yaml :: DEILE_WORKER_TASK_TIMEOUT_S),
+            # otherwise the client times out before the worker finishes — observed
+            # on PR #293 review: client 660s vs worker 900s = false WORKER_TIMEOUT
+            # while the worker was still running.
+            - { name: DEILE_WORKER_TASK_TIMEOUT_S,   value: "900" }
           volumeMounts:
             # GITHUB_TOKEN (gh) + DEILE_BOT_AUTH_TOKEN (notifier) + LLM keys
             # (unused here, harmless) — same Secret as worker/shell.

@@ -10,7 +10,6 @@ Author: DEILE
 
 import json
 import logging
-import sqlite3
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -20,7 +19,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from deile.core.context_manager import ContextManager
+from deile.infrastructure.monitoring.cost_repository import CostRepository
 
 logger = logging.getLogger(__name__)
 
@@ -111,79 +110,25 @@ class CostTracker:
     
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path or str(Path.home() / ".deile" / "costs.db")
-        self.context_manager = ContextManager()
-        
+
         # In-memory tracking
         self.current_session_costs = {}
         self.budget_limits = {}
         self.cost_alerts = []
         self.alert_callbacks = []
-        
+
         # Thread safety
         self.lock = threading.RLock()
-        
+
         # Pricing configurations
         self.pricing_config = self._load_pricing_config()
-        
-        # Initialize database
-        self._init_database()
-        
+
+        # SQLite persistence (SRP — see cost_repository.py)
+        self.repo = CostRepository(self.db_path)
+        self.repo.init_schema()
+
         # Load budget limits
         self._load_budget_limits()
-    
-    def _init_database(self):
-        """Initialize cost tracking database"""
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-        
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS cost_entries (
-                    id TEXT PRIMARY KEY,
-                    timestamp REAL NOT NULL,
-                    category TEXT NOT NULL,
-                    subcategory TEXT NOT NULL,
-                    amount REAL NOT NULL,
-                    currency TEXT NOT NULL DEFAULT 'USD',
-                    description TEXT NOT NULL,
-                    metadata TEXT NOT NULL DEFAULT '{}',
-                    session_id TEXT,
-                    user_id TEXT,
-                    created_at REAL DEFAULT (datetime('now'))
-                )
-            """)
-            
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS budget_limits (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    category TEXT NOT NULL,
-                    period TEXT NOT NULL,
-                    limit_amount REAL NOT NULL,
-                    currency TEXT NOT NULL DEFAULT 'USD',
-                    alert_threshold REAL DEFAULT 0.8,
-                    hard_limit BOOLEAN DEFAULT FALSE,
-                    created_at REAL DEFAULT (datetime('now')),
-                    active BOOLEAN DEFAULT TRUE
-                )
-            """)
-            
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS cost_alerts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    alert_type TEXT NOT NULL,
-                    category TEXT NOT NULL,
-                    period TEXT,
-                    current_amount REAL NOT NULL,
-                    limit_amount REAL NOT NULL,
-                    threshold_percentage REAL NOT NULL,
-                    triggered_at REAL DEFAULT (datetime('now')),
-                    acknowledged BOOLEAN DEFAULT FALSE
-                )
-            """)
-            
-            # Create indices for performance
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_cost_timestamp ON cost_entries(timestamp)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_cost_category ON cost_entries(category)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_cost_session ON cost_entries(session_id)")
     
     def _load_pricing_config(self) -> Dict[str, Any]:
         """Load pricing configuration"""
@@ -244,27 +189,18 @@ class CostTracker:
         """Load budget limits from database"""
         try:
             loaded: Dict[str, BudgetLimit] = {}
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.execute("""
-                    SELECT category, period, limit_amount, currency,
-                           alert_threshold, hard_limit, created_at
-                    FROM budget_limits
-                    WHERE active = TRUE
-                """)
-
-                for row in cursor.fetchall():
-                    budget = BudgetLimit(
-                        category=row[0],
-                        period=row[1],
-                        limit_amount=Decimal(str(row[2])),
-                        currency=row[3],
-                        alert_threshold=row[4],
-                        hard_limit=bool(row[5]),
-                        created_at=row[6]
-                    )
-
-                    key = f"{budget.category}_{budget.period}"
-                    loaded[key] = budget
+            for row in self.repo.fetch_active_budgets():
+                budget = BudgetLimit(
+                    category=row[0],
+                    period=row[1],
+                    limit_amount=Decimal(str(row[2])),
+                    currency=row[3],
+                    alert_threshold=row[4],
+                    hard_limit=bool(row[5]),
+                    created_at=row[6],
+                )
+                key = f"{budget.category}_{budget.period}"
+                loaded[key] = budget
 
             # Atomic full replace under the lock: a reload is authoritative
             # (drops budgets deactivated in the DB) and concurrent readers
@@ -316,38 +252,32 @@ class CostTracker:
             
             # Store in database
             try:
-                with sqlite3.connect(self.db_path) as conn:
-                    conn.execute("""
-                        INSERT INTO cost_entries 
-                        (id, timestamp, category, subcategory, amount, currency, 
-                         description, metadata, session_id, user_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        cost_entry.id,
-                        cost_entry.timestamp,
-                        cost_entry.category,
-                        cost_entry.subcategory,
-                        float(cost_entry.amount),
-                        cost_entry.currency,
-                        cost_entry.description,
-                        json.dumps(cost_entry.metadata),
-                        cost_entry.session_id,
-                        cost_entry.user_id
-                    ))
-                
+                self.repo.insert_cost_entry(
+                    entry_id=cost_entry.id,
+                    timestamp=cost_entry.timestamp,
+                    category=cost_entry.category,
+                    subcategory=cost_entry.subcategory,
+                    amount=float(cost_entry.amount),
+                    currency=cost_entry.currency,
+                    description=cost_entry.description,
+                    metadata_json=json.dumps(cost_entry.metadata),
+                    session_id=cost_entry.session_id,
+                    user_id=cost_entry.user_id,
+                )
+
                 # Update session tracking
                 session_key = cost_entry.session_id or "default"
                 if session_key not in self.current_session_costs:
                     self.current_session_costs[session_key] = Decimal('0')
                 self.current_session_costs[session_key] += cost_entry.amount
-                
+
                 # Check budget limits
                 self._check_budget_limits(cost_entry)
-                
+
                 logger.info(f"Tracked cost: {cost_entry.category}/{cost_entry.subcategory} - ${cost_entry.amount}")
-                
+
                 return entry_id
-                
+
             except Exception as e:
                 logger.error(f"Failed to track cost: {e}")
                 raise
@@ -491,28 +421,15 @@ class CostTracker:
             )
             
             # Store in database
-            with sqlite3.connect(self.db_path) as conn:
-                # Deactivate existing limits for same category/period
-                conn.execute("""
-                    UPDATE budget_limits 
-                    SET active = FALSE 
-                    WHERE category = ? AND period = ?
-                """, (category_str, period_str))
-                
-                # Insert new limit
-                conn.execute("""
-                    INSERT INTO budget_limits 
-                    (category, period, limit_amount, currency, alert_threshold, hard_limit)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (
-                    budget.category,
-                    budget.period,
-                    float(budget.limit_amount),
-                    budget.currency,
-                    budget.alert_threshold,
-                    budget.hard_limit
-                ))
-            
+            self.repo.replace_budget_limit(
+                category=budget.category,
+                period=budget.period,
+                limit_amount=float(budget.limit_amount),
+                currency=budget.currency,
+                alert_threshold=budget.alert_threshold,
+                hard_limit=budget.hard_limit,
+            )
+
             # Update in memory
             key = f"{category_str}_{period_str}"
             self.budget_limits[key] = budget
@@ -570,18 +487,9 @@ class CostTracker:
             period_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         
         start_timestamp = period_start.timestamp()
-        
+
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.execute("""
-                    SELECT COALESCE(SUM(amount), 0)
-                    FROM cost_entries
-                    WHERE category = ? AND timestamp >= ?
-                """, (category, start_timestamp))
-                
-                result = cursor.fetchone()
-                return Decimal(str(result[0] if result and result[0] else 0))
-                
+            return Decimal(str(self.repo.period_usage_sum(category, start_timestamp)))
         except Exception as e:
             logger.error(f"Failed to get period usage: {e}")
             return Decimal('0')
@@ -601,19 +509,14 @@ class CostTracker:
         
         # Store alert
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute("""
-                    INSERT INTO cost_alerts 
-                    (alert_type, category, period, current_amount, limit_amount, threshold_percentage)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (
-                    alert_data["alert_type"],
-                    alert_data["category"],
-                    alert_data["period"],
-                    alert_data["current_amount"],
-                    alert_data["limit_amount"],
-                    alert_data["threshold_percentage"]
-                ))
+            self.repo.insert_alert(
+                alert_type=alert_data["alert_type"],
+                category=alert_data["category"],
+                period=alert_data["period"],
+                current_amount=alert_data["current_amount"],
+                limit_amount=alert_data["limit_amount"],
+                threshold_percentage=alert_data["threshold_percentage"],
+            )
         except Exception as e:
             logger.error(f"Failed to store alert: {e}")
         
@@ -645,67 +548,32 @@ class CostTracker:
             start_time = end_time - timedelta(days=30)
         
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                # Base query
-                where_clauses = ["timestamp >= ?", "timestamp <= ?"]
-                params = [start_time.timestamp(), end_time.timestamp()]
-                
-                if category:
-                    where_clauses.append("category = ?")
-                    params.append(category)
-                
-                where_sql = " AND ".join(where_clauses)
-                
-                # nosec B608 — where_sql is built from hardcoded clause strings only;
-                # all user-controlled values are bound via the `params` list (parameterised query).
-                cursor = conn.execute(f"""
-                    SELECT COALESCE(SUM(amount), 0), COUNT(*)
-                    FROM cost_entries
-                    WHERE {where_sql}
-                """, params)  # nosec B608
+            total_amount, entry_count, by_category, top_rows = self.repo.summary_aggregates(
+                start_time.timestamp(), end_time.timestamp(), category
+            )
 
-                total_amount, entry_count = cursor.fetchone()
+            categories = {row[0]: Decimal(str(row[1])) for row in by_category}
+            top_expenses = [
+                {
+                    "category": row[0],
+                    "subcategory": row[1],
+                    "amount": float(row[2]),
+                    "description": row[3],
+                    "timestamp": row[4],
+                }
+                for row in top_rows
+            ]
 
-                cursor = conn.execute(f"""
-                    SELECT category, COALESCE(SUM(amount), 0)
-                    FROM cost_entries
-                    WHERE {where_sql}
-                    GROUP BY category
-                    ORDER BY SUM(amount) DESC
-                """, params)  # nosec B608
+            return CostSummary(
+                period_start=start_time.timestamp(),
+                period_end=end_time.timestamp(),
+                total_amount=Decimal(str(total_amount)),
+                currency="USD",
+                categories=categories,
+                entry_count=entry_count,
+                top_expenses=top_expenses,
+            )
 
-                categories = {}
-                for row in cursor.fetchall():
-                    categories[row[0]] = Decimal(str(row[1]))
-
-                cursor = conn.execute(f"""
-                    SELECT category, subcategory, amount, description, timestamp
-                    FROM cost_entries
-                    WHERE {where_sql}
-                    ORDER BY amount DESC
-                    LIMIT 10
-                """, params)  # nosec B608
-                
-                top_expenses = []
-                for row in cursor.fetchall():
-                    top_expenses.append({
-                        "category": row[0],
-                        "subcategory": row[1],
-                        "amount": float(row[2]),
-                        "description": row[3],
-                        "timestamp": row[4]
-                    })
-                
-                return CostSummary(
-                    period_start=start_time.timestamp(),
-                    period_end=end_time.timestamp(),
-                    total_amount=Decimal(str(total_amount)),
-                    currency="USD",
-                    categories=categories,
-                    entry_count=entry_count,
-                    top_expenses=top_expenses
-                )
-                
         except Exception as e:
             logger.error(f"Failed to get cost summary: {e}")
             # Return empty summary
@@ -740,60 +608,55 @@ class CostTracker:
             start_time = end_time - timedelta(days=30)
         
         try:
-            with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.execute("""
-                    SELECT id, timestamp, category, subcategory, amount, currency,
-                           description, metadata, session_id, user_id
-                    FROM cost_entries
-                    WHERE timestamp >= ? AND timestamp <= ?
-                    ORDER BY timestamp DESC
-                """, (start_time.timestamp(), end_time.timestamp()))
-                
-                entries = []
-                for row in cursor.fetchall():
-                    entry = {
-                        "id": row[0],
-                        "timestamp": row[1],
-                        "datetime": datetime.fromtimestamp(row[1]).isoformat(),
-                        "category": row[2],
-                        "subcategory": row[3],
-                        "amount": row[4],
-                        "currency": row[5],
-                        "description": row[6],
-                        "metadata": json.loads(row[7]) if row[7] else {},
-                        "session_id": row[8],
-                        "user_id": row[9]
-                    }
-                    entries.append(entry)
-                
-                if format_type == "json":
-                    return json.dumps({
-                        "export_timestamp": datetime.now().isoformat(),
-                        "period_start": start_time.isoformat(),
-                        "period_end": end_time.isoformat(),
-                        "total_entries": len(entries),
-                        "entries": entries
-                    }, indent=2)
-                elif format_type == "csv":
-                    # Simple CSV export
-                    import csv
-                    import io
-                    
-                    output = io.StringIO()
-                    writer = csv.DictWriter(output, fieldnames=[
-                        "id", "datetime", "category", "subcategory", 
-                        "amount", "currency", "description", "session_id"
-                    ])
-                    
-                    writer.writeheader()
-                    for entry in entries:
-                        writer.writerow({
-                            k: v for k, v in entry.items() 
-                            if k in writer.fieldnames
-                        })
-                    
-                    return output.getvalue()
-                
+            rows = self.repo.fetch_entries_in_range(
+                start_time.timestamp(), end_time.timestamp()
+            )
+
+            entries = [
+                {
+                    "id": row[0],
+                    "timestamp": row[1],
+                    "datetime": datetime.fromtimestamp(row[1]).isoformat(),
+                    "category": row[2],
+                    "subcategory": row[3],
+                    "amount": row[4],
+                    "currency": row[5],
+                    "description": row[6],
+                    "metadata": json.loads(row[7]) if row[7] else {},
+                    "session_id": row[8],
+                    "user_id": row[9],
+                }
+                for row in rows
+            ]
+
+            if format_type == "json":
+                return json.dumps({
+                    "export_timestamp": datetime.now().isoformat(),
+                    "period_start": start_time.isoformat(),
+                    "period_end": end_time.isoformat(),
+                    "total_entries": len(entries),
+                    "entries": entries
+                }, indent=2)
+            elif format_type == "csv":
+                # Simple CSV export
+                import csv
+                import io
+
+                output = io.StringIO()
+                writer = csv.DictWriter(output, fieldnames=[
+                    "id", "datetime", "category", "subcategory",
+                    "amount", "currency", "description", "session_id"
+                ])
+
+                writer.writeheader()
+                for entry in entries:
+                    writer.writerow({
+                        k: v for k, v in entry.items()
+                        if k in writer.fieldnames
+                    })
+
+                return output.getvalue()
+
         except Exception as e:
             logger.error(f"Failed to export costs: {e}")
             return ""
@@ -834,12 +697,14 @@ class CostTracker:
         }
     
     def _get_current_session_id(self) -> Optional[str]:
-        """Get current session ID"""
-        return getattr(self.context_manager, 'current_session_id', None)
-    
+        # No session context available at this layer (would violate Clean
+        # Architecture: infrastructure must not depend on core). Callers can
+        # pass session_id explicitly to track_cost().
+        return None
+
     def _get_current_user_id(self) -> Optional[str]:
-        """Get current user ID"""
-        return getattr(self.context_manager, 'current_user_id', None)
+        # See _get_current_session_id: user context is not resolved here.
+        return None
 
 
 class BudgetExceededException(Exception):

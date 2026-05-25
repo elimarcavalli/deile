@@ -44,6 +44,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
+from deile.common.tool_args import TOOL_PRIMARY_ARG_KEYS
 from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
 from deile.ui.markdown_table import DeileMarkdown as Markdown
 from deile.ui.markdown_table import safe_streaming_split
@@ -57,7 +58,16 @@ _VALIDATION_GATE_TITLE = (
 # Tools que escrevem direto no stdout durante a execução. Para elas,
 # o cabeçalho "● Bash(...)" precisa ir para a scrollback assim que
 # os args chegam, antes da execução, para evitar colisão com a Live region.
-_DIRECT_PRINT_TOOLS: frozenset = frozenset({"bash_execute"})
+#
+# ``dispatch_parallel_subagents`` (issue #257) também entra aqui: durante a
+# execução ele abre o próprio Rich Live (SubAgentPanelRenderer) e suspende o
+# Live do streaming_renderer; o cabeçalho precisa ir pra scrollback ANTES
+# para que o painel multipanel apareça logo abaixo, sem colidir com a tag
+# "● dispatch_parallel_subagents(...)".
+_DIRECT_PRINT_TOOLS: frozenset = frozenset({
+    "bash_execute",
+    "dispatch_parallel_subagents",
+})
 
 # Mapeamento opcional de nome interno → nome amigável exibido.
 _TOOL_DISPLAY_NAME: Dict[str, str] = {
@@ -67,14 +77,9 @@ _TOOL_DISPLAY_NAME: Dict[str, str] = {
 
 # Para tools de comando primário (uma string única dominante), mostramos
 # o valor cru em vez do par "chave='valor'". Mapeia tool → arg principal.
-_TOOL_PRIMARY_ARG: Dict[str, str] = {
-    "bash_execute": "command",
-    "python_execute": "code",
-    "read_file": "file_path",
-    "write_file": "file_path",
-    "list_files": "path",
-    "delete_file": "file_path",
-}
+# Alias preservado para callers internos; a fonte única de verdade vive em
+# ``deile.common.tool_args`` (compartilhada com o runner de sub-agentes).
+_TOOL_PRIMARY_ARG: Dict[str, str] = TOOL_PRIMARY_ARG_KEYS
 
 # Tools com renderização de args customizada. Quando o nome aparece aqui,
 # ``_render_args_inline`` delega à função associada em vez de usar o
@@ -291,7 +296,8 @@ class StreamingRenderer:
         # without feedback the user thinks the agent is hung. The spinner
         # is cancelled on the first event, so it never overlaps real
         # content.
-        _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        from .spinner import BRAILLE_SPINNER_FRAMES as _SPINNER_FRAMES
+
         # Animation tick — runs for the entire turn. As long as the tail
         # of ``blocks`` is a _StageBlock (i.e., we're in a "silent wait"),
         # we refresh the Live region so the spinner frame visibly rotates.

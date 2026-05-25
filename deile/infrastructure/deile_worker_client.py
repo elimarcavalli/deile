@@ -31,15 +31,24 @@ from deile.core.exceptions import DEILEError
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT_S: float = 600.0
+#: Default per-task timeout (seconds). Aligned with ``DEILE_WORKER_TASK_TIMEOUT_S``
+#: on the worker side so the client never gives up BEFORE the server has had a
+#: chance to finish (regression observed on PR #293: server raised to 900s, but
+#: client was stuck at 600s+60s buffer = 660s — review timed out client-side
+#: while the worker was still working).
+DEFAULT_TIMEOUT_S: float = float(os.environ.get("DEILE_WORKER_TASK_TIMEOUT_S", "600"))
 # Budget máximo permitido para um dispatch ``wait=True`` — compartilhado
 # entre o ``max_execution_time`` da tool e o timeout do cliente httpx, de
 # modo que um cancel upstream não mascare ``WORKER_TIMEOUT`` como
-# ``CancelledError``.
+# ``CancelledError``. The +60s buffer absorbs network/serialization latency
+# beyond the server's wall-clock budget.
 MAX_DISPATCH_BUDGET_S: float = DEFAULT_TIMEOUT_S + 60.0
 _NOWAIT_TIMEOUT_S: float = 30.0
 
 _DISPATCH_PATH = "/v1/dispatch"
+_PROGRESS_PATH = "/v1/progress/{task_id}"
+_RESULT_PATH = "/v1/result/{task_id}"
+_POLL_TIMEOUT_S: float = 5.0
 _DEFAULT_ENDPOINT = "http://deile-worker.deile.svc.cluster.local:8766"
 _ENDPOINT_ENV = "DEILE_WORKER_ENDPOINT"
 _TOKEN_ENV = "DEILE_WORKER_BEARER_TOKEN"
@@ -276,6 +285,37 @@ def _validate_token_charset(token: str) -> bool:
     return bool(_TOKEN_SAFE_CHARS.match(token))
 
 
+async def _resolve_auth_and_httpx() -> tuple[str, Any]:
+    """Shared bootstrap: resolve token (off-loop), validate it, import httpx.
+
+    Returns ``(token, httpx_module)``. Raises :class:`WorkerDispatchError`
+    with the same ``error_code`` codes that ``dispatch`` / ``_get_json``
+    previously emitted inline (``WORKER_AUTH_MISSING``,
+    ``WORKER_AUTH_MALFORMED``, ``WORKER_TRANSPORT_MISSING``) — kept in one
+    place so any future change (e.g. cached token, alternate transport)
+    lands in a single helper.
+    """
+    token = await asyncio.to_thread(_read_token)
+    if not token:
+        raise WorkerDispatchError(
+            "WORKER_BEARER_TOKEN not configured in this Pod",
+            error_code="WORKER_AUTH_MISSING",
+        )
+    if not _validate_token_charset(token):
+        raise WorkerDispatchError(
+            "bearer token has invalid characters",
+            error_code="WORKER_AUTH_MALFORMED",
+        )
+    try:
+        import httpx
+    except ImportError as exc:
+        raise WorkerDispatchError(
+            "httpx is not installed in this image",
+            error_code="WORKER_TRANSPORT_MISSING",
+        ) from exc
+    return token, httpx
+
+
 class DeileWorkerClient:
     """Cliente do control plane do deile-worker (``POST /v1/dispatch``).
 
@@ -317,28 +357,7 @@ class DeileWorkerClient:
         # Token resolution touches secret files on disk — keep that blocking
         # I/O off the event loop. The token is a secret: it must never be
         # interpolated into log or error messages.
-        token = await asyncio.to_thread(_read_token)
-        if not token:
-            raise WorkerDispatchError(
-                "WORKER_BEARER_TOKEN not configured in this Pod",
-                error_code="WORKER_AUTH_MISSING",
-            )
-        if not _validate_token_charset(token):
-            # Defense-in-depth: rejeita CR/LF/NUL antes de injetar no
-            # header. Não logamos o token nem o seu fingerprint —
-            # apenas o code-path.
-            raise WorkerDispatchError(
-                "bearer token has invalid characters",
-                error_code="WORKER_AUTH_MALFORMED",
-            )
-
-        try:
-            import httpx
-        except ImportError as exc:
-            raise WorkerDispatchError(
-                "httpx is not installed in this image",
-                error_code="WORKER_TRANSPORT_MISSING",
-            ) from exc
+        token, httpx = await _resolve_auth_and_httpx()
 
         request_id = str(uuid.uuid4())
         timeout: float = MAX_DISPATCH_BUDGET_S if wait else _NOWAIT_TIMEOUT_S
@@ -392,4 +411,108 @@ class DeileWorkerClient:
                 "task_id": data.get("task_id") if isinstance(data, dict) else None,
             },
         )
+        return data
+
+    async def get_progress(self, task_id: str) -> Dict[str, Any]:
+        """``GET /v1/progress/{task_id}`` — snapshot mid-flight.
+
+        Usado pelo :class:`WorkerSubAgentRunner` (issue #257) para polling.
+        Retorna o snapshot do ``_TASKS[task_id]`` no worker, incluindo
+        ``progress_lines``, ``phase``, ``current_activity`` e ``ok`` (None
+        enquanto em execução).
+        """
+        return await self._get_json(_PROGRESS_PATH.format(task_id=task_id))
+
+    async def get_result(self, task_id: str) -> Dict[str, Any]:
+        """``GET /v1/result/{task_id}`` — resultado final (após término).
+
+        Distinto de :meth:`get_progress` em intenção: ``get_result`` é
+        chamado uma única vez após detectar o terminal via progress
+        polling, para capturar ``files`` e ``summary`` definitivos.
+        """
+        return await self._get_json(_RESULT_PATH.format(task_id=task_id))
+
+    async def _get_json(self, path: str) -> Dict[str, Any]:
+        """Helper compartilhado: GET autenticado + JSON parsing.
+
+        Reusa a resolução de endpoint/token de :meth:`dispatch`, mas com
+        timeout curto (polling, não dispatch). Erros mapeiam para os mesmos
+        :class:`WorkerDispatchError` codes; o caller decide se é fatal.
+        """
+        endpoint = _resolve_endpoint().rstrip("/") + path
+        token, httpx = await _resolve_auth_and_httpx()
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        }
+        async with httpx.AsyncClient(timeout=_POLL_TIMEOUT_S) as cli:
+            try:
+                resp = await cli.get(endpoint, headers=headers)
+            except httpx.TimeoutException as exc:
+                raise WorkerDispatchError(
+                    f"worker poll timeout: {str(exc)[:200]}",
+                    error_code="WORKER_TIMEOUT",
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise WorkerDispatchError(
+                    f"worker unreachable: {type(exc).__name__}: {str(exc)[:200]}",
+                    error_code="WORKER_UNREACHABLE",
+                ) from exc
+
+        # M9 (PR #295 review): checa status_code ANTES de tentar parsear JSON.
+        # 404 é transiente logo após o dispatch (a task pode ainda não estar
+        # registrada no _TASKS); retornar NOT_FOUND tipado deixa o caller
+        # (WorkerSubAgentRunner) retentar especificamente esse caso. Erros
+        # ≥500 viram SERVER_ERROR sem depender de o body ser JSON-parseable
+        # (o nginx/proxy pode devolver HTML 502).
+        #
+        # Iter-2 review: discrimina 401/403/5xx ANTES do json parse — um
+        # auth proxy que devolve HTML em 401 antes mapeava para
+        # WORKER_BAD_RESPONSE e o caller (loop de retry) tratava como
+        # transient. Agora cada classe de status vira um error_code
+        # específico para que o caller possa decidir corretamente.
+        if resp.status_code == 404:
+            raise WorkerDispatchError(
+                f"task not found at {path}",
+                error_code="NOT_FOUND",
+            )
+        if resp.status_code in (401, 403):
+            raise WorkerDispatchError(
+                f"worker auth/forbidden (status={resp.status_code}) at {path}",
+                error_code="WORKER_AUTH_ERROR" if resp.status_code == 401
+                else "WORKER_FORBIDDEN",
+            )
+        if resp.status_code >= 500:
+            raise WorkerDispatchError(
+                f"worker server error (status={resp.status_code}) at {path}",
+                error_code="WORKER_SERVER_ERROR",
+            )
+
+        try:
+            data = resp.json()
+        except json.JSONDecodeError as exc:
+            # Status já filtrou 401/403/5xx acima; o que sobra são 2xx e
+            # 4xx outros. 4xx sem JSON parseable → BAD_REQUEST. 2xx →
+            # body inválido, ainda BAD_RESPONSE (era o original).
+            if resp.status_code >= 400:
+                raise WorkerDispatchError(
+                    f"worker bad request (status={resp.status_code}, non-JSON body)",
+                    error_code="WORKER_BAD_REQUEST",
+                ) from exc
+            raise WorkerDispatchError(
+                f"worker returned non-JSON (status={resp.status_code})",
+                error_code="WORKER_BAD_RESPONSE",
+            ) from exc
+
+        if resp.status_code >= 400:
+            err = (data.get("error") if isinstance(data, dict) else None) or {}
+            code = err.get("code") or "WORKER_BAD_REQUEST"
+            msg = err.get("message") or f"HTTP {resp.status_code}"
+            raise WorkerDispatchError(msg, error_code=code)
+        if not isinstance(data, dict):
+            raise WorkerDispatchError(
+                "worker returned non-object body",
+                error_code="WORKER_BAD_RESPONSE",
+            )
         return data

@@ -26,7 +26,7 @@ spec:
   # workspace subdir on the shared RWO PVC; on single-node k3s both pods land on
   # the same node and share the local-path volume (RWO is node-scoped).
   replicas: 2
-  strategy: { type: Recreate }
+  strategy: { type: RollingUpdate, rollingUpdate: { maxSurge: 1, maxUnavailable: 0 } }
   selector:
     matchLabels:
       app: deile-worker
@@ -71,12 +71,12 @@ spec:
             # otherwise pick (the PRO performs near Claude Sonnet). Soft
             # preference — falls back to the router if deepseek is unavailable.
             # Configurable: change the value or remove this line.
-            - { name: DEILE_PREFERRED_MODEL,        value: "anthropic:claude-sonnet-4-6" }
+            - { name: DEILE_PREFERRED_MODEL,        value: "deepseek:deepseek-v4-pro" }
             # Worker's own listener.
             - { name: DEILE_WORKER_HOST,            value: "0.0.0.0" }
             - { name: DEILE_WORKER_PORT,            value: "8766" }
             - { name: DEILE_WORKER_ROOT,            value: "/home/deile/work" }
-            - { name: DEILE_WORKER_TASK_TIMEOUT_S,  value: "600" }
+            - { name: DEILE_WORKER_TASK_TIMEOUT_S,  value: "900" }
             - { name: DEILE_WORKER_LOG_LEVEL,       value: "INFO" }
             # IMPORTANT: do NOT install the messaging-only whitelist
             # here. The wrapper's worker mode keeps the full toolset.

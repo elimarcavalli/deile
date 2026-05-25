@@ -13,9 +13,6 @@ Covers:
 
 from __future__ import annotations
 
-import asyncio
-import logging
-import time
 from unittest.mock import patch
 
 import pytest
@@ -23,17 +20,13 @@ import pytest
 # deilebot_client é um pacote separado (repo elimarcavalli/deilebot).
 pytest.importorskip("deilebot_client")
 
-from deilebot_client.errors import (  # noqa: E402
-    BotClientAuthError,
-    BotClientNotReady,
-    BotClientRateLimited,
-    BotClientTimeoutError,
-    BotClientUpstreamError,
-)
+from deilebot_client.errors import BotClientAuthError  # noqa: E402
+from deilebot_client.errors import (BotClientNotReady, BotClientRateLimited,
+                                    BotClientTimeoutError,
+                                    BotClientUpstreamError)
 
 from deile.integrations.bot.client import BotClientFacade  # noqa: E402
 from deile.integrations.bot.config import BotIntegrationSettings  # noqa: E402
-
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
