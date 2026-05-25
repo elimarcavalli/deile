@@ -39,6 +39,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from abc import ABC, abstractmethod
@@ -1245,6 +1246,60 @@ class PodPickerView(View):
         self.last_ok = False
 
 
+def _open_path_in_editor(path: Path) -> tuple[bool, str]:
+    """Abre `path` em editor de texto, sem bloquear o painel.
+
+    Preferência: `cursor` -> `code` -> editor padrão da plataforma
+    (Windows: `notepad`; macOS: `open -t`; Linux/outros: `xdg-open`,
+    `gedit`, `nano`). Retorna `(sucesso, label_do_tool_usado)` para
+    feedback transitório no rodapé.
+    """
+    # Editores preferidos primeiro — usuário pediu cursor > code.
+    for bin_name in ("cursor", "code"):
+        b = shutil.which(bin_name)
+        if b is None:
+            continue
+        try:
+            subprocess.Popen(
+                [b, str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True, bin_name
+        except OSError:
+            continue
+    if os.name == "nt":
+        try:
+            subprocess.Popen(["notepad", str(path)])
+            return True, "notepad"
+        except OSError:
+            return False, ""
+    if sys.platform == "darwin":
+        opener = shutil.which("open")
+        if opener is None:
+            return False, ""
+        try:
+            # `open -t` força app de texto registrado (TextEdit por default).
+            subprocess.Popen([opener, "-t", str(path)])
+            return True, "open -t"
+        except OSError:
+            return False, ""
+    for bin_name in ("xdg-open", "gedit", "nano"):
+        b = shutil.which(bin_name)
+        if b is None:
+            continue
+        try:
+            subprocess.Popen(
+                [b, str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return True, bin_name
+        except OSError:
+            continue
+    return False, ""
+
+
 class _LocalLogTailer:
     """Equivalente ao `_LogStreamer` mas para `~/.deile/logs/deile.log`.
 
@@ -1369,7 +1424,14 @@ class PodWatchView(View):
     refresh_s = 1.0
 
     HOTKEYS = ("[f] follow on/off   [h] mostrar/esconder health   "
-               "[c] clear log   [esc] volta   [q] sai")
+               "[c] clear log   [.] abrir log   [esc] volta   [q] sai")
+
+    # Quantas linhas do buffer dumpamos no tempfile quando o usuário pede
+    # "abrir log" num pod k8s. Suficiente pra contexto, sem inflar o disco.
+    _DUMP_TAIL_LINES = 2000
+
+    # Janela (s) em que a mensagem de status fica visível no header do log.
+    _STATUS_TTL_S = 6.0
 
     def __init__(self, data: Optional[PanelData] = None):
         self.data = data
@@ -1379,6 +1441,9 @@ class PodWatchView(View):
         self.following: bool = True
         # Health-checks lotam o buffer em workers ociosos; por default escondemos.
         self.hide_health: bool = True
+        # Feedback transitório (auto-limpa após _STATUS_TTL_S no render).
+        self._status_msg: Optional[str] = None
+        self._status_until: float = 0.0
 
     def on_mount(self, app: "PanelApp") -> None:
         # PodWatchView é singleton no registry — re-mount com pod diferente
@@ -1513,8 +1578,14 @@ class PodWatchView(View):
         health_label = ("health ESCONDIDOS" if self.hide_health
                         else "health VISÍVEIS")
         hidden_label = f"  ·  {hidden} health filtrados" if hidden else ""
+        # Limpa status transitório expirado antes de compor o título.
+        if self._status_msg is not None and time.time() >= self._status_until:
+            self._status_msg = None
+        status_label = (f"  ·  [yellow]{self._status_msg}[/yellow]"
+                        if self._status_msg else "")
         title = (f"[bold]LIVE LOG[/bold]  ·  {follow_label}  ·  "
-                 f"{health_label}{hidden_label}  ·  {self.pod_name}")
+                 f"{health_label}{hidden_label}  ·  "
+                 f"{self.pod_name}{status_label}")
         return Panel(body, title=title, title_align="left",
                      border_style="green" if self.following else "yellow")
 
@@ -1546,7 +1617,67 @@ class PodWatchView(View):
         if key == "h":
             self.hide_health = not self.hide_health
             return ActionResult.refresh()
+        if key == ".":
+            self._open_log_in_editor()
+            return ActionResult.refresh()
         return ActionResult()
+
+    def _set_status(self, msg: str) -> None:
+        self._status_msg = msg
+        self._status_until = time.time() + self._STATUS_TTL_S
+
+    def _resolve_log_path_for_editor(self) -> Optional[Path]:
+        """Devolve o caminho do arquivo a abrir.
+
+        Processos locais usam o `deile.log` real. Pods k8s não têm
+        arquivo local — dumpamos o buffer atual do streamer num tempfile
+        de nome estável (por pod) e devolvemos ele.
+        """
+        if _is_local_role(self.pod_role):
+            if self.data is None or self.data.context is None:
+                return None
+            return self.data.context.logs_dir / "deile.log"
+        if self.streamer is None:
+            return None
+        try:
+            lines = self.streamer.snapshot(n=self._DUMP_TAIL_LINES)
+        except Exception:  # noqa: BLE001 — streamer pode estar em mau estado
+            return None
+        # Nome estável por pod: re-abrir sobrescreve, não polui /tmp.
+        safe_pod = re.sub(r"[^A-Za-z0-9._-]", "_", self.pod_name or "pod")
+        out_path = Path(tempfile.gettempdir()) / f"deile-podwatch-{safe_pod}.log"
+        try:
+            header = (
+                f"# DEILE Pod Watch dump\n"
+                f"# pod: {self.pod_name}\n"
+                f"# role: {self.pod_role}\n"
+                f"# captured_at: {datetime.now(timezone.utc).isoformat()}\n"
+                f"# lines: {len(lines)} (buffer atual; rotaciona em "
+                f"~/.deile/run e/ou kubectl logs)\n"
+                f"# ----------------------------------------------------\n"
+            )
+            out_path.write_text(header + "\n".join(lines) + "\n",
+                                encoding="utf-8")
+        except OSError as exc:
+            logger.warning("dump do buffer falhou: %s", exc)
+            return None
+        return out_path
+
+    def _open_log_in_editor(self) -> None:
+        path = self._resolve_log_path_for_editor()
+        if path is None:
+            self._set_status("não consegui resolver o arquivo de log")
+            return
+        if not path.exists():
+            self._set_status(f"arquivo não existe: {path.name}")
+            return
+        ok, tool = _open_path_in_editor(path)
+        if ok:
+            self._set_status(f"abrindo em {tool}: {path.name}")
+        else:
+            self._set_status(
+                "nenhum editor encontrado (cursor/code/notepad/open/xdg-open)"
+            )
 
 
 class PipelineTimelineView(View):
@@ -2780,6 +2911,7 @@ class HelpView(View):
             ("+ / -",         "acelera / desacelera o refresh (×0.25 a ×4)"),
             ("r",             "força refresh imediato (invalida caches)"),
             ("s",             "snapshot: salva a tela atual em ~/.deile/snapshots/"),
+            (".",             "Pod Watch: abre o arquivo de log em editor (cursor/code/…)"),
             ("?",             "esta tela"),
         ]
         for k, v in rows:
