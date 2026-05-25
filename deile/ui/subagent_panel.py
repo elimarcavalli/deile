@@ -291,12 +291,23 @@ class SubAgentPanelRenderer:
 
         period = 1.0 / self._refresh_hz
         try:
+            # ``redirect_stdout/stderr=False``: Rich Live, por padrão, faz
+            # ``sys.stdout = FileProxy(console)`` para que ``print()``
+            # durante a Live aparcça acima da região. AQUI isso é tóxico:
+            # o orquestrador já redirecionou sys.stdout para um buffer
+            # (suprimindo print() de sub-DEILEs), e Live SOBRESCREVERIA esse
+            # redirect, mandando print() do bash_tool diretamente para
+            # ``panel_console.file`` (= terminal real) — gera leak visível
+            # (issue #257 round 5). Mantemos o redirect do orquestrador
+            # intacto desabilitando o do Live.
             with Live(
                 self._render_frame(),
                 console=self._panel_console,
                 refresh_per_second=self._refresh_hz,
                 transient=False,
                 auto_refresh=False,
+                redirect_stdout=False,
+                redirect_stderr=False,
             ) as live:
                 while True:
                     self._frame += 1

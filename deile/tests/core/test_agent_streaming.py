@@ -110,6 +110,55 @@ def configured_agent(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_text_segments_around_tool_calls_get_paragraph_separator(configured_agent, tmp_path: Path):
+    """Issue #257 round 5: TEXT_DELTAs ANTES e DEPOIS de TOOL_USE_END devem
+    ser separados por ``\\n\\n`` no histórico — sem isso, frases ficavam
+    coladas em ``/resume`` (`"Vou ler.Pronto."` em vez de
+    `"Vou ler.\\n\\nPronto."`).
+
+    Patch direto em ``_stream_chat_with_tools`` para evitar invocar o
+    tool_loop_executor real (que exige tool registry funcional).
+    """
+    async def _fake_stream(*args, **kwargs):
+        yield UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="Vou ler o arquivo.")
+        yield UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="t1", tool_name="read_file",
+            arguments={"file_path": "x.py"},
+        )
+        yield UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="t1", tool_name="read_file",
+            tool_status="success", tool_result_summary="ok",
+        )
+        yield UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="Pronto, conferido.")
+        yield UnifiedStreamEvent(
+            type=StreamEventType.USAGE_FINAL,
+            usage=ModelUsageSnapshot(input_tokens=1, output_tokens=1),
+        )
+
+    configured_agent._stream_chat_with_tools = _fake_stream
+    session = configured_agent.create_session("seg", working_directory=str(tmp_path))
+
+    async for _ in configured_agent.process_input_stream(
+        user_input="hi", session_id=session.session_id
+    ):
+        pass
+
+    assistant_entries = [
+        e for e in session.conversation_history if e["role"] == "assistant"
+    ]
+    assert assistant_entries, "no assistant entry persisted"
+    content = assistant_entries[-1]["content"]
+    # Fronteira do tool inserida como \n\n
+    assert "Vou ler o arquivo." in content
+    assert "Pronto, conferido." in content
+    # Texto NÃO pode estar grudado
+    assert "Vou ler o arquivo.Pronto" not in content
+    assert "\n\n" in content
+
+
+@pytest.mark.asyncio
 async def test_streaming_turn_yields_text_and_usage(configured_agent, tmp_path: Path):
     fake = _FakeProvider(
         iterations=[

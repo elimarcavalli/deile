@@ -832,7 +832,13 @@ class DeileAgent:
                 return
 
             # Main path: stream chat-with-tools via ToolLoopExecutor.
-            text_parts: List[str] = []
+            # ``text_segments`` armazena listas de TEXT_DELTAs entre tool calls —
+            # uma lista por "segmento de texto". Tool entre texto vira fronteira:
+            # ``[ [pre-tool deltas], [post-tool deltas] ]``. Ao final, juntamos
+            # cada segmento e separamos com ``\n\n``. Sem isso, frases coladas:
+            # `"Vou ler.Pronto."` em vez de `"Vou ler.\n\nPronto."` (issue #257
+            # round 5 — replay /resume mostrava "frase grudada em frase").
+            text_segments: List[List[str]] = [[]]
             collected_tool_results: List[ToolResult] = []
 
             async for event in self._stream_chat_with_tools(
@@ -840,7 +846,13 @@ class DeileAgent:
             ):
                 yield event
                 if event.type is StreamEventType.TEXT_DELTA and event.text:
-                    text_parts.append(event.text)
+                    text_segments[-1].append(event.text)
+                elif event.type is StreamEventType.TOOL_USE_END:
+                    # Tool vai rodar — fecha o segmento atual; o próximo texto
+                    # abre um novo segmento. Só inicia segmento NOVO se o atual
+                    # tem conteúdo (evita ``\n\n`` no início da resposta).
+                    if text_segments[-1]:
+                        text_segments.append([])
                 elif event.type is StreamEventType.USAGE_FINAL and event.reasoning_content:
                     # Non-tool final turn: capture reasoning_content so it is included
                     # in history metadata and echoed back on the next turn.
@@ -865,7 +877,13 @@ class DeileAgent:
                     )
                     collected_tool_results.append(tr)
 
-            content = "".join(text_parts)
+            # Junta os segmentos com ``\n\n`` — preserva no histórico a
+            # estrutura visual original (texto-tool-texto vira parágrafos
+            # separados). Segmentos vazios filtrados; trim no fim de cada
+            # segmento para não duplicar quebras de linha.
+            content = "\n\n".join(
+                "".join(seg).rstrip() for seg in text_segments if any(s.strip() for s in seg)
+            )
 
             # Validation gate — runs once at end. Pass only `collected_tool_results`
             # (the iterative tool-loop output) to match the non-streaming path at
