@@ -228,6 +228,71 @@ async def test_export_json_no_entries_skips_file_creation(tmp_path, monkeypatch)
 
 
 @pytest.mark.unit
+async def test_export_csv_no_entries_skips_file_creation(tmp_path, monkeypatch):
+    """Issue #301: o gate de entry_count também precisa cobrir CSV.
+
+    CSV é particularmente sutil porque ``cost_tracker.export_costs`` sempre
+    retorna pelo menos a linha de header — string truthy que não seria
+    capturada por um ``if not data:``.
+    """
+    monkeypatch.chdir(tmp_path)
+    summary = _make_summary(entry_count=0)
+    cmd = CostCommand()
+    with patch.object(cmd.cost_tracker, "get_cost_summary", return_value=summary):
+        with patch.object(cmd.cost_tracker, "export_costs") as mock_export:
+            result = await cmd.execute(_make_context("export csv 30"))
+    assert result.success
+    csv_files = list(tmp_path.glob("costs_export_*.csv"))
+    assert csv_files == [], f"Esperado nenhum arquivo CSV, achei {csv_files}"
+    mock_export.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_export_csv_writes_valid_file_when_data_exists(tmp_path, monkeypatch):
+    """Happy-path do export CSV: simetria com ``test_export_json_writes_valid_file``.
+
+    Antes deste teste, só o caminho JSON-com-dados tinha cobertura; o CSV
+    feliz era exercitado apenas indiretamente por ``test_all_subcommands_dispatched``.
+    """
+    monkeypatch.chdir(tmp_path)
+    csv_payload = (
+        "id,datetime,category,subcategory,amount,currency,description,session_id\r\n"
+        "1,2026-01-01T00:00:00,api_calls,gpt4,0.5,USD,call,sess1\r\n"
+    )
+    summary = _make_summary(total="0.5", entry_count=1)
+    cmd = CostCommand()
+    with patch.object(cmd.cost_tracker, "get_cost_summary", return_value=summary):
+        with patch.object(cmd.cost_tracker, "export_costs", return_value=csv_payload):
+            result = await cmd.execute(_make_context("export csv 30"))
+    assert result.success
+    csv_files = list(tmp_path.glob("costs_export_*.csv"))
+    assert len(csv_files) == 1
+    content = csv_files[0].read_text(encoding="utf-8")
+    assert "api_calls" in content and "0.5" in content
+
+
+@pytest.mark.unit
+async def test_export_summary_query_failure_does_not_write_file(tmp_path, monkeypatch):
+    """Resiliência: se ``get_cost_summary`` levantar (DB lock, corrupção,
+    permissão), o comando precisa falhar limpo e NÃO vazar arquivo no CWD.
+
+    Cobre o branch ``except Exception`` de ``_export_costs`` no caminho onde
+    o ``summary`` é consultado antes do export.
+    """
+    monkeypatch.chdir(tmp_path)
+    cmd = CostCommand()
+    with patch.object(
+        cmd.cost_tracker,
+        "get_cost_summary",
+        side_effect=RuntimeError("simulação de falha no DB"),
+    ):
+        result = await cmd.execute(_make_context("export json 30"))
+    assert not result.success
+    leaked = list(tmp_path.glob("costs_export_*"))
+    assert leaked == [], f"Falha no DB vazou arquivo: {leaked}"
+
+
+@pytest.mark.unit
 async def test_forecast_insufficient_data_message():
     summary = _make_summary(total="0", entry_count=0)
     cmd = CostCommand()
