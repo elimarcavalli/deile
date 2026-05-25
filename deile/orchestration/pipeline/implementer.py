@@ -299,7 +299,8 @@ class ClaudeImplementer(PipelineImplementer):
         # flag does not change behaviour here beyond the existing reuse.
         branch = monitor.branch_for_issue(issue.number)
         prompt = render_implement_prompt(
-            monitor.config.repo, issue.number, issue.title, issue.body
+            monitor.config.repo, issue.number, issue.title, issue.body,
+            forge=monitor.forge.config,
         )
         return await self._run_in_worktree(
             monitor, branch, prompt, label=f"#{issue.number}"
@@ -309,7 +310,9 @@ class ClaudeImplementer(PipelineImplementer):
         self, monitor: "PipelineMonitor", pr: "PrRef", *, resume: bool = False
     ) -> WorkOutcome:
         worktree_branch = pr.head_ref or f"pr/{pr.number}"
-        prompt = render_review_prompt(monitor.config.repo, pr.number, pr.title)
+        prompt = render_review_prompt(
+            monitor.config.repo, pr.number, pr.title, forge=monitor.forge.config,
+        )
         return await self._run_in_worktree(
             monitor, worktree_branch, prompt, label=f"PR #{pr.number}"
         )
@@ -327,7 +330,8 @@ class ClaudeImplementer(PipelineImplementer):
         # ``mode``/``resume`` are accepted for interface parity with the worker
         # path; the legacy Claude path keeps its single context-aware prompt.
         prompt = _render_claude_mention_prompt(
-            monitor.config.repo, ref, trigger_types or [], all_triggers or []
+            monitor.config.repo, ref, trigger_types or [], all_triggers or [],
+            forge=monitor.forge.config,
         )
         # mention runs at base_repo_path; no per-issue branch worktree.
         return await self._run_in_worktree(monitor, None, prompt, label="mention")
@@ -453,15 +457,16 @@ class WorkerImplementer(PipelineImplementer):
         self, monitor: "PipelineMonitor", issue: "IssueRef", *, resume: bool = False
     ) -> WorkOutcome:
         branch = monitor.branch_for_issue(issue.number)
+        forge_cfg = monitor.forge.config
         if resume:
             brief = _render_worker_implement_resume_brief(
                 monitor.config.repo, monitor.config.main_branch, branch,
-                issue.number, issue.title, issue.body,
+                issue.number, issue.title, issue.body, forge=forge_cfg,
             )
         else:
             brief = _render_worker_implement_brief(
                 monitor.config.repo, monitor.config.main_branch, branch,
-                issue.number, issue.title, issue.body,
+                issue.number, issue.title, issue.body, forge=forge_cfg,
             )
         resume_block = _build_resume_block(
             monitor.config.repo, monitor.config.main_branch, branch,
@@ -484,6 +489,7 @@ class WorkerImplementer(PipelineImplementer):
         brief = _render_worker_critique_brief(
             monitor.config.repo, issue.number, issue.title, issue.body,
             issue_type=issue_type or "", template=template_for_type(issue_type) or "intent.md",
+            forge=monitor.forge.config,
         )
         return await self._dispatch(
             brief, channel_id=f"pipeline-issue-{issue.number}",
@@ -497,6 +503,7 @@ class WorkerImplementer(PipelineImplementer):
         brief = _render_worker_refine_brief(
             monitor.config.repo, issue.number, issue.title, issue.body,
             issue_type=issue_type or "", template=template_for_type(issue_type) or "intent.md",
+            forge=monitor.forge.config,
         )
         return await self._dispatch(
             brief, channel_id=f"pipeline-issue-{issue.number}",
@@ -508,6 +515,7 @@ class WorkerImplementer(PipelineImplementer):
     ) -> WorkOutcome:
         brief = _render_worker_decompose_brief(
             monitor.config.repo, issue.number, issue.title, issue.body,
+            forge=monitor.forge.config,
         )
         return await self._dispatch(
             brief, channel_id=f"pipeline-issue-{issue.number}", persona="architect",
@@ -516,13 +524,16 @@ class WorkerImplementer(PipelineImplementer):
     async def review(
         self, monitor: "PipelineMonitor", pr: "PrRef", *, resume: bool = False
     ) -> WorkOutcome:
+        forge_cfg = monitor.forge.config
         if resume:
             brief = _render_worker_review_resume_brief(
-                monitor.config.repo, monitor.config.main_branch, pr.number
+                monitor.config.repo, monitor.config.main_branch, pr.number,
+                forge=forge_cfg,
             )
         else:
             brief = _render_worker_review_brief(
-                monitor.config.repo, monitor.config.main_branch, pr.number
+                monitor.config.repo, monitor.config.main_branch, pr.number,
+                forge=forge_cfg,
             )
         resume_block = _build_resume_block(
             monitor.config.repo, monitor.config.main_branch,
@@ -574,12 +585,15 @@ class WorkerImplementer(PipelineImplementer):
         # PR-scoped reviewer modes dispatched under the ``reviewer`` persona
         # with a resume block. ``work_merge`` is the only mode that merges and
         # the only one resume-aware (uses the review-resume brief on retry).
+        forge_cfg = monitor.forge.config
         if mode in _MENTION_REVIEWER_MODES:
             brief_fn, expect_merge = _MENTION_REVIEWER_MODES[mode]
             if mode == "work_merge" and resume:
-                reviewer_brief = _render_worker_review_resume_brief(repo, main, number)
+                reviewer_brief = _render_worker_review_resume_brief(
+                    repo, main, number, forge=forge_cfg,
+                )
             else:
-                reviewer_brief = brief_fn(repo, main, number)
+                reviewer_brief = brief_fn(repo, main, number, forge=forge_cfg)
             return await self._dispatch(
                 reviewer_brief, channel_id=channel_id, persona="reviewer",
                 resume_block=_build_resume_block(
@@ -589,7 +603,7 @@ class WorkerImplementer(PipelineImplementer):
             )
         # Default: comment mention on an issue → do what the comment says.
         brief = _render_worker_mention_brief(
-            repo, ref, trigger_types or [], all_triggers or [],
+            repo, ref, trigger_types or [], all_triggers or [], forge=forge_cfg,
         )
         return await self._dispatch(brief, channel_id=channel_id, persona="developer")
 

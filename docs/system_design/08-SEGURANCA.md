@@ -71,6 +71,19 @@ Além das chaves de cloud/SCM tradicionais (AWS, GitHub, Slack, RSA…), o scann
 |---|---|
 | `DEILE_BOT_AUTH_TOKEN` / `DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN` | `DEILE_BOT(_CONTROL_PLANE)?_AUTH_TOKEN\s*=\s*[A-Za-z0-9_-]{16,}` |
 | Token de bot Discord | `(?:DISCORD\|DEILE_BOT_DISCORD)_TOKEN\s*=\s*xxx.yyy.zzz` (3 segmentos `.`-separados) |
+| **GitHub** (decisão #38) | `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_` (PATs/auth tokens), `github_pat_…` (fine-grained PATs) |
+| **GitLab** (decisão #38) | `glpat-` (personal), `gldt-` (deploy), `glptt-` (project trigger), `glsoat-` (agent OAuth), `GITLAB_TOKEN=` / `GL_TOKEN=` / `CI_JOB_TOKEN=`, catch-all defensivo `gl[a-z]+-` |
+
+### Auth de forges (issue #297)
+
+A pipeline e o worker autenticam contra GitHub e GitLab via **tokens estáticos** lidos em `/run/secrets/deile/` por `infra/k8s/wrapper.py` no bootstrap. Postura simétrica para ambos:
+
+| Forge | Env var origem | Materializa em | Strip pós-bootstrap |
+|---|---|---|---|
+| GitHub | `GITHUB_TOKEN` | `~/.git-credentials` (linha `oauth2:<tok>@<host>`) + `~/.config/gh/hosts.yml` | sim — removido de `os.environ` antes do agente subir |
+| GitLab | `GITLAB_TOKEN` (alias `GL_TOKEN`) | `~/.git-credentials` (linha `oauth2:<tok>@<host>`) + `~/.config/glab-cli/config.yml` | sim — removido de `os.environ` antes do agente subir |
+
+`wrapper._setup_forge_credentials()` é a função única — `_setup_git_credentials` e `_setup_gh_auth` são wrappers retro-compatíveis que delegam a ela. Subprocessos (`bash_tool`, `python_execute`) **nunca** veem os tokens em `/proc/self/environ`. Operação dual (DEILE servindo GH e GL simultaneamente) é só popular os dois Secrets — todo o resto é transparente.
 
 ## Mensageria proativa (deile → deilebot)
 

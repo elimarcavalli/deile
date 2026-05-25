@@ -120,6 +120,26 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
+# GitLab CLI `glab` (issue #297). Installed in a separate layer so updating
+# the version does NOT invalidate the gh layer above. Version PINNED — bumps
+# are deliberate PRs, never silent. The .deb is fetched from the official
+# GitLab releases (no third-party PPA). Layer growth ~20 MB. Runtime
+# behaviour for GitHub-only operators is unchanged: glab is dormant unless
+# DEILE_FORGE_KIND=gitlab or a GitLab URL is processed.
+ARG GLAB_VERSION=1.45.0
+RUN ARCH="$(dpkg --print-architecture)" \
+    && case "$ARCH" in \
+        amd64) GLAB_ARCH=amd64 ;; \
+        arm64) GLAB_ARCH=arm64 ;; \
+        *) echo "unsupported arch for glab: $ARCH" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL -o /tmp/glab.deb \
+        "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_${GLAB_ARCH}.deb" \
+    && dpkg -i /tmp/glab.deb \
+    && rm /tmp/glab.deb \
+    && gh --version \
+    && glab --version
+
 # Non-root user. UID 10001 is well above the system uid range
 # and matches the runAsUser in the Pod manifests.
 RUN groupadd --system --gid 10001 deile \

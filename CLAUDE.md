@@ -89,7 +89,48 @@ $K -n deile rollout status deployment/deile-pipeline --timeout=180s
 $K -n deile exec -it deploy/deile-shell -- python3 /app/wrapper.py deile   # interactive REPL in-cluster
 ```
 
-Roles & control-plane ports: **deilebot** `:8765` (Discord I/O), **deile-worker** `:8766` (runs DEILE in-process for dispatch), **deile-pipeline** (the GitHub monitor — no Service, only "calls out"), **deile-shell** (`kubectl exec` only). Only `deile-pipeline` runs the autonomous monitor; the others never autostart it.
+Roles & control-plane ports: **deilebot** `:8765` (Discord I/O), **deile-worker** `:8766` (runs DEILE in-process for dispatch), **deile-pipeline** (the forge monitor — no Service, only "calls out"), **deile-shell** (`kubectl exec` only). Only `deile-pipeline` runs the autonomous monitor; the others never autostart it.
+
+## Forge — GitHub e GitLab
+
+DEILE é **forge-agnóstico** (issue #297): o mesmo pipeline, briefs e tools operam sobre repos GitHub (cloud + GHES) e GitLab (cloud + self-hosted). A camada `deile/orchestration/forge/` esconde a diferença sob :class:`ForgeClient`; o pipeline nunca importa `gh`/`glab` direto.
+
+Configuração (env vars resolvidas via `Settings` — mesmas regras de qualquer outra chave):
+
+| Env var | Default | Quando usar |
+|---|---|---|
+| `DEILE_FORGE_KIND` | `auto` | `github`\|`gitlab`. `auto` detecta por host/path. Para GitLab self-hosted ou GHE, defina explicitamente. |
+| `DEILE_FORGE_REPO` | — (cai pra `DEILE_PIPELINE_REPO`) | `owner/repo` (GH) ou `group/(subgroup/)*project` (GL). |
+| `DEILE_GITHUB_HOST` | `github.com` | GHES — também aceita CSV (`ghe-a.x.com,ghe-b.x.com`). |
+| `DEILE_GITLAB_HOST` | `gitlab.com` | GitLab self-hosted. |
+| `GITHUB_TOKEN` | — | PAT GitHub. Pelo menos um token (GH OU GL) é exigido pela pipeline. |
+| `GITLAB_TOKEN` / `GL_TOKEN` | — | PAT GitLab (escopo `api`, `read_repository`, `write_repository`). |
+
+Pra rodar o pipeline contra um projeto GitLab piloto:
+
+```bash
+# 1. K8s Secret recebe o token (adicione ao deile-secrets existente).
+GL_PAT=...
+kubectl -n deile patch secret deile-secrets \
+  -p "{\"stringData\":{\"GITLAB_TOKEN\":\"${GL_PAT}\"}}"
+
+# 2. ConfigMap do pipeline declara forge=gitlab + repo.
+kubectl -n deile set env deploy/deile-pipeline \
+  DEILE_FORGE_KIND=gitlab DEILE_FORGE_REPO=group/sub/project
+# (ou edite o Deployment manifest e re-aplique)
+
+# 3. Restart.
+python3 infra/k8s/deploy.py k8s restart
+```
+
+Vocabulário GitHub ↔ GitLab que o codigo mantém alinhado: PR↔MR, comment↔note, requested_reviewers↔reviewers, `gh`↔`glab`. URLs:
+
+- GitHub: `https://<host>/<owner>/<repo>/{issues,pull}/<n>`
+- GitLab: `https://<host>/<group>/(<subgroup>/)*<project>/-/{issues,merge_requests}/<n>`
+
+Templates de issue: `.github/ISSUE_TEMPLATE/<f>.md` no GH; `.gitlab/issue_templates/<f>.md` no GL. O refinement gate sabe puxar do path certo conforme o forge.
+
+> **Multi-forge na mesma sessão CLI**: o `deile-shell` interativo usa `ForgeRouter` (singleton) — você pode processar issues GH e MR GitLab na mesma conversa sem reconfigurar nada. O pipeline (`deile-pipeline`) ainda é per-repo: rode duas instâncias para servir GH e GL em paralelo (`MonitorIdentity` + shard, Decisão #18).
 
 **Pipeline label state machine** (issues, com **portão de refinamento** — PR #275):
 

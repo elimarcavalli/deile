@@ -26,9 +26,8 @@ from typing import TYPE_CHECKING, Optional
 from deile.orchestration.pipeline._time_utils import now_utc
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
 from deile.orchestration.pipeline.follow_up_detector import detect_follow_ups
-from deile.orchestration.pipeline.github_client import (CommentRef,
-                                                        GhCommandError,
-                                                        MentionTrigger)
+from deile.orchestration.forge import (CommentRef, GhCommandError, MentionTrigger,
+                                       declared_hosts, find_last_pr_url)
 from deile.orchestration.pipeline.implementer import (parse_critique_verdict,
                                                       parse_decompose_result,
                                                       parse_refine_verdict)
@@ -66,6 +65,8 @@ _ENDED_BLOQUEADO = "bloqueado"
 
 logger = logging.getLogger(__name__)
 
+# Legacy regex kept ONLY for tests that import it directly. Production code
+# uses :func:`find_last_pr_url` (forge-aware) — see ``_extract_pr_url``.
 _PR_URL_RE = re.compile(r"https://github\.com/[^\s\"'<>]+/pull/\d+", re.IGNORECASE)
 
 
@@ -125,7 +126,7 @@ async def _claim_for_classify(
     if monitor.identity.shard_count <= 1:
         return True
     try:
-        batch = await monitor.github.claim_with_batch(kind, number)
+        batch = await monitor.forge.claim_with_batch(kind, number)
     except GhCommandError as exc:
         await _record_gh_error(
             monitor, f"{error_context} #{number} failed", exc,
@@ -147,7 +148,7 @@ async def _release_classify_claim(monitor: "PipelineMonitor", kind: str, number:
     if monitor.identity.shard_count <= 1:
         return
     try:
-        await monitor.github.clear_batch_label(kind, number)
+        await monitor.forge.clear_batch_label(kind, number)
     except Exception as exc:  # noqa: BLE001 — label applied; clear is best-effort
         logger.warning("%s: could not clear batch on #%s: %s", kind, number, exc)
 
@@ -175,7 +176,7 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
     race window with parallel monitors.
     """
     try:
-        issues = await monitor.github.list_unclassified_issues()
+        issues = await monitor.forge.list_unclassified_issues()
     except GhCommandError as exc:
         await _record_gh_error(
             monitor, "could not list unclassified issues (gh error)", exc,
@@ -212,7 +213,7 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
         ):
             continue
         try:
-            await monitor.github.add_labels("issue", issue.number, [WORKFLOW_NEW])
+            await monitor.forge.add_labels("issue", issue.number, [WORKFLOW_NEW])
         except GhCommandError as exc:
             await _record_gh_error(
                 monitor, f"auto-classify label #{issue.number} failed", exc,
@@ -245,7 +246,7 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
         else:
             comment = _CLASSIFY_COMMENT
         try:
-            await monitor.github.comment_on_issue(issue.number, comment)
+            await monitor.forge.comment_on_issue(issue.number, comment)
         except Exception as exc:  # noqa: BLE001 — comment is best-effort; label already applied
             logger.warning("auto-classify comment #%s failed (label applied): %s", issue.number, exc)
 
@@ -255,7 +256,7 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
 async def classify_new_prs(monitor: "PipelineMonitor") -> None:
     """Apply ``~review:pendente`` to open non-draft PRs that have no pipeline labels."""
     try:
-        prs = await monitor.github.list_unclassified_prs()
+        prs = await monitor.forge.list_unclassified_prs()
     except GhCommandError as exc:
         await _record_gh_error(
             monitor, "could not list unclassified PRs (gh error)", exc,
@@ -280,7 +281,7 @@ async def classify_new_prs(monitor: "PipelineMonitor") -> None:
         if not await _claim_for_classify(monitor, "pr", pr.number, error_context="pr_triage claim"):
             continue
         try:
-            await monitor.github.add_labels("pr", pr.number, [REVIEW_PENDING])
+            await monitor.forge.add_labels("pr", pr.number, [REVIEW_PENDING])
         except GhCommandError as exc:
             await _record_gh_error(
                 monitor, f"pr_triage label #{pr.number} failed", exc,
@@ -358,8 +359,8 @@ async def _collect_mention_triggers(
     # ---- 1. Comment mentions (cursor-based polling) ---------------------
     since = monitor._load_mention_cursor()
     try:
-        issue_comments = await monitor.github.list_issue_comments_since(since)
-        pr_comments = await monitor.github.list_pr_review_comments_since(since)
+        issue_comments = await monitor.forge.list_issue_comments_since(since)
+        pr_comments = await monitor.forge.list_pr_review_comments_since(since)
     except Exception as exc:  # noqa: BLE001
         logger.warning("mention poll (comments) failed: %s", exc)
         issue_comments = []
@@ -377,18 +378,18 @@ async def _collect_mention_triggers(
             logger.warning("mention poll (%s) failed: %s", label, exc)
             return []
 
-    for issue in await _poll("assigned issues", monitor.github.list_issues_assigned_to(gh_login)):
+    for issue in await _poll("assigned issues", monitor.forge.list_issues_assigned_to(gh_login)):
         if MENTION_DONE not in issue.labels:
             triggers.append(MentionTrigger(trigger_type="assignee", issue=issue))
-    for pr in await _poll("assigned PRs", monitor.github.list_prs_assigned_to(gh_login)):
+    for pr in await _poll("assigned PRs", monitor.forge.list_prs_assigned_to(gh_login)):
         if MENTION_DONE not in pr.labels:
             triggers.append(MentionTrigger(trigger_type="assignee", pr=pr))
-    for pr in await _poll("review requests", monitor.github.list_prs_with_review_requests(gh_login)):
+    for pr in await _poll("review requests", monitor.forge.list_prs_with_review_requests(gh_login)):
         if MENTION_DONE not in pr.labels:
             triggers.append(MentionTrigger(trigger_type="reviewer", pr=pr))
 
     try:
-        body_issues, body_prs = await monitor.github.search_items_mentioning(handle)
+        body_issues, body_prs = await monitor.forge.search_items_mentioning(handle)
     except Exception as exc:  # noqa: BLE001
         logger.warning("mention poll (body search) failed: %s", exc)
         body_issues = []
@@ -438,7 +439,7 @@ async def _dispatch_mention_group(
     # by name in a comment is NORMAL and must NOT pull an issue out of the gate.
     if kind == "issue":
         try:
-            gated = await monitor.github.get_issue(number)
+            gated = await monitor.forge.get_issue(number)
             glabels = set(gated.labels)
         except Exception:  # noqa: BLE001 — best-effort; fall through to one-shot
             glabels = set()
@@ -446,7 +447,7 @@ async def _dispatch_mention_group(
             # The comment IS the stakeholder's decision → lift the pause so the
             # refine loop resumes (the refiner reads this comment on its next pass).
             try:
-                await monitor.github.remove_labels("issue", number, [WORKFLOW_WAITING])
+                await monitor.forge.remove_labels("issue", number, [WORKFLOW_WAITING])
             except Exception as exc:  # noqa: BLE001
                 logger.warning("mention #%d: could not lift aguardando_stakeholder: %s", number, exc)
             logger.info("mention #%d: decisão do stakeholder → retoma refino (sem one-shot)", number)
@@ -529,7 +530,7 @@ async def _dispatch_mention_group(
             # requested as reviewer, the worker did NOT post a review — break
             # the loop ourselves.
             try:
-                still_requested = await monitor.github.pr_reviewer_still_requested(
+                still_requested = await monitor.forge.pr_reviewer_still_requested(
                     number, gh_login,
                 )
             except Exception as exc:  # noqa: BLE001 — guard is best-effort
@@ -545,7 +546,7 @@ async def _dispatch_mention_group(
                     number, MENTION_DONE,
                 )
                 try:
-                    await monitor.github.comment_on_pr(
+                    await monitor.forge.comment_on_pr(
                         number,
                         f"⚠️ DEILE não conseguiu postar a review (worker terminou "
                         f"sem registrar review apesar de retornar ok). Aplicando "
@@ -566,7 +567,7 @@ async def _dispatch_mention_group(
 async def _mark_mention_done(monitor: "PipelineMonitor", kind: str, number: int) -> None:
     """Best-effort apply ``~mention:processado`` so a sticky trigger stops re-firing."""
     try:
-        await monitor.github.add_labels(kind, number, [MENTION_DONE])
+        await monitor.forge.add_labels(kind, number, [MENTION_DONE])
     except Exception as exc:  # noqa: BLE001 — marker is best-effort
         logger.warning("could not mark %s #%d as %s: %s", kind, number, MENTION_DONE, exc)
 
@@ -581,9 +582,9 @@ async def _comment_mention_gave_up(
     )
     try:
         if kind == "pr":
-            await monitor.github.comment_on_pr(number, msg)
+            await monitor.forge.comment_on_pr(number, msg)
         else:
-            await monitor.github.comment_on_issue(number, msg)
+            await monitor.forge.comment_on_issue(number, msg)
     except Exception as exc:  # noqa: BLE001 — best-effort
         logger.warning("gave-up comment on %s #%d failed: %s", kind, number, exc)
 
@@ -607,9 +608,9 @@ async def _route_issue_to_pipeline(
     already_in_pipeline = any(lb.startswith("~workflow:") for lb in labels)
     try:
         if not already_in_pipeline:
-            await monitor.github.add_labels("issue", number, [WORKFLOW_NEW])
+            await monitor.forge.add_labels("issue", number, [WORKFLOW_NEW])
             logger.info("mention: routed issue #%d into pipeline (%s)", number, WORKFLOW_NEW)
-        await monitor.github.add_labels("issue", number, [MENTION_DONE])
+        await monitor.forge.add_labels("issue", number, [MENTION_DONE])
     except Exception as exc:  # noqa: BLE001 — never abort the loop
         logger.warning("mention: could not route issue #%d: %s", number, exc)
         return
@@ -628,7 +629,7 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
     em_arquitetura), with a block-to-author after ``refine_max_attempts`` passes.
     With the gate OFF it keeps the legacy no-op transition (nova→revisada)."""
     try:
-        issues = await monitor.github.list_issues_with_label(WORKFLOW_NEW, limit=50)
+        issues = await monitor.forge.list_issues_with_label(WORKFLOW_NEW, limit=50)
     except GhCommandError as exc:
         await _record_gh_error(
             monitor, "could not list new issues (gh error)", exc,
@@ -648,15 +649,15 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
         return
 
     # ---- Legacy path (Claude/no-gate): no-op transition through review --------
-    batch = await monitor.github.claim_with_batch("issue", target.number)
+    batch = await monitor.forge.claim_with_batch("issue", target.number)
     if batch is None:
         return
     # Tag ownership so other monitors can identify who claimed this.
-    await monitor.github.add_labels("issue", target.number, [monitor.identity.ownership_label()])
+    await monitor.forge.add_labels("issue", target.number, [monitor.identity.ownership_label()])
     await monitor.notifier.issue_picked_up(target.number, target.title, target.url)
     try:
         # Atomic: if review_callback or final transition fails, revert to WORKFLOW_NEW.
-        await monitor.github.transition_issue(
+        await monitor.forge.transition_issue(
             target.number, from_label=WORKFLOW_NEW, to_label=WORKFLOW_REVIEWING
         )
         review_failed = False
@@ -664,8 +665,8 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
             if monitor._review_cb is not None:
                 comment = await monitor._review_cb(target)
                 if comment:
-                    await monitor.github.comment_on_issue(target.number, comment)
-            await monitor.github.transition_issue(
+                    await monitor.forge.comment_on_issue(target.number, comment)
+            await monitor.forge.transition_issue(
                 target.number, from_label=WORKFLOW_REVIEWING, to_label=WORKFLOW_REVIEWED
             )
         except GhCommandError:
@@ -680,7 +681,7 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
             if review_failed:
                 # Revert to WORKFLOW_NEW so the issue isn't stuck in em_revisao
                 try:
-                    await monitor.github.transition_issue(
+                    await monitor.forge.transition_issue(
                         target.number,
                         from_label=WORKFLOW_REVIEWING,
                         to_label=WORKFLOW_NEW,
@@ -708,13 +709,13 @@ async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
     # sharded deployment claims to close the TOCTOU window and clears it after.
     multi = monitor.identity.shard_count > 1
     if multi:
-        if await monitor.github.claim_with_batch("issue", number) is None:
+        if await monitor.forge.claim_with_batch("issue", number) is None:
             return
     # Ownership tag lets the implement stage accept this issue without a batch.
-    await monitor.github.add_labels("issue", number, [monitor.identity.ownership_label()])
+    await monitor.forge.add_labels("issue", number, [monitor.identity.ownership_label()])
     await monitor.notifier.issue_picked_up(number, target.title, target.url)
     try:
-        await monitor.github.transition_issue(
+        await monitor.forge.transition_issue(
             number, from_label=WORKFLOW_NEW, to_label=WORKFLOW_REVIEWING
         )
     except GhCommandError as exc:
@@ -723,11 +724,11 @@ async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
 
     outcome = await monitor.implementer.critique(monitor, target)
     if multi:
-        await monitor.github.clear_batch_label("issue", number)
+        await monitor.forge.clear_batch_label("issue", number)
     if not outcome.ok:
         # Critique dispatch failed → revert to nova so a later tick retries.
         try:
-            await monitor.github.transition_issue(
+            await monitor.forge.transition_issue(
                 number, from_label=WORKFLOW_REVIEWING, to_label=WORKFLOW_NEW
             )
         except Exception:  # noqa: BLE001 — rollback is best-effort
@@ -738,13 +739,13 @@ async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
     is_clear, reason = parse_critique_verdict(outcome.text)
     issue_type = issue_type_from_labels(target.labels)
     if is_clear:
-        await monitor.github.transition_issue(
+        await monitor.forge.transition_issue(
             number, from_label=WORKFLOW_REVIEWING, to_label=WORKFLOW_REVIEWED
         )
         # Scope is clear now: drop the refinement marker AND any stale refine
         # state (em_refinamento/em_arquitetura) so the issue carries exactly one
         # ~workflow: label — defensive against residue from a raced cycle.
-        await monitor.github.remove_labels("issue", number, [REFINAR, *REFINE_WORKFLOW_STATES])
+        await monitor.forge.remove_labels("issue", number, [REFINAR, *REFINE_WORKFLOW_STATES])
         monitor._stats.issues_reviewed += 1
         await monitor.notifier.issue_reviewed(number, target.title, target.url)
         return
@@ -755,9 +756,9 @@ async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
         return
     # Send to the type-specific refinement state and mark it for the refine stage.
     refine_state = refine_workflow_state(issue_type)
-    await monitor.github.add_labels("issue", number, [REFINAR])
+    await monitor.forge.add_labels("issue", number, [REFINAR])
     try:
-        await monitor.github.transition_issue(
+        await monitor.forge.transition_issue(
             number, from_label=WORKFLOW_REVIEWING, to_label=refine_state
         )
     except GhCommandError as exc:
@@ -779,7 +780,7 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
     if not monitor.config.enable_refinement_gate:
         return
     try:
-        issues = await monitor.github.list_issues_with_label(REFINAR, limit=50)
+        issues = await monitor.forge.list_issues_with_label(REFINAR, limit=50)
     except GhCommandError as exc:
         await _record_gh_error(
             monitor, "could not list issues to refine (gh error)", exc,
@@ -808,9 +809,9 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
         )
         try:
             if cur:
-                await monitor.github.transition_issue(number, from_label=cur, to_label=refine_state)
+                await monitor.forge.transition_issue(number, from_label=cur, to_label=refine_state)
             else:
-                await monitor.github.add_labels("issue", number, [refine_state])
+                await monitor.forge.add_labels("issue", number, [refine_state])
         except GhCommandError as exc:
             await _record_gh_error(monitor, f"could not rehydrate #{number} into {refine_state}", exc)
         return  # refined on the next tick
@@ -834,7 +835,7 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
     verdict = parse_refine_verdict(outcome.text)
     if verdict == "waiting":
         # The worker posted 2-3 suggestions and assigned the author; pause refino.
-        await monitor.github.add_labels("issue", number, [WORKFLOW_WAITING])
+        await monitor.forge.add_labels("issue", number, [WORKFLOW_WAITING])
         logger.info("refine #%d → aguardando stakeholder", number)
         return
     # OK / unknown → count it and send back for re-critique (the safety net).
@@ -844,7 +845,7 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
         refine_workflow_state(issue_type),
     )
     try:
-        await monitor.github.transition_issue(number, from_label=refine_state, to_label=WORKFLOW_NEW)
+        await monitor.forge.transition_issue(number, from_label=refine_state, to_label=WORKFLOW_NEW)
     except GhCommandError as exc:
         await _record_gh_error(monitor, f"could not return #{number} to nova after refine", exc)
         return
@@ -874,19 +875,19 @@ async def _block_refinement(monitor: "PipelineMonitor", issue, reason: str) -> N
     ]
     if stale:
         try:
-            await monitor.github.remove_labels("issue", number, stale)
+            await monitor.forge.remove_labels("issue", number, stale)
         except GhCommandError as exc:
             await _record_gh_error(
                 monitor, f"could not strip stale labels {stale} from #{number}", exc,
             )
     if refine_state not in issue.labels:
         try:
-            await monitor.github.add_labels("issue", number, [refine_state])
+            await monitor.forge.add_labels("issue", number, [refine_state])
         except GhCommandError as exc:
             await _record_gh_error(monitor, f"could not rest #{number} in {refine_state}", exc)
-    await monitor.github.add_labels("issue", number, [REFINAR])
+    await monitor.forge.add_labels("issue", number, [REFINAR])
     if getattr(issue, "author", ""):
-        await monitor.github.assign_issue(number, issue.author)
+        await monitor.forge.assign_issue(number, issue.author)
     short = reason[:PIPELINE_MSG_TRUNCATE_CHARS]
     comment = (
         f"⛔ **Refino atingiu o teto de {monitor.config.refine_max_attempts} tentativas** "
@@ -905,7 +906,7 @@ async def decompose_one_reviewed_intent(monitor: "PipelineMonitor") -> None:
     if not monitor.config.enable_refinement_gate:
         return
     try:
-        issues = await monitor.github.list_issues_with_label(WORKFLOW_REVIEWED, limit=50)
+        issues = await monitor.forge.list_issues_with_label(WORKFLOW_REVIEWED, limit=50)
     except GhCommandError as exc:
         await _record_gh_error(
             monitor, "could not list reviewed intents (gh error)", exc,
@@ -944,7 +945,7 @@ async def decompose_one_reviewed_intent(monitor: "PipelineMonitor") -> None:
     # Mark decomposed when derived issues were created (even if the ok flag is
     # noisy) so we never re-decompose and duplicate the derived issues.
     try:
-        await monitor.github.transition_issue(
+        await monitor.forge.transition_issue(
             target.number, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_DECOMPOSED
         )
     except GhCommandError as exc:
@@ -968,7 +969,7 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
     reuses :func:`_finalize_implement_outcome` unchanged.
     """
     try:
-        issues = await monitor.github.list_issues_with_label(WORKFLOW_REVIEWED, limit=50)
+        issues = await monitor.forge.list_issues_with_label(WORKFLOW_REVIEWED, limit=50)
     except GhCommandError as exc:
         await _record_gh_error(
             monitor, "could not list reviewed issues (gh error)", exc,
@@ -1002,16 +1003,16 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
         # this issue — belt-and-suspenders behind the mention/gate integration —
         # do NOT open a second PR. Park it in em_pr so it leaves the queue (the
         # existing PR is the work).
-        if monitor.config.enable_refinement_gate and await monitor.github.has_open_pr_for_issue(target.number):
+        if monitor.config.enable_refinement_gate and await monitor.forge.has_open_pr_for_issue(target.number):
             logger.info("implement #%d: PR aberta já existe — parkando em em_pr (sem duplicar)", target.number)
             try:
-                await monitor.github.transition_issue(
+                await monitor.forge.transition_issue(
                     target.number, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_PR
                 )
             except GhCommandError as exc:
                 await _record_gh_error(monitor, f"could not park #{target.number} in em_pr", exc)
             # Drop any stale refine residue so the issue carries one ~workflow:.
-            await monitor.github.remove_labels(
+            await monitor.forge.remove_labels(
                 "issue", target.number, [REFINAR, *REFINE_WORKFLOW_STATES]
             )
             monitor._resume_tracker.clear(target.number)
@@ -1020,7 +1021,7 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
         # transition_issue is remove-then-add (not atomic); multi-monitor safety
         # relies on the PID lock + single-replica Recreate + hash sharding.
         try:
-            await monitor.github.transition_issue(
+            await monitor.forge.transition_issue(
                 target.number, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_IMPLEMENTING
             )
         except GhCommandError as exc:
@@ -1033,7 +1034,7 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
         # one ~workflow: state — drop any refine residue (em_arquitetura/refinar)
         # left by a raced gate cycle.
         if monitor.config.enable_refinement_gate:
-            await monitor.github.remove_labels(
+            await monitor.forge.remove_labels(
                 "issue", target.number, [REFINAR, *REFINE_WORKFLOW_STATES]
             )
         await monitor.notifier.implementation_started(
@@ -1081,7 +1082,7 @@ async def resume_in_progress_issues(monitor: "PipelineMonitor") -> None:
     → block flow).
     """
     try:
-        issues = await monitor.github.list_issues_with_label(WORKFLOW_IMPLEMENTING, limit=50)
+        issues = await monitor.forge.list_issues_with_label(WORKFLOW_IMPLEMENTING, limit=50)
     except GhCommandError as exc:
         await _record_gh_error(
             monitor, "could not list in-progress issues (gh error)", exc,
@@ -1207,7 +1208,7 @@ async def _finalize_implement_outcome(
     # 3. CONCLUÍDO — a real PR exists (and, when expected, was merged).
     if ended == _ENDED_CONCLUIDO or (not ended and outcome.ok and pr_url):
         try:
-            await monitor.github.transition_issue(
+            await monitor.forge.transition_issue(
                 number, from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_PR
             )
         except GhCommandError as exc:
@@ -1312,15 +1313,15 @@ async def _block(
     auto-resume) without re-entering it; a human removes the label to unblock.
     """
     commenter = (
-        monitor.github.comment_on_issue if kind == "issue"
-        else monitor.github.comment_on_pr
+        monitor.forge.comment_on_issue if kind == "issue"
+        else monitor.forge.comment_on_pr
     )
     try:
         await commenter(number, comment)
     except Exception as exc:  # noqa: BLE001 — comment is best-effort; label still applied
         logger.warning("block %s: could not comment on #%d: %s", kind, number, exc)
     try:
-        await monitor.github.add_labels(kind, number, [WORKFLOW_BLOCKED])
+        await monitor.forge.add_labels(kind, number, [WORKFLOW_BLOCKED])
     except GhCommandError as exc:
         await _record_gh_error(
             monitor, f"could not apply {WORKFLOW_BLOCKED} to {kind} #{number}", exc,
@@ -1348,7 +1349,7 @@ async def _block_issue(monitor: "PipelineMonitor", number: int, reason: str) -> 
 
 async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     try:
-        prs = await monitor.github.list_open_prs(limit=50)
+        prs = await monitor.forge.list_open_prs(limit=50)
     except GhCommandError as exc:
         await _record_gh_error(
             monitor, "could not list PRs (gh error)", exc,
@@ -1389,17 +1390,17 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     if target is None:
         return
     is_resume = REVIEW_IN_PROGRESS in target.labels
-    batch = await monitor.github.claim_with_batch("pr", target.number)
+    batch = await monitor.forge.claim_with_batch("pr", target.number)
     if batch is None:
         return
     # Tag ownership so other monitors can identify who claimed this PR —
     # mirrors the identical pattern in stage 1 for issues.
-    await monitor.github.add_labels("pr", target.number, [monitor.identity.ownership_label()])
+    await monitor.forge.add_labels("pr", target.number, [monitor.identity.ownership_label()])
     if is_resume:
         state = monitor._resume_tracker.get(target.number)
         # Attempt ceiling for review/merge — same block flow as implement.
         if state.attempt >= monitor.config.resume_max_attempts:
-            await monitor.github.clear_batch_label("pr", target.number)
+            await monitor.forge.clear_batch_label("pr", target.number)
             await _block_pr(
                 monitor, target.number, target.title, target.url,
                 f"teto de tentativas atingido ({state.attempt}/"
@@ -1411,12 +1412,12 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     else:
         await monitor.notifier.pr_picked_up(target.number, target.title, target.url)
         try:
-            await monitor.github.transition_pr(
+            await monitor.forge.transition_pr(
                 target.number, from_label=REVIEW_PENDING, to_label=REVIEW_IN_PROGRESS
             )
         except GhCommandError:
             # ~review:pendente may not be set; that's ok.
-            await monitor.github.add_labels("pr", target.number, [REVIEW_IN_PROGRESS])
+            await monitor.forge.add_labels("pr", target.number, [REVIEW_IN_PROGRESS])
     monitor._resume_tracker.record_dispatch(target.number, now)
     # Delegate the review/merge work to the configured strategy. The Claude
     # strategy checks out the branch in a worktree; the worker strategy clones
@@ -1438,7 +1439,7 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
         )
 
     if blocked:
-        await monitor.github.clear_batch_label("pr", target.number)
+        await monitor.forge.clear_batch_label("pr", target.number)
         await _block_pr(
             monitor, target.number, target.title, target.url,
             outcome.motivo_bloqueio or "o agente declarou BLOQUEADO sem motivo",
@@ -1447,14 +1448,14 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
 
     if merged:
         try:
-            await monitor.github.transition_pr(
+            await monitor.forge.transition_pr(
                 target.number, from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_CONCLUDED
             )
         except GhCommandError as exc:
             await _record_gh_error(
                 monitor, f"could not transition PR #{target.number} to concluida", exc,
             )
-        await monitor.github.clear_batch_label("pr", target.number)
+        await monitor.forge.clear_batch_label("pr", target.number)
         monitor._resume_tracker.clear(target.number)
         monitor._stats.prs_reviewed += 1
         await monitor.notifier.pr_reviewed(target.number, target.title, target.url, merged=True)
@@ -1466,26 +1467,26 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     # resume, preserve the legacy behaviour: mark concluded so the PR drops out.
     if resume_enabled:
         if zero_progress:
-            await monitor.github.clear_batch_label("pr", target.number)
+            await monitor.forge.clear_batch_label("pr", target.number)
             await _block_pr(
                 monitor, target.number, target.title, target.url,
                 "duas tentativas de review/merge sem progresso (diff idêntico)",
             )
             return
         # Release the batch lock so the next tick can re-claim; keep em_andamento.
-        await monitor.github.clear_batch_label("pr", target.number)
+        await monitor.forge.clear_batch_label("pr", target.number)
         logger.info("pr_review #%d incompleto — em_andamento (será retomada)", target.number)
         return
 
     try:
-        await monitor.github.transition_pr(
+        await monitor.forge.transition_pr(
             target.number, from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_CONCLUDED
         )
     except GhCommandError as exc:
         await _record_gh_error(
             monitor, f"could not transition PR #{target.number} to concluida", exc,
         )
-    await monitor.github.clear_batch_label("pr", target.number)
+    await monitor.forge.clear_batch_label("pr", target.number)
     monitor._stats.prs_reviewed += 1
     await monitor.notifier.pr_reviewed(target.number, target.title, target.url, merged=False)
 
@@ -1529,8 +1530,8 @@ async def stage4_follow_ups(
     to the caller (stage 3 already finished successfully).
     """
     try:
-        pr_body = await monitor.github.get_pr_body(pr_number)
-        pr_comments = await monitor.github.list_pr_comments(pr_number)
+        pr_body = await monitor.forge.get_pr_body(pr_number)
+        pr_comments = await monitor.forge.list_pr_comments(pr_number)
     except Exception as exc:  # noqa: BLE001
         logger.warning("stage 4: could not fetch PR #%s content: %s", pr_number, exc)
         return
@@ -1554,7 +1555,7 @@ async def stage4_follow_ups(
             f"Origem: PR #{pr_number} — [{pr_title}]({pr_url})"
         )
         try:
-            number = await monitor.github.create_issue(
+            number = await monitor.forge.create_issue(
                 fu.title, issue_body, labels=["intent"]
             )
             if number:
@@ -1570,7 +1571,7 @@ async def stage4_follow_ups(
 
     report = _render_follow_up_report(pr_number, opened, skipped)
     try:
-        await monitor.github.comment_on_pr(pr_number, report)
+        await monitor.forge.comment_on_pr(pr_number, report)
     except Exception as exc:  # noqa: BLE001
         logger.warning("stage 4: could not post follow-up report on PR #%s: %s", pr_number, exc)
 
@@ -1589,7 +1590,7 @@ async def standalone_follow_ups(monitor: "PipelineMonitor") -> None:
     """
     _PROCESSED_LABEL = "~follow_ups:processed"
     try:
-        merged_prs = await monitor.github.list_recently_merged_prs()
+        merged_prs = await monitor.forge.list_recently_merged_prs()
     except Exception as exc:  # noqa: BLE001
         logger.warning("standalone follow_ups: could not list merged PRs: %s", exc)
         return
@@ -1599,7 +1600,7 @@ async def standalone_follow_ups(monitor: "PipelineMonitor") -> None:
             continue
         await monitor._stage4_follow_ups(pr.number, pr.title, pr.url)
         try:
-            await monitor.github.add_labels("pr", pr.number, [_PROCESSED_LABEL])
+            await monitor.forge.add_labels("pr", pr.number, [_PROCESSED_LABEL])
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "standalone follow_ups: could not mark PR #%d processed: %s",
@@ -1612,16 +1613,19 @@ async def standalone_follow_ups(monitor: "PipelineMonitor") -> None:
 # ---------------------------------------------------------------------------
 
 def _extract_pr_url(text: str) -> Optional[str]:
-    """Return the last GitHub PR URL found in *text* (gap #14).
+    """Return the last PR/MR URL found in *text* (gap #14).
 
     Using the last match avoids picking up example URLs or log lines that
-    appear earlier in the output before the actual PR URL that Claude outputs
-    on the final line.
+    appear earlier in the output before the actual PR/MR URL the agent
+    prints on the final line.
+
+    Forge-aware (issue #297): recognises both GitHub ``/pull/N`` and GitLab
+    ``/-/merge_requests/N`` URLs, plus any extra custom hosts declared via
+    ``DEILE_GITHUB_HOST`` / ``DEILE_GITLAB_HOST``.
     """
     if not text:
         return None
-    matches = _PR_URL_RE.findall(text)
-    return matches[-1] if matches else None
+    return find_last_pr_url(text, **declared_hosts())
 
 
 def _render_follow_up_report(

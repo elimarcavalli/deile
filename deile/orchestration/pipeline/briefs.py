@@ -2,27 +2,31 @@
 
 These are the imperative PT-BR prompts the pipeline sends to the executing
 agent — the long-running ``deile-worker`` Pod (markdown briefs) or the legacy
-``claude -p`` path (plain-prose prompt). They were extracted from
-:mod:`deile.orchestration.pipeline.implementer` so that module keeps a single
-responsibility (the execution *strategies*) while this one owns the prompt
-*text* and its rendering — mirroring how :mod:`claude_dispatcher` already
-separates its prompt templates from the dispatch logic.
+``claude -p`` path (plain-prose prompt).
 
-The briefs are deliberately explicit and imperative: the worker DEILE owns the
-full clone → branch → implement → test → PR lifecycle inside its sandbox. The
-worker envelope already pins its CWD and forbids escaping it, so the briefs work
-strictly under ``./repo`` relative to that workspace.
+Forge-agnostic (issue #297): every CLI command in the templates is now a
+``{forge_*_cmd}`` placeholder filled by
+:func:`deile.orchestration.forge.cli_renderer.render_brief_cmds`. The same
+template renders to ``gh ...`` for a GitHub project and to ``glab ...`` for
+a GitLab project — the worker only ever sees the right command for the
+right forge. When a caller does not pass an explicit :class:`ForgeConfig`
+(test code that bypassed the migration) the renderer falls back to a
+default GitHub configuration on ``github.com`` so the rendered text matches
+the legacy byte-exact GH output.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+import shutil
+from typing import TYPE_CHECKING, Any, Optional
 
+from deile.orchestration.forge.base import ForgeConfig, ForgeKind
+from deile.orchestration.forge.cli_renderer import render_brief_cmds
 from deile.orchestration.pipeline.constants import ISSUE_BODY_MAX_CHARS
 from deile.orchestration.pipeline.labels import title_prefix_for_type
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
-    from deile.orchestration.pipeline.github_client import MentionTrigger
+    from deile.orchestration.forge.refs import MentionTrigger
 
 
 # ---------------------------------------------------------------------------
@@ -45,64 +49,119 @@ _BRIEF_CONSTANTS: dict[str, Any] = {
 }
 
 
-def _render_brief(template: str, **runtime_params: Any) -> str:
-    """Format a brief template with shared constants + runtime params.
+def _default_forge_config(repo: str) -> ForgeConfig:
+    """Build a default :class:`ForgeConfig` for GitHub cloud.
 
-    Templates reference shared blocks with placeholders like ``{full_suite_cmd}``
-    alongside runtime placeholders (``{repo}``, ``{number}`` …). This helper
-    keeps the constants in a single declaration so a change propagates without
-    editing the 7 brief templates.
+    Used by the brief renderers when the caller did not supply one — keeps
+    backwards compatibility with every existing test that calls
+    ``_render_worker_implement_brief("owner/repo", "main", ...)`` without
+    knowing about forges.
     """
-    return template.format(**_BRIEF_CONSTANTS, **runtime_params)
+    # ``shutil.which`` may return None in test sandboxes that lack ``gh``;
+    # the cli_path is only used inside the brief text (not actually
+    # executed at render time) so falling back to the bare command name is
+    # safe and keeps tests hermetic.
+    cli = shutil.which("gh") or "gh"
+    return ForgeConfig(
+        kind=ForgeKind.GITHUB,
+        host="github.com",
+        project_path=repo,
+        cli_path=cli,
+    )
+
+
+def _build_brief_params(
+    *,
+    repo: str,
+    main: str,
+    branch: str,
+    number: int,
+    forge: Optional[ForgeConfig],
+    issue_template: str = "feature_request.md",
+    extras: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Assemble the full ``{key: value}`` map for ``.format()`` on a template.
+
+    Combines: the shared constants (test command, pip guard, BLOQUEADO),
+    the runtime values (``repo``/``main``/``branch``/``number``) and the
+    per-forge CLI snippets from :func:`render_brief_cmds`. Extras override
+    everything else so callers can inject brief-specific fields
+    (``title``/``body``/``progress_block`` …) without surprises.
+    """
+    cfg = forge or _default_forge_config(repo)
+    cmds = render_brief_cmds(
+        cfg, number=number, branch=branch, main=main, issue_template=issue_template,
+    )
+    params: dict[str, Any] = dict(_BRIEF_CONSTANTS)
+    params.update({
+        "repo": repo,
+        "main": main,
+        "branch": branch,
+        "number": number,
+    })
+    params.update(cmds)
+    if extras:
+        params.update(extras)
+    return params
+
+
+def _render_brief(template: str, *, params: dict[str, Any]) -> str:
+    """Format a brief template with a pre-built params dict."""
+    return template.format(**params)
+
+
+# ---------------------------------------------------------------------------
+# Implement / review briefs
+# ---------------------------------------------------------------------------
 
 
 _WORKER_IMPLEMENT_BRIEF = """\
-Implemente a issue #{number} do repositório {repo} e abra uma Pull Request — execute de verdade, não simule nem invente.
+Implemente a issue #{number} do repositório {repo} e abra uma {pr_noun} — execute de verdade, não simule nem invente.
 
 Passo a passo:
-1. Trabalhe na subpasta ./repo do seu diretório atual. Se ./repo não existir, rode: gh repo clone {repo} repo
+1. Trabalhe na subpasta ./repo do seu diretório atual. Se ./repo não existir, rode: {clone_cmd}
    Se já existir, entre nela e rode: git fetch origin && git checkout {main} && git reset --hard origin/{main}
 2. Dentro de ./repo, crie e dê checkout no branch {branch} a partir de {main}.
-3. ANTES de codar, leia os comentários da issue: gh issue view {number} --repo {repo} --comments — decisões e esclarecimentos do stakeholder ali FAZEM PARTE do escopo (o corpo pode não conter tudo). Implemente a feature descrita na issue abaixo E o que os comentários decidiram. Crie/edite os arquivos necessários e ADICIONE testes cobrindo todos os casos.
-4. Rode os testes e garanta 100% de aprovação. {pip_guard}. Para iterar rápido durante o desenvolvimento: python3 -m pytest <arquivos_de_teste_novos> -p no:cov -q. MAS, ANTES DE ABRIR A PR, rode a SUÍTE COMPLETA — {full_suite_cmd} — e garanta que está 100% verde. Se a sua mudança quebrou um teste FORA dos seus arquivos, conserte-o: uma PR com a suíte vermelha NÃO está pronta.
+3. ANTES de codar, leia os comentários da issue: {view_issue_cmd} — decisões e esclarecimentos do stakeholder ali FAZEM PARTE do escopo (o corpo pode não conter tudo). Implemente a feature descrita na issue abaixo E o que os comentários decidiram. Crie/edite os arquivos necessários e ADICIONE testes cobrindo todos os casos.
+4. Rode os testes e garanta 100% de aprovação. {pip_guard}. Para iterar rápido durante o desenvolvimento: python3 -m pytest <arquivos_de_teste_novos> -p no:cov -q. MAS, ANTES DE ABRIR A {pr_noun}, rode a SUÍTE COMPLETA — {full_suite_cmd} — e garanta que está 100% verde. Se a sua mudança quebrou um teste FORA dos seus arquivos, conserte-o: uma {pr_noun} com a suíte vermelha NÃO está pronta.
 5. Faça commit atômico e `git push -u origin {branch}`.
-6. ABRA A PR (passo OBRIGATÓRIO — sem PR a tarefa NÃO está concluída):
-   gh pr create --repo {repo} --base {main} --head {branch} --title "<título coerente>" --body "<resumo>. Closes #{number}."
-7. CONFIRME que a PR existe antes de responder:
-   gh pr view {branch} --repo {repo} --json url -q .url
-   (se não retornar URL, a PR NÃO foi criada — volte ao passo 6 e crie de fato.)
+6. ABRA A {pr_noun} (passo OBRIGATÓRIO — sem {pr_noun} a tarefa NÃO está concluída):
+   {create_pr_cmd}
+7. CONFIRME que a {pr_noun} existe antes de responder:
+   {check_pr_cmd}
+   (se não retornar URL, a {pr_noun} NÃO foi criada — volte ao passo 6 e crie de fato.)
 8. NÃO faça force-push. NÃO altere nada fora de ./repo.
-9. Na ÚLTIMA LINHA da resposta final, escreva SOMENTE a URL da PR confirmada no passo 7 (ex.: https://github.com/{repo}/pull/NN). Nada depois dela.
+9. Na ÚLTIMA LINHA da resposta final, escreva SOMENTE a URL da {pr_noun} confirmada no passo 7 (ex.: {pr_url_pattern}). Nada depois dela.
 
-DEFINITION OF DONE: existe uma PR aberta cuja URL você confirmou via gh. Se push/gh/testes falharem, reporte o erro REAL — NUNCA invente uma URL nem diga "concluído" sem a PR existir.
+DEFINITION OF DONE: existe uma {pr_noun} aberta cuja URL você confirmou via {forge_cli}. Se push/{forge_cli}/testes falharem, reporte o erro REAL — NUNCA invente uma URL nem diga "concluído" sem a {pr_noun} existir.
 
 === Issue #{number}: {title} ===
 {body}
 """
 
 _WORKER_REVIEW_BRIEF = """\
-Você é o QUALITY GATE final da Pull Request #{number} do repositório {repo}. Revise com RIGOR, corrija e — só se passar no portão — mergeie. Execute de verdade: testes verdes NÃO bastam.
+Você é o QUALITY GATE final da {pr_noun} #{number} do repositório {repo}. Revise com RIGOR, corrija e — só se passar no portão — mergeie. Execute de verdade: testes verdes NÃO bastam.
 
-1. Garanta um clone atualizado de {repo} em ./repo (gh repo clone {repo} repo se não existir; senão git fetch origin). Dentro de ./repo: gh pr checkout {number}
+1. Garanta um clone atualizado de {repo} em ./repo ({clone_cmd} se não existir; senão git fetch origin). Dentro de ./repo: {checkout_pr_cmd}
 2. LEIA O DIFF INTEIRO e entenda a intenção da mudança: git diff {main}...HEAD ; git diff HEAD. Liste os arquivos tocados e leia cada um por completo.
-2b. CONFRONTE A ENTREGA CONTRA O QUE FOI PEDIDO (passo OBRIGATÓRIO): descubra a issue que esta PR fecha (procure `Closes #N`/`Fixes #N` no corpo: gh pr view {number} --repo {repo} --json body,closingIssuesReferences). Leia a issue E TODOS os comentários dela: gh issue view <N> --repo {repo} --comments. Liste, item a item, TUDO o que foi pedido — no corpo E nos comentários (decisões do stakeholder fazem parte do escopo) — e verifique se a PR entrega CADA item. Se faltou qualquer requisito, ou o autor declarou "concluído" sem cumprir, isso É IMPEDIMENTO (veja o veredito).
+2b. CONFRONTE A ENTREGA CONTRA O QUE FOI PEDIDO (passo OBRIGATÓRIO): descubra a issue que esta {pr_noun} fecha (procure `Closes #N`/`Fixes #N` no corpo: {view_pr_body_cmd}). Leia a issue E TODOS os comentários dela: {view_issue_cmd_template}. Liste, item a item, TUDO o que foi pedido — no corpo E nos comentários (decisões do stakeholder fazem parte do escopo) — e verifique se a {pr_noun} entrega CADA item. Se faltou qualquer requisito, ou o autor declarou "concluído" sem cumprir, isso É IMPEDIMENTO (veja o veredito).
 3. AVALIE contra o checklist do revisor e anote cada achado (arquivo:linha + problema):
    - Corretude e IDEMPOTÊNCIA: a lógica re-executa sem efeito duplicado? Algo em loop/por tick/agendado re-dispara a cada execução sem claim/dedup/cursor? (storms de processamento duplicado são a classe de bug nº 1 deste projeto)
    - SOLID / SRP / DRY / KISS: responsabilidade única; sem duplicação real nem abstração prematura.
    - Arquitetura hexagonal: núcleo sem SDK externo; componentes via registry; Tool retorna ToolResult; I/O async.
    - SEGURANÇA: input sanitizado antes de shell/SQL/fs; sem segredo em log; sem injeção (nada de f-string em filtro jq/shell/SQL — use --arg/binding).
    - Error handling: sem bare except; exceções tipadas (DEILEError); CancelledError re-raised; nenhum awaitable sem await.
-   - Testes cobrem casos de BORDA e a regressão que a PR alega corrigir.
+   - Testes cobrem casos de BORDA e a regressão que a {pr_noun} alega corrigir.
    - Packaging/deploy: arquivo novo importado em runtime está no COPY do Dockerfile E no allowlist do .dockerignore?
 4. CORRIJA os achados com commits normais (SEM force-push) e dê push. Adicione os testes que faltarem.
-5. GATE DE TESTES. Para iterar nas correções: python3 -m pytest <arquivos> -p no:cov -q ({pip_guard}). MAS o VEREDITO exige a SUÍTE COMPLETA: rode {full_suite_cmd} (a suíte inteira, que inclui o gate de cobertura — é o portão real de CI) e ela DEVE estar 100% verde. Suíte vermelha — MESMO num arquivo que a PR não tocou, se a mudança a quebrou — é IMPEDIMENTO: NÃO mergeie. Cole a saída REAL da suíte completa na evidência.
-5b. THREADS/NOTAS de review pendentes: liste os comentários de review (gh api repos/{repo}/pulls/{number}/comments). Para CADA thread/nota, JULGUE criticamente se o que foi pedido está realmente correto — NÃO obedeça cegamente. Se procede, RESOLVA (faça a mudança + responda a thread citando o commit). Se NÃO procede, responda a thread com uma JUSTIFICATIVA concreta de por que não fazer. Não deixe thread pendente sem ação ou justificativa.
-6. DOCUMENTE as evidências como comentário na PR (gh pr comment {number} --repo {repo} --body "..."): o que revisou, os achados, as correções, como tratou cada thread, e a saída REAL dos testes.
+5. GATE DE TESTES. Para iterar nas correções: python3 -m pytest <arquivos> -p no:cov -q ({pip_guard}). MAS o VEREDITO exige a SUÍTE COMPLETA: rode {full_suite_cmd} (a suíte inteira, que inclui o gate de cobertura — é o portão real de CI) e ela DEVE estar 100% verde. Suíte vermelha — MESMO num arquivo que a {pr_noun} não tocou, se a mudança a quebrou — é IMPEDIMENTO: NÃO mergeie. Cole a saída REAL da suíte completa na evidência.
+5b. THREADS/NOTAS de review pendentes: liste os comentários de review ({list_pr_comments_cmd}). Para CADA thread/nota, JULGUE criticamente se o que foi pedido está realmente correto — NÃO obedeça cegamente. Se procede, RESOLVA (faça a mudança + responda a thread citando o commit). Se NÃO procede, responda a thread com uma JUSTIFICATIVA concreta de por que não fazer. Não deixe thread pendente sem ação ou justificativa.
+6. DOCUMENTE as evidências como comentário na {pr_noun} ({comment_pr_cmd}): o que revisou, os achados, as correções, como tratou cada thread, e a saída REAL dos testes.
 7. VEREDITO:
-   - A entrega cumpre TUDO o que a issue + comentários pediram (passo 2b) E o checklist passou E a SUÍTE COMPLETA está 100% verde (passo 5) → MERGEIE. Você é o autor da PR; NÃO use `gh pr review --approve` (o GitHub recusa auto-aprovação). Mergeie via REST (evita o escopo read:org): gh api -X PUT repos/{repo}/pulls/{number}/merge -f merge_method=merge (fallback: gh pr merge {number} --repo {repo} --merge). Confirme: gh pr view {number} --repo {repo} --json merged -q .merged (deve ser true).
+   - A entrega cumpre TUDO o que a issue + comentários pediram (passo 2b) E o checklist passou E a SUÍTE COMPLETA está 100% verde (passo 5) → MERGEIE. Você é o autor da {pr_noun}; NÃO use comandos de auto-aprovação (o {forge_name} recusa auto-aprovação). Mergeie via REST: {merge_cmd} (fallback: {merge_fallback_cmd}). Confirme: {check_merged_cmd} (deve ser true/merged).
    - A entrega NÃO cumpre tudo o que foi pedido (faltou requisito do corpo ou de um comentário; o autor disse "concluído" sem terminar) → IMPEDIMENTO: NÃO mergeie. Testes verdes NÃO suprem requisito faltante. Comente o que falta vs. o pedido e escreva `BLOQUEADO: <o que falta>` — devolve ao autor.
-   - Impedimento REAL que você não pode resolver com segurança (decisão de produto pendente, falta credencial/segredo, mudança quebraria contrato sem migração) → NÃO mergeie; comente o motivo na PR e escreva numa linha começando com `BLOQUEADO: <motivo concreto>`.
-8. Na ÚLTIMA LINHA: a URL da PR seguida de MERGED (ex.: https://github.com/{repo}/pull/{number} MERGED) se mergeou; OU a linha `BLOQUEADO: <motivo>`. NUNCA escreva MERGED sem ter mergeado de fato; NUNCA invente resultado.
+   - Impedimento REAL que você não pode resolver com segurança (decisão de produto pendente, falta credencial/segredo, mudança quebraria contrato sem migração) → NÃO mergeie; comente o motivo na {pr_noun} e escreva numa linha começando com `{blocked_contract}`.
+8. Na ÚLTIMA LINHA: a URL da {pr_noun} seguida de MERGED (ex.: {pr_url_pattern} MERGED) se mergeou; OU a linha `{blocked_contract}`. NUNCA escreva MERGED sem ter mergeado de fato; NUNCA invente resultado.
 """
 
 # --- Resume briefs (issue #254) -----------------------------------------------
@@ -125,36 +184,36 @@ Passo a passo:
    b) Veja o diff acumulado em relação a {main}: git diff {main}...HEAD ; e também: git diff HEAD
    c) LEIA TODOS os arquivos não rastreados (untracked) e os modificados — eles contêm o trabalho parcial: git status --porcelain ; depois leia cada arquivo listado.
 4. CONTINUE a implementação de onde parou. Crie/edite o que falta e garanta testes cobrindo todos os casos.
-5. Rode os testes e garanta 100% de aprovação. {pip_guard}. Para iterar rápido: python3 -m pytest <arquivos_de_teste_novos> -p no:cov -q. MAS, ANTES DE ABRIR/CONFIRMAR A PR, rode a SUÍTE COMPLETA — {full_suite_cmd} — 100% verde. Se sua mudança quebrou um teste fora dos seus arquivos, conserte-o: PR com a suíte vermelha NÃO está pronta.
+5. Rode os testes e garanta 100% de aprovação. {pip_guard}. Para iterar rápido: python3 -m pytest <arquivos_de_teste_novos> -p no:cov -q. MAS, ANTES DE ABRIR/CONFIRMAR A {pr_noun}, rode a SUÍTE COMPLETA — {full_suite_cmd} — 100% verde. Se sua mudança quebrou um teste fora dos seus arquivos, conserte-o: {pr_noun} com a suíte vermelha NÃO está pronta.
 6. Faça commit normal (SEM force-push) e `git push -u origin {branch}`.
-7. ABRA A PR (OBRIGATÓRIO — sem PR a tarefa NÃO está concluída):
-   gh pr create --repo {repo} --base {main} --head {branch} --title "<título coerente>" --body "<resumo>. Closes #{number}."
-   (Se já existe uma PR para {branch}, apenas confirme-a: gh pr view {branch} --repo {repo} --json url -q .url)
+7. ABRA A {pr_noun} (OBRIGATÓRIO — sem {pr_noun} a tarefa NÃO está concluída):
+   {create_pr_cmd}
+   (Se já existe uma {pr_noun} para {branch}, apenas confirme-a: {check_pr_cmd})
 8. ANTES DE PARAR (concluindo OU pausando de novo), ATUALIZE o journal `.deile-progress.md` no diretório de trabalho (NÃO dentro de ./repo, e NÃO commite): registre o que fez, o que falta, decisões-chave e qualquer bloqueio.
-9. Se um IMPEDIMENTO REAL impedir continuar (falta credencial/segredo, dependência impossível, decisão de produto pendente), escreva numa linha começando com `BLOQUEADO: <motivo concreto>` — só você sabe disso; o pipeline respeita isso e para de retomar.
-10. Na ÚLTIMA LINHA: a URL da PR confirmada (ex.: https://github.com/{repo}/pull/NN), ou, se bloqueado, a linha `BLOQUEADO: <motivo>`. Nada depois dela.
+9. Se um IMPEDIMENTO REAL impedir continuar (falta credencial/segredo, dependência impossível, decisão de produto pendente), escreva numa linha começando com `{blocked_contract}` — só você sabe disso; o pipeline respeita isso e para de retomar.
+10. Na ÚLTIMA LINHA: a URL da {pr_noun} confirmada (ex.: {pr_url_pattern}), ou, se bloqueado, a linha `{blocked_contract}`. Nada depois dela.
 
-DEFINITION OF DONE: existe uma PR aberta cuja URL você confirmou via gh. NUNCA invente URL nem diga "concluído" sem a PR existir.
+DEFINITION OF DONE: existe uma {pr_noun} aberta cuja URL você confirmou via {forge_cli}. NUNCA invente URL nem diga "concluído" sem a {pr_noun} existir.
 
 === Issue #{number}: {title} ===
 {body}
 """
 
 _WORKER_REVIEW_RESUME_BRIEF = """\
-RETOMADA do QUALITY GATE da Pull Request #{number} do repositório {repo} — uma tentativa anterior já começou. NÃO descarte o trabalho parcial. Testes verdes NÃO bastam.
+RETOMADA do QUALITY GATE da {pr_noun} #{number} do repositório {repo} — uma tentativa anterior já começou. NÃO descarte o trabalho parcial. Testes verdes NÃO bastam.
 
-1. Use o clone existente em ./repo (NÃO rode `git reset --hard`, NÃO apague untracked). Garanta o checkout da PR: gh pr checkout {number}
+1. Use o clone existente em ./repo (NÃO rode `git reset --hard`, NÃO apague untracked). Garanta o checkout da {pr_noun}: {checkout_pr_cmd}
 2. RECONSTRUA O CONTEXTO: leia o journal da tentativa anterior e o diff/untracked atuais:
 {progress_block}
    git diff {main}...HEAD ; git status --porcelain (leia cada arquivo modificado/untracked listado).
 3. AVALIE com RIGOR contra o checklist do revisor (corretude/IDEMPOTÊNCIA — re-dispara a cada tick sem claim/dedup?; SOLID/SRP/DRY/KISS; arquitetura hexagonal; SEGURANÇA — injeção em jq/shell/SQL, segredo em log; error handling tipado; testes de borda + a regressão alegada; packaging — arquivo novo no COPY do Dockerfile e no allowlist do .dockerignore). Anote cada achado (arquivo:linha + problema).
-3b. CONFRONTE a entrega contra o PEDIDO: descubra a issue (Closes #N no corpo da PR), leia-a com TODOS os comentários (gh issue view <N> --repo {repo} --comments) e verifique item a item se a PR entrega tudo (corpo + decisões do stakeholder). Faltou requisito ou "concluído" sem cumprir → IMPEDIMENTO, NÃO mergeie (testes verdes não suprem), `BLOQUEADO: <o que falta>`.
+3b. CONFRONTE a entrega contra o PEDIDO: descubra a issue (Closes #N no corpo da {pr_noun}), leia-a com TODOS os comentários ({view_issue_cmd_template}) e verifique item a item se a {pr_noun} entrega tudo (corpo + decisões do stakeholder). Faltou requisito ou "concluído" sem cumprir → IMPEDIMENTO, NÃO mergeie (testes verdes não suprem), `BLOQUEADO: <o que falta>`.
 4. CORRIJA os achados com commits normais (SEM force-push) e dê push. Adicione os testes que faltarem.
-5. GATE DE TESTES. Iterar nas correções: python3 -m pytest <arquivos> -p no:cov -q ({pip_guard}). MAS o VEREDITO exige a SUÍTE COMPLETA verde: {full_suite_cmd} DEVE estar 100% verde. Suíte vermelha — mesmo fora dos arquivos da PR, se a mudança a quebrou — é IMPEDIMENTO: NÃO mergeie.
-6. DOCUMENTE as evidências como comentário na PR (gh pr comment {number} --repo {repo} --body "..."), colando a saída REAL da suíte completa.
-7. VEREDITO — só mergeie se o checklist passou E a SUÍTE COMPLETA está 100% verde: gh api -X PUT repos/{repo}/pulls/{number}/merge -f merge_method=merge (fallback: gh pr merge {number} --repo {repo} --merge). Confirme: gh pr view {number} --repo {repo} --json merged -q .merged (deve ser true).
+5. GATE DE TESTES. Iterar nas correções: python3 -m pytest <arquivos> -p no:cov -q ({pip_guard}). MAS o VEREDITO exige a SUÍTE COMPLETA verde: {full_suite_cmd} DEVE estar 100% verde. Suíte vermelha — mesmo fora dos arquivos da {pr_noun}, se a mudança a quebrou — é IMPEDIMENTO: NÃO mergeie.
+6. DOCUMENTE as evidências como comentário na {pr_noun} ({comment_pr_cmd}), colando a saída REAL da suíte completa.
+7. VEREDITO — só mergeie se o checklist passou E a SUÍTE COMPLETA está 100% verde: {merge_cmd} (fallback: {merge_fallback_cmd}). Confirme: {check_merged_cmd} (deve ser true/merged).
 8. ANTES DE PARAR, atualize `.deile-progress.md` no diretório de trabalho (fora de ./repo, sem commitar): o que revisou, achados, correções e o que falta.
-9. Se um impedimento real impedir o merge com qualidade, escreva `BLOQUEADO: <motivo concreto>`. Caso contrário, na ÚLTIMA LINHA escreva a URL da PR seguida de MERGED. NUNCA escreva MERGED sem ter mergeado de fato; NUNCA invente resultado.
+9. Se um impedimento real impedir o merge com qualidade, escreva `{blocked_contract}`. Caso contrário, na ÚLTIMA LINHA escreva a URL da {pr_noun} seguida de MERGED. NUNCA escreva MERGED sem ter mergeado de fato; NUNCA invente resultado.
 """
 
 _WORKER_MENTION_BRIEF = """\
@@ -167,12 +226,12 @@ Ação esperada:
 {expected_action}
 
 IMPORTANTE:
-- Se for um ASSIGNEE em uma issue SEM PR aberta, implemente a issue completa (use o fluxo normal de implementação: branch + commit + teste + PR).
-- Se for um ASSIGNEE em uma issue que JÁ TEM PR aberta, verifique se a PR cobre tudo da issue. Se não cobrir, faça checkout do branch da PR e continue a implementação.
+- Se for um ASSIGNEE em uma issue SEM {pr_noun} aberta, implemente a issue completa (use o fluxo normal de implementação: branch + commit + teste + {pr_noun}).
+- Se for um ASSIGNEE em uma issue que JÁ TEM {pr_noun} aberta, verifique se a {pr_noun} cobre tudo da issue. Se não cobrir, faça checkout do branch da {pr_noun} e continue a implementação.
 - Se for REQUESTED REVIEWER, faça review completa (arquitetura, DRY, KISS, SOLID, clean code) + teste + corrija o que precisar + commit + push + comente as evidências + merge.
-- Se for MENTION em comentário, responda diretamente ao que foi pedido. Se o comentário está numa PR, trabalhe no branch da PR.
-- Poste SEMPRE a resposta ou evidências como comentário no GitHub.
-- Na ÚLTIMA LINHA, escreva a URL relevante (PR, issue, etc).
+- Se for MENTION em comentário, responda diretamente ao que foi pedido. Se o comentário está numa {pr_noun}, trabalhe no branch da {pr_noun}.
+- Poste SEMPRE a resposta ou evidências como comentário no {forge_name}.
+- Na ÚLTIMA LINHA, escreva a URL relevante ({pr_noun}, issue, etc).
 """
 
 # Shared mention-rendering helpers (issue #253). The worker brief and the Claude
@@ -254,44 +313,48 @@ def _classify_mention_action(ref: "MentionTrigger", trigger_types: list[str]) ->
     return "default"
 
 
-# Context-aware worker mention brief builder (issue #253)
 def _render_worker_mention_brief(
     repo: str,
     ref: "MentionTrigger",
     trigger_types: list[str],
     all_triggers: list["MentionTrigger"],
+    *,
+    forge: Optional[ForgeConfig] = None,
 ) -> str:
     """Build a context-rich mention brief from all trigger types."""
     trigger_summary = _summarize_trigger_types(trigger_types)
     trigger_details = _render_trigger_details(all_triggers, rich=True)
 
     n = ref.target_number
+    cfg = forge or _default_forge_config(repo)
+    pr_noun = "PR" if cfg.kind is ForgeKind.GITHUB else "MR"
+    forge_name = "GitHub" if cfg.kind is ForgeKind.GITHUB else "GitLab"
     actions = {
         "review_request": (
-            f"**REVIEW REQUEST**: Você foi solicitado como revisor da PR #{n}. "
+            f"**REVIEW REQUEST**: Você foi solicitado como revisor da {pr_noun} #{n}. "
             f"Faça uma revisão completa (arquitetura, DRY, KISS, SOLID, clean code), "
             f"rode os testes, corrija problemas, faça commit + push, poste evidências como "
-            f"comentário na PR e faça o merge."
+            f"comentário na {pr_noun} e faça o merge."
         ),
         "assigned_issue": (
             f"**ASSIGNED**: Você foi atribuído à issue #{n}. "
-            f"Implemente a feature completa, crie testes, abra uma PR. "
-            f"Se já existir uma PR para esta issue, verifique se cobre tudo e "
+            f"Implemente a feature completa, crie testes, abra uma {pr_noun}. "
+            f"Se já existir uma {pr_noun} para esta issue, verifique se cobre tudo e "
             f"continue a implementação no branch existente."
         ),
         "assigned_pr": (
-            f"**ASSIGNED TO PR**: Você foi atribuído à PR #{n}. "
+            f"**ASSIGNED TO {pr_noun}**: Você foi atribuído à {pr_noun} #{n}. "
             f"Revise, corrija, teste, faça commit + push e mergeie se estiver pronto."
         ),
         "mention_pr": (
-            f"**MENTION ON PR**: Você foi mencionado na PR #{n}. "
-            f"Atenda ao que foi pedido no comentário/corpo, trabalhe no branch da PR, "
-            f"teste, faça commit + push e poste a resposta como comentário na PR."
+            f"**MENTION ON {pr_noun}**: Você foi mencionado na {pr_noun} #{n}. "
+            f"Atenda ao que foi pedido no comentário/corpo, trabalhe no branch da {pr_noun}, "
+            f"teste, faça commit + push e poste a resposta como comentário na {pr_noun}."
         ),
         "mention_issue": (
             f"**MENTION ON ISSUE**: Você foi mencionado na issue #{n}. "
             f"Atenda ao que foi pedido no comentário/corpo. "
-            f"Se a issue já tem PR aberta, trabalhe no branch da PR."
+            f"Se a issue já tem {pr_noun} aberta, trabalhe no branch da {pr_noun}."
         ),
         "default": "Atenda ao contexto acima da forma mais apropriada.",
     }
@@ -302,25 +365,52 @@ def _render_worker_mention_brief(
         trigger_summary=trigger_summary,
         trigger_details=trigger_details,
         expected_action=expected_action,
+        pr_noun=pr_noun,
+        forge_name=forge_name,
     )
 
 
 def _render_worker_implement_brief(
-    repo: str, main: str, branch: str, number: int, title: str, body: str
+    repo: str,
+    main: str,
+    branch: str,
+    number: int,
+    title: str,
+    body: str,
+    *,
+    forge: Optional[ForgeConfig] = None,
 ) -> str:
-    return _render_brief(
-        _WORKER_IMPLEMENT_BRIEF,
-        repo=repo,
-        main=main,
-        branch=branch,
-        number=number,
-        title=title,
-        body=(body or "").strip()[:ISSUE_BODY_MAX_CHARS] or "(sem corpo — implemente a partir do título)",
+    params = _build_brief_params(
+        repo=repo, main=main, branch=branch, number=number, forge=forge,
+        extras={
+            "title": title,
+            "body": (body or "").strip()[:ISSUE_BODY_MAX_CHARS]
+                    or "(sem corpo — implemente a partir do título)",
+        },
     )
+    return _render_brief(_WORKER_IMPLEMENT_BRIEF, params=params)
 
 
-def _render_worker_review_brief(repo: str, main: str, number: int) -> str:
-    return _render_brief(_WORKER_REVIEW_BRIEF, repo=repo, main=main, number=number)
+def _render_worker_review_brief(
+    repo: str, main: str, number: int, *, forge: Optional[ForgeConfig] = None,
+) -> str:
+    # Review brief does not know the branch — but the placeholders that
+    # reference it only appear in the implement template; for review we use
+    # ``pr/<n>`` as a deterministic stand-in (matches the legacy template
+    # which used the same shape).
+    branch_for_render = f"pr/{number}"
+    params = _build_brief_params(
+        repo=repo, main=main, branch=branch_for_render, number=number, forge=forge,
+    )
+    # Cross-reference: review brief mentions ``gh issue view <N> --comments``
+    # where <N> is the issue closed by the PR — not yet known. The
+    # ``view_issue_cmd_template`` placeholder is the same forge command with
+    # ``<N>`` as a literal placeholder for the worker to fill in after it
+    # parses the closing reference.
+    params["view_issue_cmd_template"] = params["view_issue_cmd"].replace(
+        f" {number} ", " <N> ", 1,
+    )
+    return _render_brief(_WORKER_REVIEW_BRIEF, params=params)
 
 
 # The journal lives in the worker's per-channel PVC workspace (one level above
@@ -336,31 +426,43 @@ _PROGRESS_BLOCK = (
 
 
 def _render_worker_implement_resume_brief(
-    repo: str, main: str, branch: str, number: int, title: str, body: str
+    repo: str,
+    main: str,
+    branch: str,
+    number: int,
+    title: str,
+    body: str,
+    *,
+    forge: Optional[ForgeConfig] = None,
 ) -> str:
-    return _render_brief(
-        _WORKER_IMPLEMENT_RESUME_BRIEF,
-        repo=repo,
-        main=main,
-        branch=branch,
-        number=number,
-        title=title,
-        body=(body or "").strip()[:ISSUE_BODY_MAX_CHARS] or "(sem corpo — continue a partir do título e do trabalho parcial)",
-        progress_block=_PROGRESS_BLOCK,
+    params = _build_brief_params(
+        repo=repo, main=main, branch=branch, number=number, forge=forge,
+        extras={
+            "title": title,
+            "body": (body or "").strip()[:ISSUE_BODY_MAX_CHARS]
+                    or "(sem corpo — continue a partir do título e do trabalho parcial)",
+            "progress_block": _PROGRESS_BLOCK,
+        },
     )
+    return _render_brief(_WORKER_IMPLEMENT_RESUME_BRIEF, params=params)
 
 
 def _render_worker_review_resume_brief(
-    repo: str, main: str, number: int
+    repo: str, main: str, number: int, *, forge: Optional[ForgeConfig] = None,
 ) -> str:
-    return _render_brief(
-        _WORKER_REVIEW_RESUME_BRIEF,
-        repo=repo, main=main, number=number, progress_block=_PROGRESS_BLOCK,
+    branch_for_render = f"pr/{number}"
+    params = _build_brief_params(
+        repo=repo, main=main, branch=branch_for_render, number=number, forge=forge,
+        extras={"progress_block": _PROGRESS_BLOCK},
     )
+    params["view_issue_cmd_template"] = params["view_issue_cmd"].replace(
+        f" {number} ", " <N> ", 1,
+    )
+    return _render_brief(_WORKER_REVIEW_RESUME_BRIEF, params=params)
 
 
 # --- Refinement gate briefs (issue #257) --------------------------------------
-# Three new briefs that run BEFORE any implementation: CRITIQUE (judge scope),
+# Three briefs that run BEFORE any implementation: CRITIQUE (judge scope),
 # REFINE (rewrite the body toward the template, possibly pausing for the
 # stakeholder) and DECOMPOSE (an architect splits a clear intent into independent
 # derived issues). The persona is chosen by issue type at dispatch time (analyst
@@ -372,8 +474,8 @@ _WORKER_CRITIQUE_BRIEF = """\
 Você é o GATE DE CRÍTICA DE ESCOPO da issue #{number} (tipo: {type}) do repositório {repo}. NÃO implemente nem refine nada — apenas JULGUE, conforme a sua persona, se o escopo está claro o suficiente para avançar.
 
 1. Leia a issue (abaixo) e o template oficial do tipo:
-   gh api repos/{repo}/contents/.github/ISSUE_TEMPLATE/{template} --jq .content | base64 --decode
-   (Para feature/bug/refactor, consulte a arquitetura real — docs/system_design/ e o código; clone com `gh repo clone {repo} repo` se ainda não houver ./repo. Para bug, verifique se dá pra localizar a origem no código.)
+   {fetch_template_cmd}
+   (Para feature/bug/refactor, consulte a arquitetura real — docs/system_design/ e o código; clone com `{clone_cmd}` se ainda não houver ./repo. Para bug, verifique se dá pra localizar a origem no código.)
 2. Julgue com RIGOR: a issue está CLARA e bem-escopada (segue o template, tem substância para a PRÓXIMA etapa sem ambiguidade) ou VAGO (vazia, template em branco/incompleto, genérica demais, sem alvo/critério)?
 3. Seja honesto e específico — se VAGO, aponte exatamente o que falta.
 
@@ -389,17 +491,17 @@ _WORKER_REFINE_BRIEF = """\
 Você vai REFINAR a issue #{number} (tipo: {type}) do repositório {repo} — corrigir o TÍTULO e reescrever o CORPO para ficar claro, substancial e dentro do template oficial. NÃO implemente código de feature/fix; o objetivo é deixar o ESCOPO pronto para a próxima etapa.
 
 1. Leia a issue atual (abaixo), o template oficial E OS COMENTÁRIOS da issue:
-   gh api repos/{repo}/contents/.github/ISSUE_TEMPLATE/{template} --jq .content | base64 --decode
-   gh issue view {number} --repo {repo} --comments
+   {fetch_template_cmd}
+   {view_issue_cmd}
    Os comentários — em especial DECISÕES e esclarecimentos do stakeholder — FAZEM PARTE do escopo e DEVEM ser incorporados no corpo. NUNCA ignore o que foi pedido em comentário.
-   (feature/refactor: consulte docs/system_design/ e o código real, clone com `gh repo clone {repo} repo` se preciso. bug: investigue o código e localize a origem provável arquivo:linha. NUNCA invente.)
+   (feature/refactor: consulte docs/system_design/ e o código real, clone com `{clone_cmd}` se preciso. bug: investigue o código e localize a origem provável arquivo:linha. NUNCA invente.)
 2. CORRIJA O TÍTULO para seguir o padrão do template: ele DEVE começar com o prefixo `{title_prefix}`. Aplique:
-   gh issue edit {number} --repo {repo} --title "{title_prefix} <título claro e específico>"
+   {edit_issue_title_cmd}
 3. REESCREVA o corpo conforme a estrutura do template, preenchendo CADA seção com substância REAL (do título, do contexto, do código E das decisões registradas nos comentários). Aplique:
-   gh issue edit {number} --repo {repo} --body "<novo corpo completo>"
+   {edit_issue_body_cmd}
 4. LACUNA DO STAKEHOLDER: se houver decisão de escopo/lacuna IMPORTANTE que você NÃO pode decidir sozinho com segurança (alto impacto, ou que derivaria uma feature grande adicional), NÃO decida. Em vez disso:
-   a) Comente na issue (gh issue comment {number} --repo {repo} --body "...") descrevendo a lacuna E **2 a 3 sugestões bem pensadas** para o stakeholder escolher.
-   b) Atribua ao autor (stakeholder): descubra com `gh issue view {number} --repo {repo} --json author -q .author.login` e atribua via REST: gh api -X POST repos/{repo}/issues/{number}/assignees -f 'assignees[]=<login>'
+   a) Comente na issue ({comment_issue_cmd}) descrevendo a lacuna E **2 a 3 sugestões bem pensadas** para o stakeholder escolher.
+   b) Atribua ao autor (stakeholder): descubra com `{view_pr_author_cmd_for_issue}` e atribua via REST: {assign_user_cmd}
    c) Reporte AGUARDA_STAKEHOLDER (veredito abaixo) — o pipeline pausa o refino até o stakeholder decidir.
 5. Honestidade: marque suposições como suposições no corpo; nunca invente fato, dado ou causa-raiz.
 
@@ -414,15 +516,14 @@ VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE uma destas, nada depois 
 _WORKER_DECOMPOSE_BRIEF = """\
 Você é o ARQUITETO. A intent #{number} do repositório {repo} está CLARA e aprovada. DECOMPONHA-A em uma ou mais issues derivadas INDEPENDENTES (feature/bug/refactor) que possam ser implementadas em branches PARALELOS.
 
-1. Consulte a arquitetura real ANTES de decidir: docs/system_design/ (clone com `gh repo clone {repo} repo` se preciso) e o código relevante.
+1. Consulte a arquitetura real ANTES de decidir: docs/system_design/ (clone com `{clone_cmd}` se preciso) e o código relevante.
 2. Identifique as frentes GENUINAMENTE INDEPENDENTES (sem dependência sequencial entre si). Se a intenção é coesa e indivisível, UMA derivada é a resposta certa; se é multi-frente, várias. NÃO force a divisão — partes acopladas ficam na MESMA issue (fatiar trabalho dependente gera conflito, não paralelismo).
 3. Para CADA frente, crie uma issue derivada com escopo JÁ CLARO:
-   - título específico; corpo seguindo o template do tipo (.github/ISSUE_TEMPLATE/feature_request.md | bug_report.md | refactor_proposal.md) com alvo técnico, contrato, critérios de aceite e plano de teste;
+   - título específico; corpo seguindo o template do tipo (.github/ISSUE_TEMPLATE/feature_request.md | bug_report.md | refactor_proposal.md OU .gitlab/issue_templates/<f>.md em projetos GitLab) com alvo técnico, contrato, critérios de aceite e plano de teste;
    - inclua a linha: `Originada de #{number}`.
-   - crie com: gh issue create --repo {repo} --title "..." --body "..." --label "<feature|bug|refactor>"
-     (se o --label falhar, crie sem e adicione via REST: gh api -X POST repos/{repo}/issues/<novo>/labels -f 'labels[]=<tipo>')
-4. Comente na intent #{number} (gh issue comment) listando as derivadas criadas com links — ela permanece ABERTA como épico.
-5. Honestidade: só liste issues que você REALMENTE criou (confirme com `gh issue view`).
+   - crie com: {create_issue_cmd}
+4. Comente na intent #{number} ({comment_issue_cmd}) listando as derivadas criadas com links — ela permanece ABERTA como épico.
+5. Honestidade: só liste issues que você REALMENTE criou (confirme com `{view_issue_cmd}`).
 
 VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE (com os números reais das issues criadas):
   DECOMPOSTO: #<n1> #<n2> ...
@@ -437,29 +538,96 @@ def _refine_body(body: str) -> str:
 
 
 def _render_worker_critique_brief(
-    repo: str, number: int, title: str, body: str, *, issue_type: str, template: str
+    repo: str,
+    number: int,
+    title: str,
+    body: str,
+    *,
+    issue_type: str,
+    template: str,
+    forge: Optional[ForgeConfig] = None,
 ) -> str:
+    cfg = forge or _default_forge_config(repo)
+    cmds = render_brief_cmds(
+        cfg, number=number, branch=f"refine-{number}", main="main",
+        issue_template=template,
+    )
     return _WORKER_CRITIQUE_BRIEF.format(
-        repo=repo, number=number, title=title, body=_refine_body(body),
-        type=issue_type, template=template,
+        repo=repo,
+        number=number,
+        title=title,
+        body=_refine_body(body),
+        type=issue_type,
+        fetch_template_cmd=cmds["fetch_template_cmd"],
+        clone_cmd=cmds["clone_cmd"],
     )
 
 
 def _render_worker_refine_brief(
-    repo: str, number: int, title: str, body: str, *, issue_type: str, template: str
+    repo: str,
+    number: int,
+    title: str,
+    body: str,
+    *,
+    issue_type: str,
+    template: str,
+    forge: Optional[ForgeConfig] = None,
 ) -> str:
+    cfg = forge or _default_forge_config(repo)
+    cmds = render_brief_cmds(
+        cfg, number=number, branch=f"refine-{number}", main="main",
+        issue_template=template,
+    )
+    # The "view PR author" command in the renderer assumes a PR; for an
+    # issue we adapt it to the proper per-forge issue-author lookup.
+    if cfg.kind is ForgeKind.GITHUB:
+        view_author_cmd_for_issue = (
+            f"gh issue view {number} --repo {repo} --json author -q .author.login"
+        )
+    else:
+        view_author_cmd_for_issue = (
+            f"glab api projects/{cfg.project_id or cfg.encoded_project_path}"
+            f"/issues/{number} | jq -r .author.username"
+        )
     return _WORKER_REFINE_BRIEF.format(
-        repo=repo, number=number, title=title, body=_refine_body(body),
-        type=issue_type, template=template,
+        repo=repo,
+        number=number,
+        title=title,
+        body=_refine_body(body),
+        type=issue_type,
+        fetch_template_cmd=cmds["fetch_template_cmd"],
+        view_issue_cmd=cmds["view_issue_cmd"],
+        clone_cmd=cmds["clone_cmd"],
         title_prefix=title_prefix_for_type(issue_type) or "[FEATURE]",
+        edit_issue_title_cmd=cmds["edit_issue_title_cmd"],
+        edit_issue_body_cmd=cmds["edit_issue_body_cmd"],
+        comment_issue_cmd=cmds["comment_issue_cmd"],
+        view_pr_author_cmd_for_issue=view_author_cmd_for_issue,
+        assign_user_cmd=cmds["assign_user_cmd"],
     )
 
 
 def _render_worker_decompose_brief(
-    repo: str, number: int, title: str, body: str
+    repo: str,
+    number: int,
+    title: str,
+    body: str,
+    *,
+    forge: Optional[ForgeConfig] = None,
 ) -> str:
+    cfg = forge or _default_forge_config(repo)
+    cmds = render_brief_cmds(
+        cfg, number=number, branch=f"decompose-{number}", main="main",
+    )
     return _WORKER_DECOMPOSE_BRIEF.format(
-        repo=repo, number=number, title=title, body=_refine_body(body),
+        repo=repo,
+        number=number,
+        title=title,
+        body=_refine_body(body),
+        clone_cmd=cmds["clone_cmd"],
+        view_issue_cmd=cmds["view_issue_cmd"],
+        create_issue_cmd=cmds["create_issue_cmd"],
+        comment_issue_cmd=cmds["comment_issue_cmd"],
     )
 
 
@@ -470,20 +638,21 @@ def _render_worker_decompose_brief(
 # the author is DEILE itself). GitHub removes a requested reviewer from the
 # "requested" set once they submit a review, so this is naturally idempotent.
 _WORKER_REVIEW_ONLY_BRIEF = """\
-Você foi solicitado APENAS como REVISOR da Pull Request #{number} do repositório {repo}. Seu papel é SÓ revisar e DEVOLVER ao autor — NÃO corrija o código, NÃO faça commits, NÃO mergeie. Execute de verdade.
+Você foi solicitado APENAS como REVISOR da {pr_noun} #{number} do repositório {repo}. Seu papel é SÓ revisar e DEVOLVER ao autor — NÃO corrija o código, NÃO faça commits, NÃO mergeie. Execute de verdade.
 
-1. Garanta um clone atualizado de {repo} em ./repo (gh repo clone {repo} repo se não existir; senão git fetch origin). Dentro de ./repo: gh pr checkout {number}.
+1. Garanta um clone atualizado de {repo} em ./repo ({clone_cmd} se não existir; senão git fetch origin). Dentro de ./repo: {checkout_pr_cmd}.
 2. LEIA O DIFF INTEIRO e entenda a intenção: git diff {main}...HEAD. Leia cada arquivo tocado.
 3. AVALIE com RIGOR contra o checklist do revisor (corretude/IDEMPOTÊNCIA — re-dispara a cada tick sem claim/dedup?; SOLID/SRP/DRY/KISS; arquitetura hexagonal; SEGURANÇA — injeção em jq/shell/SQL, segredo em log; error handling tipado; testes de borda; packaging — arquivo novo no COPY do Dockerfile e no allowlist). Anote cada achado com arquivo:linha.
-3b. CONFRONTE A ENTREGA CONTRA O PEDIDO: descubra a issue (Closes #N no corpo: gh pr view {number} --repo {repo} --json body,closingIssuesReferences), leia-a com TODOS os comentários (gh issue view <N> --repo {repo} --comments) e verifique item a item se a PR entrega tudo (corpo + decisões do stakeholder). Faltou requisito, ou autor disse "concluído" sem cumprir → é bloqueante.
+3b. CONFRONTE A ENTREGA CONTRA O PEDIDO: descubra a issue (Closes #N no corpo: {view_pr_body_cmd}), leia-a com TODOS os comentários ({view_issue_cmd_template}) e verifique item a item se a {pr_noun} entrega tudo (corpo + decisões do stakeholder). Faltou requisito, ou autor disse "concluído" sem cumprir → é bloqueante.
 3c. GATE DE TESTES — rode a SUÍTE COMPLETA: {full_suite_cmd} ({pip_guard}; é o portão real de CI, inclui cobertura). NÃO basta rodar os arquivos do diff — uma mudança quebra testes em arquivos que ela não tocou. Suíte vermelha = bloqueante. Cole a saída REAL no corpo da review.
-4. POSTE a review via REST com o VEREDITO explícito: gh api -X POST repos/{repo}/pulls/{number}/reviews -f event=<EVENT> -f body="<resumo dos achados, arquivo:linha, + saída da suíte completa>". Escolha o EVENT:
-   - **APPROVE** — SÓ se NÃO houver nada bloqueante (checklist limpo, entrega cumpre o pedido do passo 3b, E a SUÍTE COMPLETA do passo 3c está 100% verde). EXCEÇÃO: se VOCÊ for o autor da PR (`gh pr view {number} --json author -q .author.login` == você), o GitHub recusa self-approve — nesse caso use `COMMENT` (o assignee-autor finalizará o merge no próximo tick).
+4. POSTE a review com o VEREDITO explícito: {review_post_cmd}
+   Escolha o VEREDITO:
+   - **APPROVE** — SÓ se NÃO houver nada bloqueante (checklist limpo, entrega cumpre o pedido do passo 3b, E a SUÍTE COMPLETA do passo 3c está 100% verde). EXCEÇÃO: se VOCÊ for o autor da {pr_noun} ({view_pr_author_cmd} == você), o {forge_name} recusa self-approve — nesse caso use `COMMENT` (o assignee-autor finalizará o merge no próximo tick).
    - **REQUEST_CHANGES** — se houver QUALQUER problema bloqueante: achado do checklist, requisito faltando (3b), OU suíte vermelha (3c). Testes verdes do subset NÃO suprem a suíte completa vermelha.
    Você ainda NÃO mergeia — quem mergeia é o autor/assignee (Decisão #32).
-5. DEVOLVA ao autor: descubra o autor (AUTOR=$(gh pr view {number} --repo {repo} --json author -q .author.login)) e marque-o como ASSIGNEE: gh api -X POST repos/{repo}/issues/{number}/assignees -f "assignees[]=$AUTOR". (Mesmo que o autor seja você — é o sinal de "bola de volta pro autor".)
+5. DEVOLVA ao autor: descubra o autor (AUTOR=$({view_pr_author_cmd})) e marque-o como ASSIGNEE: {assign_user_cmd}. (Mesmo que o autor seja você — é o sinal de "bola de volta pro autor".)
 6. NÃO mergeie, NÃO faça commits de correção. Seu trabalho termina ao postar a review e devolver ao autor.
-7. Na ÚLTIMA LINHA escreva a URL da PR (https://github.com/{repo}/pull/{number}). Se algo REAL impediu a review, escreva `BLOQUEADO: <motivo concreto>`. NUNCA invente um resultado.
+7. Na ÚLTIMA LINHA escreva a URL da {pr_noun} ({pr_url_pattern}). Se algo REAL impediu a review, escreva `{blocked_contract}`. NUNCA invente um resultado.
 """
 
 
@@ -492,23 +661,38 @@ Você foi solicitado APENAS como REVISOR da Pull Request #{number} do repositór
 # PR. It may fix code, but it must NOT merge (only the assignee finalizes a PR).
 # It also resolves any pending review threads with critical judgement.
 _WORKER_PR_ADDRESS_BRIEF = """\
-Você foi MENCIONADO na Pull Request #{number} do repositório {repo} (em comentário ou no corpo). Atenda ao que foi pedido — execute de verdade. NÃO mergeie (o merge é do autor/assignee).
+Você foi MENCIONADO na {pr_noun} #{number} do repositório {repo} (em comentário ou no corpo). Atenda ao que foi pedido — execute de verdade. NÃO mergeie (o merge é do autor/assignee).
 
-1. Garanta um clone atualizado de {repo} em ./repo; dentro dela: gh pr checkout {number}.
+1. Garanta um clone atualizado de {repo} em ./repo; dentro dela: {checkout_pr_cmd}.
 2. Leia o contexto do que foi pedido (o comentário/corpo que te mencionou) e o diff atual (git diff {main}...HEAD).
-3. THREADS/NOTAS pendentes (gh api repos/{repo}/pulls/{number}/comments): para CADA uma, JULGUE criticamente se o que foi pedido está realmente correto. Se procede, FAÇA a mudança e responda a thread citando o commit. Se NÃO procede, responda com JUSTIFICATIVA concreta. Não deixe thread sem ação ou justificativa.
+3. THREADS/NOTAS pendentes ({list_pr_comments_cmd}): para CADA uma, JULGUE criticamente se o que foi pedido está realmente correto. Se procede, FAÇA a mudança e responda a thread citando o commit. Se NÃO procede, responda com JUSTIFICATIVA concreta. Não deixe thread sem ação ou justificativa.
 4. Se a tarefa envolve código, edite, rode os testes (NÃO rode pip install — deps já instaladas; python3 -m pytest <arquivos> -p no:cov -q), faça commit normal (SEM force-push) e push.
-5. COMENTE o resultado na PR (gh pr comment {number} --repo {repo} --body "..."): o que fez, como tratou cada thread, e a saída real dos testes.
-6. NÃO mergeie. Na ÚLTIMA LINHA escreva a URL da PR. Se um impedimento real surgir, escreva `BLOQUEADO: <motivo concreto>`. NUNCA invente resultado.
+5. COMENTE o resultado na {pr_noun} ({comment_pr_cmd}): o que fez, como tratou cada thread, e a saída real dos testes.
+6. NÃO mergeie. Na ÚLTIMA LINHA escreva a URL da {pr_noun}. Se um impedimento real surgir, escreva `{blocked_contract}`. NUNCA invente resultado.
 """
 
 
-def _render_worker_review_only_brief(repo: str, main: str, number: int) -> str:
-    return _render_brief(_WORKER_REVIEW_ONLY_BRIEF, repo=repo, main=main, number=number)
+def _render_worker_review_only_brief(
+    repo: str, main: str, number: int, *, forge: Optional[ForgeConfig] = None,
+) -> str:
+    branch_for_render = f"pr/{number}"
+    params = _build_brief_params(
+        repo=repo, main=main, branch=branch_for_render, number=number, forge=forge,
+    )
+    params["view_issue_cmd_template"] = params["view_issue_cmd"].replace(
+        f" {number} ", " <N> ", 1,
+    )
+    return _render_brief(_WORKER_REVIEW_ONLY_BRIEF, params=params)
 
 
-def _render_worker_pr_address_brief(repo: str, main: str, number: int) -> str:
-    return _render_brief(_WORKER_PR_ADDRESS_BRIEF, repo=repo, main=main, number=number)
+def _render_worker_pr_address_brief(
+    repo: str, main: str, number: int, *, forge: Optional[ForgeConfig] = None,
+) -> str:
+    branch_for_render = f"pr/{number}"
+    params = _build_brief_params(
+        repo=repo, main=main, branch=branch_for_render, number=number, forge=forge,
+    )
+    return _render_brief(_WORKER_PR_ADDRESS_BRIEF, params=params)
 
 
 # ---------------------------------------------------------------------------
@@ -520,33 +704,40 @@ def _render_claude_mention_prompt(
     ref: "MentionTrigger",
     trigger_types: list[str],
     all_triggers: list["MentionTrigger"],
+    *,
+    forge: Optional[ForgeConfig] = None,
 ) -> str:
     """Build a context-rich mention prompt for the Claude path."""
     trigger_summary = _summarize_trigger_types(trigger_types)
     trigger_details = _render_trigger_details(all_triggers, rich=False)
+    cfg = forge or _default_forge_config(repo)
+    pr_noun = "PR" if cfg.kind is ForgeKind.GITHUB else "MR"
+    forge_cli = cfg.cli_path.rsplit("/", 1)[-1] if cfg.cli_path else (
+        "gh" if cfg.kind is ForgeKind.GITHUB else "glab"
+    )
 
     n = ref.target_number
     actions = {
         "review_request": (
-            f"REVIEW REQUEST: Revise a PR #{n} completamente "
+            f"REVIEW REQUEST: Revise a {pr_noun} #{n} completamente "
             f"(arquitetura, DRY, KISS, SOLID, clean code), rode testes, corrija, "
             f"commit + push, comente evidências e faça merge."
         ),
         "assigned_issue": (
             f"ASSIGNED: Implemente a issue #{n} completa. "
-            f"Crie testes, abra PR. Se já existir PR, continue no branch existente."
+            f"Crie testes, abra {pr_noun}. Se já existir {pr_noun}, continue no branch existente."
         ),
         "assigned_pr": (
-            f"ASSIGNED TO PR: Revise/corrija a PR #{n}, "
+            f"ASSIGNED TO {pr_noun}: Revise/corrija a {pr_noun} #{n}, "
             f"teste, commit + push e mergeie."
         ),
         "mention_pr": (
-            f"MENTION ON PR: Atenda ao pedido na PR #{n}, "
-            f"trabalhe no branch da PR, teste, commit + push, comente resposta."
+            f"MENTION ON {pr_noun}: Atenda ao pedido na {pr_noun} #{n}, "
+            f"trabalhe no branch da {pr_noun}, teste, commit + push, comente resposta."
         ),
         "mention_issue": (
             f"MENTION ON ISSUE: Atenda ao pedido na issue #{n}. "
-            f"Se a issue já tem PR aberta, trabalhe no branch da PR."
+            f"Se a issue já tem {pr_noun} aberta, trabalhe no branch da {pr_noun}."
         ),
         "default": "Atenda ao contexto acima da forma mais apropriada.",
     }
@@ -556,6 +747,6 @@ def _render_claude_mention_prompt(
         f"Você foi acionado por {trigger_summary} no repositório {repo}.\n\n"
         f"Contexto:\n{trigger_details}\n\n"
         f"Ação esperada:\n{action}\n\n"
-        f"IMPORTANTE: Poste a resposta como comentário no GitHub usando gh. "
+        f"IMPORTANTE: Poste a resposta como comentário no repositório usando {forge_cli}. "
         f"Na última linha, escreva a URL relevante."
     )

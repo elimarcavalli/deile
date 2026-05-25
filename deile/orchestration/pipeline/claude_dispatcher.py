@@ -159,16 +159,16 @@ IMPLEMENT_PROMPT_TEMPLATE = textwrap.dedent(
     Você está numa worktree isolada (.worktrees/<branch>) do repositório {repo}.
     Sua tarefa: pegar a issue #{number} ({title}), implementar a feature seguindo
     o workflow do projeto, criar testes para todos os casos de uso, rodar tudo
-    com 100% de aprovação e abrir uma Pull Request com branch já criado.
+    com 100% de aprovação e abrir uma {pr_noun} com branch já criado.
 
     Restrições:
     - NÃO troque de diretório — você JÁ está no worktree certo.
     - Faça commits pequenos e atômicos.
     - Adicione testes ANTES de finalizar; rode `pytest` e ajuste até 100% pass.
-    - Push do branch e abra PR via `gh pr create`. Use o título e corpo
+    - Push do branch e abra {pr_noun} via `{create_cmd}`. Use o título e corpo
       coerentes com a issue. Adicione `Closes #{number}` no corpo.
-    - Quando terminar, responda EXATAMENTE com a URL da PR aberta numa única
-      linha (ex: https://github.com/{repo}/pull/N). Sem prosa adicional.
+    - Quando terminar, responda EXATAMENTE com a URL da {pr_noun} aberta numa única
+      linha (ex: {pr_url_pattern}). Sem prosa adicional.
 
     Contexto da issue:
     {issue_body}
@@ -178,29 +178,74 @@ IMPLEMENT_PROMPT_TEMPLATE = textwrap.dedent(
 
 REVIEW_PROMPT_TEMPLATE = textwrap.dedent(
     """\
-    Você está numa worktree isolada do repositório {repo} (PR #{number}: {title}).
-    Sua tarefa: revisar a PR, corrigir o que estiver errado, cobrir todos os
+    Você está numa worktree isolada do repositório {repo} ({pr_noun} #{number}: {title}).
+    Sua tarefa: revisar a {pr_noun}, corrigir o que estiver errado, cobrir todos os
     casos de uso com testes, garantir 100% de aprovação dos testes, documentar
-    correções no corpo da PR e dar merge quando estiver pronto pra produção.
+    correções no corpo da {pr_noun} e dar merge quando estiver pronto pra produção.
 
     Restrições:
     - NÃO faça force-push.
-    - Use `gh pr review --approve` apenas após todos os checks passarem.
-    - Use `gh pr merge --merge` (não squash) e respeite a config do repo.
-    - Quando terminar, responda EXATAMENTE com a URL da PR mergeada numa
-      única linha (ex: https://github.com/{repo}/pull/N). Sem prosa adicional.
+    - Aprove apenas após todos os checks passarem.
+    - Use `{merge_cmd}` (não squash) e respeite a config do repo.
+    - Quando terminar, responda EXATAMENTE com a URL da {pr_noun} mergeada numa
+      única linha (ex: {pr_url_pattern}). Sem prosa adicional.
     """
 )
 
 
-def render_implement_prompt(repo: str, number: int, title: str, issue_body: str) -> str:
+def _default_forge_for_dispatch(repo: str):
+    """Build a default GitHub :class:`ForgeConfig` for prompt rendering.
+
+    Used when the caller did not pass an explicit ``forge``. Mirrors the
+    fallback used by the brief renderers so legacy ``render_*_prompt(repo,
+    ...)`` callers keep getting GH-shaped commands without code changes.
+    """
+    from deile.orchestration.forge.base import ForgeConfig, ForgeKind
+    cli = shutil.which("gh") or "gh"
+    return ForgeConfig(
+        kind=ForgeKind.GITHUB,
+        host="github.com",
+        project_path=repo,
+        cli_path=cli,
+    )
+
+
+def render_implement_prompt(
+    repo: str, number: int, title: str, issue_body: str, *, forge=None,
+) -> str:
+    from deile.orchestration.forge.base import ForgeKind
+    from deile.orchestration.forge.cli_renderer import render_brief_cmds
+    cfg = forge or _default_forge_for_dispatch(repo)
+    cmds = render_brief_cmds(cfg, number=number, branch="<branch>", main="main")
+    pr_noun = "PR" if cfg.kind is ForgeKind.GITHUB else "MR"
+    # ``create_cmd`` is the bare verb the prompt mentions in prose (``gh
+    # pr create`` / ``glab mr create``) — not the fully-parameterised
+    # snippet, which would over-specify and confuse the agent.
+    create_cmd = "gh pr create" if cfg.kind is ForgeKind.GITHUB else "glab mr create"
     return IMPLEMENT_PROMPT_TEMPLATE.format(
         repo=repo,
         number=number,
         title=title,
         issue_body=issue_body.strip()[:ISSUE_BODY_MAX_CHARS],
+        pr_noun=pr_noun,
+        create_cmd=create_cmd,
+        pr_url_pattern=cmds["pr_url_pattern"],
     )
 
 
-def render_review_prompt(repo: str, number: int, title: str) -> str:
-    return REVIEW_PROMPT_TEMPLATE.format(repo=repo, number=number, title=title)
+def render_review_prompt(
+    repo: str, number: int, title: str, *, forge=None,
+) -> str:
+    from deile.orchestration.forge.base import ForgeKind
+    from deile.orchestration.forge.cli_renderer import render_brief_cmds
+    cfg = forge or _default_forge_for_dispatch(repo)
+    cmds = render_brief_cmds(cfg, number=number, branch=f"pr/{number}", main="main")
+    pr_noun = "PR" if cfg.kind is ForgeKind.GITHUB else "MR"
+    return REVIEW_PROMPT_TEMPLATE.format(
+        repo=repo,
+        number=number,
+        title=title,
+        pr_noun=pr_noun,
+        merge_cmd=cmds["merge_fallback_cmd"],
+        pr_url_pattern=cmds["pr_url_pattern"],
+    )

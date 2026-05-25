@@ -33,7 +33,10 @@ from deile.orchestration.pipeline.actions import ACTIONS_BY_NAME
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeDispatcher
 from deile.orchestration.pipeline.constants import (
     PIPELINE_POLL_INTERVAL_SECONDS, PIPELINE_STOP_TIMEOUT_SECONDS)
-from deile.orchestration.pipeline.github_client import GitHubClient, IssueRef
+from deile.orchestration.forge import (ForgeClient, IssueRef, build_forge)
+# Import path preserved for callers that still type-hint ``GitHubClient`` —
+# resolved through the shim so legacy attribute usage stays compatible.
+from deile.orchestration.pipeline.github_client import GitHubClient  # noqa: F401
 from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.implementer import (PipelineImplementer,
                                                       build_implementer,
@@ -219,7 +222,8 @@ class PipelineMonitor:
         self,
         config: PipelineConfig,
         *,
-        github: Optional[GitHubClient] = None,
+        forge: Optional[ForgeClient] = None,
+        github: Optional[ForgeClient] = None,
         worktrees: Optional[WorktreeManager] = None,
         claude: Optional[ClaudeDispatcher] = None,
         notifier: Optional[DiscordNotifier] = None,
@@ -231,7 +235,18 @@ class PipelineMonitor:
     ) -> None:
         self.config = config
         self.identity = identity or MonitorIdentity.from_env()
-        self.github = github or GitHubClient(config.repo)
+        # ``forge`` is the canonical attribute (post-issue #297). ``github`` is
+        # kept as a deprecated kwarg for legacy test code that passed a
+        # ``GitHubClient`` by keyword; if both are given ``forge`` wins. When
+        # neither is supplied the factory builds the right adapter from env +
+        # ``config.repo`` — GitLab/self-hosted operators set ``DEILE_FORGE_KIND``
+        # and (optionally) ``DEILE_<KIND>_HOST`` and the same code path serves
+        # both forges.
+        if forge is not None and github is not None and forge is not github:
+            raise ValueError(
+                "PipelineMonitor: pass only one of forge=/github= (github= is deprecated)"
+            )
+        self.forge: ForgeClient = forge or github or build_forge(project_path=config.repo)
         # WorktreeManager validates that base_repo_path is a git repo at
         # construction. The deile_worker strategy never creates local
         # worktrees (the worker Pod owns its own clone) and runs where
@@ -276,6 +291,24 @@ class PipelineMonitor:
         self.schedule_store = schedule_store or ScheduleStore(
             config.base_repo_path, monitor_id=self.identity.monitor_id
         )
+
+    # ------------------------------------------------------------------
+    # Backwards-compat aliases (issue #297)
+    # ------------------------------------------------------------------
+
+    def __getattr__(self, name: str):
+        """Resolve ``monitor.github`` to ``monitor.forge`` for legacy callers.
+
+        ``__getattr__`` only fires when the attribute is NOT already set on
+        the instance, so this never shadows a real attribute — it just
+        catches the deprecated read path. No warning at every read: that
+        would spam ``stages.py`` (which already migrated to ``monitor.forge``
+        in this commit), but tests that grep the public attribute keep
+        working without modification.
+        """
+        if name == "github":
+            return self.forge
+        raise AttributeError(name)
 
     # ------------------------------------------------------------------
     # identity-aware naming helpers
@@ -352,7 +385,7 @@ class PipelineMonitor:
                     self.identity.monitor_id, exc.holder_pid,
                 )
                 raise
-        await self.github.ensure_pipeline_labels()
+        await self.forge.ensure_pipeline_labels()
         await self._catch_up_pending()
         self._stop_event.clear()
         self._task = asyncio.create_task(
@@ -364,7 +397,7 @@ class PipelineMonitor:
         # Opportunistic cleanup: remove on-disk worktrees for already-merged PRs.
         if self.config.enable_worktree_cleanup and self.worktrees is not None:
             try:
-                merged_prs = await self.github.list_recently_merged_prs(limit=100)
+                merged_prs = await self.forge.list_recently_merged_prs(limit=100)
                 merged_branches = [pr.head_ref for pr in merged_prs if pr.head_ref]
                 # PR numbers are public metadata (already in the URL) so a
                 # bounded sample is safe to log; head_refs leak branch
