@@ -10,6 +10,7 @@
 | Função que faz I/O (arquivo, rede, DB) | Async-First |
 | Nova dependência externa em `core/` ou `orchestration/` | Hexagonal — colocar adapter em `infrastructure/` |
 | Código que recebe path/comando/query do usuário | Security-First |
+| Construção de UI com caixa/painel/largura visível ao usuário | UI adaptativa (Panel/Rule sem `width=N`); ver princípio 15 |
 | Estado que precisa sobreviver entre turnos ou sessões | Memória de quatro camadas (escolha a camada certa) |
 | `try: ... except Exception:` | Error Handling tipado |
 | Leitura de configuração nova | Configuração centralizada (`Settings` singleton) |
@@ -144,3 +145,26 @@
 | Sem PyPI privado | Não declarar deps que dependam de PyPI privado/credenciado |
 | CI smoke obrigatório | Toda PR que toca `pyproject.toml` ou `[project.optional-dependencies]` deve passar por job que faz `pip install -e ".[<extra>]"` em venv limpo |
 | Doc-instalação consistente | Todo `pip install <X>[Y]` em CLAUDE.md/README precisa corresponder a uma extra que resolve sem intervenção manual |
+
+## 15. UI: adaptação a resize do terminal
+
+> Estabelecido pela issue #307. A regra é decidir o que adapta e aceitar explicitamente o que não pode adaptar.
+
+| Regra | Detalhe |
+|---|---|
+| Construções com largura derivada de texto | Proibido. Não calcular `inner_w = max(len(...), ...)` para desenhar `╔══╗` manualmente — trava a largura no momento da renderização |
+| Usar primitivas adaptativas do Rich | `Panel`, `Rule`, `Table` (sem `width=N`) — consultam `console.width` lazy via `os.get_terminal_size()` em cada render |
+| `Console()` sem `width=` | Não passar `width=N` para `rich.console.Console` salvo em testes — Rich precisa detectar a largura corrente do terminal |
+| Live region | Já adapta: `_render_live` chama `live.update(...)` por evento, cada `_compose` usa `console.width` corrente |
+| **Conteúdo já no scrollback NÃO reflowa** | Limitação fundamental de terminais. Uma vez que texto ANSI é commitado via `console.print()`, ele vive no buffer do emulador — não é mais nosso |
+| Sem `signal.SIGWINCH` | Não cross-platform (Windows não tem); o ganho de reagir a resize ativo é marginal e o custo (signal+asyncio+Live) é alto |
+| Sem `clear()` + replay | Destruiria scrollback histórico — UX regression |
+
+**O que adapta vs. o que NÃO adapta:**
+
+| Comportamento | Adapta? | Por quê |
+|---|---|---|
+| Próxima chamada de `show_welcome` / `display_error` / `display_stats` após resize | ✅ Sim | Panel/Table consultam `console.width` corrente |
+| Live region durante streaming após resize | ✅ Sim (no próximo evento) | `_compose` reusa `console.width` em cada frame |
+| `prompt_toolkit` input area | ✅ Sim | Lida com SIGWINCH internamente |
+| Markdown / Panel / ASCII art já no scrollback | ❌ Não | Texto ANSI estático fora do controle da aplicação |

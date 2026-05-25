@@ -8,9 +8,10 @@ if TYPE_CHECKING:
 import yaml
 from prompt_toolkit import PromptSession
 from rich import box
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.prompt import Prompt as RichPrompt
+from rich.rule import Rule
 from rich.status import Status
 from rich.table import Table
 from rich.text import Text
@@ -346,36 +347,29 @@ class ConsoleUIManager(UIManager):
                 Text.from_markup(f"  [bold #FFD166]✦[/] [italic]{slogan_random}[/italic]\n")
             )
 
-            border = "#4285F4"
-
-            prov_label = f"Provider  {provider_label}"
-            model_label_line = f"Model     {model_label}"
-            status_plain = "● DEILE   Pronto — digite /help para começar"
-
-            inner_w = max(len(prov_label), len(model_label_line), len(status_plain)) + 2
-
-            def _row(content_markup: str, visible_len: int) -> Text:
-                pad = " " * max(0, inner_w - 1 - visible_len)
-                line = Text()
-                line.append("║", style=border)
-                line.append_text(Text.from_markup(" " + content_markup + pad))
-                line.append("║", style=border)
-                return line
-
-            top = Text("╔" + "═" * inner_w + "╗", style=border)
-            mid = Text("╠" + "═" * inner_w + "╣", style=border)
-            bot = Text("╚" + "═" * inner_w + "╝", style=border)
-
+            # Construção adaptativa ao terminal (issue #307): em vez de
+            # desenhar `╔══╗` com `inner_w = max(len(...), ...) + 2`
+            # — o que trava a largura no comprimento das strings — usamos
+            # `Panel` + `Rule`. Tanto Panel quanto Rule consultam
+            # `console.width` no momento do render via lazy
+            # `os.get_terminal_size()`, então cada nova chamada de
+            # `show_welcome` (ou qualquer Panel novo) usa a largura atual
+            # do terminal. Conteúdo já no scrollback não reflowa — isso é
+            # limitação fundamental de terminais, não corrigível na
+            # aplicação. Ver `docs/system_design/03-PRINCIPIOS-ARQUITETURAIS.md`.
             prov_markup = f"[bold cyan]Provider[/bold cyan]  [white]{provider_label}[/white]"
             model_markup = f"[bold cyan]Model[/bold cyan]     [white]{model_label}[/white]"
             status_markup = "[bold green]●[/bold green] [bold]DEILE[/bold]   Pronto — digite [cyan]/help[/cyan] para começar"
 
-            self.console.print(top)
-            self.console.print(_row(prov_markup, len(prov_label)))
-            self.console.print(_row(model_markup, len(model_label_line)))
-            self.console.print(mid)
-            self.console.print(_row(status_markup, len(status_plain)))
-            self.console.print(bot)
+            header = Text.from_markup(prov_markup + "\n" + model_markup)
+            status = Text.from_markup(status_markup)
+            body = Group(header, Rule(style="#4285F4"), status)
+            self.console.print(Panel(
+                body,
+                border_style="#4285F4",
+                box=box.DOUBLE,
+                padding=(0, 1),
+            ))
             self.console.print("  [dim]DEILE v5.1 ULTRA[/dim]\n")
         except Exception:
             print("DEILE v5.1 ULTRA")
