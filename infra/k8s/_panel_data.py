@@ -1961,8 +1961,14 @@ class LocalInstancesProvider:
         now = datetime.now(_UTC)
         # `glob('*.json')` evita carregar arquivos temporários que Agent A
         # use durante o `os.replace` atômico (tmp + rename, padrão POSIX).
+        # `registry.json` é da Fase 3 (índice de instances) — schema
+        # diferente, lido pelo `LocalRegistryProvider`; pular aqui evita
+        # "instance file invalid payload (no pid?)" no log.
         try:
-            entries = list(self._runtime_dir.glob("*.json"))
+            entries = [
+                p for p in self._runtime_dir.glob("*.json")
+                if p.name != "registry.json"
+            ]
         except OSError as exc:
             # Permissão / FS corrompido — propaga como last_error.
             raise RuntimeError(f"listdir {self._runtime_dir}: {exc}") from exc
@@ -1981,7 +1987,26 @@ class LocalInstancesProvider:
             new_hb = snap.last_heartbeat_at
             if new_hb is not None and (old_hb is None or new_hb > old_hb):
                 out[snap.pid] = snap
+        self._gc_orphan_sockets(out)
         return out
+
+    def _gc_orphan_sockets(self, alive: Dict[int, "InstanceSnapshot"]) -> None:
+        """Remove sockets cujo state file sumiu (instance morta sem cleanup
+        do socket — caso `kill -9` ou crash de event loop pré-atexit).
+
+        Sem este GC, `~/.deile/run/` acumula `.sock` órfãos
+        indefinidamente — operador vê leftovers no `ls`, e até pode
+        confundir clients que tentem conectar num socket "morto".
+        """
+        try:
+            sockets = list(self._runtime_dir.glob("*.sock"))
+        except OSError:
+            return
+        live_stems = {f"{s.instance_id}" for s in alive.values()}
+        for sock in sockets:
+            if sock.stem in live_stems:
+                continue
+            self._unlink_quietly(sock)
 
     def _load_one(self, path: Path,
                   *, now: datetime) -> Optional[InstanceSnapshot]:
@@ -2029,18 +2054,26 @@ class LocalInstancesProvider:
                 "instance file invalid payload (no pid?), skipping: %s", path,
             )
             return None
-        # GC: PID morto → unlink silencioso e skip. Best-effort: se o
-        # unlink falhar (permissão, FS readonly), apenas pulamos o
-        # snapshot — o próximo tick tenta de novo.
+        # GC: PID morto → unlink silencioso do state file E do socket
+        # par (mesma stem). Best-effort: se o unlink falhar (permissão,
+        # FS readonly), apenas pulamos o snapshot — próximo tick tenta
+        # de novo. Sockets órfãos sem state file correspondente são
+        # cobertos por `_gc_orphan_sockets` no fim do `_fetch`.
         if not _pid_alive(snap.pid):
-            try:
-                path.unlink()
-            except OSError as exc:
-                logger.debug(
-                    "GC unlink failed for %s: %s (will retry)", path, exc,
-                )
+            self._unlink_quietly(path)
+            self._unlink_quietly(path.with_suffix(".sock"))
             return None
         return snap
+
+    @staticmethod
+    def _unlink_quietly(path: Path) -> None:
+        """Remove ``path`` ignorando FileNotFoundError; loga outros OSError."""
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.debug("GC unlink failed for %s: %s (will retry)", path, exc)
 
     def _try_fetch_via_socket(self, path: Path) -> Optional[Dict[str, Any]]:
         """Tenta puxar o snapshot do socket `<id>.sock` ao lado de `<id>.json`.

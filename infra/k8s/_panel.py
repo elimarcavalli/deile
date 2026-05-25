@@ -1746,6 +1746,45 @@ class NotifierEchoView(View):
         return events
 
     @staticmethod
+    def _normalize_event(ev: Dict[str, Any]) -> tuple:
+        """Extrai (ts, name, status, detail) de evento k8s/bot OU local.
+
+        Bot/k8s shape:    `{ts, event, payload, ...}`
+        Local-audit shape:`{timestamp, event_type, result, actor, details, ...}`
+        """
+        ts_raw = ev.get("ts") or ev.get("timestamp") or ""
+        ts = str(ts_raw)[-19:]
+        # Nome: prefere `event` (bot), depois `event_type` (audit local).
+        # Audit local complementa com `actor` quando útil (ex:
+        # "security_policy_changed [panel:set_preferred_model]").
+        name = str(ev.get("event") or ev.get("event_type") or ev.get("message") or "—")
+        actor = ev.get("actor")
+        if actor and "event" not in ev:
+            name = f"{name} [{actor}]"
+        # Status:
+        # 1) Audit local tem `result` semântico (completed/allowed/denied/failed)
+        # 2) Bot infere do nome do evento (sent/received/failed)
+        result = ev.get("result")
+        if result:
+            status = ({"completed": "OK", "allowed": "OK",
+                       "denied": "DENY", "cancelled": "DENY",
+                       "failed": "FAIL"}.get(str(result).lower(), "—"))
+        elif "sent" in name or "received" in name:
+            status = "OK"
+        elif "failed" in name:
+            status = "FAIL"
+        else:
+            status = "—"
+        # Detail: tenta `payload` (bot) ou `details` (audit local) ou
+        # cai em `resource` (audit local quando details está vazio).
+        payload = ev.get("payload") or ev.get("details") or {}
+        if payload and isinstance(payload, dict):
+            detail = ", ".join(f"{k}={v}" for k, v in payload.items())
+        else:
+            detail = str(ev.get("resource") or "")
+        return ts, name, status, detail
+
+    @staticmethod
     def _parse_line(line: str) -> Optional[Dict[str, Any]]:
         """Tenta JSON primeiro (estrutura do audit do bot); fallback ao regex.
 
@@ -1775,35 +1814,36 @@ class NotifierEchoView(View):
             return None
 
     def render(self, app: "PanelApp") -> RenderableType:
-        # Usa o NotifierProvider via _fetch_lines (cache + parse JSON
-        # robusto). Antes desta resolução de merge, render lia direto
-        # de `data.audit` (BotAuditProvider, parser estrito) que foi
-        # substituído pelo NotifierProvider (linhas cruas + parser
-        # JSON-first com fallback regex).
+        # Renderiza eventos vindos de DUAS fontes (campos diferentes):
+        # - k8s/bot audit: `ts`, `event`, `payload`, status implícito no
+        #   nome do evento (`sent`/`received`/`failed`)
+        # - local audit (security_audit.log): `timestamp`, `event_type`,
+        #   `result` (`completed`/`allowed`/`denied`/`failed`), `details`,
+        #   `actor` (e.g. `panel:set_preferred_model`)
+        # `_normalize_event` produz uma tupla uniforme (ts, name, status,
+        # detail) que cobre ambos sem perder informação.
         events = self._fetch_lines()
         if not events:
             body: RenderableType = Text(
-                "Nenhum evento `deilebot.audit` recente.\n\n"
-                "Quando o bot recebe ou envia mensagens, este painel mostra\n"
-                "evento + payload (op, reason, channel, etc).",
+                "Nenhum evento de audit recente.\n\n"
+                "Aparece aqui: I/O do bot (DM enviada/recebida) E qualquer\n"
+                "ação privilegiada do painel local (trocar modelo, ações\n"
+                "destrutivas), via ~/.deile/logs/security_audit.log.",
                 style="dim",
             )
         else:
             tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
             tbl.add_column("ts", width=20, style="dim")
-            tbl.add_column("event", width=22, style="bold")
+            tbl.add_column("event", width=26, style="bold")
             tbl.add_column("status", width=10)
             tbl.add_column("detail")
             for ev in events[-20:]:
-                ts = (ev.get("ts", "") or "")[-19:]
-                name = ev.get("event") or ev.get("message", "")
-                ok = "OK" if "sent" in name or "received" in name else \
-                     "FAIL" if "failed" in name else "—"
-                ok_style = "green" if ok == "OK" else \
-                           "red" if ok == "FAIL" else "dim"
-                payload = ev.get("payload") or {}
-                detail = ", ".join(f"{k}={v}" for k, v in payload.items())
-                tbl.add_row(ts, name, Text(ok, style=f"bold {ok_style}"),
+                ts, name, status, detail = self._normalize_event(ev)
+                ok_style = ("green" if status == "OK"
+                            else "red" if status == "FAIL"
+                            else "yellow" if status == "DENY"
+                            else "dim")
+                tbl.add_row(ts, name, Text(status, style=f"bold {ok_style}"),
                             Text(detail[:60], style="dim"))
             body = tbl
         layout = Layout()
