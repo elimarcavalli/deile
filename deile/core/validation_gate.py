@@ -20,11 +20,15 @@ explicitly.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 from typing import Any, Awaitable, Callable, List, Optional, Tuple
 
 from ..parsers.base import ParseResult
 from ..tools.base import ToolResult
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -45,15 +49,12 @@ VALIDATION_TOOL_NAMES = {
     "bash_execute", "python_execute", "run_tests",
 }
 
-# Compiled regex cache (lazy)
-_COMPILED_PROMISE_RE: Optional[List[re.Pattern[str]]] = None
-
-
-def _get_compiled_patterns() -> List[re.Pattern[str]]:
-    global _COMPILED_PROMISE_RE
-    if _COMPILED_PROMISE_RE is None:
-        _COMPILED_PROMISE_RE = [re.compile(p, re.IGNORECASE) for p in PROMISE_PATTERNS]
-    return _COMPILED_PROMISE_RE
+# Eager-compile the promise patterns once at module-load (item 12). Avoids the
+# lazy-init race that the previous ``Optional[...] = None`` form had, and
+# trades nothing material — module load is single-threaded by the import lock.
+_COMPILED_PROMISE_RE: List[re.Pattern[str]] = [
+    re.compile(p, re.IGNORECASE) for p in PROMISE_PATTERNS
+]
 
 
 # ---------------------------------------------------------------------------
@@ -68,8 +69,7 @@ def contains_promise_pattern(text: str) -> bool:
     """
     if not text:
         return False
-    compiled = _get_compiled_patterns()
-    return any(rx.search(text) for rx in compiled)
+    return any(rx.search(text) for rx in _COMPILED_PROMISE_RE)
 
 
 def detect_unvalidated_writes(tool_results: List[ToolResult]) -> List[ToolResult]:
@@ -176,11 +176,25 @@ async def apply_validation_gate(
     session.add_to_history("user", gate_prompt, {"validation_gate": True})
     session.context_data["_validation_gate_active"] = True
     try:
-        new_content, new_tool_results = await retry(
-            user_input=gate_prompt,
-            parse_result=parse_result,
-            session=session,
-        )
+        try:
+            new_content, new_tool_results = await retry(
+                user_input=gate_prompt,
+                parse_result=parse_result,
+                session=session,
+            )
+        except asyncio.CancelledError:
+            # Pilar 03 §6: never swallow CancelledError — let the caller
+            # observe the cancellation and clean up.
+            raise
+        except Exception as exc:
+            # Item 13: if the retry fails, we must not let the failure
+            # discard the pre-gate content/tool_results — that work was
+            # already executed and shown to the user.
+            logger.warning(
+                "validation_gate retry failed (%s); returning pre-gate result",
+                exc,
+            )
+            return content, tool_results
     finally:
         session.context_data.pop("_validation_gate_active", None)
 
