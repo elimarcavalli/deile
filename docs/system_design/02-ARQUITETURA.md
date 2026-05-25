@@ -55,6 +55,7 @@
 | `orchestration/pipeline/` | Pipeline autônomo de issues/PRs/menções: `PipelineMonitor` (loop de polling; estágios `classify` → `review` → `implement` (+`resume`) → `pr_review` → `follow_ups`, mais `process_mentions` como roteador por papel); `PipelineImplementer` (estratégia plugável — `ClaudeImplementer` via `claude -p` em worktree **ou** `WorkerImplementer` que despacha ao `deile-worker` por HTTP, selecionada por `dispatch_mode`); `ResumeTracker` (`resume_state.py` — cadência/fingerprint/tentativa por item, issue #254); `briefs.py` (templates de prompt: implement/review/review-only/address/mention + variantes de resume); `GitHubClient` (wrapper de `gh` CLI; `MentionTrigger`), `WorktreeManager`, `ClaudeDispatcher` (`claude -p` subprocess), `DiscordNotifier`, `MonitorIdentity` (sharding hash-based), `LockFile` (PID lock), `ScheduleStore`/`Schedule`/`RecurringEntry`/`OneshotEntry` (scheduler YAML por monitor), `cron.py` (parser de expressões 5-field) |
 | `cron/` | Agendador genérico de prompts: `CronStore` (SQLite, `data/cron.db`), `CronEntry` (recurring + one-shot), `CronRunner` (poll loop 30s, dispara `fire_callback`) |
 | `memory/` | `MemoryManager` + 4 camadas (`WorkingMemory`, `EpisodicMemory`, `SemanticMemory`, `ProceduralMemory`) + `MemoryConsolidator` |
+| `runtime/` | Estado vivo por-processo publicado em `~/.deile/run/<id>.json` (`InstanceState`, `get_instance_state`, `pid_alive`). Separado da memória (camadas em `deile/memory/`) porque é volátil, por-processo, e expõe metadados de execução para introspecção externa (painel TUI, futura observabilidade). Issue #303 (Fase 1). |
 | `security/` | `PermissionManager`, `AuditLogger`, `SecretsScanner` |
 | `personas/` | `BasePersona`, `BaseAutonomousPersona`, `PersonaManager`, `PersonaLoader`, `instruction_loader`, `builder`, `context`, `library/` (YAMLs), `instructions/` (MDs), `memory/integration.py` |
 | `config/` | `Settings` (singleton via `get_settings()`), `ConfigManager`, YAMLs (`api_config`, `commands`, `intent_patterns`, `model_providers`, `persona_config`, `system_config`), `profiles/` |
@@ -99,6 +100,7 @@
 | Workflow executor | `get_workflow_executor()` | `deile/orchestration/workflow_executor.py` |
 | Repositório de uso | `get_usage_repository()` | `deile/storage/usage_repository.py` |
 | Intent analyzer | `get_intent_analyzer()` | `deile/core/intent_analyzer.py` |
+| Runtime state (state file + heartbeat) | `get_instance_state()` | `deile/runtime/instance_state.py` |
 
 ## Padrões arquiteturais aplicados
 

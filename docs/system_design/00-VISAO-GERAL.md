@@ -58,6 +58,7 @@
 | Comandos slash | filesystem | `ls deile/commands/builtin/*.py` (excluindo `__init__.py`) |
 | Parsers | filesystem | `ls deile/parsers/*.py` (excluindo `base.py`, `registry.py`, `__init__.py`) |
 | Camadas de memória | filesystem | `ls deile/memory/*.py` (excluindo `memory_manager.py`, `memory_consolidation.py`, `__init__.py`) |
+| Runtime state por-processo | filesystem | `ls deile/runtime/*.py` (issue #303 — `instance_state.py`) |
 | Provedores de LLM | YAML | seção `providers:` em `deile/config/model_providers.yaml` |
 | Modelos | YAML | seção `models:` em `deile/config/model_providers.yaml` |
 | Personas (instruções) | filesystem | `ls deile/personas/instructions/*.md` |
@@ -104,6 +105,7 @@
 | 32 | Roteamento de menção/atribuição por papel (`process_mentions` é roteador): issue+assignee/body → injeta `~workflow:nova`; PR+assignee → review+merge; PR+reviewer-só → revisa e devolve ao autor sem mergear; comment → atende ao pedido. Idempotência cross-tick via `~mention:processado`; review de PR sob a persona `reviewer` (quality-gate SOLID/SRP/segurança, não só testes verdes) — issues #253/#261 | V1 | Fluxo (05), Componentes (04), Segurança (08) |
 | 33 | Triagem de PR só rotula `~review:pendente` em branch que o monitor revisaria (`auto/issue-*`, ou qualquer com `enable_review_human_prs`); lock `~batch:` na classificação só é reivindicado quando `shard_count>1` (monitor único não gera churn) — PR #264 | V1 patch | Arquitetura (02), Princípios (03) |
 | 34 | Sub-DEILEs paralelos em sessão CLI (decomposição autônoma): tool `dispatch_parallel_subagents` → `SubAgentOrchestrator` (asyncio.gather/return_exceptions) com runner pluggable (Local in-process default; Worker via HTTP `wait=False`+polling) + painel Rich Live multipanel ~5 linhas/frente com foco básico por tecla numérica; novo endpoint `GET /v1/progress/{task_id}` no `deile-worker` para snapshot mid-flight — issue #257 | V1 | Arquitetura (02), Componentes (04), Fluxo (05) |
+| 35 | Runtime state por-processo via state file + heartbeat (substitui inferência por log no painel TUI universal): cada processo DEILE publica seu estado vivo em `~/.deile/run/<instance_id>.json` (atomic write + atexit cleanup); `InstanceState` em `deile/runtime/` (novo subpacote, separado da memória) com singleton + injeção opcional; heartbeat task asyncio publica `last_heartbeat_at` a cada 2s; `current_action` enum `{idle, starting, tool_execution, llm_call, shutting_down}` com detail truncado em 80 chars; stats acumulam tokens/cost/turns/tool_calls/errors; sem segredos/tool_args/prompts no state file (pilar 08); painel passa a consumir state files em vez de log-tailing — Fase 1 da issue #303 | V1 | Arquitetura (02), Segurança (08) |
 
 ## Estado dos pilares
 

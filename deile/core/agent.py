@@ -475,7 +475,13 @@ class DeileAgent:
         start_time = time.time()
         self._status = AgentStatus.PROCESSING
         self._request_count += 1
-        
+        # Issue #303 — conta turno no runtime state (singleton, best-effort).
+        try:
+            from deile.runtime.instance_state import get_instance_state
+            get_instance_state().update_stats(turns=1)
+        except Exception:  # noqa: BLE001 — runtime state nunca pode quebrar a turn
+            pass
+
         try:
             # Bot-hooks: extract optional kwargs added in plano DEILE fase 2.
             # These are stashed in session.context_data so context_manager and
@@ -648,6 +654,12 @@ class DeileAgent:
         start_time = time.time()
         self._status = AgentStatus.PROCESSING
         self._request_count += 1
+        # Issue #303 — conta turno no runtime state (singleton, best-effort).
+        try:
+            from deile.runtime.instance_state import get_instance_state
+            get_instance_state().update_stats(turns=1)
+        except Exception:  # noqa: BLE001 — runtime state nunca pode quebrar a turn
+            pass
 
         try:
             session = self._get_or_create_session(session_id, **kwargs)
@@ -1116,15 +1128,37 @@ class DeileAgent:
             type=StreamEventType.STAGE,
             stage=get_stage_message("connect_model", "initial", model=_provider_label),
         )
-        async for event in executor.run(
-            provider=model_provider,
-            messages=messages_for_provider,
-            tools=tools,
-            system_instruction=system_instruction,
-            working_directory=str(session.working_directory),
-            session_data=session.context_data,
-        ):
-            yield event
+        # Issue #303 — publica ``llm_call`` no runtime state durante o stream;
+        # o ToolLoopExecutor sobrepõe com ``tool_execution`` por chamada de
+        # tool e restaura o estado anterior. Best-effort: nunca quebra o turno.
+        try:
+            from deile.runtime.instance_state import get_instance_state
+            _istate_stream = get_instance_state()
+            _istate_stream.update_action(
+                "llm_call",
+                detail=str(_provider_label),
+                session_id=session.session_id,
+                model=getattr(model_provider, "model_name", None)
+                or getattr(model_provider, "provider_id", None),
+            )
+        except Exception:  # noqa: BLE001
+            _istate_stream = None
+        try:
+            async for event in executor.run(
+                provider=model_provider,
+                messages=messages_for_provider,
+                tools=tools,
+                system_instruction=system_instruction,
+                working_directory=str(session.working_directory),
+                session_data=session.context_data,
+            ):
+                yield event
+        finally:
+            if _istate_stream is not None:
+                try:
+                    _istate_stream.clear_action()
+                except Exception:  # noqa: BLE001
+                    pass
 
     async def process_stream(
         self,
@@ -1645,17 +1679,20 @@ class DeileAgent:
             return None
     
     async def _execute_tools(
-        self, 
-        parse_result: Optional[ParseResult], 
+        self,
+        parse_result: Optional[ParseResult],
         session: AgentSession
     ) -> List[ToolResult]:
         """Fase 2: Execução de tools baseada no parsing"""
         if not parse_result or not parse_result.tool_requests:
             return []
-        
+
         self._status = AgentStatus.EXECUTING_TOOL
         tool_results = []
-        
+        # Issue #303 — singleton de runtime state; publish_action é best-effort.
+        from deile.runtime.instance_state import get_instance_state
+        _istate = get_instance_state()
+
         for tool_name in parse_result.tool_requests:
             try:
                 # Cria contexto para a tool. Bot mode propaga bot_context para
@@ -1669,16 +1706,31 @@ class DeileAgent:
                     file_list=parse_result.file_references,
                     extra={"bot_context": dict(_bot_ctx)} if _bot_ctx else {},
                 )
-                
+
+                # Issue #303 — publica intenção; tool_name é safe (não args).
+                try:
+                    _istate.update_action(
+                        "tool_execution",
+                        detail=tool_name,
+                        session_id=session.session_id,
+                    )
+                except Exception:  # noqa: BLE001 — runtime state é observability
+                    pass
+
                 # Executa a tool
                 result = await self.tool_registry.execute_tool(tool_name, context)
                 tool_results.append(result)
-                
+
                 # Display tool result using DisplayManager - SOLVES SITUAÇÃO 2 & 3
                 self.display_manager.display_tool_result(tool_name, result)
-                
+
+                try:
+                    _istate.update_stats(tool_calls=1)
+                except Exception:  # noqa: BLE001
+                    pass
+
                 # self.logger.info(f"Tool {tool_name} executed: {result.status.value}")
-                
+
             except Exception as e:
                 error_result = ToolResult(
                     status=ToolStatus.ERROR,
@@ -1687,7 +1739,16 @@ class DeileAgent:
                 )
                 tool_results.append(error_result)
                 self.logger.error(f"Tool execution failed: {e}")
-        
+                try:
+                    _istate.update_stats(errors=1)
+                except Exception:  # noqa: BLE001
+                    pass
+            finally:
+                try:
+                    _istate.clear_action()
+                except Exception:  # noqa: BLE001
+                    pass
+
         return tool_results
     
     # TODO(streaming-cleanup): legacy non-streaming tool-loop. Once the streaming path proves stable in production (Settings.streaming_enabled is True by default), migrate remaining callers and delete this method along with provider.chat_with_tools.

@@ -411,22 +411,44 @@ def _local_process_rows(data: Optional[PanelData]) -> List[PodRow]:
     Permite o PodPickerView e o painel LOCAL PROCESSES reutilizarem o
     layout existente sem casos especiais — a UI vê só "rows" e usa o
     `role` (`local-*`) para colorir/dispatchar drill-in.
+
+    Fonte do "doing now" por PID (issue #303): consulta primeiro o
+    `LocalInstancesProvider` (state files publicados por cada processo).
+    Se o PID tem snapshot, usa-o (atribuição correta por processo).
+    Caso contrário, cai no log global do `LocalLogsProvider` —
+    fallback de compat com processos legacy que ainda não publicam estado.
+    Sem nenhuma das fontes, mostra cmdline + busy via CPU.
     """
     if data is None or data.local_processes is None:
         return []
     procs = data.local_processes.get()
     if not procs:
         return []
-    state = data.local_logs.get() if data.local_logs is not None else None
+    instances = (data.local_instances.get()
+                 if getattr(data, "local_instances", None) is not None
+                 else {})
+    log_state = (data.local_logs.get()
+                 if data.local_logs is not None else None)
+    now = datetime.now(timezone.utc)
     rows: List[PodRow] = []
     for p in procs:
-        # `last activity` global do log local: aplicada principalmente a
-        # 'local-deile' (CLI ativo) e 'local-pipeline'. Para o bot é só
-        # informativa — o audit local cobre os eventos reais.
-        if state is not None and state.last_action_age_s is not None:
-            last = _fmt_age(state.last_action_age_s) + " ago"
-            doing = state.last_action_summary[:48] or "idle"
-            busy = state.last_action_age_s < 60
+        snap = instances.get(p.pid)
+        if snap is not None:
+            # Caminho preferencial: state file deste PID exato. Bug resolvido —
+            # cada linha mostra o que SEU processo está fazendo.
+            doing = snap.doing_now_label
+            ref_ts = snap.current_action_started_at or snap.last_heartbeat_at
+            if ref_ts is not None:
+                last = _fmt_age((now - ref_ts).total_seconds()) + " ago"
+            else:
+                last = "—"
+            busy = snap.current_action_kind in {"tool_execution", "llm_call"}
+        elif log_state is not None and log_state.last_action_age_s is not None:
+            # Fallback de compat: log global. Perde a atribuição por PID
+            # (mesmo texto pra todos), mas é melhor que vazio.
+            last = _fmt_age(log_state.last_action_age_s) + " ago"
+            doing = log_state.last_action_summary[:48] or "idle"
+            busy = log_state.last_action_age_s < 60
         else:
             last = "—"
             doing = p.cmd[:48] if p.cmd else "idle"

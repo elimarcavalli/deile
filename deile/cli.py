@@ -275,13 +275,25 @@ class _DeileCLI:
         self.default_session: object = None
         self.ui: object = None
         self.config_manager: object = None
+        # Issue #303 — estado vivo por-processo (heartbeat task gerenciada aqui
+        # para que ``run_interactive`` consiga cancelá-la limpa no shutdown).
+        self.instance_state: object = None
+        self._instance_state_task: Optional[asyncio.Task] = None
 
     async def initialize(self) -> bool:
         from deile.config.manager import ConfigManager
         from deile.config.settings import get_settings
         from deile.core.models.bootstrap import bootstrap_providers
         from deile.core.models.router import get_model_router
+        from deile.runtime.instance_state import get_instance_state
         from deile.ui import ConsoleUIManager, UITheme
+
+        # Issue #303 — publica state file antes de qualquer trabalho. Já marca
+        # ``starting`` para que o painel veja o processo subindo, e agenda a
+        # task de heartbeat depois que o event loop está rodando (estamos
+        # dentro de um ``async def``, então ``asyncio.create_task`` funciona).
+        self.instance_state = get_instance_state(role="cli")
+        self.instance_state.update_action("starting", detail="bootstrap")
 
         self.settings = get_settings()
         # Override working_directory to cwd
@@ -336,6 +348,15 @@ class _DeileCLI:
             )
             with self.ui.show_loading("Mapeando workspace..."):
                 self.ui.setup_file_completion(self._get_project_files())
+
+            # Issue #303 — bootstrap finalizado: limpa ``starting`` e agenda o
+            # heartbeat. A task fica retida em ``self._instance_state_task``
+            # para que ``run_interactive`` possa cancelá-la limpa no shutdown
+            # (evita warning de "task pendente" quando o atexit dispara).
+            self.instance_state.clear_action()
+            self._instance_state_task = asyncio.create_task(
+                self.instance_state.heartbeat_loop()
+            )
             return True
 
         except Exception as exc:
@@ -645,6 +666,33 @@ class _DeileCLI:
             ))
         except Exception as exc:
             self.ui.display_error(f"Ocorreu um erro fatal no loop principal: {exc}")
+        finally:
+            # Issue #303 — encerra o heartbeat antes do atexit, evitando que o
+            # warning "Task was destroyed but it is pending" aparece quando o
+            # event loop fecha com a task viva.
+            await self._shutdown_instance_state()
+
+    async def _shutdown_instance_state(self) -> None:
+        """Cancela o heartbeat e fecha o state file. Idempotente."""
+        if self.instance_state is not None:
+            try:
+                self.instance_state.update_action("shutting_down")
+            except Exception:  # noqa: BLE001 — shutdown não deve levantar
+                pass
+        if self._instance_state_task is not None and not self._instance_state_task.done():
+            self._instance_state_task.cancel()
+            try:
+                await self._instance_state_task
+            except asyncio.CancelledError:
+                pass  # esperado — solicitamos esta cancelação
+            except Exception:  # noqa: BLE001 — best-effort no shutdown
+                pass
+            self._instance_state_task = None
+        if self.instance_state is not None:
+            try:
+                self.instance_state.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # ── pipeline autostart helper ────────────────────────────────────────────────

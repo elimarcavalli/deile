@@ -251,6 +251,22 @@ class ToolLoopExecutor:
                     },
                 )
 
+                # Issue #303 — publica ação atual no runtime state (best-effort).
+                # tc_name é safe (não args); session_id vem do session_data
+                # passado pelo agente. Não falha o turn se o state file estiver
+                # corrompido/ausente.
+                _istate = None
+                try:
+                    from deile.runtime.instance_state import get_instance_state
+                    _istate = get_instance_state()
+                    _istate.update_action(
+                        "tool_execution",
+                        detail=tc_name,
+                        session_id=str((session_data or {}).get("session_id", "")) or None,
+                    )
+                except Exception:  # noqa: BLE001 — observability nunca quebra a loop
+                    _istate = None
+
                 # Run the tool under a temporal cascade so the user sees the
                 # spinner text evolve when the tool takes >3s, >10s, >30s.
                 # cascade_until yields STAGE events while the awaitable runs
@@ -258,34 +274,75 @@ class ToolLoopExecutor:
                 # re-raises the underlying exception if the tool fails.
                 result: Any = None
                 try:
-                    async for item in cascade_until(
-                        self._tool_registry.execute_tool(tc_name, ctx),
-                        message_key=tool_key,
-                        event_iteration=iteration,
-                        **tool_kwargs,
-                    ):
-                        if isinstance(item, tuple) and item and item[0] == "result":
-                            result = item[1]
-                        elif isinstance(item, UnifiedStreamEvent):
-                            yield item
-                except Exception as exc:  # pylint: disable=broad-except
-                    logger.error(
-                        "Tool '%s' raised in ToolLoopExecutor: %s", tc_name, exc, exc_info=True
-                    )
-                    err_result = ToolResult(
-                        status=ToolStatus.ERROR,
-                        message=f"{type(exc).__name__}: {exc}",
-                        error=exc,
-                        metadata={"function_name": tc_name, "tool_call_id": tc_id},
-                    )
+                    try:
+                        async for item in cascade_until(
+                            self._tool_registry.execute_tool(tc_name, ctx),
+                            message_key=tool_key,
+                            event_iteration=iteration,
+                            **tool_kwargs,
+                        ):
+                            if isinstance(item, tuple) and item and item[0] == "result":
+                                result = item[1]
+                            elif isinstance(item, UnifiedStreamEvent):
+                                yield item
+                    except Exception as exc:  # pylint: disable=broad-except
+                        logger.error(
+                            "Tool '%s' raised in ToolLoopExecutor: %s", tc_name, exc, exc_info=True
+                        )
+                        err_result = ToolResult(
+                            status=ToolStatus.ERROR,
+                            message=f"{type(exc).__name__}: {exc}",
+                            error=exc,
+                            metadata={"function_name": tc_name, "tool_call_id": tc_id},
+                        )
+                        yield UnifiedStreamEvent(
+                            type=StreamEventType.TOOL_RESULT,
+                            tool_call_id=tc_id,
+                            tool_name=tc_name,
+                            tool_status="error",
+                            tool_result_summary=summarize(err_result),
+                            tool_result_data=None,
+                            tool_metadata=dict(err_result.metadata or {}),
+                            iteration=iteration,
+                        )
+                        history.append(
+                            provider.format_tool_result_message(
+                                tc_id,
+                                tc_name,
+                                build_tool_result_payload(
+                                    err_result,
+                                    OUTCOME_EXCEPTION,
+                                    tc_name,
+                                    include_message=True,
+                                    include_data_on_error=True,
+                                ),
+                            )
+                        )
+                        # An exception escaping the registry is always "no progress"
+                        # — feed that into the guard so a string of failures
+                        # eventually trips the no-progress rule.
+                        guard.record_result(made_progress=False)
+                        if _istate is not None:
+                            try:
+                                _istate.update_stats(tool_calls=1, errors=1)
+                            except Exception:  # noqa: BLE001
+                                pass
+                        await self._publish("failed", tc_name, tc_id=tc_id, error=exc)
+                        continue
+
+                    if result.metadata is None:
+                        result.metadata = {}
+                    result.metadata.setdefault("function_name", tc_name)
+                    result.metadata.setdefault("tool_call_id", tc_id)
+
                     yield UnifiedStreamEvent(
                         type=StreamEventType.TOOL_RESULT,
                         tool_call_id=tc_id,
                         tool_name=tc_name,
-                        tool_status="error",
-                        tool_result_summary=summarize(err_result),
-                        tool_result_data=None,
-                        tool_metadata=dict(err_result.metadata or {}),
+                        tool_status="success" if result.is_success else "error",
+                        tool_result_summary=summarize(result),
+                        tool_result_data=result.data,
+                        tool_metadata=dict(result.metadata or {}),
                         iteration=iteration,
                     )
                     history.append(
@@ -293,60 +350,42 @@ class ToolLoopExecutor:
                             tc_id,
                             tc_name,
                             build_tool_result_payload(
-                                err_result,
-                                OUTCOME_EXCEPTION,
+                                result,
+                                OUTCOME_RAN,
                                 tc_name,
                                 include_message=True,
                                 include_data_on_error=True,
                             ),
                         )
                     )
-                    # An exception escaping the registry is always "no progress"
-                    # — feed that into the guard so a string of failures
-                    # eventually trips the no-progress rule.
-                    guard.record_result(made_progress=False)
-                    await self._publish("failed", tc_name, tc_id=tc_id, error=exc)
-                    continue
-
-                if result.metadata is None:
-                    result.metadata = {}
-                result.metadata.setdefault("function_name", tc_name)
-                result.metadata.setdefault("tool_call_id", tc_id)
-
-                yield UnifiedStreamEvent(
-                    type=StreamEventType.TOOL_RESULT,
-                    tool_call_id=tc_id,
-                    tool_name=tc_name,
-                    tool_status="success" if result.is_success else "error",
-                    tool_result_summary=summarize(result),
-                    tool_result_data=result.data,
-                    tool_metadata=dict(result.metadata or {}),
-                    iteration=iteration,
-                )
-                history.append(
-                    provider.format_tool_result_message(
-                        tc_id,
-                        tc_name,
-                        build_tool_result_payload(
-                            result,
-                            OUTCOME_RAN,
-                            tc_name,
-                            include_message=True,
-                            include_data_on_error=True,
-                        ),
+                    # Feed the result into the guard so the no-progress rule can
+                    # observe consecutive empty/error returns.
+                    guard.record_result(
+                        made_progress=tool_result_made_progress(result)
                     )
-                )
-                # Feed the result into the guard so the no-progress rule can
-                # observe consecutive empty/error returns.
-                guard.record_result(
-                    made_progress=tool_result_made_progress(result)
-                )
-                await self._publish(
-                    "completed" if result.is_success else "failed",
-                    tc_name,
-                    tc_id=tc_id,
-                    success=result.is_success,
-                )
+                    if _istate is not None:
+                        try:
+                            _istate.update_stats(
+                                tool_calls=1,
+                                errors=0 if result.is_success else 1,
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                    await self._publish(
+                        "completed" if result.is_success else "failed",
+                        tc_name,
+                        tc_id=tc_id,
+                        success=result.is_success,
+                    )
+                finally:
+                    # Issue #303 — restaura o estado depois de cada tool. O
+                    # ``_stream_chat_with_tools`` reaplica ``llm_call`` no
+                    # próximo ciclo do gerador antes de retornar à LLM.
+                    if _istate is not None:
+                        try:
+                            _istate.clear_action()
+                        except Exception:  # noqa: BLE001
+                            pass
 
         yield UnifiedStreamEvent(
             type=StreamEventType.STAGE,

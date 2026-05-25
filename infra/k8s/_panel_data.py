@@ -28,6 +28,8 @@ Fontes:
 - processos locais: `ps -axo pid,pcpu,rss,etime,command`
 - logs locais:      tail-from-end de `<logs_dir>/deile.log` (até 64KB)
 - audit local:      tail-from-end de `<logs_dir>/security_audit.log`
+- instâncias:       `<runtime_dir>/*.json` (state files publicados por instâncias
+                    DEILE rodando no host — issue #303)
 """
 
 from __future__ import annotations
@@ -95,6 +97,12 @@ REPO_DEFAULT = _detect_default_repo()
 USAGE_DB = Path.home() / ".deile" / "db" / "usage.db"
 LOGS_DIR = Path.home() / ".deile" / "logs"
 SESSIONS_DIR = Path.home() / ".deile" / "sessions"
+# Diretório onde instâncias DEILE publicam seu `<instance_id>.json` (state
+# file por processo, atualizado em volta de tools/heartbeat — issue #303).
+# Override-able via `DEILE_RUNTIME_DIR` env var; `LocalInstancesProvider`
+# resolve a env no construtor (não no import) para os testes poderem
+# manipular `monkeypatch.setenv` antes da instanciação.
+RUNTIME_DIR = Path.home() / ".deile" / "run"
 
 
 # ===== runtime context ======================================================
@@ -1663,6 +1671,340 @@ def _parse_audit_line(line: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+# ----- Local instances (state files publicados por processo) ----------------
+#
+# Cada instância DEILE rodando no host publica um state file JSON em
+# `<runtime_dir>/<instance_id>.json` (Agent A, issue #303). Esse provider
+# lê esses arquivos e expõe um snapshot por PID — assim o painel mostra
+# `current_action` por processo (em vez do summary global do log, que era
+# o mesmo texto pra todos os PIDs — o bug que esta feature resolve).
+#
+# Contrato com Agent A (schema_version=1): cada arquivo contém pelo menos
+# `pid`, `instance_id`, `role`, `started_at`, `last_heartbeat_at`,
+# `current_action` (ou null), `stats`. Mudanças de schema bumpam
+# `schema_version` — versões desconhecidas são puladas (forward compat).
+#
+# GC: arquivos órfãos (PID já não existe) aparecem em crashes. O provider
+# faz `unlink` silencioso no `_fetch` — evita lista poluída e mantém o
+# diretório limpo sem precisar de cron externo.
+
+# Schema atual suportado. Aumentar quando o contrato com Agent A mudar
+# de forma incompatível (campo renomeado/removido).
+_INSTANCE_SCHEMA_VERSION = 1
+# Limite default para considerar um state file "stale": last_heartbeat
+# muito velho sugere que o processo morreu sem cleanup ou o publisher
+# travou. UI pode dim a linha; provider mantém na lista.
+_INSTANCE_STALE_AFTER_S = 30.0
+# Cap para o tamanho de detail/model — evita render-cost surpresa por
+# campos inflados, e mantém doing_now_label curto na tabela.
+_INSTANCE_DETAIL_MAX = 48
+_INSTANCE_MODEL_MAX = 48
+
+
+def _pid_alive(pid: int) -> bool:
+    """`True` se o PID está vivo (UNIX).
+
+    Cópia local da função canônica em `deile/runtime/instance_state.py`
+    (Agent A, issue #303) — duplicada **intencionalmente** para manter
+    `infra/k8s/_panel*.py` rodável sem o pacote `deile` instalado
+    (mesma convenção do `audit_logger` import com fallback). Se Agent A
+    refatorar a semântica de pid_alive, sincronizar aqui.
+
+    Implementação: `os.kill(pid, 0)` — sinal 0 só checa permissão de
+    enviar, não envia nada. ProcessLookupError = morto; PermissionError
+    = vivo mas inacessível (assume vivo, pra não derrubar uma instância
+    real que rodou sob outro usuário).
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # PID existe mas não temos permissão de sinalizar — alguém de outro
+        # uid rodando DEILE no mesmo host. Vivo até prova em contrário.
+        return True
+    except OSError:
+        return False
+
+
+def _parse_iso_ts(s: Optional[str]) -> Optional[datetime]:
+    """Parse ISO8601 com `+00:00` ou `Z` (formato escrito por Agent A)."""
+    if not s or not isinstance(s, str):
+        return None
+    s2 = s.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(s2)
+    except ValueError:
+        return None
+
+
+@dataclass
+class InstanceSnapshot:
+    """Snapshot tipado de um state file `<runtime_dir>/<id>.json`.
+
+    Expõe somente os campos consumidos pela UI — campos extras do JSON
+    são silenciosamente ignorados (forward compat com Agent A adicionando
+    metadados).
+
+    Texto de `current_action` é truncado em `_INSTANCE_DETAIL_MAX` chars
+    no parse — manter a tabela "doing now" sempre curta sem trabalho de
+    render. `doing_now_label` é texto puro (sem emoji) por convenção do
+    projeto: o painel evita emojis salvo opt-in explícito.
+    """
+
+    instance_id: str
+    pid: int
+    role: str
+    started_at: Optional[datetime]
+    last_heartbeat_at: Optional[datetime]
+    current_action_kind: str          # 'idle' quando current_action is None
+    current_action_detail: str        # '' quando current_action is None
+    current_action_started_at: Optional[datetime]
+    current_action_model: str         # '' quando faltar
+    stats_tokens_in: int
+    stats_tokens_out: int
+    stats_cost_usd: float
+    stats_turns: int
+    stats_tool_calls: int
+    stats_errors: int
+    stale: bool                       # True quando last_heartbeat > stale_after_s
+
+    @property
+    def doing_now_label(self) -> str:
+        """Texto curto pra coluna 'doing now' da tabela LOCAL PROCESSES.
+
+        Mapeamento (sem emoji):
+        - `idle`             → "idle"
+        - `starting`         → "starting…"
+        - `shutting_down`    → "shutting down"
+        - `tool_execution`   → "tool: <detail>"
+        - `llm_call`         → "llm: <model-or-detail>"
+        - desconhecido       → "<kind>: <detail>" (forward-compat)
+        """
+        kind = self.current_action_kind or "idle"
+        detail = self.current_action_detail or ""
+        if kind == "idle":
+            return "idle"
+        if kind == "starting":
+            return "starting…"
+        if kind == "shutting_down":
+            return "shutting down"
+        if kind == "tool_execution":
+            return f"tool: {detail}" if detail else "tool"
+        if kind == "llm_call":
+            label = self.current_action_model or detail
+            return f"llm: {label}" if label else "llm"
+        # Forward-compat: kind desconhecida vira `<kind>: <detail>` cru.
+        return f"{kind}: {detail}".rstrip(": ").strip()
+
+
+def _snapshot_from_payload(
+    payload: Dict[str, Any], *, now: datetime, stale_after_s: float,
+) -> Optional[InstanceSnapshot]:
+    """Constrói `InstanceSnapshot` a partir do dict carregado do JSON.
+
+    Retorna None se o payload não casa o `schema_version` esperado ou
+    falta o `pid` (mínimo absoluto para indexar). Demais campos têm
+    default sensato — Agent A pode escrever `stats` parcial sem quebrar.
+    """
+    try:
+        sv = int(payload.get("schema_version", 0))
+    except (TypeError, ValueError):
+        sv = 0
+    if sv != _INSTANCE_SCHEMA_VERSION:
+        return None
+    pid_raw = payload.get("pid")
+    try:
+        pid = int(pid_raw) if pid_raw is not None else 0
+    except (TypeError, ValueError):
+        return None
+    if pid <= 0:
+        return None
+    last_hb = _parse_iso_ts(payload.get("last_heartbeat_at"))
+    stale = False
+    if last_hb is not None:
+        age = (now - last_hb).total_seconds()
+        stale = age > stale_after_s
+    action = payload.get("current_action") or {}
+    if not isinstance(action, dict):
+        action = {}
+    kind = str(action.get("kind") or "idle")
+    detail = str(action.get("detail") or "")[:_INSTANCE_DETAIL_MAX]
+    model = str(action.get("model") or "")[:_INSTANCE_MODEL_MAX]
+    action_started = _parse_iso_ts(action.get("started_at"))
+    stats = payload.get("stats") or {}
+    if not isinstance(stats, dict):
+        stats = {}
+    return InstanceSnapshot(
+        instance_id=str(payload.get("instance_id") or f"pid-{pid}"),
+        pid=pid,
+        role=str(payload.get("role") or ""),
+        started_at=_parse_iso_ts(payload.get("started_at")),
+        last_heartbeat_at=last_hb,
+        current_action_kind=kind,
+        current_action_detail=detail,
+        current_action_started_at=action_started,
+        current_action_model=model,
+        stats_tokens_in=_safe_int(stats.get("tokens_in")),
+        stats_tokens_out=_safe_int(stats.get("tokens_out")),
+        stats_cost_usd=_safe_float(stats.get("cost_usd")),
+        stats_turns=_safe_int(stats.get("turns")),
+        stats_tool_calls=_safe_int(stats.get("tool_calls")),
+        stats_errors=_safe_int(stats.get("errors")),
+        stale=stale,
+    )
+
+
+def _safe_int(v: Any) -> int:
+    try:
+        return int(v) if v is not None else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _safe_float(v: Any) -> float:
+    try:
+        return float(v) if v is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+class LocalInstancesProvider:
+    """Lê `<runtime_dir>/*.json` e devolve snapshots por PID.
+
+    Cada arquivo é o state file de uma instância DEILE rodando no host
+    (publicado pelo Agent A — issue #303). O provider parseia, valida o
+    `schema_version`, e faz GC silencioso de arquivos órfãos (PID morto).
+
+    Async-First (princípio §1): `_fetch` faz I/O síncrono (listdir +
+    file reads pequenos, ~1KB cada). Aceitável porque o cache TTL é
+    chamado em thread separada (`BackgroundRefresher`) — nunca bloqueia
+    o render. Mesma convenção dos demais providers locais.
+
+    Trade-off: leituras não-atômicas (Agent A escreve `os.replace` ATÔMICO,
+    mas leitor pode pegar a versão antiga ou nova entre frames — never
+    parcial). JSON malformado é skipped + logged WARN; não derruba o
+    diretório inteiro.
+
+    Cache TTL default 2s — state files mudam rápido (heartbeat ~2s + cada
+    tool execution dispara update). Maior que isso e a UI fica visivelmente
+    parada; menor e martelaria o filesystem.
+    """
+
+    def __init__(self, runtime_dir: Optional[Path] = None,
+                 ttl_s: float = 2.0,
+                 stale_after_s: float = _INSTANCE_STALE_AFTER_S):
+        # Resolução lazy: env var > param > default global. Faz lookup no
+        # construtor (não no import) para os testes poderem monkeypatchar
+        # `DEILE_RUNTIME_DIR` antes de instanciar o provider.
+        if runtime_dir is None:
+            env = os.environ.get("DEILE_RUNTIME_DIR")
+            runtime_dir = Path(env) if env else RUNTIME_DIR
+        self._runtime_dir = runtime_dir
+        self._stale_after_s = stale_after_s
+        self._cache: Cache[Dict[int, InstanceSnapshot]] = Cache(
+            ttl_s, self._fetch, fallback={},
+        )
+
+    @property
+    def runtime_dir(self) -> Path:
+        return self._runtime_dir
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> Dict[int, InstanceSnapshot]:
+        """Mapa PID → snapshot. Vazio quando o diretório não existe."""
+        return self._cache.get(force)
+
+    def _fetch(self) -> Dict[int, InstanceSnapshot]:
+        if not self._runtime_dir.is_dir():
+            return {}
+        out: Dict[int, InstanceSnapshot] = {}
+        now = datetime.now(_UTC)
+        # `glob('*.json')` evita carregar arquivos temporários que Agent A
+        # use durante o `os.replace` atômico (tmp + rename, padrão POSIX).
+        try:
+            entries = list(self._runtime_dir.glob("*.json"))
+        except OSError as exc:
+            # Permissão / FS corrompido — propaga como last_error.
+            raise RuntimeError(f"listdir {self._runtime_dir}: {exc}") from exc
+        for path in entries:
+            snap = self._load_one(path, now=now)
+            if snap is None:
+                continue
+            # Conflito (dois state files apontando o mesmo PID — caso muito
+            # raro de race entre crash + restart muito rápido) é resolvido
+            # mantendo o de heartbeat mais recente.
+            existing = out.get(snap.pid)
+            if existing is None:
+                out[snap.pid] = snap
+                continue
+            old_hb = existing.last_heartbeat_at
+            new_hb = snap.last_heartbeat_at
+            if new_hb is not None and (old_hb is None or new_hb > old_hb):
+                out[snap.pid] = snap
+        return out
+
+    def _load_one(self, path: Path,
+                  *, now: datetime) -> Optional[InstanceSnapshot]:
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            # Arquivo pode ter sumido entre `glob` e `read` — não loga
+            # como warning, é caso normal de Agent A reescrevendo.
+            logger.debug("instance file vanished: %s (%s)", path, exc)
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            logger.warning(
+                "instance file malformed, skipping: %s (%s)", path, exc,
+            )
+            return None
+        if not isinstance(payload, dict):
+            logger.warning(
+                "instance file not a JSON object, skipping: %s", path,
+            )
+            return None
+        # Schema-check ANTES de mexer em PID — versões futuras podem ter
+        # renomeado `pid` e ainda assim ser "válidas" pra Agent A.
+        try:
+            schema_version = int(payload.get("schema_version", 0))
+        except (TypeError, ValueError):
+            schema_version = 0
+        if schema_version != _INSTANCE_SCHEMA_VERSION:
+            logger.warning(
+                "instance file schema_version=%s unsupported (expected %s): %s",
+                schema_version, _INSTANCE_SCHEMA_VERSION, path,
+            )
+            return None
+        snap = _snapshot_from_payload(
+            payload, now=now, stale_after_s=self._stale_after_s,
+        )
+        if snap is None:
+            logger.warning(
+                "instance file invalid payload (no pid?), skipping: %s", path,
+            )
+            return None
+        # GC: PID morto → unlink silencioso e skip. Best-effort: se o
+        # unlink falhar (permissão, FS readonly), apenas pulamos o
+        # snapshot — o próximo tick tenta de novo.
+        if not _pid_alive(snap.pid):
+            try:
+                path.unlink()
+            except OSError as exc:
+                logger.debug(
+                    "GC unlink failed for %s: %s (will retry)", path, exc,
+                )
+            return None
+        return snap
+
+
 # ===== Aggregate hub ========================================================
 
 @dataclass
@@ -1685,6 +2027,11 @@ class PanelData:
     local_processes: Optional[LocalProcessesProvider] = None
     local_logs: Optional[LocalLogsProvider] = None
     local_audit: Optional[LocalAuditProvider] = None
+    # Per-PID `current_action` (issue #303). Quando presente, o adapter
+    # `_local_process_rows` prefere este provider ao fallback do log
+    # global — assim cada processo DEILE mostra seu próprio "doing now"
+    # em vez do mesmo texto compartilhado.
+    local_instances: Optional["LocalInstancesProvider"] = None
 
     @classmethod
     def from_context(cls, context: RuntimeContext) -> "PanelData":
@@ -1700,6 +2047,11 @@ class PanelData:
                       if local_on else None)
         local_audit = (LocalAuditProvider(context.logs_dir / "security_audit.log")
                        if local_on else None)
+        # `LocalInstancesProvider` é independente da existência do dir
+        # — se vazio, retorna {} (sem erro). Por isso pendurado no mesmo
+        # `local_on` que os demais (operador em --k8s-only não quer ver
+        # nada vindo do host).
+        local_instances = LocalInstancesProvider() if local_on else None
         # `enabled=context.k8s_available` faz os providers k8s curto-circuitarem
         # via `_check_enabled`/`Cache.fallback` quando o modo é local-only
         # (sem custo de subprocess `kubectl`).
@@ -1729,6 +2081,7 @@ class PanelData:
             local_processes=local_procs,
             local_logs=local_logs,
             local_audit=local_audit,
+            local_instances=local_instances,
         )
 
     @classmethod
@@ -1741,7 +2094,8 @@ class PanelData:
         base = (self.pods, self.pipeline, self.workers, self.github,
                 self.costs, self.models, self.current_model, self.notifier)
         locals_ = tuple(p for p in (self.local_processes, self.local_logs,
-                                    self.local_audit) if p is not None)
+                                    self.local_audit, self.local_instances)
+                        if p is not None)
         return base + locals_
 
     def force_refresh_all(self) -> None:
@@ -1769,6 +2123,8 @@ class PanelData:
             names.append("local_logs")
         if self.local_audit is not None:
             names.append("local_audit")
+        if self.local_instances is not None:
+            names.append("local_instances")
         out: List[tuple] = []
         for name, p in zip(names, self._all_providers()):
             err = p.last_error
