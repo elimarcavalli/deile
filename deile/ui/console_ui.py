@@ -329,7 +329,17 @@ class ConsoleUIManager(UIManager):
         ``session`` opcional permite refletir o modelo atualmente selecionado
         via ``/model use`` (armazenado em ``context_data["forced_model"]``)
         em vez de sempre exibir o default da config.
+
+        Resize-em-tempo-real (issue #307): o painel ``Provider/Model/Status``
+        é renderizado dentro de ``rich.live.Live`` por alguns segundos. Rich
+        instala um handler ``SIGWINCH`` e re-renderiza cada frame com a
+        largura corrente do terminal — se o usuário redimensiona enquanto o
+        welcome está vivo, ele adapta sem quebrar bordas. Após o período, o
+        último frame fica no scrollback (limitação fundamental documentada
+        no princípio #15). Ver também ``deile.ui.dynamic_render``.
         """
+        from deile.ui.dynamic_render import live_for
+
         self.console.clear()
 
         provider_label, model_label = self._resolve_provider_model(session)
@@ -347,29 +357,25 @@ class ConsoleUIManager(UIManager):
                 Text.from_markup(f"  [bold #FFD166]✦[/] [italic]{slogan_random}[/italic]\n")
             )
 
-            # Construção adaptativa ao terminal (issue #307): em vez de
-            # desenhar `╔══╗` com `inner_w = max(len(...), ...) + 2`
-            # — o que trava a largura no comprimento das strings — usamos
-            # `Panel` + `Rule`. Tanto Panel quanto Rule consultam
-            # `console.width` no momento do render via lazy
-            # `os.get_terminal_size()`, então cada nova chamada de
-            # `show_welcome` (ou qualquer Panel novo) usa a largura atual
-            # do terminal. Conteúdo já no scrollback não reflowa — isso é
-            # limitação fundamental de terminais, não corrigível na
-            # aplicação. Ver `docs/system_design/03-PRINCIPIOS-ARQUITETURAIS.md`.
-            prov_markup = f"[bold cyan]Provider[/bold cyan]  [white]{provider_label}[/white]"
-            model_markup = f"[bold cyan]Model[/bold cyan]     [white]{model_label}[/white]"
-            status_markup = "[bold green]●[/bold green] [bold]DEILE[/bold]   Pronto — digite [cyan]/help[/cyan] para começar"
+            # Painel adaptativo: `live_for` segura a região Live ativa por
+            # `duration_s`, re-renderizando a cada frame. Durante esse
+            # período, qualquer SIGWINCH é capturado por Rich e o layout
+            # adapta em tempo real à nova `console.width`.
+            def build_panel():
+                prov_markup = f"[bold cyan]Provider[/bold cyan]  [white]{provider_label}[/white]"
+                model_markup = f"[bold cyan]Model[/bold cyan]     [white]{model_label}[/white]"
+                status_markup = "[bold green]●[/bold green] [bold]DEILE[/bold]   Pronto — digite [cyan]/help[/cyan] para começar"
+                header = Text.from_markup(prov_markup + "\n" + model_markup)
+                status = Text.from_markup(status_markup)
+                body = Group(header, Rule(style="#4285F4"), status)
+                return Panel(
+                    body,
+                    border_style="#4285F4",
+                    box=box.DOUBLE,
+                    padding=(0, 1),
+                )
 
-            header = Text.from_markup(prov_markup + "\n" + model_markup)
-            status = Text.from_markup(status_markup)
-            body = Group(header, Rule(style="#4285F4"), status)
-            self.console.print(Panel(
-                body,
-                border_style="#4285F4",
-                box=box.DOUBLE,
-                padding=(0, 1),
-            ))
+            live_for(build_panel, console=self.console, duration_s=6.0, refresh_hz=8.0)
             self.console.print("  [dim]DEILE v5.1 ULTRA[/dim]\n")
         except Exception:
             print("DEILE v5.1 ULTRA")
@@ -401,12 +407,32 @@ class ConsoleUIManager(UIManager):
             return await asyncio.to_thread(input, '> ')
 
     def display_response(self, content, metadata: Optional[Dict] = None):
-        """Exibe a resposta do agente com metadados."""
-        self.console.print("\n[bold #4285F4]Deile >[/] ")
-        
+        """Exibe a resposta do agente com metadados.
+
+        Adaptação a resize (issue #307): quando ``metadata['live_render']``
+        é ``True`` e o conteúdo é Rich (``Panel``, ``Table``, ``Group``…),
+        o conteúdo é embrulhado em ``live_for`` por ``live_render_duration``
+        segundos (default 2.0). Rich re-renderiza a cada frame consultando
+        ``console.width`` corrente — se o usuário redimensiona durante esse
+        período, o painel/tabela adapta em tempo real. Comandos pesados
+        (``/status``, ``/logs``, ``/cost`` etc.) podem opt-in setando essa
+        flag no ``CommandResult.metadata``.
+        """
+        from deile.ui.dynamic_render import live_for, turn_separator
+        turn_separator(self.console)
+        self.console.print("[bold #4285F4]Deile >[/] ")
+
+        meta = metadata or {}
+        live_render_enabled = bool(meta.get("live_render"))
+        live_duration = float(meta.get("live_render_duration", 2.0))
+
         # Verifica se é um objeto Rich (Panel, Table, etc.)
-        if hasattr(content, '__rich__') or hasattr(content, '__rich_console__'):
-            # É um objeto Rich - renderiza diretamente
+        is_rich = hasattr(content, '__rich__') or hasattr(content, '__rich_console__')
+        if is_rich and live_render_enabled:
+            # Live: adapta a resize em tempo real durante ``live_duration``s
+            live_for(content, console=self.console, duration_s=live_duration)
+        elif is_rich:
+            # Render Rich estático — adapta apenas em novos renders
             self.console.print(content)
         elif isinstance(content, str):
             # É string - usa Markdown

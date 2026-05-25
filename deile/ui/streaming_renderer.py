@@ -324,6 +324,13 @@ class StreamingRenderer:
         # immediately, before the agent has a chance to emit its first STAGE.
         blocks.append(_StageBlock(text="Pensando..."))
 
+        # Separador visual antes de iniciar o stream da resposta — demarca
+        # o turno do assistente e facilita a leitura em sessões longas.
+        # ``rule()`` consulta ``console.width`` corrente, então adapta ao
+        # tamanho atual do terminal a cada renderização.
+        from deile.ui.dynamic_render import turn_separator
+        turn_separator(self._console)
+
         with Live(
             self._compose(blocks),
             console=self._console,

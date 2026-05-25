@@ -671,9 +671,22 @@ class _DeileCLI:
                         subtitle="Use /model use auto to clear the override",
                     ))
                 else:
+                    # Comandos pesados (que tipicamente renderizam tabelas
+                    # grandes) opt-in para renderização Live por alguns
+                    # segundos — adapta a resize em tempo real durante esse
+                    # período (issue #307). Lista mantida aqui (não nos
+                    # comandos) para evitar churn de 30+ call sites.
+                    cmd = response.metadata.get("command_executed", "")
+                    live_cmds = {
+                        "status", "logs", "cost", "permissions",
+                        "tools", "plan", "sandbox", "memory",
+                        "help", "tools",
+                    }
                     self.ui.display_response(response.content, {
                         "execution_time": response.execution_time,
                         "model_used": response.metadata.get("model_used"),
+                        "live_render": cmd in live_cmds,
+                        "live_render_duration": 2.5,
                     })
 
                 if response.tool_results and getattr(self.settings, "show_tool_details", False):
