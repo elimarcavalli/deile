@@ -29,7 +29,7 @@ packaging==26.2
 pathspec==1.1.1
 pluggy==1.6.0
 prompt_toolkit==3.0.52
-proto-plus==1.26.1
+proto-plus==1.27.2
 protobuf==6.33.6
 pyasn1==0.6.3
 pyasn1_modules==0.4.2
