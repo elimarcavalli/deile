@@ -1032,16 +1032,22 @@ class TestCreateVenvWithDeileWindows:
     HOME_DIR = Path("/tmp")  # so `str(VENV_DIR).startswith(str(HOME_DIR))` is True
 
     @patch("deile.cli_install.os.name", "nt")
+    @patch("deile.cli_install.Path.home")
     @patch("deile.cli_install.Path.resolve")
     @patch("deile.cli_install.Path.exists")
     @patch("deile.cli_install.Path.mkdir")
     @patch("deile.cli_install.asyncio.create_subprocess_exec")
     def test_windows_venv_python_is_scripts_python_exe(
         self, mock_subproc, mock_mkdir, mock_exists, mock_resolve,
+        mock_home,
     ):
         """venv_py path on Windows is `<venv>/Scripts/python.exe`, not `bin/python`."""
         from deile.cli_install import _create_venv_with_deile
 
+        # Path.home() returns a pre-baked PosixPath so it doesn't try to
+        # instantiate WindowsPath (os.name is patched to 'nt', but we're on
+        # Linux). The `.resolve()` on it is mocked separately.
+        mock_home.return_value = self.HOME_DIR
         # 3 `.resolve()` calls: venv_dir, repo_root, Path.home(). All class
         # constants are pre-baked PosixPath so str() keeps forward slashes
         # and the security check `startswith(home)` passes.
@@ -1072,16 +1078,19 @@ class TestCreateVenvWithDeileWindows:
             )
 
     @patch("deile.cli_install.os.name", "nt")
+    @patch("deile.cli_install.Path.home")
     @patch("deile.cli_install.Path.resolve")
     @patch("deile.cli_install.Path.exists")
     @patch("deile.cli_install.Path.mkdir")
     @patch("deile.cli_install.asyncio.create_subprocess_exec")
     def test_windows_missing_deile_exe_raises(
         self, mock_subproc, mock_mkdir, mock_exists, mock_resolve,
+        mock_home,
     ):
         """If `Scripts/deile.exe` is absent after install on Windows, raises."""
         from deile.cli_install import _create_venv_with_deile
 
+        mock_home.return_value = self.HOME_DIR
         mock_resolve.side_effect = [self.VENV_DIR, self.REPO_ROOT, self.HOME_DIR]
         # venv_py absent, requirements.txt present, deile_script absent
         mock_exists.side_effect = [False, True, False]
@@ -1106,14 +1115,22 @@ class TestUserScriptsDirWindowsFallback:
     @patch("deile.cli_install.os.name", "nt")
     @patch("deile.cli_install.sysconfig")
     def test_nt_user_scheme_when_preferred_scheme_absent(self, mock_sysconfig):
-        """Old Pythons (<3.10) lack `get_preferred_scheme` → fallback to nt_user."""
+        """Old Pythons (<3.10) lack `get_preferred_scheme` → fallback to nt_user.
+
+        We force ``Path`` to ``PosixPath`` so that constructing a path from
+        a Windows-style string does not try to instantiate ``WindowsPath``
+        on the Linux CI runner (``os.name`` is patched to ``'nt'``).
+        """
+        from pathlib import PosixPath
+
         from deile.cli_install import _user_scripts_dir
 
         # Simulate old Python by removing `get_preferred_scheme` from sysconfig.
         del mock_sysconfig.get_preferred_scheme
         mock_sysconfig.get_path.return_value = "C:/Users/test/AppData/Roaming/Python/Python310/Scripts"
 
-        result = _user_scripts_dir()
+        with patch("deile.cli_install.Path", PosixPath):
+            result = _user_scripts_dir()
 
         # The function must have asked sysconfig for "scripts" under "nt_user".
         mock_sysconfig.get_path.assert_called_once_with("scripts", scheme="nt_user")
