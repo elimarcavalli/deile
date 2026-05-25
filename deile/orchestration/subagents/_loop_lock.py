@@ -33,20 +33,27 @@ class LoopBoundLock:
         # Guard the read-modify-write of (_lock, _loop_id) against threaded
         # callers (pytest-asyncio in multithread, helpers que tocam a mesma
         # instância de dois loops). Coroutines no mesmo loop já são seguras
-        # por cooperative scheduling — este guard cobre o caso cross-thread.
+        # por cooperative scheduling — este guard cobre o caso cross-thread
+        # (item 11 — minor: sem ele dois ``needs_new`` concorrentes podiam
+        # cada um instalar um Lock novo e sobrescrever a referência anterior).
         self._mutation_guard = threading.Lock()
 
     def get(self) -> asyncio.Lock:
         """Retorna o Lock bindado ao event loop corrente.
 
-        Se o loop mudou desde a última chamada, descarta a referência ao
-        Lock anterior e cria um novo. **Caveat**: ao descartar o Lock antigo
-        não verificamos se há awaiters pendentes — o cenário é improvável
-        (loops descartados após ``asyncio.run()`` retornar tipicamente não
-        têm coroutines vivas), mas se uma coroutine do loop antigo ficou
-        bloqueada em ``async with``, ela ficaria com wakeup-perdido. Por
-        isso este helper é destinado a singletons class-level cujo ciclo
-        de vida coincide com o do loop owner.
+        Invariant on wakeup: the returned ``Lock`` belongs to the loop that
+        is *currently running*. When the loop changes between calls
+        (successive ``asyncio.run`` invocations or loop-per-test fixtures),
+        a fresh ``Lock`` is installed so awaiting it does not raise
+        ``RuntimeError: ... is bound to a different event loop``.
+
+        **Caveat**: ao descartar o Lock antigo não verificamos se há
+        awaiters pendentes — o cenário é improvável (loops descartados
+        após ``asyncio.run()`` retornar tipicamente não têm coroutines
+        vivas), mas se uma coroutine do loop antigo ficou bloqueada em
+        ``async with``, ela ficaria com wakeup-perdido. Por isso este
+        helper é destinado a singletons class-level cujo ciclo de vida
+        coincide com o do loop owner.
         """
         try:
             loop = asyncio.get_running_loop()
