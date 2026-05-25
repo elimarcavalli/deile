@@ -75,6 +75,11 @@ _TOKEN_SAFE_CHARS = re.compile(r"^[A-Za-z0-9._\-+/=:~]{16,4096}$")
 # personas/instructions/reviewer.md), usada pelo estágio de review do pipeline.
 WorkerPersona = Literal["developer", "architect", "debugger", "reviewer", "analyst"]
 
+# Per-stage model override slug (issue #305): ``provider:model`` (e.g.
+# ``deepseek:deepseek-v4-pro``, ``anthropic:claude-sonnet-4-6``). Mirrors
+# ``_MODEL_SLUG_RE`` in ``deile/config/settings.py`` — keep in sync.
+_MODEL_SLUG_RE = re.compile(r"^[a-z][a-z0-9_-]*:[a-z0-9._-]+$")
+
 
 class WorkerDispatchError(DEILEError):
     """Falha ao despachar uma task para o deile-worker.
@@ -106,6 +111,12 @@ class DispatchPayload(BaseModel):
     # ~8000 chars and the worker re-truncates, so this only guards against a
     # pathological payload — it must not hard-reject a legitimate render.
     history: Optional[str] = Field(default=None, max_length=20000)
+    # Per-turn model override (issue #305) — when set, the worker injects it
+    # into ``session.context_data["preferred_model"]`` so the agent's
+    # ``_choose_provider_for_turn`` picks the model for THIS dispatch only.
+    # The pipeline uses it to give each stage (classify/refine/implement/
+    # pr_review/follow_ups) a different model; tools/CLI callers leave it None.
+    preferred_model: Optional[str] = Field(default=None, max_length=128)
 
     @field_validator("brief")
     @classmethod
@@ -113,6 +124,26 @@ class DispatchPayload(BaseModel):
         stripped = v.strip()
         if not stripped:
             raise ValueError("brief must not be blank")
+        return stripped
+
+    @field_validator("preferred_model")
+    @classmethod
+    def _validate_model_slug(cls, v: Optional[str]) -> Optional[str]:
+        """Reject malformed slugs at the wire boundary (issue #305).
+
+        ``None`` / empty / whitespace collapse to ``None`` (no override).
+        A typo at this layer would only surface as a 5xx many minutes later
+        on the worker side, so we fail fast with a precise message.
+        """
+        if v is None:
+            return None
+        stripped = v.strip()
+        if not stripped:
+            return None
+        if not _MODEL_SLUG_RE.match(stripped):
+            raise ValueError(
+                f"preferred_model must match 'provider:model' (got {stripped!r})"
+            )
         return stripped
 
     @field_validator("channel_id", "user_message_id")
@@ -178,13 +209,19 @@ def build_dispatch_payload(
     user_message_id: Optional[Any] = None,
     attachments: Optional[List[Dict[str, Any]]] = None,
     history: Optional[str] = None,
+    preferred_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Assemble the JSON body POSTed to ``POST /v1/dispatch``.
 
-    Wire-format builder — falsy ``user_message_id`` / ``attachments`` are
-    dropped so ``model_dump(exclude_none=True)`` keeps the payload minimal.
-    Lives in the infrastructure module because the wire format is owned by
-    the worker adapter, not by the bot-side tool.
+    Wire-format builder — falsy ``user_message_id`` / ``attachments`` /
+    ``preferred_model`` are dropped so ``model_dump(exclude_none=True)`` keeps
+    the payload minimal. Lives in the infrastructure module because the wire
+    format is owned by the worker adapter, not by the bot-side tool.
+
+    ``preferred_model`` (issue #305) is the per-turn model override the
+    pipeline uses to dispatch each stage to a different LLM; tool / CLI
+    callers leave it ``None`` and the worker resolves the model from its own
+    ``DEILE_PREFERRED_MODEL`` / ``settings.preferred_model``.
     """
     payload: Dict[str, Any] = {
         "brief": brief,
@@ -198,6 +235,8 @@ def build_dispatch_payload(
         payload["attachments"] = attachments
     if history:
         payload["history"] = str(history)
+    if preferred_model:
+        payload["preferred_model"] = str(preferred_model)
     return payload
 
 
