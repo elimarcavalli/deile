@@ -80,12 +80,21 @@ async def test_decimal_formatting_no_exception():
 
 
 @pytest.mark.unit
-async def test_version_from_version_module():
+async def test_version_from_version_module(tmp_path, monkeypatch):
+    """Caminho de sucesso do export deve renderizar a versão de ``__version__``.
+
+    Exige ``entry_count>0`` para chegar ao success-panel (issue #301).
+    ``monkeypatch.chdir(tmp_path)`` evita poluir a raiz do repositório com o
+    arquivo escrito pelo path feliz.
+    """
     from deile.__version__ import __version__
-    export_data = '{"entries": []}'
+    monkeypatch.chdir(tmp_path)
+    export_data = '{"entries": [{"id": 1, "amount": 1.0}]}'
+    summary = _make_summary(total="1.0", entry_count=1)
     cmd = CostCommand()
-    with patch.object(cmd.cost_tracker, "export_costs", return_value=export_data):
-        result = await cmd.execute(_make_context("export json"))
+    with patch.object(cmd.cost_tracker, "get_cost_summary", return_value=summary):
+        with patch.object(cmd.cost_tracker, "export_costs", return_value=export_data):
+            result = await cmd.execute(_make_context("export json"))
     assert result.success
     rendered = _render_rich(result.content)
     assert "4.0.0" not in rendered, "Versão hardcoded 4.0.0 encontrada"
@@ -189,16 +198,55 @@ async def test_top_empty_no_crash():
 @pytest.mark.unit
 async def test_export_json_writes_valid_file(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    export_data = '{"entries": [], "period_start": "2026-01-01", "period_end": "2026-01-31"}'
+    export_data = '{"entries": [{"id": 1}], "period_start": "2026-01-01", "period_end": "2026-01-31"}'
+    summary = _make_summary(total="1.0", entry_count=1)
     cmd = CostCommand()
-    with patch.object(cmd.cost_tracker, "export_costs", return_value=export_data):
-        result = await cmd.execute(_make_context("export json 30"))
+    with patch.object(cmd.cost_tracker, "get_cost_summary", return_value=summary):
+        with patch.object(cmd.cost_tracker, "export_costs", return_value=export_data):
+            result = await cmd.execute(_make_context("export json 30"))
     assert result.success
     json_files = list(tmp_path.glob("costs_export_*.json"))
     assert len(json_files) == 1
     import json
     data = json.loads(json_files[0].read_text())
     assert "entries" in data
+
+
+@pytest.mark.unit
+async def test_export_no_data_does_not_write_file(tmp_path, monkeypatch):
+    """Regressão #301: /cost export NÃO deve criar arquivo quando entry_count==0.
+
+    Antes do fix, ``_export_costs`` validava ``if not data:``; mas ``export_costs``
+    sempre retorna JSON não-vazio (mesmo com ``entries=[]``), o que escapava o guard
+    e gerava arquivos mortos ``costs_export_*.json`` no diretório de execução.
+    """
+    monkeypatch.chdir(tmp_path)
+    empty_export = '{"export_timestamp": "2026-05-25T00:00:00", "total_entries": 0, "entries": []}'
+    empty_summary = _make_summary(total="0", entry_count=0)
+    cmd = CostCommand()
+    with patch.object(cmd.cost_tracker, "get_cost_summary", return_value=empty_summary):
+        with patch.object(cmd.cost_tracker, "export_costs", return_value=empty_export):
+            result = await cmd.execute(_make_context("export json 30"))
+    assert result.success
+    leaked = list(tmp_path.glob("costs_export_*.json"))
+    assert leaked == [], f"Arquivo morto vazado: {leaked}"
+    rendered = _render_rich(result.content) if result.content else ""
+    assert "Nenhum dado" in rendered or "nenhum dado" in rendered.lower()
+
+
+@pytest.mark.unit
+async def test_export_csv_no_data_does_not_write_file(tmp_path, monkeypatch):
+    """Regressão #301: o guard precisa cobrir CSV também (não só JSON)."""
+    monkeypatch.chdir(tmp_path)
+    csv_header_only = "id,datetime,category,subcategory,amount,currency,description,session_id\r\n"
+    empty_summary = _make_summary(total="0", entry_count=0)
+    cmd = CostCommand()
+    with patch.object(cmd.cost_tracker, "get_cost_summary", return_value=empty_summary):
+        with patch.object(cmd.cost_tracker, "export_costs", return_value=csv_header_only):
+            result = await cmd.execute(_make_context("export csv 30"))
+    assert result.success
+    leaked = list(tmp_path.glob("costs_export_*.csv"))
+    assert leaked == [], f"Arquivo morto vazado: {leaked}"
 
 
 @pytest.mark.unit
@@ -232,8 +280,15 @@ async def test_alerts_no_crash_when_empty():
 
 
 @pytest.mark.unit
-async def test_all_subcommands_dispatched():
-    """Nenhum subcomando declarado deve retornar 'Ação desconhecida'"""
+async def test_all_subcommands_dispatched(tmp_path, monkeypatch):
+    """Nenhum subcomando declarado deve retornar 'Ação desconhecida'.
+
+    ``monkeypatch.chdir(tmp_path)`` é defensivo: mesmo com o fix da issue #301
+    ('export json' cai em no-data branch porque ``_make_summary()`` tem
+    ``entry_count=0``), qualquer regressão futura que reabra a escrita não
+    polui a raiz do repositório.
+    """
+    monkeypatch.chdir(tmp_path)
     cmd = CostCommand()
     declared = [
         ("summary", {}),

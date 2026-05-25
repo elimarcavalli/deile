@@ -304,6 +304,25 @@ EXEMPLOS:
     async def _export_costs(self, fmt: str = "json", days: int = 30) -> "CommandResult":
         try:
             start_time, end_time = _period_range(days)
+
+            # Issue #301: cost_tracker.export_costs sempre devolve payload envelopado
+            # (JSON com cabeçalho + entries=[] ou CSV só-header), então ``if not data:``
+            # escapa o caso vazio e gera arquivos mortos ``costs_export_*.json`` no
+            # diretório de execução. Checar entry_count via summary antes do export é
+            # idiomatico com ``_show_top``/``_show_categories`` e garante zero escritas
+            # quando não há entradas no período.
+            summary = self.cost_tracker.get_cost_summary(start_time, end_time)
+            entry_count, _ = _safe_summary_values(summary)
+
+            if entry_count == 0:
+                return CommandResult.success_result(
+                    _cost_views.build_no_data_panel(
+                        "Nenhum dado de custo encontrado no período.",
+                        title="📤 Export de Custos",
+                    ),
+                    "rich",
+                )
+
             data = self.cost_tracker.export_costs(start_time, end_time, format_type=fmt)
 
             if not data:
