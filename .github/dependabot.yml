@@ -9,3 +9,10 @@ updates:
       - "elimarcavalli"
     assignees:
       - "elimarcavalli"
+    groups:
+      pydantic:
+        patterns:
+          - "pydantic"
+          - "pydantic_core"
+          - "pydantic-core"
+          - "pydantic-settings"
