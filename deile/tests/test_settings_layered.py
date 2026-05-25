@@ -245,3 +245,88 @@ class TestGetSettingsLayered:
         reset_settings()
         second = get_settings()
         assert first is not second
+
+
+# ---------------------------------------------------------------------------
+# DEILE_SETTINGS_FILE override (infra-only env var)
+#
+# Em containers k8s o ``~/.deile/`` é writable (emptyDir do home), e montar
+# um ConfigMap em ``~/.deile/settings.json`` via subPath cria o diretório
+# como ``root:deile 0755`` — read-only para o user 10001, quebrando
+# ``~/.deile/logs/``, ``~/.deile/run/``, ``~/.deile/sessions/``. A solução
+# é montar o ConfigMap em ``/etc/deile/settings.json`` e apontar o loader
+# via env var ``DEILE_SETTINGS_FILE``. Estes testes pinam o contrato.
+# ---------------------------------------------------------------------------
+
+
+class TestSettingsFileOverride:
+    def test_env_var_relocates_user_layer(self, monkeypatch, tmp_path):
+        """``DEILE_SETTINGS_FILE`` deve substituir ``~/.deile/settings.json``."""
+        alt = tmp_path / "etc" / "deile" / "settings.json"
+        alt.parent.mkdir(parents=True)
+        alt.write_text(json.dumps({"environment": "from-env-override"}))
+
+        # Home FORA dali — sem JSON no ~/.deile/. Se o loader usar Path.home(),
+        # o teste vai falhar (environment ficaria no default).
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path / "home"))
+        monkeypatch.setenv("DEILE_SETTINGS_FILE", str(alt))
+
+        s = get_settings()
+        assert s.environment == "from-env-override"
+
+    def test_env_var_empty_falls_back_to_home(self, monkeypatch, tmp_path):
+        """Env var vazia → comportamento default (``~/.deile/settings.json``)."""
+        home = tmp_path / "home"
+        (home / ".deile").mkdir(parents=True)
+        (home / ".deile" / "settings.json").write_text(
+            json.dumps({"environment": "from-default-home"})
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.setenv("DEILE_SETTINGS_FILE", "")
+
+        s = get_settings()
+        assert s.environment == "from-default-home"
+
+    def test_env_var_unset_falls_back_to_home(self, monkeypatch, tmp_path):
+        """Sem env var → ``~/.deile/settings.json`` é lido normalmente."""
+        home = tmp_path / "home"
+        (home / ".deile").mkdir(parents=True)
+        (home / ".deile" / "settings.json").write_text(
+            json.dumps({"environment": "from-default-home-2"})
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+        monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
+
+        s = get_settings()
+        assert s.environment == "from-default-home-2"
+
+    def test_project_layer_skipped_when_same_file_as_global(
+        self, monkeypatch, tmp_path, caplog,
+    ):
+        """HOME == cwd → o mesmo JSON é detectado e o project layer é pulado.
+
+        Cenário comum em containers (``workingDir: /home/deile`` com
+        ``HOME: /home/deile``). Antes do fix, o mesmo arquivo era aplicado
+        como user layer E como project layer (com warning de "no trust").
+        """
+        # Mesmo cwd e home → mesmo JSON em ambas as buscas.
+        home = tmp_path / "home"
+        (home / ".deile").mkdir(parents=True)
+        (home / ".deile" / "settings.json").write_text(
+            json.dumps({"environment": "shared"})
+        )
+        monkeypatch.chdir(home)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: home))
+
+        caplog.set_level(logging.WARNING, logger="deile.config.settings")
+        s = get_settings()
+        assert s.environment == "shared"
+        # O warning antigo era "applying project layer ... WITHOUT explicit trust".
+        # Deve estar ausente porque agora detectamos same_file e pulamos.
+        assert not any(
+            "project layer" in record.message and "WITHOUT explicit trust" in record.message
+            for record in caplog.records
+        )

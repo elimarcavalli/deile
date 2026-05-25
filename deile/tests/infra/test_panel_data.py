@@ -12,6 +12,7 @@ de rede. O CostsProvider usa um SQLite temporário.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import sys
 import time
@@ -830,3 +831,784 @@ class TestPodRowsAdapter:
         d.pipeline.get.return_value = ps
         rows = panel._pod_rows(d)
         assert rows == []
+
+
+# ===== Universal mode (k8s + local) =========================================
+#
+# Tests cobrem a Fase "painel universal" (issue de evolução da PR
+# #294 — `--namespace`, processos locais, tail de logs locais, audit
+# local). Nenhum mock de dados visíveis ao usuário; só fixtures de
+# arquivos tmp + monkeypatch de `ps`/`kubectl`.
+
+class TestRuntimeContext:
+    def test_detect_defaults(self):
+        ctx = pd.RuntimeContext.detect()
+        assert ctx.namespace == "deile"
+        assert ctx.pipeline_deploy == "deile-pipeline"
+        assert ctx.worker_deploy == "deile-worker"
+        assert ctx.bot_deploy == "deilebot"
+        assert ctx.repo  # detectado do origin OU fallback "elimarcavalli/deile"
+
+    def test_detect_with_overrides(self):
+        ctx = pd.RuntimeContext.detect(
+            namespace="my-ns",
+            pipeline_deploy="p1",
+            worker_deploy="w1",
+            repo="org/repo",
+        )
+        assert ctx.namespace == "my-ns"
+        assert ctx.pipeline_deploy == "p1"
+        assert ctx.worker_deploy == "w1"
+        assert ctx.repo == "org/repo"
+
+    def test_demo_disables_modes(self):
+        ctx = pd.RuntimeContext(demo=True)
+        assert ctx.k8s_available is False
+        assert ctx.local_available is False
+        assert ctx.mode_label == "demo (mocks)"
+
+    def test_k8s_force_blocks_local(self, monkeypatch):
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: "/k")
+        ctx = pd.RuntimeContext(k8s_force=True)
+        assert ctx.k8s_available is True
+        assert ctx.local_available is False
+
+    def test_local_force_blocks_k8s(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: "/k")
+        # logs_dir existe → local_available=True
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        ctx = pd.RuntimeContext(local_force=True, logs_dir=logs)
+        assert ctx.k8s_available is False
+        assert ctx.local_available is True
+
+    def test_mode_label_hybrid(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: "/k")
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        ctx = pd.RuntimeContext(logs_dir=logs,
+                                usage_db=tmp_path / "no.db")
+        assert ctx.mode_label == "k8s + local"
+
+
+class TestLocalProcessesProvider:
+    """Mocka `ps` via patch de `subprocess.run` para validar parsing."""
+
+    def _ps_output(self, lines: List[str]) -> str:
+        return "\n".join(lines) + "\n"
+
+    def test_classify_local_process(self):
+        assert pd._classify_local_process("python3 deile.py") == "local-deile"
+        assert pd._classify_local_process(
+            "/usr/bin/python -m deilebot run --provider discord"
+        ) == "local-bot"
+        assert pd._classify_local_process(
+            "python -m deile.orchestration.pipeline.monitor"
+        ) == "local-pipeline"
+        assert pd._classify_local_process("/usr/bin/python -m other") is None
+        # Generic fallback: any python+deile mention.
+        assert pd._classify_local_process(
+            "python /opt/something/deile-helper.py"
+        ) == "local-other"
+
+    def test_parse_etime(self):
+        assert pd._parse_etime("01:23") == 83
+        assert pd._parse_etime("12:34:56") == 12 * 3600 + 34 * 60 + 56
+        assert pd._parse_etime("2-03:04:05") == 2 * 86400 + 3 * 3600 + 4 * 60 + 5
+        assert pd._parse_etime("garbage") == 0
+
+    def test_fetch_parses_and_filters_panel_pid(self, monkeypatch):
+        provider = pd.LocalProcessesProvider()
+        # Inclui o próprio PID para garantir que é filtrado.
+        import os as _os
+        mine = _os.getpid()
+        fake_ps = (
+            f"  {mine}    0.0  6144  00:01 python infra/k8s/deploy.py panel\n"
+            "   123    1.5  4096  10:00 python3 deile.py\n"
+            "   456    0.0  2048  01:23:45 python -m deilebot run\n"
+            "   789    0.0  1024  03-12:00:00 python -m deile.orchestration.x\n"
+        )
+        mock_proc = MagicMock(returncode=0, stdout=fake_ps, stderr="")
+        monkeypatch.setattr(pd.shutil, "which", lambda b: "/bin/ps" if b == "ps" else None)
+        with patch("subprocess.run", return_value=mock_proc):
+            procs = provider.get()
+        # 3 esperados (123, 456, 789) — o próprio painel filtrado.
+        assert len(procs) == 3
+        pids = [p.pid for p in procs]
+        assert mine not in pids
+        # Ordem: deile > pipeline > bot
+        assert procs[0].role == "local-deile"
+        assert procs[0].pid == 123
+        assert procs[1].role == "local-pipeline"
+        assert procs[2].role == "local-bot"
+
+    def test_fetch_no_ps_raises_into_fallback(self, monkeypatch):
+        provider = pd.LocalProcessesProvider()
+        monkeypatch.setattr(pd.shutil, "which", lambda b: None)
+        # Sem `ps` → fetcher raise; Cache devolve fallback (lista vazia).
+        assert provider.get() == []
+        assert "ps" in (provider.last_error or "")
+
+
+class TestLocalLogsProvider:
+    def test_returns_empty_when_file_missing(self, tmp_path):
+        log = tmp_path / "missing.log"
+        provider = pd.LocalLogsProvider(log)
+        state = provider.get()
+        assert state.events == []
+        assert state.last_action_ts is None
+
+    def test_tails_and_classifies(self, tmp_path):
+        log = tmp_path / "deile.log"
+        log.write_text(
+            "2026-05-23 19:39:01,234 - deile.foo - INFO - hello\n"
+            "2026-05-23 19:39:05,123 - deile.bar - INFO - "
+            "deile.orchestration.pipeline.stages something happened\n"
+            "2026-05-23 19:39:06,000 - deile.x - INFO - "
+            "worker dispatch starting\n",
+            encoding="utf-8",
+        )
+        provider = pd.LocalLogsProvider(log)
+        state = provider.get()
+        # Pelo menos 1 evento classificado (stages e dispatch reconhecidos).
+        assert state.raw_lines >= 3
+        assert state.events  # pelo menos 1 classificado
+        actions = {ev.action for ev in state.events}
+        assert {"stages", "dispatch"} & actions
+        # Todos os eventos locais ganham actor='local'.
+        assert all(ev.actor == "local" for ev in state.events)
+
+    def test_tail_only_reads_last_64kb(self, tmp_path):
+        log = tmp_path / "big.log"
+        # Grava ~200KB de lixo + 1 linha boa no fim → garante que tail
+        # leu só o final (não trava em arquivo grande).
+        junk = "x" * 1000
+        with log.open("w", encoding="utf-8") as fh:
+            for _ in range(200):
+                fh.write(junk + "\n")
+            fh.write("2026-05-23 19:39:01,000 - x - INFO - "
+                     "worker dispatch completed\n")
+        provider = pd.LocalLogsProvider(log)
+        state = provider.get()
+        # File size em KB com divisão int — 200*1001 bytes ≈ 195KB.
+        assert state.file_size_kb >= 100
+        # A última linha (dispatch completed) DEVE ter sido capturada
+        # apesar do arquivo ser muito maior que o tail de 64KB.
+        assert any("dispatch" in ev.detail for ev in state.events)
+
+
+class TestLocalAuditProvider:
+    def test_parses_jsonl(self, tmp_path):
+        audit = tmp_path / "security_audit.log"
+        # 2 linhas puras de JSON + 1 inválida (skip) + 1 inline-puro
+        # (`json.loads` aceita o JSON do brace ao fim porque o `}` é
+        # final).
+        audit.write_text(
+            '{"event_type":"TOOL_EXECUTION","ts":"2026-05-23T19:39:01",'
+            '"action":"k8s_status","result":"allowed"}\n'
+            '{"event_type":"SECURITY_POLICY_CHANGED","ts":"2026-05-23T19:39:02",'
+            '"action":"kubectl_set_env","result":"completed"}\n'
+            'INVALID LINE\n'
+            'prefix runtime - '
+            '{"event_type":"TOOL_EXECUTION","result":"completed"}\n',
+            encoding="utf-8",
+        )
+        provider = pd.LocalAuditProvider(audit)
+        events = provider.get()
+        assert len(events) == 3
+        assert events[0]["event_type"] == "TOOL_EXECUTION"
+        assert events[1]["event_type"] == "SECURITY_POLICY_CHANGED"
+        # 3º veio do brace-extract — confirma o fallback funcional.
+        assert events[2]["result"] == "completed"
+
+    def test_handles_missing_file(self, tmp_path):
+        provider = pd.LocalAuditProvider(tmp_path / "absent.log")
+        assert provider.get() == []
+
+
+class TestPanelDataFromContext:
+    """`PanelData.from_context` wira providers com namespace override."""
+
+    def test_k8s_namespace_propagates(self, tmp_path):
+        # `k8s_force=True` força local_available=False sem depender da
+        # ausência de logs/DB/processos no host (o teste pode rodar num
+        # ambiente onde DEILE está rodando).
+        ctx = pd.RuntimeContext(
+            namespace="custom",
+            pipeline_deploy="my-pipeline",
+            worker_deploy="my-worker",
+            bot_deploy="my-bot",
+            usage_db=tmp_path / "u.db",
+            logs_dir=tmp_path / "no-logs",
+            k8s_force=True,
+        )
+        data = pd.PanelData.from_context(ctx)
+        # local_available=False → providers locais não criados.
+        assert data.local_processes is None
+        assert data.local_logs is None
+        assert data.local_audit is None
+        # Namespace propagou.
+        assert data.pods._namespace == "custom"
+        assert data.pipeline._namespace == "custom"
+        assert data.pipeline._deploy == "my-pipeline"
+        assert data.workers._namespace == "custom"
+        assert data.workers._worker_deploy == "my-worker"
+        assert data.notifier._namespace == "custom"
+        assert data.notifier._deploy == "my-bot"
+        assert data.current_model.namespace == "custom"
+
+    def test_local_providers_created_when_available(self, tmp_path):
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        ctx = pd.RuntimeContext(
+            logs_dir=logs,
+            usage_db=tmp_path / "u.db",
+        )
+        data = pd.PanelData.from_context(ctx)
+        assert data.local_processes is not None
+        assert data.local_logs is not None
+        assert data.local_audit is not None
+
+    def test_k8s_providers_disabled_in_local_only(self, monkeypatch, tmp_path):
+        """`--local-only` (k8s_force=False + kubectl ausente OU local_force=True)
+        deve fazer providers k8s retornarem fallback SEM chamar subprocess."""
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        ctx = pd.RuntimeContext(
+            local_force=True, logs_dir=logs, usage_db=tmp_path / "u.db",
+        )
+        data = pd.PanelData.from_context(ctx)
+        # Intercepta `subprocess.run` para detectar QUALQUER chamada
+        # (qualquer chamada significa que o `enabled=False` falhou).
+        calls = []
+        real_run = pd.subprocess.run
+        def _trap(cmd, *a, **kw):
+            calls.append(cmd)
+            return real_run(cmd, *a, **kw)
+        monkeypatch.setattr(pd.subprocess, "run", _trap)
+        # Toca cada provider k8s — deve cair em fallback imediato.
+        assert data.pods.get() == []
+        assert data.pipeline.get().events == []
+        assert data.workers.get() == {}
+        assert data.notifier.get() == []
+        # NENHUMA chamada kubectl deve ter saído.
+        kubectl_calls = [c for c in calls if c and "kubectl" in str(c[0])]
+        assert kubectl_calls == []
+        # Errors filtrados: "k8s desabilitado" não vira alerta.
+        assert data.errors() == []
+
+    def test_set_preferred_model_uses_namespace(self, monkeypatch):
+        """set_preferred_model com namespace custom deve passar pro kubectl."""
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: "/bin/kubectl")
+        captured: List[List[str]] = []
+        def _fake_run(cmd, **kw):
+            captured.append(cmd)
+            return MagicMock(returncode=0, stdout="ok\n", stderr="")
+        with patch("subprocess.run", side_effect=_fake_run):
+            ok, _ = pd.set_preferred_model(
+                "deile-worker",
+                "anthropic:claude-opus-4-7",
+                namespace="my-namespace",
+            )
+        assert ok is True
+        assert captured and captured[0][:3] == ["/bin/kubectl", "-n", "my-namespace"]
+
+
+class TestDeployFlags:
+    """Parser de flags do `deploy.py k8s panel` (universal mode)."""
+
+    @pytest.fixture(scope="class", autouse=True)
+    def _ensure_deploy_on_path(self):
+        # `deploy.py` já está em `infra/k8s/` (mesmo dir do _panel_data) —
+        # o sys.path setado no topo do arquivo cobre.
+        yield
+
+    def test_parses_value_flags(self):
+        import deploy  # noqa: PLC0415
+        ov, demo = deploy._parse_panel_flags(
+            ["--namespace", "x", "--repo", "o/r", "--pipeline-deploy", "p"]
+        )
+        assert ov == {"namespace": "x", "repo": "o/r", "pipeline_deploy": "p"}
+        assert demo is False
+
+    def test_parses_bool_flags(self):
+        import deploy  # noqa: PLC0415
+        ov, demo = deploy._parse_panel_flags(["--k8s-only"])
+        assert ov == {"k8s_force": True}
+        ov, _ = deploy._parse_panel_flags(["--local-only"])
+        assert ov == {"local_force": True}
+        ov, demo = deploy._parse_panel_flags(["--demo"])
+        assert ov == {}
+        assert demo is True
+
+    def test_paths_resolved(self):
+        import deploy  # noqa: PLC0415
+        ov, _ = deploy._parse_panel_flags(["--usage-db", "/tmp/u.db"])
+        assert isinstance(ov["usage_db"], Path)
+        assert str(ov["usage_db"]).endswith("u.db")
+
+    def test_rejects_missing_value(self):
+        import deploy  # noqa: PLC0415
+        err, _ = deploy._parse_panel_flags(["--namespace"])
+        assert "_error" in err
+        assert "namespace" in err["_error"]
+
+    def test_rejects_unknown_flag(self):
+        import deploy  # noqa: PLC0415
+        err, _ = deploy._parse_panel_flags(["--never-seen"])
+        assert "_error" in err
+
+
+# ===== Local instances (state files per PID — issue #303) ==================
+#
+# Testes do `LocalInstancesProvider`: lê arquivos JSON publicados por cada
+# instância DEILE rodando no host. Cobre parsing, schema-version skip,
+# GC de PID morto, override via env, e TTL.
+
+def _write_state(dirpath: Path, instance_id: str, pid: int,
+                 *, kind: str = "tool_execution",
+                 detail: str = "execute_bash",
+                 model: str = "deepseek:v4-pro",
+                 heartbeat_age_s: float = 1.0,
+                 schema_version: int = 1) -> Path:
+    """Helper que escreve um state file no formato canônico do Agent A."""
+    now = datetime.now(timezone.utc)
+    hb = now - timedelta(seconds=heartbeat_age_s)
+    started = now - timedelta(minutes=5)
+    action_started = now - timedelta(seconds=2)
+    if kind is None:
+        action: Any = None
+    else:
+        action = {
+            "kind": kind,
+            "started_at": action_started.isoformat(),
+            "detail": detail,
+            "session_id": "sess-test",
+            "model": model,
+        }
+    payload = {
+        "schema_version": schema_version,
+        "instance_id": instance_id,
+        "pid": pid,
+        "role": "cli",
+        "started_at": started.isoformat(),
+        "last_heartbeat_at": hb.isoformat(),
+        "current_action": action,
+        "stats": {
+            "tokens_in": 100,
+            "tokens_out": 50,
+            "cost_usd": 0.01,
+            "turns": 3,
+            "tool_calls": 5,
+            "errors": 0,
+        },
+    }
+    path = dirpath / f"{instance_id}.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+class TestLocalInstancesProvider:
+    """Lê `<runtime_dir>/*.json` (state files publicados por instância DEILE).
+
+    Mocka `_pid_alive` com `monkeypatch` para os testes não dependerem
+    de PIDs realmente existirem no host.
+    """
+
+    def test_returns_empty_when_dir_missing(self, tmp_path):
+        missing = tmp_path / "no-such-dir"
+        provider = pd.LocalInstancesProvider(runtime_dir=missing)
+        assert provider.get() == {}
+        assert provider.last_error is None  # dir ausente é caso normal
+
+    def test_returns_empty_when_dir_exists_but_empty(self, tmp_path):
+        rt = tmp_path / "run"
+        rt.mkdir()
+        provider = pd.LocalInstancesProvider(runtime_dir=rt)
+        assert provider.get() == {}
+        assert provider.last_error is None
+
+    def test_parses_valid_state_file(self, tmp_path, monkeypatch):
+        import json as _json  # ensure scoped
+        rt = tmp_path / "run"
+        rt.mkdir()
+        _write_state(rt, "cli-abc123", pid=12345,
+                     kind="tool_execution", detail="execute_bash")
+        monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
+        provider = pd.LocalInstancesProvider(runtime_dir=rt)
+        snaps = provider.get()
+        assert set(snaps.keys()) == {12345}
+        snap = snaps[12345]
+        assert snap.instance_id == "cli-abc123"
+        assert snap.pid == 12345
+        assert snap.role == "cli"
+        assert snap.current_action_kind == "tool_execution"
+        assert snap.current_action_detail == "execute_bash"
+        assert snap.current_action_model == "deepseek:v4-pro"
+        assert snap.stats_tokens_in == 100
+        assert snap.stats_cost_usd == pytest.approx(0.01)
+        assert snap.stale is False
+        # JSON ainda escrito (não foi GC'ed).
+        assert (rt / "cli-abc123.json").is_file()
+        _ = _json  # silenciar linter
+
+    def test_skips_malformed_json(self, tmp_path, monkeypatch, caplog):
+        rt = tmp_path / "run"
+        rt.mkdir()
+        (rt / "broken.json").write_text("{not valid json", encoding="utf-8")
+        monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
+        provider = pd.LocalInstancesProvider(runtime_dir=rt)
+        with caplog.at_level("WARNING"):
+            snaps = provider.get()
+        assert snaps == {}
+        # Mensagem de warning emitida pelo provider — cobre `malformed`.
+        assert any("malformed" in rec.message for rec in caplog.records)
+
+    def test_skips_wrong_schema_version(self, tmp_path, monkeypatch, caplog):
+        rt = tmp_path / "run"
+        rt.mkdir()
+        _write_state(rt, "cli-future", pid=999, schema_version=99)
+        monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
+        provider = pd.LocalInstancesProvider(runtime_dir=rt)
+        with caplog.at_level("WARNING"):
+            snaps = provider.get()
+        assert snaps == {}
+        assert any("schema_version" in rec.message for rec in caplog.records)
+
+    def test_garbage_collects_dead_pid(self, tmp_path, monkeypatch):
+        rt = tmp_path / "run"
+        rt.mkdir()
+        path = _write_state(rt, "cli-dead", pid=999999)
+        # Simula PID morto.
+        monkeypatch.setattr(pd, "_pid_alive", lambda p: False)
+        provider = pd.LocalInstancesProvider(runtime_dir=rt)
+        snaps = provider.get()
+        assert snaps == {}
+        # Arquivo deve ter sumido — GC silencioso.
+        assert not path.exists()
+
+    def test_marks_stale_when_old_heartbeat(self, tmp_path, monkeypatch):
+        rt = tmp_path / "run"
+        rt.mkdir()
+        _write_state(rt, "cli-slow", pid=12345, heartbeat_age_s=120.0)
+        monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
+        provider = pd.LocalInstancesProvider(
+            runtime_dir=rt, stale_after_s=30.0,
+        )
+        snaps = provider.get()
+        assert 12345 in snaps
+        assert snaps[12345].stale is True
+
+    def test_idle_current_action_renders_idle(self, tmp_path, monkeypatch):
+        rt = tmp_path / "run"
+        rt.mkdir()
+        # `kind=None` → `_write_state` escreve `current_action: null`.
+        _write_state(rt, "cli-idle", pid=12345, kind=None)
+        monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
+        provider = pd.LocalInstancesProvider(runtime_dir=rt)
+        snap = provider.get()[12345]
+        assert snap.current_action_kind == "idle"
+        assert snap.current_action_detail == ""
+        assert snap.doing_now_label == "idle"
+
+    def test_tool_execution_renders_with_detail(self, tmp_path, monkeypatch):
+        rt = tmp_path / "run"
+        rt.mkdir()
+        _write_state(rt, "cli-toolex", pid=12345,
+                     kind="tool_execution", detail="read_file")
+        monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
+        provider = pd.LocalInstancesProvider(runtime_dir=rt)
+        snap = provider.get()[12345]
+        # Texto puro (sem emoji): "tool: <detail>"
+        assert snap.doing_now_label == "tool: read_file"
+
+    def test_llm_call_renders_with_model(self, tmp_path, monkeypatch):
+        rt = tmp_path / "run"
+        rt.mkdir()
+        _write_state(rt, "cli-llm", pid=12345,
+                     kind="llm_call", detail="completion",
+                     model="anthropic:claude-opus-4-7")
+        monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
+        provider = pd.LocalInstancesProvider(runtime_dir=rt)
+        snap = provider.get()[12345]
+        assert snap.doing_now_label == "llm: anthropic:claude-opus-4-7"
+
+    def test_runtime_dir_env_override(self, tmp_path, monkeypatch):
+        rt = tmp_path / "custom-run"
+        rt.mkdir()
+        _write_state(rt, "cli-env", pid=12345)
+        monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
+        monkeypatch.setenv("DEILE_RUNTIME_DIR", str(rt))
+        provider = pd.LocalInstancesProvider()  # sem runtime_dir explícito
+        assert provider.runtime_dir == rt
+        assert 12345 in provider.get()
+
+    def test_cache_ttl_respected(self, tmp_path, monkeypatch):
+        """Após o 1º fetch, get() não re-lê o filesystem dentro do TTL."""
+        rt = tmp_path / "run"
+        rt.mkdir()
+        _write_state(rt, "cli-cache", pid=12345)
+        monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
+        provider = pd.LocalInstancesProvider(runtime_dir=rt, ttl_s=60.0)
+        # 1º fetch popula o cache.
+        snaps1 = provider.get()
+        assert 12345 in snaps1
+        # Spy: substitui o _fetch para detectar nova chamada.
+        calls: List[int] = []
+        real_fetch = provider._fetch
+        def _spy():
+            calls.append(1)
+            return real_fetch()
+        provider._cache.fetcher = _spy
+        # 2º get dentro do TTL não chama _fetch (cache válido).
+        snaps2 = provider.get()
+        assert calls == []
+        assert snaps2 == snaps1
+
+    def test_starting_kind_label(self, tmp_path, monkeypatch):
+        rt = tmp_path / "run"
+        rt.mkdir()
+        _write_state(rt, "cli-start", pid=12345,
+                     kind="starting", detail="")
+        monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
+        provider = pd.LocalInstancesProvider(runtime_dir=rt)
+        assert provider.get()[12345].doing_now_label == "starting…"
+
+    def test_shutting_down_kind_label(self, tmp_path, monkeypatch):
+        rt = tmp_path / "run"
+        rt.mkdir()
+        _write_state(rt, "cli-shut", pid=12345,
+                     kind="shutting_down", detail="")
+        monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
+        provider = pd.LocalInstancesProvider(runtime_dir=rt)
+        assert provider.get()[12345].doing_now_label == "shutting down"
+
+    def test_unknown_kind_falls_back_to_generic_label(self, tmp_path,
+                                                     monkeypatch):
+        """Forward-compat: kind futuro não conhecido vira `<kind>: <detail>`."""
+        rt = tmp_path / "run"
+        rt.mkdir()
+        _write_state(rt, "cli-future-kind", pid=12345,
+                     kind="quantum_compute", detail="qubit-42")
+        monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
+        provider = pd.LocalInstancesProvider(runtime_dir=rt)
+        snap = provider.get()[12345]
+        assert "quantum_compute" in snap.doing_now_label
+        assert "qubit-42" in snap.doing_now_label
+
+    def test_multiple_pids_all_indexed(self, tmp_path, monkeypatch):
+        rt = tmp_path / "run"
+        rt.mkdir()
+        _write_state(rt, "cli-a", pid=1001,
+                     kind="tool_execution", detail="execute_bash")
+        _write_state(rt, "cli-b", pid=2002,
+                     kind="llm_call", model="openai:gpt-5")
+        _write_state(rt, "cli-c", pid=3003, kind=None)
+        monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
+        provider = pd.LocalInstancesProvider(runtime_dir=rt)
+        snaps = provider.get()
+        assert set(snaps.keys()) == {1001, 2002, 3003}
+        # Cada PID com seu próprio doing_now_label — assinatura do fix.
+        labels = {pid: snap.doing_now_label for pid, snap in snaps.items()}
+        assert labels[1001] == "tool: execute_bash"
+        assert labels[2002] == "llm: openai:gpt-5"
+        assert labels[3003] == "idle"
+        # Os 3 labels DEVEM ser diferentes — o bug que esta feature resolve.
+        assert len(set(labels.values())) == 3
+
+    def test_listdir_failure_propagates_as_last_error(self, tmp_path,
+                                                     monkeypatch):
+        """Diretório com permissão negada → last_error preenchido."""
+        rt = tmp_path / "run"
+        rt.mkdir()
+        provider = pd.LocalInstancesProvider(runtime_dir=rt)
+        def _explode(self):
+            raise OSError("permission denied")
+        monkeypatch.setattr(pd.Path, "glob", _explode)
+        snaps = provider.get(force=True)
+        assert snaps == {}
+        assert provider.last_error is not None
+        assert "listdir" in provider.last_error
+
+    def test_missing_pid_in_payload_skipped(self, tmp_path, monkeypatch):
+        rt = tmp_path / "run"
+        rt.mkdir()
+        # JSON válido mas sem `pid` — provider pula silenciosamente
+        # (log WARNING).
+        payload = {"schema_version": 1, "instance_id": "no-pid"}
+        (rt / "no-pid.json").write_text(json.dumps(payload),
+                                        encoding="utf-8")
+        monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
+        provider = pd.LocalInstancesProvider(runtime_dir=rt)
+        assert provider.get() == {}
+
+
+class TestLocalInstancesInPanelData:
+    """`local_instances` é wired-up corretamente no `PanelData.from_context`."""
+
+    def test_from_context_creates_local_instances_when_available(self,
+                                                                 tmp_path):
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        ctx = pd.RuntimeContext(
+            logs_dir=logs, usage_db=tmp_path / "u.db",
+        )
+        data = pd.PanelData.from_context(ctx)
+        assert data.local_instances is not None
+        assert isinstance(data.local_instances, pd.LocalInstancesProvider)
+
+    def test_local_instances_none_when_not_available(self, tmp_path):
+        ctx = pd.RuntimeContext(
+            k8s_force=True,
+            logs_dir=tmp_path / "no-logs",
+            usage_db=tmp_path / "u.db",
+        )
+        data = pd.PanelData.from_context(ctx)
+        assert data.local_instances is None
+
+    def test_local_instances_in_all_providers(self, tmp_path):
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        ctx = pd.RuntimeContext(
+            logs_dir=logs, usage_db=tmp_path / "u.db",
+        )
+        data = pd.PanelData.from_context(ctx)
+        providers = data._all_providers()
+        assert data.local_instances in providers
+
+    def test_local_instances_in_errors_list(self, tmp_path, monkeypatch):
+        logs = tmp_path / "logs"
+        logs.mkdir()
+        ctx = pd.RuntimeContext(
+            logs_dir=logs, usage_db=tmp_path / "u.db",
+        )
+        data = pd.PanelData.from_context(ctx)
+        # Força um erro no provider via Path.glob monkeypatch.
+        def _explode(self):
+            raise OSError("forced for test")
+        monkeypatch.setattr(pd.Path, "glob", _explode)
+        # Cache cold → get() chama _fetch → set last_error.
+        data.local_instances.get(force=True)
+        names = [n for n, _ in data.errors()]
+        assert "local_instances" in names
+
+
+class TestPanelShowsPerPidAction:
+    """Render integration: linhas da tabela LOCAL PROCESSES têm `doing now`
+    DIFERENTE por PID quando há snapshots — oposto do bug original
+    (todas mostravam o mesmo texto vindo do log global).
+    """
+
+    def test_dashboard_shows_per_pid_action_when_instance_snapshot_present(
+        self, monkeypatch,
+    ):
+        # Mocka PanelData com 2 PIDs locais, cada um com seu snapshot.
+        data = MagicMock()
+        data.context = MagicMock()
+        # 2 processos locais.
+        p1 = pd.LocalProcessInfo(
+            pid=28117, role="local-deile",
+            cmd="python3 deile.py", cpu_pct=0.0, rss_kb=25000, etime_s=1800,
+        )
+        p2 = pd.LocalProcessInfo(
+            pid=16694, role="local-deile",
+            cmd="python3 deile.py", cpu_pct=0.0, rss_kb=14000, etime_s=6700,
+        )
+        data.local_processes.get.return_value = [p1, p2]
+        # 2 snapshots com `current_action` diferentes.
+        now = datetime.now(timezone.utc)
+        snap1 = pd.InstanceSnapshot(
+            instance_id="cli-a", pid=28117, role="cli",
+            started_at=now, last_heartbeat_at=now,
+            current_action_kind="tool_execution",
+            current_action_detail="execute_bash",
+            current_action_started_at=now,
+            current_action_model="",
+            stats_tokens_in=0, stats_tokens_out=0, stats_cost_usd=0.0,
+            stats_turns=0, stats_tool_calls=0, stats_errors=0,
+            stale=False,
+        )
+        snap2 = pd.InstanceSnapshot(
+            instance_id="cli-b", pid=16694, role="cli",
+            started_at=now, last_heartbeat_at=now,
+            current_action_kind="llm_call",
+            current_action_detail="completion",
+            current_action_started_at=now,
+            current_action_model="anthropic:claude-opus-4-7",
+            stats_tokens_in=0, stats_tokens_out=0, stats_cost_usd=0.0,
+            stats_turns=0, stats_tool_calls=0, stats_errors=0,
+            stale=False,
+        )
+        data.local_instances.get.return_value = {28117: snap1, 16694: snap2}
+        # `local_logs` ainda retorna o estado global (que era usado como
+        # fallback antes do fix) — propositalmente o mesmo texto pra
+        # provar que o per-PID snapshot vence.
+        log_state = MagicMock()
+        log_state.last_action_age_s = 10
+        log_state.last_action_summary = "worker dispatch completed"
+        data.local_logs.get.return_value = log_state
+        rows = panel._local_process_rows(data)
+        assert len(rows) == 2
+        # ASSINATURA DO FIX: doing now de cada linha é diferente.
+        doings = [r.doing_now for r in rows]
+        assert len(set(doings)) == 2
+        # Nenhum dos dois deve ser o texto do log global (fallback antigo).
+        assert "worker dispatch completed" not in doings
+        # Por PID: 28117 → tool, 16694 → llm.
+        by_pid = {r.name: r.doing_now for r in rows}
+        assert "tool: execute_bash" in by_pid["local-deile#28117"]
+        assert "llm: anthropic:claude-opus-4-7" in by_pid["local-deile#16694"]
+
+    def test_falls_back_to_log_state_when_no_snapshot(self, monkeypatch):
+        """PID sem state file (compat com processos legacy) → fallback log."""
+        data = MagicMock()
+        p = pd.LocalProcessInfo(
+            pid=99999, role="local-other",
+            cmd="python3 deile.py", cpu_pct=0.0, rss_kb=1000, etime_s=60,
+        )
+        data.local_processes.get.return_value = [p]
+        # local_instances vazio — PID 99999 não tem snapshot.
+        data.local_instances.get.return_value = {}
+        log_state = MagicMock()
+        log_state.last_action_age_s = 5
+        log_state.last_action_summary = "legacy log message"
+        data.local_logs.get.return_value = log_state
+        rows = panel._local_process_rows(data)
+        assert len(rows) == 1
+        assert "legacy log message" in rows[0].doing_now
+
+    def test_falls_back_to_cmd_when_no_instances_and_no_log(self):
+        """Pior caso: sem snapshot e sem log → cmdline + busy via CPU."""
+        data = MagicMock()
+        p = pd.LocalProcessInfo(
+            pid=88888, role="local-other",
+            cmd="python3 deile.py --special", cpu_pct=2.0, rss_kb=1000,
+            etime_s=60,
+        )
+        data.local_processes.get.return_value = [p]
+        data.local_instances.get.return_value = {}
+        # local_logs presente mas state sem last_action_age_s.
+        log_state = MagicMock()
+        log_state.last_action_age_s = None
+        log_state.last_action_summary = ""
+        data.local_logs.get.return_value = log_state
+        rows = panel._local_process_rows(data)
+        assert "deile.py" in rows[0].doing_now
+        # CPU >= 1% → busy=True.
+        assert rows[0].busy is True
+
+    def test_no_local_instances_attribute_does_not_crash(self):
+        """Smoke: PanelData sem local_instances (modo k8s-only) não crasha."""
+        data = MagicMock(spec=["local_processes", "local_logs"])
+        p = pd.LocalProcessInfo(
+            pid=12345, role="local-deile",
+            cmd="python3 deile.py", cpu_pct=0.0, rss_kb=1000, etime_s=60,
+        )
+        data.local_processes.get.return_value = [p]
+        log_state = MagicMock()
+        log_state.last_action_age_s = None
+        log_state.last_action_summary = ""
+        data.local_logs.get.return_value = log_state
+        # Sem AttributeError — getattr default {} é usado.
+        rows = panel._local_process_rows(data)
+        assert len(rows) == 1

@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types
+from google.genai._api_client import BaseApiClient as _GenaiBaseApiClient
 from google.genai.types import (AutomaticFunctionCallingConfig,
                                 GenerateContentConfig, HttpOptions, Tool)
 
@@ -24,6 +25,65 @@ from .tool_execution import (OUTCOME_EXCEPTION, OUTCOME_NOT_FOUND,
                              resolve_and_execute_tool)
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Defensive monkey-patch: google-genai aclose() AttributeError
+# ---------------------------------------------------------------------------
+#
+# google-genai 1.47.0 has a bug in BaseApiClient.aclose():
+#
+#     async def aclose(self) -> None:
+#         await self._async_httpx_client.aclose()
+#         if self._aiohttp_session:
+#             await self._aiohttp_session.close()
+#
+# The async httpx client is LAZY-INITIALIZED (only created on the first async
+# request). If the BaseApiClient is GC'd before any async request fires —
+# common during bootstrap when we register a Gemini provider but exercise
+# only DeepSeek/Anthropic — ``self._async_httpx_client`` doesn't exist yet
+# and ``aclose()`` raises ``AttributeError``. Worse, ``aclose()`` runs
+# as a Task on the event loop (scheduled by ``__del__``), and the exception
+# never gets retrieved, producing:
+#
+#     ERROR asyncio Task exception was never retrieved
+#     future: <Task finished name='Task-N' coro=<BaseApiClient.aclose() done...>
+#         exception=AttributeError("'BaseApiClient' object has no attribute
+#         '_async_httpx_client'")>
+#
+# Two such errors at every worker boot (observed in deile-worker pod logs).
+# The fix upstream needs ``hasattr`` guards (and presumably exists in 2.x,
+# but the major bump is breaking). The local fix is a defensive wrapper that
+# preserves the close-if-initialized semantics and silently no-ops the
+# missing-attribute case — which is exactly what aclose() means anyway.
+#
+# Idempotent (won't re-patch if our marker is present).
+
+def _install_genai_aclose_guard() -> None:
+    if getattr(_GenaiBaseApiClient.aclose, "_deile_guarded", False):
+        return
+    _original_aclose = _GenaiBaseApiClient.aclose
+
+    async def _safe_aclose(self) -> None:
+        try:
+            await _original_aclose(self)
+        except AttributeError as exc:
+            # SDK bug — referencing a lazy attribute that was never created.
+            # Nothing to close, so the close completed trivially.
+            if "_async_httpx_client" in str(exc) or "_aiohttp_session" in str(exc):
+                logger.debug(
+                    "google-genai aclose: lazy client never initialized "
+                    "(%s) — safe no-op",
+                    exc,
+                )
+                return
+            raise
+
+    _safe_aclose._deile_guarded = True  # type: ignore[attr-defined]
+    _GenaiBaseApiClient.aclose = _safe_aclose  # type: ignore[method-assign]
+
+
+_install_genai_aclose_guard()
 
 
 def _stringify_for_model(value: Any) -> Any:
@@ -295,7 +355,10 @@ class GeminiProvider(ModelProvider):
 
         # Atualiza timestamp da última request
         self._last_request_time = start_time
-        
+
+        # Issue #303 fase 4 — span deile.llm.call (cobre todo o método body).
+        _llm_span_cm = self._llm_span()
+        _llm_span = _llm_span_cm.__enter__()
         try:
             # Log request se debug ativo
             if is_debug_enabled():
@@ -310,13 +373,13 @@ class GeminiProvider(ModelProvider):
                     },
                     config=self.gemini_config.generation_config
                 )
-            
+
             # Processa mensagens com suporte a multi-modal (file_data)
             processed_messages = self._process_messages_for_gemini(messages)
-            
+
             # Cria configuração para geração
             config = self._create_generation_config(**kwargs)
-            
+
             # Gera conteúdo usando novo SDK
             response = await self._generate_with_new_sdk(
                 processed_messages, system_instruction, config
@@ -346,12 +409,18 @@ class GeminiProvider(ModelProvider):
                         latency_ms=int(execution_time * 1000),
                         success=True,
                     )
+                    # Issue #303 fase 4 — popula atributos do span de LLM.
+                    self._set_llm_span_usage(
+                        _llm_span, response.usage,
+                        latency_ms=int(execution_time * 1000),
+                    )
             except Exception as exc:  # noqa: BLE001 — telemetry must never block
                 logger.debug("gemini usage record (generate) failed: %s", exc)
 
             return response
-            
+
         except genai_errors.APIError as e:
+            self._set_llm_span_error(_llm_span, e)
             # Model-invocation failure: emit the same typed contract as the
             # Anthropic/OpenAI providers so ToolLoopExecutor and the agent loop
             # can read ``envelope.error_type`` (e.g. context_length_exceeded).
@@ -378,9 +447,10 @@ class GeminiProvider(ModelProvider):
             )
             raise ProviderInvocationError(envelope) from e
 
-        except ProviderInvocationError:
+        except ProviderInvocationError as e:
             # Already typed (e.g. re-raised by ``_generate_with_new_sdk``) —
             # propagate without re-wrapping.
+            self._set_llm_span_error(_llm_span, e)
             raise
 
         except Exception as e:
@@ -389,6 +459,7 @@ class GeminiProvider(ModelProvider):
             # which the agent's provider cascade treats as transient/retryable —
             # the same effect the pre-refactor ``ModelError`` had here, since
             # neither is flagged permanent by ``_is_permanent_provider_error``.
+            self._set_llm_span_error(_llm_span, e)
             execution_time = time.time() - start_time
             envelope = make_gemini_envelope(e, self.provider_id, self.model_name)
 
@@ -401,7 +472,13 @@ class GeminiProvider(ModelProvider):
                 })
 
             raise ProviderInvocationError(envelope) from e
-    
+        finally:
+            # Issue #303 fase 4 — sempre fecha o span (sucesso ou erro).
+            try:
+                _llm_span_cm.__exit__(None, None, None)
+            except Exception:  # noqa: BLE001
+                pass
+
     async def generate_stream(
         self,
         messages: List[ModelMessage],
@@ -1013,17 +1090,21 @@ class GeminiProvider(ModelProvider):
         - cached_content_token_count → cached_tokens (context caching)
         """
         md = getattr(response, "usage_metadata", None)
-        pt = (getattr(md, "prompt_token_count", 0) or 0) if md is not None else 0
-        ct = (getattr(md, "candidates_token_count", 0) or 0) if md is not None else 0
-        tt = (getattr(md, "total_token_count", 0) or 0) if md is not None else 0
-        cached = (
-            getattr(md, "cached_content_token_count", 0) or 0
-        ) if md is not None else 0
+
+        def _md_int(field: str) -> int:
+            if md is None:
+                return 0
+            return int(getattr(md, field, 0) or 0)
+
+        pt = _md_int("prompt_token_count")
+        ct = _md_int("candidates_token_count")
+        tt = _md_int("total_token_count")
+        cached = _md_int("cached_content_token_count")
         usage = ModelUsage(
-            prompt_tokens=int(pt),
-            completion_tokens=int(ct),
-            total_tokens=int(tt) or (int(pt) + int(ct)),
-            cached_tokens=int(cached),
+            prompt_tokens=pt,
+            completion_tokens=ct,
+            total_tokens=tt or (pt + ct),
+            cached_tokens=cached,
             request_time=float(request_time),
         )
         try:

@@ -55,11 +55,28 @@ class AgentStreamingMixin:
                                                      StreamEventType,
                                                      UnifiedStreamEvent)
 
-        from .agent import AgentStatus, _BudgetExceeded
+        from .agent import (AgentStatus, _BudgetExceeded,
+                            _finalize_turn_span, _open_turn_span,
+                            _record_turn_error)
 
         start_time = time.time()
         self._status = AgentStatus.PROCESSING
         self._request_count += 1
+
+        # Issue #303 — conta turno no runtime state (singleton, best-effort).
+        try:
+            from deile.runtime.instance_state import get_instance_state
+            get_instance_state().update_stats(turns=1)
+        except Exception:  # noqa: BLE001 — runtime state nunca pode quebrar a turn
+            pass
+
+        # Issue #303 fase 4 — span pai do turn (streaming path); ver helper.
+        _turn_span_cm, _turn_span = _open_turn_span(
+            session_id=session_id,
+            turn_number=self._request_count,
+            persona=str(self.current_persona) if getattr(self, "current_persona", None) else "",
+            input_length=len(user_input or ""),
+        )
 
         try:
             session = self._get_or_create_session(session_id, **kwargs)
@@ -350,6 +367,8 @@ class AgentStreamingMixin:
             self.logger.error(
                 f"Streaming turn failed: {exc}", exc_info=True
             )
+            # Issue #303 fase 4 — registra erro no span/metrics.
+            _record_turn_error(_turn_span, exc, component="process_input_stream")
             # Surface BudgetExceeded / FORCED_MODEL with structured metadata
             # the UI can use to render Rich panels.
             err_meta: Dict[str, Any] = {"error_type": type(exc).__name__}
@@ -366,6 +385,13 @@ class AgentStreamingMixin:
                 error_envelope=err_meta,
             )
             return
+        finally:
+            # Issue #303 fase 4 — fecha o span do turn + métrica de duração.
+            _finalize_turn_span(
+                _turn_span_cm,
+                duration_ms=int((time.time() - start_time) * 1000),
+                persona=str(self.current_persona) if getattr(self, "current_persona", None) else "",
+            )
 
 
     async def _stream_chat_with_tools(
@@ -551,15 +577,37 @@ class AgentStreamingMixin:
             type=StreamEventType.STAGE,
             stage=get_stage_message("connect_model", "initial", model=_provider_label),
         )
-        async for event in executor.run(
-            provider=model_provider,
-            messages=messages_for_provider,
-            tools=tools,
-            system_instruction=system_instruction,
-            working_directory=str(session.working_directory),
-            session_data=session.context_data,
-        ):
-            yield event
+        # Issue #303 — publica ``llm_call`` no runtime state durante o stream;
+        # o ToolLoopExecutor sobrepõe com ``tool_execution`` por chamada de
+        # tool e restaura o estado anterior. Best-effort: nunca quebra o turno.
+        try:
+            from deile.runtime.instance_state import get_instance_state
+            _istate_stream = get_instance_state()
+            _istate_stream.update_action(
+                "llm_call",
+                detail=str(_provider_label),
+                session_id=session.session_id,
+                model=getattr(model_provider, "model_name", None)
+                or getattr(model_provider, "provider_id", None),
+            )
+        except Exception:  # noqa: BLE001
+            _istate_stream = None
+        try:
+            async for event in executor.run(
+                provider=model_provider,
+                messages=messages_for_provider,
+                tools=tools,
+                system_instruction=system_instruction,
+                working_directory=str(session.working_directory),
+                session_data=session.context_data,
+            ):
+                yield event
+        finally:
+            if _istate_stream is not None:
+                try:
+                    _istate_stream.clear_action()
+                except Exception:  # noqa: BLE001
+                    pass
 
 
     async def process_input_structured(

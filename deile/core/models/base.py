@@ -426,6 +426,12 @@ class ModelProvider(ABC):
         """Persist usage to UsageRepository (wired up in Phase 11).
 
         No-op until UsageRepository is available; safe to call from all providers.
+
+        Issue #303 fase 4: também emite as métricas OpenTelemetry
+        (``deile.tokens.total``, ``deile.cost.usd.total``). Toda chamada de
+        ``_record_usage`` é o ponto único onde tokens/cost ficam finalizados,
+        por isso a integração de métricas vive aqui — evita duplicar lógica
+        em cada provider.
         """
         try:
             from deile.storage.usage_repository import \
@@ -448,6 +454,20 @@ class ModelProvider(ABC):
                 "usage record failed (provider=%s, session=%s): %s",
                 getattr(self, "provider_id", "?"), session_id, exc,
             )
+        # Issue #303 fase 4 — métricas OTLP (best-effort, nunca quebra o turn).
+        try:
+            from deile.observability import get_metrics  # noqa: PLC0415
+            m = get_metrics()
+            if usage.prompt_tokens:
+                m.record_tokens(self.provider_id, self.model_name, "in", usage.prompt_tokens)
+            if usage.completion_tokens:
+                m.record_tokens(self.provider_id, self.model_name, "out", usage.completion_tokens)
+            if usage.cached_tokens:
+                m.record_tokens(self.provider_id, self.model_name, "cached", usage.cached_tokens)
+            if usage.cost_estimate:
+                m.record_cost(self.provider_id, self.model_name, usage.cost_estimate)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("OTLP metrics emission failed: %s", exc)
     
     async def _record_failed_usage(
         self,
@@ -485,6 +505,60 @@ class ModelProvider(ABC):
         """Atualiza estatísticas internas"""
         self._request_count += 1
         self._total_tokens += usage.total_tokens
+
+    # ── observability (issue #303 fase 4) ─────────────────────────────────
+
+    def _llm_span(self) -> Any:
+        """Retorna um context-manager para o span ``deile.llm.call``.
+
+        Sempre seguro de usar: cai em no-op CM se o tracer não está disponível.
+        O caller seta ``llm.tokens.in/out/cached``, ``llm.cost_usd`` e
+        ``llm.latency_ms`` antes do CM fechar (ver padrão em
+        ``deile.observability.tracer.OtlpTracer.llm_call``).
+        """
+        try:
+            from deile.observability import get_tracer  # noqa: PLC0415
+            return get_tracer().llm_call(provider=self.provider_id, model=self.model_name)
+        except Exception:  # noqa: BLE001 — observability nunca quebra o turn
+            from contextlib import nullcontext  # noqa: PLC0415
+            return nullcontext()
+
+    @staticmethod
+    def _set_llm_span_usage(span: Any, usage: "ModelUsage", latency_ms: int = 0) -> None:
+        """Popula atributos canônicos no span de LLM call.
+
+        Atributos seguem o esquema da Fase 4 (issue #303):
+        ``llm.tokens.in``, ``llm.tokens.out``, ``llm.tokens.cached``,
+        ``llm.cost_usd``, ``llm.latency_ms``.
+
+        Nenhum prompt/response/tool_args entra no span — apenas inteiros
+        (tokens), float (custo) e ms.
+        """
+        if span is None or usage is None:
+            return
+        try:
+            span.set_attribute("llm.tokens.in", int(usage.prompt_tokens or 0))
+            span.set_attribute("llm.tokens.out", int(usage.completion_tokens or 0))
+            if usage.cached_tokens:
+                span.set_attribute("llm.tokens.cached", int(usage.cached_tokens))
+            if usage.cost_estimate:
+                span.set_attribute("llm.cost_usd", float(usage.cost_estimate))
+            if latency_ms:
+                span.set_attribute("llm.latency_ms", int(latency_ms))
+        except Exception:  # noqa: BLE001
+            pass
+
+    @staticmethod
+    def _set_llm_span_error(span: Any, exc: BaseException) -> None:
+        """Marca span de LLM call como ERROR + grava exception event."""
+        if span is None:
+            return
+        try:
+            from opentelemetry.trace import Status, StatusCode  # noqa: PLC0415
+            span.set_status(Status(StatusCode.ERROR, description=type(exc).__name__))
+            span.record_exception(exc)
+        except Exception:  # noqa: BLE001
+            pass
     
     async def get_stats(self) -> Dict[str, Any]:
         """Retorna estatísticas do provedor"""

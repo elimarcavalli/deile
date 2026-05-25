@@ -63,13 +63,21 @@ def discover_tools_in_package(
         logger.debug(f"Package {package_name} not found for auto-discovery")
         return 0
 
+    # Classes-base da hierarquia Tool: NÃO são "tools concretas" e
+    # importadas por subclasses concretas (ex: `from .base import SyncTool`
+    # em `execution_tools.py` faz `SyncTool` aparecer em `dir(módulo)`).
+    # Pular aqui evita WARNING ruidoso de `NotImplementedError` ao
+    # acessar `.name` em produção (25/mai/2026, painel local).
+    from deile.tools.base import SyncTool  # late import — evita ciclo
+    _base_classes = {Tool, SyncTool}
+
     discovered_count = 0
     for name in dir(module):
         obj = getattr(module, name)
         if not (
             inspect.isclass(obj)
             and issubclass(obj, Tool)
-            and obj is not Tool
+            and obj not in _base_classes
             and not inspect.isabstract(obj)
         ):
             continue
@@ -78,6 +86,13 @@ def discover_tools_in_package(
             if tool_instance.name not in registry:
                 registry.register(tool_instance)
                 discovered_count += 1
+        except NotImplementedError as exc:
+            # Sinaliza classe-base não concreta (override de `.name` ausente).
+            # Silencioso em DEBUG — `.name` levantando é o protocolo do
+            # próprio `Tool.name` pra dizer "não me registre".
+            logger.debug(
+                "Skipping non-concrete tool %s: %s", name, exc,
+            )
         except Exception as e:
             logger.warning(
                 f"Failed to register discovered tool {name}: {e}",

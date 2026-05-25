@@ -53,10 +53,12 @@ spec:
             # Endpoint of the bot's control plane (within the cluster).
             - name: DEILE_BOT_ENDPOINT
               value: "http://deilebot.deile.svc.cluster.local:8765"
-            # Bypass the interactive approval gate for messaging.discord_send_dm.
-            # The audit log still records "approval=auto:trusted_operator".
-            - name: DEILE_BOT_APPROVAL_AUTO
-              value: "1"
+            # approval.auto=true vem de /etc/deile/settings.json via ConfigMap
+            # deile-runtime-config (manifest 47) — substitui
+            # DEILE_BOT_APPROVAL_AUTO depreciada (issue #111). Audit log
+            # ainda registra "approval=auto:trusted_operator".
+            - name: DEILE_SETTINGS_FILE
+              value: "/etc/deile/settings.json"
             # Persona override so DEILE doesn't pull random behaviour from
             # the host's settings.json (which we don't ship in the image).
             - name: DEILE_DEFAULT_PERSONA
@@ -71,6 +73,11 @@ spec:
           volumeMounts:
             - name: deile-secrets
               mountPath: /run/secrets/deile
+              readOnly: true
+            # settings.json layered (issue #111) — ver DEILE_SETTINGS_FILE env.
+            - name: runtime-config
+              mountPath: /etc/deile/settings.json
+              subPath: oneshot-settings.json
               readOnly: true
             - name: home
               mountPath: /home/deile
@@ -108,3 +115,7 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: "32Mi"
+        - name: runtime-config
+          configMap:
+            name: deile-runtime-config
+            defaultMode: 292   # 0o444 — read-only inside pod

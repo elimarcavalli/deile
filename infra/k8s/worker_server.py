@@ -179,11 +179,50 @@ def _bot_facade():
     return facade if facade.is_available else None
 
 
+def _is_synthetic_snowflake(value: Optional[str]) -> bool:
+    """True quando ``value`` não é um snowflake Discord (= não-numérico).
+
+    Discord snowflakes são strings de só dígitos (até 19 caracteres em 2026).
+    Qualquer outro formato indica um ID sintético, criado por outra camada
+    para identificar trabalho fora do contexto Discord.
+
+    Casos de IDs sintéticos no DEILE:
+
+    1. **channel_id sintético** — o pipeline (``WorkerImplementer``) e o
+       subagent runner usam ``pipeline-issue-299``, ``pipeline-pr-123`` ou
+       ``cli:<session>:<task>`` para isolar sandboxes por unidade de trabalho
+       sem associá-las a um canal real.
+    2. **user_message_id sintético** — o slash command ``/deile``
+       (``deilebot.foundation.slash_dispatch.build_envelope``) gera
+       ``slash-<timestamp_ms>`` quando o caller não passa um message_id
+       real, porque interactions Discord não são mensagens addressable.
+
+    Em ambos os casos, qualquer tentativa de postar/editar/reagir nesses
+    IDs falharia no ``int(snowflake)`` do adapter Discord — gerando
+    ``outbound_failed`` no audit do bot ou 502 Bad Gateway no cliente.
+    O guard centralizado garante que ``_post/_edit/_react`` no-op silently
+    quando QUALQUER um dos snowflakes (channel ou message) é sintético.
+    """
+    return not (value or "").isdigit()
+
+
+# Mantido como alias para compat: nome anterior era específico de channel,
+# mas a regra é a mesma para qualquer snowflake. Documentado para que o
+# leitor saiba que pode ser usado tanto pra channel_id quanto message_id.
+_is_synthetic_channel = _is_synthetic_snowflake
+
+
 async def _post_status_message(channel_id: str, text: str) -> Optional[str]:
     """Post a fresh message to the user's channel via control-plane.
 
     Returns message_id, or None if the call fails (we degrade silently).
     """
+    if _is_synthetic_snowflake(channel_id):
+        # Pipeline/subagent dispatch: sem canal real, sem status UI.
+        logger.debug(
+            "skipping status post: synthetic channel_id=%s", channel_id,
+        )
+        return None
     try:
         facade = _bot_facade()
         if facade is None:
@@ -197,6 +236,10 @@ async def _post_status_message(channel_id: str, text: str) -> Optional[str]:
 
 
 async def _edit_status_message(channel_id: str, message_id: str, text: str) -> bool:
+    if _is_synthetic_snowflake(channel_id) or _is_synthetic_snowflake(message_id):
+        # message_id sintético acontece quando o caller perdeu o ID real
+        # do status post (raro) ou quando a edit é tentada num ID legado.
+        return False
     try:
         facade = _bot_facade()
         if facade is None:
@@ -213,6 +256,17 @@ async def _edit_status_message(channel_id: str, message_id: str, text: str) -> b
 
 
 async def _react(channel_id: str, message_id: str, emoji: str) -> bool:
+    # ``user_message_id`` chega como ``slash-<ts_ms>`` quando o /deile slash
+    # command não tem mensagem real subjacente (somente interaction). Reagir
+    # nele falharia no ``int(message_id)`` do adapter Discord (ValueError)
+    # → ProviderError → 502. Sem o guard, o cliente vê retries em loop e
+    # o operador vê "react failed" sem entender o motivo.
+    if _is_synthetic_snowflake(channel_id) or _is_synthetic_snowflake(message_id):
+        logger.debug(
+            "skipping react: synthetic channel=%s message=%s",
+            channel_id, message_id,
+        )
+        return False
     try:
         facade = _bot_facade()
         if facade is None:

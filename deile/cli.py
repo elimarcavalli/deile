@@ -23,7 +23,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from deile.commands._sentinels import (POST_SWITCH_ACTION_KEY,
                                        SWITCH_SESSION_KEY)
@@ -286,13 +286,28 @@ class _DeileCLI:
         self.default_session: object = None
         self.ui: object = None
         self.config_manager: object = None
+        # Issue #303 — estado vivo por-processo (heartbeat + status server
+        # task gerenciadas aqui para que ``run_interactive`` consiga
+        # cancelá-las limpas no shutdown). Fases 2/3 sobem juntas: a lista
+        # de tasks vem de ``InstanceState.start_async_tasks`` (1 = heartbeat;
+        # 2 = heartbeat + status server quando POSIX e habilitado).
+        self.instance_state: object = None
+        self._instance_state_tasks: List[asyncio.Task] = []
 
     async def initialize(self) -> bool:
         from deile.config.manager import ConfigManager
         from deile.config.settings import get_settings
         from deile.core.models.bootstrap import bootstrap_providers
         from deile.core.models.router import get_model_router
+        from deile.runtime.instance_state import get_instance_state
         from deile.ui import ConsoleUIManager, UITheme
+
+        # Issue #303 — publica state file antes de qualquer trabalho. Já marca
+        # ``starting`` para que o painel veja o processo subindo, e agenda a
+        # task de heartbeat depois que o event loop está rodando (estamos
+        # dentro de um ``async def``, então ``asyncio.create_task`` funciona).
+        self.instance_state = get_instance_state(role="cli")
+        self.instance_state.update_action("starting", detail="bootstrap")
 
         self.settings = get_settings()
         # Override working_directory to cwd
@@ -347,6 +362,18 @@ class _DeileCLI:
             )
             with self.ui.show_loading("Mapeando workspace..."):
                 self.ui.setup_file_completion(self._get_project_files())
+
+            # Issue #303 — bootstrap finalizado: limpa ``starting`` e agenda
+            # heartbeat + status server (Fase 2). As tasks ficam retidas em
+            # ``self._instance_state_tasks`` para que ``run_interactive``
+            # possa cancelá-las limpas no shutdown (evita warning de "task
+            # pendente" quando o atexit dispara). Em Windows ou quando o
+            # status server falha, ``start_async_tasks`` devolve só o
+            # heartbeat — comportamento legado preservado.
+            self.instance_state.clear_action()
+            self._instance_state_tasks = (
+                await self.instance_state.start_async_tasks()
+            )
             return True
 
         except Exception as exc:
@@ -667,6 +694,44 @@ class _DeileCLI:
             ))
         except Exception as exc:
             self.ui.display_error(f"Ocorreu um erro fatal no loop principal: {exc}")
+        finally:
+            # Issue #303 — encerra o heartbeat antes do atexit, evitando que o
+            # warning "Task was destroyed but it is pending" aparece quando o
+            # event loop fecha com a task viva.
+            await self._shutdown_instance_state()
+
+    async def _shutdown_instance_state(self) -> None:
+        """Cancela heartbeat + status server e fecha o state file. Idempotente."""
+        if self.instance_state is not None:
+            try:
+                self.instance_state.update_action("shutting_down")
+            except Exception:  # noqa: BLE001 — shutdown não deve levantar
+                pass
+            # Fase 2 (issue #303): para o status server limpo (await ``stop()``)
+            # ANTES de cancelar a task ``serve_forever`` — ``server.close()``
+            # dispara o break interno e a task termina sem precisar de cancel.
+            server = getattr(self.instance_state, "status_server", None)
+            if server is not None:
+                try:
+                    await server.stop()
+                except Exception:  # noqa: BLE001 — best-effort no shutdown
+                    pass
+        for task in list(self._instance_state_tasks):
+            if task is None or task.done():
+                continue
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass  # esperado — solicitamos esta cancelação
+            except Exception:  # noqa: BLE001 — best-effort no shutdown
+                pass
+        self._instance_state_tasks = []
+        if self.instance_state is not None:
+            try:
+                self.instance_state.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 # ── pipeline autostart helper ────────────────────────────────────────────────
@@ -894,7 +959,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "--model",
         dest="model",
         metavar="PROVIDER:MODEL_ID",
-        help="Force a specific model (e.g. deepseek:deepseek-v4-flash).",
+        help="Force a specific model (e.g. deepseek:deepseek-v4-pro).",
     )
     parser.add_argument(
         "--install",

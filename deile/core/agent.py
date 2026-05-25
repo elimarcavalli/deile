@@ -83,6 +83,72 @@ def _normalize_history_content(content: Any) -> str:
         return str(content)
 
 
+def _open_turn_span(
+    *,
+    session_id: str,
+    turn_number: int,
+    persona: str,
+    input_length: int,
+) -> Tuple[Any, Any]:
+    """Abre o span ``deile.turn`` manualmente (sem ``with``).
+
+    Devolve ``(span_cm, span)`` — ambos ``None`` se observability falhou.
+    Pareado com :func:`_finalize_turn_span` que fecha o CM no ``finally``.
+    O span é aberto fora do ``with`` para não re-indentar o turno inteiro
+    (mantém os ``async for`` e ``return`` no nível atual).
+    """
+    try:
+        from deile.observability import get_tracer  # noqa: PLC0415
+        span_cm = get_tracer().turn(
+            session_id=str(session_id),
+            turn_number=int(turn_number),
+            persona=persona,
+            model="",
+            input_length=int(input_length),
+        )
+        return span_cm, span_cm.__enter__()
+    except Exception:  # noqa: BLE001 — observability nunca quebra o turn
+        return None, None
+
+
+def _record_turn_error(span: Any, exc: BaseException, component: str) -> None:
+    """Marca o span do turn como ERROR e incrementa o counter ``deile.errors.total``.
+
+    Best-effort — observability nunca quebra o turn (princípio 11 + Fase 1).
+    Usado pelo ``process_input``/``process_input_stream``: o span é criado
+    fora do try, então qualquer except do turn passa por aqui antes do raise.
+    """
+    if span is not None:
+        try:
+            from opentelemetry.trace import Status, StatusCode  # noqa: PLC0415
+            span.set_status(Status(StatusCode.ERROR, description=type(exc).__name__))
+            span.record_exception(exc)
+        except Exception:  # noqa: BLE001 — observability nunca quebra
+            pass
+    try:
+        from deile.observability import get_metrics  # noqa: PLC0415
+        get_metrics().record_error(type(exc).__name__, component)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _finalize_turn_span(span_cm: Any, duration_ms: int, persona: str) -> None:
+    """Sai do CM do turn, registra a histogram de duração e ignora qualquer falha.
+
+    Chamado no ``finally`` do turno — depois da resposta normal OU do except.
+    """
+    if span_cm is not None:
+        try:
+            span_cm.__exit__(None, None, None)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        from deile.observability import get_metrics  # noqa: PLC0415
+        get_metrics().record_turn_duration(persona=persona or "unknown", duration_ms=duration_ms)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _is_permanent_provider_error(exc: Exception) -> bool:
     """Return True for errors that retrying a different provider cannot fix.
 
@@ -467,7 +533,23 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
         start_time = time.time()
         self._status = AgentStatus.PROCESSING
         self._request_count += 1
-        
+        # Issue #303 — conta turno no runtime state (singleton, best-effort).
+        try:
+            from deile.runtime.instance_state import get_instance_state
+            get_instance_state().update_stats(turns=1)
+        except Exception:  # noqa: BLE001 — runtime state nunca pode quebrar a turn
+            pass
+
+        # Issue #303 fase 4 — span pai do turn (deile.turn). Aberto via helper
+        # que faz ``__enter__`` manual (sem ``with``) para não re-indentar o
+        # método inteiro; ``__exit__`` vem em ``_finalize_turn_span`` no finally.
+        _turn_span_cm, _turn_span = _open_turn_span(
+            session_id=session_id,
+            turn_number=self._request_count,
+            persona=str(self.current_persona) if getattr(self, "current_persona", None) else "",
+            input_length=len(user_input or ""),
+        )
+
         try:
             # Bot-hooks: extract optional kwargs added in plano DEILE fase 2.
             # These are stashed in session.context_data so context_manager and
@@ -569,12 +651,14 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             if _pending_rc:
                 _history_meta["reasoning_content"] = _pending_rc
             session.add_to_history("assistant", response_content, _history_meta)
-            
+
             self._status = AgentStatus.IDLE
             return response
-            
+
         except Exception as e:
             self._status = AgentStatus.ERROR
+            # Issue #303 fase 4 — registra erro no span/metrics (best-effort).
+            _record_turn_error(_turn_span, e, component="process_input")
             # BudgetExceeded gets a structured, user-actionable response (no stack-trace dump)
             if isinstance(e, _BudgetExceeded):
                 friendly = (
@@ -614,6 +698,13 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                 status=AgentStatus.ERROR,
                 error=e,
                 execution_time=time.time() - start_time
+            )
+        finally:
+            # Issue #303 fase 4 — fecha o span do turn + métrica de duração.
+            _finalize_turn_span(
+                _turn_span_cm,
+                duration_ms=int((time.time() - start_time) * 1000),
+                persona=str(self.current_persona) if getattr(self, "current_persona", None) else "",
             )
 
     def get_session(self, session_id: str) -> Optional[AgentSession]:
@@ -962,17 +1053,20 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             return None
     
     async def _execute_tools(
-        self, 
-        parse_result: Optional[ParseResult], 
+        self,
+        parse_result: Optional[ParseResult],
         session: AgentSession
     ) -> List[ToolResult]:
         """Fase 2: Execução de tools baseada no parsing"""
         if not parse_result or not parse_result.tool_requests:
             return []
-        
+
         self._status = AgentStatus.EXECUTING_TOOL
         tool_results = []
-        
+        # Issue #303 — singleton de runtime state; publish_action é best-effort.
+        from deile.runtime.instance_state import get_instance_state
+        _istate = get_instance_state()
+
         for tool_name in parse_result.tool_requests:
             try:
                 # Cria contexto para a tool. Bot mode propaga bot_context para
@@ -986,16 +1080,31 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                     file_list=parse_result.file_references,
                     extra={"bot_context": dict(_bot_ctx)} if _bot_ctx else {},
                 )
-                
+
+                # Issue #303 — publica intenção; tool_name é safe (não args).
+                try:
+                    _istate.update_action(
+                        "tool_execution",
+                        detail=tool_name,
+                        session_id=session.session_id,
+                    )
+                except Exception:  # noqa: BLE001 — runtime state é observability
+                    pass
+
                 # Executa a tool
                 result = await self.tool_registry.execute_tool(tool_name, context)
                 tool_results.append(result)
-                
+
                 # Display tool result using DisplayManager - SOLVES SITUAÇÃO 2 & 3
                 self.display_manager.display_tool_result(tool_name, result)
-                
+
+                try:
+                    _istate.update_stats(tool_calls=1)
+                except Exception:  # noqa: BLE001
+                    pass
+
                 # self.logger.info(f"Tool {tool_name} executed: {result.status.value}")
-                
+
             except Exception as e:
                 error_result = ToolResult(
                     status=ToolStatus.ERROR,
@@ -1004,7 +1113,16 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                 )
                 tool_results.append(error_result)
                 self.logger.error(f"Tool execution failed: {e}")
-        
+                try:
+                    _istate.update_stats(errors=1)
+                except Exception:  # noqa: BLE001
+                    pass
+            finally:
+                try:
+                    _istate.clear_action()
+                except Exception:  # noqa: BLE001
+                    pass
+
         return tool_results
     
     # Non-streaming tool-loop. Still active when the streaming path bails out
