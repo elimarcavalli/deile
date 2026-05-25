@@ -1,27 +1,45 @@
-"""Standup data collectors — pure CLI parsing + git/gh observation.
+"""Standup data collectors — parsing + git/gh observation.
 
 Extracted from ``standup_command.py`` so the command file owns LLM
 dispatch + Rich panel rendering, while these helpers own argument
-parsing and subprocess-based collection of commits/PRs/issues.
+parsing and collection of commits/PRs/issues.
 
-Pilar 03 §1: I/O subprocess síncrono é deliberadamente isolado aqui;
-o caller (``StandupCommand.execute``) faz ``asyncio.to_thread`` para
-não bloquear o event loop. Nenhuma dependência de Rich, model_router
-ou outros subsistemas — coleta é fim em si mesmo, presentation e LLM
-ficam no módulo principal.
+Pilar 03 §1 (Async-first) + §2 (Hexagonal): commit collection (``git
+log``) keeps a synchronous subprocess path wrapped in
+``asyncio.to_thread`` inside :func:`collect_standup_data`; PR/issue
+collection delegates to :class:`GitHubClient` (the existing pipeline
+adapter) instead of running ``gh`` directly — so the command stays in
+the domain layer and the gh CLI transport lives in one place.
+
+Git/gh pre-condition gates (`ensure_git_repo`, `ensure_gh_authenticated`)
+come from :mod:`._git_helpers` and are re-exported here for tests that
+patch the module namespace.
 """
 
 from __future__ import annotations
 
-import json
+import asyncio
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List
 
 from ...core.exceptions import CommandError
+from ._git_helpers import ensure_gh_authenticated  # noqa: F401 — re-exported
+from ._git_helpers import ensure_git_repo
+
+if TYPE_CHECKING:
+    from ...orchestration.pipeline.github_client import GitHubClient
+
+
+# Parses both HTTPS (``https://github.com/owner/name(.git)?``) and SSH
+# (``git@github.com:owner/name(.git)?``) remote URLs to ``owner/name``.
+_REMOTE_RE = re.compile(
+    r"^(?:https?://github\.com/|git@github\.com:)"
+    r"(?P<owner>[A-Za-z0-9._-]+)/(?P<name>[A-Za-z0-9._-]+?)"
+    r"(?:\.git)?/?\s*$"
+)
 
 
 @dataclass
@@ -64,36 +82,38 @@ def parse_args(args: str) -> str:
     return "24h"
 
 
-def _ensure_git_repo() -> None:
-    if not shutil.which("git"):
-        raise CommandError("Git não está instalado.")
+def _resolve_repo_from_git(*, timeout: int = 10) -> str:
+    """Infere ``owner/name`` a partir de ``git remote get-url origin``.
+
+    Aceita URLs HTTPS (``https://github.com/owner/name(.git)?``) e SSH
+    (``git@github.com:owner/name(.git)?``). Levanta :class:`CommandError`
+    com mensagem PT-BR quando ``git`` falha ou o remote não bate com o
+    formato esperado de GitHub.
+    """
     try:
         res = subprocess.run(
-            ["git", "rev-parse", "--is-inside-work-tree"],
+            ["git", "remote", "get-url", "origin"],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=timeout,
         )
-    except subprocess.TimeoutExpired as exc:
-        raise CommandError("git rev-parse excedeu o timeout (10s).") from exc
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        raise CommandError(
+            "não consegui ler o remote origin (git falhou): " f"{exc}"
+        ) from exc
+
     if res.returncode != 0:
-        raise CommandError("O diretório atual não é um repositório git.")
-
-
-def _ensure_gh_available() -> None:
-    if not shutil.which("gh"):
-        raise CommandError("GitHub CLI (gh) não está instalada.")
-    try:
-        res = subprocess.run(
-            ["gh", "auth", "status"],
-            capture_output=True,
-            text=True,
-            timeout=15,
+        raise CommandError(
+            "não consegui detectar o repo GitHub a partir do remote origin "
+            f"(rc={res.returncode}): {(res.stderr or '').strip()}"
         )
-    except subprocess.TimeoutExpired as exc:
-        raise CommandError("gh auth status excedeu o timeout (15s).") from exc
-    if res.returncode != 0:
-        raise CommandError("CLI do GitHub (gh) não está autenticada.")
+    match = _REMOTE_RE.match(res.stdout)
+    if not match:
+        raise CommandError(
+            "não consegui detectar o repo GitHub a partir do remote origin "
+            f"(formato não reconhecido): {res.stdout.strip()!r}"
+        )
+    return f"{match.group('owner')}/{match.group('name')}"
 
 
 def collect_commits(since_iso: str) -> List[Dict[str, str]]:
@@ -118,76 +138,46 @@ def collect_commits(since_iso: str) -> List[Dict[str, str]]:
     return commits
 
 
-def _collect_gh_items(verb: str, since_iso: str) -> List[Dict[str, Any]]:
-    """Coleta itens via ``gh <verb> list`` filtrados por ``updated:>=``.
+async def collect_prs(client: "GitHubClient", since_iso: str) -> List[Dict[str, Any]]:
+    """Delega ao adapter (``GitHubClient.list_prs_updated_since``).
 
-    Compartilhado por :func:`collect_prs` (``verb='pr'``) e
-    :func:`collect_issues` (``verb='issue'``) — ambos chamavam ``gh`` com
-    a mesma forma de comando, mesmos campos JSON e mesma normalização
-    de autor. Devolve ``[]`` em qualquer falha (returncode != 0 ou JSON
-    inválido) — o caller decide se isso é um erro.
+    Pilar 03 §2 (Hexagonal): o command não fala ``gh`` diretamente — o
+    transporte vive no :class:`GitHubClient` que já trata erros tipados e
+    retorna lista vazia em falha. A normalização (``author`` flatten,
+    ``updated_at`` snake_case) acontece dentro do adapter.
     """
-    try:
-        res = subprocess.run(
-            [
-                "gh",
-                verb,
-                "list",
-                "--state",
-                "all",
-                "--search",
-                f"updated:>={since_iso}",
-                "--json",
-                "number,title,state,author,url,updatedAt",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except subprocess.TimeoutExpired:
-        return []
-    if res.returncode != 0:
-        return []
-    try:
-        data = json.loads(res.stdout)
-    except json.JSONDecodeError:
-        return []
-    items: List[Dict[str, Any]] = []
-    for item in data:
-        author = item.get("author")
-        author_name = author.get("login") if isinstance(author, dict) else "?"
-        items.append(
-            {
-                "number": item.get("number"),
-                "title": item.get("title"),
-                "state": item.get("state"),
-                "author": author_name,
-                "url": item.get("url", ""),
-                "updated_at": item.get("updatedAt", ""),
-            }
-        )
-    return items
+    return await client.list_prs_updated_since(since_iso)
 
 
-def collect_prs(since_iso: str) -> List[Dict[str, Any]]:
-    return _collect_gh_items("pr", since_iso)
+async def collect_issues(client: "GitHubClient", since_iso: str) -> List[Dict[str, Any]]:
+    """Companion de :func:`collect_prs` para issues."""
+    return await client.list_issues_updated_since(since_iso)
 
 
-def collect_issues(since_iso: str) -> List[Dict[str, Any]]:
-    return _collect_gh_items("issue", since_iso)
+async def collect_standup_data(since_spec: str) -> StandupData:
+    """Orquestra a coleta de commits + PRs + issues em uma janela.
 
-
-def collect_standup_data(since_spec: str) -> StandupData:
-    _ensure_git_repo()
-    _ensure_gh_available()
+    Async para acessar os helpers do adapter (PRs/issues) sem aninhar
+    ``asyncio.run``. Commits permanecem síncronos (``git log``) e rodam em
+    :func:`asyncio.to_thread` para não bloquear o event loop.
+    """
+    # Pre-condition gates — git/gh disponíveis e autenticados.
+    ensure_git_repo()
+    ensure_gh_authenticated()
 
     delta = parse_since(since_spec)
     since_date = datetime.now(timezone.utc) - delta
     since_iso = since_date.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    commits = collect_commits(since_iso)
-    prs = collect_prs(since_iso)
-    issues = collect_issues(since_iso)
+    # Late import — evita ciclo de import no carregamento do command package.
+    from ...orchestration.pipeline.github_client import GitHubClient
+
+    repo = _resolve_repo_from_git()
+    client = GitHubClient(repo)
+
+    commits = await asyncio.to_thread(collect_commits, since_iso)
+    prs = await collect_prs(client, since_iso)
+    issues = await collect_issues(client, since_iso)
 
     return StandupData(
         since_spec=since_spec,

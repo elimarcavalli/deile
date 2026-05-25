@@ -15,13 +15,11 @@ iteration.
 from __future__ import annotations
 
 from datetime import datetime
-from unittest.mock import patch
 
 import pytest
 
 from deile.orchestration.plan_manager import (ExecutionPlan, PlanManager,
-                                              PlanStatus, PlanStep,
-                                              StepStatus)
+                                              PlanStatus, PlanStep, StepStatus)
 from deile.tools.base import (SecurityLevel, SyncTool, ToolCategory,
                               ToolContext, ToolResult, ToolSchema)
 

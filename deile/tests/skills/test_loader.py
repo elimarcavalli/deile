@@ -15,12 +15,8 @@ from pathlib import Path
 import pytest
 
 from deile.skills.base import Skill
-from deile.skills.loader import (
-    SkillLoader,
-    SkillLoadError,
-    normalize_name,
-    parse_skill_text,
-)
+from deile.skills.loader import (SkillLoader, SkillLoadError, normalize_name,
+                                 parse_skill_text)
 
 
 @pytest.fixture

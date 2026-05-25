@@ -16,8 +16,6 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import MagicMock
 
-import pytest
-
 from deile.core.models.routing_strategies import (RoutingContext,
                                                   RoutingStrategy,
                                                   RoutingStrategySelector)

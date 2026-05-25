@@ -12,8 +12,6 @@ This adds an ``unsubscribe_all`` API and verifies it removes the handler.
 
 from __future__ import annotations
 
-import pytest
-
 from deile.events.event_bus import Event, EventBus, EventType
 
 

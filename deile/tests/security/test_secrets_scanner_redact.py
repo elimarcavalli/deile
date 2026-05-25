@@ -14,8 +14,6 @@ character count matches what's being overwritten.
 
 from __future__ import annotations
 
-import pytest
-
 from deile.security.secrets_scanner import SecretsScanner
 
 

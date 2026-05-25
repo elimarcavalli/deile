@@ -27,7 +27,6 @@ import time
 
 import pytest
 
-
 # Skip the whole file unless explicitly opted-in to live runs.
 pytestmark = pytest.mark.skipif(
     os.environ.get("DEEPSEEK_LIVE") != "1",
@@ -41,8 +40,8 @@ def _emit(label: str, value) -> None:
 
 def _build_provider():
     """Construct a real DeepSeekProvider bound to v4-flash."""
-    from deile.core.models.catalog import ModelHandle, ModelPricing
     from deile.core.models.base import ModelTier
+    from deile.core.models.catalog import ModelHandle, ModelPricing
     from deile.core.models.deepseek_provider import DeepSeekProvider
     from deile.core.models.provider_config import ProviderConfig
 
@@ -109,7 +108,7 @@ async def test_live_basic_generate():
 
 async def test_live_cost_cached_token_formula():
     """Verify the formula manually against real usage numbers."""
-    from deile.core.models.base import ModelMessage, ModelUsage
+    from deile.core.models.base import ModelMessage
 
     print("\n=== 2) cost-cached-token formula sanity ===")
     provider = _build_provider()
@@ -215,10 +214,10 @@ async def test_live_plan_manager_timeout_with_real_tool():
     """Prove PlanManager._run_tool_with_params keeps the loop alive across
     a step that internally awaits a real LLM call."""
     print("\n=== 5) PlanManager step over real LLM (loop liveness) ===")
-    from deile.tools.base import (SecurityLevel, ToolCategory, Tool,
-                                  ToolContext, ToolResult, ToolSchema)
-    from deile.orchestration.plan_manager import PlanManager
     from deile.core.models.base import ModelMessage
+    from deile.orchestration.plan_manager import PlanManager
+    from deile.tools.base import (SecurityLevel, Tool, ToolCategory,
+                                  ToolContext, ToolResult, ToolSchema)
 
     provider = _build_provider()
 

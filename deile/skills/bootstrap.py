@@ -22,7 +22,8 @@ from .discovery import discover_skills
 from .language_detector import LanguageDetector
 from .registry import get_skill_registry
 from .router import SkillRouter
-from .slash_command_bridge import register_skills_as_commands, unregister_skill_commands
+from .slash_command_bridge import (register_skills_as_commands,
+                                   unregister_skill_commands)
 from .watcher import SkillsWatcher
 
 logger = logging.getLogger(__name__)

@@ -7,11 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from deile.skills.bootstrap import (
-    BootstrapResult,
-    bootstrap_skills,
-    bootstrap_skills_with_handle,
-)
+from deile.skills.bootstrap import (BootstrapResult, bootstrap_skills,
+                                    bootstrap_skills_with_handle)
 from deile.skills.config import SkillsConfig, load_skills_config
 from deile.skills.registry import get_skill_registry, reset_skill_registry
 

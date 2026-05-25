@@ -11,9 +11,7 @@ count. The value is surfaced to users via ``/memory compact``.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
-
-import pytest
+from unittest.mock import MagicMock
 
 from deile.memory.memory_consolidation import MemoryConsolidator
 from deile.memory.working_memory import WorkingMemory

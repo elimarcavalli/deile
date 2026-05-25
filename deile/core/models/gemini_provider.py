@@ -563,7 +563,20 @@ class GeminiProvider(ModelProvider):
                 }
             },
         )
-    
+
+    def format_user_file_part(self, file_uri: str, mime_type: str = "text/plain") -> Any:
+        """Build the SDK-specific ``genai.types.File`` part to attach to a user message.
+
+        Keeps the ``google.genai`` import isolated inside the provider adapter
+        (Pilar 03 §2 — Hexagonal). The agent passes neutral dict/dataclass
+        fields (uri + mime type) and this method materializes the SDK object.
+        """
+        return types.File(
+            name=file_uri.split('/')[-1],
+            uri=file_uri,
+            mime_type=mime_type,
+        )
+
     async def validate_config(self) -> bool:
         """Valida configuração do provedor"""
         try:

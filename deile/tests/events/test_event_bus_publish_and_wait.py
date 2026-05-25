@@ -17,9 +17,7 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
-
-from deile.events.event_bus import (Event, EventBus, EventPriority, EventType)
+from deile.events.event_bus import Event, EventBus, EventType
 
 
 async def test_publish_and_wait_returns_true_only_after_handler_runs() -> None:

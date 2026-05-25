@@ -8,11 +8,8 @@ import pytest
 
 from deile.skills.base import Skill, SkillTrigger
 from deile.skills.registry import SkillRegistry
-from deile.skills.router import (
-    SkillRouter,
-    SkillSelectionContext,
-    _resolve_within,
-)
+from deile.skills.router import (SkillRouter, SkillSelectionContext,
+                                 _resolve_within)
 
 
 def _skill(name: str, *, globs=None, langs=None, priority: int = 0, **trigger_kwargs) -> Skill:

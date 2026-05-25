@@ -20,10 +20,8 @@ from typing import Any, Callable, Iterable, List, Optional
 
 from .discovery import default_scan_order, discover_skills_sync
 from .registry import get_skill_registry
-from .slash_command_bridge import (
-    register_skills_as_commands,
-    unregister_skill_commands,
-)
+from .slash_command_bridge import (register_skills_as_commands,
+                                   unregister_skill_commands)
 
 logger = logging.getLogger(__name__)
 

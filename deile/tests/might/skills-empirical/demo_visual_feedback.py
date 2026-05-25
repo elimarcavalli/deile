@@ -104,7 +104,7 @@ async def main():
         print(f"  {i:2d}. iter={it} {marker} {label}")
 
     print()
-    print(f"ALSO IN LOG OUTPUT this turn:")
+    print("ALSO IN LOG OUTPUT this turn:")
     for line in log_buffer.getvalue().splitlines():
         if "skill" in line.lower():
             print(f"  {line}")

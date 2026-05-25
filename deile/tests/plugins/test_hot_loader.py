@@ -17,8 +17,6 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
-
 from deile.plugins.hot_loader import HotLoader, PluginFileHandler
 
 

@@ -16,7 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 def _make_command(skill: Skill):
-    from ..commands.base import CommandContext, CommandResult, CommandStatus, SlashCommand
+    from ..commands.base import (CommandContext, CommandResult, CommandStatus,
+                                 SlashCommand)
     from ..config.manager import CommandConfig
 
     class _SkillCommand(SlashCommand):

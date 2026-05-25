@@ -15,8 +15,6 @@ from __future__ import annotations
 import asyncio
 import gc
 
-import pytest
-
 from deile.memory.memory_manager import MemoryConfiguration, MemoryManager
 
 

@@ -15,7 +15,6 @@ Fix: fall back to an absolute path string when ``relative_to`` fails.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 

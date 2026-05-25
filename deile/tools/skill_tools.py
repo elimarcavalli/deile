@@ -13,14 +13,8 @@ from typing import List
 
 from ..skills.registry import get_skill_registry
 from ..skills.router import _trigger_hint
-from .base import (
-    SecurityLevel,
-    Tool,
-    ToolCategory,
-    ToolContext,
-    ToolResult,
-    ToolSchema,
-)
+from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
+                   ToolSchema)
 
 logger = logging.getLogger(__name__)
 

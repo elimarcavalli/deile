@@ -14,18 +14,19 @@ from typing import TYPE_CHECKING, List, Optional
 
 from ..skills.base import Skill as _Skill
 from ..skills.discovery import discover_skills_sync
-from ..skills.loader import (
-    _FRONTMATTER_RE,  # noqa: F401 — re-exported for legacy callers
-    _VALID_NAME_RE,  # noqa: F401 — re-exported for legacy callers
-    _list_md_files,  # noqa: F401 — re-exported for legacy callers
-    normalize_name as _normalize_name,  # noqa: F401 — re-exported for legacy callers
-    parse_skill_text,
-)
+from ..skills.loader import \
+    _FRONTMATTER_RE  # noqa: F401 — re-exported for legacy callers
+from ..skills.loader import \
+    _VALID_NAME_RE  # noqa: F401 — re-exported for legacy callers
+from ..skills.loader import \
+    _list_md_files  # noqa: F401 — re-exported for legacy callers
+from ..skills.loader import \
+    normalize_name as \
+    _normalize_name  # noqa: F401 — re-exported for legacy callers
+from ..skills.loader import parse_skill_text
 from ..skills.registry import get_skill_registry
-from ..skills.slash_command_bridge import (
-    register_skills_as_commands,
-    unregister_skill_commands,
-)
+from ..skills.slash_command_bridge import (register_skills_as_commands,
+                                           unregister_skill_commands)
 
 if TYPE_CHECKING:
     from .settings_manager import SettingsManager

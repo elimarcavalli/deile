@@ -21,7 +21,6 @@ import pytest
 
 from deile.tools.bash_tool import BashExecuteTool
 
-
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="PTY path is Unix-only"
 )

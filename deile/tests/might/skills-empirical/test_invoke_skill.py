@@ -41,7 +41,8 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(PROJECT_ROOT / ".env")
 
 from deile.config.manager import ConfigManager  # noqa: E402
-from deile.core.agent import DeileAgent, _normalize_history_content  # noqa: E402
+from deile.core.agent import (DeileAgent,  # noqa: E402
+                              _normalize_history_content)
 from deile.core.models.bootstrap import bootstrap_providers  # noqa: E402
 from deile.core.models.router import get_model_router  # noqa: E402
 

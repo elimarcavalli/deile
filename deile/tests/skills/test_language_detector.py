@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from deile.skills.language_detector import LanguageDetector, default_extension_map
+from deile.skills.language_detector import (LanguageDetector,
+                                            default_extension_map)
 
 
 @pytest.mark.unit
