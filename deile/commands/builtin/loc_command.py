@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections import defaultdict
@@ -82,51 +83,78 @@ class LocCommand(DirectCommand):
                         pass
         return count
 
-    async def execute(self, context: CommandContext) -> CommandResult:
-        """Renderiza estatísticas do código-base."""
-        cwd = context.working_directory or os.getcwd()
-        
+    def _collect_stats(self, cwd: str) -> dict:
+        """Coleta estatísticas do código-base — I/O bloqueante isolado.
+
+        Executa ``git ls-files``, abre cada arquivo versionado para contar
+        linhas e varre ``deile/tests`` com ``os.walk`` + ``open`` para contar
+        funções de teste. Todo o trabalho é síncrono e bloqueante; o
+        ``execute()`` despacha esta função via ``asyncio.to_thread`` para
+        não travar o event loop (pilar 03 §1).
+        """
         files = self._get_git_files(cwd)
-        
-        lang_stats = defaultdict(lambda: {"files": 0, "lines": 0})
-        file_sizes = []
-        
+
+        lang_stats: dict[str, dict[str, int]] = defaultdict(lambda: {"files": 0, "lines": 0})
+        file_sizes: list[tuple[str, int]] = []
+
         total_files = 0
         total_lines = 0
-        
+
         for file in files:
             filepath = os.path.join(cwd, file)
             if not os.path.isfile(filepath):
                 continue
-                
+
             lines = self._count_lines(filepath)
             lang = self._get_language(file)
-            
+
             lang_stats[lang]["files"] += 1
             lang_stats[lang]["lines"] += lines
-            
+
             file_sizes.append((file, lines))
-            
+
             total_files += 1
             total_lines += lines
-            
+
+        total_tests = self._count_tests(cwd)
+
+        return {
+            "lang_stats": lang_stats,
+            "file_sizes": file_sizes,
+            "total_files": total_files,
+            "total_lines": total_lines,
+            "total_tests": total_tests,
+        }
+
+    async def execute(self, context: CommandContext) -> CommandResult:
+        """Renderiza estatísticas do código-base."""
+        cwd = context.working_directory or os.getcwd()
+
+        # Toda coleta (git ls-files + open por arquivo + os.walk +
+        # open por arquivo de teste) é I/O bloqueante; off-load para
+        # uma worker thread mantém o event loop responsivo
+        # (pilar 03 §1, alinhado com /todo).
+        stats = await asyncio.to_thread(self._collect_stats, cwd)
+        lang_stats = stats["lang_stats"]
+        file_sizes = stats["file_sizes"]
+        total_files = stats["total_files"]
+        total_lines = stats["total_lines"]
+        total_tests = stats["total_tests"]
+
         # Ordenar linguagens por número de linhas (decrescente)
         sorted_langs = sorted(lang_stats.items(), key=lambda x: x[1]["lines"], reverse=True)
-        
+
         # Top 5 maiores arquivos
         top_files = sorted(file_sizes, key=lambda x: x[1], reverse=True)[:5]
-        
-        # Total de testes
-        total_tests = self._count_tests(cwd)
-        
+
         # --- Tabela de Linguagens ---
         table = Table(title="Linhas por linguagem", title_justify="left")
         table.add_column("Linguagem", style="cyan")
         table.add_column("Arquivos", justify="right", style="green")
         table.add_column("Linhas", justify="right", style="yellow")
         
-        for lang, stats in sorted_langs:
-            table.add_row(lang, str(stats["files"]), str(stats["lines"]))
+        for lang, lang_row in sorted_langs:
+            table.add_row(lang, str(lang_row["files"]), str(lang_row["lines"]))
             
         # --- Top 5 Arquivos ---
         top_files_text = Text()

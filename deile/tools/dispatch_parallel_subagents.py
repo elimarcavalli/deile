@@ -38,15 +38,17 @@ import contextvars
 import logging
 import time
 from collections import OrderedDict
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from deile.config.settings import get_settings
 from deile.orchestration.subagents import (HISTORY_MARKER_KEY,
                                            SubAgentOrchestrator, SubAgentTask,
                                            resolve_runner)
+from deile.orchestration.subagents._loop_lock import LoopBoundLock
 from deile.orchestration.subagents.events import SubAgentState
 from deile.orchestration.subagents.orchestrator import _get_budget_s
 
+from ._dispatch_cooldown import is_in_cooldown, prune_expired, record_dispatch
 from .base import (SecurityLevel, Tool, ToolCategory, ToolContext, ToolResult,
                    ToolSchema)
 
@@ -105,16 +107,9 @@ class DispatchParallelSubagentsTool(Tool):
     # de 256 evita o problema sem custar mais que O(1) por acesso.
     _SESSION_LOCKS: "OrderedDict[str, asyncio.Lock]" = OrderedDict()
     _SESSION_LOCKS_MAX: int = 256
-    # MA5 (iter 2 review): lock-guarda é lazy-inicializado por event-loop —
-    # ``asyncio.Lock()`` em escopo de classe ficaria bound ao loop do primeiro
-    # ``__aenter__``, quebrando em testes / processos que usam múltiplos
-    # ``asyncio.run()`` invocados em loops distintos.
-    #
-    # NT1 (iter-3 review): trocamos a inspeção de ``getattr(lock, "_loop", ...)``
-    # (CPython-private) por rastreio explícito do ``id(loop)`` que criou o lock.
-    # Mesma semântica, sem depender de API interna que pode mudar entre versões.
-    _SESSION_LOCKS_GUARD: Optional[asyncio.Lock] = None
-    _SESSION_LOCKS_GUARD_LOOP_ID: Optional[int] = None
+    # Loop-bound lock-guard for session-lock creation; see
+    # :class:`LoopBoundLock` for the rebinding semantics.
+    _SESSION_LOCKS_GUARD_HOLDER: LoopBoundLock = LoopBoundLock()
 
     @property
     def name(self) -> str:
@@ -240,8 +235,11 @@ class DispatchParallelSubagentsTool(Tool):
             async with session_lock:
                 now = time.monotonic()
                 self._prune_expired(now)
-                last = self._LAST_DISPATCH.get(session_id)
-                if last is not None and (now - last) < self._DISPATCH_COOLDOWN_S:
+                if is_in_cooldown(
+                    self._LAST_DISPATCH, session_id,
+                    self._DISPATCH_COOLDOWN_S, now,
+                ):
+                    last = self._LAST_DISPATCH[session_id]
                     remaining = self._DISPATCH_COOLDOWN_S - (now - last)
                     return ToolResult.error_result(
                         f"dispatch_parallel_subagents já foi chamado há {now-last:.0f}s; "
@@ -250,7 +248,7 @@ class DispatchParallelSubagentsTool(Tool):
                         f"diferente.",
                         error_code="DISPATCH_COOLDOWN",
                     )
-                self._LAST_DISPATCH[session_id] = now
+                record_dispatch(self._LAST_DISPATCH, session_id, now)
 
             # Resolve agent + runner + orquestrador.
             agent = context.session_data.get("_agent")
@@ -442,47 +440,25 @@ class DispatchParallelSubagentsTool(Tool):
                 tool_name=self.name,
             )
         except Exception:  # audit must never crash the tool
-            logger.debug("audit emission failed", exc_info=True)
+            # Item 14: degradation in the audit trail must not be invisible —
+            # surface as a warning so operators notice missing trail entries.
+            logger.warning("audit emission failed", exc_info=True)
 
     @classmethod
     def _prune_expired(cls, now: float) -> None:
         cutoff = cls._DISPATCH_COOLDOWN_S * 10
-        stale = [sid for sid, ts in cls._LAST_DISPATCH.items() if (now - ts) > cutoff]
-        for sid in stale:
-            cls._LAST_DISPATCH.pop(sid, None)
+        prune_expired(cls._LAST_DISPATCH, cutoff, now)
 
     @classmethod
     def _get_locks_guard(cls) -> asyncio.Lock:
         """Lazy-init do lock-guarda por event loop (MA5 — iter-2 review).
 
-        ``asyncio.Lock()`` em escopo de classe ``binda`` ao loop do primeiro
-        ``__aenter__``; uso em múltiplos loops (testes, ``asyncio.run`` repetido)
-        levanta ``RuntimeError: ... is bound to a different event loop``.
-        Resolve criando o lock no primeiro acesso *do loop corrente* e
-        re-criando se o loop mudou.
-
-        NT1 (iter-3 review): em vez de inspecionar ``Lock._loop`` (API privada
-        do CPython, sem garantia de estabilidade entre versões), guardamos o
-        ``id(loop)`` que originalmente criou o lock e comparamos com o ``id``
-        do loop corrente. Mesma semântica, sem depender de internals.
+        Delega a :class:`LoopBoundLock`, que cria/troca o Lock conforme o
+        loop muda — evitando ``RuntimeError: ... is bound to a different
+        event loop`` em múltiplos ``asyncio.run()`` (testes loop-per-test,
+        CLI ``_run_self_install`` + ``_run_oneshot``).
         """
-        try:
-            loop = asyncio.get_running_loop()
-            loop_id: Optional[int] = id(loop)
-        except RuntimeError:  # pragma: no cover — chamado fora de async
-            loop_id = None
-        needs_new = cls._SESSION_LOCKS_GUARD is None
-        if (
-            not needs_new
-            and loop_id is not None
-            and cls._SESSION_LOCKS_GUARD_LOOP_ID is not None
-            and cls._SESSION_LOCKS_GUARD_LOOP_ID != loop_id
-        ):
-            needs_new = True
-        if needs_new:
-            cls._SESSION_LOCKS_GUARD = asyncio.Lock()
-            cls._SESSION_LOCKS_GUARD_LOOP_ID = loop_id
-        return cls._SESSION_LOCKS_GUARD
+        return cls._SESSION_LOCKS_GUARD_HOLDER.get()
 
     @classmethod
     async def _get_session_lock(cls, session_id: str) -> asyncio.Lock:
@@ -682,13 +658,24 @@ def _safe_truncate_markdown(text: str, max_chars: int = 400) -> str:
         if cut > 0:
             cut += 1  # inclui o ponto
     if cut < 0:
-        cut = max_chars - 1
-        truncated = text[:cut].rstrip() + "…"
+        # No good break — delegate to the shared truncate helper for the
+        # ellipsis-aware cut (keeps the single-source-of-truth for the
+        # ellipsis char/width).
+        from deile.common.text_utils import truncate
+        truncated = truncate(text, max_chars)
     else:
         truncated = text[:cut].rstrip()
     # Se ficou com code-fence aberta (número ímpar de ```), fecha.
     if truncated.count("```") % 2 == 1:
         truncated += "\n```"
+    # Item 15 — known limitation: unmatched ``[`` (link), ``*``/``_``
+    # (emphasis), or ``<`` (html-ish) sequences cut mid-token are NOT
+    # rebalanced here. They can leak into the LLM's consolidation context
+    # as syntactically-invalid markdown but the downstream renderer treats
+    # them as literal text — not a prompt-injection vector in this
+    # codebase because ``summary_for_llm`` is delivered as a tool-result
+    # payload, not interpreted as new instructions. Full markdown
+    # rebalancing would require a real tokenizer; intentionally deferred.
     return truncated
 
 

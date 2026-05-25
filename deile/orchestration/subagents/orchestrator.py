@@ -43,8 +43,21 @@ from typing import Any, Callable, ClassVar, List, Literal, Optional, TextIO
 
 from deile.config.settings import get_settings
 
+from ._capture import (CappedBuffer, _capture_lock_holder,
+                       get_capture_buffer_max_bytes, get_capture_lock)
+from ._loop_lock import LoopBoundLock
 from .events import SubAgentEvent, SubAgentState, SubAgentTask
 from .runner import SubAgentRunner
+
+# Aliases para retrocompat — testes importam estes nomes privados (item 9 —
+# SRP extract). A classe/função canônica vive em ``_capture``; mantemos os
+# nomes históricos exportados deste módulo para não quebrar importadores.
+#
+# Removal criterion: drop when ``grep -r '_CappedBuffer\|_get_capture_buffer_max_bytes'
+# --include='*.py' deile/`` shows zero hits outside this module. As of 2026-05-25
+# only ``deile/tests/orchestration/test_subagent_orchestrator.py`` consumes them.
+_CappedBuffer = CappedBuffer
+_get_capture_buffer_max_bytes = get_capture_buffer_max_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -72,12 +85,6 @@ def get_max_subagent_budget_s() -> float:
     leitura via :func:`get_settings` (Pilar 9 — configuração centralizada).
     """
     return _get_budget_s()
-
-
-# Mantido como atributo private *snapshot-on-import* só para retrocompat
-# com callers/testes que importavam o nome — não deve ser usado em código
-# novo. Novos callers devem usar :func:`get_max_subagent_budget_s`.
-_MAX_SUBAGENT_BUDGET_S_SNAPSHOT: float = _get_budget_s()
 
 
 CancellationReason = Literal["user_esc", "budget_exceeded", "parent_cancel"]
@@ -109,82 +116,12 @@ class SubAgentResult:
         return self.error_count == 0 and not self.cancelled
 
     def consolidated_summary(self) -> str:
-        """Resumo curto agregado para o LLM (≤2KB).
-
-        Cada frente vira ~2 linhas: status + descrição + arquivos. NÃO inclui o
-        ``result_text`` completo — o LLM já viu o painel ao vivo e deve apenas
-        consolidar; despejar resultados longos satura o contexto e induz o LLM
-        a re-narrar (anti-padrão da issue #257).
-        """
-        lines: List[str] = []
-        header = (
-            f"sub-DEILEs paralelos · {self.ok_count} ok · "
-            f"{self.error_count} erro · {self.elapsed_s:.1f}s total"
-        )
-        if self.cancelled:
-            # NT5 (iter-3): discrimina a razão para o LLM/auditor.
-            reason_label = {
-                "user_esc": "cancelado pelo usuário (ESC)",
-                "budget_exceeded": "cancelado por budget estourado",
-                "parent_cancel": "cancelado pelo caller (parent)",
-            }.get(self.cancellation_reason or "", "cancelado")
-            header += f" · {reason_label}"
-        lines.append(header)
-        for st in self.states:
-            glyph = {"ok": "✅", "error": "❌", "cancelled": "⏹"}.get(st.status, "•")
-            files = ", ".join(st.files_touched[:5])
-            if len(st.files_touched) > 5:
-                files += f" (+{len(st.files_touched) - 5})"
-            head = f"  #{st.task.index} {glyph} {st.task.description}"
-            if files:
-                head += f" — {files}"
-            if st.elapsed_s:
-                head += f" · {st.elapsed_s:.1f}s"
-            lines.append(head)
-            if st.error:
-                lines.append(f"      erro: {st.error[:120]}")
-        full = "\n".join(lines)
-        return full[:2000]
+        from ._summary import render_consolidated
+        return render_consolidated(self)
 
     def markdown_summary(self) -> str:
-        """Versão markdown do resumo para gravar no histórico e replay.
-
-        Diferente do ``consolidated_summary``, este é renderizado num bloco
-        Markdown (a CLI replay usa ``ui.display_response`` que parseia
-        Markdown), então deve usar formatação rica e legível.
-        """
-        lines: List[str] = []
-        status_emoji = "✅" if self.ok_global else ("⏹" if self.cancelled else "⚠️")
-        header = (
-            f"{status_emoji} **Sub-DEILEs paralelos** · "
-            f"{self.ok_count} ok · {self.error_count} erro · "
-            f"{self.elapsed_s:.1f}s total"
-        )
-        if self.cancelled and self.cancellation_reason:
-            # NT5 (iter-3): inclui razão tipada no markdown — replay/audit
-            # via /resume vê qual cancel-path foi seguido.
-            reason_label = {
-                "user_esc": "ESC do usuário",
-                "budget_exceeded": "budget estourado",
-                "parent_cancel": "cancelado pelo caller",
-            }.get(self.cancellation_reason, self.cancellation_reason)
-            header += f" · _{reason_label}_"
-        lines.append(header)
-        lines.append("")
-        for st in self.states:
-            glyph = {"ok": "✅", "error": "❌", "cancelled": "⏹"}.get(st.status, "•")
-            line = f"- {glyph} **#{st.task.index} {st.task.description}**"
-            if st.elapsed_s:
-                line += f" _({st.elapsed_s:.1f}s)_"
-            lines.append(line)
-            if st.files_touched:
-                files = ", ".join(f"`{f}`" for f in st.files_touched[:5])
-                if len(st.files_touched) > 5:
-                    files += f" _(+{len(st.files_touched) - 5})_"
-                lines.append(f"  - Arquivos: {files}")
-            if st.error:
-                lines.append(f"  - Erro: `{st.error[:200]}`")
-        return "\n".join(lines)
+        from ._summary import render_markdown
+        return render_markdown(self)
 
 
 class _Broadcast:
@@ -206,95 +143,6 @@ class _Broadcast:
                 cb(evt)
             except Exception:  # noqa: BLE001 — never break runner on UI bugs
                 logger.exception("SubAgentEvent subscriber raised")
-
-
-# Cap do buffer de stdout/stderr capturados — sub-DEILE pode rodar
-# ``apt install`` ou ``npm install`` que despeja MB de output. Sem o cap,
-# 5 sub-DEILEs em paralelo manteriam dezenas de MB em RAM até o resultado
-# ser devolvido (e o ``data`` da tool é truncado em ``summary[:400]``
-# downstream — o buffer completo é desperdício). Cap por stream.
-#
-# Iter-2 review: lê de Settings (``subagent.capture_buffer_max_bytes``)
-# com fallback para o default histórico (256 KiB). Hard-coded literals
-# em domínio violam Pilar 9 (configuração centralizada).
-def _get_capture_buffer_max_bytes() -> int:
-    return int(getattr(get_settings(), "subagent_capture_buffer_max_bytes", 256 * 1024))
-
-
-# NT3 (iter-3 review): a constante ``_CAPTURE_BUFFER_MAX_BYTES_SNAPSHOT``
-# é capturada no momento do import — overrides posteriores via env/settings
-# eram ignorados pelo default do ``_CappedBuffer``. Mantida como private
-# para retrocompat em testes que importavam o nome; ``_CappedBuffer`` agora
-# usa ``None`` como sentinel e resolve via :func:`_get_capture_buffer_max_bytes`
-# em cada instância (lazy — respeita override em runtime).
-_CAPTURE_BUFFER_MAX_BYTES_SNAPSHOT: int = _get_capture_buffer_max_bytes()
-
-
-class _CappedBuffer:
-    """``TextIO`` write-only com limite de tamanho.
-
-    Mantém os primeiros ``max_bytes`` caracteres; descarta o resto sem
-    quebrar ``print()`` / ``subprocess`` line-buffering. Após o limite,
-    escreve uma única marca ``[...truncated]`` na primeira tentativa pós-cap
-    pra deixar claro pra debug que algo foi cortado.
-
-    Issue #257 round 3 — substitui o ``StringIO`` unbounded original (C5).
-
-    NT3 (iter-3 review): ``max_bytes=None`` (default) faz o limite ser
-    resolvido lazy via :func:`_get_capture_buffer_max_bytes`, respeitando
-    overrides em runtime (env/settings). Antes, o default era o snapshot
-    capturado no momento do ``import`` do módulo — overrides posteriores
-    eram silenciosamente ignorados.
-    """
-
-    __slots__ = ("_chunks", "_size", "_max", "_truncated")
-
-    def __init__(self, max_bytes: Optional[int] = None) -> None:
-        if max_bytes is None:
-            max_bytes = _get_capture_buffer_max_bytes()
-        self._chunks: list = []
-        self._size: int = 0
-        self._max: int = max(0, int(max_bytes))
-        self._truncated: bool = False
-
-    def write(self, s: str) -> int:
-        if not isinstance(s, str):
-            s = str(s)
-        n = len(s)
-        if self._size >= self._max:
-            if not self._truncated:
-                self._chunks.append("\n[...truncated]\n")
-                self._truncated = True
-            return n  # report success per file protocol
-        # Espaço restante; pode ser tudo ou parte.
-        remaining = self._max - self._size
-        if n <= remaining:
-            self._chunks.append(s)
-            self._size += n
-        else:
-            self._chunks.append(s[:remaining])
-            self._chunks.append("\n[...truncated]\n")
-            self._size = self._max
-            self._truncated = True
-        return n
-
-    def flush(self) -> None:
-        return None
-
-    def writelines(self, lines) -> None:
-        for line in lines:
-            self.write(line)
-
-    def isatty(self) -> bool:
-        return False
-
-    @property
-    def encoding(self) -> str:
-        return "utf-8"
-
-    def getvalue(self) -> str:
-        """Retorna conteúdo agregado — compatível com ``io.StringIO.getvalue``."""
-        return "".join(self._chunks)
 
 
 class SubAgentOrchestrator:
@@ -335,9 +183,15 @@ class SubAgentOrchestrator:
     #
     # NT1 (iter-3 review): rastreamos o ``id(loop)`` que originalmente criou
     # o lock em vez de inspecionar ``Lock._loop`` (CPython-private). Mesma
-    # semântica, sem depender de API interna instável.
-    _CAPTURE_LOCK: ClassVar[Optional[asyncio.Lock]] = None
-    _CAPTURE_LOCK_LOOP_ID: ClassVar[Optional[int]] = None
+    # semântica, sem depender de API interna instável. Lógica encapsulada
+    # em :class:`LoopBoundLock` (compartilhada com
+    # ``DispatchParallelSubagentsTool._get_locks_guard``).
+    #
+    # Item 9 (SRP extract): a instância canônica vive em
+    # ``deile.orchestration.subagents._capture._capture_lock_holder``; o
+    # atributo de classe permanece como alias para retrocompat com testes
+    # que chamam ``SubAgentOrchestrator._CAPTURE_LOCK_HOLDER.reset()``.
+    _CAPTURE_LOCK_HOLDER: ClassVar[LoopBoundLock] = _capture_lock_holder
 
     def __init__(
         self,
@@ -354,34 +208,18 @@ class SubAgentOrchestrator:
 
     @classmethod
     def _get_capture_lock(cls) -> asyncio.Lock:
-        """Lazy-init do ``_CAPTURE_LOCK`` por event loop (MA5 — iter-2).
+        """Lazy-init do lock de captura por event loop (MA5 — iter-2).
 
-        Cria o lock no primeiro uso; recria se o loop atual é diferente do
-        que originalmente bindou o lock anterior. Garante que múltiplos
-        ``asyncio.run()`` independentes (CLI sub-comandos, pytest loop-per-
-        test) não esbarrem em ``RuntimeError: bound to a different loop``.
+        Delega a :func:`deile.orchestration.subagents._capture.get_capture_lock`,
+        que encapsula o :class:`LoopBoundLock` singleton — cria/troca o Lock
+        conforme o loop muda, evitando ``RuntimeError: ... is bound to a
+        different event loop`` em múltiplos ``asyncio.run()`` (CLI
+        sub-comandos, pytest loop-per-test).
 
-        NT1 (iter-3 review): rastreia o ``id(loop)`` em vez de inspecionar
-        ``Lock._loop`` (API privada do CPython). Mesma semântica, sem
-        depender de internals que podem mudar entre versões.
+        Mantido como ``classmethod`` para retrocompat (callers/testes podem
+        invocar via ``SubAgentOrchestrator._get_capture_lock()``).
         """
-        try:
-            loop = asyncio.get_running_loop()
-            loop_id: Optional[int] = id(loop)
-        except RuntimeError:  # pragma: no cover — só chamado de async
-            loop_id = None
-        needs_new = cls._CAPTURE_LOCK is None
-        if (
-            not needs_new
-            and loop_id is not None
-            and cls._CAPTURE_LOCK_LOOP_ID is not None
-            and cls._CAPTURE_LOCK_LOOP_ID != loop_id
-        ):
-            needs_new = True
-        if needs_new:
-            cls._CAPTURE_LOCK = asyncio.Lock()
-            cls._CAPTURE_LOCK_LOOP_ID = loop_id
-        return cls._CAPTURE_LOCK
+        return get_capture_lock()
 
     async def run(self, tasks: List[SubAgentTask]) -> SubAgentResult:
         """Dispara ``tasks`` em paralelo e devolve o estado final agregado.
