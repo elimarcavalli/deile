@@ -48,12 +48,17 @@ import atexit
 import json
 import logging
 import os
+import sys
 import threading
 import uuid
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from deile.runtime.registry import Registry, RegistryEntry
+    from deile.runtime.status_server import StatusServer
 
 __all__ = [
     "InstanceState",
@@ -98,6 +103,12 @@ def _resolve_runtime_dir(override: Optional[Path]) -> Path:
     if env_val:
         return Path(env_val)
     return _DEFAULT_RUNTIME_DIR
+
+
+def _supports_status_server() -> bool:
+    """Status server (Unix socket) só roda em POSIX. Windows vira no-op
+    silencioso no :class:`InstanceState`, sem warning até :meth:`start`."""
+    return os.name == "posix" and sys.platform != "win32"
 
 
 def pid_alive(pid: int) -> bool:
@@ -152,6 +163,9 @@ class InstanceState:
         self,
         role: str,
         runtime_dir: Optional[Path] = None,
+        *,
+        enable_status_server: bool = True,
+        enable_registry: bool = True,
     ) -> None:
         if role not in VALID_ROLES:
             raise ValueError(
@@ -188,10 +202,42 @@ class InstanceState:
             },
         }
         self._flush_unlocked()
+
+        # Fase 2/3 (issue #303): status server + registry. Instanciados aqui
+        # mas o socket só é aberto em ``start_async_tasks`` (precisa do event
+        # loop). O registry é síncrono e roda imediatamente — o painel
+        # consegue ver o processo antes mesmo do bootstrap async terminar.
+        self._status_server: Optional["StatusServer"] = None
+        self._registry: Optional["Registry"] = None
+        if enable_status_server and _supports_status_server():
+            try:
+                from deile.runtime.status_server import StatusServer
+                self._status_server = StatusServer(self)
+            except Exception as exc:  # noqa: BLE001 — best-effort observability
+                logger.warning(
+                    "Falha ao instanciar StatusServer (id=%s): %s",
+                    self._instance_id, exc,
+                )
+                self._status_server = None
+        if enable_registry:
+            try:
+                from deile.runtime.registry import Registry
+                self._registry = Registry(
+                    registry_path=self._runtime_dir / "registry.json"
+                )
+                self._registry.register(self._build_registry_entry())
+            except Exception as exc:  # noqa: BLE001 — best-effort observability
+                logger.warning(
+                    "Falha ao registrar no Registry (id=%s): %s",
+                    self._instance_id, exc,
+                )
+                self._registry = None
+
         atexit.register(self.close)
         logger.debug(
-            "InstanceState created: id=%s path=%s pid=%s",
+            "InstanceState created: id=%s path=%s pid=%s status_server=%s registry=%s",
             self._instance_id, self._path, os.getpid(),
+            self._status_server is not None, self._registry is not None,
         )
 
     # ── identidade ────────────────────────────────────────────────────────
@@ -211,6 +257,70 @@ class InstanceState:
     @property
     def runtime_dir(self) -> Path:
         return self._runtime_dir
+
+    @property
+    def status_server(self) -> Optional["StatusServer"]:
+        """Acesso ao status server (None se desabilitado/Windows). Útil para
+        o bootstrap agendar :meth:`StatusServer.serve_forever` como task."""
+        return self._status_server
+
+    @property
+    def registry(self) -> Optional["Registry"]:
+        """Acesso ao registry (None se desabilitado). Útil para queries
+        ad-hoc no painel/diagnóstico."""
+        return self._registry
+
+    def _build_registry_entry(self) -> "RegistryEntry":
+        """Constrói a entry do registry com a identidade atual."""
+        from deile.runtime.registry import RegistryEntry
+        endpoint = ""
+        if self._status_server is not None:
+            try:
+                endpoint = self._status_server.endpoint
+            except Exception:  # noqa: BLE001
+                endpoint = ""
+        return RegistryEntry(
+            instance_id=self._instance_id,
+            pid=os.getpid(),
+            role=self._role,
+            started_at=str(self._state.get("started_at", "")),
+            endpoint=endpoint,
+            state_file=str(self._path),
+        )
+
+    # ── async lifecycle ───────────────────────────────────────────────────
+
+    async def start_async_tasks(
+        self, *, heartbeat_interval_s: float = 2.0,
+    ) -> List[asyncio.Task]:
+        """Inicia heartbeat + status server (se habilitado).
+
+        Devolve a lista de tasks asyncio criadas; o caller (bootstrap)
+        retém para cancelar limpo no shutdown. Padrão pensado para o
+        :class:`_DeileCLI`, mas qualquer processo (worker, bot, pipeline)
+        pode usar — único requisito é estar dentro de um event loop.
+
+        Idempotente: se as tasks já existem (caller chamou duas vezes),
+        cria as faltantes e devolve a união.
+        """
+        tasks: List[asyncio.Task] = []
+        tasks.append(asyncio.create_task(
+            self.heartbeat_loop(interval_s=heartbeat_interval_s),
+            name=f"hb-{self._instance_id}",
+        ))
+        if self._status_server is not None:
+            try:
+                await self._status_server.start()
+                tasks.append(asyncio.create_task(
+                    self._status_server.serve_forever(),
+                    name=f"ss-{self._instance_id}",
+                ))
+            except Exception as exc:  # noqa: BLE001 — observability best-effort
+                logger.warning(
+                    "StatusServer falhou ao iniciar (id=%s): %s",
+                    self._instance_id, exc,
+                )
+        return tasks
 
     # ── heartbeat ─────────────────────────────────────────────────────────
 
@@ -341,6 +451,13 @@ class InstanceState:
 
         Após ``close()``, mutadores viram no-op silencioso (não levantam),
         para tolerar chamadas tardias durante o teardown do interpretador.
+
+        Fase 2/3 (issue #303): também:
+          - deregistra do :class:`Registry` se ativo (síncrono);
+          - tenta parar o :class:`StatusServer` se ativo. Como ``close()`` é
+            síncrono (atexit), o stop assíncrono é feito best-effort:
+            agenda no event loop ativo se houver; caso contrário só apaga
+            o socket file (o OS limpa o resto).
         """
         with self._lock:
             if self._closed:
@@ -356,6 +473,60 @@ class InstanceState:
                         "InstanceState.close: could not remove %s: %s",
                         candidate, exc,
                     )
+
+        # Fora do lock: chamadas externas (Registry/StatusServer) podem
+        # tentar reentrar no state — e estamos no caminho de shutdown,
+        # ninguém deveria mais mutar.
+        if self._registry is not None:
+            try:
+                self._registry.deregister(self._instance_id)
+            except Exception as exc:  # noqa: BLE001 — shutdown não levanta
+                logger.debug(
+                    "Registry.deregister(%s) falhou: %s",
+                    self._instance_id, exc,
+                )
+        if self._status_server is not None:
+            self._shutdown_status_server_best_effort()
+
+    def _shutdown_status_server_best_effort(self) -> None:
+        """Para o status server respeitando o estado do event loop.
+
+        Casos:
+          1. Loop rodando → agenda ``stop()`` como task (fire-and-forget).
+             O caller do shutdown limpo (``_DeileCLI._shutdown_instance_state``)
+             prefere :meth:`StatusServer.stop` direto via ``await``.
+          2. Sem loop ativo (atexit) → apaga só o socket file. O servidor
+             em si será destruído com o processo; o file leftover sumiria
+             pelo restart limpo, mas removemos por boa cidadania.
+        """
+        server = self._status_server
+        if server is None:
+            return
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = None
+        if loop is not None and loop.is_running():
+            try:
+                loop.create_task(server.stop())
+                return
+            except RuntimeError:
+                pass
+        # Sem loop: melhor remover o socket file pra evitar leftover
+        # confundir o painel/outros processos.
+        try:
+            socket_path = server.socket_path
+        except AttributeError:
+            return
+        try:
+            socket_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.debug(
+                "InstanceState.close: socket unlink %s falhou: %s",
+                socket_path, exc,
+            )
 
     # ── internals ─────────────────────────────────────────────────────────
 

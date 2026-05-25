@@ -1872,8 +1872,35 @@ def _safe_float(v: Any) -> float:
         return 0.0
 
 
+def _try_load_status_client():
+    """Importa :class:`StatusClient` se o pacote ``deile`` estiver disponível.
+
+    O painel é desenhado pra rodar standalone (sem `pip install -e .`),
+    então a integração com Fase 2 da issue #303 é best-effort: se o
+    import falha, caímos no caminho legado (state file) sem reclamar.
+    """
+    try:
+        from deile.runtime.status_server import StatusClient  # noqa: PLC0415
+        return StatusClient
+    except Exception:  # noqa: BLE001 — degradação silenciosa
+        return None
+
+
+_STATUS_CLIENT_CLS = _try_load_status_client()
+
+
 class LocalInstancesProvider:
-    """Lê `<runtime_dir>/*.json` e devolve snapshots por PID.
+    """Lê `<runtime_dir>/*.json` (e opcionalmente o Unix socket Fase 2)
+    e devolve snapshots por PID.
+
+    Caminho preferencial (Fase 2 — issue #303): se o pacote `deile` está
+    importável (`StatusClient` disponível) E existe um socket
+    `<runtime_dir>/<instance_id>.sock`, o snapshot vem dele — mostra
+    estado mais fresco que o último flush do state file (current_action
+    pode estar segundos atrás no file mas é instantâneo no socket).
+    Em qualquer falha (socket ausente, timeout, payload inválido) caímos
+    no caminho legado: leitura do state file. Comportamento legado
+    é preservado para painéis rodando sem `deile` instalado.
 
     Cada arquivo é o state file de uma instância DEILE rodando no host
     (publicado pelo Agent A — issue #303). O provider parseia, valida o
@@ -1896,7 +1923,9 @@ class LocalInstancesProvider:
 
     def __init__(self, runtime_dir: Optional[Path] = None,
                  ttl_s: float = 2.0,
-                 stale_after_s: float = _INSTANCE_STALE_AFTER_S):
+                 stale_after_s: float = _INSTANCE_STALE_AFTER_S,
+                 socket_timeout_s: float = 0.25,
+                 prefer_socket: bool = True):
         # Resolução lazy: env var > param > default global. Faz lookup no
         # construtor (não no import) para os testes poderem monkeypatchar
         # `DEILE_RUNTIME_DIR` antes de instanciar o provider.
@@ -1905,6 +1934,10 @@ class LocalInstancesProvider:
             runtime_dir = Path(env) if env else RUNTIME_DIR
         self._runtime_dir = runtime_dir
         self._stale_after_s = stale_after_s
+        self._socket_timeout_s = socket_timeout_s
+        # `prefer_socket=False` força o caminho legado — útil em testes
+        # do próprio provider que querem isolar a leitura do file.
+        self._prefer_socket = bool(prefer_socket) and _STATUS_CLIENT_CLS is not None
         self._cache: Cache[Dict[int, InstanceSnapshot]] = Cache(
             ttl_s, self._fetch, fallback={},
         )
@@ -1952,25 +1985,30 @@ class LocalInstancesProvider:
 
     def _load_one(self, path: Path,
                   *, now: datetime) -> Optional[InstanceSnapshot]:
-        try:
-            raw = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            # Arquivo pode ter sumido entre `glob` e `read` — não loga
-            # como warning, é caso normal de Agent A reescrevendo.
-            logger.debug("instance file vanished: %s (%s)", path, exc)
-            return None
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            logger.warning(
-                "instance file malformed, skipping: %s (%s)", path, exc,
-            )
-            return None
-        if not isinstance(payload, dict):
-            logger.warning(
-                "instance file not a JSON object, skipping: %s", path,
-            )
-            return None
+        # Caminho preferencial (Fase 2): se o socket está vivo, puxamos
+        # diretamente — estado mais novo que o último flush. O socket
+        # path é derivado do nome do file: `<id>.json` ↔ `<id>.sock`.
+        payload = self._try_fetch_via_socket(path)
+        if payload is None:
+            try:
+                raw = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                # Arquivo pode ter sumido entre `glob` e `read` — não loga
+                # como warning, é caso normal de Agent A reescrevendo.
+                logger.debug("instance file vanished: %s (%s)", path, exc)
+                return None
+            try:
+                payload = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                logger.warning(
+                    "instance file malformed, skipping: %s (%s)", path, exc,
+                )
+                return None
+            if not isinstance(payload, dict):
+                logger.warning(
+                    "instance file not a JSON object, skipping: %s", path,
+                )
+                return None
         # Schema-check ANTES de mexer em PID — versões futuras podem ter
         # renomeado `pid` e ainda assim ser "válidas" pra Agent A.
         try:
@@ -2004,6 +2042,129 @@ class LocalInstancesProvider:
             return None
         return snap
 
+    def _try_fetch_via_socket(self, path: Path) -> Optional[Dict[str, Any]]:
+        """Tenta puxar o snapshot do socket `<id>.sock` ao lado de `<id>.json`.
+
+        Retorna None silenciosamente em qualquer falha — caller cai no
+        caminho legado (state file). Pré-requisito: `StatusClient` no
+        path (`deile` instalado) e socket existindo no diretório.
+        """
+        if not self._prefer_socket or _STATUS_CLIENT_CLS is None:
+            return None
+        sock_path = path.with_suffix(".sock")
+        if not sock_path.exists():
+            return None
+        try:
+            client = _STATUS_CLIENT_CLS(
+                sock_path, timeout_s=self._socket_timeout_s,
+            )
+            return client.status()
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.debug("socket fetch failed for %s: %s", sock_path, exc)
+            return None
+
+
+# ----- Local registry (Fase 3 — issue #303) ---------------------------------
+#
+# Provider opcional que lê `<runtime_dir>/registry.json` (compartilhado por
+# todos os processos DEILE rodando no host) e devolve a lista de entries
+# vivas. Útil pro painel mostrar uma linha "fleet" no header — "3 DEILE
+# instances running" — sem precisar varrer o filesystem direto.
+#
+# Em paridade com `LocalInstancesProvider`: melhor tentar via `Registry` do
+# pacote `deile` (que aplica file-lock e GC). Quando o pacote não está
+# disponível, caímos numa leitura crua, sem GC e sem lock. O painel usa a
+# lista só pra exibir contagem/lista — concorrência fica pra quem escreve.
+
+
+def _try_load_registry_cls():
+    """Importa :class:`Registry` se o pacote ``deile`` estiver disponível."""
+    try:
+        from deile.runtime.registry import (Registry,  # noqa: PLC0415
+                                            RegistryEntry)
+        return Registry, RegistryEntry
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+_REGISTRY_CLS, _REGISTRY_ENTRY_CLS = _try_load_registry_cls()
+
+
+@dataclass
+class RegistrySnapshot:
+    """Snapshot do registry — N entries vivas, mais um summary p/ header."""
+    entries: List[Any] = field(default_factory=list)  # List[RegistryEntry]
+    instances: int = 0
+
+    @classmethod
+    def empty(cls) -> "RegistrySnapshot":
+        return cls(entries=[], instances=0)
+
+
+class LocalRegistryProvider:
+    """Lê `<runtime_dir>/registry.json` e expõe a lista de instâncias vivas.
+
+    Quando o pacote `deile` está disponível, usa o :class:`Registry`
+    completo (aplica file-lock + GC). Caso contrário, faz leitura crua
+    do JSON (read-only, sem mutar o arquivo).
+
+    Cache TTL default 3s — entries mudam pouco (só em start/stop de
+    processo), valor maior reduz contenção no lock sem perceptível
+    impacto na UI.
+    """
+
+    def __init__(self, runtime_dir: Optional[Path] = None,
+                 ttl_s: float = 3.0):
+        if runtime_dir is None:
+            env = os.environ.get("DEILE_RUNTIME_DIR")
+            runtime_dir = Path(env) if env else RUNTIME_DIR
+        self._runtime_dir = runtime_dir
+        self._registry_path = runtime_dir / "registry.json"
+        self._cache: Cache[RegistrySnapshot] = Cache(
+            ttl_s, self._fetch, fallback=RegistrySnapshot.empty(),
+        )
+
+    @property
+    def runtime_dir(self) -> Path:
+        return self._runtime_dir
+
+    @property
+    def registry_path(self) -> Path:
+        return self._registry_path
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> RegistrySnapshot:
+        return self._cache.get(force)
+
+    def _fetch(self) -> RegistrySnapshot:
+        if _REGISTRY_CLS is not None:
+            try:
+                reg = _REGISTRY_CLS(registry_path=self._registry_path)
+                entries = reg.list(gc=True)
+                return RegistrySnapshot(entries=list(entries),
+                                        instances=len(entries))
+            except Exception as exc:  # noqa: BLE001 — fallback p/ leitura crua
+                logger.debug("Registry.list falhou: %s; usando leitura crua.", exc)
+        # Fallback sem mutação — sem GC, sem lock; só pra exibir.
+        if not self._registry_path.exists():
+            return RegistrySnapshot.empty()
+        try:
+            payload = json.loads(self._registry_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return RegistrySnapshot.empty()
+        if not isinstance(payload, dict):
+            return RegistrySnapshot.empty()
+        raw_entries = payload.get("instances", [])
+        if not isinstance(raw_entries, list):
+            return RegistrySnapshot.empty()
+        # Não temos a classe RegistryEntry no fallback — devolvemos os
+        # dicts diretamente. Quem consome trata via .get() ou indexação.
+        return RegistrySnapshot(entries=list(raw_entries),
+                                instances=len(raw_entries))
+
 
 # ===== Aggregate hub ========================================================
 
@@ -2032,6 +2193,10 @@ class PanelData:
     # global — assim cada processo DEILE mostra seu próprio "doing now"
     # em vez do mesmo texto compartilhado.
     local_instances: Optional["LocalInstancesProvider"] = None
+    # Fleet view (issue #303 — Fase 3). Lê o registry compartilhado para
+    # exibir contagem de DEILE instances no header. Opcional — quando
+    # ausente, o painel só mostra a tabela LOCAL PROCESSES.
+    local_registry: Optional["LocalRegistryProvider"] = None
 
     @classmethod
     def from_context(cls, context: RuntimeContext) -> "PanelData":
@@ -2052,6 +2217,10 @@ class PanelData:
         # `local_on` que os demais (operador em --k8s-only não quer ver
         # nada vindo do host).
         local_instances = LocalInstancesProvider() if local_on else None
+        # `LocalRegistryProvider` segue a mesma regra — desabilitado em
+        # `--k8s-only`. Fleet view só faz sentido quando o painel está
+        # observando processos locais.
+        local_registry = LocalRegistryProvider() if local_on else None
         # `enabled=context.k8s_available` faz os providers k8s curto-circuitarem
         # via `_check_enabled`/`Cache.fallback` quando o modo é local-only
         # (sem custo de subprocess `kubectl`).
@@ -2082,6 +2251,7 @@ class PanelData:
             local_logs=local_logs,
             local_audit=local_audit,
             local_instances=local_instances,
+            local_registry=local_registry,
         )
 
     @classmethod
@@ -2094,7 +2264,8 @@ class PanelData:
         base = (self.pods, self.pipeline, self.workers, self.github,
                 self.costs, self.models, self.current_model, self.notifier)
         locals_ = tuple(p for p in (self.local_processes, self.local_logs,
-                                    self.local_audit, self.local_instances)
+                                    self.local_audit, self.local_instances,
+                                    self.local_registry)
                         if p is not None)
         return base + locals_
 
@@ -2125,6 +2296,8 @@ class PanelData:
             names.append("local_audit")
         if self.local_instances is not None:
             names.append("local_instances")
+        if self.local_registry is not None:
+            names.append("local_registry")
         out: List[tuple] = []
         for name, p in zip(names, self._all_providers()):
             err = p.last_error

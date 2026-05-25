@@ -266,7 +266,10 @@ class GeminiProvider(ModelProvider):
 
         # Atualiza timestamp da última request
         self._last_request_time = start_time
-        
+
+        # Issue #303 fase 4 — span deile.llm.call (cobre todo o método body).
+        _llm_span_cm = self._llm_span()
+        _llm_span = _llm_span_cm.__enter__()
         try:
             # Log request se debug ativo
             if is_debug_enabled():
@@ -281,13 +284,13 @@ class GeminiProvider(ModelProvider):
                     },
                     config=self.gemini_config.generation_config
                 )
-            
+
             # Processa mensagens com suporte a multi-modal (file_data)
             processed_messages = self._process_messages_for_gemini(messages)
-            
+
             # Cria configuração para geração
             config = self._create_generation_config(**kwargs)
-            
+
             # Gera conteúdo usando novo SDK
             response = await self._generate_with_new_sdk(
                 processed_messages, system_instruction, config
@@ -317,12 +320,18 @@ class GeminiProvider(ModelProvider):
                         latency_ms=int(execution_time * 1000),
                         success=True,
                     )
+                    # Issue #303 fase 4 — popula atributos do span de LLM.
+                    self._set_llm_span_usage(
+                        _llm_span, response.usage,
+                        latency_ms=int(execution_time * 1000),
+                    )
             except Exception as exc:  # noqa: BLE001 — telemetry must never block
                 logger.debug("gemini usage record (generate) failed: %s", exc)
 
             return response
-            
+
         except genai_errors.APIError as e:
+            self._set_llm_span_error(_llm_span, e)
             # Model-invocation failure: emit the same typed contract as the
             # Anthropic/OpenAI providers so ToolLoopExecutor and the agent loop
             # can read ``envelope.error_type`` (e.g. context_length_exceeded).
@@ -349,9 +358,10 @@ class GeminiProvider(ModelProvider):
             )
             raise ProviderInvocationError(envelope) from e
 
-        except ProviderInvocationError:
+        except ProviderInvocationError as e:
             # Already typed (e.g. re-raised by ``_generate_with_new_sdk``) —
             # propagate without re-wrapping.
+            self._set_llm_span_error(_llm_span, e)
             raise
 
         except Exception as e:
@@ -360,6 +370,7 @@ class GeminiProvider(ModelProvider):
             # which the agent's provider cascade treats as transient/retryable —
             # the same effect the pre-refactor ``ModelError`` had here, since
             # neither is flagged permanent by ``_is_permanent_provider_error``.
+            self._set_llm_span_error(_llm_span, e)
             execution_time = time.time() - start_time
             envelope = make_gemini_envelope(e, self.provider_id, self.model_name)
 
@@ -372,7 +383,13 @@ class GeminiProvider(ModelProvider):
                 })
 
             raise ProviderInvocationError(envelope) from e
-    
+        finally:
+            # Issue #303 fase 4 — sempre fecha o span (sucesso ou erro).
+            try:
+                _llm_span_cm.__exit__(None, None, None)
+            except Exception:  # noqa: BLE001
+                pass
+
     async def generate_stream(
         self,
         messages: List[ModelMessage],

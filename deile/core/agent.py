@@ -88,6 +88,44 @@ def _normalize_history_content(content: Any) -> str:
         return str(content)
 
 
+def _record_turn_error(span: Any, exc: BaseException, component: str) -> None:
+    """Marca o span do turn como ERROR e incrementa o counter ``deile.errors.total``.
+
+    Best-effort — observability nunca quebra o turn (princípio 11 + Fase 1).
+    Usado pelo ``process_input``/``process_input_stream``: o span é criado
+    fora do try, então qualquer except do turn passa por aqui antes do raise.
+    """
+    if span is not None:
+        try:
+            from opentelemetry.trace import Status, StatusCode  # noqa: PLC0415
+            span.set_status(Status(StatusCode.ERROR, description=type(exc).__name__))
+            span.record_exception(exc)
+        except Exception:  # noqa: BLE001 — observability nunca quebra
+            pass
+    try:
+        from deile.observability import get_metrics  # noqa: PLC0415
+        get_metrics().record_error(type(exc).__name__, component)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _finalize_turn_span(span_cm: Any, duration_ms: int, persona: str) -> None:
+    """Sai do CM do turn, registra a histogram de duração e ignora qualquer falha.
+
+    Chamado no ``finally`` do turno — depois da resposta normal OU do except.
+    """
+    if span_cm is not None:
+        try:
+            span_cm.__exit__(None, None, None)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        from deile.observability import get_metrics  # noqa: PLC0415
+        get_metrics().record_turn_duration(persona=persona or "unknown", duration_ms=duration_ms)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _is_permanent_provider_error(exc: Exception) -> bool:
     """Return True for errors that retrying a different provider cannot fix.
 
@@ -482,6 +520,25 @@ class DeileAgent:
         except Exception:  # noqa: BLE001 — runtime state nunca pode quebrar a turn
             pass
 
+        # Issue #303 fase 4 — span pai do turn (deile.turn). Entramos no CM
+        # manualmente (em vez de ``with``) para não re-indentar todo o método;
+        # ``__exit__`` é chamado no ``finally`` no fim do try.
+        _turn_span_cm: Any = None
+        _turn_span: Any = None
+        try:
+            from deile.observability import get_tracer
+            _turn_span_cm = get_tracer().turn(
+                session_id=str(session_id),
+                turn_number=int(self._request_count),
+                persona=str(self.current_persona) if getattr(self, "current_persona", None) else "",
+                model="",
+                input_length=len(user_input or ""),
+            )
+            _turn_span = _turn_span_cm.__enter__()
+        except Exception:  # noqa: BLE001 — observability nunca quebra o turn
+            _turn_span_cm = None
+            _turn_span = None
+
         try:
             # Bot-hooks: extract optional kwargs added in plano DEILE fase 2.
             # These are stashed in session.context_data so context_manager and
@@ -583,12 +640,14 @@ class DeileAgent:
             if _pending_rc:
                 _history_meta["reasoning_content"] = _pending_rc
             session.add_to_history("assistant", response_content, _history_meta)
-            
+
             self._status = AgentStatus.IDLE
             return response
-            
+
         except Exception as e:
             self._status = AgentStatus.ERROR
+            # Issue #303 fase 4 — registra erro no span/metrics (best-effort).
+            _record_turn_error(_turn_span, e, component="process_input")
             # BudgetExceeded gets a structured, user-actionable response (no stack-trace dump)
             if isinstance(e, _BudgetExceeded):
                 friendly = (
@@ -629,6 +688,13 @@ class DeileAgent:
                 error=e,
                 execution_time=time.time() - start_time
             )
+        finally:
+            # Issue #303 fase 4 — fecha o span do turn + métrica de duração.
+            _finalize_turn_span(
+                _turn_span_cm,
+                duration_ms=int((time.time() - start_time) * 1000),
+                persona=str(self.current_persona) if getattr(self, "current_persona", None) else "",
+            )
 
     async def process_input_stream(
         self,
@@ -660,6 +726,23 @@ class DeileAgent:
             get_instance_state().update_stats(turns=1)
         except Exception:  # noqa: BLE001 — runtime state nunca pode quebrar a turn
             pass
+
+        # Issue #303 fase 4 — span pai do turn (streaming path).
+        _turn_span_cm: Any = None
+        _turn_span: Any = None
+        try:
+            from deile.observability import get_tracer
+            _turn_span_cm = get_tracer().turn(
+                session_id=str(session_id),
+                turn_number=int(self._request_count),
+                persona=str(self.current_persona) if getattr(self, "current_persona", None) else "",
+                model="",
+                input_length=len(user_input or ""),
+            )
+            _turn_span = _turn_span_cm.__enter__()
+        except Exception:  # noqa: BLE001
+            _turn_span_cm = None
+            _turn_span = None
 
         try:
             session = self._get_or_create_session(session_id, **kwargs)
@@ -950,6 +1033,8 @@ class DeileAgent:
             self.logger.error(
                 f"Streaming turn failed: {exc}", exc_info=True
             )
+            # Issue #303 fase 4 — registra erro no span/metrics.
+            _record_turn_error(_turn_span, exc, component="process_input_stream")
             # Surface BudgetExceeded / FORCED_MODEL with structured metadata
             # the UI can use to render Rich panels.
             err_meta: Dict[str, Any] = {"error_type": type(exc).__name__}
@@ -966,6 +1051,13 @@ class DeileAgent:
                 error_envelope=err_meta,
             )
             return
+        finally:
+            # Issue #303 fase 4 — fecha o span do turn + métrica de duração.
+            _finalize_turn_span(
+                _turn_span_cm,
+                duration_ms=int((time.time() - start_time) * 1000),
+                persona=str(self.current_persona) if getattr(self, "current_persona", None) else "",
+            )
 
     async def _stream_chat_with_tools(
         self,

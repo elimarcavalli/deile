@@ -14,6 +14,7 @@ This file is the deduplication target for the previous per-provider
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from deile.core.loop_guard import (ToolLoopGuard, format_loop_break_message,
@@ -33,6 +34,52 @@ from deile.ui.stage_messages import get_stage_message  # noqa: F401
 logger = logging.getLogger(__name__)
 
 MAX_TOOL_ITERATIONS = DEFAULT_MAX_TOOL_ITERATIONS
+
+
+def _set_tool_span_status(span: Any, is_success: bool) -> None:
+    """Marca o span da tool como OK/ERROR + ``deile.tool.result.status``."""
+    if span is None:
+        return
+    try:
+        from opentelemetry.trace import Status, StatusCode  # noqa: PLC0415
+        span.set_attribute("deile.tool.result.status", "success" if is_success else "error")
+        if not is_success:
+            span.set_status(Status(StatusCode.ERROR))
+    except Exception:  # noqa: BLE001 — observability nunca quebra a loop
+        pass
+
+
+def _set_tool_span_error(span: Any, exc: BaseException) -> None:
+    """Marca ERROR + grava exception event no span da tool."""
+    if span is None:
+        return
+    try:
+        from opentelemetry.trace import Status, StatusCode  # noqa: PLC0415
+        span.set_attribute("deile.tool.result.status", "error")
+        span.set_status(Status(StatusCode.ERROR, description=type(exc).__name__))
+        span.record_exception(exc)
+        span.add_event(
+            "deile.tool.error",
+            attributes={
+                "error.type": type(exc).__name__,
+                "error.message": str(exc)[:200],
+            },
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _record_tool_metrics(tool_name: str, status: str, t0: float) -> None:
+    """Emite ``deile.tool.duration_ms``."""
+    try:
+        from deile.observability import get_metrics  # noqa: PLC0415
+        get_metrics().record_tool_duration(
+            tool_name=tool_name,
+            status=status,
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        )
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _resolve_max_iterations() -> int:
@@ -267,6 +314,20 @@ class ToolLoopExecutor:
                 except Exception:  # noqa: BLE001 — observability nunca quebra a loop
                     _istate = None
 
+                # Issue #303 fase 4 — span filho ``deile.tool.<name>`` + métrica
+                # de duração. Best-effort: spans/métricas nunca quebram a loop.
+                _tool_span_cm: Any = None
+                _tool_span: Any = None
+                try:
+                    from deile.observability import get_tracer
+                    _args_size = len(str(tc_args or {}))
+                    _tool_span_cm = get_tracer().tool(tc_name, args_size=_args_size)
+                    _tool_span = _tool_span_cm.__enter__()
+                except Exception:  # noqa: BLE001
+                    _tool_span_cm = None
+                    _tool_span = None
+                _tool_t0 = time.monotonic()
+
                 # Run the tool under a temporal cascade so the user sees the
                 # spinner text evolve when the tool takes >3s, >10s, >30s.
                 # cascade_until yields STAGE events while the awaitable runs
@@ -289,6 +350,9 @@ class ToolLoopExecutor:
                         logger.error(
                             "Tool '%s' raised in ToolLoopExecutor: %s", tc_name, exc, exc_info=True
                         )
+                        # Issue #303 fase 4 — span ERROR + métrica.
+                        _set_tool_span_error(_tool_span, exc)
+                        _record_tool_metrics(tc_name, "error", _tool_t0)
                         err_result = ToolResult(
                             status=ToolStatus.ERROR,
                             message=f"{type(exc).__name__}: {exc}",
@@ -334,6 +398,14 @@ class ToolLoopExecutor:
                         result.metadata = {}
                     result.metadata.setdefault("function_name", tc_name)
                     result.metadata.setdefault("tool_call_id", tc_id)
+
+                    # Issue #303 fase 4 — span status + métrica de duração.
+                    _set_tool_span_status(_tool_span, result.is_success)
+                    _record_tool_metrics(
+                        tc_name,
+                        "success" if result.is_success else "error",
+                        _tool_t0,
+                    )
 
                     yield UnifiedStreamEvent(
                         type=StreamEventType.TOOL_RESULT,
@@ -384,6 +456,12 @@ class ToolLoopExecutor:
                     if _istate is not None:
                         try:
                             _istate.clear_action()
+                        except Exception:  # noqa: BLE001
+                            pass
+                    # Issue #303 fase 4 — fecha o span ``deile.tool.<name>``.
+                    if _tool_span_cm is not None:
+                        try:
+                            _tool_span_cm.__exit__(None, None, None)
                         except Exception:  # noqa: BLE001
                             pass
 
