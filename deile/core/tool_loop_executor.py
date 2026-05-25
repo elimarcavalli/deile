@@ -320,8 +320,9 @@ class ToolLoopExecutor:
                 _tool_span: Any = None
                 try:
                     from deile.observability import get_tracer
-                    _args_size = len(str(tc_args or {}))
-                    _tool_span_cm = get_tracer().tool(tc_name, args_size=_args_size)
+                    _tool_span_cm = get_tracer().tool(
+                        tc_name, args_size=len(str(tc_args or {})),
+                    )
                     _tool_span = _tool_span_cm.__enter__()
                 except Exception:  # noqa: BLE001
                     _tool_span_cm = None

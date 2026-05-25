@@ -685,10 +685,9 @@ class _DeileCLI:
                 self.instance_state.update_action("shutting_down")
             except Exception:  # noqa: BLE001 — shutdown não deve levantar
                 pass
-        # Fase 2 (issue #303): para o status server limpo (await ``stop()``)
-        # ANTES de cancelar a task ``serve_forever`` — ``server.close()``
-        # dispara o break interno e a task termina sem precisar de cancel.
-        if self.instance_state is not None:
+            # Fase 2 (issue #303): para o status server limpo (await ``stop()``)
+            # ANTES de cancelar a task ``serve_forever`` — ``server.close()``
+            # dispara o break interno e a task termina sem precisar de cancel.
             server = getattr(self.instance_state, "status_server", None)
             if server is not None:
                 try:

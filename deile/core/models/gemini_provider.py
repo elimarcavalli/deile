@@ -988,17 +988,21 @@ class GeminiProvider(ModelProvider):
         - cached_content_token_count → cached_tokens (context caching)
         """
         md = getattr(response, "usage_metadata", None)
-        pt = (getattr(md, "prompt_token_count", 0) or 0) if md is not None else 0
-        ct = (getattr(md, "candidates_token_count", 0) or 0) if md is not None else 0
-        tt = (getattr(md, "total_token_count", 0) or 0) if md is not None else 0
-        cached = (
-            getattr(md, "cached_content_token_count", 0) or 0
-        ) if md is not None else 0
+
+        def _md_int(field: str) -> int:
+            if md is None:
+                return 0
+            return int(getattr(md, field, 0) or 0)
+
+        pt = _md_int("prompt_token_count")
+        ct = _md_int("candidates_token_count")
+        tt = _md_int("total_token_count")
+        cached = _md_int("cached_content_token_count")
         usage = ModelUsage(
-            prompt_tokens=int(pt),
-            completion_tokens=int(ct),
-            total_tokens=int(tt) or (int(pt) + int(ct)),
-            cached_tokens=int(cached),
+            prompt_tokens=pt,
+            completion_tokens=ct,
+            total_tokens=tt or (pt + ct),
+            cached_tokens=cached,
             request_time=float(request_time),
         )
         try:

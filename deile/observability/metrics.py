@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from deile.observability.config import (ObservabilityConfig,
                                         get_observability_config)
@@ -166,6 +166,27 @@ class OtlpMetrics:
 
     # ── record helpers ────────────────────────────────────────────────────
 
+    def _emit(
+        self,
+        instrument_attr: str,
+        op: str,
+        value: Any,
+        attributes: Dict[str, str],
+        *,
+        op_name: str,
+    ) -> None:
+        """Common path para counters/histograms: ensure meter, fetch instrument,
+        chama ``add``/``record`` em try/except. Métricas nunca quebram (princípio 11).
+        """
+        self._ensure_meter()
+        instrument = getattr(self, instrument_attr, None)
+        if instrument is None:
+            return
+        try:
+            getattr(instrument, op)(value, attributes=attributes)
+        except Exception as exc:  # noqa: BLE001 — métricas nunca quebram
+            logger.debug("%s failed: %s", op_name, exc)
+
     def record_tokens(
         self,
         provider: str,
@@ -175,20 +196,12 @@ class OtlpMetrics:
     ) -> None:
         if not count or count <= 0:
             return
-        self._ensure_meter()
-        if self._counter_tokens is None:
-            return
-        try:
-            self._counter_tokens.add(
-                int(count),
-                attributes={
-                    "provider": str(provider),
-                    "model": str(model),
-                    "direction": str(direction),
-                },
-            )
-        except Exception as exc:  # noqa: BLE001 — métricas nunca quebram
-            logger.debug("record_tokens failed: %s", exc)
+        self._emit(
+            "_counter_tokens", "add", int(count),
+            {"provider": str(provider), "model": str(model),
+             "direction": str(direction)},
+            op_name="record_tokens",
+        )
 
     def record_cost(
         self,
@@ -198,19 +211,11 @@ class OtlpMetrics:
     ) -> None:
         if not usd or usd <= 0:
             return
-        self._ensure_meter()
-        if self._counter_cost is None:
-            return
-        try:
-            self._counter_cost.add(
-                float(usd),
-                attributes={
-                    "provider": str(provider),
-                    "model": str(model),
-                },
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("record_cost failed: %s", exc)
+        self._emit(
+            "_counter_cost", "add", float(usd),
+            {"provider": str(provider), "model": str(model)},
+            op_name="record_cost",
+        )
 
     def record_tool_duration(
         self,
@@ -218,56 +223,33 @@ class OtlpMetrics:
         status: str,
         duration_ms: int,
     ) -> None:
-        self._ensure_meter()
-        if self._hist_tool_duration is None:
-            return
-        try:
-            self._hist_tool_duration.record(
-                int(duration_ms),
-                attributes={
-                    "tool_name": str(tool_name),
-                    "status": str(status),
-                },
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("record_tool_duration failed: %s", exc)
+        self._emit(
+            "_hist_tool_duration", "record", int(duration_ms),
+            {"tool_name": str(tool_name), "status": str(status)},
+            op_name="record_tool_duration",
+        )
 
     def record_turn_duration(
         self,
         persona: str,
         duration_ms: int,
     ) -> None:
-        self._ensure_meter()
-        if self._hist_turn_duration is None:
-            return
-        try:
-            self._hist_turn_duration.record(
-                int(duration_ms),
-                attributes={
-                    "persona": str(persona or "unknown"),
-                },
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("record_turn_duration failed: %s", exc)
+        self._emit(
+            "_hist_turn_duration", "record", int(duration_ms),
+            {"persona": str(persona or "unknown")},
+            op_name="record_turn_duration",
+        )
 
     def record_error(
         self,
         error_type: str,
         component: str,
     ) -> None:
-        self._ensure_meter()
-        if self._counter_errors is None:
-            return
-        try:
-            self._counter_errors.add(
-                1,
-                attributes={
-                    "error_type": str(error_type),
-                    "component": str(component),
-                },
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("record_error failed: %s", exc)
+        self._emit(
+            "_counter_errors", "add", 1,
+            {"error_type": str(error_type), "component": str(component)},
+            op_name="record_error",
+        )
 
     def shutdown(self) -> None:
         """Flush + shutdown do MeterProvider. Idempotente."""

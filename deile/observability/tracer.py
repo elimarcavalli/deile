@@ -226,13 +226,10 @@ class OtlpTracer:
             logger.debug("start_as_current_span failed for %s: %s", name, exc)
             yield NoOpSpan()
             return
-        try:
-            with span_cm as span:
-                yield span
-        except Exception:
-            # NÃO logar nem suprimir — exceção original sobe para o caller.
-            # O span já foi marcado pelo SDK no __exit__ via record_exception.
-            raise
+        # Exceção do bloco do usuário sobe normalmente — o SDK já marca o span
+        # via ``record_exception`` no ``__exit__``.
+        with span_cm as span:
+            yield span
 
     # ── ciclo de vida ─────────────────────────────────────────────────────
 

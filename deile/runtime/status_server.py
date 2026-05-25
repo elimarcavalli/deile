@@ -497,32 +497,36 @@ class StatusClient:
 
     # ── internals ─────────────────────────────────────────────────────────
 
+    # Defensive cap: respostas legítimas (STATUS/METRICS) ficam em ~5KB; se
+    # passar 64KB algo está muito errado.
+    _MAX_RESPONSE_BYTES = 65536
+
+    def _recv_until_eof(self, sock: _socket.socket) -> Optional[bytes]:
+        """Lê até o servidor fechar; retorna None se exceder cap defensivo."""
+        chunks: List[bytes] = []
+        total = 0
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > self._MAX_RESPONSE_BYTES:
+                return None
+        return b"".join(chunks)
+
     def _send_command(self, command: bytes) -> Optional[str]:
         """Conexão one-shot. Retorna o payload UTF-8 sem trailing newline
         ou None em qualquer erro (timeout, socket ausente, falha de I/O).
         """
-        if not _is_posix():
-            return None
-        if not self._socket_path.exists():
+        if not _is_posix() or not self._socket_path.exists():
             return None
         sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
         sock.settimeout(self._timeout_s)
         try:
             sock.connect(str(self._socket_path))
             sock.sendall(command)
-            chunks: List[bytes] = []
-            total = 0
-            # Lê até o servidor fechar (handler responde + close).
-            while True:
-                chunk = sock.recv(4096)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                total += len(chunk)
-                # Defensive cap: respostas legítimas (STATUS/METRICS) ficam
-                # em ~5KB. Se passar 64KB algo está muito errado.
-                if total > 65536:
-                    return None
+            data = self._recv_until_eof(sock)
         except _socket.timeout:
             logger.debug("StatusClient timeout em %s", self._socket_path)
             return None
@@ -538,9 +542,9 @@ class StatusClient:
                 sock.close()
             except OSError:
                 pass
-        if not chunks:
+        if not data:
             return None
-        payload = b"".join(chunks).decode("utf-8", errors="replace")
+        payload = data.decode("utf-8", errors="replace")
         # Tira o ``\n`` final (server adiciona sempre).
         if payload.endswith("\n"):
             payload = payload[:-1]

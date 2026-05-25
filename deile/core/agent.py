@@ -88,6 +88,34 @@ def _normalize_history_content(content: Any) -> str:
         return str(content)
 
 
+def _open_turn_span(
+    *,
+    session_id: str,
+    turn_number: int,
+    persona: str,
+    input_length: int,
+) -> Tuple[Any, Any]:
+    """Abre o span ``deile.turn`` manualmente (sem ``with``).
+
+    Devolve ``(span_cm, span)`` — ambos ``None`` se observability falhou.
+    Pareado com :func:`_finalize_turn_span` que fecha o CM no ``finally``.
+    O span é aberto fora do ``with`` para não re-indentar o turno inteiro
+    (mantém os ``async for`` e ``return`` no nível atual).
+    """
+    try:
+        from deile.observability import get_tracer  # noqa: PLC0415
+        span_cm = get_tracer().turn(
+            session_id=str(session_id),
+            turn_number=int(turn_number),
+            persona=persona,
+            model="",
+            input_length=int(input_length),
+        )
+        return span_cm, span_cm.__enter__()
+    except Exception:  # noqa: BLE001 — observability nunca quebra o turn
+        return None, None
+
+
 def _record_turn_error(span: Any, exc: BaseException, component: str) -> None:
     """Marca o span do turn como ERROR e incrementa o counter ``deile.errors.total``.
 
@@ -520,24 +548,15 @@ class DeileAgent:
         except Exception:  # noqa: BLE001 — runtime state nunca pode quebrar a turn
             pass
 
-        # Issue #303 fase 4 — span pai do turn (deile.turn). Entramos no CM
-        # manualmente (em vez de ``with``) para não re-indentar todo o método;
-        # ``__exit__`` é chamado no ``finally`` no fim do try.
-        _turn_span_cm: Any = None
-        _turn_span: Any = None
-        try:
-            from deile.observability import get_tracer
-            _turn_span_cm = get_tracer().turn(
-                session_id=str(session_id),
-                turn_number=int(self._request_count),
-                persona=str(self.current_persona) if getattr(self, "current_persona", None) else "",
-                model="",
-                input_length=len(user_input or ""),
-            )
-            _turn_span = _turn_span_cm.__enter__()
-        except Exception:  # noqa: BLE001 — observability nunca quebra o turn
-            _turn_span_cm = None
-            _turn_span = None
+        # Issue #303 fase 4 — span pai do turn (deile.turn). Aberto via helper
+        # que faz ``__enter__`` manual (sem ``with``) para não re-indentar o
+        # método inteiro; ``__exit__`` vem em ``_finalize_turn_span`` no finally.
+        _turn_span_cm, _turn_span = _open_turn_span(
+            session_id=session_id,
+            turn_number=self._request_count,
+            persona=str(self.current_persona) if getattr(self, "current_persona", None) else "",
+            input_length=len(user_input or ""),
+        )
 
         try:
             # Bot-hooks: extract optional kwargs added in plano DEILE fase 2.
@@ -727,22 +746,13 @@ class DeileAgent:
         except Exception:  # noqa: BLE001 — runtime state nunca pode quebrar a turn
             pass
 
-        # Issue #303 fase 4 — span pai do turn (streaming path).
-        _turn_span_cm: Any = None
-        _turn_span: Any = None
-        try:
-            from deile.observability import get_tracer
-            _turn_span_cm = get_tracer().turn(
-                session_id=str(session_id),
-                turn_number=int(self._request_count),
-                persona=str(self.current_persona) if getattr(self, "current_persona", None) else "",
-                model="",
-                input_length=len(user_input or ""),
-            )
-            _turn_span = _turn_span_cm.__enter__()
-        except Exception:  # noqa: BLE001
-            _turn_span_cm = None
-            _turn_span = None
+        # Issue #303 fase 4 — span pai do turn (streaming path); ver helper.
+        _turn_span_cm, _turn_span = _open_turn_span(
+            session_id=session_id,
+            turn_number=self._request_count,
+            persona=str(self.current_persona) if getattr(self, "current_persona", None) else "",
+            input_length=len(user_input or ""),
+        )
 
         try:
             session = self._get_or_create_session(session_id, **kwargs)

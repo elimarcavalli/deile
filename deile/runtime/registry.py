@@ -197,21 +197,17 @@ class Registry:
         except OSError:
             return True  # incerto = manter (princípio: não GC indevido)
 
-    def _load_unlocked(self) -> List[RegistryEntry]:
-        """Lê e parseia o registry. Caller deve segurar o lock.
-
-        Tolerante: JSON inválido vira lista vazia (loga warning). Schema
-        version diferente também — log + lista vazia (forward compat).
-        """
+    def _read_payload(self) -> Optional[Dict[str, Any]]:
+        """Lê + parseia o registry como dict; None se ausente/inválido/schema errado."""
         try:
             raw = self._path.read_text(encoding="utf-8")
         except FileNotFoundError:
-            return []
+            return None
         except OSError as exc:
             logger.warning("Registry.read(%s) falhou: %s", self._path, exc)
-            return []
+            return None
         if not raw.strip():
-            return []
+            return None
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -219,9 +215,9 @@ class Registry:
                 "Registry %s contém JSON inválido (%s); tratando como vazio.",
                 self._path, exc,
             )
-            return []
+            return None
         if not isinstance(payload, dict):
-            return []
+            return None
         try:
             sv = int(payload.get("schema_version", 0))
         except (TypeError, ValueError):
@@ -231,6 +227,17 @@ class Registry:
                 "Registry %s schema_version=%s não suportado (esperado %s); ignorando.",
                 self._path, sv, REGISTRY_SCHEMA_VERSION,
             )
+            return None
+        return payload
+
+    def _load_unlocked(self) -> List[RegistryEntry]:
+        """Lê e parseia o registry. Caller deve segurar o lock.
+
+        Tolerante: JSON inválido vira lista vazia (loga warning). Schema
+        version diferente também — log + lista vazia (forward compat).
+        """
+        payload = self._read_payload()
+        if payload is None:
             return []
         raw_entries = payload.get("instances")
         if not isinstance(raw_entries, list):
@@ -241,11 +248,9 @@ class Registry:
             if not isinstance(item, dict):
                 continue
             entry = RegistryEntry.from_dict(item)
-            if entry is None:
+            if entry is None or entry.instance_id in seen_ids:
                 continue
             # Dedupe: mantém o primeiro por instance_id (ordem do file).
-            if entry.instance_id in seen_ids:
-                continue
             seen_ids.add(entry.instance_id)
             out.append(entry)
         return out
