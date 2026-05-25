@@ -250,6 +250,49 @@ async def test_export_csv_no_data_does_not_write_file(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
+async def test_export_csv_writes_valid_file_when_data_exists(tmp_path, monkeypatch):
+    """Simetria do happy path: CSV com dados deve produzir arquivo .csv válido.
+
+    Cobre o caminho de sucesso de ``/cost export csv`` que não tinha cobertura
+    direta — só JSON tinha (``test_export_json_writes_valid_file``).
+    """
+    monkeypatch.chdir(tmp_path)
+    csv_data = (
+        "id,datetime,category,subcategory,amount,currency,description,session_id\r\n"
+        "1,2026-01-01T00:00:00,api_calls,gpt4,0.5,USD,call,sess1\r\n"
+    )
+    summary = _make_summary(total="0.5", entry_count=1)
+    cmd = CostCommand()
+    with patch.object(cmd.cost_tracker, "get_cost_summary", return_value=summary):
+        with patch.object(cmd.cost_tracker, "export_costs", return_value=csv_data):
+            result = await cmd.execute(_make_context("export csv 30"))
+    assert result.success
+    csv_files = list(tmp_path.glob("costs_export_*.csv"))
+    assert len(csv_files) == 1
+    written = csv_files[0].read_text()
+    assert "api_calls" in written and "0.5" in written
+
+
+@pytest.mark.unit
+async def test_export_summary_query_failure_does_not_write_file(tmp_path, monkeypatch):
+    """Defesa extra (#301): se ``get_cost_summary`` levantar, o comando deve
+    falhar limpo sem escrever arquivo na pasta atual. Cobre o ``except Exception``
+    do ``_export_costs`` no caminho onde o ``summary`` é consultado primeiro.
+    """
+    monkeypatch.chdir(tmp_path)
+    cmd = CostCommand()
+    with patch.object(
+        cmd.cost_tracker,
+        "get_cost_summary",
+        side_effect=RuntimeError("simulação de falha no DB"),
+    ):
+        result = await cmd.execute(_make_context("export json 30"))
+    assert not result.success
+    leaked = list(tmp_path.glob("costs_export_*"))
+    assert leaked == [], f"Falha no DB vazou arquivo: {leaked}"
+
+
+@pytest.mark.unit
 async def test_forecast_insufficient_data_message():
     summary = _make_summary(total="0", entry_count=0)
     cmd = CostCommand()
