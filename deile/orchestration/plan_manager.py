@@ -1,7 +1,6 @@
 """Plan Manager - Sistema de orquestração autônoma com plans e execução"""
 
 import asyncio
-import json
 import logging
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -13,7 +12,8 @@ from typing import Any, Dict, List, Optional
 from ..core.exceptions import DEILEError
 from ..security import (AuditEventType, SeverityLevel, get_audit_logger,
                         get_permission_manager)
-from ..tools.base import ToolResult
+from ..storage.aio_fileio import read_json, write_json, write_text
+from ..tools.base import ToolContext, ToolResult
 from ..tools.registry import get_tool_registry
 from ._deps import all_dependencies_met
 from ._objective_steps import derive_step_specs
@@ -88,9 +88,9 @@ class PlanStep:
         # Remove result complexo - será salvo separadamente
         if self.result:
             data["result"] = {
-                "success": self.result.success,
+                "success": self.result.is_success,
                 "status": self.result.status.value,
-                "output_preview": str(self.result.output)[:200],
+                "output_preview": str(self.result.data)[:200] if self.result.data is not None else "",
                 "artifact_path": self.result.artifact_path
             }
         return data
@@ -295,33 +295,26 @@ class PlanManager:
         return plan
     
     async def load_plan(self, plan_id: str) -> Optional[ExecutionPlan]:
-        """Carrega um plano salvo"""
-        
+        """Carrega um plano salvo (I/O em worker thread)."""
         plan_file = self.plans_dir / f"{plan_id}.json"
         if not plan_file.exists():
             return None
-        
+
         try:
-            with open(plan_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
-            plan = ExecutionPlan.from_dict(data)
-            return plan
-            
+            data = await read_json(plan_file)
+            return ExecutionPlan.from_dict(data)
         except Exception as e:
             logger.error(f"Failed to load plan {plan_id}: {e}")
             return None
-    
+
     async def list_plans(self, status_filter: Optional[PlanStatus] = None) -> List[Dict[str, Any]]:
-        """Lista planos disponíveis"""
-        
+        """Lista planos disponíveis (I/O por arquivo em worker thread)."""
         plans_info = []
-        
+
         for plan_file in self.plans_dir.glob("*.json"):
             try:
-                with open(plan_file, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                
+                data = await read_json(plan_file)
+
                 # Filtra por status se necessário
                 if status_filter and data.get("status") != status_filter.value:
                     continue
@@ -660,7 +653,7 @@ class PlanManager:
                     step.result = result
                     step.completed_at = datetime.now()
                     
-                    if result.success:
+                    if result.is_success:
                         step.status = StepStatus.COMPLETED
                         execution_log.append({
                             "step_id": step.id,
@@ -670,31 +663,35 @@ class PlanManager:
                         })
                     else:
                         step.status = StepStatus.FAILED
-                        step.error_message = result.error_message
+                        step.error_message = result.message
                         execution_log.append({
                             "step_id": step.id,
-                            "action": "failed", 
-                            "error": result.error_message,
+                            "action": "failed",
+                            "error": result.message,
                             "timestamp": step.completed_at.isoformat()
                         })
-                        
-                        # Para execução se configurado
+
+                        # ``break`` only exits the inner for-loop; without
+                        # setting the stop_flag the outer while-loop would
+                        # ignore ``stop_on_failure`` and resume execution.
                         if plan.stop_on_failure:
+                            self._stop_flags[plan.id] = True
                             break
-                
+
                 except Exception as e:
                     step.status = StepStatus.FAILED
                     step.error_message = str(e)
                     step.completed_at = datetime.now()
-                    
+
                     execution_log.append({
                         "step_id": step.id,
                         "action": "error",
                         "error": str(e),
                         "timestamp": step.completed_at.isoformat()
                     })
-                    
+
                     if plan.stop_on_failure:
+                        self._stop_flags[plan.id] = True
                         break
             
             # Atualiza estatísticas
@@ -786,10 +783,10 @@ class PlanManager:
                 self.audit_logger.log_tool_execution(
                     tool_name=step.tool_name,
                     resource=step.description or f"step_{step.id}",
-                    success=result.success,
+                    success=result.is_success,
                     duration_ms=duration_ms,
                     exit_code=getattr(result, 'exit_code', None),
-                    output_size=len(str(result.output)) if result.output else 0
+                    output_size=len(str(result.data)) if result.data is not None else 0
                 )
                 
                 return result
@@ -891,27 +888,51 @@ class PlanManager:
         }
     
     async def _run_tool_with_params(self, tool, params: Dict[str, Any]) -> ToolResult:
-        """Executa tool com parâmetros"""
-        
-        # Usa execute_function_call do registry para compatibilidade
-        return self.tool_registry.execute_function_call(
-            function_name=tool.name,
-            arguments=params
+        """Executa a tool diretamente pelo pipeline async.
+
+        Não usa ``execute_function_call`` (síncrono — bloqueia o loop e
+        anula o ``asyncio.wait_for`` externo). Schema validation continua
+        sendo aplicada para preservar a semântica ``INVALID_ARGUMENTS``.
+        """
+        if getattr(tool, "schema", None):
+            from ..tools.function_call import validate_function_arguments
+            validation = validate_function_arguments(tool.schema, params or {})
+            if not validation["valid"]:
+                return ToolResult.error_result(
+                    f"Invalid arguments for '{tool.name}': "
+                    f"{validation['errors']}",
+                    error_code="INVALID_ARGUMENTS",
+                )
+
+        context = ToolContext(
+            user_input="",
+            parsed_args=params or {},
+            metadata={
+                "execution_method": "plan_step",
+                "tool_name": tool.name,
+            },
         )
+        try:
+            return await tool.execute(context)
+        except Exception as exc:
+            # Tools devem encapsular falhas em ToolResult, mas tools terceiras
+            # podem violar o contrato — preserva-se a semântica do bridge
+            # antigo (que mapeava exceções a ToolResult.error_result).
+            return ToolResult.error_result(
+                f"Execution error: {type(exc).__name__}: {exc}",
+                error=exc,
+                error_code="EXECUTION_ERROR",
+            )
     
     async def _save_plan(self, plan: ExecutionPlan) -> None:
-        """Salva plano em arquivo JSON"""
-        
+        """Salva plano em arquivo JSON (I/O em worker thread)."""
         plan_file = self.plans_dir / f"{plan.id}.json"
-        
+
         try:
-            with open(plan_file, 'w', encoding='utf-8') as f:
-                json.dump(plan.to_dict(), f, indent=2, ensure_ascii=False)
-            
+            await write_json(plan_file, plan.to_dict())
             # Também salva versão human-readable
             md_file = self.plans_dir / f"{plan.id}.md"
             await self._save_plan_markdown(plan, md_file)
-            
         except Exception as e:
             logger.error(f"Failed to save plan {plan.id}: {e}")
             raise
@@ -981,8 +1002,7 @@ class PlanManager:
             ])
         
         try:
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write('\n'.join(content))
+            await write_text(file_path, '\n'.join(content))
         except Exception as e:
             logger.warning(f"Failed to save plan markdown {file_path}: {e}")
 

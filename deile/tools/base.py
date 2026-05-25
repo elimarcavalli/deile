@@ -116,6 +116,12 @@ class ToolSchema:
         if self.required:
             converted_params['required'] = self.required
 
+        # Remove additionalProperties — o Schema protobuf do Gemini não
+        # suporta esse campo JSON Schema. O SDK converte camelCase →
+        # snake_case (additional_properties) e a API rejeita com
+        # "Unknown name 'additional_properties'".
+        converted_params = self._strip_unsupported_gemini_fields(converted_params)
+
         return FunctionDeclaration(
             name=self.name,
             description=self.description,
@@ -153,7 +159,33 @@ class ToolSchema:
                 converted[key] = value
 
         return converted
-    
+
+    @staticmethod
+    def _strip_unsupported_gemini_fields(schema: dict) -> dict:
+        """Remove campos JSON Schema que o protobuf ``Schema`` do Gemini
+        não reconhece, evitando ``Unknown name`` na serialização.
+
+        O SDK do Google converte camelCase → snake_case internamente;
+        ``additionalProperties`` vira ``additional_properties``, campo
+        inexistente no protobuf, quebrando a chamada.
+        """
+        stripped = {}
+        for key, value in schema.items():
+            if key == "additionalProperties":
+                continue
+            if isinstance(value, dict):
+                stripped[key] = ToolSchema._strip_unsupported_gemini_fields(value)
+            elif isinstance(value, list):
+                stripped[key] = [
+                    ToolSchema._strip_unsupported_gemini_fields(item)
+                    if isinstance(item, dict)
+                    else item
+                    for item in value
+                ]
+            else:
+                stripped[key] = value
+        return stripped
+
     def to_dict(self) -> Dict[str, Any]:
         """Converte para dicionário completo"""
         return {

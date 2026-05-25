@@ -19,7 +19,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 
-from deile.core.context_manager import ContextManager
 from deile.infrastructure.monitoring.cost_repository import CostRepository
 
 logger = logging.getLogger(__name__)
@@ -111,7 +110,6 @@ class CostTracker:
     
     def __init__(self, db_path: Optional[str] = None):
         self.db_path = db_path or str(Path.home() / ".deile" / "costs.db")
-        self.context_manager = ContextManager()
 
         # In-memory tracking
         self.current_session_costs = {}
@@ -699,12 +697,14 @@ class CostTracker:
         }
     
     def _get_current_session_id(self) -> Optional[str]:
-        """Get current session ID"""
-        return getattr(self.context_manager, 'current_session_id', None)
-    
+        # No session context available at this layer (would violate Clean
+        # Architecture: infrastructure must not depend on core). Callers can
+        # pass session_id explicitly to track_cost().
+        return None
+
     def _get_current_user_id(self) -> Optional[str]:
-        """Get current user ID"""
-        return getattr(self.context_manager, 'current_user_id', None)
+        # See _get_current_session_id: user context is not resolved here.
+        return None
 
 
 class BudgetExceededException(Exception):

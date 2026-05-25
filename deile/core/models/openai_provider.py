@@ -530,9 +530,39 @@ class OpenAIProvider(ModelProvider):
     @staticmethod
     def _extract_cached_tokens(response: Any) -> int:
         try:
-            return response.usage.prompt_tokens_details.cached_tokens or 0
+            value = response.usage.prompt_tokens_details.cached_tokens or 0
         except AttributeError:
             return 0
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    def estimate_cost(self, usage: ModelUsage) -> float:
+        """OpenAI/DeepSeek-aware cost.
+
+        Both providers report ``prompt_tokens`` as the FULL input total — the
+        cached subset is reported separately (``prompt_tokens_details.cached_tokens``
+        for OpenAI; ``prompt_cache_hit_tokens`` for DeepSeek). The base
+        ``estimate_cost`` charges ``prompt_tokens`` at the full rate AND
+        ``cached_tokens`` at the cached rate, double-counting the cached
+        portion. Here we treat ``prompt_tokens`` as a superset and only charge
+        the non-cached remainder at the full rate.
+        """
+        p = self.pricing
+        if p is None:
+            return 0.0
+        cached = usage.cached_tokens or 0
+        non_cached_input = max(usage.prompt_tokens - cached, 0)
+        input_cost = (non_cached_input / 1_000_000) * p.input_per_1m_usd
+        output_cost = (usage.completion_tokens / 1_000_000) * p.output_per_1m_usd
+        cached_cost = 0.0
+        if cached and p.cached_input_per_1m_usd is not None:
+            cached_cost = (cached / 1_000_000) * p.cached_input_per_1m_usd
+        elif cached:
+            # No cached price published → charge cached portion at full rate.
+            cached_cost = (cached / 1_000_000) * p.input_per_1m_usd
+        return round(input_cost + output_cost + cached_cost, 8)
 
     async def _execute_tool(
         self, name: str, args: Dict[str, Any]

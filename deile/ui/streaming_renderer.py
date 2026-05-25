@@ -44,6 +44,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
+from deile.common.tool_args import TOOL_PRIMARY_ARG_KEYS
 from deile.core.models.stream_events import StreamEventType, UnifiedStreamEvent
 from deile.ui.markdown_table import DeileMarkdown as Markdown
 from deile.ui.markdown_table import safe_streaming_split
@@ -76,14 +77,9 @@ _TOOL_DISPLAY_NAME: Dict[str, str] = {
 
 # Para tools de comando primário (uma string única dominante), mostramos
 # o valor cru em vez do par "chave='valor'". Mapeia tool → arg principal.
-_TOOL_PRIMARY_ARG: Dict[str, str] = {
-    "bash_execute": "command",
-    "python_execute": "code",
-    "read_file": "file_path",
-    "write_file": "file_path",
-    "list_files": "path",
-    "delete_file": "file_path",
-}
+# Alias preservado para callers internos; a fonte única de verdade vive em
+# ``deile.common.tool_args`` (compartilhada com o runner de sub-agentes).
+_TOOL_PRIMARY_ARG: Dict[str, str] = TOOL_PRIMARY_ARG_KEYS
 
 # Tools com renderização de args customizada. Quando o nome aparece aqui,
 # ``_render_args_inline`` delega à função associada em vez de usar o
@@ -300,7 +296,8 @@ class StreamingRenderer:
         # without feedback the user thinks the agent is hung. The spinner
         # is cancelled on the first event, so it never overlaps real
         # content.
-        _SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        from .spinner import BRAILLE_SPINNER_FRAMES as _SPINNER_FRAMES
+
         # Animation tick — runs for the entire turn. As long as the tail
         # of ``blocks`` is a _StageBlock (i.e., we're in a "silent wait"),
         # we refresh the Live region so the spinner frame visibly rotates.

@@ -289,7 +289,9 @@ class WorkflowExecutor:
         if result.status != ToolStatus.SUCCESS:
             raise DEILEError(f"Tool execution failed: {result.message}")
 
-        return result.output
+        # ``ToolResult`` has no ``output`` field — historical mistake (same
+        # family as the plan_manager bug fix). The payload lives in ``data``.
+        return result.data
 
     async def _execute_command_action(self, command: str, params: Dict[str, Any], task: Task) -> Any:
         """Executa comando do sistema via bash_execute tool."""

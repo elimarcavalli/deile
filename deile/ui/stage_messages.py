@@ -227,6 +227,14 @@ STAGE_MESSAGES["proactive_tools"] = StageMessages(
     after_3s="Rodando análise de contexto...",
 )
 
+# Surfaced before the LLM call when the per-turn SkillRouter selection
+# returned at least one auto-triggered skill — gives the user visible
+# feedback that a project/user skill is contributing to the answer (the
+# body would otherwise be invisibly appended to the system prompt).
+STAGE_MESSAGES["skills_active"] = StageMessages(
+    initial="🧩 Skill ativa: {names}",
+)
+
 STAGE_MESSAGES["check_workflow"] = StageMessages(
     initial="Verificando necessidade de workflow...",
     after_3s="Analisando complexidade da intenção...",

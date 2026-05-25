@@ -146,12 +146,21 @@ def _collect_entries(
 
         try:
             stat = entry.stat()
+            # ``relative_to`` raises ValueError when ``entry`` isn't lexically
+            # under ``working_directory`` (symlinks pointing outside the
+            # tree, or rglob yielding a differently-anchored path). Without
+            # catching ValueError the exception escaped and dropped ALL
+            # results — the loop aborted instead of skipping the offender.
+            try:
+                rel = str(entry.relative_to(working_directory))
+            except ValueError:
+                rel = str(entry)
             files_info.append({
                 "name": entry.name,
                 "type": "directory" if entry.is_dir() else "file",
                 "size": stat.st_size if entry.is_file() else None,
                 "modified": stat.st_mtime,
-                "path": str(entry.relative_to(working_directory))
+                "path": rel,
             })
         except (PermissionError, OSError):
             # Pula arquivos sem permissão

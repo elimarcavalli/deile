@@ -9,6 +9,7 @@
 | Novo arquivo em `deile/tools/**/*.py` | **Tool Development** |
 | Novo arquivo em `deile/commands/**/*.py` | **Command Implementation** |
 | Novo arquivo em `deile/parsers/**/*.py` | **Parser Development** |
+| Novo `*.md` em `deile/skills/library/`, `~/.deile/skills/`, `.deile/skills/`, etc. | **Skill Development** |
 | Estado cross-turn ou cross-session | **Memory System Integration** |
 | Permission check / audit log / sanitização | **Security Implementation** |
 | Padrões de intent / regex novos | **Intent Analysis Integration** |
@@ -253,6 +254,52 @@ async def test_permission_enforcement():
 ```
 
 Lembre: `pytest.ini` usa `--strict-markers` — registre o marker antes de usar. `asyncio_mode=auto` torna `@pytest.mark.asyncio` desnecessário.
+
+## Skill Development
+
+Skill = arquivo Markdown puro, sem Python. Frontmatter YAML define quando ela auto-dispara; o body é o conteúdo que entra no prompt. Hot-reload em 0,5 s — basta dropar o arquivo num dos 5 diretórios de scan.
+
+```markdown
+---
+name: rust                           # opcional; default = stem do arquivo (normalizado)
+description: |
+  Regras específicas do projeto sobre Rust — ownership, async/Tokio
+  patterns. Sobrescreve qualquer conselho genérico do treinamento.
+triggers:                            # tudo opcional; vazio = só responde a /<name> ou invoke_skill
+  file_globs: ["*.rs", "Cargo.toml"]
+  code_block_langs: [rust, rs]       # case-insensitive
+  keywords: ["ownership", "borrow checker", "tokio"]
+  file_content_patterns:             # regex MULTILINE; sample = 4 KiB do início do arquivo
+    - '^use tokio::'
+    - '#\[tokio::main\]'
+priority: 50                         # int; default 0. Maior aparece primeiro no ranking
+---
+
+# Rust expertise
+
+Conteúdo livre em Markdown. Quando uma trigger casa, esse body inteiro
+entra no system prompt como "### Skill: rust". Quando o LLM chama
+`invoke_skill(name="rust")`, esse body é o que ele recebe. Quando o usuário
+digita `/rust [args]`, esse body é enviado como prompt (com os args
+concatenados).
+
+Recomendações de redação:
+- Comece com regras imperativas curtas, não exposição teórica.
+- Termine com exemplos concretos do projeto, não código genérico.
+- Mencione decisões e exceções específicas do projeto que sobrescrevam
+  conhecimento de treinamento.
+```
+
+| Onde dropar | Quando |
+|---|---|
+| `~/.deile/skills/<name>.md` | Skill pessoal — visível em qualquer projeto seu |
+| `<cwd>/.deile/skills/<name>.md` | Skill do projeto — vai junto no git |
+| `~/.claude/commands/<name>.md` | Compat Claude Code (nome vira UPPERCASE) |
+| `deile/skills/library/**/<name>.md` | Bundled (vai no pacote DEILE; PR no repo) |
+
+Override: a ordem é `bundled < user < user-claude < project < project-claude < extras`. Um arquivo posterior substitui o anterior em colisão de nome (com log INFO).
+
+❌ Nunca: usar `name: null` ou ausente quando o stem normalizado fica vazio (skip silencioso); usar `priority: yes` (YAML 1.1 lê como `True` — rejeitado explicitamente); referenciar `../` em `file_content_patterns` para tentar ler fora do `project_root` (containment); duplicar nome de um built-in slash command (`/help`, `/model`, etc. — colisão filtrada com warning).
 
 ## Configuration Management
 

@@ -35,10 +35,13 @@ from rich.text import Text
 
 from deile.orchestration.subagents.events import SubAgentEvent, SubAgentState
 
+from ..common.text_utils import truncate
+from .spinner import BRAILLE_SPINNER_FRAMES as _SPINNER
+
 logger = logging.getLogger(__name__)
 
 
-_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
 _REFRESH_HZ = 6.0
 # Timeout (segundos) após receber ``\x1b`` para decidir se é ESC genuíno ou
 # prefixo de escape-sequence (seta etc.). 200ms é a recomendação clássica de
@@ -615,12 +618,14 @@ def _files_tail(files: list, *, head: int) -> str:
 
 
 def _truncate(text, limit: int) -> str:
-    if text is None:
-        return ""
-    s = str(text)
-    if len(s) <= limit:
-        return s
-    return s[: limit - 1] + "…"
+    """Thin wrapper around :func:`deile.common.text_utils.truncate`.
+
+    Kept as a module-local name because callers throughout this file (and
+    one test in ``tests/ui/test_subagent_panel.py``) import it directly.
+    Centralised implementation lives in ``common`` to share semantics with
+    ``orchestration/subagents/runner._short``.
+    """
+    return truncate(text, limit)
 
 
 def _escape_markup(text) -> str:

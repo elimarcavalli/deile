@@ -9,6 +9,7 @@ Router events are written as newline-delimited JSON to `logs/router_events.jsonl
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
@@ -71,13 +72,22 @@ class _DebugLogger:
             "event": event_type,
             **payload,
         }
+        # The file write is delegated to a worker thread because this method
+        # is awaited from the hot path (every provider call in agent.py).
+        # A sync open() + write() here blocks the event loop on disk I/O for
+        # 1-10ms per call, which compounds over a conversation. Violates
+        # principle 03 §1 ("I/O bloqueante proibido em contexto async").
         try:
-            _EVENTS_LOG.parent.mkdir(parents=True, exist_ok=True)
-            with _EVENTS_LOG.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(record) + "\n")
+            await asyncio.to_thread(self._write_event_record, record)
         except OSError:
             self._logger.debug("router_event write failed: %s %s", event_type, payload)
         self._logger.debug("router_event: %s %s", event_type, payload)
+
+    @staticmethod
+    def _write_event_record(record: Dict[str, Any]) -> None:
+        _EVENTS_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with _EVENTS_LOG.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record) + "\n")
 
 
 _singleton: Optional[_DebugLogger] = None

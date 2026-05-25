@@ -153,6 +153,35 @@ class GeminiProvider(ModelProvider):
 
         return handle, gemini_config, api_key
 
+    @staticmethod
+    def build_file_attachment_part(
+        file_uri: str,
+        mime_type: str = "text/plain",
+        name: Optional[str] = None,
+    ) -> Any:
+        """Build a Gemini ``File`` part for a file attachment.
+
+        Encapsulates the ``google.genai.types.File(...)`` construction so callers
+        in ``deile/core/`` do not need to import the Gemini SDK directly
+        (Clean Architecture: SDK adapters belong to ``deile/core/models/``).
+
+        Args:
+            file_uri: URI returned by the Gemini File API upload (e.g.
+                ``files/abc123``).
+            mime_type: MIME type of the file; defaults to ``text/plain``.
+            name: Optional file name; defaults to the last path component of
+                ``file_uri``.
+
+        Returns:
+            A ``google.genai.types.File`` instance suitable for appending to a
+            multimodal message payload.
+        """
+        return types.File(
+            name=name if name is not None else file_uri.split("/")[-1],
+            uri=file_uri,
+            mime_type=mime_type,
+        )
+
     def __init__(
         self,
         gemini_config=None,
@@ -611,7 +640,20 @@ class GeminiProvider(ModelProvider):
                 }
             },
         )
-    
+
+    def format_user_file_part(self, file_uri: str, mime_type: str = "text/plain") -> Any:
+        """Build the SDK-specific ``genai.types.File`` part to attach to a user message.
+
+        Keeps the ``google.genai`` import isolated inside the provider adapter
+        (Pilar 03 §2 — Hexagonal). The agent passes neutral dict/dataclass
+        fields (uri + mime type) and this method materializes the SDK object.
+        """
+        return types.File(
+            name=file_uri.split('/')[-1],
+            uri=file_uri,
+            mime_type=mime_type,
+        )
+
     async def validate_config(self) -> bool:
         """Valida configuração do provedor"""
         try:
@@ -1187,10 +1229,13 @@ class GeminiProvider(ModelProvider):
     def _process_messages_for_gemini(self, messages: List[ModelMessage]) -> List[Dict[str, Any]]:
         """Converte ``ModelMessage`` em ``contents`` para o Google GenAI SDK.
 
-        Mapeia roles num único passo (``assistant`` preservado, demais viram
-        ``user``), descarta mensagens ``system`` — tratadas via
-        ``system_instruction`` — e normaliza ``content`` em ``parts``
-        (string/objeto único → lista de parts; lista multi-modal mantida).
+        Mapeia ``assistant`` para o role ``model`` que o SDK do Google GenAI
+        exige (única alternativa válida a ``user`` — a documentação oficial
+        lista somente ``user`` e ``model``; mandar ``assistant`` causa
+        400 ``Please use a valid role: user, model``). Mensagens ``system``
+        são descartadas (tratadas via ``system_instruction``). ``content`` é
+        normalizado em ``parts`` (string/objeto único → lista de parts; lista
+        multi-modal mantida).
         """
         contents: List[Dict[str, Any]] = []
 
@@ -1198,7 +1243,7 @@ class GeminiProvider(ModelProvider):
             if message.role == "system":
                 # System messages são tratadas na system_instruction.
                 continue
-            role = "assistant" if message.role == "assistant" else "user"
+            role = "model" if message.role == "assistant" else "user"
 
             # Processa content (pode ser string ou lista de parts)
             if isinstance(message.content, str):

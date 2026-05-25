@@ -35,12 +35,19 @@ class MemoryConsolidator:
         }
 
         try:
-            # Consolida working memory
-            working_stats = await self.working_memory.get_stats()
+            # Consolida working memory.
+            #
+            # Antes da correção, get_stats() era chamado primeiro — e
+            # get_stats() internamente já faz _cleanup_expired(), então a
+            # segunda chamada nunca tinha nada para limpar (expired_cleaned
+            # sempre = 0) e entries_before reportava o estado JÁ pós-limpeza.
+            # Capturamos a contagem ANTES de qualquer operação de limpeza.
+            entries_before = len(self.working_memory._entries)
             cleaned_entries = await self.working_memory._cleanup_expired()
             report["working_memory"] = {
-                "entries_before": working_stats.get("total_entries", 0),
-                "expired_cleaned": cleaned_entries
+                "entries_before": entries_before,
+                "expired_cleaned": cleaned_entries,
+                "entries_after": len(self.working_memory._entries),
             }
 
             # Outras consolidações seriam implementadas aqui

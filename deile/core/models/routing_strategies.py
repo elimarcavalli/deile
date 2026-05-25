@@ -52,9 +52,16 @@ class RoutingContext:
 
 @dataclass
 class ModelMetrics:
-    """Métricas de um modelo"""
+    """Métricas de um modelo.
+
+    ``active_requests`` is kept for backwards compatibility but is never
+    incremented — a correct "active" counter would need symmetric
+    ``record_complete`` calls at every agent call site (refactor out of
+    scope). ``LEAST_BUSY``/``LOAD_BALANCED`` now use ``total_requests`` as
+    a monotonic proxy for "least historically used".
+    """
     total_requests: int = 0
-    active_requests: int = 0
+    active_requests: int = 0  # deprecated — always 0; see class docstring
     avg_response_time: float = 0.0
     error_rate: float = 0.0
     cost_per_token: float = 0.0
@@ -62,9 +69,8 @@ class ModelMetrics:
     last_used: float = 0.0
 
     def record_request(self) -> None:
-        """Registra nova requisição"""
+        """Registra nova requisição."""
         self.total_requests += 1
-        self.active_requests += 1
         self.last_used = time.time()
 
 
@@ -81,7 +87,12 @@ class RoutingStrategySelector:
     """
 
     def __init__(self) -> None:
-        self._round_robin_index = 0
+        # ``itertools.count`` is atomic under the CPython GIL — replaces a
+        # non-atomic ``idx = self._cursor; self._cursor += 1`` that allowed
+        # two concurrent ``select_provider`` callers to collide on the same
+        # provider when an ``await`` was interleaved between the load+write.
+        from itertools import count
+        self._round_robin_counter = count()
         # Mapeamento de tarefas para tipos de modelo
         self.task_model_mapping = {
             "code_analysis": ModelSize.MEDIUM,
@@ -124,22 +135,22 @@ class RoutingStrategySelector:
         if not providers:
             return None
 
-        selected = providers[self._round_robin_index % len(providers)]
-        self._round_robin_index += 1
-        return selected
+        idx = next(self._round_robin_counter)
+        return providers[idx % len(providers)]
 
     def _least_busy_selection(
         self, providers: List[ModelProvider], metrics: Dict[str, ModelMetrics]
     ) -> Optional[ModelProvider]:
-        """Seleciona provedor menos ocupado"""
+        """Seleciona provedor menos usado historicamente (proxy:
+        ``total_requests`` — monotonic, correct; ``active_requests`` was
+        a broken never-decremented counter)."""
         if not providers:
             return None
 
-        least_busy = min(
+        return min(
             providers,
-            key=lambda p: metrics[_provider_key(p)].active_requests
+            key=lambda p: metrics[_provider_key(p)].total_requests,
         )
-        return least_busy
 
     def _task_optimized_selection(
         self,
@@ -224,12 +235,13 @@ class RoutingStrategySelector:
         if not providers:
             return None
 
-        # Combina least_busy com performance
+        # Combine least_busy with performance.
+        # Uses ``total_requests`` (see ``ModelMetrics`` docstring).
         def load_score(provider: ModelProvider) -> float:
             m = metrics[_provider_key(provider)]
 
             # Score inverso: menor = melhor
-            load_factor = m.active_requests + 1
+            load_factor = m.total_requests + 1
             performance_factor = m.avg_response_time if m.avg_response_time > 0 else 1
 
             return load_factor * performance_factor / max(m.success_rate, 0.1)

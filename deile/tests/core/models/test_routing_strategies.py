@@ -95,7 +95,10 @@ class TestRoundRobin:
         assert picks[0:3] == providers
         # Second pass repeats the cycle (cursor wrapped).
         assert picks[3:6] == providers
-        assert selector._round_robin_index == 6
+        # Cursor advanced exactly 6 ticks — peek the next value via next().
+        # ``itertools.count`` exposes its state only through next(), so
+        # the assertion captures the "advanced 6 times" invariant.
+        assert next(selector._round_robin_counter) == 6
 
     def test_empty_providers_returns_none(self):
         selector = RoutingStrategySelector()
@@ -111,14 +114,17 @@ class TestRoundRobin:
 
 
 class TestLeastBusy:
-    def test_selects_provider_with_fewest_active_requests(self):
+    def test_selects_provider_with_fewest_requests(self):
+        """``LEAST_BUSY`` now keys on ``total_requests`` (was broken
+        ``active_requests`` — never decremented). See ModelMetrics docstring.
+        """
         selector = RoutingStrategySelector()
         busy = _FakeProvider("anthropic", "claude")
         idle = _FakeProvider("openai", "gpt")
         providers = [busy, idle]
         metrics = _metrics_for(providers)
-        metrics[_provider_key(busy)].active_requests = 5
-        metrics[_provider_key(idle)].active_requests = 1
+        metrics[_provider_key(busy)].total_requests = 5
+        metrics[_provider_key(idle)].total_requests = 1
 
         result = selector.select(
             RoutingStrategy.LEAST_BUSY, _ctx(), providers, metrics
@@ -253,11 +259,12 @@ class TestLoadBalanced:
         light = _FakeProvider("b", "m2")
         providers = [heavy, light]
         metrics = _metrics_for(providers)
-        # load_score = (active+1) * response_time / max(success_rate, 0.1)
-        metrics[_provider_key(heavy)].active_requests = 8
+        # load_score = (total_requests+1) * response_time / max(success_rate, 0.1)
+        # (was ``active_requests`` — now uses total_requests; see ModelMetrics).
+        metrics[_provider_key(heavy)].total_requests = 8
         metrics[_provider_key(heavy)].avg_response_time = 2.0
         metrics[_provider_key(heavy)].success_rate = 0.9
-        metrics[_provider_key(light)].active_requests = 0
+        metrics[_provider_key(light)].total_requests = 0
         metrics[_provider_key(light)].avg_response_time = 0.5
         metrics[_provider_key(light)].success_rate = 0.9
 

@@ -229,18 +229,26 @@ class FileParser(RegexParser):
         # Procura por @ no final da entrada para sugerir arquivos
         if partial_input.endswith('@') or '@' in partial_input:
             try:
-                # Obtém lista de arquivos do diretório atual
-                current_dir = Path.cwd()
-                
+                # ``resolve()`` so ``relative_to`` below cannot mismatch
+                # lexically against ``rglob`` paths the OS returns
+                # fully-resolved. Without it, ``relative_to`` raised
+                # ValueError → outer except returned [] → all autocomplete
+                # suggestions silently disappeared whenever cwd had any
+                # symlink/``..`` component.
+                current_dir = Path.cwd().resolve()
+
                 # Se há um @ seguido de texto parcial
                 at_match = re.search(r'@([^@\s]*)$', partial_input)
                 if at_match:
                     partial_name = at_match.group(1)
-                    
+
                     # Busca arquivos que começam com o texto parcial
                     for file_path in current_dir.rglob(f"{partial_name}*"):
                         if file_path.is_file():
-                            relative_path = file_path.relative_to(current_dir)
+                            try:
+                                relative_path = file_path.relative_to(current_dir)
+                            except ValueError:
+                                continue
                             suggestions.append(f"@{relative_path}")
                             
                             # Limita sugestões
