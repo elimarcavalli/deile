@@ -85,20 +85,21 @@ _CSS_FILE = Path(__file__).with_suffix(".tcss")
 def _snapshot_instance_state() -> Dict[str, Any]:
     """Retorna snapshot defensivo do InstanceState do processo, ou {}.
 
-    **Nao cria singleton**: lemos diretamente o ``_instance_singleton`` do
-    modulo. Se a CLI principal nao bootou (caso da app Textual ainda em
-    Fase 1, sem integracao com ``_DeileCLI.initialize``), o singleton e
-    ``None`` e o Header degrada para placeholders — sem side-effect de
-    publicar state file, registrar no Registry ou abrir StatusServer. Esses
-    side-effects sao responsabilidade do bootstrap da CLI/worker/bot,
-    nao de uma surface de UI lida em ``on_mount``.
+    **Nao cria singleton**: usa ``peek_instance_state`` (API publica que so
+    devolve o singleton se ja existe, sem instanciar). Se a CLI principal
+    nao bootou (caso da app Textual ainda em Fase 1, sem integracao com
+    ``_DeileCLI.initialize``), o singleton e ``None`` e o Header degrada
+    para placeholders — sem side-effect de publicar state file, registrar
+    no Registry ou abrir StatusServer. Esses side-effects sao
+    responsabilidade do bootstrap da CLI/worker/bot, nao de uma surface
+    de UI lida em ``on_mount``.
 
     Issue #317 + #303 (DECISOES #37/#38): o singleton e dono do estado vivo
     e atexit. Sub-readers (Header, painel) so consomem; nunca produzem.
     """
     try:
-        from deile.runtime import instance_state as _is_mod
-        singleton = getattr(_is_mod, "_instance_singleton", None)
+        from deile.runtime.instance_state import peek_instance_state
+        singleton = peek_instance_state()
         if singleton is None:
             return {}
         return singleton.snapshot()

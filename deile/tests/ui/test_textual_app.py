@@ -287,7 +287,8 @@ def test_snapshot_instance_state_does_not_create_singleton(monkeypatch):
     """Regressao do achado major do Revisor 2: ``_snapshot_instance_state``
     NAO pode criar o singleton InstanceState (que dispara side-effects:
     state file, atexit, StatusServer, Registry). Quando o singleton e None,
-    deve retornar ``{}`` sem importar/criar nada novo."""
+    deve retornar ``{}`` sem importar/criar nada novo. Usa a API publica
+    ``peek_instance_state`` (issue #317 — sub-readers consomem, nao produzem)."""
     from deile.runtime import instance_state as _is_mod
 
     # Garante que comecamos sem singleton.
@@ -295,7 +296,23 @@ def test_snapshot_instance_state_does_not_create_singleton(monkeypatch):
     snap = textual_app._snapshot_instance_state()
     assert snap == {}
     # E o singleton continua None — nada foi instanciado.
-    assert _is_mod._instance_singleton is None
+    assert _is_mod.peek_instance_state() is None
+
+
+@pytest.mark.ui
+def test_peek_instance_state_returns_singleton_or_none(monkeypatch):
+    """API publica ``peek_instance_state``: contrato e devolver o singleton
+    se existe, ou ``None`` se nao. Sem criar. Sub-readers (Header da app
+    Textual, painel) consomem via essa porta."""
+    from deile.runtime import instance_state as _is_mod
+    from deile.runtime.instance_state import peek_instance_state
+
+    monkeypatch.setattr(_is_mod, "_instance_singleton", None, raising=False)
+    assert peek_instance_state() is None
+
+    sentinel = object()
+    monkeypatch.setattr(_is_mod, "_instance_singleton", sentinel, raising=False)
+    assert peek_instance_state() is sentinel
 
 
 @pytest.mark.ui
