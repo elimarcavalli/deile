@@ -55,13 +55,20 @@ import _panel_demo as demo  # noqa: E402
 # sys.path setup feito por `deploy.py` (que insere `infra/k8s/` no path
 # antes de importar `_panel`). Não trocar para `from infra.k8s. ...` sem
 # revisar como o orquestrador invoca o painel.
+from _panel_data import \
+    NS as _NS_DEFAULT  # noqa: F401  # PR #315 — multi-namespace
 from _panel_data import _fmt_age  # noqa: F401
 from _panel_data import kubectl_bin  # noqa: F401
 from _panel_data import BackgroundRefresher, PanelData  # noqa: F401
 from _panel_data import \
+    _audit_dispatch_mode_change as pd_audit_dispatch_mode_change
+from _panel_data import \
     _audit_security_policy_change as pd_audit_security_policy_change
-from _panel_data import NS as _NS_DEFAULT  # noqa: F401  # PR #315 — multi-namespace
+from _panel_data import \
+    clear_pipeline_dispatch_mode as pd_clear_pipeline_dispatch_mode
 from _panel_data import clear_stage_model as pd_clear_stage_model
+from _panel_data import \
+    set_pipeline_dispatch_mode as pd_set_pipeline_dispatch_mode
 from _panel_data import set_preferred_model as pd_set_preferred_model
 from _panel_data import set_stage_model as pd_set_stage_model
 from rich import box
@@ -870,6 +877,10 @@ class DashboardView(View):
             # distinct keystroke (Shift+m) so it doesn't collide with the
             # deployment-wide ModelSwitcherView on lowercase 'm'.
             "M": "stage-models",
+            # Pipeline dispatch mode (issue #309) — flip
+            # ``DEILE_PIPELINE_DISPATCH_MODE`` (claude vs deile_worker) sem
+            # editar manifests.
+            "d": "dispatch-mode",
         }
         if key in nav:
             return ActionResult.nav(nav[key])
@@ -1222,10 +1233,9 @@ class PodPickerView(View):
             self.last_msg = "modo demo — nenhuma ação aplicada"
             self.last_ok = False
             return
-        from _panel_data import (delete_pod,  # noqa: PLC0415
-                                  kill_local_pid,
-                                  rollout_restart_all,
-                                  rollout_restart_deployment)
+        from _panel_data import delete_pod  # noqa: PLC0415
+        from _panel_data import (kill_local_pid, rollout_restart_all,
+                                 rollout_restart_deployment)
 
         # Multi-NS (issue #297): propagar o namespace do contexto em vez de
         # deixar as funções caírem no default ``NS`` (env DEILE_K8S_NAMESPACE
@@ -3224,6 +3234,338 @@ class StageModelsView(View):
         self.last_msg = msg
 
 
+class DispatchModeView(View):
+    """Editor do dispatch mode do pipeline (issue #309) — layout dinâmico.
+
+    O ``PipelineMonitor`` instancia ``ClaudeImplementer`` (``claude -p`` num
+    worktree local) ou ``WorkerImplementer`` (HTTP → deile-worker), decidido por
+    ``settings.pipeline_dispatch_mode``. A view permite flipar entre os dois
+    sem editar manifest ou ConfigMap: ``kubectl set env`` sobre
+    ``deile-pipeline`` dispara rollout (strategy ``Recreate``) e a próxima
+    dispatch usa o modo novo.
+
+    Limitação operacional: setar ``claude`` só funciona se o binary ``claude``
+    estiver no PATH dentro do pod E houver credentials montadas para
+    ``~/.claude/``. Hoje o image NÃO instala o ``claude`` CLI nem monta
+    credentials — a próxima dispatch falha com um erro `claude binary not
+    found` claro (sem dano além disso). Issue de follow-up cobre o trabalho
+    de infra (Dockerfile + Secret).
+
+    Persistência via ``set_pipeline_dispatch_mode`` (kubectl set env + audit
+    log); o pipeline pega o modo novo no rollout disparado pelo kubectl.
+    """
+
+    name = "dispatch-mode"
+    title = "Modo de despacho do pipeline (deile_worker | claude)"
+    refresh_s = 1.0
+
+    HOTKEYS = ("[↑/↓] navega   [enter] aplicar   [c] limpar override   "
+               "[r] refresh   [esc] volta   [q] sai")
+
+    # Source of truth do conjunto de modos — espelha _DISPATCH_MODES_ALLOWED
+    # em _panel_data.py. Listado aqui (e não importado) para a view continuar
+    # importável quando o painel roda de infra/k8s sem o pacote DEILE no path.
+    _MODES_FALLBACK = ("deile_worker", "claude")
+
+    # Pretty/descrição por modo — visível no painel ajuda escolha sem doc externa.
+    _MODE_DESCRIPTIONS = {
+        "deile_worker": (
+            "DEILE-to-DEILE — pipeline dispara o deile-worker via HTTP "
+            "(default; sem dependência externa)."
+        ),
+        "claude": (
+            "Claude Code one-shot — pipeline roda `claude -p` num worktree "
+            "local. Requer binary `claude` no PATH + credenciais em "
+            "~/.claude/."
+        ),
+    }
+
+    def __init__(self, data: Optional[PanelData] = None):
+        self.data = data
+        self.cursor: int = 0
+        self.last_msg: str = ""
+        self.last_ok: Optional[bool] = None
+        # Modal state: None = browsing; ("set", mode) = confirming apply;
+        # ("clear", None) = confirming reset.
+        self.mode_modal: Optional[tuple] = None
+
+    def on_unmount(self, app: "PanelApp") -> None:
+        # Re-entry should always land on the option list, never on a stale
+        # confirmation modal that the operator dismissed by leaving the view.
+        self.mode_modal = None
+
+    def intercepts_key(self, key: str) -> bool:
+        # ESC inside a modal must close the modal (our own _handle_*),
+        # not pop the view off the app stack.
+        return key == "ESC" and self.mode_modal is not None
+
+    # --- data accessors --------------------------------------------------
+
+    def _current(self):
+        """Return the current ``DispatchModeEntry`` (or a demo-mode stub)."""
+        if self.data is None:
+            # Demo mode: pretend deile-pipeline has no env override and falls
+            # back to the ConfigMap default. Visible to the operator as
+            # "source: default", same shape as a real cluster read.
+            from _panel_data import DispatchModeEntry  # noqa: PLC0415
+            return DispatchModeEntry(
+                mode=None, source="default", effective="deile_worker",
+            )
+        return self.data.dispatch_mode.get()
+
+    # --- rendering -------------------------------------------------------
+
+    def _render_options(self, current_mode: Optional[str],
+                        width: int) -> RenderableType:
+        compact = width < 100
+        tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
+        tbl.add_column(" ", width=2)
+        tbl.add_column("#", width=2, justify="right")
+        tbl.add_column("modo", style="bold")
+        if not compact:
+            tbl.add_column("descrição", overflow="fold")
+        tbl.add_column("ativo", width=8, justify="center")
+        modes = self._MODES_FALLBACK
+        self.cursor = max(0, min(self.cursor, len(modes) - 1))
+        for i, m in enumerate(modes):
+            marker = "▶" if i == self.cursor else " "
+            is_active = (m == current_mode)
+            slug_style = "bold yellow" if is_active else "bold"
+            active_mark = Text("●", style="bold green") if is_active \
+                else Text("", style="dim")
+            row = [
+                Text(marker, style="bold cyan"),
+                Text(f"{i + 1}", style="bold cyan"),
+                Text(m, style=slug_style),
+            ]
+            if not compact:
+                row.append(Text(self._MODE_DESCRIPTIONS.get(m, ""),
+                                style="dim"))
+            row.append(active_mark)
+            tbl.add_row(*row)
+        return Panel(
+            tbl,
+            title="[bold]MODOS DISPONÍVEIS[/bold]",
+            title_align="left", border_style="cyan",
+        )
+
+    def _render_status_panel(self, entry) -> RenderableType:
+        """Painel header com o estado corrente lido do cluster."""
+        source_pretty = {
+            "env": "DEILE_PIPELINE_DISPATCH_MODE (env do Deployment)",
+            "default": "settings.json / ConfigMap (sem env override)",
+        }.get(entry.source, entry.source)
+        lines = [
+            Text.assemble(
+                ("modo efetivo: ", "dim"),
+                (entry.effective, "bold yellow"),
+            ),
+            Text.assemble(
+                ("origem: ", "dim"),
+                (source_pretty, "cyan"),
+            ),
+        ]
+        if entry.mode is None:
+            lines.append(Text(
+                "(sem override per-Deployment — pod usa o default do ConfigMap)",
+                style="dim",
+            ))
+        return Panel(Group(*lines),
+                     title="[bold]ESTADO ATUAL[/bold]",
+                     title_align="left", border_style="yellow")
+
+    def _render_action_status(self) -> Optional[RenderableType]:
+        if not self.last_msg:
+            return None
+        border = "green" if self.last_ok else "red"
+        return Panel(
+            Text(self.last_msg,
+                 style="bold green" if self.last_ok else "bold red"),
+            title="[bold]ÚLTIMA AÇÃO[/bold]",
+            title_align="left", border_style=border,
+        )
+
+    def _render_confirm_modal(self, kind: str) -> RenderableType:
+        """Constrói o Panel de confirmação para ``set`` ou ``clear``.
+
+        Mantém os 2 modais com a mesma moldura/posição mas headers e
+        prompts distintos — único callsite no :meth:`render`.
+        """
+        if kind == "set":
+            mode = self.mode_modal[1]
+            header = Text(
+                f"Aplicar dispatch_mode = '{mode}' em deile-pipeline?",
+                style="bold yellow",
+            )
+            detail = Text(
+                "`kubectl set env` dispara rollout (strategy Recreate). "
+                "A próxima dispatch já roda no modo novo.",
+                style="dim",
+            )
+            title = "[bold yellow]CONFIRMAR APLICAÇÃO[/bold yellow]"
+        else:  # "clear"
+            header = Text(
+                "Limpar override de DEILE_PIPELINE_DISPATCH_MODE?",
+                style="bold yellow",
+            )
+            detail = Text(
+                "O pipeline voltará a usar o default declarado no "
+                "ConfigMap (deile_worker) na próxima dispatch.",
+                style="dim",
+            )
+            title = "[bold yellow]CONFIRMAR LIMPEZA[/bold yellow]"
+        return Panel(
+            Group(header, detail, Text(),
+                  Text("[y] confirmar    [n] cancelar", style="bold cyan")),
+            title=title, title_align="left", border_style="yellow",
+        )
+
+    def render(self, app: "PanelApp") -> RenderableType:
+        entry = self._current()
+        width = app.console.size.width or 100
+        layout = Layout()
+        sections: List[Layout] = [
+            Layout(_head_panel(self.title, app), name="head", size=4),
+        ]
+        # Modal confirmação fica em destaque acima da listagem.
+        modal_kind = self.mode_modal[0] if self.mode_modal is not None else None
+        if modal_kind in ("set", "clear"):
+            sections.append(Layout(self._render_confirm_modal(modal_kind),
+                                   name="confirm", size=8))
+        else:
+            # Browsing — status + opções.
+            sections.append(Layout(self._render_status_panel(entry),
+                                   name="status_header", size=6))
+            sections.append(Layout(self._render_options(entry.effective,
+                                                        width),
+                                   name="body"))
+
+        action_status = self._render_action_status()
+        if action_status is not None:
+            sections.append(Layout(action_status, name="status", size=4))
+
+        sections.append(Layout(_footer_panel(self.HOTKEYS),
+                               name="footer", size=3))
+        layout.split_column(*sections)
+        return layout
+
+    # --- input -----------------------------------------------------------
+
+    def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
+        # Confirmação modal: y aplica, qualquer outra tecla cancela.
+        modal_kind = self.mode_modal[0] if self.mode_modal is not None else None
+        if modal_kind == "set":
+            return self._handle_set_confirm_key(key)
+        if modal_kind == "clear":
+            return self._handle_clear_confirm_key(key)
+        modes = self._MODES_FALLBACK
+        n = len(modes)
+        if key in ("UP", "k"):
+            self.cursor = (self.cursor - 1) % n
+            return ActionResult.refresh()
+        if key in ("DOWN", "j"):
+            self.cursor = (self.cursor + 1) % n
+            return ActionResult.refresh()
+        if key.isdigit():
+            idx = int(key) - 1
+            if 0 <= idx < n:
+                self.cursor = idx
+                return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            self.mode_modal = ("set", modes[self.cursor])
+            return ActionResult.refresh()
+        if key == "c":
+            self.mode_modal = ("clear", None)
+            return ActionResult.refresh()
+        return ActionResult()
+
+    def _handle_set_confirm_key(self, key: str) -> ActionResult:
+        mode = self.mode_modal[1] if self.mode_modal else None
+        # Guarda explícita contra mode_modal degenerado (('set', '') /
+        # ('set', None)): em vez de cair silenciosamente no ramo de
+        # cancelamento, fechamos com erro visível pra o operador notar.
+        if key == "y" and not mode:
+            self.mode_modal = None
+            self.last_msg = (
+                "estado interno inconsistente: modo do modal vazio"
+            )
+            self.last_ok = False
+            pd_audit_dispatch_mode_change(
+                None, result="failed",
+                detail="modal state degenerado em _handle_set_confirm_key",
+            )
+            return ActionResult.refresh()
+        if key == "y" and mode:
+            self._apply_set(mode)
+            self.mode_modal = None
+            if self.data is not None:
+                self.data.dispatch_mode._cache.invalidate()  # noqa: SLF001
+            return ActionResult.refresh()
+        # ESC / n / anything else cancels (default-deny). Audita
+        # ``cancelled`` para paridade com ModelSwitcherView — o branch
+        # ``cancelled`` em ``_audit_dispatch_mode_change`` não fica morto.
+        reason = ("operador cancelou na confirmação" if key in ("n", "ESC")
+                  else f"tecla inesperada na confirmação: {key!r}")
+        # ``mode`` pode ser falsy (degenerate set state) — passa ``None`` ao
+        # audit nesse caso pra não confundir o discriminador ``action`` (que
+        # vira ``kubectl_unset_env`` quando mode é falsy). ``detail`` carrega
+        # o motivo original e a string vazia/falsy é registrada lá pra log
+        # analysis se necessário.
+        audit_mode = mode if mode else None
+        audit_detail = (
+            reason if mode
+            else f"{reason} (modal state degenerado: mode={mode!r})"
+        )
+        pd_audit_dispatch_mode_change(
+            audit_mode, result="cancelled", detail=audit_detail,
+        )
+        self.mode_modal = None
+        self.last_msg = "cancelado pelo operador"
+        self.last_ok = False
+        return ActionResult.refresh()
+
+    def _handle_clear_confirm_key(self, key: str) -> ActionResult:
+        if key == "y":
+            self._apply_clear()
+            self.mode_modal = None
+            if self.data is not None:
+                self.data.dispatch_mode._cache.invalidate()  # noqa: SLF001
+            return ActionResult.refresh()
+        # Cancelamento auditado — paridade com ModelSwitcherView e com o
+        # ramo "cancelled" reconhecido em ``_audit_dispatch_mode_change``.
+        reason = ("operador cancelou na confirmação" if key in ("n", "ESC")
+                  else f"tecla inesperada na confirmação: {key!r}")
+        pd_audit_dispatch_mode_change(
+            None, result="cancelled", detail=reason,
+        )
+        self.mode_modal = None
+        self.last_msg = "cancelado pelo operador"
+        self.last_ok = False
+        return ActionResult.refresh()
+
+    # --- writes ----------------------------------------------------------
+
+    def _apply_set(self, mode: str) -> None:
+        if self.data is None:
+            self.last_msg = "modo demo — nenhuma escrita aplicada"
+            self.last_ok = False
+            return
+        ns = self.data.context.namespace if self.data.context else _NS_DEFAULT
+        ok, msg = pd_set_pipeline_dispatch_mode(mode, namespace=ns)
+        self.last_ok = ok
+        self.last_msg = msg
+
+    def _apply_clear(self) -> None:
+        if self.data is None:
+            self.last_msg = "modo demo — nenhuma escrita aplicada"
+            self.last_ok = False
+            return
+        ns = self.data.context.namespace if self.data.context else _NS_DEFAULT
+        ok, msg = pd_clear_pipeline_dispatch_mode(namespace=ns)
+        self.last_ok = ok
+        self.last_msg = msg
+
+
 class StubView(View):
     """Sub-view placeholder enquanto a Fase correspondente não foi feita."""
 
@@ -3266,8 +3608,9 @@ class HelpView(View):
         tbl.add_column("tecla", style="bold cyan", width=18)
         tbl.add_column("ação")
         rows = [
-            ("1-5, a, m, M, n",  "drill em sub-view (no dashboard)"),
+            ("1-5, a, m, M, d, n",  "drill em sub-view (no dashboard)"),
             ("m / M",         "modelo do deployment / modelo por etapa (settings)"),
+            ("d",             "modo de despacho do pipeline (claude | deile_worker)"),
             ("↑/↓ ou j/k",    "navega em listas (picker, issues/PRs, modelos)"),
             ("enter",         "seleciona o item destacado"),
             ("esc",           "volta à view anterior (ou ao dashboard)"),
@@ -3636,6 +3979,8 @@ def _build_views(data: Optional[PanelData] = None) -> Dict[str, View]:
         "notifier-echo": NotifierEchoView(data=data),
         "model-switcher": ModelSwitcherView(data=data),
         "stage-models": StageModelsView(data=data),
+        # Issue #309 — flip pipeline dispatch_mode (deile_worker | claude).
+        "dispatch-mode": DispatchModeView(data=data),
     }
 
 
@@ -3657,7 +4002,8 @@ def run_panel(context: "Optional[Any]" = None,
     locais (modo "local only"). Demo agora exige opt-in explícito.
     """
     # Import local para evitar import circular no topo.
-    from _panel_data import RuntimeContext, discover_deile_namespaces  # noqa: PLC0415
+    from _panel_data import RuntimeContext  # noqa: PLC0415
+    from _panel_data import discover_deile_namespaces  # noqa: PLC0415
 
     if force_demo:
         data: Optional[PanelData] = None
@@ -3698,7 +4044,8 @@ def run_panel(context: "Optional[Any]" = None,
                     context = RuntimeContext.detect(namespace=selected_ns)
                 elif hasattr(context, "__class__"):
                     # RuntimeContext é frozen; cria novo com namespace correto.
-                    from dataclasses import replace as _dc_replace  # noqa: PLC0415
+                    from dataclasses import \
+                        replace as _dc_replace  # noqa: PLC0415
                     context = _dc_replace(context, namespace=selected_ns)
 
         ctx = context if context is not None else RuntimeContext.detect()
