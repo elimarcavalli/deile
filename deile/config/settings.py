@@ -11,6 +11,7 @@ fallback (with a deprecation log). New writes go to the user's
 import json
 import logging
 import os
+import re
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
@@ -137,6 +138,36 @@ def _to_pos_int(value: Any) -> int:
     return iv
 
 
+# Per-stage pipeline model slug (issue #305): ``provider:model``. Mirrors
+# `_MODEL_SLUG_RE` in `deile/infrastructure/deile_worker_client.py` — keep in
+# sync (both validate the same wire/JSON format).
+_MODEL_SLUG_RE = re.compile(r"^[a-z][a-z0-9_-]*:[a-z0-9._-]+$")
+
+
+def _to_optional_model_slug(value: Any) -> Optional[str]:
+    """Strict converter for ``pipeline.models.<stage>`` entries (issue #305).
+
+    ``None`` and empty/whitespace string collapse to ``None`` (no override).
+    Non-strings, or strings that don't match ``provider:model``, raise —
+    ``apply_overrides`` catches the exception and keeps the previous (default)
+    value. Strict by design: a typo here would silently route every dispatch
+    to a non-existent model, manifesting only as a worker-side 5xx many
+    minutes later.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"expected str, got {type(value).__name__}")
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if not _MODEL_SLUG_RE.match(stripped):
+        raise ValueError(
+            f"invalid model slug {stripped!r}; expected 'provider:model'"
+        )
+    return stripped
+
+
 # Map of nested JSON paths in ``.deile/settings.json`` to ``Settings`` flat
 # fields, with a converter for each. Unknown keys are silently ignored —
 # that's how future-compatible forward-compat works.
@@ -184,6 +215,12 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     # Refinement gate + parallel decomposition (issue #257)
     "pipeline.refine_max_attempts": ("pipeline_refine_max_attempts", _to_pos_int),
     "pipeline.max_parallel": ("pipeline_max_parallel", _to_pos_int),
+    # Per-stage model override (issue #305) — see _MODEL_SLUG_RE / resolver.
+    "pipeline.models.classify":   ("pipeline_model_classify",   _to_optional_model_slug),
+    "pipeline.models.refine":     ("pipeline_model_refine",     _to_optional_model_slug),
+    "pipeline.models.implement":  ("pipeline_model_implement",  _to_optional_model_slug),
+    "pipeline.models.pr_review":  ("pipeline_model_pr_review",  _to_optional_model_slug),
+    "pipeline.models.follow_ups": ("pipeline_model_follow_ups", _to_optional_model_slug),
     # Sub-DEILEs paralelos (issue #257)
     "subagent.runner": ("subagent_runner", lambda v: str(v).strip().lower()),
     "subagent.max_parallel": ("subagent_max_parallel", _to_pos_int),
@@ -347,6 +384,19 @@ class Settings:
     pipeline_resume_budget: int = 0
     pipeline_refine_max_attempts: int = 5
     pipeline_max_parallel: int = 2
+
+    # Pipeline per-stage model override (issue #305) — local-CLI path. The
+    # cluster path uses `DEILE_PIPELINE_MODEL_<STAGE>` env on the worker
+    # Deployment (kubectl set env via the panel TUI). Both layers are read
+    # by `resolve_stage_model` in `deile/orchestration/pipeline/model_resolver`.
+    # Worker forwards the resolved slug as `DispatchPayload.preferred_model`,
+    # which the worker injects in `session.context_data["preferred_model"]`
+    # — the agent picks it up via the soft-override chain.
+    pipeline_model_classify: Optional[str] = None
+    pipeline_model_refine: Optional[str] = None
+    pipeline_model_implement: Optional[str] = None
+    pipeline_model_pr_review: Optional[str] = None
+    pipeline_model_follow_ups: Optional[str] = None
 
     # Sub-DEILEs paralelos em sessão CLI (issue #257)
     # `subagent_runner`        — "local" (default; in-process via asyncio.gather de
@@ -905,6 +955,16 @@ _ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any], bool], ...] = (
     ("DEILE_SUBAGENT_POLL_INTERVAL_S",       "subagent_poll_interval_s",       float,             False),
     ("DEILE_SUBAGENT_BUDGET_S",              "subagent_budget_s",              float,             False),
     ("DEILE_SUBAGENT_CAPTURE_BUFFER_MAX_BYTES", "subagent_capture_buffer_max_bytes", _int_floor(1), False),
+    # Per-stage model override (issue #305) — cluster path. The panel TUI
+    # writes these via ``kubectl set env deploy/deile-worker`` (parallel to
+    # ``set_preferred_model``). The CLI local path uses ``pipeline.models.*``
+    # in settings.json. Both layers run through ``_to_optional_model_slug``
+    # so a malformed slug is dropped with a warning, never silently used.
+    ("DEILE_PIPELINE_MODEL_CLASSIFY",        "pipeline_model_classify",        _to_optional_model_slug, False),
+    ("DEILE_PIPELINE_MODEL_REFINE",          "pipeline_model_refine",          _to_optional_model_slug, False),
+    ("DEILE_PIPELINE_MODEL_IMPLEMENT",       "pipeline_model_implement",       _to_optional_model_slug, False),
+    ("DEILE_PIPELINE_MODEL_PR_REVIEW",       "pipeline_model_pr_review",       _to_optional_model_slug, False),
+    ("DEILE_PIPELINE_MODEL_FOLLOW_UPS",      "pipeline_model_follow_ups",      _to_optional_model_slug, False),
 )
 
 

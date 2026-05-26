@@ -55,11 +55,14 @@ import _panel_demo as demo  # noqa: E402
 # sys.path setup feito por `deploy.py` (que insere `infra/k8s/` no path
 # antes de importar `_panel`). Não trocar para `from infra.k8s. ...` sem
 # revisar como o orquestrador invoca o painel.
+from _panel_data import _fmt_age  # noqa: F401
+from _panel_data import kubectl_bin  # noqa: F401
 from _panel_data import BackgroundRefresher, PanelData  # noqa: F401
 from _panel_data import \
     _audit_security_policy_change as pd_audit_security_policy_change
-from _panel_data import _fmt_age, kubectl_bin  # noqa: F401
+from _panel_data import clear_stage_model as pd_clear_stage_model
 from _panel_data import set_preferred_model as pd_set_preferred_model
+from _panel_data import set_stage_model as pd_set_stage_model
 from rich import box
 from rich.align import Align
 from rich.console import Console, Group, RenderableType
@@ -288,6 +291,16 @@ class View(ABC):
 
     def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
         return ActionResult()
+
+    def intercepts_key(self, key: str) -> bool:
+        """Allow the view to short-circuit a global hotkey.
+
+        Returning True for *key* tells the dispatcher to deliver it to
+        :meth:`handle_key` instead of running the global handler. Useful
+        when a view has a modal state that must consume ESC (close modal)
+        before the global ESC (pop view) fires.
+        """
+        return False
 
 
 # ===== alerts engine ========================================================
@@ -584,7 +597,8 @@ class DashboardView(View):
 
     HOTKEYS = (
         "[1]Pod watch  [2]Pipeline  [3]Issues/PRs  [4]Logs split  "
-        "[5]Tokens  [n]otifier  [a]ctions  [m]odel  [?]help  [q]uit"
+        "[5]Tokens  [n]otifier  [a]ctions  [m]odel/runtime  "
+        "[M]odel/stage  [?]help  [q]uit"
     )
 
     def __init__(self, data: Optional[PanelData] = None):
@@ -849,6 +863,10 @@ class DashboardView(View):
             "n": "notifier-echo",
             "a": "actions",
             "m": "model-switcher",
+            # Per-stage model overrides (issue #305) — uppercase 'M' is a
+            # distinct keystroke (Shift+m) so it doesn't collide with the
+            # deployment-wide ModelSwitcherView on lowercase 'm'.
+            "M": "stage-models",
         }
         if key in nav:
             return ActionResult.nav(nav[key])
@@ -2864,6 +2882,338 @@ class ModelSwitcherView(View):
         self.last_msg = msg
 
 
+class StageModelsView(View):
+    """Per-stage model override editor (issue #305) — layout dinâmico.
+
+    Cada uma das 5 etapas do pipeline (``classify`` / ``refine`` /
+    ``implement`` / ``pr_review`` / ``follow_ups``) pode ter um modelo
+    diferente. Etapas sem override caem no ``DEILE_PREFERRED_MODEL`` global.
+
+    A view se adapta à largura do terminal:
+      - ``width < 100``: tabela colapsada (Etapa + Efetivo só);
+      - ``100 ≤ width < 140``: tabela completa (Etapa + Override + Efetivo);
+      - ``width ≥ 140``: tabela completa + painel lateral com o catálogo
+        do ``ModelsProvider`` para edição visual.
+
+    Persistência via ``set_stage_model`` (settings.json + audit log); o
+    worker pega a próxima dispatch já com o modelo novo (sem rollout).
+    """
+
+    name = "stage-models"
+    title = "Modelos por etapa do pipeline (settings.json)"
+    refresh_s = 1.0
+
+    HOTKEYS = ("[↑/↓] navega   [enter] editar   [c] limpar override   "
+               "[r] refresh   [esc] volta   [q] sai")
+
+    # Source of truth for the row count — keep in sync with PIPELINE_STAGES.
+    # We list it here (and not import at class scope) so the view stays
+    # importable even when the deile package is not on sys.path (panel runs
+    # from infra/k8s in some installs).
+    _STAGES_FALLBACK = ("classify", "refine", "implement", "pr_review",
+                        "follow_ups")
+
+    def __init__(self, data: Optional[PanelData] = None):
+        self.data = data
+        self.cursor: int = 0
+        self.last_msg: str = ""
+        self.last_ok: Optional[bool] = None
+        # Edit modal state: None = browsing; ("set", stage) = picking model
+        # for stage; ("clear", stage) = confirming clear.
+        self.mode: Optional[tuple] = None
+        self.picker_cursor: int = 0
+
+    def on_unmount(self, app: "PanelApp") -> None:
+        # Re-entry should always land on the stage list, never on a stale
+        # picker modal that the operator dismissed by leaving the view.
+        self.mode = None
+        self.picker_cursor = 0
+
+    def intercepts_key(self, key: str) -> bool:
+        # ESC inside a modal must close the modal (handled by our own
+        # _handle_picker_key / _handle_clear_confirm_key), not pop the view.
+        return key == "ESC" and self.mode is not None
+
+    # --- data accessors --------------------------------------------------
+
+    def _entries(self) -> List:
+        if self.data is None:
+            # Demo mode — synthesise 5 fallback rows so the layout still
+            # renders. Effective = "(demo)" to make the mode visible.
+            from _panel_data import StageModelEntry  # noqa: PLC0415
+            return [
+                StageModelEntry(stage=s, override=None,
+                                effective="(demo)", is_fallback=True)
+                for s in self._STAGES_FALLBACK
+            ]
+        return self.data.stage_models.get()
+
+    def _models(self):
+        if self.data is None:
+            return []
+        return self.data.models.get()
+
+    # --- rendering -------------------------------------------------------
+
+    def _render_table(self, entries: List, width: int) -> RenderableType:
+        """Render the stage table; columns adapt to *width*.
+
+        Three breakpoints chosen to match common terminal sizes (80, 120,
+        160 cols). The narrowest path drops the Override column entirely;
+        the widest one also drops nothing but lets the wide-layout add a
+        sibling panel beside this one.
+        """
+        compact = width < 100
+        tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
+        tbl.add_column("#", width=2, justify="right")
+        tbl.add_column("Etapa", style="bold")
+        if not compact:
+            tbl.add_column("Override", style="cyan", overflow="fold")
+        tbl.add_column("Efetivo", style="green", overflow="fold")
+        if not compact:
+            tbl.add_column(" ", width=2)
+        n = len(entries)
+        if n == 0:
+            tbl.add_row(*(["—"] * len(tbl.columns)))
+            return Panel(tbl, title="[bold]ETAPAS[/bold]",
+                         title_align="left", border_style="cyan")
+        self.cursor = max(0, min(self.cursor, n - 1))
+        for i, e in enumerate(entries):
+            marker = "▶" if i == self.cursor else " "
+            override_txt = e.override or "(não setado)"
+            effective_txt = e.effective or "(nenhum — agente usa default)"
+            fallback_mark = "◄" if e.is_fallback else ""
+            row = [
+                Text(f"{marker}{i + 1}", style="bold cyan"),
+                Text(e.stage),
+            ]
+            if not compact:
+                row.append(Text(override_txt,
+                                style="dim" if not e.override else "cyan"))
+            row.append(Text(effective_txt,
+                            style="green" if e.effective else "dim"))
+            if not compact:
+                row.append(Text(fallback_mark, style="dim yellow"))
+            tbl.add_row(*row)
+        legend = ("◄ = sem override per-stage; herda DEILE_PREFERRED_MODEL"
+                  if not compact else "(modo estreito: tabela colapsada)")
+        return Panel(
+            Group(tbl, Text(legend, style="dim")),
+            title="[bold]MODELOS POR ETAPA[/bold]",
+            title_align="left", border_style="cyan",
+        )
+
+    def _render_picker(self, stage: str, width: int) -> RenderableType:
+        """Picker panel: cataloga modelos para seleção (modo 'set')."""
+        models = self._models()
+        compact = width < 100
+        if not models:
+            return Panel(
+                Text("(sem modelos no catálogo — checar model_providers.yaml)",
+                     style="dim"),
+                title=f"[bold yellow]ESCOLHA UM MODELO PARA '{stage}'[/bold yellow]",
+                title_align="left", border_style="yellow",
+            )
+        self.picker_cursor = max(0, min(self.picker_cursor, len(models) - 1))
+        tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
+        tbl.add_column(" ", width=2)
+        tbl.add_column("slug", style="bold")
+        if not compact:
+            tbl.add_column("display", style="cyan")
+            tbl.add_column("$/1M in", justify="right", style="green")
+            tbl.add_column("$/1M out", justify="right", style="green")
+        for i, m in enumerate(models):
+            marker = "▶" if i == self.picker_cursor else " "
+            row = [Text(marker, style="bold cyan"), Text(m.slug, style="bold")]
+            if not compact:
+                row.extend([
+                    Text(m.display_name),
+                    Text(f"${m.input_cost_per_1m:.2f}"),
+                    Text(f"${m.output_cost_per_1m:.2f}"),
+                ])
+            tbl.add_row(*row)
+        return Panel(
+            Group(
+                tbl,
+                Text("[↑/↓] navega   [enter] confirma   [esc] cancela",
+                     style="dim cyan"),
+            ),
+            title=f"[bold yellow]ESCOLHA UM MODELO PARA '{stage}'[/bold yellow]",
+            title_align="left", border_style="yellow",
+        )
+
+    def _render_status(self) -> Optional[RenderableType]:
+        if not self.last_msg:
+            return None
+        border = "green" if self.last_ok else "red"
+        return Panel(
+            Text(self.last_msg,
+                 style="bold green" if self.last_ok else "bold red"),
+            title="[bold]ÚLTIMA AÇÃO[/bold]",
+            title_align="left", border_style=border,
+        )
+
+    def render(self, app: "PanelApp") -> RenderableType:
+        entries = self._entries()
+        width = app.console.size.width or 100
+
+        layout = Layout()
+        sections: List[Layout] = [
+            Layout(_head_panel(self.title, app), name="head", size=4),
+        ]
+
+        # Modal picker / confirmation on top of the body.
+        if self.mode is not None and self.mode[0] == "set":
+            sections.append(Layout(self._render_picker(self.mode[1], width),
+                                   name="picker"))
+        elif self.mode is not None and self.mode[0] == "clear":
+            sections.append(Layout(Panel(
+                Group(
+                    Text(f"Limpar override de '{self.mode[1]}'?",
+                         style="bold yellow"),
+                    Text("A etapa voltará a usar o DEILE_PREFERRED_MODEL "
+                         "global na próxima dispatch.", style="dim"),
+                    Text(),
+                    Text("[y] confirmar    [n] cancelar", style="bold cyan"),
+                ),
+                title="[bold yellow]CONFIRMAR LIMPEZA[/bold yellow]",
+                title_align="left", border_style="yellow",
+            ), name="confirm", size=8))
+        else:
+            # Browsing mode — adaptive body. Wide layouts split table +
+            # catalog side-by-side (a visual cue that picker is keyboard-ready
+            # without leaving this view).
+            table_panel = self._render_table(entries, width)
+            if width >= 140 and self._models():
+                catalog_tbl = Table(box=box.SIMPLE_HEAD, expand=True)
+                catalog_tbl.add_column("slug", style="bold")
+                catalog_tbl.add_column("tier", width=8)
+                catalog_tbl.add_column("$/1M in", justify="right",
+                                       style="green")
+                catalog_tbl.add_column("$/1M out", justify="right",
+                                       style="green")
+                for m in self._models():
+                    catalog_tbl.add_row(m.slug, m.tier,
+                                        f"${m.input_cost_per_1m:.2f}",
+                                        f"${m.output_cost_per_1m:.2f}")
+                catalog_panel = Panel(
+                    catalog_tbl,
+                    title="[bold]CATÁLOGO[/bold]",
+                    title_align="left", border_style="dim",
+                )
+                body = Layout(name="body")
+                body.split_row(
+                    Layout(table_panel, name="table", ratio=2),
+                    Layout(catalog_panel, name="catalog", ratio=1),
+                )
+                sections.append(body)
+            else:
+                sections.append(Layout(table_panel, name="body"))
+
+        status_panel = self._render_status()
+        if status_panel is not None:
+            sections.append(Layout(status_panel, name="status", size=4))
+
+        sections.append(Layout(_footer_panel(self.HOTKEYS),
+                               name="footer", size=3))
+        layout.split_column(*sections)
+        return layout
+
+    # --- input -----------------------------------------------------------
+
+    def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
+        # Picker modal: navigate + confirm/cancel.
+        if self.mode is not None and self.mode[0] == "set":
+            return self._handle_picker_key(key)
+        # Clear-confirmation modal.
+        if self.mode is not None and self.mode[0] == "clear":
+            return self._handle_clear_confirm_key(key)
+        # Browsing.
+        entries = self._entries()
+        n = len(entries)
+        if n == 0:
+            return ActionResult()
+        if key in ("UP", "k"):
+            self.cursor = (self.cursor - 1) % n
+            return ActionResult.refresh()
+        if key in ("DOWN", "j"):
+            self.cursor = (self.cursor + 1) % n
+            return ActionResult.refresh()
+        # Number shortcut: 1-5 jump to that row.
+        if key.isdigit():
+            idx = int(key) - 1
+            if 0 <= idx < n:
+                self.cursor = idx
+                return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            self.mode = ("set", entries[self.cursor].stage)
+            self.picker_cursor = 0
+            return ActionResult.refresh()
+        if key == "c":
+            self.mode = ("clear", entries[self.cursor].stage)
+            return ActionResult.refresh()
+        return ActionResult()
+
+    def _handle_picker_key(self, key: str) -> ActionResult:
+        models = self._models()
+        if key == "ESC":
+            self.mode = None
+            return ActionResult.refresh()
+        if not models:
+            if key in ("\r", "\n"):
+                self.mode = None
+            return ActionResult()
+        if key in ("UP", "k"):
+            self.picker_cursor = (self.picker_cursor - 1) % len(models)
+            return ActionResult.refresh()
+        if key in ("DOWN", "j"):
+            self.picker_cursor = (self.picker_cursor + 1) % len(models)
+            return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            stage = self.mode[1] if self.mode else ""
+            slug = models[self.picker_cursor].slug
+            self._apply_set(stage, slug)
+            self.mode = None
+            if self.data is not None:
+                self.data.stage_models._cache.invalidate()  # noqa: SLF001
+            return ActionResult.refresh()
+        return ActionResult()
+
+    def _handle_clear_confirm_key(self, key: str) -> ActionResult:
+        stage = self.mode[1] if self.mode else ""
+        if key == "y":
+            self._apply_clear(stage)
+            self.mode = None
+            if self.data is not None:
+                self.data.stage_models._cache.invalidate()  # noqa: SLF001
+            return ActionResult.refresh()
+        # ESC / n / anything else cancels.
+        self.mode = None
+        self.last_msg = "cancelado pelo operador"
+        self.last_ok = False
+        return ActionResult.refresh()
+
+    # --- writes ----------------------------------------------------------
+
+    def _apply_set(self, stage: str, slug: str) -> None:
+        if self.data is None:
+            self.last_msg = "modo demo — nenhuma escrita aplicada"
+            self.last_ok = False
+            return
+        ok, msg = pd_set_stage_model(stage, slug)
+        self.last_ok = ok
+        self.last_msg = msg
+
+    def _apply_clear(self, stage: str) -> None:
+        if self.data is None:
+            self.last_msg = "modo demo — nenhuma escrita aplicada"
+            self.last_ok = False
+            return
+        ok, msg = pd_clear_stage_model(stage)
+        self.last_ok = ok
+        self.last_msg = msg
+
+
 class StubView(View):
     """Sub-view placeholder enquanto a Fase correspondente não foi feita."""
 
@@ -2906,7 +3256,8 @@ class HelpView(View):
         tbl.add_column("tecla", style="bold cyan", width=18)
         tbl.add_column("ação")
         rows = [
-            ("1-5, a, m, n",  "drill em sub-view (no dashboard)"),
+            ("1-5, a, m, M, n",  "drill em sub-view (no dashboard)"),
+            ("m / M",         "modelo do deployment / modelo por etapa (settings)"),
             ("↑/↓ ou j/k",    "navega em listas (picker, issues/PRs, modelos)"),
             ("enter",         "seleciona o item destacado"),
             ("esc",           "volta à view anterior (ou ao dashboard)"),
@@ -3213,7 +3564,14 @@ class PanelApp:
                 key = keys.read(timeout=0.05)
                 consumed = False
                 if key:
-                    if self._handle_global(key):
+                    # Views can short-circuit a global hotkey (e.g. ESC inside
+                    # a modal must close the modal before global ESC pops view).
+                    if self.current_view.intercepts_key(key):
+                        result = self.current_view.handle_key(key, self)
+                        self._apply(result)
+                        if result.kind != Action.NOOP:
+                            consumed = True
+                    elif self._handle_global(key):
                         consumed = True
                     else:
                         result = self.current_view.handle_key(key, self)
@@ -3267,6 +3625,7 @@ def _build_views(data: Optional[PanelData] = None) -> Dict[str, View]:
         "actions": ActionsView(data=data),
         "notifier-echo": NotifierEchoView(data=data),
         "model-switcher": ModelSwitcherView(data=data),
+        "stage-models": StageModelsView(data=data),
     }
 
 

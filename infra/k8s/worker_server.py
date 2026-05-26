@@ -527,6 +527,7 @@ async def _run_task(
     history: Optional[str] = None,
     *,
     resume_ctx: Optional[Dict[str, Any]] = None,
+    preferred_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Body of a single dispatch — only one runs at a time (lock).
 
@@ -542,6 +543,17 @@ async def _run_task(
     the ``.deile-progress.md`` journal and persists ``.deile-progress.json`` for
     the progress guard + attempt/budget ceiling. Shape:
     ``{"repo": str, "branch": str, "main_branch": str, "expect_merge": bool}``.
+
+    ``preferred_model`` (issue #305) is a per-turn model override the pipeline
+    sends when a stage has a per-stage model configured (set via
+    ``DEILE_PIPELINE_MODEL_<STAGE>`` env on the worker Deployment, or
+    ``pipeline.models.<stage>`` in the local-CLI's settings.json). When set,
+    it is injected into ``session.context_data["preferred_model"]`` BEFORE the
+    agent runs; the agent's ``_choose_provider_for_turn`` reads
+    ``context_data["preferred_model"]`` first in its soft-override chain
+    (see ``deile/core/agent.py`` — the ``preferred_model`` row in
+    ``soft_candidates``), so this turn uses the pinned model without
+    disturbing the worker's process-wide default.
     """
     start = time.monotonic()
     # Workdir POR canal (não por task): o payload de dispatch não traz
@@ -598,9 +610,29 @@ async def _run_task(
             agent = await _get_agent()
             session_id = f"worker_{task_id}"
             try:
-                await agent.get_or_create_session(session_id, persisted=False)
+                session = await agent.get_or_create_session(session_id, persisted=False)
             except AttributeError:
-                pass
+                session = None
+            # Per-stage model override (issue #305) — when the pipeline
+            # dispatched this turn with a specific model, pin it on the
+            # session's context_data. The agent's _choose_provider_for_turn
+            # reads context_data["preferred_model"] first in the soft-override
+            # chain (see soft_candidates in deile/core/agent.py), ahead of
+            # the process-wide settings.preferred_model. Session is per-task
+            # (worker_<task_id>, persisted=False), so this never bleeds into
+            # another dispatch.
+            if preferred_model and session is not None:
+                try:
+                    session.context_data["preferred_model"] = preferred_model
+                    logger.info(
+                        "task %s: pinning preferred_model=%s for this turn",
+                        task_id, preferred_model,
+                    )
+                except (AttributeError, TypeError) as exc:
+                    logger.warning(
+                        "task %s: could not pin preferred_model=%s: %s",
+                        task_id, preferred_model, exc,
+                    )
             prompt = _build_prompt(brief, workdir, history or "")
 
             # Hook the agent's event bus if available, to feed progress.
@@ -852,6 +884,16 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     history = body.get("history")
     if history is not None:
         history = str(history)
+    # Per-turn model override (issue #305). Present only on pipeline
+    # dispatches and only when the stage has a per-stage model configured;
+    # tool / CLI passthrough leaves it absent. The wire validator
+    # (``DispatchPayload._validate_model_slug``) on the bot-side already
+    # rejected malformed slugs before the request reached us; we accept
+    # whatever survived. An empty/whitespace value collapses to None so
+    # ``_run_task`` only injects when there's an actual override.
+    preferred_model = body.get("preferred_model")
+    if preferred_model is not None:
+        preferred_model = str(preferred_model).strip() or None
     # Resume context — present only on pipeline dispatches (issue #254).
     resume_ctx = _parse_resume_ctx(body)
 
@@ -869,7 +911,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         try:
             result = await asyncio.wait_for(
                 _run_task(task_id, brief, channel_id, user_message_id, persona,
-                          attachments, history, resume_ctx=resume_ctx),
+                          attachments, history, resume_ctx=resume_ctx,
+                          preferred_model=preferred_model),
                 timeout=TASK_TIMEOUT_S + 30,
             )
             _TASKS[task_id] = result
@@ -885,7 +928,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             # ``ok`` stays ``None`` forever and pollers loop indefinitely).
             try:
                 _TASKS[task_id] = await _run_task(task_id, brief, channel_id, user_message_id, persona,
-                                                  attachments, history, resume_ctx=resume_ctx)
+                                                  attachments, history, resume_ctx=resume_ctx,
+                                                  preferred_model=preferred_model)
             except asyncio.CancelledError:
                 _TASKS[task_id] = {
                     **_TASKS.get(task_id, {"task_id": task_id}),
