@@ -27,10 +27,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+# ``rich`` e dependencia core do DEILE (pyproject.toml), entao o escape vive
+# fora do try/except do textual — disponivel em qualquer ambiente.
+from rich.markup import escape as _rich_escape
+
 _TEXTUAL_AVAILABLE = True
 _TEXTUAL_IMPORT_ERROR: Optional[ImportError] = None
 try:
-    from rich.markup import escape as _rich_escape
     from textual import on
     from textual.app import App, ComposeResult
     from textual.containers import Vertical
@@ -39,10 +42,6 @@ try:
 except ImportError as exc:  # pragma: no cover — exercised when extra absent
     _TEXTUAL_AVAILABLE = False
     _TEXTUAL_IMPORT_ERROR = exc
-
-    def _rich_escape(text: str) -> str:  # type: ignore[no-redef]
-        """Fallback identity escape — usado nos shims sem textual instalado."""
-        return text
 
 
 __all__ = [
