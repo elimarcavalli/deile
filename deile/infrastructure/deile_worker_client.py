@@ -117,6 +117,26 @@ class DispatchPayload(BaseModel):
     # The pipeline uses it to give each stage (classify/refine/implement/
     # pr_review/follow_ups) a different model; tools/CLI callers leave it None.
     preferred_model: Optional[str] = Field(default=None, max_length=128)
+    # --- Pipeline context (issue #309 fase 2) -------------------------------
+    # Todos opcionais. O worker (deile-worker ou claude-worker) usa quando
+    # presente, e ignora silenciosamente quando ausente — workers antigos que
+    # não conhecem estes campos continuam funcionando porque o cliente serializa
+    # com ``model_dump(exclude_none=True)``, omitindo os campos None do wire.
+    # ``stage``: qual etapa do pipeline está despachando (mapeia 1-pra-1 com
+    # :data:`deile.orchestration.pipeline.dispatch_resolver.PIPELINE_STAGES`).
+    # Validado contra esse tuple — typo aqui só apareceria como 5xx do worker
+    # muito mais tarde, então falhar local é melhor.
+    stage: Optional[str] = Field(default=None, max_length=32)
+    # ``action_kind``: tipo de ação concreto (``implement|review|mention|
+    # refine|decompose|...``). Não validamos contra um enum aqui porque o
+    # conjunto evolui mais rápido que o stage tuple; o worker é a autoridade.
+    action_kind: Optional[str] = Field(default=None, max_length=32)
+    # ``issue_number``: número da issue GitHub que originou o dispatch (quando
+    # houver). Permite o worker fazer telemetry/log correlation.
+    issue_number: Optional[int] = Field(default=None, ge=1)
+    # ``branch``: nome da branch git de trabalho (ex.: ``auto/issue-309``).
+    # Útil pro worker resolver o working tree correto em modos future.
+    branch: Optional[str] = Field(default=None, max_length=255)
 
     @field_validator("brief")
     @classmethod
@@ -143,6 +163,30 @@ class DispatchPayload(BaseModel):
         if not _MODEL_SLUG_RE.match(stripped):
             raise ValueError(
                 f"preferred_model must match 'provider:model' (got {stripped!r})"
+            )
+        return stripped
+
+    @field_validator("stage")
+    @classmethod
+    def _validate_stage(cls, v: Optional[str]) -> Optional[str]:
+        """Reject unknown stages at the wire boundary (issue #309 fase 2).
+
+        Importado lazy pra evitar ciclo de import (este módulo de
+        infraestrutura é importado cedo no bootstrap, antes do pacote
+        :mod:`deile.orchestration.pipeline`). ``None``/empty/whitespace
+        colapsam pra ``None`` (sem override de contexto de pipeline).
+        """
+        if v is None:
+            return None
+        stripped = v.strip()
+        if not stripped:
+            return None
+        # Lazy import — quebra ciclo potencial.
+        from deile.orchestration.pipeline.dispatch_resolver import \
+            PIPELINE_STAGES
+        if stripped not in PIPELINE_STAGES:
+            raise ValueError(
+                f"invalid stage {stripped!r}; expected one of {PIPELINE_STAGES}"
             )
         return stripped
 
