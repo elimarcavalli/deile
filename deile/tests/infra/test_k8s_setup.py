@@ -396,11 +396,14 @@ class TestApplyNamespace:
         # mas deile-secrets e worker-bearer sim
         assert "deile-secrets" in applied_secrets
         assert "worker-bearer" in applied_secrets
-        # Manifests do bot NUNCA aplicados
-        assert "15-bot-config.yaml" not in applied_manifests
+        # PVC + Deployment do bot NUNCA aplicados
         assert "19-bot-data-pvc.yaml" not in applied_manifests
         assert "20-bot-deployment.yaml" not in applied_manifests
-        # Mas worker e pipeline sim
+        # MAS ``15-bot-config.yaml`` (ConfigMap compartilhado) AINDA aplicado
+        # — worker (45) e shell (35) o montam para `clonable_repos`.
+        assert "15-bot-config.yaml" in applied_manifests
+        # E worker, shell e pipeline sim
+        assert "35-deile-interactive.yaml" in applied_manifests
         assert "45-deile-worker-deployment.yaml" in applied_manifests
         assert "46-deile-pipeline-deployment.yaml" in applied_manifests
 

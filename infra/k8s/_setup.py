@@ -554,9 +554,13 @@ def _apply_namespace(
     """Provisiona um NS inteiro: namespace + network policy + secrets + cm +
     PVCs + Deployments. Idempotente — chama os manifests existentes.
 
-    Quando ``plan.bot_enabled`` é False, os manifests do bot (15-bot-config,
-    19-bot-data-pvc, 20-bot-deployment) são pulados — sem ``bot-secrets``
-    com discord token, o deployment crashlooparia e travaria o ``_validate``.
+    Quando ``plan.bot_enabled`` é False, **só o PVC e o Deployment do bot**
+    (19-bot-data-pvc, 20-bot-deployment) são pulados — sem ``bot-secrets``
+    com discord token, o deployment crashlooparia e travaria o
+    ``_validate``. O ConfigMap ``bot-config`` (manifest 15) continua sendo
+    aplicado mesmo sem bot, porque é também montado por worker (45) e
+    shell (35) para a allowlist ``clonable_repos`` que o ``wrapper.py``
+    consome em todos os pods.
     """
     ns = plan.name
     ui.info(f"[{ns}] provisionando namespace + labels PSS restricted")
@@ -587,17 +591,24 @@ def _apply_namespace(
     if not _apply_runtime_configmap(kubectl, ns, plan):
         return False
 
-    ui.info(f"[{ns}] aplicando PVCs + Deployments")
-    bot_manifests = ("15-bot-config.yaml", "19-bot-data-pvc.yaml", "20-bot-deployment.yaml")
-    core_manifests = (
+    ui.info(f"[{ns}] aplicando ConfigMap bot-config + PVCs + Deployments")
+    # bot-config (manifest 15) é compartilhado: worker (45) e shell (35)
+    # montam-no para a allowlist ``clonable_repos``. Aplica SEMPRE — só o
+    # PVC e o Deployment do bot ficam fora quando ``bot_enabled=False``.
+    base_manifests = (
+        "15-bot-config.yaml",
         "35-deile-interactive.yaml",
         "41-worker-pvc.yaml",
         "45-deile-worker-deployment.yaml",
         "46-deile-pipeline-deployment.yaml",
     )
-    manifests_to_apply = (bot_manifests + core_manifests) if plan.bot_enabled else core_manifests
+    bot_only_manifests = ("19-bot-data-pvc.yaml", "20-bot-deployment.yaml")
+    manifests_to_apply = base_manifests + bot_only_manifests if plan.bot_enabled else base_manifests
     if not plan.bot_enabled:
-        ui.info(f"[{ns}] bot Discord desabilitado — pulando manifests do bot")
+        ui.info(
+            f"[{ns}] bot Discord desabilitado — pulando PVC + Deployment do bot "
+            "(ConfigMap bot-config é compartilhado, continua sendo aplicado)"
+        )
     for manifest in manifests_to_apply:
         rc = subprocess.run(
             [kubectl, "apply", "-n", ns, "-f", str(manifests_dir / manifest)]
