@@ -2103,6 +2103,261 @@ def clear_stage_model(stage: str, timeout: float = 15.0) -> tuple:
     return True, f"{env_var} unset ({msg})"
 
 
+# ===== Pipeline dispatch mode (issue #309) ==================================
+#
+# O ``PipelineMonitor`` lê ``settings.pipeline_dispatch_mode`` no boot e instancia
+# ``ClaudeImplementer`` (``claude -p`` num worktree local) ou ``WorkerImplementer``
+# (HTTP → deile-worker). O ConfigMap ``deile-runtime-config`` traz o default
+# (``deile_worker``), mas o painel TUI permite flipar o modo sem editar manifest
+# nem ConfigMap: ``kubectl set env deploy/deile-pipeline DEILE_PIPELINE_DISPATCH_MODE=<mode>``.
+#
+# A env var é tecnicamente *deprecated* a favor de ``pipeline.dispatch_mode`` no
+# settings.json (issue #111), mas é o único caminho que NÃO exige editar +
+# re-aplicar ConfigMap (que não propaga live em subPath mounts) — e o
+# ``kubectl set env`` dispara rollout, então a config nova chega no pod novo
+# como qualquer outro `kubectl set env` da casa. Continuamos compat com a env
+# var; quem prefere editar JSON pode editar o ConfigMap manualmente.
+#
+# **Limitação operacional documentada**: setar ``claude`` aqui só funciona se o
+# binary ``claude`` estiver no PATH dentro do pod *e* houver credentials para
+# ``~/.claude/`` (subscription ou API key). Hoje o image NÃO instala o
+# ``claude`` CLI nem monta credentials — follow-up explícito no body do PR
+# de #309 (e a próxima dispatch ``claude`` no pipeline emite warning claro de
+# ``claude binary not found in PATH``).
+_DISPATCH_MODES_ALLOWED: tuple = ("claude", "deile_worker")
+_DISPATCH_DEPLOYMENT = "deile-pipeline"
+_DISPATCH_ENV_VAR = "DEILE_PIPELINE_DISPATCH_MODE"
+
+
+@dataclass(frozen=True)
+class DispatchModeEntry:
+    """Snapshot do dispatch mode lido do cluster (issue #309).
+
+    - ``mode`` — valor corrente de ``DEILE_PIPELINE_DISPATCH_MODE`` no
+      Deployment ``deile-pipeline``. ``None`` quando a env var não está setada
+      (o pod cai no default carregado do settings.json — ``deile_worker``).
+    - ``source`` — ``"env"`` quando lida da Deployment spec; ``"default"``
+      quando não há env e o painel infere o valor declarado no ConfigMap.
+    - ``effective`` — o que o pod realmente vai usar na próxima dispatch:
+      ``mode`` quando presente, senão o default do settings.json layered.
+    """
+
+    mode: Optional[str]
+    source: str
+    effective: str
+
+
+class DispatchModeProvider(_KubectlProviderMixin):
+    """Lê o dispatch mode corrente da Deployment ``deile-pipeline``.
+
+    Mirrors :class:`CurrentModelProvider` (um único ``kubectl get -o json``)
+    mas extrai ``DEILE_PIPELINE_DISPATCH_MODE`` em vez de
+    ``DEILE_PREFERRED_MODEL``. TTL alinhado com ``CurrentModelProvider`` (3s).
+    """
+
+    _DEFAULT_FROM_CONFIGMAP = "deile_worker"
+
+    def __init__(self, ttl_s: float = 3.0, enabled: bool = True):
+        self._kubectl = kubectl_bin()
+        self._enabled = enabled
+        self._cache: Cache[DispatchModeEntry] = Cache(
+            ttl_s, self._fetch,
+            fallback=DispatchModeEntry(
+                mode=None, source="default",
+                effective=self._DEFAULT_FROM_CONFIGMAP,
+            ),
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> DispatchModeEntry:
+        return self._cache.get(force)
+
+    def _fetch(self) -> DispatchModeEntry:
+        self._check_enabled()
+        self._resolve_kubectl()
+        if self._kubectl is None:
+            raise RuntimeError("kubectl não encontrado")
+        data = _capture_json(
+            [self._kubectl, "-n", NS, "get",
+             f"deployment/{_DISPATCH_DEPLOYMENT}", "-o", "json"],
+            timeout=4.0,
+        )
+        if not data:
+            raise RuntimeError(
+                f"kubectl get deployment/{_DISPATCH_DEPLOYMENT} falhou ou vazio"
+            )
+        containers = (data.get("spec", {}).get("template", {})
+                      .get("spec", {}).get("containers", []) or [])
+        env_value: Optional[str] = None
+        for env in (containers[0].get("env") or []) if containers else []:
+            if env.get("name") == _DISPATCH_ENV_VAR:
+                raw = env.get("value")
+                if isinstance(raw, str) and raw.strip():
+                    env_value = raw.strip().lower()
+                break
+        if env_value:
+            return DispatchModeEntry(
+                mode=env_value, source="env", effective=env_value,
+            )
+        return DispatchModeEntry(
+            mode=None, source="default",
+            effective=self._DEFAULT_FROM_CONFIGMAP,
+        )
+
+
+def _audit_dispatch_mode_change(
+    mode: Optional[str], *, result: str, detail: str,
+    namespace: str = NS,
+) -> None:
+    """Audit ``SECURITY_POLICY_CHANGED`` para troca de dispatch mode (#309).
+
+    Mesma envelope de :func:`_audit_security_policy_change` (preferred_model)
+    e :func:`_audit_stage_model_change` (stage models) para que dashboards
+    grepem os três sob o mesmo event type. ``mode=None`` é a variante
+    clear/reset (volta ao default do settings.json).
+    """
+    try:
+        from deile.security.audit_logger import (  # noqa: PLC0415
+            AuditEventType, SeverityLevel, get_audit_logger)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "audit logger indisponível para set_pipeline_dispatch_mode: %s",
+            exc,
+        )
+        return
+    severity = (SeverityLevel.INFO
+                if result in ("allowed", "completed", "cancelled")
+                else SeverityLevel.WARNING)
+    try:
+        get_audit_logger().log_event(
+            event_type=AuditEventType.SECURITY_POLICY_CHANGED,
+            severity=severity,
+            actor="panel:set_pipeline_dispatch_mode",
+            resource=f"deployment:{namespace}/{_DISPATCH_DEPLOYMENT}:{_DISPATCH_ENV_VAR}",
+            action="kubectl_set_env" if mode else "kubectl_unset_env",
+            result=result,
+            details={"mode": mode or "", "detail": detail[:200]},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("falha emitindo AuditEvent (dispatch_mode): %s", exc)
+
+
+def set_pipeline_dispatch_mode(
+    mode: str, *, namespace: str = NS, timeout: float = 15.0,
+) -> tuple:
+    """Pin ``DEILE_PIPELINE_DISPATCH_MODE=<mode>`` em ``deile-pipeline`` (#309).
+
+    Usa ``kubectl set env deploy/deile-pipeline`` e dispara o rollout
+    (strategy ``Recreate`` do pipeline). Returns ``(ok, msg)``.
+
+    O argumento ``mode`` é validado contra ``_DISPATCH_MODES_ALLOWED`` ANTES
+    de virar argv — rejeita typos (``claude_p``, ``deile-worker``...) que de
+    outra forma cairiam silenciosamente no fallback do ``build_implementer``
+    e quebrariam a próxima dispatch.
+    """
+    safe_mode = mode if isinstance(mode, str) else repr(mode)
+    if not isinstance(mode, str) or mode.strip().lower() not in _DISPATCH_MODES_ALLOWED:
+        _audit_dispatch_mode_change(
+            safe_mode, result="denied",
+            detail="dispatch_mode fora do conjunto canônico",
+            namespace=namespace,
+        )
+        allowed = ", ".join(sorted(_DISPATCH_MODES_ALLOWED))
+        return False, (
+            f"dispatch_mode '{mode}' inválido — "
+            f"esperado um de: {allowed}"
+        )
+    canonical = mode.strip().lower()
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        _audit_dispatch_mode_change(
+            canonical, result="failed", detail="kubectl não encontrado",
+            namespace=namespace,
+        )
+        return False, "kubectl não encontrado"
+    _audit_dispatch_mode_change(
+        canonical, result="allowed",
+        detail=f"executando kubectl set env {_DISPATCH_ENV_VAR}={canonical}",
+        namespace=namespace,
+    )
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", namespace, "set", "env",
+             f"deploy/{_DISPATCH_DEPLOYMENT}",
+             f"{_DISPATCH_ENV_VAR}={canonical}"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _audit_dispatch_mode_change(
+            canonical, result="failed", detail=f"subprocess: {exc}",
+            namespace=namespace,
+        )
+        return False, f"falha ao executar kubectl: {exc}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+        _audit_dispatch_mode_change(
+            canonical, result="failed",
+            detail=f"rc={proc.returncode} {err}", namespace=namespace,
+        )
+        return False, err
+    msg = (proc.stdout or "rollout disparado").strip()
+    _audit_dispatch_mode_change(
+        canonical, result="completed", detail=msg, namespace=namespace,
+    )
+    return True, f"{_DISPATCH_ENV_VAR}={canonical} ({msg})"
+
+
+def clear_pipeline_dispatch_mode(
+    *, namespace: str = NS, timeout: float = 15.0,
+) -> tuple:
+    """Remove o override de dispatch mode no ``deile-pipeline`` (#309).
+
+    Usa ``kubectl set env ... <VAR>-`` (trailing dash = unset). Depois do
+    rollout, o pod relê o settings.json layered e cai no default declarado
+    no ConfigMap ``deile-runtime-config`` (``deile_worker``).
+    """
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        _audit_dispatch_mode_change(
+            None, result="failed", detail="kubectl não encontrado",
+            namespace=namespace,
+        )
+        return False, "kubectl não encontrado"
+    _audit_dispatch_mode_change(
+        None, result="allowed",
+        detail=f"executando kubectl set env {_DISPATCH_ENV_VAR}-",
+        namespace=namespace,
+    )
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", namespace, "set", "env",
+             f"deploy/{_DISPATCH_DEPLOYMENT}",
+             f"{_DISPATCH_ENV_VAR}-"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _audit_dispatch_mode_change(
+            None, result="failed", detail=f"subprocess: {exc}",
+            namespace=namespace,
+        )
+        return False, f"falha ao executar kubectl: {exc}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+        _audit_dispatch_mode_change(
+            None, result="failed",
+            detail=f"rc={proc.returncode} {err}", namespace=namespace,
+        )
+        return False, err
+    msg = (proc.stdout or "rollout disparado").strip()
+    _audit_dispatch_mode_change(
+        None, result="completed", detail=msg, namespace=namespace,
+    )
+    return True, f"{_DISPATCH_ENV_VAR} unset ({msg})"
+
+
 # ===== Notifier (bot audit log) =============================================
 
 class NotifierProvider(_KubectlProviderMixin):
@@ -2932,8 +3187,8 @@ class LocalInstancesProvider:
 def _try_load_registry_cls():
     """Importa :class:`Registry` se o pacote ``deile`` estiver disponível."""
     try:
-        from deile.runtime.registry import (Registry,  # noqa: PLC0415
-                                            RegistryEntry)
+        from deile.runtime.registry import Registry  # noqa: PLC0415
+        from deile.runtime.registry import RegistryEntry
         return Registry, RegistryEntry
     except Exception:  # noqa: BLE001
         return None, None
@@ -3037,6 +3292,10 @@ class PanelData:
     models: ModelsProvider
     current_model: CurrentModelProvider
     stage_models: "StageModelsProvider"
+    # Dispatch mode do pipeline (issue #309). Lê
+    # ``DEILE_PIPELINE_DISPATCH_MODE`` da Deployment ``deile-pipeline`` para
+    # mostrar/editar via panel TUI.
+    dispatch_mode: "DispatchModeProvider"
     notifier: NotifierProvider
     local_processes: Optional[LocalProcessesProvider] = None
     local_logs: Optional[LocalLogsProvider] = None
@@ -3108,6 +3367,10 @@ class PanelData:
             # mesma Deployment `deile-worker`. Hardcoded para `NS` global
             # internamente; só recebe `enabled` para respeitar `--local-only`.
             stage_models=StageModelsProvider(enabled=k8s_on),
+            # `DispatchModeProvider` (issue #309) lê
+            # ``DEILE_PIPELINE_DISPATCH_MODE`` da Deployment
+            # ``deile-pipeline`` — single read, baixa frequência (3s).
+            dispatch_mode=DispatchModeProvider(enabled=k8s_on),
             notifier=NotifierProvider(namespace=context.namespace,
                                       deploy=context.bot_deploy,
                                       enabled=k8s_on),
@@ -3127,7 +3390,7 @@ class PanelData:
         """Ordem usada por `force_refresh_all` e `errors`."""
         base = (self.pods, self.pipeline, self.workers, self.github,
                 self.costs, self.models, self.current_model,
-                self.stage_models, self.notifier)
+                self.stage_models, self.dispatch_mode, self.notifier)
         locals_ = tuple(p for p in (self.local_processes, self.local_logs,
                                     self.local_audit, self.local_instances,
                                     self.local_registry)
@@ -3152,7 +3415,8 @@ class PanelData:
         eles seriam ruído visual no painel ALERTS sem trazer informação.
         """
         names = ["pods", "pipeline", "workers", "github", "costs",
-                 "models", "current_model", "stage_models", "notifier"]
+                 "models", "current_model", "stage_models",
+                 "dispatch_mode", "notifier"]
         if self.local_processes is not None:
             names.append("local_processes")
         if self.local_logs is not None:

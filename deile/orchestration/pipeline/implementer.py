@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, List, Optional, Tuple
@@ -675,6 +676,35 @@ def is_claude_mode(dispatch_mode: Optional[str]) -> bool:
     )
 
 
+def _warn_if_claude_unavailable() -> None:
+    """Aviso de boot quando dispatch_mode=claude mas ``claude`` não tá no PATH.
+
+    Sem fail-fast: o operador pode estar montando o binary via volume custom
+    que ``shutil.which`` ainda não vê (ex.: deploy K8s com initContainer). A
+    falha real surge no primeiro dispatch quando o subprocess do ``claude -p``
+    estourar ENOENT — mas com este warning na boot o operador já sabe que
+    precisa instalar o CLI antes de ver red no painel.
+
+    Issue #309: o image ``deile-stack:local`` hoje NÃO instala o ``claude``
+    CLI nem monta credentials em ``~/.claude/``. Painel TUI permite flipar
+    para ``claude``, mas a dispatch só funcionará quando o image trouxer o
+    binary e o pod tiver credentials montadas (follow-up infra).
+    """
+    # shutil é import top-level no módulo — patch como
+    # ``deile.orchestration.pipeline.implementer.shutil.which`` para isolamento
+    # robusto sob test pollution (algum suite gigante reordena imports e
+    # patchar ``shutil.which`` global passa a falhar; patchar onde a função
+    # de fato lê resolve isso).
+    if shutil.which("claude") is None:
+        logger.warning(
+            "pipeline dispatch_mode=claude mas binary 'claude' não encontrado "
+            "no PATH. A próxima dispatch falhará com ENOENT. Instale o "
+            "claude CLI (ou rode `claude login`) antes de usar este modo. "
+            "Detalhe: deile/orchestration/pipeline/claude_dispatcher.py "
+            "usa shutil.which('claude') ou cai em literal 'claude'."
+        )
+
+
 def build_implementer(
     dispatch_mode: str, *, worker_client: Optional[object] = None
 ) -> PipelineImplementer:
@@ -687,14 +717,20 @@ def build_implementer(
     Claude silenciosamente — um typo em ``DEILE_PIPELINE_DISPATCH_MODE``
     (ex.: ``deile_woker``) usaria a chave da Anthropic e queimaria budget
     sem o operador perceber. Fail-fast surface o erro imediatamente.
+
+    Issue #309: quando o modo resolvido é ``claude`` mas o binary ``claude``
+    não está no PATH, emite warning de boot. Sem fail-fast — ver
+    :func:`_warn_if_claude_unavailable`.
     """
     if not dispatch_mode or not dispatch_mode.strip():
         # Legacy default (vazio/None) — usa Claude.
+        _warn_if_claude_unavailable()
         return ClaudeImplementer()
     mode = dispatch_mode.strip().lower()
     if mode in WORKER_ALIASES:
         return WorkerImplementer(client=worker_client)
     if mode in CLAUDE_ALIASES:
+        _warn_if_claude_unavailable()
         return ClaudeImplementer()
     raise ValueError(
         f"unknown pipeline dispatch_mode {dispatch_mode!r}; "
