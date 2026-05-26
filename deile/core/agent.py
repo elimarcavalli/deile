@@ -569,16 +569,26 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             if bot_context is not None:
                 session.context_data["bot_context"] = dict(bot_context)
 
-            # Adiciona entrada ao histórico
-            session.add_to_history("user", user_input)
-            
             # Intercepta comandos slash ANTES de processar — apenas se o comando existe.
             # Comandos desconhecidos (ex: /ideias-projetos) caem no LLM como linguagem natural.
             _stripped = user_input.strip()
+            _is_known_slash = False
             if _stripped.startswith('/'):
                 _cmd = _stripped[1:].split()[0] if _stripped[1:] else ""
                 if _cmd and self.command_registry.has_command(_cmd):
-                    return await self._process_slash_command(_stripped, session, start_time)
+                    _is_known_slash = True
+
+            # Slash commands conhecidos NÃO entram no histórico user — são
+            # comandos da CLI, não mensagens para o LLM. Sem essa exclusão,
+            # ``/rewind``, ``/help``, etc. poluem o seletor de rewind e
+            # contaminam o contexto do LLM nas próximas turns. Skills
+            # (``llm_prompt``) re-adicionam com o body real do prompt em
+            # ``_process_slash_command``.
+            if not _is_known_slash:
+                session.add_to_history("user", user_input)
+
+            if _is_known_slash:
+                return await self._process_slash_command(_stripped, session, start_time)
             
             # AUTONOMY PHASE: Try autonomous processing first
             autonomous_result = await self.process_autonomous_request(user_input, session)
@@ -973,12 +983,13 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
             # Route the prompt through the LLM pipeline instead of returning it raw.
             if command_result.content_type == "llm_prompt" and command_result.content:
                 prompt = str(command_result.content)
-                # Replace the slash-command user turn in history with the real prompt
-                # so the LLM sees the skill body, not the raw "/skill-name args".
-                for entry in reversed(session.conversation_history):
-                    if entry["role"] == "user":
-                        entry["content"] = prompt
-                        break
+                # ``process_input`` agora NÃO adiciona slash commands ao histórico
+                # (são comandos da CLI). Para skills, o body real do prompt é
+                # o que o LLM deve ver — adiciona aqui como entrada user
+                # legítima (substitui a antiga lógica de "varrer reversed
+                # history e mutar entry[content]" que dependia da entrada
+                # slash já existir).
+                session.add_to_history("user", prompt)
                 response_content, tool_results = await self._process_iterative_function_calling(
                     prompt, None, session
                 )
