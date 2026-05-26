@@ -134,8 +134,13 @@ class ConsoleUIManager(UIManager):
                     # sentinel so the CLI loop opens /rewind.
                     if _esc['active']:
                         _hide_esc_hint(event)
-                        buf.insert_text(_REWIND_SENTINEL)
-                        event.current_buffer.validate_and_handle()
+                        # ``app.exit(result=...)`` faz ``prompt_async()`` retornar
+                        # o sentinel SEM commitar o buffer ao scrollback —
+                        # evita o eco ``^@REWIND^@`` (null bytes renderizados
+                        # pelo terminal) que ``insert_text + validate_and_handle``
+                        # produzia. O CLI loop intercepta o sentinel em
+                        # ``cli.py`` e converte para ``/rewind``.
+                        event.app.exit(result=_REWIND_SENTINEL)
                         return
                     # First ESC on empty buffer: show rewind hint.
                     _esc['active'] = True
@@ -330,16 +335,18 @@ class ConsoleUIManager(UIManager):
         via ``/model use`` (armazenado em ``context_data["forced_model"]``)
         em vez de sempre exibir o default da config.
 
-        Resize-em-tempo-real (issue #307): o painel ``Provider/Model/Status``
-        é renderizado dentro de ``rich.live.Live`` por alguns segundos. Rich
-        instala um handler ``SIGWINCH`` e re-renderiza cada frame com a
-        largura corrente do terminal — se o usuário redimensiona enquanto o
-        welcome está vivo, ele adapta sem quebrar bordas. Após o período, o
-        último frame fica no scrollback (limitação fundamental documentada
-        no princípio #15). Ver também ``deile.ui.dynamic_render``.
+        Layout compacto e adaptativo: o painel ``Provider/Model/Status`` é
+        construído com ``Panel.fit(...)`` (``expand=False``), portanto o
+        Rich dimensiona a caixa ao conteúdo ao invés de esticar pela
+        largura inteira do terminal — exatamente como a caixa manual
+        ``╔══╗`` antiga, mas sem travar a largura por ``max(len(...))``.
+        A consulta a ``console.width`` continua lazy: terminais menores
+        que o conteúdo (ex.: 30 colunas) ainda fazem o painel encolher
+        e o texto interno reflow naturalmente. Frames já no scrollback
+        são estáticos (limitação fundamental documentada no princípio
+        #15). A região ``Live`` bloqueante foi removida porque adicionava
+        6s ao startup sem benefício prático no caso comum (sem resize).
         """
-        from deile.ui.dynamic_render import live_for
-
         self.console.clear()
 
         provider_label, model_label = self._resolve_provider_model(session)
@@ -357,25 +364,26 @@ class ConsoleUIManager(UIManager):
                 Text.from_markup(f"  [bold #FFD166]✦[/] [italic]{slogan_random}[/italic]\n")
             )
 
-            # Painel adaptativo: `live_for` segura a região Live ativa por
-            # `duration_s`, re-renderizando a cada frame. Durante esse
-            # período, qualquer SIGWINCH é capturado por Rich e o layout
-            # adapta em tempo real à nova `console.width`.
-            def build_panel():
-                prov_markup = f"[bold cyan]Provider[/bold cyan]  [white]{provider_label}[/white]"
-                model_markup = f"[bold cyan]Model[/bold cyan]     [white]{model_label}[/white]"
-                status_markup = "[bold green]●[/bold green] [bold]DEILE[/bold]   Pronto — digite [cyan]/help[/cyan] para começar"
-                header = Text.from_markup(prov_markup + "\n" + model_markup)
-                status = Text.from_markup(status_markup)
-                body = Group(header, Rule(style="#4285F4"), status)
-                return Panel(
-                    body,
-                    border_style="#4285F4",
-                    box=box.DOUBLE,
-                    padding=(0, 1),
-                )
-
-            live_for(build_panel, console=self.console, duration_s=6.0, refresh_hz=8.0)
+            # Painel COMPACTO e adaptativo. ``Panel.fit(...)`` =
+            # ``Panel(..., expand=False)``: a caixa se dimensiona pelo
+            # conteúdo (look próximo ao antigo ``╔══╗`` manual) ao
+            # invés de esticar pela largura inteira do terminal — o que
+            # causa "bordas soltas" em terminais largos e Rule interno
+            # desconectado das verticais. O Rich ainda consulta
+            # ``console.width`` no render (clamp em terminais estreitos),
+            # mantendo a adaptação a resize do princípio #15.
+            prov_markup = f"[bold cyan]Provider[/bold cyan]  [white]{provider_label}[/white]"
+            model_markup = f"[bold cyan]Model[/bold cyan]     [white]{model_label}[/white]"
+            status_markup = "[bold green]●[/bold green] [bold]DEILE[/bold]   Pronto — digite [cyan]/help[/cyan] para começar"
+            header = Text.from_markup(prov_markup + "\n" + model_markup)
+            status = Text.from_markup(status_markup)
+            body = Group(header, Rule(style="#4285F4"), status)
+            self.console.print(Panel.fit(
+                body,
+                border_style="#4285F4",
+                box=box.DOUBLE,
+                padding=(0, 1),
+            ))
             self.console.print("  [dim]DEILE v5.1 ULTRA[/dim]\n")
         except Exception:
             print("DEILE v5.1 ULTRA")
