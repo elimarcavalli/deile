@@ -77,13 +77,97 @@ async def test_health_returns_500_when_binary_missing(
         assert "claude" in body["error"].lower()
 
 
-async def test_progress_returns_501_stub(claude_worker_module):
-    """``GET /v1/progress/{task_id}`` é stub na Task 12; Task 14 implementa
-    o tail dos arquivos de stdout/stderr persistidos no PVC."""
+# --------------------------------------------------------------------------- #
+# Task 14: /v1/progress/{task_id}
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_progress_returns_404_for_unknown_task(claude_worker_module, monkeypatch, tmp_path):
+    """task_id válido mas progress file não existe → 404."""
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+
     app = claude_worker_module.build_app()
     async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/v1/progress/abc12345")
-        assert resp.status == 501
+        # 16-char hex valid format mas inexistente
+        resp = await client.get("/v1/progress/0123456789abcdef")
+        assert resp.status == 404
+
+
+@pytest.mark.asyncio
+async def test_progress_returns_400_for_invalid_task_id(claude_worker_module, monkeypatch, tmp_path):
+    """task_id formato inválido (não-hex 16-char) → 400."""
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+
+    app = claude_worker_module.build_app()
+    async with TestClient(TestServer(app)) as client:
+        # Not hex
+        resp = await client.get("/v1/progress/garbage-no-hex")
+        assert resp.status == 400
+
+        # Wrong length
+        resp = await client.get("/v1/progress/abc123")
+        assert resp.status == 400
+
+
+@pytest.mark.asyncio
+async def test_progress_returns_tails(claude_worker_module, monkeypatch, tmp_path):
+    """Quando progress files existem, devolve tail dos últimos N bytes."""
+    progress_dir = tmp_path / ".progress"
+    progress_dir.mkdir()
+    (progress_dir / "abcdef0123456789.stdout.log").write_text("line 1\nline 2\nline 3\n")
+    (progress_dir / "abcdef0123456789.stderr.log").write_text("err A\nerr B\n")
+
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+
+    app = claude_worker_module.build_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/progress/abcdef0123456789")
+        assert resp.status == 200
+        body = await resp.json()
+        assert "stdout" in body
+        assert "stderr" in body
+        assert "line 3" in body["stdout"]
+        assert "err B" in body["stderr"]
+        assert body["task_id"] == "abcdef0123456789"
+
+
+@pytest.mark.asyncio
+async def test_progress_handles_only_stdout_present(claude_worker_module, monkeypatch, tmp_path):
+    """Se só stdout file existe (stderr vazio), ainda retorna 200."""
+    progress_dir = tmp_path / ".progress"
+    progress_dir.mkdir()
+    (progress_dir / "fedcba9876543210.stdout.log").write_text("partial\n")
+    # No stderr.log
+
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+
+    app = claude_worker_module.build_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/progress/fedcba9876543210")
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["stdout"] == "partial\n"
+        assert body["stderr"] == ""
+
+
+@pytest.mark.asyncio
+async def test_progress_tail_caps_long_stdout(claude_worker_module, monkeypatch, tmp_path):
+    """Stdout muito longo é truncado pra tail 50KB."""
+    progress_dir = tmp_path / ".progress"
+    progress_dir.mkdir()
+    # 60000 bytes — should be truncated to last 50000
+    long_content = "A" * 60_000
+    (progress_dir / "1111222233334444.stdout.log").write_text(long_content)
+
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+
+    app = claude_worker_module.build_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/progress/1111222233334444")
+        assert resp.status == 200
+        body = await resp.json()
+        assert len(body["stdout"]) == 50_000
 
 
 # --------------------------------------------------------------------------- #

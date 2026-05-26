@@ -18,7 +18,7 @@ Endpoints:
 
 * ``GET  /v1/health``              — readiness/liveness probe (Task 12)
 * ``POST /v1/dispatch``            — receive brief + spawn ``claude -p`` (Task 13)
-* ``GET  /v1/progress/{task_id}``  — mid-flight snapshot      (stub 501; Task 14)
+* ``GET  /v1/progress/{task_id}``  — mid-flight snapshot via PVC tail (Task 14)
 
 Spec: ``docs/superpowers/specs/2026-05-26-claude-worker-design.md`` §4.4.
 """
@@ -310,17 +310,68 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     })
 
 
-async def progress_handler(request: web.Request) -> web.Response:
-    """``GET /v1/progress/{task_id}`` — STUB (Task 14 implementa).
+#: ``secrets.token_hex(8)`` em :func:`dispatch_handler` gera exatamente 16
+#: chars hex; qualquer outra forma é rejeitada para não permitir path traversal
+#: pela URL nem leitura de arquivos arbitrários no PVC.
+_TASK_ID_RE = re.compile(r"[0-9a-f]{16}")
 
-    Será responsável por devolver o tail dos arquivos de stdout/stderr que
-    o ``run_subprocess_with_progress`` persistir no PVC, permitindo ao
-    painel TUI fazer polling mid-flight (paridade com o
-    ``/v1/progress/{task_id}`` do ``deile-worker``).
+
+async def progress_handler(request: web.Request) -> web.Response:
+    """``GET /v1/progress/{task_id}`` — snapshot do task em execução ou completo.
+
+    Lê os arquivos persistidos por :func:`run_subprocess_with_progress` no PVC
+    (``DEILE_CLAUDE_WORKER_ROOT/.progress/<task_id>.<stream>.log``) e devolve
+    tail (stdout 50 KiB, stderr 10 KiB). Usado pelo painel TUI / subagent
+    orchestration para acompanhar mid-flight sem aguardar a resposta do
+    ``/v1/dispatch``.
+
+    Returns:
+        - ``200`` com ``{task_id, stdout, stderr}`` se algum dos arquivos existe.
+        - ``404`` se ``task_id`` tem formato válido mas nenhum dos arquivos
+          de progress está presente (task ainda não rodou, foi GCed, etc.).
+        - ``400`` se ``task_id`` não bate ``[0-9a-f]{16}`` — defende contra
+          path traversal pela URL e contra IDs vazados de outros sistemas.
+
+    Erros de I/O ao ler os arquivos viram ``logger.warning`` + string vazia
+    (best-effort): o que o cliente vê é o que conseguimos ler.
     """
-    return web.json_response(
-        {"status": "not_implemented_yet", "task": 14}, status=501,
-    )
+    task_id = request.match_info["task_id"]
+
+    # Sanity: task_id deve ser hex 16-char (gerado por secrets.token_hex(8)).
+    if not _TASK_ID_RE.fullmatch(task_id):
+        return web.json_response(
+            {"error": "invalid task_id format (expected hex 16-char)"},
+            status=400,
+        )
+
+    root = Path(os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work"))
+    progress_dir = root / ".progress"
+    stdout_path = progress_dir / f"{task_id}.stdout.log"
+    stderr_path = progress_dir / f"{task_id}.stderr.log"
+
+    if not stdout_path.exists() and not stderr_path.exists():
+        return web.json_response(
+            {"error": f"task_id {task_id} not found"},
+            status=404,
+        )
+
+    try:
+        stdout = stdout_path.read_text() if stdout_path.exists() else ""
+    except OSError as exc:
+        logger.warning("failed to read %s: %s", stdout_path, exc)
+        stdout = ""
+
+    try:
+        stderr = stderr_path.read_text() if stderr_path.exists() else ""
+    except OSError as exc:
+        logger.warning("failed to read %s: %s", stderr_path, exc)
+        stderr = ""
+
+    return web.json_response({
+        "task_id": task_id,
+        "stdout": stdout[-50_000:],
+        "stderr": stderr[-10_000:],
+    })
 
 
 # --------------------------------------------------------------------------- #
