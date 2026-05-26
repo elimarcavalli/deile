@@ -951,6 +951,96 @@ def k8s_list(args: dict) -> int:
     return 0
 
 
+def _parse_claude_login_flags(extra: List[str]) -> Dict[str, object]:
+    """Decodifica flags do verb `k8s claude-login` a partir de ``args["extra"]``.
+
+    Reconhece:
+
+      * ``--switch`` / ``--force-relogin`` -> ``force_relogin=True``
+      * ``--no-interactive``               -> ``interactive=False``
+
+    Devolve ``{"_error": msg}`` se vier flag desconhecida. ``--namespace``
+    é resolvido pelo flag global ``-n``/``--namespace`` (via ``_ns(args)``)
+    e não é re-parseado aqui.
+    """
+    parsed: Dict[str, object] = {"force_relogin": False, "interactive": True}
+    for token in extra:
+        if token in ("--switch", "--force-relogin"):
+            parsed["force_relogin"] = True
+            continue
+        if token == "--no-interactive":
+            parsed["interactive"] = False
+            continue
+        return {"_error": f"flag desconhecido: `{token}`"}
+    return parsed
+
+
+def k8s_claude_login(args: dict) -> int:
+    """k8s claude-login — captura credentials Claude do host + instala claude-worker.
+
+    Idempotente: rerodar sem flags é noop quando tudo está pronto. Use
+    ``--switch`` (alias ``--force-relogin``) para forçar logout + nova OAuth
+    (trocar conta). Use ``--no-interactive`` em CI para falhar se as
+    credentials não estiverem presentes (não chama ``claude login``).
+
+    Issue #309 fase 2 — delega o trabalho pesado a
+    ``infra/k8s/_claude_install.bootstrap_claude_worker``.
+    """
+    flags = _parse_claude_login_flags(args.get("extra") or [])
+    if "_error" in flags:
+        ui.err(str(flags["_error"]))
+        ui.info("flags válidos: --switch (--force-relogin), --no-interactive")
+        return 64
+
+    ns = _ns(args)
+
+    # Import tardio: ``_claude_install`` só é necessário neste verb e em
+    # operações do painel (DispatchMatrixView). Outros verbs não pagam
+    # o custo do import.
+    sys.path.insert(0, str(HERE))
+    try:
+        from _claude_install import bootstrap_claude_worker  # noqa: PLC0415
+    finally:
+        sys.path.pop(0)
+
+    force_relogin = bool(flags["force_relogin"])
+    interactive = bool(flags["interactive"])
+
+    ui.section("k8s claude-login")
+    ui.info(
+        f"namespace={ns}, switch={force_relogin}, interactive={interactive}"
+    )
+
+    result = bootstrap_claude_worker(
+        namespace=ns,
+        force_relogin=force_relogin,
+        interactive=interactive,
+    )
+
+    if not result.ok:
+        ui.err(f"claude-login falhou: {result.error}")
+        if result.account_email:
+            ui.info(f"logado como: {result.account_email}")
+        ui.info(
+            f"Secret claude-credentials: {'ok' if result.secret_applied else '—'}"
+        )
+        ui.info(
+            f"Deployment claude-worker:  {'ok' if result.deployment_applied else '—'}"
+        )
+        ui.info(
+            f"Rollout ready:             {'ok' if result.rollout_ready else '—'}"
+        )
+        return 1
+
+    ui.ok("claude-worker pronto.")
+    if result.account_email:
+        ui.info(f"logado como: {result.account_email}")
+    ui.info(f"Secret claude-credentials: {'ok' if result.secret_applied else '—'}")
+    ui.info(f"Deployment claude-worker:  {'ok' if result.deployment_applied else '—'}")
+    ui.info(f"Rollout ready:             {'ok' if result.rollout_ready else '—'}")
+    return 0
+
+
 def _k8s_state_label(ns: Optional[str] = None) -> str:
     """Rótulo curto do estado do k8s para o menu/diagnóstico."""
     ns = ns or NS_DEFAULT
@@ -970,7 +1060,7 @@ _K8S = {
     "restart": k8s_restart, "status": k8s_status, "logs": k8s_logs,
     "build": k8s_build, "test": k8s_test, "clone": k8s_clone,
     "list": k8s_list, "panel": k8s_panel, "doctor": cmd_doctor,
-    "setup": k8s_setup,
+    "setup": k8s_setup, "claude-login": k8s_claude_login,
 }
 _LOCAL = {
     "start": local_start, "stop": local_stop, "restart": local_restart,
@@ -992,6 +1082,8 @@ _K8S_ACTIONS = [
     ("logs", "logs recentes (bot + worker)"),
     ("test", "rodar o Job one-shot deile-oneshot"),
     ("clone", "clone <owner/repo> — clona um repo no deile-shell"),
+    ("claude-login",
+     "instalar claude-worker no cluster (flags: --switch, --no-interactive)"),
     ("down", "APAGAR o namespace e TODOS os dados"),
 ]
 _LOCAL_ACTIONS = [
