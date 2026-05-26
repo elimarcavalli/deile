@@ -389,13 +389,12 @@ def _build_namespace_plan(
 
 def _collect_namespace_plans(
     existing_ns: List[str], dry_run: bool = False
-) -> Optional[List[NamespacePlan]]:
+) -> List[NamespacePlan]:
     """Coleta N planos de NS via prompts.
 
-    Retorna ``None`` para indicar abort (operador cancelou ou input
-    inválido recorrente); ``list`` (não-vazia) para indicar sucesso. A
-    rejeição de ``--yes`` fica em ``run_setup`` — esta função pressupõe
-    fluxo interativo.
+    Retorna sempre uma lista não-vazia (1..8 entradas — o loop interno
+    valida o range). Aborts vivem no caller (rejeição de ``--yes`` em
+    ``run_setup``) — esta função pressupõe fluxo interativo.
     """
     while True:
         raw = ui.ask(
