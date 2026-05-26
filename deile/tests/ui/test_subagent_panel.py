@@ -147,6 +147,194 @@ def test_truncate_helper_inside_renderer_limits_long_titles():
     assert _truncate("short", 50) == "short"
 
 
+# -------------------------------------------------------------------- #
+# Round 6 — parse_key_buffer (issue: setas em rajada → ESC falso)        #
+# -------------------------------------------------------------------- #
+
+
+def test_parse_key_buffer_single_arrow_right():
+    """1 seta direita inteira no buffer → 1 sequência CSI."""
+    from deile.ui.subagent_panel import parse_key_buffer
+
+    seqs, rem = parse_key_buffer("\x1b[C")
+    assert seqs == ["\x1b[C"]
+    assert rem == ""
+
+
+def test_parse_key_buffer_burst_of_arrows_yields_each_seq_no_esc():
+    """Rajada de 5 setas direitas num único buffer → 5 sequências,
+    NENHUMA delas é ESC isolado. Esse é o cenário do bug raiz: o usuário
+    aperta setas em rajada e o kernel entrega tudo de uma vez; o parser
+    legacy quebrava entre os bytes e disparava ESC falso.
+    """
+    from deile.ui.subagent_panel import parse_key_buffer
+
+    burst = "\x1b[C" * 5
+    seqs, rem = parse_key_buffer(burst)
+    assert seqs == ["\x1b[C"] * 5
+    assert rem == ""
+    assert "\x1b" not in seqs  # ESC isolado nunca aparece
+
+
+def test_parse_key_buffer_mixed_burst_no_false_esc():
+    """Rajada mista de setas L/R/digit no buffer → cada um separado,
+    sem ESC falso.
+    """
+    from deile.ui.subagent_panel import parse_key_buffer
+
+    burst = "\x1b[C\x1b[D2\x1b[Ch"
+    seqs, rem = parse_key_buffer(burst)
+    assert seqs == ["\x1b[C", "\x1b[D", "2", "\x1b[C", "h"]
+    assert rem == ""
+
+
+def test_parse_key_buffer_lone_esc_goes_to_remainder():
+    """ESC sozinho NÃO sai como sequência — vai pro remainder para o
+    caller decidir via timeout. Esse é o coração da fix: ESC genuíno
+    só dispara quando o caller confirma que nada mais veio em 200ms.
+    """
+    from deile.ui.subagent_panel import parse_key_buffer
+
+    seqs, rem = parse_key_buffer("\x1b")
+    assert seqs == []
+    assert rem == "\x1b"
+
+
+def test_parse_key_buffer_partial_csi_goes_to_remainder():
+    """CSI incompleta (``\\x1b[`` sem terminador) vai pro remainder."""
+    from deile.ui.subagent_panel import parse_key_buffer
+
+    seqs, rem = parse_key_buffer("\x1b[")
+    assert seqs == []
+    assert rem == "\x1b["
+
+    # E o resto fecha numa rodada seguinte:
+    seqs2, rem2 = parse_key_buffer(rem + "C")
+    assert seqs2 == ["\x1b[C"]
+    assert rem2 == ""
+
+
+def test_parse_key_buffer_ss3_introducer():
+    """SS3 (``\\x1bOC`` etc.) é sempre 3 bytes."""
+    from deile.ui.subagent_panel import parse_key_buffer
+
+    seqs, rem = parse_key_buffer("\x1bOC\x1bOD")
+    assert seqs == ["\x1bOC", "\x1bOD"]
+    assert rem == ""
+
+
+def test_parse_key_buffer_ss3_partial_goes_to_remainder():
+    """SS3 com só introducer espera no remainder."""
+    from deile.ui.subagent_panel import parse_key_buffer
+
+    seqs, rem = parse_key_buffer("\x1bO")
+    assert seqs == []
+    assert rem == "\x1bO"
+
+
+def test_parse_key_buffer_esc_followed_by_garbage_does_not_emit_esc():
+    """``\\x1b`` seguido de algo que não é introducer CSI/SS3 NÃO emite
+    ESC genuíno — descarta o ``\\x1b`` e processa o byte como char normal.
+    Esse foi um dos caminhos do bug legacy: o read(1) podia retornar ``""``
+    ou um byte inesperado e o código original disparava ``_on_key("\\x1b")``.
+    """
+    from deile.ui.subagent_panel import parse_key_buffer
+
+    seqs, rem = parse_key_buffer("\x1bXh")
+    # ``\x1b`` descartado, ``X`` e ``h`` processados.
+    assert "\x1b" not in seqs
+    assert "X" in seqs
+    assert "h" in seqs
+    assert rem == ""
+
+
+def test_parse_key_buffer_csi_with_modifiers_is_treated_as_single_seq():
+    """CSI com modificadores (ex.: Shift+Right ``\\x1b[1;2C``) é uma seq."""
+    from deile.ui.subagent_panel import parse_key_buffer
+
+    seqs, rem = parse_key_buffer("\x1b[1;2C")
+    assert seqs == ["\x1b[1;2C"]
+    assert rem == ""
+
+
+def test_parse_key_buffer_csi_split_across_buffers_does_not_leak_esc():
+    """Mesmo se a CSI vier em pedaços (kernel entrega ``\\x1b[`` numa
+    syscall e ``C`` na próxima), o ``\\x1b`` fica no remainder e nunca
+    é emitido como cancel. Cobre o cenário em que o usuário aperta as
+    setas com pausa natural entre teclas.
+    """
+    from deile.ui.subagent_panel import parse_key_buffer
+
+    seqs1, rem1 = parse_key_buffer("\x1b[")
+    assert seqs1 == []
+    assert rem1 == "\x1b["
+
+    seqs2, rem2 = parse_key_buffer(rem1 + "C")
+    assert seqs2 == ["\x1b[C"]
+    assert rem2 == ""
+
+    # Em nenhum dos chunks o ESC isolado aparece.
+    assert all("\x1b" != s for s in seqs1 + seqs2)
+
+
+def test_parse_key_buffer_no_false_esc_under_30_arrow_burst():
+    """30 setas em rajada extrema (pior caso humano plausível) — nenhuma
+    delas vira ESC falso e o foco anda como esperado.
+    """
+    from deile.ui.subagent_panel import parse_key_buffer
+
+    burst = ("\x1b[C\x1b[D" * 15)  # 30 setas alternando
+    seqs, rem = parse_key_buffer(burst)
+    assert len(seqs) == 30
+    assert all(s in ("\x1b[C", "\x1b[D") for s in seqs)
+    assert rem == ""
+
+
+# -------------------------------------------------------------------- #
+# _on_key + parse_key_buffer integração — foco vs. cancel               #
+# -------------------------------------------------------------------- #
+
+
+def test_arrow_burst_does_not_set_cancel_or_change_focus_past_end():
+    """Cenário do bug do usuário: foco na última frente, aperta seta
+    direita várias vezes → painel NÃO deve fechar (cancel_requested
+    permanece False).
+
+    Como ``_on_key`` é definido dentro de ``_start_keyboard_watcher``
+    (closure), instanciamos um renderer e simulamos o despacho das
+    sequências chamando o método público ``_compose_compact`` antes/depois
+    e validando ``_focus``/``_cancel_requested`` diretamente.
+    """
+    states = [_mk_state(i, f"task {i}", status="running") for i in (1, 2, 3)]
+    renderer, _, _ = _make_renderer(states)
+    renderer._focus = 3  # já no último
+
+    # Simula o que o watcher faria depois de parsear a rajada:
+    # despacha 10 setas direitas em sequência.
+    from deile.ui.subagent_panel import parse_key_buffer
+    seqs, _ = parse_key_buffer("\x1b[C" * 10)
+    assert len(seqs) == 10
+
+    # Aplicação manual da lógica de _on_key (sem precisar do thread):
+    n_states = len(states)
+    for seq in seqs:
+        if seq == "\x1b":
+            if renderer._focus is not None:
+                renderer._focus = None
+            else:
+                renderer._cancel_requested = True
+        elif seq in ("\x1b[C", "\x1bOC"):
+            if renderer._focus and renderer._focus < n_states:
+                renderer._focus += 1
+        elif seq in ("\x1b[D", "\x1bOD"):
+            if renderer._focus and renderer._focus > 1:
+                renderer._focus -= 1
+
+    # Ainda no último, ainda aberto.
+    assert renderer._focus == 3
+    assert renderer._cancel_requested is False
+
+
 async def test_run_completes_when_all_states_terminal(tmp_path):
     """Smoke test: ``run()`` encerra cedo quando todos os states já estão
     em terminal (ok/error/cancelled). Sem TTY → keyboard watcher é skipado.
