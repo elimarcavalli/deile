@@ -118,15 +118,11 @@ def _probe_host_sync(host: str) -> Optional[ForgeKind]:
     return result
 
 
-def _do_probe_sync(host: str) -> Optional[ForgeKind]:
-    """Executa as sondas HTTP de forma síncrona (sem event loop).
-
-    Chama as duas funções de probe em sequência (GitLab primeiro, depois GHES).
-    """
+def _check_gitlab_endpoint(host: str) -> Optional[ForgeKind]:
+    """Probe ``https://<host>/api/v4/version`` and return :data:`ForgeKind.GITLAB`
+    on HTTP 200, else ``None``. Never raises."""
     import urllib.error
     import urllib.request
-
-    # Tenta GitLab.
     try:
         req = urllib.request.Request(f"https://{host}/api/v4/version", method="GET")
         with urllib.request.urlopen(req, timeout=3) as resp:
@@ -134,11 +130,19 @@ def _do_probe_sync(host: str) -> Optional[ForgeKind]:
                 return ForgeKind.GITLAB
     except (urllib.error.URLError, OSError, ValueError):
         pass
+    return None
 
-    # Tenta GHES. Só aceita como GitHub quando o header
-    # ``X-GitHub-Enterprise-Version`` está presente — assim um endpoint
-    # arbitrário respondendo 200 a ``/api/v3/`` não é misclassificado
-    # como GitHub (defesa contra proxies/IDS retornando 200 genérico).
+
+def _check_github_endpoint(host: str) -> Optional[ForgeKind]:
+    """Probe ``https://<host>/api/v3/`` for GHES.
+
+    Só aceita como GitHub quando o header ``X-GitHub-Enterprise-Version``
+    está presente — assim um endpoint arbitrário respondendo 200 a
+    ``/api/v3/`` não é misclassificado como GitHub (defesa contra proxies/IDS
+    retornando 200 genérico).
+    """
+    import urllib.error
+    import urllib.request
     try:
         req = urllib.request.Request(f"https://{host}/api/v3/", method="GET")
         with urllib.request.urlopen(req, timeout=3) as resp:
@@ -149,8 +153,15 @@ def _do_probe_sync(host: str) -> Optional[ForgeKind]:
                 return ForgeKind.GITHUB
     except (urllib.error.URLError, OSError, ValueError):
         pass
-
     return None
+
+
+def _do_probe_sync(host: str) -> Optional[ForgeKind]:
+    """Executa as sondas HTTP de forma síncrona (sem event loop).
+
+    Chama as duas funções de probe em sequência (GitLab primeiro, depois GHES).
+    """
+    return _check_gitlab_endpoint(host) or _check_github_endpoint(host)
 
 
 def detect_forge_kind(
@@ -284,45 +295,9 @@ async def _probe_host(host: str) -> Optional[ForgeKind]:
 
 async def _do_probe(host: str) -> Optional[ForgeKind]:
     """Executa as sondas HTTP em paralelo e retorna o kind do primeiro sucesso."""
-    import urllib.error
-    import urllib.request
-
-    def _check_gitlab() -> Optional[ForgeKind]:
-        url = f"https://{host}/api/v4/version"
-        try:
-            req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                if resp.status == 200:
-                    return ForgeKind.GITLAB
-        except (urllib.error.URLError, OSError, ValueError):
-            pass
-        return None
-
-    def _check_github() -> Optional[ForgeKind]:
-        url = f"https://{host}/api/v3/"
-        try:
-            req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                if resp.status != 200:
-                    return None
-                # GHES expõe o header ``X-GitHub-Enterprise-Version``. Esse é o
-                # único sinal confiável de que um endpoint que responde 200 a
-                # ``/api/v3/`` é de fato GHES (versus um proxy/IDS retornando
-                # 200 genérico). Sem o header, retornamos None e o caller cai
-                # no erro de detecção, evitando classificar erroneamente um
-                # host arbitrário como GitHub.
-                if any(
-                    k.lower() == "x-github-enterprise-version"
-                    for k in dict(resp.headers)
-                ):
-                    return ForgeKind.GITHUB
-        except (urllib.error.URLError, OSError, ValueError):
-            pass
-        return None
-
     loop = asyncio.get_event_loop()
-    gl_task = loop.run_in_executor(None, _check_gitlab)
-    gh_task = loop.run_in_executor(None, _check_github)
+    gl_task = loop.run_in_executor(None, _check_gitlab_endpoint, host)
+    gh_task = loop.run_in_executor(None, _check_github_endpoint, host)
 
     # Espera ambas em paralelo; pega o primeiro resultado não-None.
     results = await asyncio.gather(gl_task, gh_task, return_exceptions=True)
