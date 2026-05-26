@@ -892,6 +892,51 @@ async def _run_command_flag(
     return 0 if result.success else 1
 
 
+def _run_textual_ui() -> int:
+    """Bootstrap o shell Textual (issue #317 Phase 0+1, opt-in via --ui textual).
+
+    Mantemos a importacao tardia para que ``deile/cli.py`` carregue sem o
+    extra ``[ui]`` instalado — usuarios que nunca passam ``--ui textual``
+    nao precisam de ``textual`` na cadeia de import. Quando o extra falta,
+    devolvemos um erro claro (exit 2) com instrucao de install.
+
+    Mensagens de erro usam ``type(exc).__name__`` em vez de ``str(exc)`` no
+    stderr para evitar vazar caminhos absolutos do filesystem em erros de
+    ``ImportError`` (pilar 08). O stacktrace completo vai pro logger via
+    ``exc_info=True`` — operadores com log file ativo veem o detalhe.
+    """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+    try:
+        from deile.ui.textual_app import (TEXTUAL_INSTALL_HINT,
+                                          ensure_textual_available,
+                                          run_textual_app)
+    except ImportError as exc:
+        # Caminho raro: ``deile/ui/textual_app.py`` esta no pacote (definido
+        # nas extras_packages), mas algum import interno explodiu antes do
+        # try/except do modulo.
+        _log.error("Falha ao importar deile.ui.textual_app", exc_info=True)
+        print(
+            f"ERROR: nao consegui carregar deile.ui.textual_app ({type(exc).__name__}).",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        ensure_textual_available()
+    except ImportError:
+        print(TEXTUAL_INSTALL_HINT, file=sys.stderr)
+        return 2
+    try:
+        return run_textual_app()
+    except Exception as exc:  # noqa: BLE001 — last-resort para nao mascarar bugs
+        _log.error("Falha ao executar a app Textual", exc_info=True)
+        print(
+            f"ERROR: falha ao executar a app Textual ({type(exc).__name__}).",
+            file=sys.stderr,
+        )
+        return 1
+
+
 def _format_help_with_commands(parser: "argparse.ArgumentParser") -> str:
     """Append the slash-command catalog to argparse's stock --help output.
 
@@ -946,7 +991,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
 
-    # No args → interactive
+    # No args → interactive (legacy shell — Textual opt-in requires --ui)
     if not argv:
         _silence_logging()
         asyncio.run(_DeileCLI().run_interactive())
@@ -973,6 +1018,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         dest="model",
         metavar="PROVIDER:MODEL_ID",
         help="Force a specific model (e.g. deepseek:deepseek-v4-pro).",
+    )
+    parser.add_argument(
+        "--ui",
+        dest="ui",
+        choices=("legacy", "textual"),
+        default="legacy",
+        help=(
+            "Shell UI mode. 'legacy' (default) is the current Rich shell. "
+            "'textual' boots the experimental Textual-based shell (issue "
+            "#317 Phase 0+1 — skeleton; requires 'pip install -e \".[ui]\"')."
+        ),
     )
     parser.add_argument(
         "--install",
@@ -1050,7 +1106,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     msg = " ".join(args.message).strip()
     if not msg and not sys.stdin.isatty():
         msg = sys.stdin.read().strip()
+    # --ui textual + mensagem positional: a flag exige um shell interativo,
+    # mas a mensagem dispara one-shot. O usuario provavelmente esqueceu uma
+    # das duas — emitimos warning e seguimos no one-shot (preserva o intent
+    # de "responda a essa mensagem"). Sem warning, a UX silenciosa confunde.
+    if msg and getattr(args, "ui", "legacy") == "textual":
+        print(
+            "WARNING: --ui textual ignorado em modo one-shot (mensagem posicional "
+            "presente). Rode 'deile --ui textual' sem mensagem para abrir o shell "
+            "Textual.",
+            file=sys.stderr,
+        )
     if not msg:
+        # --ui textual launches the experimental Textual shell (issue #317
+        # Phase 0+1 — opt-in).
+        if getattr(args, "ui", "legacy") == "textual":
+            _silence_logging()
+            return _run_textual_ui()
         # --debug or --model without a message → fall through to interactive mode.
         if getattr(args, "debug", False) or args.model:
             _silence_logging()

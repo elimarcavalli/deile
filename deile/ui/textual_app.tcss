@@ -1,0 +1,40 @@
+/*
+ * deile/ui/textual_app.tcss — layout reativo do shell Textual (issue #317).
+ *
+ * Toda a area do terminal e coberta por um Screen vertical. O RichLog
+ * ocupa 1fr (todo o espaco disponivel apos Header/Footer/Input) e
+ * recalcula layout em cada SIGWINCH automaticamente. O Input tem altura
+ * fixa de 3 linhas e fica docked no bottom.
+ *
+ * Mantenha esta folha pequena: cores e estilos finos virao na Fase 5
+ * (polimento). A regra raiz e: nenhum width fixo, tudo proporcional.
+ */
+
+Screen {
+    layout: vertical;
+}
+
+#main {
+    height: 1fr;
+    layout: vertical;
+}
+
+#chat_history {
+    height: 1fr;
+    border: tall $primary 30%;
+    padding: 0 1;
+}
+
+#prompt {
+    dock: bottom;
+    height: 3;
+    border: tall $accent;
+}
+
+Header {
+    background: $primary 20%;
+}
+
+Footer {
+    background: $primary 10%;
+}

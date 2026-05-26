@@ -63,6 +63,7 @@ if TYPE_CHECKING:
 __all__ = [
     "InstanceState",
     "get_instance_state",
+    "peek_instance_state",
     "reset_instance_state",
     "pid_alive",
     "VALID_ROLES",
@@ -585,3 +586,19 @@ def reset_instance_state() -> None:
         if _instance_singleton is not None:
             _instance_singleton.close()
             _instance_singleton = None
+
+
+def peek_instance_state() -> Optional[InstanceState]:
+    """Retorna o singleton atual SEM criar um se ainda não existe.
+
+    Diferente de :func:`get_instance_state`, esta acessor não tem side-effect:
+    nada é instanciado, nenhum state file é publicado, nenhuma task asyncio é
+    agendada. Pensada para *sub-readers* (surfaces de UI, painel, observador
+    externo) que querem ler o estado vivo apenas se algum bootstrap (CLI,
+    worker, bot, pipeline) já tomou ownership do processo. Caso contrário,
+    devolve ``None`` e o caller decide degradar para placeholders.
+
+    Issue #317 + DECISOES #37/#38: o singleton é dono do state file + atexit;
+    sub-readers consomem, nunca produzem.
+    """
+    return _instance_singleton
