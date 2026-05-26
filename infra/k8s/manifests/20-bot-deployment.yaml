@@ -137,8 +137,11 @@ spec:
               path: /v1/health
               port: control-plane
             initialDelaySeconds: 5
-            periodSeconds: 5
-            failureThreshold: 6
+            # 20s reduz 75% do tráfego /v1/health (era a cada 5s, gerando
+            # spam no log). Detecção de unready leva até 3 falhas = ~60s
+            # fora do Service — aceitável para workload interno.
+            periodSeconds: 20
+            failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /v1/health

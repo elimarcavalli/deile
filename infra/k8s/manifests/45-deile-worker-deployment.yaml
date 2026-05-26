@@ -108,8 +108,11 @@ spec:
           readinessProbe:
             httpGet: { path: /v1/health, port: worker-api }
             initialDelaySeconds: 5
-            periodSeconds: 5
-            failureThreshold: 12
+            # 20s reduz 75% do tráfego /v1/health (era a cada 5s, gerando
+            # spam no log). Detecção de unready leva até 4 falhas = ~80s
+            # fora do Service — aceitável para workload interno.
+            periodSeconds: 20
+            failureThreshold: 4
           livenessProbe:
             httpGet: { path: /v1/health, port: worker-api }
             initialDelaySeconds: 30
