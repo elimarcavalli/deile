@@ -16,6 +16,24 @@ import pytest
 
 from deile.ui import textual_app
 
+# Marker reutilizavel para os smoke tests reais (que precisam do extra ``[ui]``).
+requires_textual = pytest.mark.skipif(
+    not textual_app.TEXTUAL_AVAILABLE,
+    reason="textual nao instalado — pulando smoke real do App",
+)
+
+
+@pytest.fixture
+def app_with_cli_snapshot():
+    """DEILEApp instanciada com snapshot minimo de role=cli/turns=0.
+
+    Usada pelos smoke tests que so precisam de um app rodando — evita
+    repetir o dict literal em cada teste.
+    """
+    return textual_app.DEILEApp(
+        instance_state_snapshot={"role": "cli", "stats": {"turns": 0}}
+    )
+
 
 @pytest.mark.ui
 def test_install_hint_mentions_extra():
@@ -72,18 +90,14 @@ def test_format_header_subtitle_handles_partial_snapshots(snap, expected_substri
 
 
 @pytest.mark.ui
-async def test_app_run_test_renders_input_messages():
+@requires_textual
+async def test_app_run_test_renders_input_messages(app_with_cli_snapshot):
     """App.run_test smoke: instancia a DEILEApp, simula tres submits no Input
     e verifica que o ``RichLog`` contem cada mensagem (echo)."""
-    if not textual_app.TEXTUAL_AVAILABLE:
-        pytest.skip("textual nao instalado — pulando smoke real do App")
-
     # Importacao tardia: so quando textual existe.
     from textual.widgets import Input, RichLog
 
-    app = textual_app.DEILEApp(
-        instance_state_snapshot={"role": "cli", "stats": {"turns": 0}}
-    )
+    app = app_with_cli_snapshot
     messages = ["primeira", "segunda", "terceira"]
 
     async with app.run_test() as pilot:
@@ -111,12 +125,10 @@ async def test_app_run_test_renders_input_messages():
 
 
 @pytest.mark.ui
+@requires_textual
 async def test_app_subtitle_reflects_injected_snapshot():
     """A subtitle do App deve refletir o snapshot injetado (testabilidade
     sem precisar de InstanceState singleton)."""
-    if not textual_app.TEXTUAL_AVAILABLE:
-        pytest.skip("textual nao instalado — pulando smoke real do App")
-
     app = textual_app.DEILEApp(
         instance_state_snapshot={
             "role": "cli",
@@ -206,16 +218,12 @@ def test_run_textual_ui_emits_install_hint_when_extra_missing(monkeypatch, capsy
 
 
 @pytest.mark.ui
-async def test_app_clear_log_binding_empties_history():
+@requires_textual
+async def test_app_clear_log_binding_empties_history(app_with_cli_snapshot):
     """Ctrl+L deve limpar o RichLog sem encerrar a app."""
-    if not textual_app.TEXTUAL_AVAILABLE:
-        pytest.skip("textual nao instalado — pulando smoke real do App")
-
     from textual.widgets import Input, RichLog
 
-    app = textual_app.DEILEApp(
-        instance_state_snapshot={"role": "cli", "stats": {"turns": 0}}
-    )
+    app = app_with_cli_snapshot
     async with app.run_test() as pilot:
         await pilot.pause()
         prompt = app.screen.query_one("#prompt", Input)
@@ -247,19 +255,15 @@ def _rendered_text(rich_log) -> str:
 
 
 @pytest.mark.ui
-async def test_app_escapes_rich_markup_in_user_input():
+@requires_textual
+async def test_app_escapes_rich_markup_in_user_input(app_with_cli_snapshot):
     """Regressao do achado de seguranca do Revisor 2: usuario digita
     ``[red]inject[/red]`` no Input — o RichLog tem ``markup=True`` e ecoaria
     como Rich markup (spoofing visual). A sanitizacao via
     ``rich.markup.escape`` deve renderizar as tags como texto literal."""
-    if not textual_app.TEXTUAL_AVAILABLE:
-        pytest.skip("textual nao instalado — pulando smoke real do App")
-
     from textual.widgets import Input, RichLog
 
-    app = textual_app.DEILEApp(
-        instance_state_snapshot={"role": "cli", "stats": {"turns": 0}}
-    )
+    app = app_with_cli_snapshot
     payloads = [
         "[red]inject[/red]",
         "ola unicode áéíóú \U0001f680",
