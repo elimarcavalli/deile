@@ -210,17 +210,32 @@ def _default_forge_for_dispatch(repo: str):
     )
 
 
-def render_implement_prompt(
-    repo: str, number: int, title: str, issue_body: str, *, forge=None,
-) -> str:
+def _resolve_forge_for_prompt(repo: str, forge, *, number: int, branch: str):
+    """Resolve ``(cfg, cmds, pr_noun)`` for a prompt renderer.
+
+    Centralises the three-line preamble shared by every ``render_*_prompt``:
+    pick the explicit forge or build the GH default, render the per-forge
+    CLI snippets, and derive the PR/MR noun. Keeps the import-locals inside
+    one helper so each render function is one ``.format()`` call.
+    """
     from deile.orchestration.forge.base import ForgeKind
     from deile.orchestration.forge.cli_renderer import render_brief_cmds
     cfg = forge or _default_forge_for_dispatch(repo)
-    cmds = render_brief_cmds(cfg, number=number, branch="<branch>", main="main")
+    cmds = render_brief_cmds(cfg, number=number, branch=branch, main="main")
     pr_noun = "PR" if cfg.kind is ForgeKind.GITHUB else "MR"
+    return cfg, cmds, pr_noun
+
+
+def render_implement_prompt(
+    repo: str, number: int, title: str, issue_body: str, *, forge=None,
+) -> str:
+    cfg, cmds, pr_noun = _resolve_forge_for_prompt(
+        repo, forge, number=number, branch="<branch>",
+    )
     # ``create_cmd`` is the bare verb the prompt mentions in prose (``gh
     # pr create`` / ``glab mr create``) — not the fully-parameterised
     # snippet, which would over-specify and confuse the agent.
+    from deile.orchestration.forge.base import ForgeKind
     create_cmd = "gh pr create" if cfg.kind is ForgeKind.GITHUB else "glab mr create"
     return IMPLEMENT_PROMPT_TEMPLATE.format(
         repo=repo,
@@ -236,11 +251,9 @@ def render_implement_prompt(
 def render_review_prompt(
     repo: str, number: int, title: str, *, forge=None,
 ) -> str:
-    from deile.orchestration.forge.base import ForgeKind
-    from deile.orchestration.forge.cli_renderer import render_brief_cmds
-    cfg = forge or _default_forge_for_dispatch(repo)
-    cmds = render_brief_cmds(cfg, number=number, branch=f"pr/{number}", main="main")
-    pr_noun = "PR" if cfg.kind is ForgeKind.GITHUB else "MR"
+    _cfg, cmds, pr_noun = _resolve_forge_for_prompt(
+        repo, forge, number=number, branch=f"pr/{number}",
+    )
     return REVIEW_PROMPT_TEMPLATE.format(
         repo=repo,
         number=number,
