@@ -1669,6 +1669,291 @@ def kill_local_pid(pid: int, *, sig: str = "SIGTERM",
     return True, msg
 
 
+# ===== Per-stage model override (issue #305) ================================
+#
+# Key architectural note: the panel runs on the OPERATOR's host (Mac/laptop),
+# but the per-stage model setting needs to take effect inside the
+# ``deile-worker`` Pod. Writing to the operator's local ``~/.deile/settings.json``
+# has ZERO effect on the cluster (the pod has its own filesystem).
+#
+# So the cluster-side write path mirrors ``set_preferred_model``:
+# ``kubectl set env deploy/deile-worker DEILE_PIPELINE_MODEL_<STAGE>=<slug>``.
+# The worker reads ``DEILE_PIPELINE_MODEL_<STAGE>`` env vars at startup via
+# ``_apply_env_overrides`` in ``deile/config/settings.py`` (issue #305), so a
+# RollingUpdate after the set-env applies the new value pod-wide.
+#
+# The settings.json path (``pipeline.models.<stage>``) is still wired in
+# Settings — it's the local-CLI path (operator running DEILE on Mac, not in
+# cluster). The panel just doesn't use it because it doesn't reach the pod.
+
+# The 5 stage env var slots (must mirror PIPELINE_STAGES + the _ENV_OVERRIDES
+# table in deile/config/settings.py). Kept as a module-level tuple so the
+# provider/setter/HelpView all agree on the wire format.
+_STAGE_ENV_VARS: tuple = (
+    ("classify",    "DEILE_PIPELINE_MODEL_CLASSIFY"),
+    ("refine",      "DEILE_PIPELINE_MODEL_REFINE"),
+    ("implement",   "DEILE_PIPELINE_MODEL_IMPLEMENT"),
+    ("pr_review",   "DEILE_PIPELINE_MODEL_PR_REVIEW"),
+    ("follow_ups",  "DEILE_PIPELINE_MODEL_FOLLOW_UPS"),
+)
+_STAGE_DEPLOYMENT = "deile-worker"
+
+
+@dataclass(frozen=True)
+class StageModelEntry:
+    """One row in the per-stage model override view.
+
+    - ``stage`` — canonical stage name (one of ``PIPELINE_STAGES``).
+    - ``override`` — value of ``DEILE_PIPELINE_MODEL_<STAGE>`` env var on the
+      ``deile-worker`` Deployment; ``None`` when no per-stage override is set.
+    - ``effective`` — what the worker will actually use for this stage on
+      the next dispatch: the override, or the worker's
+      ``DEILE_PREFERRED_MODEL`` (read via :class:`CurrentModelProvider`).
+    - ``is_fallback`` — True iff ``effective`` came from the global default,
+      not the per-stage override. The view marks fallback rows with ``◄``.
+    """
+
+    stage: str
+    override: Optional[str]
+    effective: Optional[str]
+    is_fallback: bool
+
+
+class StageModelsProvider(_KubectlProviderMixin):
+    """Per-stage model overrides + global default, read from the cluster.
+
+    Mirrors :class:`CurrentModelProvider` (single ``kubectl get -o json`` of
+    the ``deile-worker`` Deployment) but extracts the 5
+    ``DEILE_PIPELINE_MODEL_<STAGE>`` env vars instead of
+    ``DEILE_PREFERRED_MODEL``. TTL aligned with ``CurrentModelProvider`` (3s)
+    so a single ``[r]`` refresh sweeps both.
+
+    The provider does NOT read the operator's local ``Settings`` singleton —
+    that would be misleading, because the operator's local
+    ``~/.deile/settings.json`` does not propagate to the worker pod.
+    """
+
+    def __init__(self, ttl_s: float = 3.0, enabled: bool = True):
+        self._kubectl = kubectl_bin()
+        self._enabled = enabled
+        self._cache: Cache[List[StageModelEntry]] = Cache(
+            ttl_s, self._fetch, fallback=[],
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> List[StageModelEntry]:
+        return self._cache.get(force)
+
+    def _fetch(self) -> List[StageModelEntry]:
+        # `--local-only` → cai no fallback do Cache sem chamar kubectl.
+        self._check_enabled()
+        self._resolve_kubectl()
+        if self._kubectl is None:
+            raise RuntimeError("kubectl não encontrado")
+        data = _capture_json(
+            [self._kubectl, "-n", NS, "get",
+             f"deployment/{_STAGE_DEPLOYMENT}", "-o", "json"],
+            timeout=4.0,
+        )
+        if not data:
+            raise RuntimeError(
+                f"kubectl get deployment/{_STAGE_DEPLOYMENT} falhou ou vazio"
+            )
+        env_map = self._extract_env_map(data)
+        global_default = env_map.get("DEILE_PREFERRED_MODEL") or None
+        out: List[StageModelEntry] = []
+        for stage, env_var in _STAGE_ENV_VARS:
+            override = env_map.get(env_var) or None
+            effective = override or global_default
+            out.append(StageModelEntry(
+                stage=stage,
+                override=override,
+                effective=effective,
+                is_fallback=(override is None and effective is not None),
+            ))
+        return out
+
+    @staticmethod
+    def _extract_env_map(data: Dict[str, Any]) -> Dict[str, str]:
+        """Return ``{env_name: env_value}`` for the first container's env list.
+
+        Matches CurrentModelProvider's extraction shape; centralised so the
+        same parsing logic doesn't drift between the two providers.
+        """
+        containers = (data.get("spec", {}).get("template", {})
+                      .get("spec", {}).get("containers", []) or [])
+        if not containers:
+            return {}
+        out: Dict[str, str] = {}
+        for env in (containers[0].get("env") or []):
+            name = env.get("name")
+            value = env.get("value")
+            if name and isinstance(value, str):
+                out[name] = value
+        return out
+
+
+def _audit_stage_model_change(
+    stage: str, slug: Optional[str], *, result: str, detail: str,
+) -> None:
+    """Emit AuditEvent(SECURITY_POLICY_CHANGED) for per-stage model writes.
+
+    Same envelope as :func:`_audit_security_policy_change` (parity with the
+    deployment-wide ``set_preferred_model``) so dashboards can grep for both
+    under the same event type. ``slug=None`` is the clear/reset variant.
+    """
+    try:
+        from deile.security.audit_logger import (  # noqa: PLC0415
+            AuditEventType, SeverityLevel, get_audit_logger)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "audit logger indisponível para set_stage_model: %s", exc,
+        )
+        return
+    severity = (SeverityLevel.INFO
+                if result in ("allowed", "completed", "cancelled")
+                else SeverityLevel.WARNING)
+    env_var = next((e for s, e in _STAGE_ENV_VARS if s == stage),
+                   f"DEILE_PIPELINE_MODEL_{stage.upper()}")
+    try:
+        get_audit_logger().log_event(
+            event_type=AuditEventType.SECURITY_POLICY_CHANGED,
+            severity=severity,
+            actor="panel:set_stage_model",
+            resource=f"deployment:{NS}/{_STAGE_DEPLOYMENT}:{env_var}",
+            action="kubectl_set_env" if slug else "kubectl_unset_env",
+            result=result,
+            details={"stage": stage, "slug": slug or "", "detail": detail[:200]},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("falha emitindo AuditEvent (stage_model): %s", exc)
+
+
+def _env_var_for_stage(stage: str) -> Optional[str]:
+    """Return ``DEILE_PIPELINE_MODEL_<STAGE>`` for a canonical stage, else None.
+
+    Single source of truth for the stage→env mapping; rejects unknown stages.
+    """
+    return next((env for s, env in _STAGE_ENV_VARS if s == stage), None)
+
+
+def set_stage_model(stage: str, slug: str, timeout: float = 15.0) -> tuple:
+    """Pin a per-stage model override on ``deile-worker`` (issue #305).
+
+    Uses ``kubectl set env`` to write ``DEILE_PIPELINE_MODEL_<STAGE>=<slug>``
+    on the ``deile-worker`` Deployment. The worker reads
+    ``DEILE_PIPELINE_MODEL_<STAGE>`` at startup (registered in
+    ``_ENV_OVERRIDES`` of ``deile/config/settings.py``), and the RollingUpdate
+    strategy applies the new value zero-downtime. Returns ``(ok, msg)``.
+
+    Slug is validated against ``_MODEL_SLUG_RE`` BEFORE reaching kubectl argv
+    — same defense as :func:`set_preferred_model`. Emits a
+    ``SECURITY_POLICY_CHANGED`` audit event on every attempt (allowed /
+    denied / completed / failed), under the same event type as
+    ``set_preferred_model`` so dashboards see them uniformly.
+    """
+    safe_slug = slug if isinstance(slug, str) else repr(slug)
+    env_var = _env_var_for_stage(stage)
+    if env_var is None:
+        _audit_stage_model_change(
+            str(stage), safe_slug, result="denied",
+            detail="stage fora do conjunto canônico",
+        )
+        allowed = ", ".join(s for s, _ in _STAGE_ENV_VARS)
+        return False, f"stage '{stage}' inválido — esperado um de: {allowed}"
+    if not isinstance(slug, str) or not _MODEL_SLUG_RE.match(slug):
+        _audit_stage_model_change(
+            stage, safe_slug, result="denied", detail="slug inválido",
+        )
+        return False, "slug inválido — recusado por validação"
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        _audit_stage_model_change(
+            stage, slug, result="failed", detail="kubectl não encontrado",
+        )
+        return False, "kubectl não encontrado"
+    _audit_stage_model_change(
+        stage, slug, result="allowed",
+        detail=f"executando kubectl set env {env_var}",
+    )
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", NS, "set", "env", f"deploy/{_STAGE_DEPLOYMENT}",
+             f"{env_var}={slug}"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _audit_stage_model_change(
+            stage, slug, result="failed", detail=f"subprocess: {exc}",
+        )
+        return False, f"falha ao executar kubectl: {exc}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+        _audit_stage_model_change(
+            stage, slug, result="failed",
+            detail=f"rc={proc.returncode} {err}",
+        )
+        return False, err
+    msg = (proc.stdout or "rollout disparado").strip()
+    _audit_stage_model_change(
+        stage, slug, result="completed", detail=msg,
+    )
+    return True, f"{env_var}={slug} ({msg})"
+
+
+def clear_stage_model(stage: str, timeout: float = 15.0) -> tuple:
+    """Remove a per-stage override on ``deile-worker``. Returns ``(ok, msg)``.
+
+    Uses ``kubectl set env ... <VAR>-`` (the trailing dash is kubectl's
+    syntax for "unset"). After the rollout, the worker reads no
+    ``DEILE_PIPELINE_MODEL_<STAGE>`` env, so :func:`resolve_stage_model`
+    returns ``None`` and the dispatch falls back to the global default.
+    """
+    env_var = _env_var_for_stage(stage)
+    if env_var is None:
+        _audit_stage_model_change(
+            str(stage), None, result="denied",
+            detail="stage fora do conjunto canônico",
+        )
+        return False, f"stage '{stage}' inválido"
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        _audit_stage_model_change(
+            stage, None, result="failed", detail="kubectl não encontrado",
+        )
+        return False, "kubectl não encontrado"
+    _audit_stage_model_change(
+        stage, None, result="allowed",
+        detail=f"executando kubectl set env {env_var}-",
+    )
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", NS, "set", "env", f"deploy/{_STAGE_DEPLOYMENT}",
+             f"{env_var}-"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _audit_stage_model_change(
+            stage, None, result="failed", detail=f"subprocess: {exc}",
+        )
+        return False, f"falha ao executar kubectl: {exc}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+        _audit_stage_model_change(
+            stage, None, result="failed",
+            detail=f"rc={proc.returncode} {err}",
+        )
+        return False, err
+    msg = (proc.stdout or "rollout disparado").strip()
+    _audit_stage_model_change(
+        stage, None, result="completed", detail=msg,
+    )
+    return True, f"{env_var} unset ({msg})"
+
+
 # ===== Notifier (bot audit log) =============================================
 
 class NotifierProvider(_KubectlProviderMixin):
@@ -2602,6 +2887,7 @@ class PanelData:
     costs: CostsProvider
     models: ModelsProvider
     current_model: CurrentModelProvider
+    stage_models: "StageModelsProvider"
     notifier: NotifierProvider
     local_processes: Optional[LocalProcessesProvider] = None
     local_logs: Optional[LocalLogsProvider] = None
@@ -2662,6 +2948,10 @@ class PanelData:
                 deployments=(context.worker_deploy, context.pipeline_deploy),
                 enabled=k8s_on,
             ),
+            # `StageModelsProvider` (issue #305) lê env vars per-stage da
+            # mesma Deployment `deile-worker`. Hardcoded para `NS` global
+            # internamente; só recebe `enabled` para respeitar `--local-only`.
+            stage_models=StageModelsProvider(enabled=k8s_on),
             notifier=NotifierProvider(namespace=context.namespace,
                                       deploy=context.bot_deploy,
                                       enabled=k8s_on),
@@ -2680,7 +2970,8 @@ class PanelData:
     def _all_providers(self) -> tuple:
         """Ordem usada por `force_refresh_all` e `errors`."""
         base = (self.pods, self.pipeline, self.workers, self.github,
-                self.costs, self.models, self.current_model, self.notifier)
+                self.costs, self.models, self.current_model,
+                self.stage_models, self.notifier)
         locals_ = tuple(p for p in (self.local_processes, self.local_logs,
                                     self.local_audit, self.local_instances,
                                     self.local_registry)
@@ -2705,7 +2996,7 @@ class PanelData:
         eles seriam ruído visual no painel ALERTS sem trazer informação.
         """
         names = ["pods", "pipeline", "workers", "github", "costs",
-                 "models", "current_model", "notifier"]
+                 "models", "current_model", "stage_models", "notifier"]
         if self.local_processes is not None:
             names.append("local_processes")
         if self.local_logs is not None:

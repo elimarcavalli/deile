@@ -558,6 +558,17 @@ def k8s_panel(args: dict) -> int:
     if "_error" in overrides:
         ui.err(overrides["_error"])
         return 64
+    # Bug-fix: a flag GLOBAL ``--namespace``/``-n`` é capturada em
+    # ``args["k8s_namespace"]`` pelo argparser top-level (multi-NS no PR #315),
+    # mas o ``_parse_panel_flags`` só lê ``args["extra"]`` (flags do subcomando).
+    # Sem propagar a global, ``RuntimeContext.namespace`` cai no default
+    # (``_NS_DEFAULT``) e o ``run_panel`` apresenta o prompt de seleção mesmo
+    # com o operador tendo declarado o NS explicitamente.
+    # Flag do subcomando (``deploy.py k8s panel --namespace X``) tem precedência
+    # sobre a global (``deploy.py --namespace X k8s panel``) para preservar a
+    # ergonomia de override pontual.
+    if "namespace" not in overrides:
+        overrides["namespace"] = _ns(args)
     ctx = RuntimeContext.detect(**overrides)
     # K8s não é mais obrigatório, mas avisa quando o operador pediu
     # explicitamente k8s e ele não está disponível.

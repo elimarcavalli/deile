@@ -43,6 +43,7 @@ from deile.orchestration.pipeline.claude_dispatcher import (
 from deile.orchestration.pipeline.labels import (issue_type_from_labels,
                                                  persona_for_type,
                                                  template_for_type)
+from deile.orchestration.pipeline.model_resolver import resolve_stage_model
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from deile.orchestration.pipeline.github_client import (IssueRef,
@@ -426,6 +427,7 @@ class WorkerImplementer(PipelineImplementer):
         channel_id: str,
         persona: str = "developer",
         resume_block: Optional[dict] = None,
+        stage: Optional[str] = None,
     ) -> WorkOutcome:
         from deile.infrastructure.deile_worker_client import (
             WorkerDispatchError, build_dispatch_payload)
@@ -436,8 +438,15 @@ class WorkerImplementer(PipelineImplementer):
         # instructions. Guarantees the payload never hard-fails on size.
         if len(brief) > 7950:
             brief = brief[:7950] + "\n…(brief truncado por tamanho)"
+        # Per-stage model override (issue #305). ``stage`` is the canonical
+        # pipeline-stage name (see :data:`PIPELINE_STAGES`); when set, the
+        # resolver returns ``None`` if no override is configured (the worker
+        # then falls back to its own ``DEILE_PREFERRED_MODEL``), or a
+        # ``provider:model`` slug to pin THIS turn only.
+        preferred_model = resolve_stage_model(stage) if stage else None
         payload = build_dispatch_payload(
-            brief=brief, channel_id=channel_id, persona=persona, wait=True
+            brief=brief, channel_id=channel_id, persona=persona, wait=True,
+            preferred_model=preferred_model,
         )
         # The resume context (issue #254) is an additive wire field consumed by
         # the worker; ``build_dispatch_payload`` validates the core fields, so
@@ -473,7 +482,8 @@ class WorkerImplementer(PipelineImplementer):
             resume=resume, expect_merge=False,
         )
         return await self._dispatch(
-            brief, channel_id=f"pipeline-issue-{issue.number}", resume_block=resume_block
+            brief, channel_id=f"pipeline-issue-{issue.number}",
+            resume_block=resume_block, stage="implement",
         )
 
     # --- Refinement gate (issue #257) -------------------------------------
@@ -493,7 +503,7 @@ class WorkerImplementer(PipelineImplementer):
         )
         return await self._dispatch(
             brief, channel_id=f"pipeline-issue-{issue.number}",
-            persona=persona_for_type(issue_type),
+            persona=persona_for_type(issue_type), stage="refine",
         )
 
     async def refine(
@@ -507,7 +517,7 @@ class WorkerImplementer(PipelineImplementer):
         )
         return await self._dispatch(
             brief, channel_id=f"pipeline-issue-{issue.number}",
-            persona=persona_for_type(issue_type),
+            persona=persona_for_type(issue_type), stage="refine",
         )
 
     async def decompose(
@@ -518,7 +528,8 @@ class WorkerImplementer(PipelineImplementer):
             forge=monitor.forge.config,
         )
         return await self._dispatch(
-            brief, channel_id=f"pipeline-issue-{issue.number}", persona="architect",
+            brief, channel_id=f"pipeline-issue-{issue.number}",
+            persona="architect", stage="refine",
         )
 
     async def review(
@@ -546,7 +557,7 @@ class WorkerImplementer(PipelineImplementer):
         # just whether the suite is green. implement/mention keep ``developer``.
         return await self._dispatch(
             brief, channel_id=f"pipeline-pr-{pr.number}",
-            persona="reviewer", resume_block=resume_block,
+            persona="reviewer", resume_block=resume_block, stage="pr_review",
         )
 
     async def mention(
@@ -585,7 +596,11 @@ class WorkerImplementer(PipelineImplementer):
         # PR-scoped reviewer modes dispatched under the ``reviewer`` persona
         # with a resume block. ``work_merge`` is the only mode that merges and
         # the only one resume-aware (uses the review-resume brief on retry).
+        # ForgeConfig do monitor — usado nos briefs forge-aware (issue #297).
         forge_cfg = monitor.forge.config
+        # Stage for per-stage model override (issue #305): PR-scoped modes are
+        # review work (``pr_review`` stage); issue-scoped comments are
+        # follow-up work (``follow_ups`` stage). See PIPELINE_STAGES.
         if mode in _MENTION_REVIEWER_MODES:
             brief_fn, expect_merge = _MENTION_REVIEWER_MODES[mode]
             if mode == "work_merge" and resume:
@@ -600,12 +615,16 @@ class WorkerImplementer(PipelineImplementer):
                     repo, main, head, resume=resume, expect_merge=expect_merge,
                     pr_url_hint=pr_url_hint,
                 ),
+                stage="pr_review",
             )
         # Default: comment mention on an issue → do what the comment says.
         brief = _render_worker_mention_brief(
             repo, ref, trigger_types or [], all_triggers or [], forge=forge_cfg,
         )
-        return await self._dispatch(brief, channel_id=channel_id, persona="developer")
+        return await self._dispatch(
+            brief, channel_id=channel_id, persona="developer",
+            stage="follow_ups",
+        )
 
 
 # ---------------------------------------------------------------------------
