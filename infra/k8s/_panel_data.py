@@ -2714,16 +2714,37 @@ class StageDispatchProvider(_KubectlProviderMixin):
         """
         return self._status_cache.get(force)
 
+    # Fallback estático — espelha PIPELINE_STAGES + WORKER aliases canônicos do
+    # dispatch_resolver. Usado quando o lazy import de ``deile.orchestration``
+    # falha (ex.: syntax error em qualquer arquivo da cadeia de import por
+    # merge conflict não resolvido). Provider não pode crashar o painel.
+    _STAGES_FALLBACK = ("classify", "refine", "implement", "pr_review", "follow_ups")
+    _DISPATCHER_ALIASES_FALLBACK = {
+        "deile_worker": "deile-worker", "worker": "deile-worker",
+        "deile": "deile-worker", "deile-worker": "deile-worker",
+        "claude": "claude-worker", "claude_code": "claude-worker",
+        "claude-code": "claude-worker", "claude-worker": "claude-worker",
+    }
+
     def _fetch_entries(self) -> List[StageDispatchEntry]:
         """Lê env vars dos dois Deployments e monta as 5 entries.
 
-        Lazy import de :data:`PIPELINE_STAGES` + :func:`is_valid_dispatcher`
+        Lazy import de :data:`PIPELINE_STAGES` + :data:`_DISPATCHER_ALIASES`
         para não puxar ``deile.orchestration`` no boot do painel (cold-import
-        custa ~200ms).
+        custa ~200ms). Catch EXCEPTION (não só ImportError): qualquer erro
+        na cadeia de import (incluindo SyntaxError vindo de merge conflict
+        não resolvido em outro módulo) cai no fallback estático — provider
+        NUNCA deve crashar o painel.
         """
-        # Lazy import — único call site no provider, custo amortizado.
-        from deile.orchestration.pipeline.dispatch_resolver import (  # noqa: PLC0415
-            _DISPATCHER_ALIASES, PIPELINE_STAGES)
+        # Lazy import com fallback robusto — qualquer Exception (SyntaxError
+        # vindo de merge conflict, ImportError de deps quebradas, etc.)
+        # usa as constantes locais.
+        try:
+            from deile.orchestration.pipeline.dispatch_resolver import (  # noqa: PLC0415
+                _DISPATCHER_ALIASES, PIPELINE_STAGES)
+        except Exception:  # noqa: BLE001 — proteção genérica intencional
+            PIPELINE_STAGES = self._STAGES_FALLBACK
+            _DISPATCHER_ALIASES = self._DISPATCHER_ALIASES_FALLBACK
 
         # --local-only → cai no fallback vazio do Cache sem chamar kubectl.
         if not self._enabled:

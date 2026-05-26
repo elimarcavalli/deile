@@ -3684,15 +3684,19 @@ class DispatchMatrixView(View):
     def _stages(self) -> tuple:
         """Lazy import de :data:`PIPELINE_STAGES` com fallback estático.
 
-        Quando o painel roda de ``infra/k8s/`` sem o pacote ``deile`` no
-        path, o import falha — usamos a constante hardcoded acima (que é
-        verificada por ``StageDispatchProvider`` no provider side).
+        Catch EXCEPTION (não só ImportError): se o pacote ``deile`` tem
+        SyntaxError numa cadeia de import (ex.: merge conflict não
+        resolvido em ``deile/tools/discovery.py``), o ``import`` levanta
+        ``SyntaxError`` (não ``ImportError``). O painel NÃO PODE crashar
+        por causa de código quebrado em outro módulo — usa o fallback
+        estático que já é a fonte autoritativa do PIPELINE_STAGES (Task 17
+        ``StageDispatchProvider`` faz a mesma proteção).
         """
         try:
             from deile.orchestration.pipeline.dispatch_resolver import \
                 PIPELINE_STAGES  # noqa: PLC0415
             return PIPELINE_STAGES
-        except ImportError:
+        except Exception:  # noqa: BLE001 — proteção genérica é intencional
             return self._STAGES_FALLBACK
 
     def _entries(self) -> List:
@@ -3769,14 +3773,35 @@ class DispatchMatrixView(View):
     # --- rendering -------------------------------------------------------
 
     def render(self, app) -> RenderableType:
-        """Constrói o Group com (header de status, matriz, picker?, rodapé).
+        """Wrapper defensivo: catch ANY exception → renderiza painel de
+        erro com stacktrace truncado em vez de crashar o loop principal.
 
-        Quando ``self.mode`` está ativo, intercala um Panel com o picker
-        contextual (worker/model, per-stage/global) entre a matriz e o
-        rodapé. ``app`` não é usado hoje — assinatura mantida para compat
-        com o :class:`View` contract; Tasks futuras podem ler
-        ``app.console.size.width`` para layout adaptativo.
+        Princípio enterprise: a view do painel TUI nunca pode derrubar o
+        processo. Erros em providers (kubectl down, syntax error em cadeia
+        de import, secret malformado etc) viram feedback visual com hint
+        de ação.
         """
+        try:
+            return self._render_safe(app)
+        except Exception as exc:  # noqa: BLE001 — proteção genérica do view
+            import traceback as _tb  # noqa: PLC0415
+            tb_lines = _tb.format_exception_only(type(exc), exc)
+            tb_text = "".join(tb_lines).strip()
+            # Mantém o que conseguimos do render normal — pelo menos o
+            # rodapé de hotkeys e o painel de erro.
+            return Group(
+                Text("DispatchMatrixView: render falhou",
+                     style="bold red"),
+                Panel(
+                    Text(tb_text, style="red"),
+                    title="[bold red]ERRO DO PAINEL[/bold red]",
+                    title_align="left", border_style="red",
+                ),
+                Text(self.HOTKEYS, style="dim"),
+            )
+
+    def _render_safe(self, app) -> RenderableType:
+        """Render real (separado de :meth:`render` que é o wrapper de erro)."""
         entries = self._entries()
         cw = self._claude_status()
 
@@ -3916,7 +3941,30 @@ class DispatchMatrixView(View):
     # --- input -----------------------------------------------------------
 
     def handle_key(self, key: str, app) -> ActionResult:
-        """Roteador de teclas.
+        """Wrapper defensivo: catch ANY exception → mostra erro em
+        ``last_msg`` (vermelho) em vez de propagar pro main loop (que
+        derrubaria o painel inteiro).
+
+        Princípio enterprise: input handling do painel TUI NUNCA pode
+        crashar — operador precisa do painel up mesmo quando uma action
+        falhou.
+        """
+        try:
+            return self._handle_key_safe(key, app)
+        except Exception as exc:  # noqa: BLE001 — proteção genérica intencional
+            self.last_msg = (
+                f"erro no handler de tecla {key!r}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self.last_ok = False
+            # Fecha modal se estava aberto pra não travar
+            self.mode = None
+            self.picker_cursor = 0
+            return ActionResult.refresh()
+
+    def _handle_key_safe(self, key: str, app) -> ActionResult:
+        """Roteador de teclas real (separado de :meth:`handle_key` que é
+        wrapper defensivo).
 
         - Picker modal ativo → :meth:`_handle_picker_key` (↑/↓ navega,
           enter confirma, ESC cancela).
@@ -3928,8 +3976,9 @@ class DispatchMatrixView(View):
                 - row < N + col 1 → :meth:`_open_model_picker`
                 - row == N (Global default) → picker global
                   (worker/model conforme col).
-            * [r] / [L] / [I] → STUBS pra Tasks 19-20-restantes (reset
-              cell / switch login / install on-the-fly).
+            * [r] → reseta a célula corrente (clear override).
+            * [L] → switch claude-worker login.
+            * [I] → install claude-worker on-the-fly.
         """
         # Picker modal — todas as teclas vão pro handler dedicado.
         if self.mode is not None:
@@ -3975,11 +4024,9 @@ class DispatchMatrixView(View):
                 return self._open_worker_picker(entry)
             return self._open_model_picker(entry)
 
-        # --- STUBS (Tasks 19-20-restantes) -------------------------------
+        # --- [r] reset da célula corrente -------------------------------
         if key == "r":
-            # Task 19 — reset da célula corrente (kubectl set env --remove
-            # do override específico, voltando para a chain de fallback).
-            return ActionResult()
+            return self._reset_current_cell()
         if key in ("L",):
             # Task 20 — modal de switch-login do claude-worker. Só faz
             # sentido quando o Deployment já está aplicado; senão sugere [I].
@@ -4046,6 +4093,54 @@ class DispatchMatrixView(View):
         opts = ["(clear override)", *all_models]
         self.mode = ("global_model", None, opts)
         self.picker_cursor = 0
+        return ActionResult.refresh()
+
+    # --- [r] reset cell --------------------------------------------------
+
+    def _reset_current_cell(self) -> ActionResult:
+        """Clear do override da célula corrente — volta ao fallback chain.
+
+        Roteia conforme (cursor_row, cursor_col):
+          - Stage row + col 0 (Worker) → set_pipeline_dispatch_stage(stage, None)
+          - Stage row + col 1 (Model)  → clear_stage_model(stage)
+          - Global row + col 0 (Worker) → clear_pipeline_dispatch_mode()
+          - Global row + col 1 (Model)  → no-op com hint (sem helper hoje)
+
+        Cache do StageDispatchProvider é invalidado depois — próximo render
+        mostra o valor novo.
+        """
+        if self.data is None:
+            self.last_msg = "[demo] reset (sem cluster, no-op)"
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        entries = self._entries()
+        n_stages = len(entries)
+        ns = (self.data.context.namespace
+              if getattr(self.data, "context", None)
+              else getattr(self.data, "namespace", _NS_DEFAULT))
+
+        if self.cursor_row < n_stages:
+            entry = entries[self.cursor_row]
+            stage = entry.stage
+            if self.cursor_col == 0:
+                ok, msg = pd_set_pipeline_dispatch_stage(stage, None, namespace=ns)
+            else:
+                ok, msg = pd_clear_stage_model(stage)
+        else:  # Global default row
+            if self.cursor_col == 0:
+                ok, msg = pd_clear_pipeline_dispatch_mode(namespace=ns)
+            else:
+                ok, msg = (None, "clear de DEILE_PIPELINE_MODEL global ainda não suportado")
+
+        self.last_ok = ok
+        self.last_msg = msg
+        # Invalida cache pra próximo render refletir o reset.
+        try:
+            self.data.stage_dispatch._cache.invalidate()  # noqa: SLF001
+            self.data.stage_dispatch._status_cache.invalidate()  # noqa: SLF001
+        except (AttributeError, TypeError):
+            pass
         return ActionResult.refresh()
 
     # --- install / switch-login modals (Task 20) ------------------------
