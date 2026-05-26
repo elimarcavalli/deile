@@ -438,6 +438,39 @@ class _DeileCLI:
         from .cli_session_helpers import replay_history
         replay_history(self.ui, self.default_session, history)
 
+    # ANSI sequence: ``\033[A`` = "move cursor up 1 line"; ``\033[2K`` =
+    # "erase entire line"; ``\r`` = "carriage return to col 0". A pair de
+    # ``\033[A\033[2K`` apaga UMA linha acima da posição atual; duas pairs
+    # apagam DUAS linhas (uma para o prompt commitado de prompt_toolkit,
+    # outra para o ``console.rule()`` emitido por ``get_user_input``).
+    _ERASE_PROMPT_ECHO_ANSI = "\033[A\033[2K\033[A\033[2K\r"
+
+    def _erase_empty_prompt_echo(self) -> None:
+        """Remove o eco visual de um Enter vazio do scrollback.
+
+        Por iteração de loop interativo, ``get_user_input`` emite duas
+        linhas: (1) ``self.console.rule(style="dim")`` — o separador
+        horizontal acima do prompt; (2) o ``> `` que o prompt_toolkit
+        commita ao scrollback quando o usuário pressiona Enter. Sem
+        cleanup, iterações vazias consecutivas empilham essas duas
+        linhas indefinidamente, parecendo bug.
+
+        Defensivo em ambientes non-TTY (pipe, CI, redirecionamento de
+        stdout): emitir ANSI vazaria caracteres ``\\033[A`` literais no
+        output. Por isso só apaga quando ``sys.stdout.isatty()``.
+
+        Cross-platform: ``\\033[A`` / ``\\033[2K`` são ANSI padrão
+        suportados por Windows Terminal, VSCode, ConEmu, ANSICON e
+        terminais Unix modernos. No conhost legado (cmd.exe sem
+        ``VT_PROCESSING``), a sequência seria invisível — mas como
+        ``isatty()`` ainda retorna True nesse caso, o pior cenário é
+        ANSI literal no scrollback, comportamento de baixo dano.
+        """
+        if not sys.stdout.isatty():
+            return
+        sys.stdout.write(self._ERASE_PROMPT_ECHO_ANSI)
+        sys.stdout.flush()
+
     async def _stream_with_esc_cancel(self, event_stream) -> bool:
         """Run display_streaming_turn, cancelling on ESC keypress.
 
@@ -582,10 +615,15 @@ class _DeileCLI:
 
                 # ESC ESC on empty prompt → trigger /rewind
                 if user_input == self._REWIND_SENTINEL:
+                    # O prompt_toolkit deixou o ``> `` vazio no scrollback
+                    # quando saímos via ``app.exit(SENTINEL)``. Apaga
+                    # (rule + prompt) antes que o seletor de /rewind abra,
+                    # senão cada ciclo ESC ESC + ESC empilha um ``> `` extra.
+                    self._erase_empty_prompt_echo()
                     user_input = "/rewind"
                 elif not user_input:
-                    sys.stdout.write("\033[A\033[2K\r")
-                    sys.stdout.flush()
+                    # Empty Enter → não aceita e remove o eco visual.
+                    self._erase_empty_prompt_echo()
                     continue
 
                 if user_input.lower() in ("exit", "quit", "q"):

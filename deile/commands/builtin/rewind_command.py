@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import time
-import uuid
-
 from rich.panel import Panel
 from rich.text import Text
 
 from ...core.interfaces.selector import SelectorNotSupported, SelectorOption
 from ...infrastructure.selectors import get_default_selector
-from .._sentinels import SWITCH_SESSION_KEY
+from .._sentinels import POST_SWITCH_ACTION_KEY, SWITCH_SESSION_KEY
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import truncate_oneline, wrap_command_errors
 
@@ -97,43 +94,42 @@ class RewindCommand(DirectCommand):
         if choice is None:
             return CommandResult(
                 success=True,
-                content=Panel(
-                    Text("Rewind cancelado.", style="dim"),
-                    title="Rewind",
-                    border_style="yellow",
-                ),
-                metadata={"cancelled": True},
+                content="",
+                metadata={
+                    "cancelled": True,
+                    "suppress_response_display": True,
+                },
             )
 
-        cut = int(choice.value) + 1
+        # Trunca ATÉ E INCLUSIVE a mensagem selecionada — voltar pra
+        # "antes daquela mensagem". Ex.: selecionar #3 apaga a #3 e tudo
+        # depois dela, deixando o histórico em [#1, resposta-#1, #2,
+        # resposta-#2]. O usuário tem o prompt vazio pronto para
+        # reformular a mensagem que estava na posição #3.
+        cut = int(choice.value)
         trimmed = history[:cut]
 
-        new_sid = f"rewind-{int(time.time())}-{uuid.uuid4().hex[:8]}"
-        try:
-            new_session = agent.create_session(
-                session_id=new_sid,
-                working_directory=session.working_directory,
-            )
-        except Exception as exc:
-            return CommandResult.error_result(f"Não foi possível criar sessão: {exc}")
+        # Muta o histórico DA SESSÃO ATUAL — não cria fork. Rewind é
+        # destrutivo por design (mais próximo do mental model de "voltar
+        # atrás" do chat). Para preservar histórico, use /fork antes.
+        session.conversation_history = [dict(e) for e in trimmed]
 
-        new_session.conversation_history = [dict(e) for e in trimmed]
+        # Reusa a infra de session-switch para acionar o replay: o CLI
+        # vai pop SWITCH+POST_SWITCH em ``check_session_switch``,
+        # resolver a sessão (mesmo session_id → mesma sessão), e o
+        # branch ``action == "replay"`` chama ``replay_history`` que
+        # limpa a tela, redesenha o welcome e re-renderiza o histórico
+        # truncado. Sem isso, o scrollback continuaria mostrando tudo.
+        session.context_data[SWITCH_SESSION_KEY] = session.session_id
+        session.context_data[POST_SWITCH_ACTION_KEY] = "replay"
 
-        orig_name = session.context_data.get("conversation_name", "")
-        if orig_name:
-            new_session.context_data["conversation_name"] = f"{orig_name} (rewind)"
-
-        session.context_data[SWITCH_SESSION_KEY] = new_sid
-
-        label = truncate_oneline(trimmed[-1]["content"], _MAX_LABEL) if trimmed else "—"
+        # ``suppress_response_display`` evita qualquer Panel/texto antes
+        # do replay — qualquer print aqui apareceria por uma fração de
+        # segundo antes do ``console.clear()`` do replay, gerando flash
+        # visual. O replay já comunica a mudança (tela limpa + histórico
+        # menor).
         return CommandResult(
             success=True,
-            content=Panel(
-                Text.from_markup(
-                    f"Fork criado a partir de: [bold cyan]{label}[/bold cyan]\n"
-                    f"[dim]{len(trimmed)} mensagem(ns) preservada(s) · ID: {new_sid}[/dim]"
-                ),
-                title="[bold green]Rewind — fork criado[/bold green]",
-                border_style="green",
-            ),
+            content="",
+            metadata={"suppress_response_display": True},
         )

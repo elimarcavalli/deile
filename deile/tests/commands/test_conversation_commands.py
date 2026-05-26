@@ -298,14 +298,85 @@ class TestRewindCommand:
         assert SWITCH_SESSION_KEY not in ctx.session.context_data
 
     @pytest.mark.unit
-    async def test_rewind_choice_creates_fork(self):
+    async def test_rewind_cancel_suppresses_response_display(self):
+        """ESC no seletor de rewind não deve printar nada novo.
+
+        O ``CommandResult`` precisa carregar ``suppress_response_display=True``
+        para o ``cli.py`` pular o ``ui.display_response`` (evita o eco
+        ``Panel('Rewind cancelado.')`` no scrollback que poluía o histórico).
+        Sem isso, cada ESC empilhava um painel amarelo na UI.
+        """
+        from deile.commands.builtin import rewind_command as rw_mod
+
+        ctx = _make_context("rewind", history=_HISTORY)
+        mock_selector = MagicMock()
+        mock_selector.is_supported.return_value = True
+        mock_selector.select = AsyncMock(return_value=None)
+
+        with patch.object(rw_mod, "get_default_selector", return_value=mock_selector):
+            cmd = RewindCommand()
+            result = await cmd.execute(ctx)
+
+        assert result.metadata.get("suppress_response_display") is True
+        assert result.content == ""
+
+    @pytest.mark.unit
+    async def test_rewind_truncates_current_session_in_place(self):
+        """Rewind muta a sessão atual: apaga a mensagem selecionada E tudo após.
+
+        Esse é o mental model esperado de "voltar atrás" — não cria fork
+        nem preserva a mensagem escolhida; vai diretamente para um prompt
+        limpo no ponto ANTES dela. Quem quiser preservar histórico deve
+        usar /fork antes de /rewind.
+
+        Selecionando a #2 (``"como vai?"`` no índice 2 do histórico):
+        - apaga: [#2 "como vai?", resposta "Bem!"]
+        - preserva: [#1 "olá mundo", resposta "Olá!"]
+        """
+        from deile.commands.builtin import rewind_command as rw_mod
+        from deile.core.interfaces.selector import SelectorOption
+
+        ctx = _make_context("rewind", history=_HISTORY)
+        original_sid = ctx.session.session_id
+        mock_selector = MagicMock()
+        mock_selector.is_supported.return_value = True
+        # value=2 = índice da #2 "como vai?" no histórico completo
+        mock_selector.select = AsyncMock(
+            return_value=SelectorOption(label="#2 como vai?", value=2)
+        )
+
+        with patch.object(rw_mod, "get_default_selector", return_value=mock_selector):
+            cmd = RewindCommand()
+            result = await cmd.execute(ctx)
+
+        assert result.success
+        # NÃO cria nova sessão — muta a atual. SWITCH aponta para a
+        # própria sessão (re-trigger pro replay no CLI), sem fork.
+        assert ctx.session.context_data.get(SWITCH_SESSION_KEY) == original_sid
+
+        # Histórico foi truncado IN-PLACE: 2 entradas restantes (não 3).
+        assert len(ctx.session.conversation_history) == 2
+        assert ctx.session.conversation_history[0]["content"] == "olá mundo"
+        assert ctx.session.conversation_history[1]["content"] == "Olá!"
+        # A mensagem #2 e sua resposta foram apagadas.
+        contents = [e["content"] for e in ctx.session.conversation_history]
+        assert "como vai?" not in contents
+        assert "Bem!" not in contents
+
+    @pytest.mark.unit
+    async def test_rewind_first_message_clears_all_history(self):
+        """Selecionar a primeira mensagem (#1) zera o histórico inteiro.
+
+        Comportamento intencional: rewind para "antes da primeira" =
+        conversa nova. Equivalente a /clear, mas preserva session_id.
+        """
         from deile.commands.builtin import rewind_command as rw_mod
         from deile.core.interfaces.selector import SelectorOption
 
         ctx = _make_context("rewind", history=_HISTORY)
         mock_selector = MagicMock()
         mock_selector.is_supported.return_value = True
-        # Select the first user message (index 0 in history)
+        # value=0 = primeira mensagem user no histórico
         mock_selector.select = AsyncMock(
             return_value=SelectorOption(label="#1 olá mundo", value=0)
         )
@@ -315,14 +386,40 @@ class TestRewindCommand:
             result = await cmd.execute(ctx)
 
         assert result.success
-        new_sid = ctx.session.context_data.get(SWITCH_SESSION_KEY)
-        assert new_sid is not None
-        assert new_sid.startswith("rewind-")
+        assert ctx.session.conversation_history == []
 
-        # Fork should contain only up to the first user message (index 0 + 1 = 1 entry)
-        new_sess = ctx.agent.get_session(new_sid)
-        assert len(new_sess.conversation_history) == 1
-        assert new_sess.conversation_history[0]["content"] == "olá mundo"
+    @pytest.mark.unit
+    async def test_rewind_choice_triggers_replay(self):
+        """Rewind aceito deve solicitar replay (limpa tela + redesenha histórico).
+
+        Sem essa flag, o CLI cairia no branch default ("Sessão alternada
+        para …") e o scrollback continuaria mostrando TODO o histórico
+        anterior — dando a impressão visual de que nada mudou. O usuário
+        espera ver a conversa "voltar atrás", então o efeito tem que ser
+        explícito: limpar e re-renderizar só até o ponto escolhido.
+        """
+        from deile.commands._sentinels import POST_SWITCH_ACTION_KEY
+        from deile.commands.builtin import rewind_command as rw_mod
+        from deile.core.interfaces.selector import SelectorOption
+
+        ctx = _make_context("rewind", history=_HISTORY)
+        mock_selector = MagicMock()
+        mock_selector.is_supported.return_value = True
+        mock_selector.select = AsyncMock(
+            return_value=SelectorOption(label="#1 olá mundo", value=0)
+        )
+
+        with patch.object(rw_mod, "get_default_selector", return_value=mock_selector):
+            cmd = RewindCommand()
+            result = await cmd.execute(ctx)
+
+        assert result.success
+        assert ctx.session.context_data.get(POST_SWITCH_ACTION_KEY) == "replay"
+        # E o display do resultado deve ser suprimido — o replay logo
+        # depois (no CLI loop) já comunica a mudança visualmente, então
+        # qualquer Panel/Text aqui seria flash visual antes do clear.
+        assert result.metadata.get("suppress_response_display") is True
+        assert result.content == ""
 
     @pytest.mark.unit
     async def test_rewind_content_none_does_not_crash(self):
