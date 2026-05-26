@@ -46,6 +46,12 @@ logger = logging.getLogger(__name__)
 # injection via crafted ``login`` arguments.
 _GH_LOGIN_RE = re.compile(r"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\Z")
 
+# Canonical ``gh --json`` field lists. Centralised so the GH adapter never
+# misses a field when one list helper diverges from another (the shape feeds
+# ``IssueRef.from_gh_json`` / ``PrRef.from_gh_json``).
+_ISSUE_JSON_FIELDS = "number,title,url,labels,body,state,author"
+_PR_JSON_FIELDS = "number,title,url,labels,headRefName,baseRefName,state,isDraft"
+
 
 # Legacy alias kept for callers that ``except GhCommandError``. Subclasses
 # ForgeCommandError so the typed-error hierarchy stays clean.
@@ -163,7 +169,7 @@ class GitHubForge(ForgeClient):
             "--state", "open",
             "--label", label,
             "--limit", str(limit),
-            "--json", "number,title,url,labels,body,state,author",
+            "--json", _ISSUE_JSON_FIELDS,
             factory=IssueRef.from_gh_json,
         )
 
@@ -171,7 +177,7 @@ class GitHubForge(ForgeClient):
         out = await self._run_checked(
             "issue", "view", str(number),
             "--repo", self.repo,
-            "--json", "number,title,url,labels,body,state,author",
+            "--json", _ISSUE_JSON_FIELDS,
         )
         return IssueRef.from_gh_json(json.loads(out))
 
@@ -184,7 +190,7 @@ class GitHubForge(ForgeClient):
             "--state", "open",
             "--assignee", login,
             "--limit", str(limit),
-            "--json", "number,title,url,labels,body,state,author",
+            "--json", _ISSUE_JSON_FIELDS,
             factory=IssueRef.from_gh_json,
             log_label="list_issues_assigned_to",
         )
@@ -214,7 +220,7 @@ class GitHubForge(ForgeClient):
                 "--repo", self.repo,
                 "--state", "open",
                 "--limit", str(batch_limit),
-                "--json", "number,title,url,labels,body,state,author",
+                "--json", _ISSUE_JSON_FIELDS,
             )
             data = json.loads(out or "[]")
             for item in data:
@@ -306,7 +312,7 @@ class GitHubForge(ForgeClient):
             out = await self._run_checked(
                 "pr", "view", str(number),
                 "--repo", self.repo,
-                "--json", "number,title,url,labels,headRefName,baseRefName,state,isDraft",
+                "--json", _PR_JSON_FIELDS,
             )
         except ForgeCommandError:
             return None
@@ -344,7 +350,7 @@ class GitHubForge(ForgeClient):
             "--repo", self.repo,
             "--state", "open",
             "--limit", str(limit),
-            "--json", "number,title,url,labels,headRefName,baseRefName,state,isDraft",
+            "--json", _PR_JSON_FIELDS,
             factory=PrRef.from_gh_json,
         )
 
@@ -357,7 +363,7 @@ class GitHubForge(ForgeClient):
             "--state", "open",
             "--assignee", login,
             "--limit", str(limit),
-            "--json", "number,title,url,labels,headRefName,baseRefName,state,isDraft",
+            "--json", _PR_JSON_FIELDS,
             factory=PrRef.from_gh_json,
             log_label="list_prs_assigned_to",
         )
@@ -376,7 +382,7 @@ class GitHubForge(ForgeClient):
             "--repo", self.repo,
             "--state", "merged",
             "--limit", str(limit),
-            "--json", "number,title,url,labels,headRefName,baseRefName,state,isDraft",
+            "--json", _PR_JSON_FIELDS,
             factory=lambda item: PrRef.from_gh_json(item, default_state="merged"),
             log_label="list_recently_merged_prs",
         )
@@ -720,7 +726,7 @@ class GitHubForge(ForgeClient):
                 "--repo", self.repo,
                 "--state", "open",
                 "--limit", str(limit),
-                "--json", "number,title,url,labels,body,state,author",
+                "--json", _ISSUE_JSON_FIELDS,
             )
         except ForgeCommandError as exc:
             logger.warning("search_items_mentioning failed: %s", exc)
