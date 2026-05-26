@@ -307,16 +307,30 @@ class StreamingRenderer:
         spinner_frame_idx = [0]
 
         async def _thinking_spinner(live_obj: Live) -> None:
+            # Anti-flicker (Bug A): durante a execução de tools que abrem o
+            # próprio Rich Live (ex.: ``dispatch_parallel_subagents`` via
+            # :class:`SubAgentPanelRenderer`), o Live pai é suspenso
+            # (``prev_live.stop()``); tentar ``refresh()`` num Live parado
+            # é no-op interno do Rich, mas qualquer ciclo extra colide com
+            # o repaint do painel filho quando o pai é restaurado. Guarda
+            # via ``is_started`` (API pública do Rich) para pular o tick
+            # nesse caso. Também subimos o sleep de 100ms → 250ms (4 Hz):
+            # o spinner ainda parece animado mas reduz refresh em 60%.
             try:
                 while not turn_done[0]:
-                    if blocks and isinstance(blocks[-1], _StageBlock):
+                    # ``is_started`` é False quando o Live foi parado por um
+                    # consumidor que precisava de exclusividade no console
+                    # (ex.: subagent_panel). Skip o tick para evitar flicker
+                    # ao retomar.
+                    started = getattr(live_obj, "is_started", True)
+                    if started and blocks and isinstance(blocks[-1], _StageBlock):
                         spinner_frame_idx[0] = (spinner_frame_idx[0] + 1) % len(_SPINNER_FRAMES)
                         live_obj.update(self._compose(
                             blocks[committed_count:],
                             spinner_frame=_SPINNER_FRAMES[spinner_frame_idx[0]],
                         ))
                         live_obj.refresh()
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.25)
             except asyncio.CancelledError:
                 return
 
@@ -341,7 +355,33 @@ class StreamingRenderer:
             spinner_task = asyncio.create_task(_thinking_spinner(live))
             try:
                 async for event in event_stream:
-                    self._apply_event(event, blocks, result)
+                    # Bug B mitigation: o loop de render NUNCA pode quebrar
+                    # silenciosamente. Se ``_apply_event``, ``_compose`` ou um
+                    # ``Text.from_markup`` no caminho levantar (ex.: ``MarkupError``
+                    # por ``[`` literal em args de tool, summary de tool com
+                    # markup malformado, ou Markdown com sintaxe quebrada), o
+                    # ``async for`` continua consumindo eventos mas a Live
+                    # region NÃO REPINTA — usuário vê o stream "travar
+                    # silenciosamente" até o turn terminar (quando o `finally`
+                    # ou um caller acima força um repaint final).
+                    #
+                    # A defesa aqui: cada *etapa* do laço é isolada num
+                    # try/except que LOGA com contexto e segue. Histórico
+                    # ainda é registrado normalmente (esse caminho é do
+                    # core/agent.py, não daqui). O usuário pode perder um
+                    # frame intermediário, mas o turno completa e a Live
+                    # mostra todo o conteúdo no próximo evento bem-formado.
+                    try:
+                        self._apply_event(event, blocks, result)
+                    except Exception as exc:
+                        logger.warning(
+                            "streaming_renderer: _apply_event falhou em %s — pulando frame",
+                            getattr(event, "type", "?"),
+                            exc_info=True,
+                        )
+                        # Não retornamos — drenar o stream é essencial; o
+                        # próximo evento pode reconciliar o estado.
+                        continue
                     if event.type is StreamEventType.USAGE_FINAL and event.usage:
                         u = event.usage
                         usage_footer = (
@@ -354,23 +394,42 @@ class StreamingRenderer:
 
                     # Determine the first "active" block (the one currently
                     # being modified). Everything before it can be committed.
-                    active_idx = self._first_active_block_idx(blocks, committed_count)
-                    if active_idx > committed_count:
-                        # First, shrink the Live region so the to-be-committed
-                        # blocks aren't rendered both in Live AND in scrollback
-                        # for a single frame.
-                        live.update(self._compose(blocks[active_idx:]))
-                        live.refresh()
-                        # Now flush the completed blocks to scrollback.
-                        # Each committed block is followed by a blank line so
-                        # tool blocks and text blocks never appear glued
-                        # together (matches the spacer rule in _compose).
-                        for i in range(committed_count, active_idx):
-                            renderable = self._render_single_block(blocks[i])
-                            if renderable is not None:
-                                self._console.print(renderable)
-                                self._console.print()
-                        committed_count = active_idx
+                    try:
+                        active_idx = self._first_active_block_idx(blocks, committed_count)
+                        if active_idx > committed_count:
+                            # First, shrink the Live region so the to-be-committed
+                            # blocks aren't rendered both in Live AND in scrollback
+                            # for a single frame.
+                            live.update(self._compose(blocks[active_idx:]))
+                            live.refresh()
+                            # Now flush the completed blocks to scrollback.
+                            # Each committed block is followed by a blank line so
+                            # tool blocks and text blocks never appear glued
+                            # together (matches the spacer rule in _compose).
+                            for i in range(committed_count, active_idx):
+                                try:
+                                    renderable = self._render_single_block(blocks[i])
+                                except Exception:
+                                    logger.warning(
+                                        "streaming_renderer: render do bloco %d falhou",
+                                        i, exc_info=True,
+                                    )
+                                    renderable = None
+                                if renderable is not None:
+                                    try:
+                                        self._console.print(renderable)
+                                        self._console.print()
+                                    except Exception:
+                                        logger.warning(
+                                            "streaming_renderer: console.print falhou no bloco %d",
+                                            i, exc_info=True,
+                                        )
+                            committed_count = active_idx
+                    except Exception:
+                        logger.warning(
+                            "streaming_renderer: commit-to-scrollback falhou — segue",
+                            exc_info=True,
+                        )
 
                     # AGORA (após texto/blocos precedentes irem para scrollback)
                     # comprometemos cabeçalho/summary de tools direct-print. Isso
@@ -379,14 +438,29 @@ class StreamingRenderer:
                     # Sem este reordenamento, o cabeçalho da bash sairia ANTES
                     # do texto precedente do modelo (todo o texto ficava preso
                     # na Live region até o final do turno).
-                    self._commit_direct_print_tools(blocks)
+                    try:
+                        self._commit_direct_print_tools(blocks)
+                    except Exception:
+                        logger.warning(
+                            "streaming_renderer: commit direct-print falhou — segue",
+                            exc_info=True,
+                        )
 
                     # Refresh on every event. With auto_refresh=False this is
                     # the ONLY way pixels reach the terminal — and there's no
                     # background thread to race against, so unconditional
                     # refresh is safe and gives the most responsive feel.
-                    live.update(self._compose(blocks[committed_count:]))
-                    live.refresh()
+                    try:
+                        live.update(self._compose(blocks[committed_count:]))
+                        live.refresh()
+                    except Exception:
+                        # Live.update/refresh ou _compose pode levantar
+                        # (MarkupError, ConsoleError, etc.). Loga e segue —
+                        # o próximo evento tem outra chance de repintar.
+                        logger.warning(
+                            "streaming_renderer: live.update/refresh falhou — frame perdido",
+                            exc_info=True,
+                        )
                 # Final flush — pass force_complete=True so any trailing
                 # in-progress table (no closing blank line) commits as a
                 # real Markdown table in the scrollback, instead of the
@@ -824,7 +898,11 @@ class StreamingRenderer:
             display_msg = result.error_message
             if isinstance(event.error_envelope, dict) and event.error_envelope.get("budget_exceeded"):
                 display_msg += "\nUse /model budget to view limits, or wait for the next window."
-            blocks.append(_TextBlock(text=f"[red]✗[/red] {display_msg}", source="error"))
+            # Escapa colchetes do display_msg — caso a mensagem do provider
+            # contenha ``[`` literal, ``Text.from_markup`` (usado em _compose
+            # via source="error") levantaria MarkupError. Bug B defense.
+            safe_msg = self._safe_markup(display_msg)
+            blocks.append(_TextBlock(text=f"[red]✗[/red] {safe_msg}", source="error"))
 
     @staticmethod
     def _find_tool_block(blocks: List[Any], tool_call_id: Optional[str]) -> Optional[_ToolBlock]:
@@ -919,17 +997,42 @@ class StreamingRenderer:
         return Group(*rendered) if rendered else Text("")
 
     def _tool_renderable(self, block: _ToolBlock):
-        return Text.from_markup(self._tool_head_markup(block) + self._tool_summary_markup(block))
+        # Bug B defense: ``from_markup`` levanta ``MarkupError`` se o
+        # display_name ou args injetados contiverem ``[`` literal (vindo
+        # de nome de tool com colchete, ou args com markup acidental). O
+        # fallback degrada para texto plano em vez de derrubar o frame.
+        try:
+            return Text.from_markup(self._tool_head_markup(block) + self._tool_summary_markup(block))
+        except Exception:
+            return Text(self._tool_head_plain(block) + self._tool_summary_plain(block))
 
     def _tool_head_markup(self, block: _ToolBlock) -> str:
         """Cabeçalho `● Name(args)` com cor conforme status."""
-        display_name = _TOOL_DISPLAY_NAME.get(block.tool_name, block.tool_name)
-        args_inline = self._render_args_inline(block.tool_name, block.args)
+        display_name = self._safe_markup(
+            _TOOL_DISPLAY_NAME.get(block.tool_name, block.tool_name)
+        )
+        args_inline = self._safe_markup(
+            self._render_args_inline(block.tool_name, block.args)
+        )
         if block.status == "running":
             return f"[yellow]●[/yellow] [bold]{display_name}[/bold]({args_inline}) [dim]running…[/dim]"
         if block.status == "success":
             return f"[green]●[/green] [bold]{display_name}[/bold]({args_inline})"
         return f"[red]●[/red] [bold]{display_name}[/bold]({args_inline})"
+
+    def _tool_head_plain(self, block: _ToolBlock) -> str:
+        """Versão plain-text do cabeçalho — fallback se ``from_markup`` falhar."""
+        display_name = _TOOL_DISPLAY_NAME.get(block.tool_name, block.tool_name)
+        args_inline = self._render_args_inline(block.tool_name, block.args)
+        marker = {"running": "●", "success": "●", "error": "●"}.get(block.status, "●")
+        suffix = " running…" if block.status == "running" else ""
+        return f"{marker} {display_name}({args_inline}){suffix}"
+
+    def _tool_summary_plain(self, block: _ToolBlock) -> str:
+        """Versão plain-text do summary — fallback se ``from_markup`` falhar."""
+        if not block.summary:
+            return ""
+        return f"\n  ⎿ {block.summary}"
 
     def _tool_summary_markup(self, block: _ToolBlock) -> str:
         """Linha `  ⎿ summary` quando há resumo; vazio caso contrário."""
