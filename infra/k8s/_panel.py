@@ -3385,6 +3385,41 @@ class DispatchModeView(View):
             title_align="left", border_style=border,
         )
 
+    def _render_confirm_modal(self, kind: str) -> RenderableType:
+        """Constrói o Panel de confirmação para ``set`` ou ``clear``.
+
+        Mantém os 2 modais com a mesma moldura/posição mas headers e
+        prompts distintos — único callsite no :meth:`render`.
+        """
+        if kind == "set":
+            mode = self.mode_modal[1]
+            header = Text(
+                f"Aplicar dispatch_mode = '{mode}' em deile-pipeline?",
+                style="bold yellow",
+            )
+            detail = Text(
+                "`kubectl set env` dispara rollout (strategy Recreate). "
+                "A próxima dispatch já roda no modo novo.",
+                style="dim",
+            )
+            title = "[bold yellow]CONFIRMAR APLICAÇÃO[/bold yellow]"
+        else:  # "clear"
+            header = Text(
+                "Limpar override de DEILE_PIPELINE_DISPATCH_MODE?",
+                style="bold yellow",
+            )
+            detail = Text(
+                "O pipeline voltará a usar o default declarado no "
+                "ConfigMap (deile_worker) na próxima dispatch.",
+                style="dim",
+            )
+            title = "[bold yellow]CONFIRMAR LIMPEZA[/bold yellow]"
+        return Panel(
+            Group(header, detail, Text(),
+                  Text("[y] confirmar    [n] cancelar", style="bold cyan")),
+            title=title, title_align="left", border_style="yellow",
+        )
+
     def render(self, app: "PanelApp") -> RenderableType:
         entry = self._current()
         width = app.console.size.width or 100
@@ -3393,35 +3428,10 @@ class DispatchModeView(View):
             Layout(_head_panel(self.title, app), name="head", size=4),
         ]
         # Modal confirmação fica em destaque acima da listagem.
-        if self.mode_modal is not None and self.mode_modal[0] == "set":
-            mode = self.mode_modal[1]
-            sections.append(Layout(Panel(
-                Group(
-                    Text(f"Aplicar dispatch_mode = '{mode}' em deile-pipeline?",
-                         style="bold yellow"),
-                    Text("`kubectl set env` dispara rollout (strategy "
-                         "Recreate). A próxima dispatch já roda no modo novo.",
-                         style="dim"),
-                    Text(),
-                    Text("[y] confirmar    [n] cancelar", style="bold cyan"),
-                ),
-                title="[bold yellow]CONFIRMAR APLICAÇÃO[/bold yellow]",
-                title_align="left", border_style="yellow",
-            ), name="confirm", size=8))
-        elif self.mode_modal is not None and self.mode_modal[0] == "clear":
-            sections.append(Layout(Panel(
-                Group(
-                    Text("Limpar override de DEILE_PIPELINE_DISPATCH_MODE?",
-                         style="bold yellow"),
-                    Text("O pipeline voltará a usar o default declarado no "
-                         "ConfigMap (deile_worker) na próxima dispatch.",
-                         style="dim"),
-                    Text(),
-                    Text("[y] confirmar    [n] cancelar", style="bold cyan"),
-                ),
-                title="[bold yellow]CONFIRMAR LIMPEZA[/bold yellow]",
-                title_align="left", border_style="yellow",
-            ), name="confirm", size=8))
+        modal_kind = self.mode_modal[0] if self.mode_modal is not None else None
+        if modal_kind in ("set", "clear"):
+            sections.append(Layout(self._render_confirm_modal(modal_kind),
+                                   name="confirm", size=8))
         else:
             # Browsing — status + opções.
             sections.append(Layout(self._render_status_panel(entry),
@@ -3443,9 +3453,10 @@ class DispatchModeView(View):
 
     def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
         # Confirmação modal: y aplica, qualquer outra tecla cancela.
-        if self.mode_modal is not None and self.mode_modal[0] == "set":
+        modal_kind = self.mode_modal[0] if self.mode_modal is not None else None
+        if modal_kind == "set":
             return self._handle_set_confirm_key(key)
-        if self.mode_modal is not None and self.mode_modal[0] == "clear":
+        if modal_kind == "clear":
             return self._handle_clear_confirm_key(key)
         modes = self._MODES_FALLBACK
         n = len(modes)

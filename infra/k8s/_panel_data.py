@@ -2206,7 +2206,8 @@ class DispatchModeProvider(_KubectlProviderMixin):
         containers = (data.get("spec", {}).get("template", {})
                       .get("spec", {}).get("containers", []) or [])
         env_value: Optional[str] = None
-        for env in (containers[0].get("env") or []) if containers else []:
+        envs = (containers[0].get("env") or []) if containers else []
+        for env in envs:
             if env.get("name") == _DISPATCH_ENV_VAR:
                 raw = env.get("value")
                 if isinstance(raw, str) and raw.strip():
