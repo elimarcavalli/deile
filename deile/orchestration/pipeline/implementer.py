@@ -25,12 +25,13 @@ themselves.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import re
 import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from deile.orchestration.pipeline.briefs import (
     _render_claude_mention_prompt, _render_worker_critique_brief,
@@ -41,6 +42,8 @@ from deile.orchestration.pipeline.briefs import (
     _render_worker_review_resume_brief)
 from deile.orchestration.pipeline.claude_dispatcher import (
     render_implement_prompt, render_review_prompt)
+from deile.orchestration.pipeline.dispatch_resolver import (
+    get_endpoint_for, resolve_stage_dispatcher)
 from deile.orchestration.pipeline.labels import (issue_type_from_labels,
                                                  persona_for_type,
                                                  template_for_type)
@@ -414,12 +417,70 @@ class WorkerImplementer(PipelineImplementer):
 
     name = "deile_worker"
 
-    def __init__(self, client: Optional[object] = None) -> None:
+    def __init__(
+        self,
+        client: Optional[object] = None,
+        *,
+        endpoint_override: Optional[str] = None,
+    ) -> None:
+        """Constrói o implementer.
+
+        Args:
+            client: Cliente HTTP do worker (default: :class:`DeileWorkerClient`).
+                Em testes, injetado como fake/mock.
+            endpoint_override: URL HTTP absoluta que sobrescreve a resolução
+                per-stage (issue #309 fase 2). Útil em testes ad-hoc e dev
+                local apontando para localhost. Quando ``None`` (default), o
+                endpoint é resolvido via :func:`resolve_stage_dispatcher` +
+                :func:`get_endpoint_for` a cada chamada.
+        """
         if client is None:
             from deile.infrastructure.deile_worker_client import \
                 DeileWorkerClient
             client = DeileWorkerClient()
         self._client = client
+        self._endpoint_override = endpoint_override
+
+    def _resolve_endpoint(self, stage: str) -> str:
+        """Resolve a URL HTTP do worker pod que recebe o dispatch de *stage*.
+
+        Precedência:
+          1. ``endpoint_override`` passado no ``__init__`` (absoluto).
+          2. ``resolve_stage_dispatcher(stage)`` → :func:`get_endpoint_for`
+             — chain de env vars + default ``deile-worker``.
+
+        ``stage`` precisa estar em :data:`PIPELINE_STAGES`; o ValueError
+        levantado pelo resolver propaga (programming bug, não user input).
+        """
+        if self._endpoint_override:
+            return self._endpoint_override
+        return get_endpoint_for(resolve_stage_dispatcher(stage))
+
+    async def _post_dispatch(
+        self,
+        url: str,
+        payload: Dict[str, Any],
+        *,
+        wait: bool,
+    ) -> Dict[str, Any]:
+        """Costura HTTP — recebe URL explícita resolvida pelo caller.
+
+        Único ponto que toca o client; em testes, é patchado para isolar
+        o roteamento per-stage do I/O real. ``url`` é a URL completa do
+        worker pod (sem ``/v1/dispatch``); o client adiciona o path.
+
+        Por compat com clients fakes existentes (``test_implementer.py`` e
+        ``test_implementer_per_stage_model.py``) que NÃO aceitam
+        ``endpoint_url``, usa-se introspecção para só passar o kwarg
+        quando o client real o suporta — assim a refatoração não
+        quebra fakes pré-existentes.
+        """
+        sig = inspect.signature(self._client.dispatch)
+        if "endpoint_url" in sig.parameters:
+            return await self._client.dispatch(
+                payload, wait=wait, endpoint_url=url,
+            )
+        return await self._client.dispatch(payload, wait=wait)
 
     async def _dispatch(
         self,
@@ -454,8 +515,14 @@ class WorkerImplementer(PipelineImplementer):
         # we attach ``resume`` after building to keep that contract untouched.
         if resume_block:
             payload["resume"] = resume_block
+        # Per-stage endpoint routing (issue #309 fase 2). ``stage`` opcional
+        # mantém compat com callers (testes) que ainda não declaram stage —
+        # nesses casos cai no default ``deile-worker:8766`` via stage
+        # ``implement`` (escolha conservadora: o stage mais comum). Quando o
+        # ``endpoint_override`` está set no __init__, ele ganha.
+        url = self._resolve_endpoint(stage or "implement")
         try:
-            data = await self._client.dispatch(payload, wait=True)
+            data = await self._post_dispatch(url, payload, wait=True)
         except WorkerDispatchError as exc:
             return WorkOutcome(ok=False, text="", error=f"{exc.error_code}: {exc}"[:500])
         except Exception as exc:  # noqa: BLE001 — never crash the tick
