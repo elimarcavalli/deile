@@ -14,7 +14,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: deile-shell
-  namespace: deile
   labels:
     app: deile-shell
     role: deile
@@ -51,7 +50,7 @@ spec:
           env:
             - { name: HOME, value: /home/deile }
             - { name: PYTHONUNBUFFERED, value: "1" }
-            - { name: DEILE_BOT_ENDPOINT, value: "http://deilebot.deile.svc.cluster.local:8765" }
+            - { name: DEILE_BOT_ENDPOINT, value: "http://deilebot:8765" }
             - { name: DEILE_DEFAULT_PERSONA, value: developer }
             # Full toolset — see header for rationale.
             - { name: DEILE_WRAPPER_TOOL_WHITELIST, value: "all" }

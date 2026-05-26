@@ -126,15 +126,22 @@ RUN apt-get update \
 # GitLab releases (no third-party PPA). Layer growth ~20 MB. Runtime
 # behaviour for GitHub-only operators is unchanged: glab is dormant unless
 # DEILE_FORGE_KIND=gitlab or a GitLab URL is processed.
+#
+# SHA256 verificados em 2026-05-25 baixando do release oficial v1.45.0:
+#   https://gitlab.com/gitlab-org/cli/-/releases/v1.45.0/downloads/checksums.txt
+# Fonte canônica: arquivo checksums.txt publicado junto ao release.
 ARG GLAB_VERSION=1.45.0
+ARG GLAB_SHA256_AMD64=3efe5be6d5fd6c3346d2cabd2ca35d7f85a5ae5d97da8c90dff81557124dc519
+ARG GLAB_SHA256_ARM64=2bd45d6d0f7c6af15604720dc8d177a3a15661230bcee45334879c5928de57bc
 RUN ARCH="$(dpkg --print-architecture)" \
     && case "$ARCH" in \
-        amd64) GLAB_ARCH=amd64 ;; \
-        arm64) GLAB_ARCH=arm64 ;; \
+        amd64) GLAB_ARCH=x86_64; EXPECTED_SHA="${GLAB_SHA256_AMD64}" ;; \
+        arm64) GLAB_ARCH=arm64;  EXPECTED_SHA="${GLAB_SHA256_ARM64}" ;; \
         *) echo "unsupported arch for glab: $ARCH" >&2; exit 1 ;; \
        esac \
     && curl -fsSL -o /tmp/glab.deb \
-        "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_${GLAB_ARCH}.deb" \
+        "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_Linux_${GLAB_ARCH}.deb" \
+    && echo "${EXPECTED_SHA}  /tmp/glab.deb" | sha256sum -c - \
     && dpkg -i /tmp/glab.deb \
     && rm /tmp/glab.deb \
     && gh --version \

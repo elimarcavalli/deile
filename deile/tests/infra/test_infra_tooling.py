@@ -93,8 +93,44 @@ def test_parse_args_help_and_no_color_flags():
 
 def test_command_tables_cover_expected_actions():
     assert {"up", "down", "start", "stop", "restart", "status",
-            "logs", "build", "test", "clone"} <= set(deploy._K8S)
+            "logs", "build", "test", "clone", "list"} <= set(deploy._K8S)
     assert {"start", "stop", "restart", "status", "logs"} <= set(deploy._LOCAL)
+
+
+def test_parse_args_namespace_long():
+    args = deploy.parse_args(["--namespace", "deile-gl", "k8s", "status"])
+    assert args["k8s_namespace"] == "deile-gl"
+    assert args["positionals"] == ["k8s", "status"]
+
+
+def test_parse_args_namespace_short():
+    args = deploy.parse_args(["-n", "deile-staging", "k8s", "up"])
+    assert args["k8s_namespace"] == "deile-staging"
+    assert args["positionals"] == ["k8s", "up"]
+
+
+def test_parse_args_namespace_default_is_none():
+    # Sem --namespace/-n, k8s_namespace fica None e _ns() resolve para NS_DEFAULT.
+    args = deploy.parse_args(["k8s", "status"])
+    assert args["k8s_namespace"] is None
+
+
+def test_ns_helper_uses_override():
+    args = deploy.parse_args(["--namespace", "deile-gl", "k8s", "status"])
+    assert deploy._ns(args) == "deile-gl"
+
+
+def test_ns_helper_falls_back_to_default(monkeypatch):
+    monkeypatch.setattr(deploy, "NS_DEFAULT", "deile")
+    args = deploy.parse_args(["k8s", "status"])
+    assert deploy._ns(args) == "deile"
+
+
+def test_ns_helper_respects_env_default(monkeypatch):
+    # NS_DEFAULT é lido do env no import; simula env custom.
+    monkeypatch.setattr(deploy, "NS_DEFAULT", "deile-test")
+    args = deploy.parse_args(["k8s", "status"])
+    assert deploy._ns(args) == "deile-test"
 
 
 def test_announce_plan_dry_run_short_circuits():

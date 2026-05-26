@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -190,29 +191,63 @@ def build_default_pipeline_config(*, use_pid_lock: bool = True) -> PipelineConfi
     )
 
 
-@dataclass
 class _Stats:
-    ticks: int = 0
-    issues_reviewed: int = 0
-    issues_implemented: int = 0
-    prs_reviewed: int = 0
-    issues_classified: int = 0
-    errors: int = 0
-    # Separate counters allow operators to distinguish gh CLI failures from Claude failures.
-    gh_errors: int = 0
-    claude_errors: int = 0
-    catchup_runs: int = 0
-    scheduled_runs: int = 0
-    follow_ups_opened: int = 0
-    follow_ups_skipped: int = 0
-    # Incremented when a scheduled action is disabled via enable_* config.
-    skipped_runs: int = 0
-    prs_classified: int = 0
-    mentions_processed: int = 0
-    # Issues moved to ~workflow:bloqueada by the block flow (issue #254).
-    issues_blocked: int = 0
-    # Resume dispatches re-sent for parked, continuable implementations.
-    resume_dispatches: int = 0
+    """Mutable stat bag for the pipeline monitor.
+
+    ``forge_errors`` counts failures attributable to the forge CLI / REST API
+    (previously ``gh_errors``). The old name remains accessible via a
+    deprecated property for one release so existing dashboards / log scrapers
+    keep working without change.
+    """
+
+    def __init__(self) -> None:
+        self.ticks: int = 0
+        self.issues_reviewed: int = 0
+        self.issues_implemented: int = 0
+        self.prs_reviewed: int = 0
+        self.issues_classified: int = 0
+        self.errors: int = 0
+        # Contadores separados permitem distinguir falhas de CLI/REST da forge
+        # de falhas do Claude (ex.: timeout, budget exceeded).
+        self.forge_errors: int = 0
+        self.claude_errors: int = 0
+        self.catchup_runs: int = 0
+        self.scheduled_runs: int = 0
+        self.follow_ups_opened: int = 0
+        self.follow_ups_skipped: int = 0
+        # Incrementado quando uma ação agendada está desabilitada via enable_*.
+        self.skipped_runs: int = 0
+        self.prs_classified: int = 0
+        self.mentions_processed: int = 0
+        # Issues movidas para ~workflow:bloqueada pelo fluxo de bloqueio (#254).
+        self.issues_blocked: int = 0
+        # Dispatches de resume reenviados para implementações em pausa.
+        self.resume_dispatches: int = 0
+
+    @property
+    def gh_errors(self) -> int:
+        """Deprecated alias for :attr:`forge_errors`.
+
+        .. deprecated::
+            Use ``forge_errors`` directly. This alias will be removed in the
+            next major release.
+        """
+        warnings.warn(
+            "_Stats.gh_errors is deprecated; use forge_errors instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.forge_errors
+
+    @gh_errors.setter
+    def gh_errors(self, value: int) -> None:
+        """Deprecated setter — redirects writes to :attr:`forge_errors`."""
+        warnings.warn(
+            "_Stats.gh_errors is deprecated; use forge_errors instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.forge_errors = value
 
 
 class PipelineMonitor:

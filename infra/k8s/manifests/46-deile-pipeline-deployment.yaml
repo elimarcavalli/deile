@@ -15,7 +15,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: deile-pipeline
-  namespace: deile
   labels:
     app: deile-pipeline
     role: deile        # inherits deile-egress-to-bot (8765) + deile-egress-https-llm (443)
@@ -54,8 +53,8 @@ spec:
             # Endpoints (não-deprecados) continuam via env — são leitura direta
             # (não-DEILE_* legacy) e a configuração layered ainda não cobre
             # ``DEILE_WORKER_ENDPOINT`` / ``DEILE_BOT_ENDPOINT``.
-            - { name: DEILE_WORKER_ENDPOINT,         value: "http://deile-worker.deile.svc.cluster.local:8766" }
-            - { name: DEILE_BOT_ENDPOINT,            value: "http://deilebot.deile.svc.cluster.local:8765" }
+            - { name: DEILE_WORKER_ENDPOINT,         value: "http://deile-worker:8766" }
+            - { name: DEILE_BOT_ENDPOINT,            value: "http://deilebot:8765" }
             # Aponta o settings layered pra fora do home (montado read-only
             # pelo ConfigMap deile-runtime-config / manifest 47). Substitui
             # ``DEILE_PIPELINE_*`` e ``DEILE_BOT_APPROVAL_AUTO`` depreciadas

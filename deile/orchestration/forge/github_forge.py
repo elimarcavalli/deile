@@ -186,6 +186,7 @@ class GitHubForge(ForgeClient):
         """Return open issues with no pipeline label (no ``~*``).
 
         Manual pagination — gh has no server-side cursor (gap #30).
+        Verifica o rate-limit entre páginas e dorme se necessário.
         """
         result: List[IssueRef] = []
         seen: set = set()
@@ -193,6 +194,14 @@ class GitHubForge(ForgeClient):
         offset = 0
         while True:
             batch_limit = page_size + offset
+            # Usa --include para capturar headers de rate-limit junto com o corpo.
+            _, rl_headers = await self._api_get_json_with_headers(
+                f"repos/{self.repo}/issues",
+                "--field", "state=open",
+                "--field", f"per_page={batch_limit}",
+            )
+            await self._maybe_sleep_for_rate_limit(rl_headers)
+
             out = await self._run_checked(
                 "issue", "list",
                 "--repo", self.repo,

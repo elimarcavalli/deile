@@ -21,6 +21,7 @@ import asyncio
 import logging
 import re
 import time
+import warnings
 from typing import TYPE_CHECKING, Optional
 
 from deile.orchestration.pipeline._time_utils import now_utc
@@ -76,14 +77,14 @@ def _monotonic() -> float:
     return time.monotonic()
 
 
-async def _record_gh_error(
+async def _record_forge_error(
     monitor: "PipelineMonitor",
     description: str,
     exc: Exception,
     *,
     notifier_label: Optional[str] = None,
 ) -> None:
-    """Bump ``errors`` + ``gh_errors`` counters, log, optionally notify.
+    """Bump ``errors`` + ``forge_errors`` counters, log, optionally notify.
 
     Centralises the four-line pattern (counters + logger.error + optional
     notifier) that recurred ~10 times across the stage handlers. The
@@ -97,10 +98,33 @@ async def _record_gh_error(
     call-site simply ``await`` it, whether or not it ends up notifying.
     """
     monitor._stats.errors += 1
-    monitor._stats.gh_errors += 1
+    monitor._stats.forge_errors += 1
     logger.error("%s: %s", description, exc)
     if notifier_label is not None:
         await monitor.notifier.error(notifier_label, str(exc))
+
+
+async def _record_gh_error(
+    monitor: "PipelineMonitor",
+    description: str,
+    exc: Exception,
+    *,
+    notifier_label: Optional[str] = None,
+) -> None:
+    """Deprecated alias for :func:`_record_forge_error`.
+
+    .. deprecated::
+        Use ``_record_forge_error`` directly. This shim will be removed in the
+        next major release.
+    """
+    warnings.warn(
+        "_record_gh_error is deprecated; use _record_forge_error instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    await _record_forge_error(
+        monitor, description, exc, notifier_label=notifier_label,
+    )
 
 
 async def _claim_for_classify(
@@ -129,7 +153,7 @@ async def _claim_for_classify(
     try:
         batch = await monitor.forge.claim_with_batch(kind, number)
     except GhCommandError as exc:
-        await _record_gh_error(
+        await _record_forge_error(
             monitor, f"{error_context} #{number} failed", exc,
             notifier_label=notifier_label,
         )
@@ -179,8 +203,8 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
     try:
         issues = await monitor.forge.list_unclassified_issues()
     except GhCommandError as exc:
-        await _record_gh_error(
-            monitor, "could not list unclassified issues (gh error)", exc,
+        await _record_forge_error(
+            monitor, "could not list unclassified issues (forge error)", exc,
             notifier_label="classify/list",
         )
         return
@@ -216,7 +240,7 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
         try:
             await monitor.forge.add_labels("issue", issue.number, [WORKFLOW_NEW])
         except GhCommandError as exc:
-            await _record_gh_error(
+            await _record_forge_error(
                 monitor, f"auto-classify label #{issue.number} failed", exc,
                 notifier_label=f"auto-classify #{issue.number}",
             )
@@ -259,8 +283,8 @@ async def classify_new_prs(monitor: "PipelineMonitor") -> None:
     try:
         prs = await monitor.forge.list_unclassified_prs()
     except GhCommandError as exc:
-        await _record_gh_error(
-            monitor, "could not list unclassified PRs (gh error)", exc,
+        await _record_forge_error(
+            monitor, "could not list unclassified PRs (forge error)", exc,
             notifier_label="pr_triage/list",
         )
         return
@@ -284,7 +308,7 @@ async def classify_new_prs(monitor: "PipelineMonitor") -> None:
         try:
             await monitor.forge.add_labels("pr", pr.number, [REVIEW_PENDING])
         except GhCommandError as exc:
-            await _record_gh_error(
+            await _record_forge_error(
                 monitor, f"pr_triage label #{pr.number} failed", exc,
                 notifier_label=f"pr_triage #{pr.number}",
             )
@@ -632,8 +656,8 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
     try:
         issues = await monitor.forge.list_issues_with_label(WORKFLOW_NEW, limit=50)
     except GhCommandError as exc:
-        await _record_gh_error(
-            monitor, "could not list new issues (gh error)", exc,
+        await _record_forge_error(
+            monitor, "could not list new issues (forge error)", exc,
             notifier_label="review/list",
         )
         return
@@ -672,7 +696,7 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
             )
         except GhCommandError:
             monitor._stats.errors += 1
-            monitor._stats.gh_errors += 1
+            monitor._stats.forge_errors += 1
             review_failed = True
             raise
         except Exception:  # noqa: BLE001
@@ -720,7 +744,7 @@ async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
             number, from_label=WORKFLOW_NEW, to_label=WORKFLOW_REVIEWING
         )
     except GhCommandError as exc:
-        await _record_gh_error(monitor, f"could not claim issue #{number} for critique", exc)
+        await _record_forge_error(monitor, f"could not claim issue #{number} for critique", exc)
         return
 
     outcome = await monitor.implementer.critique(monitor, target)
@@ -763,7 +787,7 @@ async def _critique_one_issue(monitor: "PipelineMonitor", target) -> None:
             number, from_label=WORKFLOW_REVIEWING, to_label=refine_state
         )
     except GhCommandError as exc:
-        await _record_gh_error(monitor, f"could not move #{number} to {refine_state}", exc)
+        await _record_forge_error(monitor, f"could not move #{number} to {refine_state}", exc)
         return
     logger.info("critique #%d VAGO → %s (%s)", number, refine_state, reason[:120])
 
@@ -783,8 +807,8 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
     try:
         issues = await monitor.forge.list_issues_with_label(REFINAR, limit=50)
     except GhCommandError as exc:
-        await _record_gh_error(
-            monitor, "could not list issues to refine (gh error)", exc,
+        await _record_forge_error(
+            monitor, "could not list issues to refine (forge error)", exc,
             notifier_label="refine/list",
         )
         return
@@ -814,7 +838,7 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
             else:
                 await monitor.forge.add_labels("issue", number, [refine_state])
         except GhCommandError as exc:
-            await _record_gh_error(monitor, f"could not rehydrate #{number} into {refine_state}", exc)
+            await _record_forge_error(monitor, f"could not rehydrate #{number} into {refine_state}", exc)
         return  # refined on the next tick
 
     # Ceiling guard (belt-and-suspenders with the critique-side check).
@@ -848,7 +872,7 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
     try:
         await monitor.forge.transition_issue(number, from_label=refine_state, to_label=WORKFLOW_NEW)
     except GhCommandError as exc:
-        await _record_gh_error(monitor, f"could not return #{number} to nova after refine", exc)
+        await _record_forge_error(monitor, f"could not return #{number} to nova after refine", exc)
         return
     logger.info("refine #%d OK (passe %d) → nova (re-crítica)", number,
                 monitor._resume_tracker.refine_attempt(number))
@@ -878,14 +902,14 @@ async def _block_refinement(monitor: "PipelineMonitor", issue, reason: str) -> N
         try:
             await monitor.forge.remove_labels("issue", number, stale)
         except GhCommandError as exc:
-            await _record_gh_error(
+            await _record_forge_error(
                 monitor, f"could not strip stale labels {stale} from #{number}", exc,
             )
     if refine_state not in issue.labels:
         try:
             await monitor.forge.add_labels("issue", number, [refine_state])
         except GhCommandError as exc:
-            await _record_gh_error(monitor, f"could not rest #{number} in {refine_state}", exc)
+            await _record_forge_error(monitor, f"could not rest #{number} in {refine_state}", exc)
     await monitor.forge.add_labels("issue", number, [REFINAR])
     if getattr(issue, "author", ""):
         await monitor.forge.assign_issue(number, issue.author)
@@ -909,8 +933,8 @@ async def decompose_one_reviewed_intent(monitor: "PipelineMonitor") -> None:
     try:
         issues = await monitor.forge.list_issues_with_label(WORKFLOW_REVIEWED, limit=50)
     except GhCommandError as exc:
-        await _record_gh_error(
-            monitor, "could not list reviewed intents (gh error)", exc,
+        await _record_forge_error(
+            monitor, "could not list reviewed intents (forge error)", exc,
             notifier_label="decompose/list",
         )
         return
@@ -950,7 +974,7 @@ async def decompose_one_reviewed_intent(monitor: "PipelineMonitor") -> None:
             target.number, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_DECOMPOSED
         )
     except GhCommandError as exc:
-        await _record_gh_error(monitor, f"could not mark #{target.number} decomposed", exc)
+        await _record_forge_error(monitor, f"could not mark #{target.number} decomposed", exc)
     logger.info("decompose #%d → derivadas %s", target.number, derived)
     await monitor.notifier.issue_reviewed(
         target.number, f"{target.title} (decomposta em {len(derived)})", target.url
@@ -972,8 +996,8 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
     try:
         issues = await monitor.forge.list_issues_with_label(WORKFLOW_REVIEWED, limit=50)
     except GhCommandError as exc:
-        await _record_gh_error(
-            monitor, "could not list reviewed issues (gh error)", exc,
+        await _record_forge_error(
+            monitor, "could not list reviewed issues (forge error)", exc,
             notifier_label="implement/list",
         )
         return
@@ -1011,7 +1035,7 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
                     target.number, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_PR
                 )
             except GhCommandError as exc:
-                await _record_gh_error(monitor, f"could not park #{target.number} in em_pr", exc)
+                await _record_forge_error(monitor, f"could not park #{target.number} in em_pr", exc)
             # Drop any stale refine residue so the issue carries one ~workflow:.
             await monitor.forge.remove_labels(
                 "issue", target.number, [REFINAR, *REFINE_WORKFLOW_STATES]
@@ -1026,7 +1050,7 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
                 target.number, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_IMPLEMENTING
             )
         except GhCommandError as exc:
-            await _record_gh_error(
+            await _record_forge_error(
                 monitor, f"could not claim issue #{target.number} for implementation", exc,
                 notifier_label=f"implement claim #{target.number}",
             )
@@ -1085,8 +1109,8 @@ async def resume_in_progress_issues(monitor: "PipelineMonitor") -> None:
     try:
         issues = await monitor.forge.list_issues_with_label(WORKFLOW_IMPLEMENTING, limit=50)
     except GhCommandError as exc:
-        await _record_gh_error(
-            monitor, "could not list in-progress issues (gh error)", exc,
+        await _record_forge_error(
+            monitor, "could not list in-progress issues (forge error)", exc,
             notifier_label="resume/list",
         )
         return
@@ -1213,7 +1237,7 @@ async def _finalize_implement_outcome(
                 number, from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_PR
             )
         except GhCommandError as exc:
-            await _record_gh_error(
+            await _record_forge_error(
                 monitor, f"could not transition issue #{number} to em_pr", exc,
             )
         monitor._resume_tracker.clear(number)
@@ -1324,7 +1348,7 @@ async def _block(
     try:
         await monitor.forge.add_labels(kind, number, [WORKFLOW_BLOCKED])
     except GhCommandError as exc:
-        await _record_gh_error(
+        await _record_forge_error(
             monitor, f"could not apply {WORKFLOW_BLOCKED} to {kind} #{number}", exc,
         )
     monitor._resume_tracker.clear(number)
@@ -1352,8 +1376,8 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     try:
         prs = await monitor.forge.list_open_prs(limit=50)
     except GhCommandError as exc:
-        await _record_gh_error(
-            monitor, "could not list PRs (gh error)", exc,
+        await _record_forge_error(
+            monitor, "could not list PRs (forge error)", exc,
             notifier_label="pr_review/list",
         )
         return
@@ -1453,7 +1477,7 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
                 target.number, from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_CONCLUDED
             )
         except GhCommandError as exc:
-            await _record_gh_error(
+            await _record_forge_error(
                 monitor, f"could not transition PR #{target.number} to concluida", exc,
             )
         await monitor.forge.clear_batch_label("pr", target.number)
@@ -1484,7 +1508,7 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
             target.number, from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_CONCLUDED
         )
     except GhCommandError as exc:
-        await _record_gh_error(
+        await _record_forge_error(
             monitor, f"could not transition PR #{target.number} to concluida", exc,
         )
     await monitor.forge.clear_batch_label("pr", target.number)

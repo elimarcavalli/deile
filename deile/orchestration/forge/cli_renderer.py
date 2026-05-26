@@ -216,9 +216,15 @@ def _gitlab_cmds(
             f"glab api projects/{project_id}/merge_requests/{number} "
             f"| jq -r .author.username"
         ),
+        # A API REST v4 do GitLab usa ``assignee_ids[]`` (semântica REPLACE
+        # completo — ``add_assignee_ids`` NÃO existe). Empiricamente confirmado:
+        # ``glab api -X PUT ... -f 'assignee_ids[]=N'`` retorna HTTP 400
+        # ("assignee_ids ... are missing") porque glab envia params com ``[]``
+        # no body form-encoded e o GitLab REST PUT requer o array na query
+        # string. Solução: encodar ``[]`` como ``%5B%5D`` direto na URL.
         "assign_user_cmd": (
-            f"glab api -X PUT projects/{project_id}/issues/{number} "
-            f"-f 'add_assignee_ids[]=<user_id>'"
+            f"glab api -X PUT 'projects/{project_id}/issues/{number}"
+            f"?assignee_ids%5B%5D=<user_id>'"
         ),
         "create_issue_cmd": (
             f'glab issue create -R {project_path} -t "<...>" -d "<...>" '

@@ -54,7 +54,9 @@ T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
-NS = "deile"
+# Namespace padrão: lido do env DEILE_K8S_NAMESPACE; fallback "deile".
+# Providers usam `RuntimeContext.namespace`, nunca esta constante diretamente.
+NS = os.environ.get("DEILE_K8S_NAMESPACE", "deile")
 # Tamanho máximo de log (bytes) que parsers carregam em memória — protege
 # contra pods com saídas multi-MB. Aplicado antes de `splitlines()`.
 MAX_LOG_BYTES = 256_000
@@ -108,6 +110,51 @@ REPO_DEFAULT = _detect_default_repo()
 USAGE_DB = Path.home() / ".deile" / "db" / "usage.db"
 LOGS_DIR = Path.home() / ".deile" / "logs"
 SESSIONS_DIR = Path.home() / ".deile" / "sessions"
+
+# Label aplicada a namespaces gerenciados pelo DEILE (mesma do deploy.py).
+_DEILE_NS_LABEL = "app.kubernetes.io/managed-by=deile"
+
+
+def discover_deile_namespaces() -> List[str]:
+    """Enumera namespaces DEILE acessíveis no cluster atual.
+
+    Estratégia combinada (mesmo critério de `k8s list` no deploy.py):
+    1. Namespaces com label `app.kubernetes.io/managed-by=deile`.
+    2. Fallback: namespaces que têm pods com `app=deile-pipeline`.
+
+    Devolve lista ordenada. Retorna lista vazia se kubectl ausente,
+    cluster inacessível ou nenhum namespace encontrado — o chamador
+    decide o que exibir.
+    """
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return []
+    try:
+        by_label = subprocess.run(
+            [kubectl, "get", "ns", "-l", _DEILE_NS_LABEL,
+             "-o", "jsonpath={.items[*].metadata.name}"],
+            capture_output=True, text=True, timeout=5.0,
+        )
+        labeled: set = set()
+        if by_label.returncode == 0 and by_label.stdout.strip():
+            labeled = set(by_label.stdout.strip().split())
+    except (OSError, subprocess.TimeoutExpired):
+        labeled = set()
+
+    try:
+        by_pod = subprocess.run(
+            [kubectl, "get", "pods", "--all-namespaces",
+             "-l", "app=deile-pipeline",
+             "-o", "jsonpath={.items[*].metadata.namespace}"],
+            capture_output=True, text=True, timeout=5.0,
+        )
+        from_pods: set = set()
+        if by_pod.returncode == 0 and by_pod.stdout.strip():
+            from_pods = set(by_pod.stdout.strip().split())
+    except (OSError, subprocess.TimeoutExpired):
+        from_pods = set()
+
+    return sorted(labeled | from_pods)
 # Diretório onde instâncias DEILE publicam seu `<instance_id>.json` (state
 # file por processo, atualizado em volta de tools/heartbeat — issue #303).
 # Override-able via `DEILE_RUNTIME_DIR` env var; `LocalInstancesProvider`
@@ -149,14 +196,15 @@ class RuntimeContext:
 
     Resolve namespace, deployment names, paths e modo (k8s/local/demo) num
     objeto imutável que os providers consomem. Defaults batem com o
-    layout `infra/k8s/manifests/` (namespace `deile`, deployments
+    layout `infra/k8s/manifests/` (namespace padrão = ``NS``, deployments
     `deile-pipeline`/`deile-worker`/`deilebot`/`deile-shell`).
 
     Use `RuntimeContext.detect(**overrides)` para construir aplicando
     overrides do CLI (`--namespace`, `--pipeline-deploy`, etc).
     """
 
-    namespace: str = "deile"
+    # NS é o namespace default do painel: env DEILE_K8S_NAMESPACE ou "deile".
+    namespace: str = field(default_factory=lambda: NS)
     pipeline_deploy: str = "deile-pipeline"
     worker_deploy: str = "deile-worker"
     bot_deploy: str = "deilebot"
@@ -167,6 +215,9 @@ class RuntimeContext:
     sessions_dir: Path = field(default_factory=lambda: SESSIONS_DIR)
     cluster_label: str = "rancher-desktop (k3s)"
     image_label: str = "deile-stack:local"
+    # forge_kind: "github" | "gitlab" | "" (auto-detect ou indisponível).
+    # Lido do env DEILE_FORGE_KIND no deployment deile-pipeline, se possível.
+    forge_kind: str = ""
     k8s_force: bool = False
     local_force: bool = False
     demo: bool = False
@@ -175,6 +226,11 @@ class RuntimeContext:
     def detect(cls, **overrides: Any) -> "RuntimeContext":
         """Constrói o contexto, resolvendo defaults quando overrides faltam."""
         repo = overrides.pop("repo", None) or _detect_default_repo()
+        # Tenta ler o forge_kind do cluster se não foi passado como override.
+        if "forge_kind" not in overrides:
+            overrides["forge_kind"] = _read_forge_kind(
+                overrides.get("namespace") or NS,
+            )
         return cls(repo=repo, **overrides)
 
     @property
@@ -207,6 +263,36 @@ class RuntimeContext:
         if ll:
             return "local only"
         return "vazio (sem fontes)"
+
+
+def _read_forge_kind(namespace: str) -> str:
+    """Lê o env DEILE_FORGE_KIND do deploy deile-pipeline no namespace dado.
+
+    Retorna "github" | "gitlab" | "" (auto/erro). Faz uma única chamada
+    kubectl silenciosa; nunca lança exceção — fallback é "".
+    """
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return ""
+    try:
+        out = subprocess.run(
+            [kubectl, "-n", namespace, "get", "deploy", "deile-pipeline",
+             "-o", "jsonpath={.spec.template.spec.containers[0].env}"],
+            capture_output=True, text=True, timeout=3.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if out.returncode != 0 or not out.stdout.strip():
+        return ""
+    # O jsonpath devolve o array de env vars como JSON-like; procura DEILE_FORGE_KIND.
+    try:
+        envs = json.loads(out.stdout)
+        for entry in envs:
+            if isinstance(entry, dict) and entry.get("name") == "DEILE_FORGE_KIND":
+                return (entry.get("value") or "").strip().lower()
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return ""
 
 
 def _has_local_deile_process() -> bool:
@@ -477,7 +563,7 @@ _ROLE_BY_APP = {
 
 
 class PodsProvider(_KubectlProviderMixin):
-    """Lista os pods do namespace em forma tipada (default `deile`)."""
+    """Lista os pods do namespace em forma tipada (default = NS)."""
 
     def __init__(self, ttl_s: float = 1.0, namespace: str = NS,
                  enabled: bool = True):
@@ -2588,7 +2674,7 @@ class PanelData:
 
     @classmethod
     def default(cls, repo: str = REPO_DEFAULT) -> "PanelData":
-        """Backwards-compat: contexto padrão (namespace `deile`)."""
+        """Backwards-compat: contexto padrão (namespace via env DEILE_K8S_NAMESPACE)."""
         return cls.from_context(RuntimeContext.detect(repo=repo))
 
     def _all_providers(self) -> tuple:

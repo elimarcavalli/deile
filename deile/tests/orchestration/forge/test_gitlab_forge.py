@@ -127,13 +127,67 @@ async def test_remove_labels_404_is_idempotent(fake_glab):
 
 
 async def test_assign_issue_resolves_username_to_user_id(fake_glab):
+    """Verifica o flow end-to-end e o fix do HTTP 400 (assignee_ids[] em query string).
+
+    Bug empírico descoberto: ``glab api -X PUT ... -f assignee_ids[]=N`` retorna
+    HTTP 400 ("assignee_ids ... are missing") porque o GitLab REST PUT espera o
+    array na query string, não no body form-encoded. O fix encoda ``[]`` como
+    ``%5B%5D`` na URL diretamente.
+    """
     forge, responses, calls = fake_glab
-    # 1st: user lookup. 2nd: PUT assignee_ids.
+    # 1st: user lookup. 2nd: PUT com assignee_ids[] na query string.
     responses.append((0, json.dumps([{"id": 123, "username": "alice"}]), ""))
     responses.append((0, "{}", ""))
     await forge.assign_issue(42, "alice")
     assert "username=alice" in calls[0]
-    assert "assignee_ids[]=123" in calls[1]
+    # PUT call: URL deve carregar ``assignee_ids%5B%5D=123`` na query string —
+    # NÃO ``-f assignee_ids[]=123`` (que o GitLab REST rejeita com HTTP 400).
+    put_call = calls[1]
+    assert put_call[:3] == ("api", "-X", "PUT")
+    url_segment = put_call[3]
+    assert "assignee_ids%5B%5D=123" in url_segment, (
+        f"esperado 'assignee_ids%5B%5D=123' na URL, got {url_segment!r}"
+    )
+    # Garante que NÃO usamos -f para esse campo (esse é o bug que estamos prevenindo).
+    assert "-f" not in put_call, "PUT assignee_ids deve usar query string, não -f"
+
+
+async def test_assign_issue_logs_replace_warning(fake_glab):
+    """assign_issue deve emitir WARNING explícito sobre semântica REPLACE.
+
+    Usa handler direto no logger-alvo + restaura logging.disable(NOTSET) para
+    contornar side-effects de outros testes que deixam o logging global desabilitado
+    (padrão documentado em test_gap_regressions.py e test_settings_layered.py).
+    """
+    import logging
+
+    forge, responses, _ = fake_glab
+    responses.append((0, json.dumps([{"id": 99, "username": "bob"}]), ""))
+    responses.append((0, "{}", ""))
+
+    captured: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record.getMessage())
+
+    _logger = logging.getLogger("deile.orchestration.forge.gitlab_forge")
+    handler = _Capture(level=logging.WARNING)
+    _logger.addHandler(handler)
+    original_level = _logger.level
+    _logger.setLevel(logging.WARNING)
+    # Restaura o estado global do logging caso outro teste tenha chamado
+    # logging.disable() e esquecido de reverter (padrão conhecido na suíte).
+    previous_disable = logging.root.manager.disable
+    logging.disable(logging.NOTSET)
+    try:
+        await forge.assign_issue(10, "bob")
+    finally:
+        _logger.removeHandler(handler)
+        _logger.setLevel(original_level)
+        logging.disable(previous_disable)
+
+    assert any("REPLACE" in msg for msg in captured)
 
 
 async def test_assign_issue_handles_missing_user_gracefully(fake_glab):
@@ -144,13 +198,95 @@ async def test_assign_issue_handles_missing_user_gracefully(fake_glab):
 
 
 async def test_merge_pr_blocked_by_unmergeable_status(fake_glab):
+    """detailed_merge_status=conflict deve levantar MergeBlocked."""
     forge, responses, _ = fake_glab
-    # The precheck reads the MR — return cannot_be_merged.
+    # Payload com detailed_merge_status preenchido (GitLab >= 15.6).
     responses.append((0, json.dumps({
-        "iid": 5, "merge_status": "cannot_be_merged",
+        "iid": 5,
+        "detailed_merge_status": "conflict",
+        "merge_status": "cannot_be_merged",  # legado presente mas não deve ser lido
     }), ""))
-    with pytest.raises(MergeBlocked):
+    with pytest.raises(MergeBlocked) as exc_info:
         await forge.merge_pr(5)
+    assert "detailed_merge_status=conflict" in str(exc_info.value)
+
+
+async def test_merge_pr_blocked_fallback_to_merge_status(fake_glab):
+    """Instâncias GitLab antigas sem detailed_merge_status usam merge_status como fallback."""
+    forge, responses, _ = fake_glab
+    # Sem detailed_merge_status — somente campo legado.
+    responses.append((0, json.dumps({
+        "iid": 5,
+        "merge_status": "cannot_be_merged",
+    }), ""))
+    with pytest.raises(MergeBlocked) as exc_info:
+        await forge.merge_pr(5)
+    assert "merge_status=cannot_be_merged" in str(exc_info.value)
+
+
+async def test_merge_pr_unchecked_does_NOT_block(fake_glab):
+    """detailed_merge_status=unchecked é neutro — não bloqueia no pre-check."""
+    forge, responses, _ = fake_glab
+    # Pre-check: unchecked (GitLab ainda está computando).
+    responses.append((0, json.dumps({
+        "iid": 5,
+        "detailed_merge_status": "unchecked",
+    }), ""))
+    # Merge PUT: sucesso.
+    responses.append((0, "{}", ""))
+    # Não deve levantar MergeBlocked.
+    await forge.merge_pr(5)
+
+
+async def test_merge_pr_unchecked_legacy_does_NOT_block(fake_glab):
+    """merge_status=unchecked no campo legado também não bloqueia."""
+    forge, responses, _ = fake_glab
+    # Sem detailed_merge_status; merge_status=unchecked no campo legado.
+    responses.append((0, json.dumps({
+        "iid": 5,
+        "merge_status": "unchecked",
+    }), ""))
+    # Merge PUT: sucesso.
+    responses.append((0, "{}", ""))
+    await forge.merge_pr(5)
+
+
+@pytest.mark.parametrize("dms,exc_type,fragment", [
+    ("conflict",                   MergeBlocked,           "conflict"),
+    ("not_approved",               MergeBlocked,           "not_approved"),
+    ("requested_changes",          MergeBlocked,           "requested_changes"),
+    ("discussions_not_resolved",   MergeBlocked,           "discussions_not_resolved"),
+    ("need_rebase",                MergeBlocked,           "need_rebase"),
+    ("not_open",                   MergeBlocked,           "not_open"),
+    ("cannot_be_merged",           MergeBlocked,           "cannot_be_merged"),
+    # ci_must_pass levanta MergeBlockedByPipeline — requer respostas extras para get_ci_status
+    # (testado em test_merge_pr_blocked_by_pipeline_succeed_rule acima)
+    # Valores neutros — não devem levantar (testados individualmente):
+    # unchecked, checking, mergeable, preparing, approvals_syncing
+])
+async def test_merge_pr_detailed_status_variants(fake_glab, dms, exc_type, fragment):
+    """Cada detailed_merge_status bloqueante leva ao tipo de exceção correto."""
+    forge, responses, _ = fake_glab
+    responses.append((0, json.dumps({
+        "iid": 5,
+        "detailed_merge_status": dms,
+    }), ""))
+    with pytest.raises(exc_type) as exc_info:
+        await forge.merge_pr(5)
+    assert fragment in str(exc_info.value)
+
+
+@pytest.mark.parametrize("dms", ["unchecked", "checking", "mergeable", "preparing", "approvals_syncing"])
+async def test_merge_pr_neutral_detailed_status_does_not_block(fake_glab, dms):
+    """Valores neutros de detailed_merge_status não devem levantar no pre-check."""
+    forge, responses, _ = fake_glab
+    responses.append((0, json.dumps({
+        "iid": 5,
+        "detailed_merge_status": dms,
+    }), ""))
+    # PUT merge bem-sucedido.
+    responses.append((0, "{}", ""))
+    await forge.merge_pr(5)
 
 
 async def test_merge_pr_blocked_by_pipeline_succeed_rule(fake_glab):
@@ -261,3 +397,141 @@ async def test_path_traversal_rejected():
             project_path="group/../etc",
             cli_path="/usr/bin/glab",
         )
+
+
+async def test_comment_on_issue_uses_raw_field(fake_glab):
+    """comment_on_issue deve usar --raw-field (não -f) para o corpo do comentário."""
+    forge, responses, calls = fake_glab
+    responses.append((0, "{}", ""))
+    await forge.comment_on_issue(7, "texto: null, true, :repo, $HOME")
+    flat_call = calls[0]
+    # --raw-field deve estar presente
+    assert "--raw-field" in flat_call
+    # -f NÃO deve aparecer para o body (poderia estar em outros params, mas body é raw)
+    # Verifica que o par "--raw-field", "body=..." está na sequência
+    idx = list(flat_call).index("--raw-field")
+    assert flat_call[idx + 1].startswith("body=")
+    # Garante que -f NÃO precede o body
+    assert "-f" not in flat_call[:idx]
+
+
+async def test_comment_on_pr_uses_raw_field(fake_glab):
+    """comment_on_pr deve usar --raw-field para evitar magic type conversion."""
+    forge, responses, calls = fake_glab
+    responses.append((0, "{}", ""))
+    await forge.comment_on_pr(3, "resposta: null or :branch override?")
+    flat_call = calls[0]
+    assert "--raw-field" in flat_call
+    idx = list(flat_call).index("--raw-field")
+    assert flat_call[idx + 1].startswith("body=")
+
+
+async def test_event_to_comment_issue_uses_issues_url(fake_glab):
+    """_event_to_comment com kind=issue deve usar /-/issues/<iid> na URL."""
+    forge, _, _ = fake_glab
+    note = {"id": 10, "body": "msg", "noteable_iid": 5, "noteable_url": None}
+    event = {"author": {"username": "alice"}}
+    ref = forge._event_to_comment(event, note, kind="issue")
+    assert "/-/issues/5" in ref.issue_url
+    assert "/-/merge_requests/" not in ref.issue_url
+
+
+async def test_event_to_comment_pr_review_uses_merge_requests_url(fake_glab):
+    """_event_to_comment com kind=pr_review deve usar /-/merge_requests/<iid> na URL."""
+    forge, _, _ = fake_glab
+    note = {"id": 20, "body": "review", "noteable_iid": 8, "noteable_url": None}
+    event = {"author": {"username": "bob"}}
+    ref = forge._event_to_comment(event, note, kind="pr_review")
+    assert "/-/merge_requests/8" in ref.issue_url
+    assert "/-/issues/" not in ref.issue_url
+
+
+async def test_event_to_comment_prefers_noteable_url(fake_glab):
+    """Quando noteable_url está presente, deve ser usado sem reconstrução."""
+    forge, _, _ = fake_glab
+    canonical = "https://gitlab.example.com/grp/prj/-/issues/42"
+    note = {
+        "id": 30, "body": "x",
+        "noteable_iid": 42, "noteable_url": canonical,
+    }
+    event = {"author": {"username": "carol"}}
+    ref = forge._event_to_comment(event, note, kind="issue")
+    assert ref.issue_url == canonical
+
+
+# ---------------------------------------------------------------------------
+# Regressões de bugs descobertos no E2E real contra gitlab.com (2026-05-26)
+# ---------------------------------------------------------------------------
+
+
+async def test_api_get_json_forces_X_GET_when_params_present(fake_glab):
+    """Regressão: ``glab api`` muda para POST por default quando há ``-f``.
+
+    Bug observado contra gitlab.com real:
+    ``glab api projects/.../issues -f state=opened`` virou POST → HTTP 400
+    ("title is missing") porque GitLab tratou como criação de issue.
+    O fix adiciona ``-X GET`` explícito sempre que há parâmetros.
+    """
+    forge, responses, calls = fake_glab
+    responses.append((0, "[]", ""))
+    # Chamada com parâmetros deve carregar -X GET antes do endpoint.
+    await forge._api_get_json("projects/1/issues", "-f", "state=opened")
+    call = calls[0]
+    # Sequência esperada: ("api", "-X", "GET", "projects/1/issues", "-f", "state=opened")
+    assert call[0] == "api"
+    assert call[1:3] == ("-X", "GET"), (
+        f"esperado ('-X', 'GET') antes do endpoint, got {call[1:3]}"
+    )
+    assert call[3] == "projects/1/issues"
+
+
+async def test_api_get_json_no_method_flag_when_no_params(fake_glab):
+    """Sem parâmetros, ``glab api <endpoint>`` é GET implícito — não força ``-X GET``."""
+    forge, responses, calls = fake_glab
+    responses.append((0, "{}", ""))
+    await forge._api_get_json("projects/1")
+    call = calls[0]
+    assert call == ("api", "projects/1"), (
+        f"sem params não deve injetar -X GET, got {call}"
+    )
+
+
+async def test_list_open_prs_uses_X_GET(fake_glab):
+    """Verifica que list_open_prs (via _api_paginated) carrega -X GET no glab call."""
+    forge, responses, calls = fake_glab
+    responses.append((0, "[]", ""))
+    await forge.list_open_prs(limit=10)
+    call = calls[0]
+    assert call[1:3] == ("-X", "GET"), (
+        f"list_open_prs deve usar -X GET, got {call[1:3]}"
+    )
+
+
+async def test_create_issue_parses_work_items_url(fake_glab):
+    """Regressão: GitLab >= 17 retorna URL ``/-/work_items/<iid>`` no output do create.
+
+    Bug observado: ``glab issue create`` agora retorna
+    ``https://gitlab.com/owner/repo/-/work_items/2`` em vez do antigo
+    ``/-/issues/2``. O regex deve tolerar ambos os formatos.
+    """
+    forge, responses, _ = fake_glab
+    # Output novo do glab (work_items).
+    work_items_out = (
+        "- Creating issue in elimarcavalli/test\n"
+        "https://gitlab.com/elimarcavalli/test/-/work_items/42\n"
+    )
+    responses.append((0, work_items_out, ""))
+    iid = await forge.create_issue("test", "body")
+    assert iid == 42, f"deveria parsear iid=42 do path /-/work_items/, got {iid}"
+
+
+async def test_create_issue_still_parses_legacy_issues_url(fake_glab):
+    """Output legado (``/-/issues/N``) continua sendo parseado corretamente."""
+    forge, responses, _ = fake_glab
+    legacy_out = (
+        "- Creating issue in owner/repo\n"
+        "https://gitlab.com/owner/repo/-/issues/17\n"
+    )
+    responses.append((0, legacy_out, ""))
+    iid = await forge.create_issue("title", "body")
+    assert iid == 17

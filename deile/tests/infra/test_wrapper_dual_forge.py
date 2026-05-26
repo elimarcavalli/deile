@@ -146,11 +146,45 @@ def test_idempotent_no_duplicate_lines_per_host(wrapper_mod, monkeypatch):
 
 
 def test_legacy_shim_still_works(wrapper_mod, monkeypatch):
-    """``_setup_git_credentials`` and ``_setup_gh_auth`` must still exist
-    and delegate to the forge function (no callsite breakage)."""
+    """``_setup_git_credentials`` e ``_setup_gh_auth`` devem existir e delegar
+    à função forge (nenhum call-site quebra)."""
     mod, home = wrapper_mod
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_LEGACY_TOKEN_1234567890abcdef12")
-    # Legacy callers can call both — must not crash and must produce config.
+    # Chamadores legados podem chamar ambas — não deve quebrar e deve produzir config.
     mod._setup_gh_auth()
     mod._setup_git_credentials()
     assert (home / ".git-credentials").exists()
+
+
+def test_setup_gh_auth_emits_deprecation_warning(wrapper_mod, monkeypatch):
+    """``_setup_gh_auth`` deve emitir DeprecationWarning na primeira chamada."""
+    import warnings
+    mod, home = wrapper_mod
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_WARN_TOKEN_1234567890abcdefab")
+    # Garante que o flag de aviso por processo seja False para este módulo recarregado.
+    mod._setup_gh_auth_warned = False
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        mod._setup_gh_auth()
+    assert any(issubclass(x.category, DeprecationWarning) for x in w), (
+        "_setup_gh_auth deve emitir DeprecationWarning na 1ª chamada"
+    )
+    assert any("_setup_forge_credentials" in str(x.message) for x in w)
+
+
+def test_setup_gh_auth_warns_only_once(wrapper_mod, monkeypatch):
+    """A segunda chamada de ``_setup_gh_auth`` na mesma sessão NÃO deve re-emitir."""
+    import warnings
+    mod, home = wrapper_mod
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_ONCE_TOKEN_1234567890abcdef12")
+    mod._setup_gh_auth_warned = False
+    # Primeira chamada — emite aviso.
+    with warnings.catch_warnings(record=True) as w1:
+        warnings.simplefilter("always")
+        mod._setup_gh_auth()
+    assert any(issubclass(x.category, DeprecationWarning) for x in w1)
+    # Segunda chamada — NÃO deve re-emitir.
+    with warnings.catch_warnings(record=True) as w2:
+        warnings.simplefilter("always")
+        mod._setup_gh_auth()
+    assert not any(issubclass(x.category, DeprecationWarning) for x in w2)

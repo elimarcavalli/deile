@@ -26,6 +26,7 @@ import asyncio
 import logging
 import re
 import shutil
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
@@ -39,6 +40,11 @@ from deile.orchestration.forge.refs import (CommentRef, IssueRef,
                                             compute_batch_id_for_number)
 
 logger = logging.getLogger(__name__)
+
+# Limiar de requisições restantes abaixo do qual o sleep é ativado.
+_RATE_LIMIT_THRESHOLD: int = 20
+# Cap máximo de sleep em segundos para não bloquear o pipeline indefinidamente.
+_RATE_LIMIT_CAP_SECONDS: int = 60
 
 
 # ---------------------------------------------------------------------------
@@ -599,6 +605,99 @@ class ForgeClient(ABC):
         return self._config.web_pr_url(number)
 
     # ------------------------------------------------------------------
+    # Rate-limit helpers — best-effort, never raise
+    # ------------------------------------------------------------------
+
+    async def _api_get_json_with_headers(
+        self,
+        endpoint: str,
+        *params: str,
+    ) -> Tuple[dict, dict]:
+        """Run ``gh api --include <endpoint> [params...]`` and return ``(payload, headers)``.
+
+        The ``--include`` / ``-i`` flag makes the ``gh`` CLI prepend the HTTP
+        response headers (in ``Header: Value`` format) before the JSON body.
+        The headers and body are separated by a blank line.
+
+        Returns
+        -------
+        tuple[dict, dict]
+            ``(parsed_json_body, headers_dict)``. On any error both are empty
+            dicts so callers are not burdened with error handling.
+        """
+        args = ["api", "--include", endpoint, *params]
+        rc, out, err = await self._run(*args)
+        if rc != 0:
+            logger.debug(
+                "_api_get_json_with_headers(%s) failed rc=%d err=%s",
+                endpoint, rc, err.strip()[:200],
+            )
+            return {}, {}
+        return _parse_headers_and_body(out)
+
+    async def _maybe_sleep_for_rate_limit(
+        self,
+        headers: dict,
+        *,
+        threshold: int = _RATE_LIMIT_THRESHOLD,
+        cap: int = _RATE_LIMIT_CAP_SECONDS,
+    ) -> None:
+        """Sleep até o reset do rate-limit quando as requisições restantes estão abaixo de *threshold*.
+
+        Suporta dois conjuntos de nomes de header:
+
+        - ``X-RateLimit-Remaining`` / ``X-RateLimit-Reset`` — GitHub cloud
+        - ``RateLimit-Remaining`` / ``RateLimit-Reset`` — GitLab / GHES
+
+        O valor de ``Reset`` é interpretado como epoch Unix (segundos).
+        O sleep é limitado a *cap* segundos para não bloquear o pipeline
+        indefinidamente. Erros de parsing são ignorados (best-effort).
+        """
+        remaining_str = (
+            headers.get("X-RateLimit-Remaining")
+            or headers.get("RateLimit-Remaining")
+            or ""
+        ).strip()
+        reset_str = (
+            headers.get("X-RateLimit-Reset")
+            or headers.get("RateLimit-Reset")
+            or ""
+        ).strip()
+
+        if not remaining_str or not reset_str:
+            return
+
+        try:
+            remaining = int(remaining_str)
+            reset_epoch = int(reset_str)
+        except ValueError:
+            logger.debug(
+                "_maybe_sleep_for_rate_limit: could not parse headers "
+                "remaining=%r reset=%r — skipping",
+                remaining_str, reset_str,
+            )
+            return
+
+        if remaining < threshold:
+            now = time.time()
+            delta = max(0.0, reset_epoch - now)
+            sleep_secs = min(delta, cap)
+
+            if remaining <= 0:
+                logger.warning(
+                    "rate-limit excedido: remaining=%d reset_epoch=%d "
+                    "dormindo %.1fs (cap=%ds)",
+                    remaining, reset_epoch, sleep_secs, cap,
+                )
+            else:
+                logger.info(
+                    "rate-limit baixo: remaining=%d threshold=%d "
+                    "dormindo %.1fs até reset",
+                    remaining, threshold, sleep_secs,
+                )
+            await asyncio.sleep(sleep_secs)
+
+    # ------------------------------------------------------------------
     # Internal helper shared by every concrete forge's list operations
     # ------------------------------------------------------------------
 
@@ -632,6 +731,55 @@ class ForgeClient(ABC):
 # ---------------------------------------------------------------------------
 
 
+def _parse_headers_and_body(raw: str) -> Tuple[dict, dict]:
+    """Analisa o output de ``gh api --include`` (headers + corpo JSON).
+
+    O formato emitido pelo ``gh`` CLI com ``--include`` / ``-i`` é:
+
+    .. code-block:: text
+
+        HTTP/1.1 200 OK
+        Header-Name: value
+        Another-Header: value
+
+        {\"key\": \"value\"}
+
+    Returns
+    -------
+    tuple[dict, dict]
+        ``(parsed_json_body, headers_dict)``. Os nomes de header são
+        preservados em sua capitalização original. Em caso de falha de
+        parsing retorna ``({}, {})``.
+    """
+    import json as _json
+
+    # Separa a seção de headers do corpo pelo primeiro ``\\n\\n`` (linha em branco).
+    parts = raw.split("\n\n", 1)
+    header_block = parts[0] if parts else ""
+    body_block = parts[1].strip() if len(parts) > 1 else ""
+
+    headers: dict = {}
+    for line in header_block.splitlines():
+        # Ignora a status-line (ex: "HTTP/1.1 200 OK").
+        if line.startswith("HTTP/"):
+            continue
+        if ":" in line:
+            key, _, value = line.partition(":")
+            headers[key.strip()] = value.strip()
+
+    if not body_block:
+        return {}, headers
+
+    try:
+        body = _json.loads(body_block)
+        if not isinstance(body, dict):
+            body = {}
+    except _json.JSONDecodeError:
+        body = {}
+
+    return body, headers
+
+
 def discover_cli(cli_name: str) -> str:
     """Locate ``cli_name`` on ``$PATH`` or raise :class:`ForgeCliNotFound`.
 
@@ -658,4 +806,5 @@ __all__ = [
     "MergeBlocked",
     "MergeBlockedByPipeline",
     "discover_cli",
+    "_parse_headers_and_body",
 ]

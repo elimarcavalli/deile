@@ -105,3 +105,38 @@ def test_gitlab_fetch_template_uses_correct_path(gitlab_config):
     # GitLab keeps templates under ``.gitlab/issue_templates/`` — the URL
     # path is encoded with ``%2F`` inside the REST endpoint.
     assert ".gitlab%2Fissue_templates%2Ffeature_request.md" in cmds["fetch_template_cmd"]
+
+
+def test_gitlab_assign_uses_assignee_ids_not_add_assignee_ids(gitlab_config):
+    """O endpoint PUT /issues/:id do GitLab aceita ``assignee_ids[]``, NÃO
+    ``add_assignee_ids`` (parâmetro inexistente na API REST v4 oficial).
+
+    Empiricamente confirmado contra gitlab.com (2026-05-26): ``-f assignee_ids[]=N``
+    no body retorna HTTP 400; o valor precisa ir na query string da URL como
+    ``?assignee_ids%5B%5D=<id>``.
+    """
+    cmds = render_brief_cmds(gitlab_config, number=5, branch="b", main="main")
+    # ``[]`` aparece encoded como ``%5B%5D`` na query string.
+    assert "assignee_ids%5B%5D=<user_id>" in cmds["assign_user_cmd"]
+    # Garante ausência da forma errada (que retorna 400 do GitLab).
+    assert "add_assignee_ids" not in cmds["assign_user_cmd"]
+    # Garante ausência da forma errada em body (``-f assignee_ids[]=``).
+    assert "-f 'assignee_ids[]" not in cmds["assign_user_cmd"]
+    assert "--raw-field 'assignee_ids[]" not in cmds["assign_user_cmd"]
+
+
+def test_gitlab_assign_uses_query_string_not_body(gitlab_config):
+    """Garante que ``assignee_ids`` vai na query string (``?…``), não no body.
+
+    Bug empírico: ``glab api -X PUT -f assignee_ids[]=N`` envia no body
+    form-encoded e o GitLab REST PUT rejeita com HTTP 400. A correção encoda
+    ``[]`` em ``%5B%5D`` direto na URL.
+    """
+    cmds = render_brief_cmds(gitlab_config, number=5, branch="b", main="main")
+    cmd = cmds["assign_user_cmd"]
+    # URL deve conter ``?assignee_ids%5B%5D=`` (query string).
+    assert "?assignee_ids%5B%5D=" in cmd
+    # ``-f`` solto não deve aparecer como flag de corpo isolada (params via URL).
+    parts = cmd.split()
+    assert "-f" not in parts
+    assert "--raw-field" not in parts

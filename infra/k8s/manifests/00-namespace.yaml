@@ -1,3 +1,26 @@
+# Cria o namespace DEILE com o Pod Security Standards "restricted".
+# Para usar um nome de namespace customizado (ex.: deile-gl, deile-staging):
+#
+#   kubectl create namespace deile-gl \
+#     --dry-run=client -o yaml | kubectl apply -f -
+#   kubectl label namespace deile-gl \
+#     pod-security.kubernetes.io/enforce=restricted \
+#     pod-security.kubernetes.io/enforce-version=v1.29 \
+#     pod-security.kubernetes.io/audit=restricted \
+#     pod-security.kubernetes.io/audit-version=v1.29 \
+#     pod-security.kubernetes.io/warn=restricted \
+#     pod-security.kubernetes.io/warn-version=v1.29 \
+#     app.kubernetes.io/managed-by=deile
+#
+# Em seguida aplique os demais manifests com:
+#   kubectl apply -n <seu-namespace> -f infra/k8s/manifests/
+#
+# OU use o orquestrador:
+#   python3 infra/k8s/deploy.py k8s up --namespace deile-gl
+#
+# O manifest abaixo é o exemplo padrão (namespace = deile).
+# Não é necessário editá-lo — o "namespace:" foi removido dos outros
+# manifests; o kubectl aplica o NS via flag -n.
 apiVersion: v1
 kind: Namespace
 metadata:

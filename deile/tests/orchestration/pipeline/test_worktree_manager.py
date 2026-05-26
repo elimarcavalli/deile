@@ -101,3 +101,49 @@ class TestCreateBranchWorktree:
             ["git", "-C", str(wt.path), "remote", "get-url", "origin"]
         )
         assert out.strip().decode() == str(fake_repo.resolve())
+
+
+class TestForgeHostHints:
+    """Verifica que _FORGE_HOST_HINTS não inclui o fragmento ``"git."`` (muito permissivo)."""
+
+    def test_git_dot_not_in_hints(self):
+        """``"git."`` foi removido das hints — URLs como git.empresa.com NÃO devem casar."""
+        assert "git." not in WorktreeManager._FORGE_HOST_HINTS
+
+    def test_standard_cloud_hosts_still_in_hints(self):
+        hints = WorktreeManager._FORGE_HOST_HINTS
+        assert "github.com" in hints
+        assert "gitlab.com" in hints
+
+    def test_enterprise_prefixes_still_in_hints(self):
+        hints = WorktreeManager._FORGE_HOST_HINTS
+        assert "ghe." in hints
+        assert "gitlab." in hints
+
+    def test_git_empresa_url_does_not_match(self):
+        """URL genérica ``git.empresa.com/x/y`` NÃO deve ser reconhecida como forge."""
+        url = "https://git.empresa.com/grupo/projeto"
+        hints = WorktreeManager._FORGE_HOST_HINTS
+        assert not any(h in url for h in hints), (
+            f"'git.empresa.com' não deveria casar nenhum hint; hints={hints}"
+        )
+
+    def test_github_url_still_matches(self):
+        url = "https://github.com/owner/repo"
+        hints = WorktreeManager._FORGE_HOST_HINTS
+        assert any(h in url for h in hints)
+
+    def test_gitlab_url_still_matches(self):
+        url = "https://gitlab.com/group/project"
+        hints = WorktreeManager._FORGE_HOST_HINTS
+        assert any(h in url for h in hints)
+
+    def test_ghe_url_still_matches(self):
+        url = "https://ghe.empresa.com/owner/repo"
+        hints = WorktreeManager._FORGE_HOST_HINTS
+        assert any(h in url for h in hints)
+
+    def test_self_hosted_gitlab_url_still_matches(self):
+        url = "https://gitlab.empresa.com/group/project"
+        hints = WorktreeManager._FORGE_HOST_HINTS
+        assert any(h in url for h in hints)

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from deile.orchestration.forge import (ForgeDetectionError, ForgeKind,
                                        declared_hosts, detect_forge_kind)
+from deile.orchestration.forge.detection import _probe_host, _probe_cache
 
 
 def test_detect_explicit_override_wins_github():
@@ -102,3 +105,141 @@ def test_declared_hosts_csv():
     assert "ghe-a.empresa.com" in result["github_hosts"]
     assert "ghe-b.empresa.com" in result["github_hosts"]
     assert result["gitlab_hosts"] == ("gitlab.empresa.com",)
+
+
+# ---------------------------------------------------------------------------
+# Testes para o HTTP probe (_probe_host e integração em detect_forge_kind)
+# ---------------------------------------------------------------------------
+
+
+def _make_mock_response(status: int, headers: dict = None):
+    """Cria um mock de resposta urllib para uso em testes de probe."""
+    mock_resp = MagicMock()
+    mock_resp.status = status
+    mock_resp.headers = headers or {}
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
+
+
+@pytest.mark.unit
+async def test_probe_returns_gitlab_when_v4_version_responds() -> None:
+    """_probe_host deve retornar GITLAB quando /api/v4/version responde 200."""
+    # Limpa o cache entre testes.
+    _probe_cache.pop("unknown-gl.empresa.com", None)
+
+    gl_resp = _make_mock_response(200)
+    gh_resp = MagicMock(side_effect=Exception("connection refused"))
+
+    def fake_urlopen(req, timeout=None):
+        if "/api/v4/" in req.full_url:
+            return gl_resp
+        raise Exception("not gitlab")
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        result = await _probe_host("unknown-gl.empresa.com")
+
+    assert result is ForgeKind.GITLAB
+
+
+@pytest.mark.unit
+async def test_probe_returns_github_when_v3_root_responds() -> None:
+    """_probe_host deve retornar GITHUB quando /api/v3/ responde 200 (GHES)."""
+    import urllib.error
+
+    _probe_cache.pop("unknown-gh.empresa.com", None)
+
+    gh_resp = _make_mock_response(200, headers={"X-GitHub-Enterprise-Version": "3.10"})
+
+    def fake_urlopen(req, timeout=None):
+        if "/api/v4/" in req.full_url:
+            raise urllib.error.URLError("not gitlab")
+        if "/api/v3/" in req.full_url:
+            return gh_resp
+        raise Exception("unexpected")
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        result = await _probe_host("unknown-gh.empresa.com")
+
+    assert result is ForgeKind.GITHUB
+
+
+@pytest.mark.unit
+async def test_probe_disabled_when_env_var_not_set() -> None:
+    """detect_forge_kind NÃO deve chamar probe quando DEILE_FORGE_PROBE não é '1'."""
+    _probe_cache.pop("mystery.host.com", None)
+
+    with patch(
+        "deile.orchestration.forge.detection._probe_host_sync"
+    ) as mock_probe:
+        with pytest.raises(ForgeDetectionError):
+            detect_forge_kind(
+                url="https://mystery.host.com/group/repo",
+                env={},  # DEILE_FORGE_PROBE ausente
+            )
+    mock_probe.assert_not_called()
+
+
+@pytest.mark.unit
+async def test_probe_timeout_falls_through_to_error() -> None:
+    """Se o probe falhar (timeout/conexão), detect_forge_kind deve levantar ForgeDetectionError."""
+    import urllib.error
+
+    _probe_cache.pop("timeout.host.com", None)
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.URLError("timed out")
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with pytest.raises(ForgeDetectionError):
+            detect_forge_kind(
+                url="https://timeout.host.com/owner/repo",
+                env={"DEILE_FORGE_PROBE": "1"},
+            )
+
+
+@pytest.mark.unit
+async def test_probe_result_is_cached() -> None:
+    """O resultado de _probe_host deve ser armazenado em cache para evitar sondas repetidas."""
+    _probe_cache.pop("cached.empresa.com", None)
+
+    import urllib.error
+
+    gl_resp = _make_mock_response(200)
+
+    call_count = 0
+
+    def fake_urlopen(req, timeout=None):
+        nonlocal call_count
+        call_count += 1
+        if "/api/v4/" in req.full_url:
+            return gl_resp
+        raise urllib.error.URLError("not this")
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        r1 = await _probe_host("cached.empresa.com")
+        # Captura o call_count após a primeira sonda (pode ser 1 ou 2 dependendo
+        # de quantas tentativas paralelas foram feitas — GL + GH opcionalmente).
+        calls_after_first = call_count
+        r2 = await _probe_host("cached.empresa.com")
+
+    assert r1 is ForgeKind.GITLAB
+    assert r2 is ForgeKind.GITLAB
+    # Segunda chamada deve retornar do cache — sem I/O adicional.
+    assert call_count == calls_after_first
+
+
+@pytest.mark.unit
+async def test_probe_returns_none_when_both_fail() -> None:
+    """_probe_host retorna None quando ambas as sondas falham."""
+    import urllib.error
+
+    _probe_cache.pop("both-fail.empresa.com", None)
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.URLError("connection refused")
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        result = await _probe_host("both-fail.empresa.com")
+
+    assert result is None

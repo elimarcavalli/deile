@@ -201,12 +201,15 @@ class WorktreeManager:
 
         return deleted
 
-    # Hostname fragments that identify a *real* upstream forge URL — used to
-    # distinguish a remote we should propagate to the worktree from a local
-    # path. The list covers both default-cloud hosts and the most common
-    # self-hosted instance patterns; operators with exotic hosts still get
-    # the local-path branch (safe, just a warning).
-    _FORGE_HOST_HINTS = ("github.com", "gitlab.com", "gitlab.", "ghe.", "git.")
+    # Fragmentos de nome de host que identificam uma URL de forge real — usados
+    # para distinguir um remote que deve ser propagado para a worktree de um
+    # path local. A lista cobre os hosts cloud padrão e os padrões self-hosted
+    # mais comuns. O fragmento ``"git."`` foi removido propositalmente: ele é
+    # demasiado permissivo (qualquer URL contendo ``git.algo.com`` casaria,
+    # incluindo repositórios internos legítimos que NÃO são forges). Operadores
+    # com hosts exóticos devem configurar ``DEILE_GITHUB_HOST`` ou
+    # ``DEILE_GITLAB_HOST`` explicitamente.
+    _FORGE_HOST_HINTS = ("github.com", "gitlab.com", "gitlab.", "ghe.")
 
     async def _ensure_forge_remote(self, worktree: Path) -> None:
         """Add or update the ``forge`` remote (and legacy ``github`` alias).

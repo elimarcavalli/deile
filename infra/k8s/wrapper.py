@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import os
 import sys
+import warnings
 from pathlib import Path
 from typing import Callable, List
 
@@ -374,10 +375,31 @@ def _setup_git_credentials() -> None:
     _setup_forge_credentials()
 
 
+_setup_gh_auth_warned: bool = False
+
+
 def _setup_gh_auth() -> None:
-    # ``_setup_forge_credentials`` writes the gh hosts.yml inline; this
-    # legacy entry point becomes a no-op so calling both is harmless.
-    return
+    """Deprecated compat-shim for ``_setup_forge_credentials``.
+
+    .. deprecated::
+        ``_setup_gh_auth`` was replaced by ``_setup_forge_credentials``, which
+        handles both GitHub and GitLab credentials uniformly (issue #297).
+        This shim delegates to ``_setup_forge_credentials`` and emits a
+        ``DeprecationWarning`` on the first invocation per process.  Remove
+        calls to this function — use ``_setup_forge_credentials`` directly.
+    """
+    global _setup_gh_auth_warned
+    if not _setup_gh_auth_warned:
+        warnings.warn(
+            "_setup_gh_auth() is deprecated and will be removed in a future release; "
+            "call _setup_forge_credentials() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        _setup_gh_auth_warned = True
+    # A função _setup_forge_credentials já gerencia o hosts.yml do gh; chamar
+    # ambas em sequência é inofensivo (o arquivo é sobrescrito idempotentemente).
+    _setup_forge_credentials()
 
 
 def _setup_git_clone_guard(config_path: str = "") -> None:

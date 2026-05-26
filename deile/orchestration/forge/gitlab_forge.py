@@ -134,15 +134,19 @@ class GitLabForge(ForgeClient):
         try:
             payload = json.loads(out or "{}")
         except json.JSONDecodeError as exc:
+            # rc=-1 por convenção "erro não-CLI" — distingue de rc=0 (sucesso)
+            # e evita confundir o operador com "exit code 0 mas falhou".
             raise ForgeCommandError(
                 ("glab", "api", f"projects/{self._config.encoded_project_path}"),
-                0, out, f"non-JSON: {exc}",
+                -1, out, f"resposta não-JSON ao resolver project id: {exc}",
             )
         pid = payload.get("id")
         if not pid:
+            # rc=-1: glab saiu 0 (OK no transporte) mas o payload não contém 'id'.
+            # Pode indicar token sem permissão de leitura ou project_path errado.
             raise ForgeCommandError(
                 ("glab", "api", f"projects/{self._config.encoded_project_path}"),
-                0, out, "project payload missing 'id'",
+                -1, out, "payload do projeto não contém campo 'id' — verifique project_path e permissões do token",
             )
         self._config.project_id = str(pid)
         # Capture the default branch while we are here — it costs nothing
@@ -156,13 +160,22 @@ class GitLabForge(ForgeClient):
 
         Caller passes additional ``-f key=value`` pairs as alternating
         ``"-f", "k=v"`` strings (matches the legacy gh shape).
+
+        IMPORTANTE: forçamos ``-X GET`` SEMPRE que há parâmetros porque o
+        ``glab api`` muda o método HTTP para POST por default quando recebe
+        ``-f``/``--raw-field`` (doc oficial: "The default HTTP request method
+        is ``GET`` if no parameters are added, and ``POST`` otherwise").
+        Sem o ``-X GET`` explícito, listagens como ``GET /projects/:id/issues``
+        viram POST com ``state=opened`` no body, gerando HTTP 400.
         """
-        args = ("api", endpoint, *params)
+        method_args = ("-X", "GET") if params else ()
+        args = ("api", *method_args, endpoint, *params)
         out = await self._run_checked(*args)
         try:
             return json.loads(out or "null")
         except json.JSONDecodeError as exc:
-            raise ForgeCommandError(("glab",) + args, 0, out, f"non-JSON: {exc}") from exc
+            # rc=-1 distingue erro de parsing (glab saiu 0) de falha de transporte.
+            raise ForgeCommandError(("glab",) + args, -1, out, f"non-JSON: {exc}") from exc
 
     async def _api_paginated(
         self,
@@ -285,14 +298,21 @@ class GitLabForge(ForgeClient):
         except ForgeCommandError as exc:
             logger.warning("create_issue %r failed: %s", title[:60], exc)
             return 0
-        # ``glab issue create`` prints the URL of the new issue; the iid
-        # is the last numeric segment.
+        # ``glab issue create`` imprime a URL da nova issue; o ``iid`` é o
+        # último segmento numérico do path. Em GitLab >= 17 (2025+) o output
+        # pode usar ``/-/work_items/<iid>`` (sucessor unificado de issues e
+        # tasks) em vez de ``/-/issues/<iid>``. Ambos compartilham o mesmo
+        # ``iid`` por projeto, então tolerar os dois é suficiente.
         import re as _re
-        m = _re.search(r"/issues/(\d+)", out)
+        m = _re.search(r"/(?:issues|work_items)/(\d+)", out)
         return int(m.group(1)) if m else 0
 
     async def comment_on_issue(self, number: int, text: str) -> None:
-        # POST /projects/<id>/issues/<iid>/notes -f body=<text>
+        # POST /projects/<id>/issues/<iid>/notes --raw-field body=<text>
+        # Usa --raw-field (não -f) para evitar magic type conversion e
+        # placeholder replacement do glab api: literais "null"/"true"/integers
+        # e tokens `:branch`/`:user`/`:repo` seriam reinterpretados com -f,
+        # corrompendo silenciosamente textos de LLM ou do operador.
         # Using REST (not ``glab issue note``) keeps the contract symmetric
         # with the GitHub adapter (REST for label mutations too) and avoids
         # the ``glab issue note --message`` interactive prompt that some
@@ -300,7 +320,7 @@ class GitLabForge(ForgeClient):
         await self._run_checked(
             "api", "-X", "POST",
             f"projects/{self._project_ref}/issues/{number}/notes",
-            "-f", f"body={text}",
+            "--raw-field", f"body={text}",
         )
 
     async def assign_issue(self, number: int, login: str) -> None:
@@ -310,9 +330,23 @@ class GitLabForge(ForgeClient):
         first resolve the username via ``/users?username=<login>`` and then
         PUT the resolved id. Best-effort: failures are logged but never
         raised — assignment is a courtesy signal (mirrors the GH adapter).
+
+        .. warning::
+            A API REST do GitLab (PUT /issues/:iid) usa ``assignee_ids[]``
+            como operação de **REPLACE completo** — não existe endpoint de
+            "add_assignee" no v4. Isso significa que qualquer assignee
+            anterior é **removido** ao chamar este método. Não faça fetch
+            da lista atual para tentar merge: isso introduziria TOCTOU.
+            A semântica REPLACE é intencional e documentada aqui; o
+            operador deve estar ciente ao usar multi-assignee.
         """
         if not login:
             return
+        logger.warning(
+            "assign_issue #%d: operação REPLACE — todos os assignees anteriores "
+            "serão removidos (GitLab PUT assignee_ids[] é full-replace, sem add)",
+            number,
+        )
         try:
             users = await self._api_get_json("users", "-f", f"username={login}")
         except ForgeCommandError as exc:
@@ -325,10 +359,18 @@ class GitLabForge(ForgeClient):
         if not user_id:
             logger.warning("assign_issue: user %r has no id in payload", login)
             return
+        # IMPORTANTE: glab/GitLab rejeita ``-f assignee_ids[]=N`` para PUT —
+        # o GitLab REST espera o array em query string (``?assignee_ids[]=N``),
+        # não no body form-encoded que glab gera com ``-f``. Erro observado:
+        # ``HTTP 400 {"error":"assignee_id, assignee_ids, ... are missing"}``.
+        # Solução: encodar ``[]`` (``%5B%5D``) na URL diretamente — sem ``-f``,
+        # sem ``--raw-field``. Outros parâmetros sem ``[]`` (``add_labels``,
+        # ``draft``, etc.) funcionam normalmente com ``-f``.
+        from urllib.parse import quote as _quote
         rc, _, err = await self._run(
             "api", "-X", "PUT",
-            f"projects/{self._project_ref}/issues/{number}",
-            "-f", f"assignee_ids[]={user_id}",
+            f"projects/{self._project_ref}/issues/{number}"
+            f"?assignee_ids{_quote('[]')}={user_id}",
         )
         if rc != 0:
             logger.warning(
@@ -530,10 +572,12 @@ class GitLabForge(ForgeClient):
         return result
 
     async def comment_on_pr(self, number: int, text: str) -> None:
+        # --raw-field: evita magic type conversion e placeholder replacement
+        # do glab api para conteúdo de texto livre (LLM output / input do operador).
         await self._run_checked(
             "api", "-X", "POST",
             f"projects/{self._project_ref}/merge_requests/{number}/notes",
-            "-f", f"body={text}",
+            "--raw-field", f"body={text}",
         )
 
     async def get_pr_body(self, number: int) -> str:
@@ -584,16 +628,38 @@ class GitLabForge(ForgeClient):
         pipeline can declare ``BLOQUEADO:`` with a specific reason instead
         of retrying blindly:
 
-        - HTTP 405 "Method Not Allowed" or ``merge_status`` ∈ {``unchecked``,
-          ``cannot_be_merged``} → :class:`MergeBlocked`.
-        - 405 with body mentioning "pipeline must succeed" → :class:`MergeBlockedByPipeline`.
+        - ``detailed_merge_status`` ∈ bloqueantes → :class:`MergeBlocked` com
+          mensagem específica por valor. Fallback para ``merge_status`` (campo
+          legado, deprecated em GitLab v5) quando ``detailed_merge_status``
+          não estiver presente (compatibilidade com instâncias antigas).
+        - ``detailed_merge_status == "ci_must_pass"`` → :class:`MergeBlockedByPipeline`.
+        - Valores neutros (``unchecked``, ``checking``, ``preparing``,
+          ``approvals_syncing``, ``mergeable``) NÃO bloqueam o pre-check — o
+          PUT dispara o cômputo final no servidor.
+        - HTTP 405 "Method Not Allowed" → :class:`MergeBlocked`.
 
-        ``merge_method`` is informational here: GitLab decides the actual
-        merge strategy per project (merge/squash/fast-forward). The flag
-        ``squash=false`` keeps the default flat merge.
+        ``merge_method`` é informativo: o GitLab decide a estratégia real
+        (merge/squash/fast-forward) por projeto. ``squash=false`` mantém
+        o merge plano como padrão.
         """
-        # Pre-check: if mergeable status already says no, fail fast with a
-        # clear reason. This avoids the "MR refused, retry" loop.
+        # Valores de detailed_merge_status que indicam bloqueio real.
+        # Fonte: https://docs.gitlab.com/ee/api/merge_requests.html#merge-status
+        _DETAILED_BLOCKED: dict[str, str] = {
+            "conflict": "MR tem conflito de merge",
+            "not_approved": "MR requer aprovação(ões) pendente(s)",
+            "not_open": "MR não está aberto",
+            "requested_changes": "revisores solicitaram alterações",
+            "discussions_not_resolved": "discussões não resolvidas bloqueiam o merge",
+            "need_rebase": "rebase necessário antes do merge",
+            "cannot_be_merged": "GitLab indica que o MR não pode ser mergeado",
+        }
+        # Valores neutros: não bloqueamos no pre-check; o PUT dispara o cômputo.
+        _DETAILED_NEUTRAL = frozenset({
+            "unchecked", "checking", "preparing", "approvals_syncing", "mergeable",
+        })
+
+        # Pre-check: se o status já diz não, falha rápido com motivo claro.
+        # Evita o loop "MR recusado, tenta de novo".
         try:
             mr = await self._api_get_json(
                 f"projects/{self._project_ref}/merge_requests/{number}",
@@ -602,11 +668,29 @@ class GitLabForge(ForgeClient):
             logger.warning("merge_pr precheck #%d failed: %s", number, exc)
             mr = {}
         if isinstance(mr, dict):
-            ms = str(mr.get("merge_status") or "").lower()
-            if ms in ("cannot_be_merged", "unchecked"):
-                raise MergeBlocked(
-                    f"GitLab MR #{number} merge_status={ms}: not mergeable yet"
-                )
+            # Prefer detailed_merge_status (GitLab >= 15.6); fallback para
+            # merge_status (deprecated, removido na v5 da REST API).
+            dms = str(mr.get("detailed_merge_status") or "").lower()
+            if dms:
+                if dms == "ci_must_pass":
+                    ci = await self.get_ci_status(number)
+                    raise MergeBlockedByPipeline(
+                        f"GitLab MR #{number}: CI deve passar antes do merge "
+                        f"(detailed_merge_status=ci_must_pass, ci={ci})"
+                    )
+                if dms in _DETAILED_BLOCKED:
+                    raise MergeBlocked(
+                        f"GitLab MR #{number} detailed_merge_status={dms}: "
+                        f"{_DETAILED_BLOCKED[dms]}"
+                    )
+                # dms é neutro (unchecked/checking/mergeable/…) — deixa o PUT tentar.
+            else:
+                # Fallback legado: detailed_merge_status ausente (GitLab antigo).
+                ms = str(mr.get("merge_status") or "").lower()
+                if ms == "cannot_be_merged":
+                    raise MergeBlocked(
+                        f"GitLab MR #{number} merge_status={ms}: não mergeável"
+                    )
         squash_flag = "true" if merge_method == "squash" else "false"
         rc, out, err = await self._run(
             "api", "-X", "PUT",
@@ -724,12 +808,15 @@ class GitLabForge(ForgeClient):
         normalises here.
         """
         gl_color = color if color.startswith("#") else f"#{color}"
+        # name e color são valores controlados pelo nosso código — -f é seguro.
+        # description é texto livre (pode vir de LABEL_DESCRIPTIONS externo)
+        # → --raw-field para evitar magic type conversion e placeholder replacement.
         rc, _, err = await self._run(
             "api", "-X", "POST",
             f"projects/{self._project_ref}/labels",
             "-f", f"name={name}",
             "-f", f"color={gl_color}",
-            "-f", f"description={description}",
+            "--raw-field", f"description={description}",
         )
         if rc != 0 and "already" not in err.lower() and "has already been taken" not in err.lower():
             logger.debug("ensure_label %s: rc=%d err=%s", name, rc, err.strip()[:200])
@@ -845,15 +932,29 @@ class GitLabForge(ForgeClient):
         return result
 
     def _event_to_comment(self, event: dict, note: dict, *, kind: str) -> CommentRef:
-        """Materialise a :class:`CommentRef` from a GitLab event payload."""
+        """Materialise a :class:`CommentRef` from a GitLab event payload.
+
+        O segmento de URL varia conforme o tipo do noteable:
+        - kind="issue"     → ``/-/issues/<iid>``
+        - kind="pr_review" → ``/-/merge_requests/<iid>``
+        """
         author = (note.get("author") or event.get("author") or {})
-        # Reconstruct the issue web URL from the event target — GitLab events
+        # Reconstruct the target web URL from the event payload — GitLab events
         # do not always carry a fully-formed ``web_url`` for the note.
         target_iid = note.get("noteable_iid") or event.get("target_iid")
-        target_web = note.get("noteable_url") or (
-            f"https://{self._config.host}/{self._config.project_path}/-/issues/{target_iid}"
-            if target_iid else ""
-        )
+        if note.get("noteable_url"):
+            target_web = str(note["noteable_url"])
+        elif target_iid:
+            # Escolhe o segmento correto conforme o tipo do comentário.
+            if kind == "pr_review":
+                segment = f"/-/merge_requests/{target_iid}"
+            else:
+                segment = f"/-/issues/{target_iid}"
+            target_web = (
+                f"https://{self._config.host}/{self._config.project_path}{segment}"
+            )
+        else:
+            target_web = ""
         return CommentRef(
             comment_id=int(note.get("id") or event.get("target_id") or 0),
             body=str(note.get("body") or ""),
