@@ -7,6 +7,16 @@ naquela largura. Mesmo terminal redimensionado, novos renders preservavam o
 tamanho antigo. O fix: trocar o desenho manual por `Panel`/`Rule` do Rich,
 que consultam `console.width` lazy em cada render.
 
+Bug visual reportado pós-PR #312: ``Panel(...)`` default (``expand=True``)
+fazia a caixa esticar pela largura inteira do terminal, parecendo "bordas
+soltas" e cores quebradas em terminais largos. Fix complementar (após
+#307): trocar para ``Panel.fit(...)`` (``expand=False``) — caixa COMPACTA
+dimensionada ao conteúdo, mas ainda adaptativa: terminais menores que o
+conteúdo (ex.: 30 cols) fazem o Rich clampar a caixa e o texto reflowar
+naturalmente. A regra estrutural (proibido ``inner_w = max(len(...))``)
+continua valendo: largura do conteúdo emerge do próprio conteúdo, não de
+``len(string)`` hardcoded.
+
 Limitação fundamental NÃO testada aqui (porque é inevitável): conteúdo já
 commitado ao scrollback não reflowa. Esses testes cobrem apenas o
 comportamento de NOVOS renders.
@@ -61,15 +71,20 @@ def _panel_borders(output: str) -> tuple[str, str]:
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("width", [20, 30, 40, 60, 80, 100, 120, 160, 200])
-def test_show_welcome_box_adapts_to_console_width(width: int) -> None:
-    """A caixa `╔══╗` do welcome usa a largura do console em cada render.
+@pytest.mark.parametrize("width", [80, 100, 120, 160, 200])
+def test_show_welcome_box_is_compact_on_wide_terminals(width: int) -> None:
+    """A caixa `╔══╗` do welcome NÃO ocupa a largura inteira em terminais largos.
 
-    Antes do fix da issue #307, a caixa ficava travada em ~48 chars (o
-    `len()` do maior label) independentemente da largura do terminal.
-    Larguras extremas (20, 30) também são incluídas para garantir que
-    o texto interno quebra naturalmente sem crash — a caixa em si
-    ainda assume a largura disponível, e o conteúdo refluí dentro.
+    Bug visual pós-PR #312: ``Panel(...)`` (default ``expand=True``) fazia
+    a caixa esticar pra largura total do terminal — em terminais largos
+    o look ficava "solto" e quebrado. Fix: ``Panel.fit(...)`` produz uma
+    caixa COMPACTA dimensionada ao conteúdo, igual ao desenho manual
+    antigo (~48 chars), mas com largura ainda determinada lazy pelo
+    Rich (sem ``len(string)`` literal).
+
+    Topo e fundo devem ter o MESMO tamanho (caixa balanceada) e ser
+    estritamente menores que a largura do console (look compacto). O
+    tamanho exato emerge do conteúdo, mas em geral cabe em ~50 chars.
     """
     ui = _make_ui(width=width)
     ui.show_welcome()
@@ -77,13 +92,38 @@ def test_show_welcome_box_adapts_to_console_width(width: int) -> None:
 
     box_top, box_bot = _panel_borders(output)
 
-    # Topo e fundo devem ter exatamente a largura do console
-    # (Panel default usa a largura total disponível).
-    assert len(box_top) == width, (
-        f"box top has len={len(box_top)} for console width={width}: {box_top!r}"
+    # Topo e fundo balanceados (caixa fechada nas 4 quinas).
+    assert len(box_top) == len(box_bot), (
+        f"box assimétrica: top={len(box_top)} bot={len(box_bot)}"
     )
-    assert len(box_bot) == width, (
-        f"box bottom has len={len(box_bot)} for console width={width}: {box_bot!r}"
+    # E estritamente menor que a largura do console — compacto.
+    assert len(box_top) < width, (
+        f"caixa de largura {len(box_top)} ocupou TODO o console (w={width}); "
+        f"deveria ser compacta (Panel.fit). Linha: {box_top!r}"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("width", [30, 40])
+def test_show_welcome_box_clamps_to_narrow_terminal(width: int) -> None:
+    """Em terminais MAIS estreitos que o conteúdo, a caixa encolhe para
+    caber sem estourar.
+
+    ``Panel.fit`` ainda consulta ``console.width`` no render — quando o
+    terminal é estreito demais para a largura natural do conteúdo, Rich
+    clampa a caixa à largura do terminal e o texto reflow internamente.
+    Garantia: nenhuma linha ultrapassa ``width``.
+    """
+    ui = _make_ui(width=width)
+    ui.show_welcome()
+    output = ui.console.file.getvalue()
+
+    box_top, box_bot = _panel_borders(output)
+    assert len(box_top) <= width, (
+        f"caixa estourou: top={len(box_top)} > width={width}"
+    )
+    assert len(box_bot) <= width, (
+        f"caixa estourou: bot={len(box_bot)} > width={width}"
     )
 
 
@@ -104,16 +144,27 @@ def test_show_welcome_uses_double_box_style() -> None:
 
 
 @pytest.mark.unit
-def test_show_welcome_does_not_use_text_derived_width() -> None:
-    """A largura da caixa NÃO deve depender do comprimento das strings exibidas.
+def test_show_welcome_box_is_not_full_terminal_width_when_room_for_compact() -> None:
+    """A caixa compacta (``Panel.fit``) NÃO ocupa a largura inteira do
+    terminal quando ele é mais largo que o conteúdo.
 
-    Renderizamos com um modelo muito longo e um curto na mesma largura de
-    console e validamos que o topo do box tem o mesmo tamanho (= console.width).
+    Substitui o teste antigo ``test_show_welcome_does_not_use_text_derived_width``
+    que assumia ``Panel`` expansível (full-width). Agora o contrato é o
+    inverso: a caixa fica compacta em terminais largos, e cresce/encolhe
+    com o conteúdo — mas a regra estrutural (proibido literal
+    ``inner_w = max(len(...))``) continua respeitada pelo uso de
+    ``Panel.fit`` em vez de cálculo manual.
+
+    Verificações:
+    - Caixa < largura do console (não estica).
+    - Conteúdo mais longo produz caixa proporcionalmente maior — não
+      por mágica de ``len()`` mas porque o Rich mede o renderable e
+      ``expand=False`` significa "use a medida natural".
     """
-    short = _make_ui(width=120, default_model="x:short")
+    short = _make_ui(width=200, default_model="x:short")
     short.show_welcome()
     long_ = _make_ui(
-        width=120,
+        width=200,
         default_model="anthropic:claude-opus-4-7-with-a-deliberately-very-long-suffix",
     )
     long_.show_welcome()
@@ -121,8 +172,11 @@ def test_show_welcome_does_not_use_text_derived_width() -> None:
     short_top, _ = _panel_borders(short.console.file.getvalue())
     long_top, _ = _panel_borders(long_.console.file.getvalue())
 
-    # Mesma largura de console → mesma largura de box, independente do texto.
-    assert len(short_top) == len(long_top) == 120
+    # Ambas COMPACTAS (estritamente menores que o console de 200 cols).
+    assert len(short_top) < 200
+    assert len(long_top) < 200
+    # E a caixa do modelo longo é >= que a do curto (conteúdo dimensiona).
+    assert len(long_top) >= len(short_top)
 
 
 @pytest.mark.unit
