@@ -357,9 +357,21 @@ class GitLabForge(ForgeClient):
         if not isinstance(users, list) or not users:
             logger.warning("assign_issue: user %r not found", login)
             return
-        user_id = users[0].get("id")
-        if not user_id:
+        user_id_raw = users[0].get("id")
+        if not user_id_raw:
             logger.warning("assign_issue: user %r has no id in payload", login)
+            return
+        # Defesa em profundidade: GitLab REST retorna ``id`` como int, mas
+        # interpolar direto na URL sem cast aceita strings arbitrárias se o
+        # payload for adulterado por proxy/MITM. ``int()`` força coerção
+        # numérica e falha cedo se o servidor mandar lixo.
+        try:
+            user_id = int(user_id_raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "assign_issue: user %r tem id não-numérico %r — rejeitando",
+                login, user_id_raw,
+            )
             return
         # IMPORTANTE: glab/GitLab rejeita ``-f assignee_ids[]=N`` para PUT —
         # o GitLab REST espera o array em query string (``?assignee_ids[]=N``),

@@ -159,14 +159,25 @@ class WorktreeManager:
                     )
         except BaseException:
             # Rollback do ``copytree``. ``BaseException`` (não só ``Exception``)
-            # para também limpar em ``CancelledError`` / ``KeyboardInterrupt`` —
-            # o rollback é re-raised abaixo, então a semântica não muda.
+            # para também limpar em ``CancelledError`` / ``KeyboardInterrupt``.
+            # ``shield`` protege o rmtree do mesmo cancel que disparou o
+            # rollback — sem ele, em CancelledError o ``await`` re-dispara o
+            # cancel antes do rmtree completar, deixando worktree parcial no
+            # disco e anulando o rollback. Re-raise abaixo preserva a semântica.
             logger.warning(
                 "create_branch_worktree falhou após copytree; removendo "
                 "worktree parcial em %s para evitar reuso silenciosamente quebrado",
                 target,
             )
-            await asyncio.to_thread(shutil.rmtree, target, ignore_errors=True)
+            try:
+                await asyncio.shield(
+                    asyncio.to_thread(shutil.rmtree, target, ignore_errors=True)
+                )
+            except asyncio.CancelledError:
+                # Cleanup foi interrompido de novo — última tentativa
+                # síncrona em best-effort (o shield já protegeu o awaitable
+                # principal; este é o caso patológico de cancel duplo).
+                shutil.rmtree(target, ignore_errors=True)
             raise
         return Worktree(path=target, branch=branch, base_repo=self.base_repo)
 

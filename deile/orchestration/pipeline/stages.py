@@ -1078,6 +1078,16 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
     # silencioso onde nem o worker timeout (10min) nem o TCP keepalive
     # disparam: o gather inteiro travaria, segurando o stop_event do monitor.
     # Pilar 03 §1 — toda I/O externa precisa de teto explícito de tempo.
+    #
+    # LIMITAÇÃO conhecida (PR #297 review iter 2): quando o cap dispara, o
+    # ``await`` é cancelado client-side mas o worker continua processando
+    # server-side até completar — não há endpoint DELETE /v1/tasks/<id> hoje.
+    # Risco residual: worker pode abrir PR DEPOIS que o monitor já marcou
+    # a issue como falha. Mitigação operacional: o finalizador checa
+    # ground-truth (PR existe / branch tem commits) ANTES de declarar
+    # resultado, então o próximo tick reconcilia a issue (não é silenciosa-
+    # mente perdida — pior caso é re-tentativa duplicada, capturada pela
+    # idempotência de label ``~workflow:em_pr``).
     _DISPATCH_HARD_CAP_S = 3 * 60 * 60
     try:
         outcomes = await asyncio.wait_for(
@@ -1090,7 +1100,8 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
     except asyncio.TimeoutError:
         logger.error(
             "implement gather() excedeu o cap de %ds com %d targets; abortando o "
-            "batch (cada target será re-tentado no próximo tick via resume)",
+            "batch client-side (worker pode continuar — sem cancel explícito; "
+            "próximo tick reconcilia via ground-truth)",
             _DISPATCH_HARD_CAP_S, len(claimed),
         )
         outcomes = [

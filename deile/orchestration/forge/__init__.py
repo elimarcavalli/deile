@@ -120,8 +120,10 @@ class ForgeRouter:
         rules in :func:`build_forge_config` decide.
         """
         if env is None:
-            import os
-            env = os.environ
+            # Pilar 03 §7 — config-centralizado. ``_settings_as_env`` projeta os
+            # campos forge_* do Settings singleton de volta no shape DEILE_*.
+            from deile.orchestration.forge.detection import _settings_as_env
+            env = _settings_as_env()
         if url and not project_path:
             parsed = parse_forge_url(url, **declared_hosts(env))
             if parsed is None:

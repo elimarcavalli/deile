@@ -278,6 +278,16 @@ class GitHubForge(ForgeClient):
         """
         if not login:
             return
+        # Defesa simétrica à ``list_prs_with_review_requests``: ``login`` é
+        # interpolado abaixo no valor de ``-f assignees[]=…``. Embora ``-f``
+        # do gh seja form-encoded (mais seguro que jq), validamos pelo mesmo
+        # alfabeto de usernames do GitHub para fechar o invariante.
+        if not _GH_LOGIN_RE.fullmatch(login):
+            logger.warning(
+                "assign_issue #%d: login %r não é um GitHub username válido "
+                "(alnum/hyphen, 1-39 chars) — rejeitando", number, login,
+            )
+            return
         rc, _, err = await self._run(
             "api", "-X", "POST", f"repos/{self.repo}/issues/{number}/assignees",
             "-f", f"assignees[]={login}",

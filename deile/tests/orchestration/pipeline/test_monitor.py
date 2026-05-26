@@ -649,6 +649,7 @@ class TestForgeErrorCounter:
     def test_gh_errors_alias_reads_forge_errors(self):
         """``gh_errors`` deve retornar o valor de ``forge_errors``."""
         import warnings
+
         from deile.orchestration.pipeline.monitor import _Stats
         s = _Stats()
         s.forge_errors = 3
@@ -662,6 +663,7 @@ class TestForgeErrorCounter:
     def test_gh_errors_alias_emits_deprecation_warning(self):
         """Ler ``gh_errors`` deve emitir DeprecationWarning."""
         import warnings
+
         from deile.orchestration.pipeline.monitor import _Stats
         s = _Stats()
         with warnings.catch_warnings(record=True) as w:

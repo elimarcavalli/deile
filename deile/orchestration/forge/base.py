@@ -167,11 +167,17 @@ class MergeBlockedByPipeline(MergeBlocked):
 # Project path validation regexes — defence in depth against shell metachars,
 # whitespace and path traversal. GitHub is ``owner/repo`` (exactly two
 # segments); GitLab supports nested groups (``group/sub*/project`` — 2+
-# segments). Both reject ``..`` e qualquer caractere fora do alfabeto
-# documentado para identificadores de projeto. Cada segmento precisa começar
-# por alnum ou ``_`` — GitHub/GitLab rejeitam segmentos com leading ``.``/``-``
-# (ex.: ``.foo/bar``, ``-x/y``).
-_SEG = r"[A-Za-z0-9_][A-Za-z0-9._-]*"
+# segments). Cada segmento precisa:
+# - começar por alnum ou ``_`` (rejeita ``.foo/bar``, ``-x/y``);
+# - terminar por alnum ou ``_`` (rejeita ``foo./bar``, ``x-/y``);
+# - usar apenas alnum/dot/underscore/hyphen no meio;
+# - ter no máximo ``_SEG_MAX_LEN`` (100) caracteres — fecha invariante de
+#   path length anti-DoS na composição de URLs REST. GitHub limita org/repo
+#   a 39+100 e GitLab a 255 por segmento; 100 é o teto conservador para
+#   ambos enquanto deixa folga para o padrão ``owner/sub-pkg-name``.
+_SEG_MAX_LEN = 100
+# ``_SEG``: single char (alnum/_) OU alnum/_ + … + alnum/_ até _SEG_MAX_LEN.
+_SEG = rf"[A-Za-z0-9_](?:[A-Za-z0-9._-]{{0,{_SEG_MAX_LEN - 2}}}[A-Za-z0-9_])?"
 _GH_REPO_RE = re.compile(rf"\A{_SEG}/{_SEG}\Z")
 _GL_PROJECT_RE = re.compile(rf"\A{_SEG}(?:/{_SEG})+\Z")
 

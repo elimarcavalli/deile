@@ -50,8 +50,15 @@ def _settings_as_env() -> Mapping[str, str]:
     try:
         from deile.config.settings import get_settings
         s = get_settings()
-    except Exception:  # pragma: no cover — defensive: settings not loaded yet
+    except Exception as exc:  # pragma: no cover — defensive: settings not loaded yet
+        # Pilar 03 §6: logamos o motivo do fallback para diagnose de bootstrap
+        # quebrado (ex.: dependência circular, YAML malformado).
         import os
+        logger.debug(
+            "_settings_as_env: get_settings() falhou (%s) — fallback "
+            "lendo %d env vars conhecidas direto de os.environ",
+            exc, 4,
+        )
         return {
             "DEILE_FORGE_KIND": os.environ.get("DEILE_FORGE_KIND", ""),
             "DEILE_GITHUB_HOST": os.environ.get("DEILE_GITHUB_HOST", ""),

@@ -23,7 +23,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-
 from google.genai._api_client import BaseApiClient
 
 # Trigger the patch install (idempotent — already done if gemini_provider was

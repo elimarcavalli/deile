@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from deile.orchestration.forge import (CommentRef, IssueRef, MentionTrigger,
                                        PrRef, compute_batch_id_for_number)
 

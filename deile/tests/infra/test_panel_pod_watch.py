@@ -30,7 +30,6 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
 
 import _panel as panel  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # _open_path_in_editor — ordem de preferência e fallbacks
 # ---------------------------------------------------------------------------

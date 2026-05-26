@@ -658,8 +658,25 @@ def is_claude_mode(dispatch_mode: Optional[str]) -> bool:
 
     Handles ``None``, empty, whitespace, and case variations uniformly so callers
     don't reproduce the ``(mode or "claude").strip().lower() in (...)`` idiom.
+
+    **Validação consistente com :func:`build_implementer`** (PR review iter 2):
+    um valor não-vazio fora dos aliases conhecidos dispara :class:`ValueError`,
+    em vez de retornar ``False`` silenciosamente (que faria a montagem da
+    :class:`PipelineConfig` aplicar worker-semantics ANTES do erro real,
+    expondo flags de configuração para um modo inexistente).
     """
-    return (dispatch_mode or "claude").strip().lower() in CLAUDE_ALIASES
+    if not dispatch_mode or not dispatch_mode.strip():
+        return True
+    mode = dispatch_mode.strip().lower()
+    if mode in CLAUDE_ALIASES:
+        return True
+    if mode in WORKER_ALIASES:
+        return False
+    raise ValueError(
+        f"unknown pipeline dispatch_mode {dispatch_mode!r}; "
+        f"expected one of {sorted(WORKER_ALIASES | CLAUDE_ALIASES)} "
+        "(set DEILE_PIPELINE_DISPATCH_MODE explicitly)"
+    )
 
 
 def build_implementer(
