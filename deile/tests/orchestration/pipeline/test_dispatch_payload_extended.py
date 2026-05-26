@@ -108,3 +108,68 @@ def test_valid_stages_accepted(stage):
     """Cada stage de PIPELINE_STAGES é aceito."""
     p = DispatchPayload(brief="x", channel_id="c", stage=stage)
     assert p.stage == stage
+
+
+def test_build_dispatch_payload_forwards_new_fields():
+    """build_dispatch_payload helper deve aceitar e forwardar os 4 campos novos.
+
+    A helper retorna ``Dict[str, Any]`` (wire-format direto), então os campos
+    são consultados via chaves de dict, não atributos — alinhado com o caller
+    que serializa o dict via ``json.dumps`` ao POST /v1/dispatch.
+    """
+    from deile.infrastructure.deile_worker_client import build_dispatch_payload
+
+    p = build_dispatch_payload(
+        brief="test brief",
+        channel_id="auto/issue-309",
+        preferred_model="anthropic:claude-opus-4-7",
+        stage="implement",
+        action_kind="implement",
+        issue_number=309,
+        branch="auto/issue-309",
+    )
+    assert p["stage"] == "implement"
+    assert p["action_kind"] == "implement"
+    assert p["issue_number"] == 309
+    assert p["branch"] == "auto/issue-309"
+    assert p["preferred_model"] == "anthropic:claude-opus-4-7"
+    # Campos antigos preservados (regression guard).
+    assert p["brief"] == "test brief"
+    assert p["channel_id"] == "auto/issue-309"
+
+
+def test_build_dispatch_payload_omits_unset_new_fields():
+    """Sem os 4 fields novos, helper produz payload backward-compat.
+
+    Mesmo critério do ``preferred_model``: chaves opcionais ausentes não
+    aparecem no payload, garantindo que worker antigo não receba campos
+    desconhecidos.
+    """
+    from deile.infrastructure.deile_worker_client import build_dispatch_payload
+
+    p = build_dispatch_payload(
+        brief="test brief",
+        channel_id="auto/issue-309",
+    )
+    assert "stage" not in p
+    assert "action_kind" not in p
+    assert "issue_number" not in p
+    assert "branch" not in p
+
+
+def test_build_dispatch_payload_omits_when_explicit_none():
+    """Passar ``None`` explicitamente equivale ao default — chave dropada."""
+    from deile.infrastructure.deile_worker_client import build_dispatch_payload
+
+    p = build_dispatch_payload(
+        brief="x",
+        channel_id="c",
+        stage=None,
+        action_kind=None,
+        issue_number=None,
+        branch=None,
+    )
+    assert "stage" not in p
+    assert "action_kind" not in p
+    assert "issue_number" not in p
+    assert "branch" not in p

@@ -28,6 +28,7 @@ from pydantic import (BaseModel, Field, ValidationError, ValidationInfo,
                       field_validator)
 
 from deile.core.exceptions import DEILEError
+from deile.orchestration.pipeline.dispatch_resolver import PIPELINE_STAGES
 
 logger = logging.getLogger(__name__)
 
@@ -171,19 +172,17 @@ class DispatchPayload(BaseModel):
     def _validate_stage(cls, v: Optional[str]) -> Optional[str]:
         """Reject unknown stages at the wire boundary (issue #309 fase 2).
 
-        Importado lazy pra evitar ciclo de import (este módulo de
-        infraestrutura é importado cedo no bootstrap, antes do pacote
-        :mod:`deile.orchestration.pipeline`). ``None``/empty/whitespace
-        colapsam pra ``None`` (sem override de contexto de pipeline).
+        ``PIPELINE_STAGES`` é importado no topo do módulo:
+        :mod:`deile.orchestration.pipeline.dispatch_resolver` só depende da
+        stdlib (``os`` / ``typing``), então não há ciclo de import.
+        ``None``/empty/whitespace colapsam pra ``None`` (sem override de
+        contexto de pipeline).
         """
         if v is None:
             return None
         stripped = v.strip()
         if not stripped:
             return None
-        # Lazy import — quebra ciclo potencial.
-        from deile.orchestration.pipeline.dispatch_resolver import \
-            PIPELINE_STAGES
         if stripped not in PIPELINE_STAGES:
             raise ValueError(
                 f"invalid stage {stripped!r}; expected one of {PIPELINE_STAGES}"
@@ -254,6 +253,16 @@ def build_dispatch_payload(
     attachments: Optional[List[Dict[str, Any]]] = None,
     history: Optional[str] = None,
     preferred_model: Optional[str] = None,
+    # --- Pipeline context (issue #309 fase 2) -------------------------------
+    # Todos opcionais e adicionados ao FINAL para preservar a ordem dos kwargs
+    # existentes (callers que dependem da assinatura por posição continuam
+    # funcionando). Quando ``None`` (o default), a chave é dropada do payload
+    # — mesma disciplina dos campos opcionais antigos — para garantir
+    # backward compat com worker antigo que não conhece estes campos.
+    stage: Optional[str] = None,
+    action_kind: Optional[str] = None,
+    issue_number: Optional[int] = None,
+    branch: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Assemble the JSON body POSTed to ``POST /v1/dispatch``.
 
@@ -266,6 +275,12 @@ def build_dispatch_payload(
     pipeline uses to dispatch each stage to a different LLM; tool / CLI
     callers leave it ``None`` and the worker resolves the model from its own
     ``DEILE_PREFERRED_MODEL`` / ``settings.preferred_model``.
+
+    ``stage`` / ``action_kind`` / ``issue_number`` / ``branch`` (issue #309
+    fase 2) carregam o contexto do pipeline para telemetry / log correlation
+    no worker. São opcionais e omitidos do wire quando ``None`` — workers
+    antigos que não conhecem estes campos continuam funcionando porque o
+    cliente serializa via ``model_dump(exclude_none=True)``.
     """
     payload: Dict[str, Any] = {
         "brief": brief,
@@ -281,6 +296,17 @@ def build_dispatch_payload(
         payload["history"] = str(history)
     if preferred_model:
         payload["preferred_model"] = str(preferred_model)
+    if stage:
+        payload["stage"] = str(stage)
+    if action_kind:
+        payload["action_kind"] = str(action_kind)
+    if issue_number is not None:
+        # ``issue_number`` é ``int``: ``if issue_number`` dropa 0
+        # (não-issue válida, mas mesmo assim distinguir é correto).
+        # Pydantic já valida ``ge=1`` na chegada, então 0 é rejeitado lá.
+        payload["issue_number"] = int(issue_number)
+    if branch:
+        payload["branch"] = str(branch)
     return payload
 
 
