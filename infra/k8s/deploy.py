@@ -1004,27 +1004,85 @@ def _run_action(namespace: str, action: str, args: dict) -> int:
 
 
 def cmd_menu(args: dict, preset_ns: Optional[str] = None) -> int:
-    """Menu interativo: detecta o estado, pergunta o alvo e a ação."""
+    """Menu interativo: detecta o estado, pergunta o alvo e a ação.
+
+    Suporta multi-namespace (issue #297): quando há mais de um namespace
+    DEILE no cluster — coexistência GH + GL paralelos — o menu lista cada
+    um com seu estado e pede ao operador qual será o alvo. O NS escolhido
+    é propagado por ``args["k8s_namespace"]`` em todas as ações
+    subsequentes (status / logs / restart / panel / ...).
+    """
     if not sys.stdin.isatty():
         ui.warn("sem terminal interativo — mostrando a ajuda.")
         return cmd_help(args)
     ui.header("deploy.py — deilebot / DEILE")
-    k8s_label = _k8s_state_label(_ns(args))
+
+    # Detecta namespaces DEILE no cluster (label
+    # ``app.kubernetes.io/managed-by=deile`` + fallback por pods).
+    # Import lazy: ``_panel_data`` puxa providers Rich/etc. desnecessários
+    # para callers que invocam o ``deploy.py`` apenas via subcomando.
+    from _panel_data import discover_deile_namespaces  # noqa: PLC0415
+    detected_ns = discover_deile_namespaces() if _kubectl() is not None else []
+
+    # Se uma flag global ``--namespace``/``-n`` foi passada, ela tem
+    # precedência sobre a detecção (operador já declarou).
+    explicit_ns = args.get("k8s_namespace")
+
+    # Estado por NS — uma chamada ``_k8s_state_label`` por namespace
+    # detectado (~50 ms cada via ``kubectl get pods --no-headers``).
+    if detected_ns:
+        ns_labels = [(ns, _k8s_state_label(ns)) for ns in detected_ns]
+    else:
+        # Cluster sem nenhum NS DEILE: mostra apenas o default para
+        # operador rodar ``k8s up`` (que provisiona-do-zero).
+        ns_labels = [(_ns(args), _k8s_state_label(_ns(args)))]
+
     _, local_detail = LocalService(ROOT).status()
     ui.section("Estado atual")
-    ui.info(f"k8s:   {k8s_label}")
+    for ns, label in ns_labels:
+        marker = " ←" if explicit_ns == ns else ""
+        ui.info(f"k8s:   {label}{marker}")
     ui.info(f"local: {local_detail}")
 
     namespace = preset_ns
     if namespace is None:
+        # Mostra apenas {k8s, local}; se houver múltiplos NS k8s, faz um
+        # segundo prompt para escolher qual NS depois que o operador
+        # confirmou "k8s".
+        k8s_summary = (
+            f"{len(detected_ns)} ns DEILE detectados"
+            if len(detected_ns) > 1
+            else (ns_labels[0][1] if ns_labels else "kubectl indisponível")
+        )
         namespace = ui.choose("Qual alvo?", [
-            ("k8s", k8s_label),
+            ("k8s", k8s_summary),
             ("local", local_detail),
         ])
+
+    # Se o alvo é k8s e há múltiplos NS detectados (e nenhum foi declarado
+    # explicitamente), pergunta qual usar. Caso contrário, propaga o NS já
+    # resolvido por ``_ns(args)`` (flag global / env / default).
+    if namespace == "k8s":
+        if explicit_ns:
+            args["k8s_namespace"] = explicit_ns
+        elif len(detected_ns) > 1:
+            ui.section("Namespace k8s")
+            chosen_ns = ui.choose(
+                "Qual namespace?",
+                [(ns, label) for ns, label in ns_labels],
+            )
+            args["k8s_namespace"] = chosen_ns
+        elif len(detected_ns) == 1:
+            args["k8s_namespace"] = detected_ns[0]
+        # Se 0 NS detectados, ``args["k8s_namespace"]`` permanece ``None``
+        # e ``_ns(args)`` cai no default. Ações como ``up`` ou ``setup``
+        # ainda funcionam (criam o NS).
+
     actions = _K8S_ACTIONS if namespace == "k8s" else _LOCAL_ACTIONS
     # `clone` precisa de argumento — fora do menu.
     menu_actions = [(a, d) for a, d in actions if a != "clone"]
-    ui.section(f"Ações — {namespace}")
+    ns_suffix = f" (ns={args.get('k8s_namespace') or _ns(args)})" if namespace == "k8s" else ""
+    ui.section(f"Ações — {namespace}{ns_suffix}")
     action = ui.choose("Qual ação?", menu_actions)
     return _run_action(namespace, action, args)
 

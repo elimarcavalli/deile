@@ -224,13 +224,25 @@ class RuntimeContext:
 
     @classmethod
     def detect(cls, **overrides: Any) -> "RuntimeContext":
-        """Constrói o contexto, resolvendo defaults quando overrides faltam."""
-        repo = overrides.pop("repo", None) or _detect_default_repo()
+        """Constrói o contexto, resolvendo defaults quando overrides faltam.
+
+        Ordem de resolução do ``repo``:
+
+        1. ``overrides["repo"]`` — operador declarou no CLI.
+        2. ``_read_forge_repo(ns)`` — ConfigMap ``deile-runtime-config`` do
+           NS escolhido. **Sempre** consultado quando há kubectl e o NS
+           difere do default; permite o painel apontar ao repo correto
+           num NS GitLab (``_detect_default_repo`` só conhece github.com).
+        3. ``_detect_default_repo()`` — ``git remote get-url origin``
+           local; fallback histórico.
+        """
+        ns_choice = overrides.get("namespace") or NS
+        repo = overrides.pop("repo", None) or ""
+        if not repo:
+            repo = _read_forge_repo(ns_choice) or _detect_default_repo()
         # Tenta ler o forge_kind do cluster se não foi passado como override.
         if "forge_kind" not in overrides:
-            overrides["forge_kind"] = _read_forge_kind(
-                overrides.get("namespace") or NS,
-            )
+            overrides["forge_kind"] = _read_forge_kind(ns_choice)
         return cls(repo=repo, **overrides)
 
     @property
@@ -263,6 +275,41 @@ class RuntimeContext:
         if ll:
             return "local only"
         return "vazio (sem fontes)"
+
+
+def _read_forge_repo(namespace: str) -> str:
+    """Lê ``pipeline.repo`` do ConfigMap ``deile-runtime-config`` do NS.
+
+    Quando o painel aponta para um namespace que carrega forge GitLab, o
+    repo certo a listar **não** é o ``owner/repo`` do clone local (que
+    ``_detect_default_repo()`` retornaria via ``gh repo view``) — é o repo
+    que o pipeline está orquestrando, declarado no ConfigMap layered.
+    Falha graciosamente para ``""`` (callsite cai no default).
+    """
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return ""
+    try:
+        out = subprocess.run(
+            [kubectl, "-n", namespace, "get", "configmap",
+             "deile-runtime-config",
+             "-o", "jsonpath={.data.pipeline-settings\\.json}"],
+            capture_output=True, text=True, timeout=3.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if out.returncode != 0 or not out.stdout.strip():
+        return ""
+    try:
+        payload = json.loads(out.stdout)
+    except json.JSONDecodeError:
+        return ""
+    pipeline = payload.get("pipeline") if isinstance(payload, dict) else None
+    if isinstance(pipeline, dict):
+        repo = pipeline.get("repo")
+        if isinstance(repo, str) and repo.strip():
+            return repo.strip()
+    return ""
 
 
 def _read_forge_kind(namespace: str) -> str:
@@ -986,15 +1033,31 @@ def _derive_review(labels: List[str]) -> str:
 
 
 class GitHubProvider:
-    """Lista issues e PRs abertos via `gh api`."""
+    """Lista issues e PRs/MRs abertos via ``gh api`` (GitHub) ou ``glab api`` (GitLab).
+
+    Forge-aware (PR #297): quando ``forge_kind="gitlab"`` é informado, o
+    provider chama ``glab api`` no endpoint REST v4 equivalente; quando
+    ``"github"`` (default), mantém o comportamento legado via ``gh api``.
+    O nome da classe continua ``GitHubProvider`` para compat — o renderer
+    do painel não distingue PR de MR (ambos viram :class:`GitHubIssue`
+    com ``is_pr=True``).
+    """
 
     PER_PAGE = 100
 
-    def __init__(self, repo: str = REPO_DEFAULT, ttl_s: float = 10.0):
-        # 10s: `gh api --paginate` custa rate-limit (5000/h auth = 1.4/s);
-        # 10s = 360/h, folga confortável.
+    def __init__(
+        self,
+        repo: str = REPO_DEFAULT,
+        ttl_s: float = 10.0,
+        *,
+        forge_kind: str = "",
+    ):
+        # 10s: rate-limit auth-only no GH (5000/h = 1.4/s) e GL (600/min/usuário
+        # autenticado em gitlab.com). 10s/ciclo = 360/h, folga em ambos.
         self._gh = gh_bin()
+        self._glab = shutil.which("glab")
         self._repo = repo
+        self._forge_kind = (forge_kind or "").strip().lower()
         self._cache: Cache[GitHubSnapshot] = Cache(
             ttl_s, self._fetch, fallback=GitHubSnapshot(),
         )
@@ -1007,6 +1070,15 @@ class GitHubProvider:
         return self._cache.get(force)
 
     def _fetch(self) -> GitHubSnapshot:
+        # Roteia pelo forge_kind detectado — evita o pior caso anterior em que
+        # o painel apontado a um NS GitLab tentava ``gh api`` num repo
+        # inexistente no GitHub, esperando o timeout de 15s a cada refresh
+        # (cache TTL de 10s causava ciclos consecutivos travando a UX).
+        if self._forge_kind == "gitlab":
+            return self._fetch_gitlab()
+        return self._fetch_github()
+
+    def _fetch_github(self) -> GitHubSnapshot:
         if self._gh is None:
             raise RuntimeError("gh não encontrado")
         # /issues retorna issues + PRs no mesmo array; PR tem chave 'pull_request'.
@@ -1022,8 +1094,6 @@ class GitHubProvider:
         if data is None:
             raise RuntimeError("gh api issues falhou")
         snap = GitHubSnapshot()
-        # `--paginate` pode retornar lista única ou várias páginas concatenadas
-        # (lista de listas) dependendo do gh — normaliza.
         items: List[Dict[str, Any]] = []
         if isinstance(data, list):
             for chunk in data:
@@ -1053,6 +1123,70 @@ class GitHubProvider:
                 snap.prs.append(obj)
             else:
                 snap.issues.append(obj)
+        snap.issues.sort(key=lambda x: x.number, reverse=True)
+        snap.prs.sort(key=lambda x: x.number, reverse=True)
+        return snap
+
+    def _fetch_gitlab(self) -> GitHubSnapshot:
+        """Lista issues + MRs do projeto GitLab via ``glab api``.
+
+        Duas chamadas paralelas via subprocess síncrono: ``projects/<encoded>/
+        issues?state=opened`` e ``projects/<encoded>/merge_requests?state=opened``.
+        Forçamos ``-X GET`` porque ``glab api -f`` (PR #297 / E2E descobriu)
+        muda o método HTTP para POST quando há parâmetros, gerando HTTP 400.
+        """
+        if self._glab is None:
+            raise RuntimeError("glab não encontrado")
+        from urllib.parse import quote as _quote
+        encoded = _quote(self._repo, safe="")
+
+        def _list(endpoint_suffix: str) -> List[Dict[str, Any]]:
+            data = _capture_json(
+                [self._glab, "api", "-X", "GET",
+                 f"projects/{encoded}/{endpoint_suffix}",
+                 "-f", "state=opened",
+                 "-f", f"per_page={self.PER_PAGE}"],
+                timeout=15.0,
+            )
+            if data is None:
+                raise RuntimeError(f"glab api {endpoint_suffix} falhou")
+            return data if isinstance(data, list) else []
+
+        snap = GitHubSnapshot()
+        for it in _list("issues"):
+            labels = it.get("labels") or []
+            if labels and isinstance(labels[0], dict):
+                labels = [lbl.get("name", "") for lbl in labels]
+            assignees = [a.get("username", "")
+                         for a in it.get("assignees", []) or []]
+            iid = int(it.get("iid") or it.get("number") or 0)
+            snap.issues.append(GitHubIssue(
+                number=iid, title=it.get("title", ""), is_pr=False,
+                state="open", labels=list(labels), assignees=assignees,
+                updated_at=_parse_k8s_ts(it.get("updated_at")),
+                url=it.get("web_url", ""),
+                workflow=_derive_workflow(list(labels)),
+                review=_derive_review(list(labels)),
+                blocked=_BLOCKED_LABEL in labels,
+                refining=any(lbl == "refinar" for lbl in labels),
+            ))
+        for it in _list("merge_requests"):
+            labels = it.get("labels") or []
+            if labels and isinstance(labels[0], dict):
+                labels = [lbl.get("name", "") for lbl in labels]
+            assignees = [a.get("username", "")
+                         for a in it.get("assignees", []) or []]
+            iid = int(it.get("iid") or it.get("number") or 0)
+            snap.prs.append(GitHubIssue(
+                number=iid, title=it.get("title", ""), is_pr=True,
+                state="open", labels=list(labels), assignees=assignees,
+                updated_at=_parse_k8s_ts(it.get("updated_at")),
+                url=it.get("web_url", ""),
+                workflow=_derive_workflow(list(labels)),
+                review=_derive_review(list(labels)),
+                blocked=_BLOCKED_LABEL in labels,
+                refining=any(lbl == "refinar" for lbl in labels),
+            ))
         snap.issues.sort(key=lambda x: x.number, reverse=True)
         snap.prs.sort(key=lambda x: x.number, reverse=True)
         return snap
@@ -2940,7 +3074,14 @@ class PanelData:
                                    enabled=k8s_on),
             # `context.repo` pode vir vazio se o operador construiu o
             # ctx direto (sem `.detect()`) — resolve no fallback global.
-            github=GitHubProvider(repo=context.repo or REPO_DEFAULT),
+            # forge_kind do contexto (lido do deployment do NS) decide se
+            # o provider usa ``gh api`` (GitHub) ou ``glab api`` (GitLab) —
+            # evita o timeout de 15s/refresh do PR #297 quando um NS GitLab
+            # tentava listar issues via ``gh`` num repo inexistente.
+            github=GitHubProvider(
+                repo=context.repo or REPO_DEFAULT,
+                forge_kind=context.forge_kind,
+            ),
             costs=CostsProvider(db_path=context.usage_db),
             models=ModelsProvider(),
             current_model=CurrentModelProvider(
