@@ -743,21 +743,6 @@ def is_claude_mode(dispatch_mode: Optional[str]) -> bool:
     )
 
 
-def _build_claude_implementer_with_warning() -> "ClaudeImplementer":
-    """Factory single-callsite para :class:`ClaudeImplementer` — emite o
-    aviso de PATH-missing antes de instanciar.
-
-    Toda construção de ``ClaudeImplementer`` em ``build_implementer`` passa
-    por aqui — evita que um caminho novo (ex.: alias acrescentado em
-    ``CLAUDE_ALIASES``) esqueça do warning. Esta função é um wrapper de
-    duas etapas (aviso + instanciação), NÃO um alias: o detector de PATH
-    fica em :func:`_warn_if_claude_unavailable` (continua público para
-    callers externos que queiram checar sem instanciar).
-    """
-    _warn_if_claude_unavailable()
-    return ClaudeImplementer()
-
-
 def _warn_if_claude_unavailable() -> None:
     """Aviso de boot quando dispatch_mode=claude mas ``claude`` não tá no PATH.
 
@@ -791,34 +776,59 @@ def _warn_if_claude_unavailable() -> None:
 
 
 def build_implementer(
-    dispatch_mode: str, *, worker_client: Optional[object] = None
+    dispatch_mode: Optional[str] = None,
+    *,
+    worker_client: Optional[object] = None,
 ) -> PipelineImplementer:
-    """Return the implementer strategy selected by ``dispatch_mode``.
+    """Return the pipeline implementer.
 
-    ``deile_worker`` (and aliases) → :class:`WorkerImplementer`;
-    ``claude`` (and aliases) → :class:`ClaudeImplementer`. An empty/None mode
-    defaults to Claude (legacy behaviour). Um valor **não-vazio** que não
-    case com nenhum alias dispara :class:`ValueError` em vez de cair em
-    Claude silenciosamente — um typo em ``DEILE_PIPELINE_DISPATCH_MODE``
-    (ex.: ``deile_woker``) usaria a chave da Anthropic e queimaria budget
-    sem o operador perceber. Fail-fast surface o erro imediatamente.
+    A partir da fase 2 da issue #309, a factory **sempre retorna
+    :class:`WorkerImplementer`** — a decisão de qual worker (``deile-worker``
+    vs ``claude-worker``) recebe o POST ``/v1/dispatch`` é feita
+    per-stage em runtime via :mod:`deile.orchestration.pipeline.dispatch_resolver`,
+    NÃO mais na construção do implementer.
 
-    Issue #309: a construção de ``ClaudeImplementer`` é centralizada em
-    :func:`_build_claude_implementer_with_warning`, que emite o warning de
-    boot quando o binary ``claude`` não está no PATH — todo caminho novo
-    para ClaudeImplementer aqui herda o aviso sem precisar repetir a
-    chamada.
+    O parâmetro ``dispatch_mode`` é mantido apenas para compat com chamadas
+    antigas (``monitor.PipelineMonitor`` ainda passa ``config.dispatch_mode``):
+    valor não-vazio fora dos aliases reconhecidos dispara :class:`ValueError`
+    (fail-fast em typo, ex.: ``deile_woker``). Valor vazio/``None`` é o
+    default normal — nada é validado.
+
+    A classe :class:`ClaudeImplementer` (subprocess ``claude -p`` local)
+    continua existindo, mas só para callers locais fora do cluster — use
+    :func:`get_local_claude_implementer` em vez de ``build_implementer``
+    para esse caso.
+
+    Raises:
+        ValueError: ``dispatch_mode`` não-vazio que não case com nenhum
+            alias canônico nem legacy (validação via
+            :func:`dispatch_resolver.is_valid_dispatcher`).
     """
-    if not dispatch_mode or not dispatch_mode.strip():
-        # Legacy default (vazio/None) — usa Claude.
-        return _build_claude_implementer_with_warning()
-    mode = dispatch_mode.strip().lower()
-    if mode in WORKER_ALIASES:
-        return WorkerImplementer(client=worker_client)
-    if mode in CLAUDE_ALIASES:
-        return _build_claude_implementer_with_warning()
-    raise ValueError(
-        f"unknown pipeline dispatch_mode {dispatch_mode!r}; "
-        f"expected one of {sorted(WORKER_ALIASES | CLAUDE_ALIASES)} "
-        "(set DEILE_PIPELINE_DISPATCH_MODE explicitly)"
-    )
+    if dispatch_mode and dispatch_mode.strip():
+        from deile.orchestration.pipeline.dispatch_resolver import \
+            is_valid_dispatcher  # noqa: PLC0415
+        if not is_valid_dispatcher(dispatch_mode):
+            raise ValueError(
+                f"unknown pipeline dispatch_mode {dispatch_mode!r}; "
+                f"expected one of ('deile-worker', 'claude-worker') "
+                f"or legacy aliases (set DEILE_PIPELINE_DISPATCH_MODE explicitly)"
+            )
+    return WorkerImplementer(client=worker_client)
+
+
+def get_local_claude_implementer() -> "ClaudeImplementer":
+    """Factory exclusiva para construir :class:`ClaudeImplementer` em uso
+    local (deile CLI fora do cluster — Humano rodando ``python3 deile.py``
+    com ``claude -p`` no PATH).
+
+    Emite o aviso de boot quando o binary ``claude`` não está disponível
+    (via :func:`_warn_if_claude_unavailable`) — sem fail-fast, porque o
+    operador pode montar o binary via volume que ``shutil.which`` ainda
+    não enxerga.
+
+    **NÃO usada pelo pipeline em cluster** — esse caminho passa por
+    :func:`build_implementer`, que sempre devolve :class:`WorkerImplementer`
+    (decisão per-stage de endpoint via :mod:`dispatch_resolver`).
+    """
+    _warn_if_claude_unavailable()
+    return ClaudeImplementer()

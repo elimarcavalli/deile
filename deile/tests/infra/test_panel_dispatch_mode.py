@@ -712,17 +712,19 @@ class TestDashboardHotkey:
 
 
 # ---------------------------------------------------------------------------
-# build_implementer claude-binary warning (issue #309)
+# claude-binary warning (issue #309 fase 2)
 # ---------------------------------------------------------------------------
 
 
 class TestBuildImplementerClaudeWarning:
-    """Quando ``dispatch_mode=claude`` mas o binary ``claude`` não está
-    no PATH, ``build_implementer`` deve logar warning (sem fail-fast).
+    """Mudança semântica em #309 fase 2:
 
-    Sem fail-fast porque o operador pode estar montando o binary via volume
-    que ``shutil.which`` ainda não enxerga; a falha real surge no primeiro
-    subprocess.
+    * :func:`build_implementer` **sempre retorna** :class:`WorkerImplementer`
+      — não emite mais warning sobre ``claude`` ausente em PATH (não é mais
+      esse caminho que constrói ``ClaudeImplementer``).
+    * :func:`get_local_claude_implementer` é a única factory que constrói
+      ``ClaudeImplementer`` (uso local fora do cluster — CLI) e mantém o
+      warning de PATH-missing.
 
     Patcha o ``logger.warning`` do módulo implementer diretamente — caplog
     fica frágil sob a suite completa (alguns testes prévios reconfiguram o
@@ -731,11 +733,13 @@ class TestBuildImplementerClaudeWarning:
     """
 
     def test_warning_emitted_when_claude_missing(self):
+        """O warning de claude ausente vive em ``get_local_claude_implementer``,
+        não mais em ``build_implementer`` (que sempre retorna WorkerImplementer)."""
         from deile.orchestration.pipeline import implementer as impl_mod
         with patch.object(impl_mod, "shutil") as mock_shutil, \
              patch.object(impl_mod.logger, "warning") as mock_warn:
             mock_shutil.which.return_value = None
-            implementer = impl_mod.build_implementer("claude")
+            implementer = impl_mod.get_local_claude_implementer()
         assert isinstance(implementer, impl_mod.ClaudeImplementer)
         # Pelo menos uma chamada de warning com a mensagem certa.
         assert mock_warn.called
@@ -748,11 +752,12 @@ class TestBuildImplementerClaudeWarning:
                 or "enoent" in msg)
 
     def test_no_warning_when_claude_present(self):
+        """``get_local_claude_implementer`` com ``claude`` no PATH não warna."""
         from deile.orchestration.pipeline import implementer as impl_mod
         with patch.object(impl_mod, "shutil") as mock_shutil, \
              patch.object(impl_mod.logger, "warning") as mock_warn:
             mock_shutil.which.return_value = "/usr/local/bin/claude"
-            implementer = impl_mod.build_implementer("claude")
+            implementer = impl_mod.get_local_claude_implementer()
         assert isinstance(implementer, impl_mod.ClaudeImplementer)
         # Sem warning sobre claude ausente — pode haver outro warning legítimo,
         # mas nenhum com "não encontrado".
@@ -763,30 +768,42 @@ class TestBuildImplementerClaudeWarning:
                 and ("não encontrado" in text or "not found" in text)
             )
 
-    def test_no_warning_when_worker_mode(self):
-        """Modo worker não usa claude — não faz sentido emitir warning,
-        mesmo que o binary esteja ausente."""
+    def test_build_implementer_does_not_warn_about_claude(self):
+        """``build_implementer`` não constrói mais ``ClaudeImplementer`` —
+        portanto não pode mais emitir o warning de PATH-missing, qualquer que
+        seja o ``dispatch_mode``. Substitui o antigo
+        ``test_no_warning_when_worker_mode``."""
+        from deile.orchestration.pipeline import implementer as impl_mod
+        for mode in ("deile_worker", "claude", "claude-worker", "", None):
+            with patch.object(impl_mod, "shutil") as mock_shutil, \
+                 patch.object(impl_mod.logger, "warning") as mock_warn:
+                mock_shutil.which.return_value = None
+                impl = impl_mod.build_implementer(mode)
+            # build_implementer SEMPRE retorna WorkerImplementer agora.
+            assert isinstance(impl, impl_mod.WorkerImplementer), (
+                f"mode={mode!r}: esperado WorkerImplementer, got {type(impl).__name__}"
+            )
+            # E nenhum warning sobre claude ausente.
+            for call in mock_warn.call_args_list:
+                text = (call[0][0] if call[0] else "").lower()
+                assert not (
+                    "claude" in text
+                    and ("não encontrado" in text or "not found" in text)
+                ), f"mode={mode!r} emitiu warning inesperado: {text}"
+
+    def test_empty_dispatch_mode_returns_worker_implementer(self):
+        """Empty/None dispatch_mode → WorkerImplementer (sem warning)."""
         from deile.orchestration.pipeline import implementer as impl_mod
         with patch.object(impl_mod, "shutil") as mock_shutil, \
              patch.object(impl_mod.logger, "warning") as mock_warn:
             mock_shutil.which.return_value = None
-            impl_mod.build_implementer("deile_worker")
-        # Worker mode não tem caminho que chame _warn_if_claude_unavailable.
+            implementer = impl_mod.build_implementer("")
+        assert isinstance(implementer, impl_mod.WorkerImplementer)
+        # Nenhum warning sobre claude ausente — build_implementer não
+        # constrói mais ClaudeImplementer.
         for call in mock_warn.call_args_list:
             text = (call[0][0] if call[0] else "").lower()
             assert not (
                 "claude" in text
                 and ("não encontrado" in text or "not found" in text)
             )
-
-    def test_empty_dispatch_mode_defaults_claude_and_warns_if_missing(self):
-        """Empty/None dispatch_mode legado cai em ClaudeImplementer — mesmo
-        warning aplica."""
-        from deile.orchestration.pipeline import implementer as impl_mod
-        with patch.object(impl_mod, "shutil") as mock_shutil, \
-             patch.object(impl_mod.logger, "warning") as mock_warn:
-            mock_shutil.which.return_value = None
-            implementer = impl_mod.build_implementer("")
-        assert isinstance(implementer, impl_mod.ClaudeImplementer)
-        assert mock_warn.called
-        assert "claude" in mock_warn.call_args[0][0].lower()
