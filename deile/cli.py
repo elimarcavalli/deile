@@ -422,8 +422,11 @@ class _DeileCLI:
         persist_session(self.default_session, user_input)
 
     def _rollback_history(self, baseline_len: int) -> None:
-        from .cli_session_helpers import rollback_history
-        rollback_history(self.default_session, baseline_len)
+        # Renomeado conceitualmente para "marcar como cancelado" — não
+        # apaga mais a entrada user. Mantém + adiciona placeholder
+        # assistant. Ver ``mark_turn_cancelled`` em cli_session_helpers.
+        from .cli_session_helpers import mark_turn_cancelled
+        mark_turn_cancelled(self.default_session, baseline_len)
 
     def _check_session_switch(self) -> None:
         from .cli_session_helpers import check_session_switch

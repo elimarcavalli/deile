@@ -51,13 +51,11 @@ class RewindCommand(DirectCommand):
         ]
 
         if not user_entries:
+            # Histórico vazio — fecha silenciosamente, igual ao cancel via ESC.
             return CommandResult(
                 success=True,
-                content=Panel(
-                    Text("Nenhuma mensagem no histórico desta conversa.", style="dim"),
-                    title="Rewind",
-                    border_style="yellow",
-                ),
+                content="",
+                metadata={"suppress_response_display": True},
             )
 
         selector = get_default_selector()

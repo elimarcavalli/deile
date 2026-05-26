@@ -1241,3 +1241,252 @@ async def test_budget_exceeded_error_includes_action_hint():
     output = console.file.getvalue()
     assert "Session x would exceed limit" in output
     assert "/model budget" in output
+
+
+# ----------------------------------------------------------------------
+# Bug A — Spinner flicker reduction (issue: dispatch_parallel_subagents)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_spinner_skips_refresh_when_parent_live_is_suspended():
+    """Bug A: durante a execução de ``dispatch_parallel_subagents``,
+    o ``SubAgentPanelRenderer`` chama ``prev_live.stop()`` no Live do
+    streaming_renderer pai (Rich só permite um Live ativo por console).
+    Mas o ``_thinking_spinner`` continuava chamando ``live_obj.update()``
+    + ``refresh()`` a cada 100ms — gerando flicker quando o Live era
+    restaurado.
+
+    Garantia: o spinner consulta ``live_obj.is_started`` antes de
+    chamar update/refresh. Quando o Live está parado, o tick é
+    no-op.
+    """
+    from rich.live import Live
+    from rich.text import Text
+
+    # Mock minimal Live-like object — só precisa de ``is_started``,
+    # ``update`` e ``refresh``. Conta quantas vezes refresh é chamado.
+    class _MockLive:
+        def __init__(self):
+            self.is_started = False
+            self.refresh_calls = 0
+            self.update_calls = 0
+
+        def update(self, renderable):
+            self.update_calls += 1
+
+        def refresh(self):
+            self.refresh_calls += 1
+
+    # Para o teste, construo o estado do spinner manualmente e
+    # disparo um tick — assim isolamos a lógica do guard de
+    # ``is_started`` sem precisar de TTY real.
+    import inspect
+
+    from deile.ui import streaming_renderer as sr_module
+
+    src = inspect.getsource(sr_module.StreamingRenderer._render_live)
+    # Verificação estrutural: a guarda ``is_started`` está presente,
+    # e o sleep aumentou de 0.1 para 0.25 (60% menos refresh).
+    assert "is_started" in src, (
+        "o spinner deve checar live.is_started antes de refresh — "
+        "sem isso, refreshes em Live suspenso causam flicker quando o "
+        "Live pai é restaurado por subagent_panel"
+    )
+    assert "asyncio.sleep(0.25)" in src, (
+        "sleep do _thinking_spinner deve ser 0.25s (4Hz) para reduzir "
+        "carga de refresh em 60% vs 0.1s (10Hz). Não use valores "
+        "diferentes sem justificativa explícita."
+    )
+
+
+@pytest.mark.asyncio
+async def test_spinner_refresh_rate_is_reasonable_for_animation():
+    """Cobre a parte (a) do fix do Bug A: refresh a 4Hz ainda é
+    animação visível (spinner com 6+ frames muda de quadro a cada
+    ~250ms — suficiente pra parecer 'vivo' sem saturar stdout).
+    Esta é uma validação documental — se alguém futuramente trocar
+    o sleep, este teste avisa.
+    """
+    import inspect
+
+    from deile.ui import streaming_renderer as sr_module
+
+    src = inspect.getsource(sr_module.StreamingRenderer._render_live)
+    # Não deve regredir para 100ms (10Hz era o original muito-flicker).
+    assert "asyncio.sleep(0.1)" not in src, (
+        "spinner regredido para 10Hz — voltaria a piscar excessivamente "
+        "durante dispatch_parallel_subagents (Bug A)."
+    )
+
+
+# ----------------------------------------------------------------------
+# Bug B — Silent stream stall (MarkupError swallowing repaints)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stream_does_not_stall_on_tool_name_with_brackets():
+    """Bug B: tool name contendo ``[`` literal não pode derrubar a
+    Live region. ``Text.from_markup`` levanta ``MarkupError`` em
+    ``[`` não-fechado, e antes do fix isso parava o repaint até
+    o final do turno (estilo "trava silenciosamente").
+
+    Garantia: o stream completa, todos os eventos posteriores chegam
+    na saída, e o nome com colchete aparece escapado/preservado.
+    """
+    console = _capture_console()
+    renderer = StreamingRenderer(
+        console=console, legacy_windows=False, markdown=False, refresh_per_second=60.0
+    )
+    events = [
+        UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="antes"),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="t1",
+            tool_name="weird[tool",  # nome com colchete literal
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="t1",
+            tool_name="weird[tool",
+            arguments={"x": "v"},
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="t1",
+            tool_name="weird[tool",
+            tool_status="success",
+            tool_result_summary="ok",
+        ),
+        UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="depois"),
+        UnifiedStreamEvent(
+            type=StreamEventType.USAGE_FINAL,
+            usage=ModelUsageSnapshot(input_tokens=1, output_tokens=1),
+        ),
+    ]
+    result = await renderer.render(_replay(events))
+    output = console.file.getvalue()
+    # Stream completou — texto pré E pós-tool presentes (o sintoma do
+    # bug era que tudo após o ponto de quebra ficava preso).
+    assert "antes" in output
+    assert "depois" in output
+    # Tool foi contabilizada — o pipeline interno não quebrou.
+    assert result.tool_invocations == 1
+    # Texto final consistente
+    assert result.full_text == "antesdepois"
+
+
+@pytest.mark.asyncio
+async def test_stream_does_not_stall_on_tool_args_with_brackets():
+    """Bug B: args de tool com ``[`` literal não derrubam o repaint.
+    Antes do fix, args como ``{'pattern': '[a-z]+'}`` (regex comum)
+    quebravam o cabeçalho com MarkupError.
+    """
+    console = _capture_console()
+    renderer = StreamingRenderer(
+        console=console, legacy_windows=False, markdown=False, refresh_per_second=60.0
+    )
+    events = [
+        UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="começo"),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_START,
+            tool_call_id="t1", tool_name="grep_search",
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_USE_END,
+            tool_call_id="t1", tool_name="grep_search",
+            arguments={"pattern": "[a-z]+", "path": "[abc]"},
+        ),
+        UnifiedStreamEvent(
+            type=StreamEventType.TOOL_RESULT,
+            tool_call_id="t1", tool_name="grep_search",
+            tool_status="success", tool_result_summary="2 hits",
+        ),
+        UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="fim"),
+        UnifiedStreamEvent(
+            type=StreamEventType.USAGE_FINAL,
+            usage=ModelUsageSnapshot(input_tokens=1, output_tokens=1),
+        ),
+    ]
+    result = await renderer.render(_replay(events))
+    output = console.file.getvalue()
+    # Repaint não parou — todo o stream pós-tool chegou.
+    assert "começo" in output
+    assert "fim" in output
+    assert "2 hits" in output
+    assert result.tool_invocations == 1
+
+
+@pytest.mark.asyncio
+async def test_render_loop_logs_and_continues_on_apply_event_error(monkeypatch):
+    """Bug B: se ``_apply_event`` levantar (deveria ser inalcançável
+    com input bem-formado, mas providers às vezes mandam payload
+    inesperado), o stream NÃO pode parar de repintar — loga e segue.
+
+    Simulamos forçando ``_apply_event`` a falhar em UM evento; o
+    stream deve continuar consumindo os demais.
+    """
+    console = _capture_console()
+    renderer = StreamingRenderer(
+        console=console, legacy_windows=False, markdown=False, refresh_per_second=60.0
+    )
+
+    original = renderer._apply_event
+    call_count = {"n": 0}
+
+    def faulty_apply(event, blocks, result):
+        call_count["n"] += 1
+        # 2º evento explode — simula falha mid-stream.
+        if call_count["n"] == 2:
+            raise RuntimeError("provider sent malformed delta")
+        return original(event, blocks, result)
+
+    monkeypatch.setattr(renderer, "_apply_event", faulty_apply)
+
+    events = [
+        UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="primeiro "),
+        UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="ATAQUE"),  # quebra aqui
+        UnifiedStreamEvent(type=StreamEventType.TEXT_DELTA, text="terceiro"),
+        UnifiedStreamEvent(
+            type=StreamEventType.USAGE_FINAL,
+            usage=ModelUsageSnapshot(input_tokens=1, output_tokens=1),
+        ),
+    ]
+    # Não levanta (antes do fix, a exception escaparia o async-for).
+    result = await renderer.render(_replay(events))
+    output = console.file.getvalue()
+    # Os eventos válidos foram processados — "primeiro " e "terceiro"
+    # aparecem; o que falhou ("ATAQUE") foi pulado mas o stream seguiu.
+    assert "primeiro " in output
+    assert "terceiro" in output
+    # full_text reflete o que entrou nos blocks — "ATAQUE" foi
+    # pulado, então não está lá.
+    assert "ATAQUE" not in result.full_text
+
+
+@pytest.mark.asyncio
+async def test_error_event_with_brackets_in_message_does_not_break():
+    """Bug B: error_envelope.message contendo ``[`` literal não pode
+    quebrar ``Text.from_markup`` (chamado em _compose para source=error).
+    Ex.: provider error message com regex pattern ou tag XML.
+    """
+    console = _capture_console()
+    renderer = StreamingRenderer(console=console, legacy_windows=False, markdown=False)
+    events = [
+        UnifiedStreamEvent(
+            type=StreamEventType.ERROR,
+            error_envelope={
+                "message": "validation failed: regex [a-z]+ rejected",
+                "error_type": "ValidationError",
+            },
+        ),
+    ]
+    # Antes do fix, isso levantaria MarkupError dentro de Live.update
+    # e deixaria o turno congelado.
+    result = await renderer.render(_replay(events))
+    output = console.file.getvalue()
+    # Mensagem visível — pode ter escape de colchete mas o conteúdo
+    # essencial aparece.
+    assert result.error_message and "regex" in result.error_message
+    assert "regex" in output

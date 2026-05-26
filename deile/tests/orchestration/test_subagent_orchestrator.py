@@ -602,6 +602,117 @@ async def test_cancellation_reason_user_esc():
     assert "ESC" in md or "esc" in md.lower()
 
 
+async def test_orphan_thread_after_cancel_does_not_leak_to_real_stdout():
+    """Issue #297-bookkeeping (orphan-thread leak): quando o budget estoura,
+    o ``asyncio.Task`` que aguarda ``asyncio.to_thread(execute_sync)`` recebe
+    cancel — mas a thread do executor continua viva (não há API asyncio para
+    cancelá-la). Em produção, ``bash_tool`` no meio de ``subprocess.run``
+    longo pode ainda imprimir ``print(data, ...)`` *DEPOIS* que o orquestrador
+    restaurou ``sys.stdout`` — vazando direto no terminal por cima do painel.
+
+    Esta fix detecta threads novas vivas no encerramento e mantém o
+    :class:`SwitchableStream` instalado apontando para :class:`_DiscardSink`
+    — orfãs continuam imprimindo no wrapper, mas o byte é silenciosamente
+    descartado em vez de chegar ao terminal real.
+    """
+    import io
+    import sys as _sys
+    import threading
+    import time as _time
+
+    class _ToThreadRunner:
+        async def run_one(self, state, *, on_event):
+            state.status = "running"
+            state.started_at = 0.0
+            def _blocking_with_prints():
+                # Simula execute_sync de bash_tool — print() em sequência.
+                # ``time.sleep`` aqui é intencional (não respondem a cancel
+                # do asyncio Task, replicando o caso real).
+                for i in range(6):
+                    _time.sleep(0.15)
+                    print(f"ORPHAN_LEAK_{i}", flush=True)
+            try:
+                await asyncio.to_thread(_blocking_with_prints)
+            except asyncio.CancelledError:
+                pass
+            state.status = "ok"
+            state.finished_at = 0.05
+
+    # Instala um StringIO no lugar do terminal — qualquer write que escapar
+    # do redirect do orquestrador acaba aqui (proxy do "terminal real").
+    real_stdout_proxy = io.StringIO()
+    saved = _sys.stdout
+    _sys.stdout = real_stdout_proxy
+
+    # Budget pequeno → força timeout no orquestrador → cancel das runner tasks
+    # → thread orfã continua viva imprimindo.
+    import deile.orchestration.subagents.orchestrator as oc_mod
+    orig_get_budget = oc_mod._get_budget_s
+    oc_mod._get_budget_s = lambda: 0.3
+    try:
+        orch = SubAgentOrchestrator(_ToThreadRunner(), max_parallel=1, capture_output=True)
+        await orch.run(_mk_tasks(1))
+        # Aguarda thread orfã terminar de imprimir todos os 6 prints.
+        _time.sleep(1.5)
+    finally:
+        oc_mod._get_budget_s = orig_get_budget
+        _sys.stdout = saved
+
+    # CONTRATO: ``ORPHAN_LEAK_<N>`` NUNCA pode aparecer no terminal real.
+    leaked = real_stdout_proxy.getvalue()
+    assert "ORPHAN_LEAK" not in leaked, (
+        f"Orphan thread leaked to real terminal: {leaked!r}"
+    )
+
+
+async def test_capture_output_keeps_switchable_when_orphan_detected():
+    """Quando o orquestrador detecta orfãs no encerramento, NÃO reatribui
+    ``sys.stdout = prev_stdout`` — em vez disso mantém o
+    :class:`SwitchableStream` instalado com target=``_DiscardSink``. Garante
+    que escritas futuras de orfãs (que ainda têm a referência ao
+    ``SwitchableStream`` capturada pelo lookup dinâmico de ``print``) cheguem
+    ao sink, não ao terminal.
+    """
+    import io
+    import sys as _sys
+    import time as _time
+    from deile.orchestration.subagents._capture import SwitchableStream
+
+    class _ToThreadOrphanRunner:
+        async def run_one(self, state, *, on_event):
+            state.status = "running"
+            state.started_at = 0.0
+            def _orphan():
+                _time.sleep(0.5)  # ainda vivo no encerramento
+            try:
+                await asyncio.to_thread(_orphan)
+            except asyncio.CancelledError:
+                pass
+            state.status = "ok"
+            state.finished_at = 0.05
+
+    saved = _sys.stdout
+    _sys.stdout = io.StringIO()
+    import deile.orchestration.subagents.orchestrator as oc_mod
+    orig_get_budget = oc_mod._get_budget_s
+    oc_mod._get_budget_s = lambda: 0.1
+    try:
+        orch = SubAgentOrchestrator(
+            _ToThreadOrphanRunner(), max_parallel=1, capture_output=True,
+        )
+        await orch.run(_mk_tasks(1))
+        # No encerramento, ``sys.stdout`` permanece o SwitchableStream porque
+        # orfãs foram detectadas.
+        assert isinstance(_sys.stdout, SwitchableStream), (
+            f"esperava SwitchableStream em sys.stdout, vi {type(_sys.stdout).__name__}"
+        )
+        # Aguarda orfã terminar antes de finalizar o teste.
+        _time.sleep(1.0)
+    finally:
+        oc_mod._get_budget_s = orig_get_budget
+        _sys.stdout = saved
+
+
 async def test_cancellation_reason_field_in_dataclass_signature():
     """NT5: o campo ``cancellation_reason`` aceita os literais válidos e
     default None — garante que SubAgentResult não regrediu a assinatura.
