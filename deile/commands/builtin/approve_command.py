@@ -90,12 +90,12 @@ class ApproveCommand(DirectCommand):
         
         # Create table of pending approvals
         table = Table(title=f"⚠️ Pending Approvals ({len(pending_approvals)} steps)", show_header=True, header_style="bold yellow")
-        table.add_column("Plan", style="cyan", width=12)
-        table.add_column("Step ID", style="yellow", width=10)
-        table.add_column("Tool", style="green", width=12)
-        table.add_column("Description", style="white", width=30)
-        table.add_column("Risk", style="red", width=8)
-        table.add_column("Action", style="blue", width=20)
+        table.add_column("Plan", style="cyan")
+        table.add_column("Step ID", style="yellow")
+        table.add_column("Tool", style="green")
+        table.add_column("Description", style="white")
+        table.add_column("Risk", style="red")
+        table.add_column("Action", style="blue")
         
         for approval in pending_approvals:
             risk_emoji = _risk_emoji(approval['risk_level'])

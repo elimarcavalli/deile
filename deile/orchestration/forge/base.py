@@ -394,6 +394,28 @@ class ForgeClient(ABC):
     async def list_recently_merged_prs(self, *, limit: int = 20) -> List[PrRef]: ...
 
     @abstractmethod
+    async def list_prs_updated_since(
+        self, since_iso: str, *, limit: int = 100,
+    ) -> List[dict]:
+        """PRs/MRs updated since *since_iso* (ISO-8601 UTC) — any state.
+
+        Used by the ``/standup`` slash command. Returns plain dicts with the
+        normalised standup shape: ``{number, title, state, author, url,
+        updated_at}``. Implementations log and return ``[]`` on CLI errors
+        — never raise (slash command should not crash on a transient hiccup).
+        """
+
+    @abstractmethod
+    async def list_issues_updated_since(
+        self, since_iso: str, *, limit: int = 100,
+    ) -> List[dict]:
+        """Issues updated since *since_iso* (ISO-8601 UTC) — any state.
+
+        Companion of :meth:`list_prs_updated_since` for ``/standup``. Same
+        contract (normalised dict shape, fail-soft).
+        """
+
+    @abstractmethod
     async def pr_reviewer_still_requested(self, number: int, login: str) -> bool: ...
 
     @abstractmethod

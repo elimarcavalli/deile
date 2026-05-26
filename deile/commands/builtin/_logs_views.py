@@ -115,9 +115,9 @@ def build_overview_table(
 ) -> Table:
     """Render the metric table for ``/logs`` (no args)."""
     table = Table(title="📊 Visão Geral dos Logs de Auditoria", show_header=False)
-    table.add_column("Métrica", style="bold cyan", width=22)
-    table.add_column("Valor", style="green", width=15)
-    table.add_column("Detalhes", style="dim", width=30)
+    table.add_column("Métrica", style="bold cyan")
+    table.add_column("Valor", style="green")
+    table.add_column("Detalhes", style="dim")
 
     table.add_row("Total de Eventos", str(total_events), "Na sessão atual")
     table.add_row("ID da Sessão", session_id, "Identificador da sessão atual")
@@ -146,12 +146,12 @@ def build_activity_table(recent_events: Sequence[AuditEvent]) -> Table | Panel:
         show_header=True,
         header_style="bold yellow",
     )
-    table.add_column("Hora", style="cyan", width=8)
-    table.add_column("Tipo", style="yellow", width=12)
-    table.add_column("Ator", style="green", width=12)
-    table.add_column("Ação", style="white", width=10)
-    table.add_column("Recurso", style="blue", width=20)
-    table.add_column("Resultado", style="red", width=10)
+    table.add_column("Hora", style="cyan")
+    table.add_column("Tipo", style="yellow")
+    table.add_column("Ator", style="green")
+    table.add_column("Ação", style="white")
+    table.add_column("Recurso", style="blue")
+    table.add_column("Resultado", style="red")
 
     now = datetime.now()
     for event in recent_events[:10]:
@@ -277,13 +277,13 @@ def build_recent_logs_table(events: Sequence[AuditEvent]) -> Table:
         show_header=True,
         header_style="bold cyan",
     )
-    table.add_column("Data/Hora", style="dim", width=19)
-    table.add_column("Severidade", style="red", width=12)
-    table.add_column("Tipo", style="yellow", width=15)
-    table.add_column("Ator", style="green", width=12)
-    table.add_column("Ação", style="white", width=10)
-    table.add_column("Recurso", style="blue", width=25)
-    table.add_column("Resultado", style="magenta", width=10)
+    table.add_column("Data/Hora", style="dim")
+    table.add_column("Severidade", style="red")
+    table.add_column("Tipo", style="yellow")
+    table.add_column("Ator", style="green")
+    table.add_column("Ação", style="white")
+    table.add_column("Recurso", style="blue")
+    table.add_column("Resultado", style="magenta")
 
     for event in events:
         emoji = _SEVERITY_EMOJI.get(event.severity, "📝")
@@ -324,11 +324,11 @@ def build_security_table(events: Sequence[AuditEvent]) -> Table:
         show_header=True,
         header_style="bold red",
     )
-    table.add_column("Hora", style="cyan", width=8)
-    table.add_column("Evento", style="red", width=15)
-    table.add_column("Severidade", style="yellow", width=10)
-    table.add_column("Detalhes", style="white", width=40)
-    table.add_column("Ação Tomada", style="green", width=15)
+    table.add_column("Hora", style="cyan")
+    table.add_column("Evento", style="red")
+    table.add_column("Severidade", style="yellow")
+    table.add_column("Detalhes", style="white")
+    table.add_column("Ação Tomada", style="green")
 
     now = datetime.now()
     for event in events[:50]:
@@ -401,12 +401,12 @@ def build_permission_table(events: Sequence[AuditEvent]) -> Table:
         show_header=True,
         header_style="bold blue",
     )
-    table.add_column("Hora", style="dim", width=8)
-    table.add_column("Ferramenta", style="green", width=15)
-    table.add_column("Recurso", style="blue", width=25)
-    table.add_column("Ação", style="white", width=10)
-    table.add_column("Resultado", style="red", width=10)
-    table.add_column("Regra", style="yellow", width=15)
+    table.add_column("Hora", style="dim")
+    table.add_column("Ferramenta", style="green")
+    table.add_column("Recurso", style="blue")
+    table.add_column("Ação", style="white")
+    table.add_column("Resultado", style="red")
+    table.add_column("Regra", style="yellow")
 
     for event in events[:30]:
         time_str = event.timestamp.strftime("%H:%M:%S")
@@ -462,12 +462,12 @@ def build_secret_logs_table(events: Sequence[AuditEvent]) -> Table:
         show_header=True,
         header_style="bold red",
     )
-    table.add_column("Data/Hora", style="dim", width=19)
-    table.add_column("Arquivo", style="blue", width=25)
-    table.add_column("Tipo de Segredo", style="red", width=15)
-    table.add_column("Linha", style="yellow", width=6, justify="center")
-    table.add_column("Confiança", style="green", width=10, justify="center")
-    table.add_column("Ação", style="magenta", width=12)
+    table.add_column("Data/Hora", style="dim")
+    table.add_column("Arquivo", style="blue")
+    table.add_column("Tipo de Segredo", style="red")
+    table.add_column("Linha", style="yellow", justify="center")
+    table.add_column("Confiança", style="green", justify="center")
+    table.add_column("Ação", style="magenta")
 
     for event in sorted(events, key=lambda e: e.timestamp, reverse=True):
         file_path = (
@@ -516,12 +516,12 @@ def build_tool_logs_table(events: Sequence[AuditEvent]) -> Table:
         show_header=True,
         header_style="bold green",
     )
-    table.add_column("Hora", style="dim", width=8)
-    table.add_column("Ferramenta", style="green", width=15)
-    table.add_column("Recurso", style="blue", width=25)
-    table.add_column("Duração", style="yellow", width=10)
-    table.add_column("Cód. Saída", style="cyan", width=10)
-    table.add_column("Resultado", style="red", width=10)
+    table.add_column("Hora", style="dim")
+    table.add_column("Ferramenta", style="green")
+    table.add_column("Recurso", style="blue")
+    table.add_column("Duração", style="yellow")
+    table.add_column("Cód. Saída", style="cyan")
+    table.add_column("Resultado", style="red")
 
     for event in sorted(events, key=lambda e: e.timestamp, reverse=True)[:30]:
         time_str = event.timestamp.strftime("%H:%M:%S")
@@ -559,12 +559,12 @@ def build_plan_logs_table(events: Sequence[AuditEvent]) -> Table:
         show_header=True,
         header_style="bold purple",
     )
-    table.add_column("Hora", style="dim", width=8)
-    table.add_column("ID do Plano", style="purple", width=12)
-    table.add_column("Evento", style="yellow", width=15)
-    table.add_column("Ação", style="white", width=12)
-    table.add_column("Resultado", style="green", width=12)
-    table.add_column("Detalhes", style="blue", width=25)
+    table.add_column("Hora", style="dim")
+    table.add_column("ID do Plano", style="purple")
+    table.add_column("Evento", style="yellow")
+    table.add_column("Ação", style="white")
+    table.add_column("Resultado", style="green")
+    table.add_column("Detalhes", style="blue")
 
     for event in events[:30]:
         time_str = event.timestamp.strftime("%H:%M:%S")
@@ -610,11 +610,11 @@ def build_errors_table(events: Sequence[AuditEvent]) -> Table:
         show_header=True,
         header_style="bold red",
     )
-    table.add_column("Data/Hora", style="dim", width=19)
-    table.add_column("Severidade", style="red", width=12)
-    table.add_column("Tipo", style="yellow", width=15)
-    table.add_column("Ator", style="green", width=12)
-    table.add_column("Detalhes do Erro", style="white", width=30)
+    table.add_column("Data/Hora", style="dim")
+    table.add_column("Severidade", style="red")
+    table.add_column("Tipo", style="yellow")
+    table.add_column("Ator", style="green")
+    table.add_column("Detalhes do Erro", style="white")
 
     for event in events[:30]:
         emoji = _SEVERITY_EMOJI.get(event.severity, "❓")
@@ -636,9 +636,9 @@ def build_errors_table(events: Sequence[AuditEvent]) -> Table:
 
 def build_summary_table(events: Sequence[AuditEvent]) -> Table:
     table = Table(title="📊 Estatísticas Detalhadas de Auditoria", show_header=False)
-    table.add_column("Métrica", style="bold cyan", width=25)
-    table.add_column("Valor", style="green", width=15)
-    table.add_column("Percentual", style="yellow", width=15)
+    table.add_column("Métrica", style="bold cyan")
+    table.add_column("Valor", style="green")
+    table.add_column("Percentual", style="yellow")
 
     total_events = len(events)
 

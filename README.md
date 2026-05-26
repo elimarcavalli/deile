@@ -71,6 +71,243 @@ Documentação completa: [`docs/2026-05-06_PIPELINE-AUTONOMO.md`](docs/2026-05-0
 
 ---
 
+## 🌳 Forge — GitHub & GitLab (issue #297)
+
+O DEILE é **forge-agnóstico**. O mesmo agente, o mesmo pipeline autônomo e os mesmos briefs operam **idênticos** em repos **GitHub** (cloud, GHES) e **GitLab** (cloud, self-hosted). O CLI usado por baixo (`gh` ou `glab`) é detalhe de transporte — você só decide para **onde** o trabalho vai.
+
+### 🎛️ Como decidir qual forge usar
+
+```
+            ┌─────────────────────────────────────┐
+            │ Onde está o repositório do projeto? │
+            └──────────┬──────────────────────────┘
+                       │
+        ┌──────────────┴───────────────┐
+        │                              │
+   github.com                     gitlab.com
+   ou GHES                        ou self-hosted
+        │                              │
+        ▼                              ▼
+   DEILE_FORGE_KIND=github        DEILE_FORGE_KIND=gitlab
+   GITHUB_TOKEN=ghp_…             GITLAB_TOKEN=glpat-…
+   (DEILE_GITHUB_HOST=…)          (DEILE_GITLAB_HOST=…)
+        │                              │
+        └──────────────┬───────────────┘
+                       ▼
+              ✅ Funciona idêntico
+       (mesma máquina de estados, mesmos briefs)
+```
+
+| Cenário | `DEILE_FORGE_KIND` | Hosts | Tokens necessários |
+|---|---|---|---|
+| 🐙 **GitHub cloud** (padrão) | `auto` ou `github` | — (default `github.com`) | `GITHUB_TOKEN` |
+| 🦊 **GitLab cloud** | `gitlab` | — (default `gitlab.com`) | `GITLAB_TOKEN` |
+| 🏢 **GitHub Enterprise Server** | `github` | `DEILE_GITHUB_HOST=ghe.empresa.com` | `GITHUB_TOKEN` (do seu GHES) |
+| 🏠 **GitLab self-hosted** | `gitlab` | `DEILE_GITLAB_HOST=gitlab.empresa.com` | `GITLAB_TOKEN` (do seu GL) |
+| 🌐 **Multi-forge na sessão CLI** | `auto` | ambos hosts declarados | **AMBOS** (`GITHUB_TOKEN` + `GITLAB_TOKEN`) |
+
+### 🔑 Onde obter o token e quais escopos
+
+#### 🐙 GitHub (cloud ou GHES)
+
+1. Acesse: **https://github.com/settings/tokens** (em GHES: `https://<seu-ghes>/settings/tokens`)
+2. Clique em **"Generate new token (classic)"**
+3. Marque os escopos:
+
+| Escopo | Para que serve |
+|---|---|
+| ✅ `repo` (todo) | Ler/escrever issues, PRs, labels, commits |
+| ✅ `workflow` | Pipeline labela PRs e gerencia branches `auto/issue-N` |
+| ⬜ `read:org` | **NÃO marque** — o pipeline foi desenhado pra funcionar sem isso |
+
+4. Copie o token (formato `ghp_…`). **Você só vê uma vez.**
+
+#### 🦊 GitLab (cloud ou self-hosted)
+
+1. Acesse: **https://gitlab.com/-/user_settings/personal_access_tokens** (self-hosted: `https://<seu-gitlab>/-/user_settings/personal_access_tokens`)
+2. Clique em **"Add new token"**, dê um nome (ex.: `deile-pipeline`) e data de expiração
+3. Marque os escopos:
+
+| Escopo | Para que serve |
+|---|---|
+| ✅ `api` | Acesso completo à API (issues, MRs, notes, merge, labels) |
+| ✅ `read_repository` | Clone via HTTPS + leitura de arquivos (templates `.gitlab/issue_templates/`) |
+| ✅ `write_repository` | Push de commits + branches `auto/issue-N` |
+| ⬜ `read_user` / `read_registry` | Não necessários |
+
+4. Copie o token (formato `glpat-…`). **Você só vê uma vez.**
+
+### 🔐 Autenticação git: HTTPS+token vs SSH vs GPG
+
+Para o DEILE em produção (containerizado), a recomendação é **clara**:
+
+| Opção | Recomendação | Por quê |
+|---|---|---|
+| 🟢 **HTTPS + Personal Access Token** | ✅ **USE ISTO** | É o que o `wrapper.py` configura automaticamente; o token vai pro `~/.git-credentials` em mode `0600`; sem prompt interativo; mesmo padrão pra os dois forges; rotação simples (substitui no Secret). |
+| 🟡 **SSH key** | ❌ Evite | Exige montar `~/.ssh/id_*` como Secret separado, `known_hosts` pré-populado, agent socket no Pod — toda essa cerimônia só pra alcançar o mesmo resultado do HTTPS+token. |
+| 🟠 **GPG signing** | ➖ Opcional | É **ortogonal** à autenticação — GPG só assina o conteúdo do commit, não autentica `git push`. Se você quer commits assinados, pode adicionar `signingkey` no `~/.gitconfig` separadamente, mas não substitui o token. Default do DEILE é não assinar. |
+
+> 💡 **TL;DR**: gere um PAT no forge, joga no K8s Secret, esquece. SSH só faz sentido se o seu time TEM uma política que proíbe HTTPS — o que é raro hoje em dia.
+
+### 🪛 Configuração — escolha sua via
+
+#### 🏠 Local (laptop / dev)
+
+```bash
+# 1. Adicione ao seu .env (gitignored):
+DEILE_FORGE_KIND=gitlab                    # ou "github" / "auto"
+DEILE_FORGE_REPO=group/sub/projeto         # owner/repo no GH, group/.../proj no GL
+DEILE_GITLAB_HOST=gitlab.com               # ou seu self-hosted
+GITLAB_TOKEN=glpat-XXXXXXXXXXXXXXXXXXXX    # token gerado acima
+
+# Para multi-forge na sessão CLI, defina TAMBÉM:
+GITHUB_TOKEN=ghp_XXXXXXXXXXXXXXXXXXXXXX
+
+# 2. Rode normalmente
+python3 deile.py
+```
+
+#### ☸️ Kubernetes (deile-pipeline / deile-worker / deile-shell)
+
+```bash
+# 1. Patch no Secret existente (NÃO recrie o Secret inteiro pra preservar o GITHUB_TOKEN/LLM keys):
+GL_PAT='glpat-XXXXXXXXXXXXXXXXXXXX'
+kubectl -n deile patch secret deile-secrets \
+  -p "{\"stringData\":{\"GITLAB_TOKEN\":\"${GL_PAT}\"}}"
+
+# 2. Defina as env vars no Deployment do pipeline:
+kubectl -n deile set env deploy/deile-pipeline \
+  DEILE_FORGE_KIND=gitlab \
+  DEILE_FORGE_REPO=group/sub/projeto \
+  DEILE_GITLAB_HOST=gitlab.com   # (omita se for gitlab.com)
+
+# 3. Reconstrua e reinicie (deploy.py faz tudo idempotente):
+python3 infra/k8s/deploy.py k8s build --restart --yes
+```
+
+### 🔄 Como funciona por dentro (decisão run-time)
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                  Pipeline tick (ou agente CLI)                  │
+└──────────────────────────────┬───────────────────────────────────┘
+                               ▼
+            ┌──────────────────────────────────┐
+            │  build_forge(project_path, env)  │
+            └──────────────┬───────────────────┘
+                           ▼
+       ┌───────────────────────────────────────────┐
+       │  detect_forge_kind() — 3 camadas:         │
+       │  1. DEILE_FORGE_KIND="github"|"gitlab"?   │ ✅ Override explícito
+       │  2. URL host bate "github.com"/"gitlab.com"│ ✅ Detecção por URL
+       │     ou DEILE_*_HOST declarado?            │
+       │  3. project_path 3+ segmentos → GitLab    │ ✅ Heurística de path
+       │     2 segmentos → GitHub (compat)         │
+       └──────────────┬────────────────────────────┘
+                      ▼
+        ┌─────────────────────────────┐
+        │  Resolve ForgeClient:       │
+        │  github → GitHubForge(gh)   │
+        │  gitlab → GitLabForge(glab) │
+        └─────────────┬───────────────┘
+                      ▼
+       ┌─────────────────────────────────┐
+       │ Briefs forge-aware:             │
+       │   {forge_create_pr_cmd}         │ → "gh pr create …" OU "glab mr create …"
+       │   {pr_url_pattern}              │ → "github.com/…/pull/N" OU "gitlab.com/…/-/merge_requests/N"
+       │   {merge_cmd}                   │ → "gh api PUT …" OU "glab api PUT …"
+       └─────────────────────────────────┘
+```
+
+### 🗺️ Mapeamento GitHub ↔ GitLab (vocabulário canônico)
+
+| Conceito interno | GitHub | GitLab |
+|---|---|---|
+| Mudança proposta | **PR** (Pull Request) | **MR** (Merge Request) |
+| Comentário | `comment` | `note` |
+| Thread de review | review comment | discussion |
+| Reviewer | `requested_reviewers[]` | `reviewers[]` |
+| Numeração | `pr.number` | `mr.iid` (interno ao projeto) |
+| URL pública | `/<owner>/<repo>/pull/N` | `/<group>/.../<proj>/-/merge_requests/N` |
+| Templates de issue | `.github/ISSUE_TEMPLATE/*.md` | `.gitlab/issue_templates/*.md` |
+| API base | `api.github.com` (cloud) ou `<host>/api/v3` (GHES) | `<host>/api/v4` |
+| CLI | `gh` | `glab` |
+| Cross-ref de PR/MR | `#N` (mesmo namespace de issue) | `!N` (namespace separado) |
+
+### 🧩 Multi-forge na sessão CLI (modo dual)
+
+Numa mesma sessão `python3 deile.py` ou `deile-shell`, você pode trabalhar com repos GitHub **e** GitLab. O `ForgeRouter` cacheia um cliente por `(host, project)` — você só precisa que **os dois tokens** estejam configurados:
+
+```bash
+export GITHUB_TOKEN=ghp_...
+export GITLAB_TOKEN=glpat-...
+# DEILE_FORGE_KIND fica "auto" (default) — cada URL escolhe seu adapter
+```
+
+> ⚠️ **Pipeline ≠ CLI**: o `deile-pipeline` (autônomo) é **per-repo, per-forge** — uma instância serve UM repo. Para operar GH e GL simultaneamente em modo autônomo, rode **duas instâncias** do pipeline (Decisão #18 — `MonitorIdentity` + shard), cada uma com sua `DEILE_FORGE_REPO`.
+
+### ✅ Garantias
+
+- 🔒 Tokens **nunca** ficam em `/proc/self/environ` — `wrapper.py` move pra `~/.git-credentials` (mode `0600`) + `~/.config/gh/hosts.yml` + `~/.config/glab-cli/config.yml` e remove de `os.environ` antes do agente subir.
+- 🛡️ `secrets_scanner` detecta vazamento de tokens GitHub (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`) **e** GitLab (`glpat-`, `gldt-`, `glptt-`, `glsoat-`).
+- 🔁 **Backwards-compat 100%**: se você já rodava com GitHub, **nada muda** — `DEILE_PIPELINE_REPO` continua aceito como alias, `monitor.github` continua funcionando, `_setup_gh_auth` continua existindo. O `glab` fica dormente até você definir `DEILE_FORGE_KIND=gitlab`.
+
+> 🚫 **Honestidade**: rate-limit sleep ativo e HTTP probe opt-in estão documentados mas **não implementados** nesta release — o cliente lê e propaga erros de rate limit do CLI, mas não dorme até reset automaticamente. Se o piloto GitLab esbarrar no limite (`gitlab.com`: 600 req/min/usuário), abriremos issue derivada. Mitigação imediata: `DEILE_PIPELINE_POLL_INTERVAL` mais conservador.
+
+---
+
+## 🧩 Sub-DEILEs paralelos (decomposição em sessão CLI)
+
+Durante uma conversa interativa, o DEILE pode identificar autonomamente sub-tarefas **independentes e substanciais** dentro do seu pedido e dispará-las em paralelo — cada uma rodando num sub-DEILE com **sessão limpa** (contexto/histórico próprios). Você vê o progresso ao vivo num painel multipanel discreto.
+
+### Quando usar
+
+✅ "Refator módulo A E módulo B (não-acoplados)"  ·  "Gere testes pra X, Y e Z"  ·  "Escreva doc do módulo A e implemente feature em B"
+
+❌ Tarefas sequenciais ("primeiro X, depois Y") · micro-tarefas (<30s cada) · mesmo arquivo
+
+### Como funciona
+
+O LLM principal chama a tool `dispatch_parallel_subagents` com 2-5 sub-tarefas (description + prompt auto-contido + persona/model opcionais). O `SubAgentOrchestrator` dispara em paralelo (semaphore de `subagent_max_parallel`, default 3), respeitando budget global. Cada sub-DEILE roda no chat-with-tools loop direto (skip de autonomous/workflow paths) — então o painel mostra `⚙ bash_execute(...)`, `✓ write_file: 412 bytes`, `✎ texto-em-curso` em tempo real.
+
+```
+🧩 Decomposto em 2 frentes paralelas · 1 ok · 1/2 concluídas · 00:08
+
+╭─ ▶ sub-DEILE #1 · refatorar auth.py ──────────────────────────── 00:08 ──╮
+│ ⚙ bash_execute(pytest deile/tests/auth -q)                               │
+│ ✓ bash_execute: 5 passed in 0.04s                                        │
+│ ✎ aplicando guard clauses (3/5 funções)                                  │
+╰──────────────────────────────────────────────────────────────────────────╯
+
+╭─ ✅ sub-DEILE #2 · doc do módulo X ──────────────────────────────────────╮
+│ ✅ concluído · docs/x.md                                                  │
+╰──────────────────────────────────────────────────────────────────────────╯
+
+(toque 1-9 para focar · ESC: fecha painel)
+```
+
+Teclas: `1`-`9` foca uma frente (ficha completa com prompt, persona, model, task_id, files_touched + tail do stream); `ESC` volta ou fecha. Falha de uma frente NÃO cancela siblings. Stdout dos sub-DEILEs é capturado (não polui o terminal). O resumo final é gravado no histórico — `/resume` reconstrói o painel.
+
+### Runners pluggable
+
+- **`LocalSubAgentRunner`** (default) — in-process via `asyncio.create_task` + `wait FIRST_COMPLETED`. Funciona em qualquer ambiente (laptop, CI, pod), sem depender de infra.
+- **`WorkerSubAgentRunner`** — delega ao `deile-worker` via HTTP (`wait=False` + polling de `GET /v1/progress/{task_id}`). Isolamento real por processo separado. Habilite com `DEILE_SUBAGENT_RUNNER=worker`.
+
+Ambos herdam de `_BaseRunner` (template-method): o ciclo de vida (`running → STARTED → cancel/exception handling → mark_*`) é compartilhado.
+
+### Settings
+
+```bash
+DEILE_SUBAGENT_RUNNER=local|worker          # default: local
+DEILE_SUBAGENT_MAX_PARALLEL=3               # teto de concorrência por chamada
+DEILE_SUBAGENT_BUDGET_S=600                 # teto global de tempo (10min)
+DEILE_SUBAGENT_POLL_INTERVAL_S=0.8          # polling do WorkerSubAgentRunner
+```
+
+Detalhes técnicos completos: Decisão #34 em [`docs/system_design/DECISOES.md`](docs/system_design/DECISOES.md). Issue: [#257](https://github.com/elimarcavalli/deile/issues/257). Demo end-to-end: [`test-your-might/issue-257-demo/`](test-your-might/issue-257-demo/).
+
+---
+
 ## 🚀 Visão geral
 
 DEILE é um **agente de IA autônomo para desenvolvimento de software**, executado diretamente no terminal. Você conversa com ele em linguagem natural — em português ou inglês — e ele lê, escreve e edita arquivos do seu projeto, roda comandos, instala pacotes, executa testes, busca trechos no repositório, planeja tarefas e acompanha custo de uso, tudo dentro do diretório de trabalho atual.
@@ -99,6 +336,7 @@ As ferramentas disponíveis incluem `list_files`, `read_file`, `write_file`, `de
 | 💬 CONVERSA            | Conversa multi-turno com contexto e histórico de sessão.                 |
 | 🖼️ STREAMING UI       | Resposta em streaming com renderização incremental no terminal.          |
 | 🔁 LOOP DE FERRAMENTAS | Function calling iterativo até concluir a tarefa (com limite seguro).    |
+| 🧩 SUB-DEILES PARALELOS | Decompõe pedidos complexos em N sub-DEILEs em paralelo (sessões limpas), com painel multipanel ao vivo + foco por tecla — issue #257. |
 | 🛠️ EDIÇÃO DE CÓDIGO   | Lê, cria, edita, deleta e busca arquivos no repositório.                 |
 | ⚙️ EXECUÇÃO LOCAL      | Executa shell/Python, instala pacotes e roda testes/lint.                |
 | 🌐 ROTEAMENTO LLM      | Roteia entre 4 providers com fallback e seleção por tier.                |
@@ -263,10 +501,12 @@ Tutorial passo-a-passo, troubleshooting, modelo de ameaça e operação:
 | 🔄 STREAMING     | Unificado de eventos          | `deile/core/models/stream_events.py`                                              |
 | 🖼️ RENDERIZAÇÃO | Incremental de Markdown       | `deile/ui/streaming_renderer.py`                                                  |
 | 🔁 LOOP          | Iterativo de function calling | `deile/core/tool_loop_executor.py`                                                |
+| 🧩 SUB-DEILES    | Paralelos em sessão CLI       | `deile/orchestration/subagents/`, `deile/tools/dispatch_parallel_subagents.py`, `deile/ui/subagent_panel.py` |
 | 📨 BARRAMENTO    | Assíncrono de eventos         | `deile/events/event_bus.py`                                                       |
 | 🛠️ REGISTRO     | Extensível de ferramentas     | `deile/tools/registry.py`                                                         |
 | 📜 COMANDOS      | Slash registráveis            | `deile/commands/registry.py`, `commands/builtin/`                                 |
 | 🎭 PERSONAS      | Dinâmicas via YAML+Markdown   | `deile/personas/library/`, `deile/personas/instructions/`                         |
+| 🧩 SKILLS        | MD-driven, hot-reload, 4 triggers, `invoke_skill` tool | `deile/skills/`, `deile/tools/skill_tools.py`              |
 | 🧠 MEMÓRIA       | Quatro camadas                | `deile/memory/*.py`                                                               |
 | 🔒 PERMISSÕES    | Auditoria e scan de segredos  | `deile/security/*.py`                                                             |
 | 💾 PERSISTÊNCIA  | SQLite (tasks + uso)          | `deile/orchestration/sqlite_task_manager.py`, `deile/storage/usage_repository.py` |
@@ -278,7 +518,7 @@ Tutorial passo-a-passo, troubleshooting, modelo de ameaça e operação:
 
 ## 🏗️ Arquitetura e camadas
 
-DEILE segue arquitetura por camadas, com registries para artefatos extensíveis (tools, commands, parsers, personas).
+DEILE segue arquitetura por camadas, com registries para artefatos extensíveis (tools, commands, parsers, personas, skills).
 
 
 | Camada                 | Pacote                             | Responsabilidade                                     |
@@ -368,6 +608,8 @@ Todas em `deile/tools/` e registradas via `register_tool`:
 | `process_tool`         | process_tool.py       | Inspecionar processos                              |
 | `tokenizer`            | tokenizer_tool.py     | Estimar tokens/analisar contexto                   |
 | `slash_command_executor`| slash_command_executor.py | Disparar comandos slash                      |
+| `list_skills`          | skill_tools.py        | Catálogo machine-readable de todas as skills carregadas |
+| `invoke_skill`         | skill_tools.py        | Carrega o body de uma skill por nome (LLM puxa sob demanda) |
 
 ## 📊 Comandos slash
 
@@ -390,6 +632,7 @@ Os comandos slash do DEILE (em `deile/commands/builtin/`):
 /permissions      # Gerenciar permissões
 /plan             # Operar planos de execução
 /run              # Executar run orquestrado
+/skills           # list/add/remove paths de skills (ver seção 🧩)
 /tools            # Listar ferramentas disponíveis
 /stop             # Cancelar operação corrente
 /approve          # Aprovar etapa pendente
@@ -398,6 +641,8 @@ Os comandos slash do DEILE (em `deile/commands/builtin/`):
 /sandbox          # Status do toggle de sandbox (informativo)
 /welcome          # Tela de boas-vindas
 ```
+
+> Além dos built-ins acima, **toda skill carregada vira `/<name>`** automaticamente (exceto as bundled em `deile/skills/library/`, que ficam disponíveis só via auto-trigger e `invoke_skill`). Skills de `~/.claude/commands/` ficam UPPERCASE.
 
 ---
 
@@ -411,6 +656,60 @@ Personas MD-driven:
 - 🛠️ Infra (`deile/personas/`): loader, builder, manager, etc.
 
 Modificar `instructions/*.md` altera o comportamento sem tocar em Python. Os YAMLs definem nome/persona_id/capacidades.
+
+---
+
+## 🧩 Sistema de skills
+
+Skills são unidades composáveis de expertise em Markdown puro (sem código). O loader escaneia todas as fontes abaixo em ordem de prioridade crescente — em colisão de nome o source mais alto vence (project sobrescreve user que sobrescreve bundled, com `INFO` log):
+
+| Origem | Caminho | Comportamento |
+|---|---|---|
+| Bundled | `deile/skills/library/**/*.md` | Vai no pacote DEILE; PR no repo |
+| Usuário pessoal | `~/.deile/skills/*.md` | Visível em qualquer projeto seu |
+| Usuário (Claude compat) | `~/.claude/commands/*.md` | Mesmo formato; nome registrado em UPPERCASE (`kind=command`) |
+| Projeto | `<cwd>/.deile/skills/*.md` | Versionada no git, viaja junto com o repo |
+| Projeto (Claude compat) | `<cwd>/.claude/commands/*.md` | UPPERCASE (`kind=command`) |
+| Configurada via YAML | `library_paths:` em `deile/config/skills.yaml` | Lista explícita de paths absolutos ou relativos ao repo |
+| Configurada via REPL | `/skills add <path> [--scope global\|project]` | Persistida em `~/.deile/settings.json` (global) ou `.deile/settings.json` (projeto) |
+
+### Como o LLM usa cada skill
+
+Três caminhos simultâneos e independentes:
+
+- **Auto-injeção no system prompt** — quando uma `trigger` casa para o turno (até `max_per_turn=4`, ordenadas por `(-priority, name)`):
+  - `file_globs` — match `fnmatch` no basename ou path completo
+  - `code_block_langs` — fence ``` ```python ``` no input, case-insensitive
+  - `keywords` — word-boundary regex (não confunde "rust" com "trust")
+  - `file_content_patterns` — regex em 4 KiB de cada arquivo referenciado, **contido ao `project_root`** (security)
+- **Function-call tools** `invoke_skill(name)` e `list_skills` — auto-descobertas via `DEFAULT_TOOL_PACKAGES`. O catálogo no system prompt mostra ao LLM o que existe; ele puxa skills que não dispararam por trigger
+- **Slash command `/<name>`** — invocação explícita pelo usuário com argumentos opcionais
+
+### Configuração e ergonomia
+
+- `deile/config/skills.yaml`: `enabled`, `max_per_turn`, `library_paths`, `extension_map`, `basename_map`
+- Comando `/skills` no REPL: `list` (mostra paths ativos), `add` e `remove` (gerencia paths extras com escopo `global` ou `project`)
+- **Hot-reload** via `watchdog`: dropar/editar/remover um `.md` reflete no agente em 0,5 s, sem restart (debounce coalesce bursts do editor; swap atômico no `SkillRegistry`)
+
+### Formato
+
+```markdown
+---
+name: rust                          # opcional; default = stem do arquivo (normalizado)
+description: |
+  Regras do projeto sobre Rust — ownership, async/Tokio. Sobrescreve
+  qualquer conselho genérico do treinamento.
+triggers:                           # tudo opcional; vazio = só responde a /<name> ou invoke_skill
+  file_globs: ["*.rs", "Cargo.toml"]
+  code_block_langs: [rust]
+  keywords: ["ownership", "tokio"]
+  file_content_patterns: ['^use tokio::']
+priority: 50                        # int; default 0. Maior aparece primeiro no ranking
+---
+# Body em Markdown puro — entra no prompt ou é devolvido por invoke_skill.
+```
+
+Bundled out-of-the-box: `python`, `typescript`, `tdd`. Detalhes em [`docs/system_design/04-MODELO-COMPONENTES.md`](docs/system_design/04-MODELO-COMPONENTES.md) e template completo em [`docs/system_design/12-PADROES-CODIGO.md`](docs/system_design/12-PADROES-CODIGO.md). Decisão #34 em [`docs/system_design/DECISOES.md`](docs/system_design/DECISOES.md).
 
 ---
 
@@ -492,9 +791,15 @@ export ANTHROPIC_API_KEY=...
 export OPENAI_API_KEY=...
 export DEEPSEEK_API_KEY=...
 export GOOGLE_API_KEY=...
+
+# Sub-DEILEs paralelos (issue #257) — opcionais
+export DEILE_SUBAGENT_RUNNER=local         # local (default) | worker
+export DEILE_SUBAGENT_MAX_PARALLEL=3       # teto de concorrência
+export DEILE_SUBAGENT_BUDGET_S=600         # teto de tempo global (s)
+export DEILE_SUBAGENT_POLL_INTERVAL_S=0.8  # polling do worker runner
 ```
 
-Veja exemplos em `.env.example` — defina pelo menos uma.
+Veja exemplos em `.env.example` — defina pelo menos uma chave.
 
 ### Arquivos de configuração
 
@@ -510,6 +815,7 @@ Principais caminhos:
 - `deile/config/intent_patterns.yaml` — Padrões de intenção
 - `deile/config/persona_config.yaml` — Defaults de persona
 - `deile/config/commands.yaml` — Defaults de comandos
+- `deile/config/skills.yaml` — Sistema de skills (`enabled`, `max_per_turn`, `library_paths`, `extension_map`)
 - `deile/config/profiles/autonomous_agent.yaml` — Perfil autonomous
 - `deile/config/profiles/enterprise.yaml` — Perfil enterprise
 
@@ -697,6 +1003,7 @@ git push origin feature/nome-feature
 | ⌨️ Slash command        | `deile/commands/builtin/<nome>.py`                                | Registre no `CommandRegistry`                    |
 | 🗂️ Parser               | `deile/parsers/<nome>.py`                                         | Siga o contrato base                             |
 | 🧑‍🎤 Persona              | `personas/instructions/` e `personas/library/`                    | MD/YAML                                          |
+| 🧩 Skill                | `~/.deile/skills/`, `.deile/skills/`, ou `deile/skills/library/`  | MD com frontmatter — sem Python; hot-reload automático |
 | 🧠 Provider de LLM      | `core/models/`                                                    | Registre em `bootstrap.py` + YAML dos modelos    |
 
 ### 🐛 Reportando bugs/features/refatorações

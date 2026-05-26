@@ -45,6 +45,10 @@ def _is_allowed(path: Path) -> bool:
         "deile/orchestration/pipeline/briefs.py",
         "deile/orchestration/pipeline/claude_dispatcher.py",
         "deile/orchestration/pipeline/worktree_manager.py",
+        # The standup collectors documents the URL formats it parses for
+        # the ``/standup`` slash command. Mentions are docstring/comments,
+        # not coupling — parsing is done by ``parse_forge_url`` internally.
+        "deile/commands/builtin/_standup_collectors.py",
     }
     return (
         parts[0] in {".git", ".github", "docs", "deilebot", "test-your-might"}

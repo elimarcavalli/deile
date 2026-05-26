@@ -299,8 +299,15 @@ class SecretsScanner:
             line_idx = match.line_number - 1
             if 0 <= line_idx < len(lines):
                 line = lines[line_idx]
-                # Replace the matched text with redaction characters
-                replacement = redaction_char * len(match.matched_text)
+                # Use the position span (end - start), NOT len(matched_text).
+                # matched_text is ``match.group(1)`` when patterns capture; the
+                # span covers ``match.group(0)`` (the full pattern), which
+                # almost always includes context like ``api_key = "..."``.
+                # Mismatching them produced output shorter than the input AND
+                # dropped surrounding context (``api_key = "..."`` became
+                # ``****`` instead of ``api_key = "******"``).
+                span = max(0, match.end_pos - match.start_pos)
+                replacement = redaction_char * span
                 lines[line_idx] = line[:match.start_pos] + replacement + line[match.end_pos:]
         
         redacted_text = '\n'.join(lines)

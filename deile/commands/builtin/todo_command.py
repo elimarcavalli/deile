@@ -232,10 +232,10 @@ class TodoCommand(DirectCommand):
         """Constrói tabela Rich com os marcadores."""
         table = Table(show_header=True, header_style="bold cyan")
         table.add_column("Arquivo", style="cyan", no_wrap=False, max_width=55)
-        table.add_column("Linha", style="yellow", justify="right", width=6)
-        table.add_column("Autor", style="green", width=18)
-        table.add_column("Idade", style="magenta", justify="right", width=8)
-        table.add_column("Marcador", style="bold red", width=8)
+        table.add_column("Linha", style="yellow", justify="right")
+        table.add_column("Autor", style="green")
+        table.add_column("Idade", style="magenta", justify="right")
+        table.add_column("Marcador", style="bold red")
 
         # Ordena por arquivo, depois linha
         for m in sorted(markers, key=lambda x: (x["file"], x["line"])):

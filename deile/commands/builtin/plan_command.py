@@ -148,12 +148,12 @@ class PlanCommand(DirectCommand):
         
         # Create table
         table = Table(title=f"📋 Execution Plans ({len(plans)} found)", show_header=True, header_style="bold magenta")
-        table.add_column("ID", style="cyan", width=10)
-        table.add_column("Title", style="white", width=30)
-        table.add_column("Status", style="green", width=12)
-        table.add_column("Steps", justify="right", style="blue", width=8)
-        table.add_column("Progress", justify="right", style="yellow", width=10)
-        table.add_column("Created", style="dim", width=16)
+        table.add_column("ID", style="cyan")
+        table.add_column("Title", style="white")
+        table.add_column("Status", style="green")
+        table.add_column("Steps", justify="right", style="blue")
+        table.add_column("Progress", justify="right", style="yellow")
+        table.add_column("Created", style="dim")
         
         for plan in plans:
             status_emoji = plan_status_emoji(plan["status"])

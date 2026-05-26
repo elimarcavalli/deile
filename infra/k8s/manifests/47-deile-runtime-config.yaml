@@ -1,0 +1,69 @@
+# deile-runtime-config — ConfigMap declarativo com o ``settings.json`` de cada
+# pod DEILE (pipeline / worker / shell). Substitui as env vars ``DEILE_*``
+# depreciadas pela issue #111 — a tabela ``_ENV_OVERRIDES`` em
+# ``deile/config/settings.py`` ainda aceita as env vars (compatibilidade), mas
+# cada uma com ``deprecated=True`` emite um WARNING no boot. Movendo para o JSON
+# layered, eliminamos os warnings sem mudar comportamento.
+#
+# Cada chave abaixo é montada em ``/home/deile/.deile/settings.json`` no pod
+# correspondente via ``subPath:`` (o subPath NÃO esconde o restante de
+# ``~/.deile/`` — logs/run/sessions continuam writable no emptyDir).
+#
+# Resiliência: aplicado por ``kubectl apply -f`` (idempotente); sobrevive a
+# ``k8s down`` + ``k8s up``; não depende de ``$HOME`` local; não vaza segredos
+# (apenas configuração funcional).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: deile-runtime-config
+  namespace: deile
+  labels:
+    app: deile
+data:
+  pipeline-settings.json: |
+    {
+      "pipeline": {
+        "dispatch_mode": "deile_worker",
+        "repo": "elimarcavalli/deile",
+        "poll_interval": 60
+      },
+      "approval": {
+        "auto": true
+      }
+    }
+  worker-settings.json: |
+    {
+      "model": {
+        "preferred": "deepseek:deepseek-v4-pro"
+      },
+      "approval": {
+        "auto": true
+      }
+    }
+  shell-settings.json: |
+    {
+      "approval": {
+        "auto": true
+      }
+    }
+  # Usado tanto pelo Job one-shot (manifest 30) quanto pelo debug pod
+  # (manifest 99). Idêntico ao shell-settings — ambos rodam DEILE com
+  # ``DEILE_BOT_APPROVAL_AUTO=1`` historicamente; agora vem do JSON.
+  oneshot-settings.json: |
+    {
+      "approval": {
+        "auto": true
+      }
+    }
+  # Bot pod: o deilebot importa ``deile.config.settings`` ao registrar tools
+  # messaging, então o loader emite warning para ``DEILE_CRON_DB_PATH``
+  # (depreciada na issue #111). Movendo o valor pra ``cron.db_path`` no
+  # JSON eliminamos o warning. O deilebot lê a env por outro caminho
+  # (``os.environ.get`` direto em ``cli.py`` e ``providers/discord/adapter.py``)
+  # — o manifest do bot mantém a env var apontando para o mesmo path.
+  bot-settings.json: |
+    {
+      "cron": {
+        "db_path": "/home/deile/data/cron.db"
+      }
+    }

@@ -38,8 +38,9 @@ spec:
           value: /home/deile
         - name: DEILE_BOT_ENDPOINT
           value: "http://deilebot.deile.svc.cluster.local:8765"
-        - name: DEILE_BOT_APPROVAL_AUTO
-          value: "1"
+        # approval.auto=true vem do ConfigMap deile-runtime-config (issue #111).
+        - name: DEILE_SETTINGS_FILE
+          value: "/etc/deile/settings.json"
       volumeMounts:
         - name: deile-secrets
           mountPath: /run/secrets/deile
@@ -48,6 +49,10 @@ spec:
           mountPath: /home/deile
         - name: tmp
           mountPath: /tmp
+        - name: runtime-config
+          mountPath: /etc/deile/settings.json
+          subPath: oneshot-settings.json
+          readOnly: true
       resources:
         requests:
           cpu: "100m"
@@ -77,3 +82,7 @@ spec:
       emptyDir:
         medium: Memory
         sizeLimit: "32Mi"
+    - name: runtime-config
+      configMap:
+        name: deile-runtime-config
+        defaultMode: 292

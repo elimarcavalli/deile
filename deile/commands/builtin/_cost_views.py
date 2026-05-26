@@ -50,9 +50,9 @@ def build_summary_tables(
         show_header=True,
         header_style="bold cyan",
     )
-    summary_table.add_column("Métrica", style="white", width=22)
-    summary_table.add_column("Valor", style="green", width=20)
-    summary_table.add_column("Detalhes", style="dim", width=30)
+    summary_table.add_column("Métrica", style="white")
+    summary_table.add_column("Valor", style="green")
+    summary_table.add_column("Detalhes", style="dim")
 
     summary_table.add_row(
         "Total Gasto",
@@ -84,10 +84,10 @@ def build_summary_tables(
             show_header=True,
             header_style="bold yellow",
         )
-        category_table.add_column("Categoria", style="cyan", width=22)
-        category_table.add_column("Valor", style="green", width=14)
-        category_table.add_column("Percentual", style="white", width=14)
-        category_table.add_column("Visual", style="blue", width=20)
+        category_table.add_column("Categoria", style="cyan")
+        category_table.add_column("Valor", style="green")
+        category_table.add_column("Percentual", style="white")
+        category_table.add_column("Visual", style="blue")
 
         for category, amount in sorted(
             categories.items(), key=lambda x: x[1], reverse=True
@@ -140,9 +140,9 @@ def build_categories_table(
         show_header=True,
         header_style="bold cyan",
     )
-    table.add_column("Categoria", style="cyan", width=24)
-    table.add_column("Valor", style="green", width=14)
-    table.add_column("Percentual", style="white", width=12)
+    table.add_column("Categoria", style="cyan")
+    table.add_column("Valor", style="green")
+    table.add_column("Percentual", style="white")
 
     for category in sorted(categories, key=lambda c: categories[c], reverse=True):
         cat_amount = float(categories[category])
@@ -163,11 +163,11 @@ def build_budget_list_table(budgets: Mapping[str, Any]) -> Table:
         show_header=True,
         header_style="bold cyan",
     )
-    table.add_column("Categoria", style="cyan", width=22)
-    table.add_column("Período", style="white", width=12)
-    table.add_column("Limite", style="green", width=12)
-    table.add_column("Alerta em", style="yellow", width=10)
-    table.add_column("Rígido", style="red", width=8)
+    table.add_column("Categoria", style="cyan")
+    table.add_column("Período", style="white")
+    table.add_column("Limite", style="green")
+    table.add_column("Alerta em", style="yellow")
+    table.add_column("Rígido", style="red")
 
     for budget in budgets.values():
         table.add_row(
@@ -189,8 +189,8 @@ def build_forecast_table(
         show_header=True,
         header_style="bold cyan",
     )
-    table.add_column("Métrica", style="white", width=28)
-    table.add_column("Valor", style="green", width=20)
+    table.add_column("Métrica", style="white")
+    table.add_column("Valor", style="green")
 
     table.add_row("Média diária (30 dias)", f"${daily_avg:.4f}")
     table.add_row(f"Previsão ({forecast_days} dias)", f"${projected:.4f}")
@@ -206,11 +206,11 @@ def build_top_table(top: Sequence[Mapping[str, Any]], n: int) -> Table:
         show_header=True,
         header_style="bold cyan",
     )
-    table.add_column("#", style="dim", width=4)
-    table.add_column("Categoria", style="cyan", width=20)
-    table.add_column("Subcategoria", style="white", width=20)
-    table.add_column("Valor", style="green", width=14)
-    table.add_column("Descrição", style="dim", width=30)
+    table.add_column("#", style="dim")
+    table.add_column("Categoria", style="cyan")
+    table.add_column("Subcategoria", style="white")
+    table.add_column("Valor", style="green")
+    table.add_column("Descrição", style="dim")
 
     for idx, entry in enumerate(top, 1):
         table.add_row(
@@ -230,10 +230,10 @@ def build_alerts_table(alerts: Sequence[Mapping[str, Any]]) -> Table:
         show_header=True,
         header_style="bold red",
     )
-    table.add_column("Tipo", style="red", width=20)
-    table.add_column("Categoria", style="cyan", width=18)
-    table.add_column("Uso Atual", style="yellow", width=14)
-    table.add_column("% Limite", style="white", width=10)
+    table.add_column("Tipo", style="red")
+    table.add_column("Categoria", style="cyan")
+    table.add_column("Uso Atual", style="yellow")
+    table.add_column("% Limite", style="white")
 
     for alert in alerts:
         table.add_row(
@@ -264,9 +264,9 @@ def build_estimate_panel(
         show_header=True,
         header_style="bold cyan",
     )
-    table.add_column("Componente", style="white", width=20)
-    table.add_column("Tokens", style="yellow", width=14)
-    table.add_column("Custo", style="green", width=14)
+    table.add_column("Componente", style="white")
+    table.add_column("Tokens", style="yellow")
+    table.add_column("Custo", style="green")
 
     input_t = estimate.get("estimated_input_tokens", 0)
     output_t = estimate.get("estimated_output_tokens", 0)

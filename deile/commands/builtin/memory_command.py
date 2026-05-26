@@ -95,9 +95,9 @@ class MemoryCommand(DirectCommand):
                 real_usage = {"error": str(exc)}
 
         table = Table(title="🧠 Status de Memória", show_header=False)
-        table.add_column("Componente", style="bold cyan", width=22)
-        table.add_column("Uso", style="green", width=15)
-        table.add_column("Descrição", style="dim", width=30)
+        table.add_column("Componente", style="bold cyan")
+        table.add_column("Uso", style="green")
+        table.add_column("Descrição", style="dim")
 
         if real_usage and "error" not in real_usage and real_usage.get("status") != "not_initialized":
             components = real_usage.get("components", {})
@@ -250,10 +250,10 @@ class MemoryCommand(DirectCommand):
 
     async def _show_memory_usage(self, context: CommandContext) -> CommandResult:
         table = Table(title="🔍 Análise Detalhada de Uso de Memória", show_header=True, header_style="bold yellow")
-        table.add_column("Componente", style="cyan", width=22)
-        table.add_column("Contagem", style="green", width=10, justify="center")
-        table.add_column("Tamanho Est.", style="blue", width=14, justify="center")
-        table.add_column("Impacto", style="red", width=12)
+        table.add_column("Componente", style="cyan")
+        table.add_column("Contagem", style="green", justify="center")
+        table.add_column("Tamanho Est.", style="blue", justify="center")
+        table.add_column("Impacto", style="red")
 
         total_impact = 0
         session = get_session(context)
@@ -471,9 +471,9 @@ class MemoryCommand(DirectCommand):
             )
 
         table = Table(title="💾 Checkpoints Disponíveis", show_header=True, header_style="bold cyan")
-        table.add_column("Nome", style="cyan", width=25)
-        table.add_column("Salvo em", style="dim", width=22)
-        table.add_column("Tamanho", style="yellow", width=12)
+        table.add_column("Nome", style="cyan")
+        table.add_column("Salvo em", style="dim")
+        table.add_column("Tamanho", style="yellow")
 
         for name, meta in sorted(index.items(), key=lambda x: x[1].get("saved_at", "")):
             size_kb = meta.get("size_bytes", 0) / 1024

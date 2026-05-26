@@ -152,28 +152,32 @@ class AnthropicProvider(ModelProvider):
         if system:
             create_kwargs["system"] = self._system_blocks(system)
 
-        try:
-            response = await self._client.messages.create(**create_kwargs, **kwargs)
-        except anthropic.APIError as exc:
-            raise ProviderInvocationError(_make_envelope(exc, self.provider_id, self.model_name)) from exc
+        # Issue #303 fase 4 — span deile.llm.call. CM cai em no-op quando OTLP off.
+        with self._llm_span() as _span:
+            try:
+                response = await self._client.messages.create(**create_kwargs, **kwargs)
+            except anthropic.APIError as exc:
+                self._set_llm_span_error(_span, exc)
+                raise ProviderInvocationError(_make_envelope(exc, self.provider_id, self.model_name)) from exc
 
-        text = "".join(b.text for b in response.content if hasattr(b, "text"))
-        usage = ModelUsage(
-            prompt_tokens=response.usage.input_tokens,
-            completion_tokens=response.usage.output_tokens,
-            total_tokens=response.usage.input_tokens + response.usage.output_tokens,
-            cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
-            request_time=time.time() - start,
-        )
-        usage.cost_estimate = self.estimate_cost(usage)
-        self._update_stats(usage)
-        return ModelResponse(
-            content=text,
-            model_name=self.model_name,
-            usage=usage,
-            raw_response=response,
-            finish_reason=response.stop_reason,
-        )
+            text = "".join(b.text for b in response.content if hasattr(b, "text"))
+            usage = ModelUsage(
+                prompt_tokens=response.usage.input_tokens,
+                completion_tokens=response.usage.output_tokens,
+                total_tokens=response.usage.input_tokens + response.usage.output_tokens,
+                cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+                request_time=time.time() - start,
+            )
+            usage.cost_estimate = self.estimate_cost(usage)
+            self._update_stats(usage)
+            self._set_llm_span_usage(_span, usage, latency_ms=int((time.time() - start) * 1000))
+            return ModelResponse(
+                content=text,
+                model_name=self.model_name,
+                usage=usage,
+                raw_response=response,
+                finish_reason=response.stop_reason,
+            )
 
     # ------------------------------------------------------------------
     # chat_with_tools()
@@ -211,19 +215,41 @@ class AnthropicProvider(ModelProvider):
             if anthropic_tools:
                 create_kwargs["tools"] = anthropic_tools
 
-            try:
-                response = await self._client.messages.create(**create_kwargs)
-            except anthropic.APIError as exc:
-                env = _make_envelope(exc, self.provider_id, self.model_name)
-                await self._record_failed_usage(
-                    session_id=kwargs.get("session_id", "default"),
-                    start_time=start,
-                    prompt_tokens=total_input,
-                    completion_tokens=total_output,
-                    cached_tokens=total_cached,
-                    error_envelope=env,
+            # Issue #303 fase 4 — 1 iteração = 1 deile.llm.call span.
+            with self._llm_span() as _it_span:
+                _it_start = time.time()
+                try:
+                    response = await self._client.messages.create(**create_kwargs)
+                except anthropic.APIError as exc:
+                    self._set_llm_span_error(_it_span, exc)
+                    env = _make_envelope(exc, self.provider_id, self.model_name)
+                    await self._record_failed_usage(
+                        session_id=kwargs.get("session_id", "default"),
+                        start_time=start,
+                        prompt_tokens=total_input,
+                        completion_tokens=total_output,
+                        cached_tokens=total_cached,
+                        error_envelope=env,
+                    )
+                    raise ProviderInvocationError(env) from exc
+
+                # Métricas no span: tokens da iteração (não cumulativos).
+                _iter_in = response.usage.input_tokens
+                _iter_out = response.usage.output_tokens
+                _iter_cached = (getattr(response.usage, "cache_read_input_tokens", 0) or 0) + (
+                    getattr(response.usage, "cache_creation_input_tokens", 0) or 0
                 )
-                raise ProviderInvocationError(env) from exc
+                _iter_usage = ModelUsage(
+                    prompt_tokens=_iter_in,
+                    completion_tokens=_iter_out,
+                    total_tokens=_iter_in + _iter_out,
+                    cached_tokens=_iter_cached,
+                )
+                _iter_usage.cost_estimate = self.estimate_cost(_iter_usage)
+                self._set_llm_span_usage(
+                    _it_span, _iter_usage,
+                    latency_ms=int((time.time() - _it_start) * 1000),
+                )
 
             total_input += response.usage.input_tokens
             total_output += response.usage.output_tokens

@@ -71,8 +71,8 @@ Além das chaves de cloud/SCM tradicionais (AWS, GitHub, Slack, RSA…), o scann
 |---|---|
 | `DEILE_BOT_AUTH_TOKEN` / `DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN` | `DEILE_BOT(_CONTROL_PLANE)?_AUTH_TOKEN\s*=\s*[A-Za-z0-9_-]{16,}` |
 | Token de bot Discord | `(?:DISCORD\|DEILE_BOT_DISCORD)_TOKEN\s*=\s*xxx.yyy.zzz` (3 segmentos `.`-separados) |
-| **GitHub** (decisão #38) | `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_` (PATs/auth tokens), `github_pat_…` (fine-grained PATs) |
-| **GitLab** (decisão #38) | `glpat-` (personal), `gldt-` (deploy), `glptt-` (project trigger), `glsoat-` (agent OAuth), `GITLAB_TOKEN=` / `GL_TOKEN=` / `CI_JOB_TOKEN=`, catch-all defensivo `gl[a-z]+-` |
+| **GitHub** (decisão #41) | `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_` (PATs/auth tokens), `github_pat_…` (fine-grained PATs) |
+| **GitLab** (decisão #41) | `glpat-` (personal), `gldt-` (deploy), `glptt-` (project trigger), `glsoat-` (agent OAuth), `GITLAB_TOKEN=` / `GL_TOKEN=` / `CI_JOB_TOKEN=`, catch-all defensivo `gl[a-z]+-` |
 
 ### Auth de forges (issue #297)
 

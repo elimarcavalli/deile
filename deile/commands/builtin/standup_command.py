@@ -2,15 +2,15 @@
 
 Responsabilidade única deste módulo: dispatch + render Rich + LLM call.
 Parsing de CLI e coleta de git/gh foram extraídos para
-``_standup_collectors`` (Pilar 03 §1 — coleta I/O síncrona isolada;
-Pilar 03 §8 — single responsibility por unidade).
+``_standup_collectors`` (Pilar 03 §1 — coleta async; Pilar 03 §2 —
+PRs/issues passam pelo :class:`GitHubClient`, não invocam ``gh``
+diretamente; Pilar 03 §8 — single responsibility por unidade).
 
 Re-exportamos os símbolos coletores no namespace deste módulo para
 preservar a superfície pública que ``test_standup_command.py`` importa
 diretamente — assim a refatoração é puramente interna.
 """
 
-import asyncio
 import shutil  # noqa: F401 — re-exportado para `monkeypatch.setattr(sc.shutil, ...)`
 import subprocess  # noqa: F401 — re-exportado para `monkeypatch.setattr(sc.subprocess, ...)`
 
@@ -22,22 +22,24 @@ from ...core.models.base import ModelMessage
 from ...core.models.router import get_model_router
 from ..base import CommandContext, CommandResult, DirectCommand
 from ._shared import emit_audit_event, wrap_command_errors
-from ._standup_collectors import (StandupData, _ensure_gh_available,
-                                  _ensure_git_repo, build_prompt,
-                                  collect_commits, collect_issues, collect_prs,
-                                  collect_standup_data, parse_args,
-                                  parse_since)
+from ._standup_collectors import (StandupData, _resolve_repo_from_git,
+                                  build_prompt, collect_commits,
+                                  collect_issues, collect_prs,
+                                  collect_standup_data,
+                                  ensure_gh_authenticated, ensure_git_repo,
+                                  parse_args, parse_since)
 
 __all__ = [
     "StandupCommand",
     "StandupData",
-    "_ensure_gh_available",
-    "_ensure_git_repo",
+    "_resolve_repo_from_git",
     "build_prompt",
     "collect_commits",
     "collect_issues",
     "collect_prs",
     "collect_standup_data",
+    "ensure_gh_authenticated",
+    "ensure_git_repo",
     "generate_narrative",
     "get_model_router",
     "parse_args",
@@ -76,11 +78,10 @@ class StandupCommand(DirectCommand):
         self._emit_audit_event(context)
 
         since_spec = parse_args(context.args)
-        # `collect_standup_data` runs `git rev-parse`, `gh auth status`,
-        # `git log` e duas chamadas `gh <verb> list` em sequência — todo
-        # subprocess síncrono. Off-loading para uma worker thread evita
-        # bloquear o event loop (pilar 03 §1).
-        data = await asyncio.to_thread(collect_standup_data, since_spec)
+        # `collect_standup_data` é async: PRs/issues passam pelo GitHubClient
+        # (que já é assíncrono) e `git log` roda em `asyncio.to_thread` dentro
+        # do coletor — o event loop não bloqueia em nenhum trecho.
+        data = await collect_standup_data(since_spec)
         prompt = build_prompt(data)
 
         narrative = await generate_narrative(prompt)

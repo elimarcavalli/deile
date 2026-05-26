@@ -1,0 +1,34 @@
+# Skills subsystem configuration.
+#
+# Skills are composable, trigger-driven context modules layered on top of the
+# active persona. See deile/skills/__init__.py for the architecture.
+
+# Master switch. Set to false to disable skill discovery and injection entirely.
+enabled: true
+
+# Maximum number of skills appended to the system prompt per turn. Skills are
+# sorted by priority (desc) then name; the cap bounds token cost on turns
+# where many triggers fire.
+max_per_turn: 4
+
+# Extra directories scanned recursively for ``*.md`` skill files at startup,
+# on TOP of the canonical scan order (bundled library + ~/.deile/skills/ +
+# ~/.claude/commands/ + .deile/skills/ + .claude/commands/). Paths are
+# resolved relative to the project root if not absolute. The bundled library
+# under deile/skills/library/ is included automatically — do not list it here.
+library_paths: []
+
+# Optional overrides on top of the built-in extension → language map in
+# deile/skills/language_detector.py. Use this to teach DEILE about new
+# extensions or to override an existing mapping for a specific project.
+#
+# extension_map:
+#   .zig: zig
+#   .nim: nim
+extension_map: {}
+
+# Optional overrides for the built-in basename map (extensionless files).
+#
+# basename_map:
+#   buildfile: bazel
+basename_map: {}

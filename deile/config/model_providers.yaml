@@ -1,5 +1,12 @@
 # Multi-Provider Model Router configuration.
 # API keys are NEVER stored here — only the name of the environment variable.
+#
+# Pricing/context-window/capabilities verificados em 2026-05-25 contra:
+#   - Anthropic:  https://platform.claude.com/docs/en/about-claude/pricing
+#                 https://platform.claude.com/docs/en/about-claude/models/overview
+#   - OpenAI:     https://developers.openai.com/api/docs/models/<id>
+#   - Gemini:     https://ai.google.dev/gemini-api/docs/pricing + .../models
+#   - DeepSeek:   https://api-docs.deepseek.com/quick_start/pricing
 
 version: 1
 default_strategy: task_optimized   # task_optimized | cost_optimized
@@ -37,14 +44,16 @@ providers:
 
 models:
   # === ANTHROPIC ===
+  # Context window 1M aplica-se a Opus 4.7, Opus 4.6 e Sonnet 4.6 (standard pricing).
+  # Haiku 4.5 permanece em 200k. Todos suportam vision.
   - provider_id: anthropic
     model_id: claude-opus-4-7
     tier: tier_1
     label: flagship
     display_name: Claude Opus 4.7
     pricing: { input_per_1m_usd: 5.00, output_per_1m_usd: 25.00, cached_input_per_1m_usd: 0.50 }
-    context_window: 200000
-    capabilities: [function_calling, streaming, caching, vision]
+    context_window: 1000000
+    capabilities: [function_calling, streaming, caching, vision, adaptive_thinking]
 
   - provider_id: anthropic
     model_id: claude-sonnet-4-6
@@ -52,8 +61,8 @@ models:
     label: balanced
     display_name: Claude Sonnet 4.6
     pricing: { input_per_1m_usd: 3.00, output_per_1m_usd: 15.00, cached_input_per_1m_usd: 0.30 }
-    context_window: 200000
-    capabilities: [function_calling, streaming, caching, vision]
+    context_window: 1000000
+    capabilities: [function_calling, streaming, caching, vision, extended_thinking, adaptive_thinking]
 
   - provider_id: anthropic
     model_id: claude-haiku-4-5
@@ -62,40 +71,74 @@ models:
     display_name: Claude Haiku 4.5
     pricing: { input_per_1m_usd: 1.00, output_per_1m_usd: 5.00, cached_input_per_1m_usd: 0.10 }
     context_window: 200000
-    capabilities: [function_calling, streaming, caching]
+    capabilities: [function_calling, streaming, caching, vision, extended_thinking]
 
   # === OPENAI ===
-  # NOTA: ``gpt-5.3-codex`` é completions-only (``/v1/completions``);
-  # o ``OpenAIModelProvider`` só chama ``/v1/chat/completions``. Reintroduzir
-  # quando o provider suportar completions ou o modelo migrar para chat.
+  - provider_id: openai
+    model_id: gpt-5.5
+    tier: tier_1
+    label: flagship
+    display_name: GPT-5.5
+    pricing: { input_per_1m_usd: 5.00, output_per_1m_usd: 30.00, cached_input_per_1m_usd: 0.50 }
+    context_window: 1050000
+    capabilities: [function_calling, streaming, caching, vision, reasoning]
 
   - provider_id: openai
     model_id: gpt-5.4
     tier: tier_2
     label: balanced
     display_name: GPT-5.4
-    pricing: { input_per_1m_usd: 2.50, output_per_1m_usd: 15.00 }
-    context_window: 200000
-    capabilities: [function_calling, streaming, caching, vision]
+    pricing: { input_per_1m_usd: 2.50, output_per_1m_usd: 15.00, cached_input_per_1m_usd: 0.25 }
+    context_window: 1050000
+    capabilities: [function_calling, streaming, caching, vision, reasoning]
 
   - provider_id: openai
     model_id: gpt-5.4-mini
     tier: tier_3
     label: fast
     display_name: GPT-5.4 Mini
-    pricing: { input_per_1m_usd: 0.75, output_per_1m_usd: 4.50 }
-    context_window: 128000
-    capabilities: [function_calling, streaming, caching]
+    pricing: { input_per_1m_usd: 0.75, output_per_1m_usd: 4.50, cached_input_per_1m_usd: 0.075 }
+    context_window: 400000
+    capabilities: [function_calling, streaming, caching, vision, reasoning]
+
+  - provider_id: openai
+    model_id: gpt-5.4-nano
+    tier: tier_4
+    label: ultra-cheap
+    display_name: GPT-5.4 Nano
+    pricing: { input_per_1m_usd: 0.20, output_per_1m_usd: 1.25, cached_input_per_1m_usd: 0.02 }
+    context_window: 400000
+    capabilities: [function_calling, streaming, caching, vision, reasoning]
 
   # === GEMINI ===
+  # Gemini 3.1 Pro Preview tem pricing tiered: ≤200k = $2/$12/$0.20; >200k = $4/$18/$0.40.
+  # Aqui o tier ≤200k é o default; o orchestrator deve aplicar multiplicador 2x acima de 200k.
   - provider_id: gemini
     model_id: gemini-3.1-pro-preview
     tier: tier_1
     label: flagship
     display_name: Gemini 3.1 Pro Preview
     pricing: { input_per_1m_usd: 2.00, output_per_1m_usd: 12.00, cached_input_per_1m_usd: 0.20 }
-    context_window: 200000
-    capabilities: [function_calling, streaming, caching, vision]
+    context_window: 1048576
+    capabilities: [function_calling, streaming, caching, vision, thinking]
+
+  - provider_id: gemini
+    model_id: gemini-2.5-pro
+    tier: tier_1
+    label: flagship-stable
+    display_name: Gemini 2.5 Pro
+    pricing: { input_per_1m_usd: 1.25, output_per_1m_usd: 10.00, cached_input_per_1m_usd: 0.125 }
+    context_window: 1048576
+    capabilities: [function_calling, streaming, caching, vision, thinking]
+
+  - provider_id: gemini
+    model_id: gemini-3.5-flash
+    tier: tier_2
+    label: balanced
+    display_name: Gemini 3.5 Flash
+    pricing: { input_per_1m_usd: 1.50, output_per_1m_usd: 9.00, cached_input_per_1m_usd: 0.15 }
+    context_window: 1048576
+    capabilities: [function_calling, streaming, caching, vision, thinking]
 
   - provider_id: gemini
     model_id: gemini-3-flash-preview
@@ -103,17 +146,26 @@ models:
     label: balanced
     display_name: Gemini 3 Flash Preview
     pricing: { input_per_1m_usd: 0.50, output_per_1m_usd: 3.00, cached_input_per_1m_usd: 0.05 }
-    context_window: 200000
-    capabilities: [function_calling, streaming, caching, vision]
+    context_window: 1048576
+    capabilities: [function_calling, streaming, caching, vision, thinking]
 
   - provider_id: gemini
-    model_id: gemini-3.1-flash-lite-preview
+    model_id: gemini-3.1-flash-lite
     tier: tier_3
     label: fast
-    display_name: Gemini 3.1 Flash-Lite Preview
+    display_name: Gemini 3.1 Flash-Lite
     pricing: { input_per_1m_usd: 0.25, output_per_1m_usd: 1.50, cached_input_per_1m_usd: 0.025 }
-    context_window: 1000000
-    capabilities: [function_calling, streaming, caching, vision]
+    context_window: 1048576
+    capabilities: [function_calling, streaming, caching, vision, thinking]
+
+  - provider_id: gemini
+    model_id: gemini-2.5-flash
+    tier: tier_3
+    label: balanced-stable
+    display_name: Gemini 2.5 Flash
+    pricing: { input_per_1m_usd: 0.30, output_per_1m_usd: 2.50, cached_input_per_1m_usd: 0.03 }
+    context_window: 1048576
+    capabilities: [function_calling, streaming, caching, vision, thinking]
 
   - provider_id: gemini
     model_id: gemini-2.5-flash-lite
@@ -121,49 +173,45 @@ models:
     label: ultra-fast
     display_name: Gemini 2.5 Flash-Lite
     pricing: { input_per_1m_usd: 0.10, output_per_1m_usd: 0.40, cached_input_per_1m_usd: 0.01 }
-    context_window: 1000000
-    capabilities: [function_calling, streaming, caching, vision]
+    context_window: 1048576
+    capabilities: [function_calling, streaming, caching, vision, thinking]
 
   # === DEEPSEEK ===
+  # ATENÇÃO: deepseek-v4-pro e v4-flash estão sob promo de -75% no off-peak.
+  # Pre-promo (tabela): v4-pro $1.74/$3.48; v4-flash $0.56/$1.12.
+  # Pós-promo (atual): v4-pro $0.435/$0.87; v4-flash $0.14/$0.28.
+  # Cache hit: v4-pro $0.003625; v4-flash $0.0028.
+  # deepseek-chat e deepseek-reasoner serão deprecados — usar v4-flash (thinking mode = reasoner).
   - provider_id: deepseek
     model_id: deepseek-v4-pro
     tier: tier_1
     label: flagship-cheap
     display_name: DeepSeek V4 Pro
-    pricing: { input_per_1m_usd: 1.74, output_per_1m_usd: 3.48 }
-    context_window: 128000
-    capabilities: [function_calling, streaming, caching]
+    pricing: { input_per_1m_usd: 0.435, output_per_1m_usd: 0.87, cached_input_per_1m_usd: 0.003625 }
+    context_window: 1000000
+    capabilities: [function_calling, streaming, caching, json_output, thinking]
 
   - provider_id: deepseek
     model_id: deepseek-v4-flash
     tier: tier_3
     label: ultra-cheap
     display_name: DeepSeek V4 Flash
-    pricing: { input_per_1m_usd: 0.14, output_per_1m_usd: 0.28 }
-    context_window: 128000
-    capabilities: [function_calling, streaming, caching]
-
-  - provider_id: deepseek
-    model_id: deepseek-reasoner
-    tier: tier_3
-    label: reasoning-cheap
-    display_name: DeepSeek Reasoner
-    pricing: { input_per_1m_usd: 0.14, output_per_1m_usd: 0.28 }
-    context_window: 128000
-    capabilities: [streaming, caching]
+    pricing: { input_per_1m_usd: 0.14, output_per_1m_usd: 0.28, cached_input_per_1m_usd: 0.0028 }
+    context_window: 1000000
+    capabilities: [function_calling, streaming, caching, json_output, thinking]
 
 policies:
   task_optimized:
-    tier_1: [anthropic:claude-opus-4-7, gemini:gemini-3.1-pro-preview, openai:gpt-5.3-codex, deepseek:deepseek-v4-pro]
-    tier_2: [anthropic:claude-sonnet-4-6, gemini:gemini-3-flash-preview, openai:gpt-5.4, deepseek:deepseek-v4-pro]
-    tier_3: [gemini:gemini-3.1-flash-lite-preview, gemini:gemini-2.5-flash-lite, anthropic:claude-haiku-4-5, openai:gpt-5.4-mini, deepseek:deepseek-v4-flash]
-    tier_4: [deepseek:deepseek-v4-flash, openai:gpt-5.4-mini]
+    tier_1: [anthropic:claude-opus-4-7, gemini:gemini-3.1-pro-preview, gemini:gemini-2.5-pro, openai:gpt-5.5, deepseek:deepseek-v4-pro]
+    tier_2: [anthropic:claude-sonnet-4-6, gemini:gemini-3.5-flash, gemini:gemini-3-flash-preview, openai:gpt-5.4, deepseek:deepseek-v4-pro]
+    tier_3: [gemini:gemini-3.1-flash-lite, gemini:gemini-2.5-flash, gemini:gemini-2.5-flash-lite, anthropic:claude-haiku-4-5, openai:gpt-5.4-mini, deepseek:deepseek-v4-flash]
+    tier_4: [deepseek:deepseek-v4-flash, openai:gpt-5.4-nano, openai:gpt-5.4-mini]
 
   cost_optimized:
-    tier_1: [deepseek:deepseek-v4-pro, gemini:gemini-3.1-pro-preview, openai:gpt-5.4]
-    tier_2: [gemini:gemini-3-flash-preview, deepseek:deepseek-v4-pro, openai:gpt-5.4-mini]
-    tier_3: [gemini:gemini-2.5-flash-lite, gemini:gemini-3.1-flash-lite-preview, deepseek:deepseek-v4-flash, openai:gpt-5.4-mini]
-    tier_4: [deepseek:deepseek-v4-flash, openai:gpt-5.4-mini]
+    tier_1: [deepseek:deepseek-v4-pro, gemini:gemini-2.5-pro, gemini:gemini-3.1-pro-preview, openai:gpt-5.4]
+    tier_2: [gemini:gemini-3.5-flash, gemini:gemini-3-flash-preview, deepseek:deepseek-v4-pro, openai:gpt-5.4-mini]
+    tier_3: [gemini:gemini-2.5-flash-lite, gemini:gemini-2.5-flash, gemini:gemini-3.1-flash-lite, deepseek:deepseek-v4-flash, openai:gpt-5.4-mini]
+    tier_4: [deepseek:deepseek-v4-flash, openai:gpt-5.4-nano, openai:gpt-5.4-mini]
 
 circuit_breaker:
   consecutive_failures_threshold: 3

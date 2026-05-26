@@ -31,7 +31,8 @@ from deile.orchestration.forge import (CommentRef, GhCommandError, MentionTrigge
 from deile.orchestration.pipeline.implementer import (parse_critique_verdict,
                                                       parse_decompose_result,
                                                       parse_refine_verdict)
-from deile.orchestration.pipeline.labels import (MENTION_DONE, REFINAR,
+from deile.orchestration.pipeline.labels import (FOLLOW_UPS_PROCESSED,
+                                                 MENTION_DONE, REFINAR,
                                                  REFINE_WORKFLOW_STATES,
                                                  REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
@@ -1585,10 +1586,9 @@ async def standalone_follow_ups(monitor: "PipelineMonitor") -> None:
 
     This is the standalone version of stage 4, invocable via the schedule
     without requiring a concurrent stage 3 run.  Idempotency is enforced by
-    the ``~follow_ups:processed`` label: PRs that already have this label
-    are skipped.
+    the :data:`FOLLOW_UPS_PROCESSED` marker label: PRs that already have
+    this label are skipped.
     """
-    _PROCESSED_LABEL = "~follow_ups:processed"
     try:
         merged_prs = await monitor.forge.list_recently_merged_prs()
     except Exception as exc:  # noqa: BLE001
@@ -1596,11 +1596,11 @@ async def standalone_follow_ups(monitor: "PipelineMonitor") -> None:
         return
 
     for pr in merged_prs:
-        if _PROCESSED_LABEL in pr.labels:
+        if FOLLOW_UPS_PROCESSED in pr.labels:
             continue
         await monitor._stage4_follow_ups(pr.number, pr.title, pr.url)
         try:
-            await monitor.forge.add_labels("pr", pr.number, [_PROCESSED_LABEL])
+            await monitor.forge.add_labels("pr", pr.number, [FOLLOW_UPS_PROCESSED])
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "standalone follow_ups: could not mark PR #%d processed: %s",

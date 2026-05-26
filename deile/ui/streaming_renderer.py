@@ -324,6 +324,13 @@ class StreamingRenderer:
         # immediately, before the agent has a chance to emit its first STAGE.
         blocks.append(_StageBlock(text="Pensando..."))
 
+        # Separador visual antes de iniciar o stream da resposta — demarca
+        # o turno do assistente e facilita a leitura em sessões longas.
+        # ``rule()`` consulta ``console.width`` corrente, então adapta ao
+        # tamanho atual do terminal a cada renderização.
+        from deile.ui.dynamic_render import turn_separator
+        turn_separator(self._console)
+
         with Live(
             self._compose(blocks),
             console=self._console,
@@ -466,6 +473,11 @@ class StreamingRenderer:
                     self._console.print(Text.from_markup(
                         self._tool_summary_markup(b).lstrip("\n")
                     ))
+                # Blank line após o summary p/ separar visualmente do próximo
+                # bloco (texto do LLM, próxima tool, etc.) — alinhado com o
+                # padrão dos blocos não-direct-print. Issue #257 round 5
+                # (usuário pediu espaçamento entre ``⎿`` e o próximo conteúdo).
+                self._console.print()
                 b.summary_committed = True
 
     def _render_single_block(self, block: Any) -> Optional[Any]:

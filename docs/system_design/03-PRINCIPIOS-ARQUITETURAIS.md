@@ -10,6 +10,7 @@
 | Função que faz I/O (arquivo, rede, DB) | Async-First |
 | Nova dependência externa em `core/` ou `orchestration/` | Hexagonal — colocar adapter em `infrastructure/` |
 | Código que recebe path/comando/query do usuário | Security-First |
+| Construção de UI com caixa/painel/largura visível ao usuário | UI adaptativa (Panel/Rule sem `width=N`); ver princípio 15 |
 | Estado que precisa sobreviver entre turnos ou sessões | Memória de quatro camadas (escolha a camada certa) |
 | `try: ... except Exception:` | Error Handling tipado |
 | Leitura de configuração nova | Configuração centralizada (`Settings` singleton) |
@@ -144,3 +145,32 @@
 | Sem PyPI privado | Não declarar deps que dependam de PyPI privado/credenciado |
 | CI smoke obrigatório | Toda PR que toca `pyproject.toml` ou `[project.optional-dependencies]` deve passar por job que faz `pip install -e ".[<extra>]"` em venv limpo |
 | Doc-instalação consistente | Todo `pip install <X>[Y]` em CLAUDE.md/README precisa corresponder a uma extra que resolve sem intervenção manual |
+
+## 15. UI: adaptação a resize do terminal
+
+> Estabelecido pela issue #307. **Regra raiz: DEILE tem layout dinâmico em todos os seus recursos** — toda surface UI consulta `console.width` no momento do render, nenhuma largura é literal. Vale para `Panel`, `Table`, `Rule`, `Live` e qualquer construção de moldura.
+>
+> **Resize-em-tempo-real:** surfaces críticas (welcome screen, comandos com tabelas pesadas tipo `/status`, `/logs`, `/cost`) embrulham seu conteúdo em `rich.live.Live` por alguns segundos via `deile.ui.dynamic_render.live_for`. Durante esse período, Rich captura `SIGWINCH` e re-renderiza cada frame com a largura corrente — se o usuário redimensiona, o painel adapta sem quebrar bordas. Após o tempo configurado, o último frame fica no scrollback (limitação fundamental abaixo). A solução enterprise definitiva (Textual framework, todo o CLI dentro de um App reativo) está descrita em issue separada.
+
+| Regra | Detalhe |
+|---|---|
+| Construções com largura derivada de texto | Proibido. Não calcular `inner_w = max(len(...), ...)` para desenhar `╔══╗` manualmente — trava a largura no momento da renderização |
+| Usar primitivas adaptativas do Rich | `Panel`, `Rule`, `Table` (sem `width=N`) — consultam `console.width` lazy via `os.get_terminal_size()` em cada render |
+| **`Table.add_column(...)` sem `width=<int>`** | Proibido literal. Rich auto-calcula a largura ótima por coluna em cada render usando `console.width` corrente. Permitido: `max_width=N` (teto, Rich pode encolher), `min_width=N` (piso), `ratio=N` (proporção), `width=None`. Verificado automaticamente em `deile/tests/commands/test_table_widths_adaptive.py` |
+| `Console()` sem `width=` | Não passar `width=N` para `rich.console.Console` salvo em testes ou consoles internos de captura (`.capture()` pra normalizar texto, nunca exibido ao usuário) — Rich precisa detectar a largura corrente do terminal |
+| Live region | Já adapta: `_render_live` chama `live.update(...)` por evento, cada `_compose` usa `console.width` corrente |
+| **Conteúdo já no scrollback NÃO reflowa** | Limitação fundamental de terminais. Uma vez que texto ANSI é commitado via `console.print()`, ele vive no buffer do emulador — não é mais nosso |
+| Sem `signal.SIGWINCH` | Não cross-platform (Windows não tem); o ganho de reagir a resize ativo é marginal e o custo (signal+asyncio+Live) é alto |
+| Sem `clear()` + replay | Destruiria scrollback histórico — UX regression |
+
+**O que adapta vs. o que NÃO adapta:**
+
+| Comportamento | Adapta? | Por quê |
+|---|---|---|
+| **Welcome em tempo real durante os primeiros segundos** | ✅ Sim, em tempo real | Embrulhado em `Live` via `live_for(duration_s=6)` |
+| **Tabela de comando pesado opt-in (`/status`, `/logs`, `/cost`, ...) em tempo real** | ✅ Sim, em tempo real | `cli.py` seta `metadata['live_render']=True`; `display_response` chama `live_for(duration_s=2.5)` |
+| Próxima chamada de `show_welcome` / `display_error` / `display_stats` após resize | ✅ Sim (próximo render) | Panel/Table consultam `console.width` corrente |
+| Tabela de qualquer comando slash após resize | ✅ Sim (próximo render) | Colunas sem `width=N`; Rich auto-calcula a partir de `console.width` em cada render |
+| Live region durante streaming após resize | ✅ Sim, em tempo real | `_compose` reusa `console.width` em cada frame |
+| `prompt_toolkit` input area | ✅ Sim | Lida com SIGWINCH internamente |
+| Markdown / Panel / ASCII art já no scrollback (depois do Live encerrar) | ❌ Não | Texto ANSI estático fora do controle da aplicação — solução final via Textual em issue follow-up |

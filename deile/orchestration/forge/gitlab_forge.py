@@ -53,6 +53,28 @@ logger = logging.getLogger(__name__)
 _PER_PAGE = 100
 
 
+def _standup_item_from_gl_json(item: dict) -> dict:
+    """Normalise a GitLab issue/MR payload to the standup display shape.
+
+    GitLab vocabulary (`iid`, `web_url`, `author.username`, `state="opened"`)
+    is mapped to the same canonical keys used by the GH helper, so the
+    ``/standup`` slash command never branches on which forge produced the
+    record. ``state="opened"`` is normalised to ``"open"`` for symmetry.
+    """
+    author = item.get("author") or {}
+    state = str(item.get("state", ""))
+    if state == "opened":
+        state = "open"
+    return {
+        "number": item.get("iid") or item.get("number"),
+        "title": item.get("title"),
+        "state": state,
+        "author": str(author.get("username") or author.get("name") or "?"),
+        "url": str(item.get("web_url") or ""),
+        "updated_at": item.get("updated_at", ""),
+    }
+
+
 class GitLabForge(ForgeClient):
     """Concrete :class:`ForgeClient` over ``glab`` + GitLab REST v4."""
 
@@ -418,6 +440,51 @@ class GitLabForge(ForgeClient):
             logger.warning("list_recently_merged_prs failed: %s", exc)
             return []
         return [PrRef.from_gl_json(it, default_state="merged") for it in items[:limit]]
+
+    async def list_prs_updated_since(
+        self, since_iso: str, *, limit: int = 100,
+    ) -> List[dict]:
+        """Return MRs updated since *since_iso* (ISO-8601 UTC).
+
+        GitLab's REST endpoint exposes ``updated_after=<iso>`` natively (full
+        ISO-8601 precision, unlike the events endpoint which is day-granular).
+        Normalises each payload to the standup shape used by the slash command.
+        """
+        try:
+            items = await self._api_paginated(
+                f"projects/{self._project_ref}/merge_requests",
+                params=[
+                    "-f", "state=all",
+                    "-f", f"updated_after={since_iso}",
+                    "-f", "order_by=updated_at",
+                    "-f", "sort=desc",
+                ],
+                max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+            )
+        except ForgeCommandError as exc:
+            logger.warning("list_prs_updated_since failed: %s", exc)
+            return []
+        return [_standup_item_from_gl_json(it) for it in items[:limit]]
+
+    async def list_issues_updated_since(
+        self, since_iso: str, *, limit: int = 100,
+    ) -> List[dict]:
+        """Return issues updated since *since_iso* (ISO-8601 UTC)."""
+        try:
+            items = await self._api_paginated(
+                f"projects/{self._project_ref}/issues",
+                params=[
+                    "-f", "state=all",
+                    "-f", f"updated_after={since_iso}",
+                    "-f", "order_by=updated_at",
+                    "-f", "sort=desc",
+                ],
+                max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+            )
+        except ForgeCommandError as exc:
+            logger.warning("list_issues_updated_since failed: %s", exc)
+            return []
+        return [_standup_item_from_gl_json(it) for it in items[:limit]]
 
     async def pr_reviewer_still_requested(self, number: int, login: str) -> bool:
         """True when *login* is in the MR's ``reviewers`` array.

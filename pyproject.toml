@@ -76,6 +76,15 @@ bot = ["deilebot @ git+https://github.com/elimarcavalli/deilebot.git@main"]
 scheduler = ["apscheduler>=3.10"]
 webhook = ["fastapi>=0.100", "uvicorn>=0.23"]
 test = ["aiohttp>=3.9", "pytest>=7", "pytest-asyncio>=0.23", "pytest-cov>=4"]
+# Observabilidade enterprise via OpenTelemetry (issue #303 fase 4).
+# DEILE roda em no-op se este extra não está instalado OU se
+# DEILE_OTLP_ENDPOINT não está set — instale apenas quando quiser correlacionar
+# traces/métricas num backend (Tempo/Loki/Prometheus/Grafana).
+otel = [
+    "opentelemetry-api>=1.27.0",
+    "opentelemetry-sdk>=1.27.0",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.27.0",
+]
 
 [project.scripts]
 deile = "deile.cli:main"

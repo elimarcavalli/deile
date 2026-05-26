@@ -313,6 +313,78 @@ def _classify_mention_action(ref: "MentionTrigger", trigger_types: list[str]) ->
     return "default"
 
 
+# ---------------------------------------------------------------------------
+# Unified mention-action templates (DRY across worker + claude renderers).
+#
+# Both `_render_worker_mention_brief` (markdown) and `_render_claude_mention_prompt`
+# (plain prose) used to carry near-identical 6-key `actions = {...}` dicts that
+# differed only in surface formatting. Wording drift had already produced subtle
+# divergence between them. Centralising the bodies here means one wording change
+# touches one place.
+#
+# Forge-agnostic (issue #297): the bodies use ``{pr_noun}`` and ``{label_pr}``
+# placeholders so the same template renders "PR" (GitHub) or "MR" (GitLab) at
+# call time. Each entry has a LABEL (the role/action header, e.g. "REVIEW
+# REQUEST" or "ASSIGNED TO {label_pr}") and a BODY (the instruction text after
+# the label). The two formatters below decorate them differently:
+# rich → ``**REVIEW REQUEST**: <body>``; plain → ``REVIEW REQUEST: <body>``.
+# ``default`` has no label — only a body.
+# ---------------------------------------------------------------------------
+_MENTION_ACTION_TEMPLATES: dict[str, tuple[str | None, str]] = {
+    "review_request": (
+        "REVIEW REQUEST",
+        "Você foi solicitado como revisor da {pr_noun} #{n}. "
+        "Faça uma revisão completa (arquitetura, DRY, KISS, SOLID, clean code), "
+        "rode os testes, corrija problemas, faça commit + push, poste evidências como "
+        "comentário na {pr_noun} e faça o merge.",
+    ),
+    "assigned_issue": (
+        "ASSIGNED",
+        "Você foi atribuído à issue #{n}. "
+        "Implemente a feature completa, crie testes, abra uma {pr_noun}. "
+        "Se já existir uma {pr_noun} para esta issue, verifique se cobre tudo e "
+        "continue a implementação no branch existente.",
+    ),
+    "assigned_pr": (
+        "ASSIGNED TO {label_pr}",
+        "Você foi atribuído à {pr_noun} #{n}. "
+        "Revise, corrija, teste, faça commit + push e mergeie se estiver pronto.",
+    ),
+    "mention_pr": (
+        "MENTION ON {label_pr}",
+        "Você foi mencionado na {pr_noun} #{n}. "
+        "Atenda ao que foi pedido no comentário/corpo, trabalhe no branch da {pr_noun}, "
+        "teste, faça commit + push e poste a resposta como comentário na {pr_noun}.",
+    ),
+    "mention_issue": (
+        "MENTION ON ISSUE",
+        "Você foi mencionado na issue #{n}. "
+        "Atenda ao que foi pedido no comentário/corpo. "
+        "Se a issue já tem {pr_noun} aberta, trabalhe no branch da {pr_noun}.",
+    ),
+    "default": (None, "Atenda ao contexto acima da forma mais apropriada."),
+}
+
+
+def _format_mention_action_rich(action: str, n: int, pr_noun: str = "PR") -> str:
+    """Render a mention action with markdown bold label (worker brief style)."""
+    label, body = _MENTION_ACTION_TEMPLATES[action]
+    body = body.format(n=n, pr_noun=pr_noun, label_pr=pr_noun)
+    if label is None:
+        return body
+    return f"**{label.format(label_pr=pr_noun)}**: {body}"
+
+
+def _format_mention_action_plain(action: str, n: int, pr_noun: str = "PR") -> str:
+    """Render a mention action with plain prose label (Claude prompt style)."""
+    label, body = _MENTION_ACTION_TEMPLATES[action]
+    body = body.format(n=n, pr_noun=pr_noun, label_pr=pr_noun)
+    if label is None:
+        return body
+    return f"{label.format(label_pr=pr_noun)}: {body}"
+
+
+# Context-aware worker mention brief builder (issue #253)
 def _render_worker_mention_brief(
     repo: str,
     ref: "MentionTrigger",
@@ -325,40 +397,14 @@ def _render_worker_mention_brief(
     trigger_summary = _summarize_trigger_types(trigger_types)
     trigger_details = _render_trigger_details(all_triggers, rich=True)
 
-    n = ref.target_number
     cfg = forge or _default_forge_config(repo)
     pr_noun = "PR" if cfg.kind is ForgeKind.GITHUB else "MR"
     forge_name = "GitHub" if cfg.kind is ForgeKind.GITHUB else "GitLab"
-    actions = {
-        "review_request": (
-            f"**REVIEW REQUEST**: Você foi solicitado como revisor da {pr_noun} #{n}. "
-            f"Faça uma revisão completa (arquitetura, DRY, KISS, SOLID, clean code), "
-            f"rode os testes, corrija problemas, faça commit + push, poste evidências como "
-            f"comentário na {pr_noun} e faça o merge."
-        ),
-        "assigned_issue": (
-            f"**ASSIGNED**: Você foi atribuído à issue #{n}. "
-            f"Implemente a feature completa, crie testes, abra uma {pr_noun}. "
-            f"Se já existir uma {pr_noun} para esta issue, verifique se cobre tudo e "
-            f"continue a implementação no branch existente."
-        ),
-        "assigned_pr": (
-            f"**ASSIGNED TO {pr_noun}**: Você foi atribuído à {pr_noun} #{n}. "
-            f"Revise, corrija, teste, faça commit + push e mergeie se estiver pronto."
-        ),
-        "mention_pr": (
-            f"**MENTION ON {pr_noun}**: Você foi mencionado na {pr_noun} #{n}. "
-            f"Atenda ao que foi pedido no comentário/corpo, trabalhe no branch da {pr_noun}, "
-            f"teste, faça commit + push e poste a resposta como comentário na {pr_noun}."
-        ),
-        "mention_issue": (
-            f"**MENTION ON ISSUE**: Você foi mencionado na issue #{n}. "
-            f"Atenda ao que foi pedido no comentário/corpo. "
-            f"Se a issue já tem {pr_noun} aberta, trabalhe no branch da {pr_noun}."
-        ),
-        "default": "Atenda ao contexto acima da forma mais apropriada.",
-    }
-    expected_action = actions[_classify_mention_action(ref, trigger_types)]
+    expected_action = _format_mention_action_rich(
+        _classify_mention_action(ref, trigger_types),
+        ref.target_number,
+        pr_noun=pr_noun,
+    )
 
     return _WORKER_MENTION_BRIEF.format(
         repo=repo,
@@ -716,32 +762,11 @@ def _render_claude_mention_prompt(
         "gh" if cfg.kind is ForgeKind.GITHUB else "glab"
     )
 
-    n = ref.target_number
-    actions = {
-        "review_request": (
-            f"REVIEW REQUEST: Revise a {pr_noun} #{n} completamente "
-            f"(arquitetura, DRY, KISS, SOLID, clean code), rode testes, corrija, "
-            f"commit + push, comente evidências e faça merge."
-        ),
-        "assigned_issue": (
-            f"ASSIGNED: Implemente a issue #{n} completa. "
-            f"Crie testes, abra {pr_noun}. Se já existir {pr_noun}, continue no branch existente."
-        ),
-        "assigned_pr": (
-            f"ASSIGNED TO {pr_noun}: Revise/corrija a {pr_noun} #{n}, "
-            f"teste, commit + push e mergeie."
-        ),
-        "mention_pr": (
-            f"MENTION ON {pr_noun}: Atenda ao pedido na {pr_noun} #{n}, "
-            f"trabalhe no branch da {pr_noun}, teste, commit + push, comente resposta."
-        ),
-        "mention_issue": (
-            f"MENTION ON ISSUE: Atenda ao pedido na issue #{n}. "
-            f"Se a issue já tem {pr_noun} aberta, trabalhe no branch da {pr_noun}."
-        ),
-        "default": "Atenda ao contexto acima da forma mais apropriada.",
-    }
-    action = actions[_classify_mention_action(ref, trigger_types)]
+    action = _format_mention_action_plain(
+        _classify_mention_action(ref, trigger_types),
+        ref.target_number,
+        pr_noun=pr_noun,
+    )
 
     return (
         f"Você foi acionado por {trigger_summary} no repositório {repo}.\n\n"

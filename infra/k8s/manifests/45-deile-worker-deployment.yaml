@@ -62,22 +62,23 @@ spec:
             # The worker calls back into the bot's control-plane to
             # post/edit Discord status messages and react.
             - { name: DEILE_BOT_ENDPOINT,           value: "http://deilebot.deile.svc.cluster.local:8765" }
-            # We allow messaging tools (incl. send_dm) without prompting
-            # the operator; the worker's prompt is sanitised by envelope.
-            - { name: DEILE_BOT_APPROVAL_AUTO,      value: "1" }
             - { name: DEILE_DEFAULT_PERSONA,        value: developer }
-            # Pin the worker to DeepSeek V4 Pro for implementation/review work:
-            # a stronger model than the cheap tier-3 flash the router might
-            # otherwise pick (the PRO performs near Claude Sonnet). Soft
-            # preference — falls back to the router if deepseek is unavailable.
-            # Configurable: change the value or remove this line.
-            - { name: DEILE_PREFERRED_MODEL,        value: "deepseek:deepseek-v4-pro" }
             # Worker's own listener.
             - { name: DEILE_WORKER_HOST,            value: "0.0.0.0" }
             - { name: DEILE_WORKER_PORT,            value: "8766" }
             - { name: DEILE_WORKER_ROOT,            value: "/home/deile/work" }
             - { name: DEILE_WORKER_TASK_TIMEOUT_S,  value: "900" }
             - { name: DEILE_WORKER_LOG_LEVEL,       value: "INFO" }
+            # Aponta o settings layered pra /etc/deile/ (montado pelo
+            # ConfigMap deile-runtime-config / manifest 47). Substitui
+            # ``DEILE_BOT_APPROVAL_AUTO`` e ``DEILE_PREFERRED_MODEL``
+            # depreciadas pela issue #111. Ver pipeline-deployment para o
+            # racional do path fora do home.
+            - { name: DEILE_SETTINGS_FILE,          value: "/etc/deile/settings.json" }
+            #
+            # Para mudar o modelo preferido do worker, edite o campo
+            # ``model.preferred`` em worker-settings.json (manifest 47).
+            #
             # IMPORTANT: do NOT install the messaging-only whitelist
             # here. The wrapper's worker mode keeps the full toolset.
           ports:
@@ -99,11 +100,19 @@ spec:
               mountPath: /home/deile/config/deilebot.yaml
               subPath: deilebot.yaml
               readOnly: true
+            # settings.json layered (issue #111) — ver DEILE_SETTINGS_FILE env.
+            - name: runtime-config
+              mountPath: /etc/deile/settings.json
+              subPath: worker-settings.json
+              readOnly: true
           readinessProbe:
             httpGet: { path: /v1/health, port: worker-api }
             initialDelaySeconds: 5
-            periodSeconds: 5
-            failureThreshold: 12
+            # 20s reduz 75% do tráfego /v1/health (era a cada 5s, gerando
+            # spam no log). Detecção de unready leva até 4 falhas = ~80s
+            # fora do Service — aceitável para workload interno.
+            periodSeconds: 20
+            failureThreshold: 4
           livenessProbe:
             httpGet: { path: /v1/health, port: worker-api }
             initialDelaySeconds: 30
@@ -129,6 +138,10 @@ spec:
         - name: bot-config
           configMap:
             name: bot-config
+            defaultMode: 292   # 0o444
+        - name: runtime-config
+          configMap:
+            name: deile-runtime-config
             defaultMode: 292   # 0o444
 ---
 apiVersion: v1

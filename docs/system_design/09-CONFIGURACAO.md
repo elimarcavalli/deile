@@ -205,8 +205,8 @@ O daemon em si vive em `elimarcavalli/deilebot` e tem extras próprios (`discord
 | Variável | Uso | Default |
 |---|---|---|
 | `DEILE_PIPELINE_REPO` | **Deprecated alias** — use `DEILE_FORGE_REPO`. Repositório alvo (`owner/repo` GH ou `group/.../project` GL) | `elimarcavalli/deile` |
-| `DEILE_FORGE_REPO` | Project path do forge ativo (`owner/repo` GH ou `group/(subgroup/)*project` GL) — Decisão #38 | (cai pra `DEILE_PIPELINE_REPO`) |
-| `DEILE_FORGE_KIND` | `github`\|`gitlab`\|`auto` (default `auto`: detecta por URL host → path heuristic) — Decisão #38 | `auto` |
+| `DEILE_FORGE_REPO` | Project path do forge ativo (`owner/repo` GH ou `group/(subgroup/)*project` GL) — Decisão #41 | (cai pra `DEILE_PIPELINE_REPO`) |
+| `DEILE_FORGE_KIND` | `github`\|`gitlab`\|`auto` (default `auto`: detecta por URL host → path heuristic) — Decisão #41 | `auto` |
 | `DEILE_GITHUB_HOST` | Hosts GitHub adicionais (CSV; ex.: `ghe.empresa.com`). `github.com` é sempre aceito | `github.com` |
 | `DEILE_GITLAB_HOST` | Hosts GitLab adicionais (CSV; ex.: `gitlab.empresa.com`). `gitlab.com` é sempre aceito | `gitlab.com` |
 | `DEILE_FORGE_PROBE` | Habilita HTTP probe opt-in para detectar forge em hosts desconhecidos | `false` |

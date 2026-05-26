@@ -57,12 +57,12 @@ class StopCommand(DirectCommand):
         
         # Create table of stoppable plans
         table = Table(title=f"⏹️ Plans Available to Stop ({len(stoppable_plans)} plans)", show_header=True, header_style="bold red")
-        table.add_column("Plan ID", style="cyan", width=10)
-        table.add_column("Title", style="white", width=30)
-        table.add_column("Status", style="yellow", width=10)
-        table.add_column("Progress", style="green", width=15)
-        table.add_column("Started", style="dim", width=16)
-        table.add_column("Action", style="red", width=15)
+        table.add_column("Plan ID", style="cyan")
+        table.add_column("Title", style="white")
+        table.add_column("Status", style="yellow")
+        table.add_column("Progress", style="green")
+        table.add_column("Started", style="dim")
+        table.add_column("Action", style="red")
         
         for plan in stoppable_plans:
             # Get detailed status

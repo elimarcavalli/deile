@@ -1,5 +1,12 @@
 # `infra/k8s/` — DEILE + deilebot em containers (Rancher Desktop / k3s)
 
+> ⭐ **Painel TUI universal** — `python3 infra/k8s/deploy.py k8s panel`
+> abre o cockpit ao vivo do DEILE. Funciona **com ou sem k8s**: detecta
+> automaticamente processos locais (`python deile.py`), tail de
+> `~/.deile/logs/`, custos do SQLite, e — quando o cluster está no ar —
+> pods, pipeline, workers, audit do bot. Tudo em uma só tela. Salto
+> direto: [seção 4.3](#43-painel-tui-ao-vivo-deploypy-k8s-panel).
+
 > **Modelo conceitual** vive em
 > [`docs/system_design/14-CONTAINERIZACAO.md`](../../docs/system_design/14-CONTAINERIZACAO.md).
 > Aqui você encontra **o passo-a-passo de operação** — instalar
@@ -278,60 +285,80 @@ python3 infra/k8s/deploy.py k8s panel
 
 O painel é uma TUI navegável (`rich.Live`) que cruza o estado do cluster
 (pods, deployments, restarts) com a fonte de verdade do pipeline (GitHub
-issues + PRs) e o uso (`~/.deile/db/usage.db`). **Não muta nada** — é só
-observação, exceto onde explicitamente acionado (`[a]ções` e `[m]odel`,
-ambos com confirmação para destrutivos).
+issues + PRs), o uso (`~/.deile/db/usage.db`), processos locais
+(`python deile.py` rodando no host) e logs locais (`~/.deile/logs/`).
+**Não muta nada** — é só observação, exceto onde explicitamente acionado
+(`[a]ções` e `[m]odel`, ambos com confirmação para destrutivos).
+
+**Três modos** de execução, detectados em runtime — **não exige
+cluster**:
+
+| Modo | Quando | O que aparece |
+|---|---|---|
+| **K8s + local** (híbrido) | cluster no ar AND `python deile.py` rodando | PODS k8s + LOCAL PROCESSES lado a lado; ACTIVITY mescla pipeline + log local; NOTIFIER mescla bot audit (k8s) + audit local |
+| **K8s only** | cluster no ar, sem DEILE local; ou `--k8s-only` | Comportamento legado pré-universal |
+| **Local only** | sem kubectl OU `--local-only` OU cluster down + há vestígios em `~/.deile/` | Pods/Workers/Pipeline ficam em branco; LOCAL PROCESSES e GITHUB e TOKENS funcionam; modelo via `kubectl set env` mostra aviso |
+| **Demo** (`--demo`) | opt-in explícito | Mocks puros — útil pra ver a UI sem rodar nada |
 
 Composição (módulos em `infra/k8s/`):
 
-- `_panel_data.py` — cache TTL + 7 providers (Pods, Pipeline, Worker,
-  GitHub, Costs, Models, CurrentModel). Fonte única de verdade dos números.
-- `_panel_demo.py` — mocks usados quando o cluster está fora ou o `kubectl`
-  não está no PATH (modo demo: a UI ainda abre).
+- `_panel_data.py` — cache TTL + `RuntimeContext` + 11 providers (Pods,
+  Pipeline, Worker, GitHub, Costs, Models, CurrentModel, Notifier +
+  **LocalProcesses, LocalLogs, LocalAudit**). Fonte única de verdade dos
+  números.
+- `_panel_demo.py` — mocks usados em `--demo` (modo legado opt-in).
 - `_panel.py` — `KeyReader` (termios cbreak / `msvcrt`), view contract,
-  alerts engine, 9 views, loop principal `PanelApp`.
+  alerts engine, 9 views, `_LogStreamer` (kubectl), `_LocalLogTailer`
+  (tail file), loop principal `PanelApp`.
 
-Zero dependência nova: `rich` já está em `pyproject.toml`.
+Zero dependência nova: `rich` já está em `pyproject.toml`. Detecção
+local usa só `ps`, leitura tail-from-end pura (até 64KB), sem `psutil`.
 
 #### 4.3.1 Visão geral — o dashboard
 
 A primeira tela que aparece. Refresh visual **1s** (cada bloco refresca
 conforme TTL do seu provider — ver tabela abaixo).
 
+**Modo híbrido (k8s + local) — capturado em produção:**
+
 ```text
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ DEILE Stack  ·  Dashboard  ·  2026-05-23 13:28:18  ·  refresh 3.0s                                         ┃
-┃ cluster: rancher-desktop (k3s)   namespace: deile   image: deile-stack:local                               ┃
+┃ DEILE Stack  ·  Dashboard  ·  2026-05-24 22:30:33  ·  refresh 1.0s                                         ┃
+┃ mode: k8s + local   cluster: rancher-desktop (k3s)   namespace: deile   repo: elimarcavalli/deile          ┃
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-╭─ PODS ─────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│        pod                           status     age      r   last-activi…   doing now                      │
-│  ────────────────────────────────────────────────────────────────────────────────────────────────────────  │
-│  ●     deile-pipeline-676866dcdf-…   Running    2h06m    0   12m ago        worker dispatch completed      │
-│  ●     deile-worker-6486989bbb-45…   Running    2h23m    0   3s ago         idle                           │
-│  ●     deile-worker-6486989bbb-lr…   Running    2h22m    0   12m ago        2026-05-23 16:15:57,852 INFO…  │
-│  ●     deilebot-75b5dc48d4-k88v7     Running    2h23m    0   —              —                              │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ PIPELINE ──────────────────────────────────────────╮╭─ ALERTS ────────────────────────────────────────────╮
-│ running for 2h06m   ·  last action 12m ago          ││ ⚠ pipeline sem ação há 12m — pode estar travado     │
-│ summary: worker dispatch completed                  ││ ⚠ 1 issue(s) com ~workflow:bloqueada: #283          │
-│ dispatches/24h: 3  mentions/24h: 3                  ││                                                     │
-│ Issues open: 2  bloqueada:1  sem_workflow:1         ││                                                     │
-│ PRs open:    2  sem_review:2                        ││                                                     │
-╰─────────────────────────────────────────────────────╯╰─────────────────────────────────────────────────────╯
-╭─ ACTIVITY (últimos 10) ────────────────────────────────────────────────────────────────────────────────────╮
-│  13:15:57        pipeline          dispatch                            worker dispatch completed           │
-│  13:15:57        pipeline          http                                POST /v1/dispatch → 200             │
-│  13:04:58        pipeline          dispatch                            worker dispatch starting            │
-│  13:04:58        pipeline          mention              PR295          triggers=reviewer                   │
-│  11:56:26        pipeline          mention              #278           triggers=assignee                   │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ TOKENS & CUSTOS ───────────────────────────────────╮╭─ ÚLTIMAS DECISÕES ──────────────────────────────────╮
-│ anthropic $0.32   openai $0.04                      ││ —  worker dispatch completed                        │
-│ total 24h: $0.36   records: 196  ·  1h: $0.12       ││ —  worker dispatch starting                         │
-│                                                     ││ PR295  triggers=reviewer                            │
-╰─────────────────────────────────────────────────────╯╰─────────────────────────────────────────────────────╯
+╭─ PODS ───────────────────────────────────╮╭─ LOCAL PROCESSES (host) ─────────────────╮
+│   pod              status    age   doing ││   pid/role             rss  up   cpu doing│
+│  ──────────────────────────────────────  ││  ──────────────────────────────────────── │
+│  ⚡ deile-pipe…    Running   5h28m mention││  ● local-deile#2001    6MB  15d   0% disp │
+│  ● deile-worker…   Running   2h12m idle  ││  ● local-deile#16694   14MB 1h10m 0% disp │
+│  ● deile-worker…   Running   2h12m idle  ││  ● local-deile#28117   25MB 30m   0% disp │
+│  ● deilebot…       Running   2h12m —     ││                                           │
+╰──────────────────────────────────────────╯╰───────────────────────────────────────────╯
+╭─ PIPELINE ──────────────────────────╮╭─ ALERTS ────────────────────────────────────╮
+│ running for 5h28m  ·  last 38s ago  ││ ⛔ deile-worker-... reiniciou 28× — investigar│
+│ summary: mention poll (review …)    ││ ⛔ deile-worker-... reiniciou 26× — investigar│
+│ dispatches/24h: 0  mentions/24h: 0  ││ ⛔ deilebot-…       reiniciou 29× — investigar│
+│ Issues open: 4  sem_workflow:4      ││                                              │
+│ PRs open:    5  sem_review:5        ││                                              │
+╰─────────────────────────────────────╯╰──────────────────────────────────────────────╯
+╭─ ACTIVITY (últimos 10) ──────────────────────────────────────────────────────────────╮
+│  22:29:55  pipeline  mention   PR297    triggers=reviewer                            │
+│  22:29:32  local     dispatch           worker dispatch completed (1 result)         │
+│  22:28:11  pipeline  http               POST /v1/dispatch → 200                      │
+│  22:28:11  pipeline  dispatch           worker dispatch starting                     │
+│  22:27:42  local     stages             refining_passes=2/5 prompt_tokens=4819       │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ TOKENS & CUSTOS ───────────────────╮╭─ ÚLTIMAS DECISÕES ──────────────────────────╮
+│ deepseek $1.74  anthropic $0.32     ││ PR297  triggers=reviewer                     │
+│ total 24h: $2.06  records: 246  ·   ││ —  worker dispatch completed                 │
+│ 1h: $0.12                           ││ —  worker dispatch starting                  │
+╰─────────────────────────────────────╯╰──────────────────────────────────────────────╯
   [1]Pod watch  [2]Pipeline  [3]Issues/PRs  [4]Logs split  [5]Tokens  [n]otifier  [a]ctions  [m]odel
 ```
+
+**Header "mode:" sinaliza o que está ativo** — `k8s + local` (híbrido,
+verde), `k8s only` (ciano), `local only` (amarelo), `demo (mocks)`
+(vermelho).
 
 **Visual vs fetch — desacoplados.** A view re-renderiza em cadência
 **de 1s** (`refresh_s`) — render é ~3ms, custo desprezível. O fetch
@@ -741,6 +768,95 @@ Padrões do contract:
 | `[m]` mostra `(não setado)` no pipeline | é o estado correto se o manifest do pipeline não define `DEILE_PREFERRED_MODEL` | aplique normalmente — o `set env` cria a entrada |
 | painel trava ao apertar `c` em Ações com runner em curso | é a parada (SIGTERM → SIGKILL 2s); aguarde | até 2s; se persistir, `Ctrl-C` no terminal mata o painel inteiro |
 | logs do pod-watch só mostram `health` em loop | filtro `[h]` está em "VISÍVEIS" | aperte `h` para esconder; o título mostra `N health filtrados` |
+
+#### 4.3.16 CLI flags do `panel`
+
+Todos opcionais (defaults batem com a stack padrão em `manifests/`).
+Encadeie após `deploy.py k8s panel`:
+
+```bash
+python3 infra/k8s/deploy.py k8s panel [flags...]
+```
+
+**Por categoria:**
+
+| Categoria | Flag | Default | Quando usar |
+|---|---|---|---|
+| **Namespace / deploys** | `--namespace <ns>` | `deile` | rodar contra outro namespace (ex: testar PR num clone do cluster) |
+| | `--pipeline-deploy <name>` | `deile-pipeline` | renomeou o deployment no manifest |
+| | `--worker-deploy <name>` | `deile-worker` | idem |
+| | `--bot-deploy <name>` | `deilebot` | idem |
+| **GitHub** | `--repo <owner/repo>` | derivado de `git remote get-url origin` | painel apontando pra outro repo de pipeline |
+| **Paths locais** | `--usage-db <path>` | `~/.deile/db/usage.db` | DB de custos em outro caminho (PVC montado, snapshot, etc) |
+| | `--logs-dir <path>` | `~/.deile/logs/` | logs em outro local (CI, container with mounted volume) |
+| **Modo** | `--k8s-only` | (auto) | **não** detectar processos locais; útil quando o painel está sendo aberto NUM HOST com DEILE rodando que NÃO é o que você quer monitorar |
+| | `--local-only` | (auto) | **não** chamar kubectl (mesmo disponível); foca só no host |
+| | `--demo` | (off) | mocks puros — útil pra screenshot/treinamento sem cluster nem DEILE |
+
+**Exemplos:**
+
+```bash
+# Painel apontando para um cluster de homologação (mesmo binário, ns diferente)
+python3 infra/k8s/deploy.py k8s panel --namespace deile-staging
+
+# DEILE rodando local sem k8s — só host
+python3 infra/k8s/deploy.py k8s panel --local-only
+
+# Cluster de produção isolado, ignorando processo local de dev
+python3 infra/k8s/deploy.py k8s panel --k8s-only
+
+# DB de custos snapshotado pra inspeção offline
+python3 infra/k8s/deploy.py k8s panel --usage-db /backup/usage-2026-05-24.db
+
+# Pipeline rodando contra outro fork
+python3 infra/k8s/deploy.py k8s panel --repo other-org/their-deile
+
+# Modo demo para gravar screenshot do README ou treinar alguém
+python3 infra/k8s/deploy.py k8s panel --demo
+```
+
+**Validação de flags acontece antes do TTY abrir** — `--namespace` sem
+valor, flag desconhecido, ou `--k8s-only` em ambiente sem kubectl
+retornam erro imediato (exit code 64 ou 1).
+
+#### 4.3.17 Modo Local-only — DEILE rodando fora do k8s
+
+Quando você roda `python3 deile.py` direto no shell (sem container) e
+quer monitorar **sem** precisar do cluster:
+
+```bash
+python3 infra/k8s/deploy.py k8s panel --local-only
+```
+
+O que aparece (todos com dados reais, sem mocks):
+
+| Painel | Fonte real |
+|---|---|
+| `LOCAL PROCESSES` | `ps -axo pid,pcpu,rss,etime,command` filtrado por padrões `(deile\|deilebot)` — categorizado em `local-deile`/`local-pipeline`/`local-bot`/`local-other` |
+| `PIPELINE` | fallback para `last_action` do log local quando o pod do pipeline não responde — `summary` mostra a última ação do log local (`worker dispatch completed`, etc) |
+| `ACTIVITY` | classifica eventos da última janela (~64KB tail-from-end) de `~/.deile/logs/deile.log` — `actor='local'` na coluna |
+| `ISSUES & PRs` | igual ao modo k8s (vem de `gh api`) |
+| `TOKENS & CUSTOS` | igual ao modo k8s (SQLite local — `~/.deile/db/usage.db`) |
+| `NOTIFIER ECHO` | parses `~/.deile/logs/security_audit.log` (JSONL) — mostra cada `AuditEvent` emitido pelo agente local |
+| `AÇÕES` | `[1] status (k8s offline)` + ações locais: `tail deile.log`, `tail security_audit`, `ps deile-like`, `open logs dir`, `open sessions dir` |
+| `TROCAR MODELO` | mostra aviso honesto: `kubectl set env` não roda sem k8s; ajuste via `model_providers.yaml` ou env var no shell |
+
+O `PodWatch` ([1] → Enter num processo local) **muda o streamer** —
+chama `tail -F ~/.deile/logs/deile.log` em vez de `kubectl logs -f`.
+Fallback Python puro quando `tail` ausente (polling de EOF a cada
+500ms). Header do drill-in mostra PID, CPU%, RSS, uptime, cmdline.
+
+**Detecção automática de modo.** Sem nenhum flag, o painel roda
+`RuntimeContext.detect()` e escolhe entre:
+
+```
+k8s_available  = kubectl_bin() is not None  (e cluster aceita)
+local_available = ~/.deile/logs/ existe  OU  ~/.deile/db/usage.db existe
+                                          OU  `ps` mostra python+deile
+```
+
+Ambos → híbrido. Só um → modo correspondente. Nenhum → erro com
+sugestão de `--demo`.
 
 ### 4.4 Diagnóstico rápido
 

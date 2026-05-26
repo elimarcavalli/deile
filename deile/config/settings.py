@@ -741,6 +741,11 @@ _JSON_ONLY_FIELD_MAP: Dict[str, str] = {
     "forge.github_api_prefix": "forge_github_api_prefix",
     "cron.db_path": "cron_db_path",
     "cron.poll_interval": "cron_poll_interval",
+    # Sub-DEILEs paralelos (issue #257)
+    "subagent.runner": "subagent_runner",
+    "subagent.max_parallel": "subagent_max_parallel",
+    "subagent.poll_interval_s": "subagent_poll_interval_s",
+    "subagent.budget_s": "subagent_budget_s",
     "agent.max_tool_iterations": "max_tool_iterations",
 }
 
@@ -1164,16 +1169,41 @@ def _apply_legacy_fallback(cwd: Path) -> Optional["Settings"]:
     return Settings.load_from_file(legacy_path)
 
 
+def _resolve_global_settings_path() -> Path:
+    """Path do JSON do user layer, honrando ``DEILE_SETTINGS_FILE`` se setado.
+
+    Quando rodamos em K8s, o ``~/.deile/`` é um emptyDir writable (precisamos
+    pra logs/sessions/run) e não é local pra montar um ConfigMap (mounts de
+    subPath em ``~/.deile/`` criam o diretório como ``root:deile 0755``,
+    tornando o resto não-writable para o usuário 10001). A saída limpa é
+    montar o ConfigMap em ``/etc/deile/settings.json`` e apontar o loader
+    pra esse path via env var — preservando o mesmo formato JSON e a
+    semântica de camadas. Sem a env var, o comportamento default
+    (``~/.deile/settings.json``) é preservado.
+
+    A env var ``DEILE_SETTINGS_FILE`` é **infra-only** (não-deprecada): ela
+    apenas relocaliza o user layer; não substitui a migração env-var → JSON
+    da issue #111.
+    """
+    override = os.environ.get("DEILE_SETTINGS_FILE", "").strip()
+    if override:
+        return Path(override)
+    return Path.home() / ".deile" / "settings.json"
+
+
 def _load_layered_settings() -> "Settings":
     """Build a fresh ``Settings`` from defaults + ``.deile/settings.json`` layers.
 
     Order:
       1. Defaults from the dataclass.
-      2. Apply ``~/.deile/settings.json`` (user) overrides — this is also
-         where the trust allowlist (``trust.project_layer_dirs``) is read.
+      2. Apply user layer (``~/.deile/settings.json`` por default, ou o path
+         apontado por ``DEILE_SETTINGS_FILE``) — também onde o trust
+         allowlist (``trust.project_layer_dirs``) é lido.
       3. Conditionally apply ``<cwd>/.deile/settings.json`` (project)
          overrides on top — only when ``cwd`` is in the allowlist or the
-         migration policy is ``"auto"`` (the default).
+         migration policy is ``"auto"`` (the default). **Pulado quando o
+         project_path coincide com o global_path** — evita aplicar o mesmo
+         arquivo duas vezes (cenário comum em containers onde HOME == cwd).
       4. Apply DEILE_* env vars as deprecated fallback (win over JSON for
          backward compat).
 
@@ -1182,7 +1212,7 @@ def _load_layered_settings() -> "Settings":
     """
     settings = Settings()
     cwd = Path.cwd()
-    global_path = Path.home() / ".deile" / "settings.json"
+    global_path = _resolve_global_settings_path()
     project_path = cwd / ".deile" / "settings.json"
 
     # Layer 0: profile preset — peek at profile.name from user settings first
@@ -1190,11 +1220,21 @@ def _load_layered_settings() -> "Settings":
     settings.profile_name = _peek_profile_name(global_path)
     _apply_profile_layer(settings)
 
-    # Layer 1: global user preferences (~/.deile/settings.json) — wins over profile
+    # Layer 1: global user preferences — wins over profile
     _apply_user_layer(settings, global_path)
 
-    # Layer 2: project preferences — gated by trust boundary (issue #125)
-    _apply_project_layer_if_trusted(settings, cwd, project_path)
+    # Layer 2: project preferences — gated by trust boundary (issue #125).
+    # Pula quando o arquivo coincide com o global (HOME == cwd em containers
+    # com workingDir == HOME): aplicar o mesmo JSON duas vezes não muda
+    # valores mas emite warning de "project layer sem trust".
+    try:
+        same_file = global_path.exists() and project_path.exists() and (
+            global_path.resolve() == project_path.resolve()
+        )
+    except OSError:
+        same_file = False
+    if not same_file:
+        _apply_project_layer_if_trusted(settings, cwd, project_path)
 
     # Legacy fallback: if neither new-layer file exists, honor config/settings.json
     if not global_path.exists() and not project_path.exists():

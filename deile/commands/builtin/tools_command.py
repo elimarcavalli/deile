@@ -242,12 +242,12 @@ class ToolsCommand(DirectCommand):
         """Create list display for all tools"""
         
         table = Table(title="🔧 Available Tools", show_header=True, header_style="bold magenta")
-        table.add_column("Tool Name", style="cyan", width=15)
-        table.add_column("Category", style="green", width=10) 
-        table.add_column("Risk", style="yellow", width=8)
-        table.add_column("Calls", justify="right", style="blue", width=6)
-        table.add_column("Success%", justify="right", style="green", width=8)
-        table.add_column("Description", style="white", width=40)
+        table.add_column("Tool Name", style="cyan")
+        table.add_column("Category", style="green") 
+        table.add_column("Risk", style="yellow")
+        table.add_column("Calls", justify="right", style="blue")
+        table.add_column("Success%", justify="right", style="green")
+        table.add_column("Description", style="white")
         
         tools = data.get("tools", {})
         for tool_name, tool_data in sorted(tools.items()):

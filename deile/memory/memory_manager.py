@@ -5,7 +5,7 @@ import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 from .episodic_memory import EpisodicMemory
 from .memory_consolidation import MemoryConsolidator
@@ -97,6 +97,10 @@ class MemoryManager:
         # Estado do manager
         self._is_initialized = False
         self._consolidation_task: Optional[asyncio.Task] = None
+        # Hard references to fire-and-forget tasks. The event loop only
+        # keeps weakrefs (see docs of ``asyncio.create_task``), so without
+        # this set background work could be GC'd mid-execution.
+        self._background_tasks: Set[asyncio.Task] = set()
         self._memory_stats = {
             "retrievals": 0,
             "stores": 0,
@@ -166,14 +170,20 @@ class MemoryManager:
             )
 
             # Extrai conhecimento para semantic memory (assíncrono)
-            asyncio.create_task(self._extract_semantic_knowledge(
-                user_input, agent_response, context
-            ))
+            self._spawn_background(
+                self._extract_semantic_knowledge(
+                    user_input, agent_response, context
+                ),
+                name="extract_semantic_knowledge",
+            )
 
             # Analisa patterns para procedural memory (assíncrono)
-            asyncio.create_task(self._analyze_interaction_patterns(
-                user_input, agent_response, context
-            ))
+            self._spawn_background(
+                self._analyze_interaction_patterns(
+                    user_input, agent_response, context
+                ),
+                name="analyze_interaction_patterns",
+            )
 
             self._memory_stats["stores"] += 1
             logger.debug(f"Interação armazenada: working_id={working_id}, episode_id={episode_id}")
@@ -432,6 +442,34 @@ class MemoryManager:
                 # Continua o loop mesmo com erro
                 await asyncio.sleep(60)  # Aguarda 1 minuto antes de tentar novamente
 
+    def _spawn_background(self, coro, *, name: Optional[str] = None) -> asyncio.Task:
+        """Schedule a coroutine as a background task with a hard reference.
+
+        The event loop only keeps weak references to ``asyncio.Task``
+        objects; without storing them somewhere, fire-and-forget tasks can
+        be garbage-collected mid-execution and silently disappear. We hold
+        the task in ``self._background_tasks`` and remove it via a
+        done-callback. Exceptions are logged so they don't vanish silently.
+        """
+        task = asyncio.create_task(coro, name=name)
+        self._background_tasks.add(task)
+
+        def _on_done(t: asyncio.Task) -> None:
+            self._background_tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                logger.error(
+                    "Background task %r failed: %s",
+                    t.get_name(),
+                    exc,
+                    exc_info=exc,
+                )
+
+        task.add_done_callback(_on_done)
+        return task
+
     async def shutdown(self) -> None:
         """Finaliza o sistema de memória gracefully"""
         logger.info("Finalizando sistema de memória...")
@@ -444,6 +482,22 @@ class MemoryManager:
                     await self._consolidation_task
                 except asyncio.CancelledError:
                     pass
+
+            # Aguarda background tasks em andamento (semantic/procedural).
+            # Não cancelamos: queremos que o trabalho persista. Cap em 5s
+            # para não travar shutdown indefinidamente.
+            if self._background_tasks:
+                pending = list(self._background_tasks)
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*pending, return_exceptions=True),
+                        timeout=5.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Background tasks did not finish in 5s; %d still pending",
+                        len(self._background_tasks),
+                    )
 
             # Executa consolidação final
             await self.optimize_memory(force=True)

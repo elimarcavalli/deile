@@ -8,9 +8,10 @@ if TYPE_CHECKING:
 import yaml
 from prompt_toolkit import PromptSession
 from rich import box
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.prompt import Prompt as RichPrompt
+from rich.rule import Rule
 from rich.status import Status
 from rich.table import Table
 from rich.text import Text
@@ -328,7 +329,17 @@ class ConsoleUIManager(UIManager):
         ``session`` opcional permite refletir o modelo atualmente selecionado
         via ``/model use`` (armazenado em ``context_data["forced_model"]``)
         em vez de sempre exibir o default da config.
+
+        Resize-em-tempo-real (issue #307): o painel ``Provider/Model/Status``
+        é renderizado dentro de ``rich.live.Live`` por alguns segundos. Rich
+        instala um handler ``SIGWINCH`` e re-renderiza cada frame com a
+        largura corrente do terminal — se o usuário redimensiona enquanto o
+        welcome está vivo, ele adapta sem quebrar bordas. Após o período, o
+        último frame fica no scrollback (limitação fundamental documentada
+        no princípio #15). Ver também ``deile.ui.dynamic_render``.
         """
+        from deile.ui.dynamic_render import live_for
+
         self.console.clear()
 
         provider_label, model_label = self._resolve_provider_model(session)
@@ -346,36 +357,25 @@ class ConsoleUIManager(UIManager):
                 Text.from_markup(f"  [bold #FFD166]✦[/] [italic]{slogan_random}[/italic]\n")
             )
 
-            border = "#4285F4"
+            # Painel adaptativo: `live_for` segura a região Live ativa por
+            # `duration_s`, re-renderizando a cada frame. Durante esse
+            # período, qualquer SIGWINCH é capturado por Rich e o layout
+            # adapta em tempo real à nova `console.width`.
+            def build_panel():
+                prov_markup = f"[bold cyan]Provider[/bold cyan]  [white]{provider_label}[/white]"
+                model_markup = f"[bold cyan]Model[/bold cyan]     [white]{model_label}[/white]"
+                status_markup = "[bold green]●[/bold green] [bold]DEILE[/bold]   Pronto — digite [cyan]/help[/cyan] para começar"
+                header = Text.from_markup(prov_markup + "\n" + model_markup)
+                status = Text.from_markup(status_markup)
+                body = Group(header, Rule(style="#4285F4"), status)
+                return Panel(
+                    body,
+                    border_style="#4285F4",
+                    box=box.DOUBLE,
+                    padding=(0, 1),
+                )
 
-            prov_label = f"Provider  {provider_label}"
-            model_label_line = f"Model     {model_label}"
-            status_plain = "● DEILE   Pronto — digite /help para começar"
-
-            inner_w = max(len(prov_label), len(model_label_line), len(status_plain)) + 2
-
-            def _row(content_markup: str, visible_len: int) -> Text:
-                pad = " " * max(0, inner_w - 1 - visible_len)
-                line = Text()
-                line.append("║", style=border)
-                line.append_text(Text.from_markup(" " + content_markup + pad))
-                line.append("║", style=border)
-                return line
-
-            top = Text("╔" + "═" * inner_w + "╗", style=border)
-            mid = Text("╠" + "═" * inner_w + "╣", style=border)
-            bot = Text("╚" + "═" * inner_w + "╝", style=border)
-
-            prov_markup = f"[bold cyan]Provider[/bold cyan]  [white]{provider_label}[/white]"
-            model_markup = f"[bold cyan]Model[/bold cyan]     [white]{model_label}[/white]"
-            status_markup = "[bold green]●[/bold green] [bold]DEILE[/bold]   Pronto — digite [cyan]/help[/cyan] para começar"
-
-            self.console.print(top)
-            self.console.print(_row(prov_markup, len(prov_label)))
-            self.console.print(_row(model_markup, len(model_label_line)))
-            self.console.print(mid)
-            self.console.print(_row(status_markup, len(status_plain)))
-            self.console.print(bot)
+            live_for(build_panel, console=self.console, duration_s=6.0, refresh_hz=8.0)
             self.console.print("  [dim]DEILE v5.1 ULTRA[/dim]\n")
         except Exception:
             print("DEILE v5.1 ULTRA")
@@ -407,12 +407,32 @@ class ConsoleUIManager(UIManager):
             return await asyncio.to_thread(input, '> ')
 
     def display_response(self, content, metadata: Optional[Dict] = None):
-        """Exibe a resposta do agente com metadados."""
-        self.console.print("\n[bold #4285F4]Deile >[/] ")
-        
+        """Exibe a resposta do agente com metadados.
+
+        Adaptação a resize (issue #307): quando ``metadata['live_render']``
+        é ``True`` e o conteúdo é Rich (``Panel``, ``Table``, ``Group``…),
+        o conteúdo é embrulhado em ``live_for`` por ``live_render_duration``
+        segundos (default 2.0). Rich re-renderiza a cada frame consultando
+        ``console.width`` corrente — se o usuário redimensiona durante esse
+        período, o painel/tabela adapta em tempo real. Comandos pesados
+        (``/status``, ``/logs``, ``/cost`` etc.) podem opt-in setando essa
+        flag no ``CommandResult.metadata``.
+        """
+        from deile.ui.dynamic_render import live_for, turn_separator
+        turn_separator(self.console)
+        self.console.print("[bold #4285F4]Deile >[/] ")
+
+        meta = metadata or {}
+        live_render_enabled = bool(meta.get("live_render"))
+        live_duration = float(meta.get("live_render_duration", 2.0))
+
         # Verifica se é um objeto Rich (Panel, Table, etc.)
-        if hasattr(content, '__rich__') or hasattr(content, '__rich_console__'):
-            # É um objeto Rich - renderiza diretamente
+        is_rich = hasattr(content, '__rich__') or hasattr(content, '__rich_console__')
+        if is_rich and live_render_enabled:
+            # Live: adapta a resize em tempo real durante ``live_duration``s
+            live_for(content, console=self.console, duration_s=live_duration)
+        elif is_rich:
+            # Render Rich estático — adapta apenas em novos renders
             self.console.print(content)
         elif isinstance(content, str):
             # É string - usa Markdown
