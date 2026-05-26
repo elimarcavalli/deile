@@ -15,16 +15,34 @@ Round 2 (post-feedback):
     timeout de 200ms (não 50ms — era apertado demais e levava ``ESC`` a
     disparar quando o usuário pressionava arrows em rajada — issue #257
     feedback ponto 4).
+
+Round 6 (rajada de setas → ESC falso):
+  * Parser byte-a-byte do round 2 tinha 3 falhas reais em rajadas:
+    (1) ``read(1)`` pode retornar ``""`` em meio à drain (interrompido por
+        sinal), e o branch ``intro not in ("[", "O")`` então disparava
+        ``_on_key("\\x1b")`` — fechando o painel;
+    (2) drain de 50ms com select por byte de 5ms era frágil para teclados
+        que entregam bytes em rajada num único batch (kernel buffer);
+    (3) entre iterações do loop, se a segunda seta chegasse atrasada (≥200ms
+        — pause natural em rajada manual), o ``\\x1b`` solo expirava o
+        timeout e ainda disparava cancel.
+  * Solução: ler em rajada com ``os.read(fd, N)`` (atômico, pega tudo que
+    o kernel já tem) e parsear o buffer com state-machine puro
+    (:func:`parse_key_buffer`), testável sem TTY. Bytes pendentes no buffer
+    ficam para a próxima iteração — sem timeout artificial pra sequências
+    completas. ESC genuíno só dispara quando o ``\\x1b`` chega *isolado* no
+    buffer E não há mais bytes em 200ms (timeout só nesse caso).
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 import threading
 import time
-from typing import List, Optional, TextIO
+from typing import List, Optional, TextIO, Tuple
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -43,14 +61,100 @@ logger = logging.getLogger(__name__)
 
 
 _REFRESH_HZ = 6.0
-# Timeout (segundos) após receber ``\x1b`` para decidir se é ESC genuíno ou
-# prefixo de escape-sequence (seta etc.). 200ms é a recomendação clássica de
+# Timeout (segundos) após receber ``\x1b`` ISOLADO no buffer para decidir se
+# é ESC genuíno ou prefixo de seta. 200ms é a recomendação clássica de
 # editores curses; cobre teclados USB em rajada sem deixar ESC perceptível.
 _ESC_SEQUENCE_TIMEOUT_S = 0.20
-# Janela para coletar o resto da escape-sequence depois do CSI introducer
-# (``\x1b[`` ou ``\x1bO``). Suficiente para até ~5 bytes (todas as teclas
-# que nos importam — setas/F-keys têm no máximo 4-5 bytes).
-_ESC_SEQUENCE_DRAIN_S = 0.05
+# Tamanho máximo de uma leitura atômica do stdin (``os.read``). 64 cobre
+# folgada qualquer rajada plausível de setas/teclas em <200ms (cada seta é
+# 3 bytes; >20 teclas/100ms é mais rápido que qualquer humano).
+_STDIN_READ_CHUNK = 64
+
+
+def parse_key_buffer(buf: str) -> Tuple[List[str], str]:
+    """Parsea ``buf`` em sequências de tecla reconhecidas.
+
+    Retorna ``(seqs, remainder)`` onde ``seqs`` é a lista de sequências
+    completas em ordem de chegada e ``remainder`` é o sufixo do buffer que
+    ainda não forma uma sequência completa (deve voltar pra próxima rodada).
+
+    Sequências reconhecidas (cada item de ``seqs`` casa com o que o legacy
+    ``_on_key`` espera):
+
+    * ``"\\x1b"``: ESC isolado. **Só emitido quando o caller decide que o
+      buffer não vai crescer mais** — ver ``flush=True`` abaixo. Por default
+      ESC fica em ``remainder``, aguardando os bytes da sequência.
+    * ``"\\x1b[A/B/C/D"``: setas via CSI introducer.
+    * ``"\\x1bOA/B/C/D"``: setas via SS3 introducer (terminal alt-mode).
+    * ``"\\x1b[<digits><final>"``: outras CSI (PageUp/Down, Home/End com
+      modificadores); ignoradas pelo caller.
+    * 1 char ASCII printable (dígito, letra) cada um vira sua própria seq.
+
+    Bytes inesperados em meio à CSI quebram a sequência: o ``\\x1b`` é
+    descartado (NÃO emitido como ESC genuíno — comportamento pré round 6
+    causava cancel falso) e o resto vai pra próxima iteração.
+
+    Args:
+        buf: string acumulada de stdin (pode conter múltiplas teclas em
+            sequência num único batch do kernel).
+
+    Returns:
+        ``(seqs, remainder)``. ``remainder`` pode incluir ``"\\x1b"`` solto
+        no fim — só vira ESC após o timeout do caller.
+    """
+    seqs: List[str] = []
+    i = 0
+    n = len(buf)
+    while i < n:
+        ch = buf[i]
+        if ch != "\x1b":
+            # ASCII char comum (dígito, letra, etc.)
+            seqs.append(ch)
+            i += 1
+            continue
+
+        # ESC encontrado — pode ser ESC isolado OU prefixo de CSI/SS3.
+        if i + 1 >= n:
+            # Último byte do buffer — devolve como remainder pro caller
+            # decidir (timeout → ESC genuíno; chegada de mais bytes →
+            # próxima rodada de parse).
+            return seqs, buf[i:]
+
+        intro = buf[i + 1]
+        if intro not in ("[", "O"):
+            # ``\x1b`` seguido de algo que não é CSI/SS3 introducer.
+            # Round 6 fix: NÃO interpretamos como ESC genuíno — o usuário
+            # quase nunca digita ESC seguido de letra; mais provável é um
+            # glitch do kernel ou sequência exótica. Descarta o ``\x1b``
+            # e continua processando o byte como ASCII normal.
+            i += 1  # pula o \x1b
+            continue
+
+        # Procura o terminador da CSI/SS3.
+        # CSI (\x1b[): termina em byte final A-Z/a-z (0x40-0x7e).
+        # SS3 (\x1bO): SEMPRE 3 bytes (\x1bO + 1 char).
+        if intro == "O":
+            if i + 2 >= n:
+                # Sequência SS3 incompleta — guarda no remainder.
+                return seqs, buf[i:]
+            seqs.append(buf[i:i + 3])
+            i += 3
+            continue
+
+        # CSI: varre até achar terminador.
+        end = i + 2
+        while end < n:
+            b = buf[end]
+            if 0x40 <= ord(b) <= 0x7e:
+                break
+            end += 1
+        if end >= n:
+            # CSI incompleta — guarda no remainder.
+            return seqs, buf[i:]
+        seqs.append(buf[i:end + 1])
+        i = end + 1
+
+    return seqs, ""
 
 
 _STATUS_GLYPH = {
@@ -465,6 +569,9 @@ class SubAgentPanelRenderer:
         # Ctrl+C / exit abrupto.
         try:
             fd = sys.stdin.fileno()
+        except Exception:
+            return None  # sem fd, sem watcher
+        try:
             current_attrs = termios.tcgetattr(fd)
             # lflag está no índice 3; ICANON ativo = modo cooked.
             already_cbreak = not bool(current_attrs[3] & termios.ICANON)
@@ -525,65 +632,66 @@ class SubAgentPanelRenderer:
                 pass
 
         def _watch() -> None:
+            """Lê stdin em rajada e despacha sequências completas.
+
+            Round 6: substitui o parser byte-a-byte por leitura atômica via
+            ``os.read(fd, 64)`` + parser de buffer. Vantagens:
+              * Rajadas (3+ setas <50ms) chegam num único ``os.read`` —
+                kernel já tem tudo no buffer e o select acorda só uma vez.
+                ``parse_key_buffer`` separa cada seta em sua própria
+                sequência sem usar timeouts ad-hoc.
+              * ``read(1)`` que retornava ``""`` (signal) ou ``intro`` vazio
+                não pode mais disparar ``_on_key("\\x1b")`` falso —
+                ``parse_key_buffer`` descarta ``\\x1b`` órfão silenciosamente.
+              * ESC genuíno só dispara após 200ms COM o ``\\x1b`` isolado
+                no remainder do buffer (nenhuma outra tecla seguiu).
+            """
             try:
-                # stdin já está em cbreak (configurado pelo CLI watcher).
-                # Não chamamos setcbreak aqui pra não criar um segundo
-                # snapshot que poderia ser restaurado fora de ordem.
+                # ``fd`` já foi capturado no escopo externo (mesmo fd usado
+                # pra detectar cbreak). Reutilizamos para evitar diferenças
+                # de file descriptor entre threads.
+                pending = ""        # bytes não-parseáveis (CSI incompleta)
+                esc_deadline = 0.0  # > 0 quando ESC isolado está aguardando
                 while not stop_event.is_set():
-                    # Bloco curto pro stop_event ser checado a cada 100ms.
-                    r, _, _ = _select.select([sys.stdin], [], [], 0.1)
+                    # Timeout do select: curto pra reagir a stop_event e
+                    # apertado o suficiente pra confirmar ESC isolado.
+                    timeout = 0.1
+                    if esc_deadline > 0:
+                        remaining = esc_deadline - time.monotonic()
+                        if remaining <= 0:
+                            # ESC isolado expirou — dispara cancel.
+                            _on_key("\x1b")
+                            pending = ""
+                            esc_deadline = 0.0
+                            continue
+                        timeout = min(timeout, remaining)
+                    r, _, _ = _select.select([sys.stdin], [], [], timeout)
                     if not r:
                         continue
+                    # Leitura ATÔMICA — pega tudo o que o kernel tem no
+                    # buffer agora (até 64 bytes, folgado p/ rajada manual).
                     try:
-                        ch = sys.stdin.read(1)
+                        chunk = os.read(fd, _STDIN_READ_CHUNK)
                     except (OSError, ValueError):
                         break
-                    if not ch:
-                        continue
-                    if ch != "\x1b":
-                        _on_key(ch)
-                        continue
-
-                    # ESC recebido — pode ser ESC genuíno OU prefixo de
-                    # escape-sequence (setas, F-keys, etc.). Espera até
-                    # _ESC_SEQUENCE_TIMEOUT_S por mais bytes.
-                    r2, _, _ = _select.select([sys.stdin], [], [], _ESC_SEQUENCE_TIMEOUT_S)
-                    if not r2:
-                        _on_key("\x1b")
-                        continue
-                    # Lê introducer ('[' ou 'O').
-                    try:
-                        intro = sys.stdin.read(1)
-                    except (OSError, ValueError):
+                    if not chunk:
+                        # EOF — stdin fechou.
                         break
-                    if intro not in ("[", "O"):
-                        # ESC seguido de algo inesperado — interpreta como
-                        # ESC genuíno e processa o próximo byte separadamente.
-                        _on_key("\x1b")
-                        _on_key(intro)
-                        continue
-                    seq = "\x1b" + intro
-                    # Drena o resto da sequência. Pra setas/F-keys: 1-2 bytes.
-                    # _ESC_SEQUENCE_DRAIN_S por byte é cómodo no teclado USB.
-                    deadline = time.monotonic() + _ESC_SEQUENCE_DRAIN_S
-                    while time.monotonic() < deadline and len(seq) < 8:
-                        r3, _, _ = _select.select([sys.stdin], [], [], 0.005)
-                        if not r3:
-                            break
-                        try:
-                            nxt = sys.stdin.read(1)
-                        except (OSError, ValueError):
-                            break
-                        if not nxt:
-                            break
-                        seq += nxt
-                        # CSI termina em uma letra A-Z/a-z (códigos finais).
-                        if 0x40 <= ord(nxt) <= 0x7e and intro == "[":
-                            break
-                        # SS3 (ESC O X) é sempre 3 bytes.
-                        if intro == "O":
-                            break
-                    _on_key(seq)
+                    try:
+                        new_data = chunk.decode("utf-8", errors="replace")
+                    except Exception:
+                        new_data = ""
+                    pending += new_data
+                    seqs, pending = parse_key_buffer(pending)
+                    for seq in seqs:
+                        _on_key(seq)
+                    # Se sobrou ``\x1b`` solto no remainder, arma o
+                    # deadline pra confirmar ESC genuíno em 200ms.
+                    if pending == "\x1b":
+                        if esc_deadline == 0:
+                            esc_deadline = time.monotonic() + _ESC_SEQUENCE_TIMEOUT_S
+                    else:
+                        esc_deadline = 0.0
             except Exception:
                 logger.debug("keyboard watcher crashed", exc_info=True)
             finally:
@@ -660,4 +768,4 @@ def _escape_markup(text) -> str:
     return _rich_escape(str(text))
 
 
-__all__ = ["SubAgentPanelRenderer"]
+__all__ = ["SubAgentPanelRenderer", "parse_key_buffer"]
