@@ -585,8 +585,7 @@ Refresh **1s** (pra mostrar o output streaming). Lista os verbos do
 ╭─ AÇÕES ────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │         ação                  comando                                                                      │
 │  ────────────────────────────────────────────────────────────────────────────────────────────────────────  │
-│  1      status                /Users/elimar.cavalli/dev/github/elimarcavalli/deile/infra/k8s/deploy.py     │
-│                               k8s status                                                                   │
+│  1      status                infra/k8s/deploy.py k8s status                                               │
 │  2      restart               k8s restart --yes                                                            │
 │  3      build (no restart)    k8s build --yes                                                              │
 │  4      build + restart       build --restart --yes                                                        │
