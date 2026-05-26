@@ -33,18 +33,62 @@ def persist_session(session: Any, user_input: str) -> None:
         pass
 
 
-def rollback_history(session: Any, baseline_len: int) -> None:
-    """Trim ``conversation_history`` back to ``baseline_len``.
+_CANCELLED_MARKER_TEXT = "(cancelado pelo usuário)"
 
-    Required after ESC/Ctrl+C: providers (DeepSeek, OpenAI) collapse two
-    consecutive ``user`` turns with ``/`` as a separator, so leaving an orphan
-    user entry poisons the next reply.
+
+def mark_turn_cancelled(
+    session: Any,
+    baseline_len: int,
+    marker_text: str = _CANCELLED_MARKER_TEXT,
+) -> None:
+    """Marca o turno cancelado no histórico ao invés de apagá-lo.
+
+    Mantém a entrada ``user`` que motivou o turno e adiciona um placeholder
+    ``assistant`` com ``marker_text`` (default ``"(cancelado pelo usuário)"``)
+    para o LLM saber que aquilo foi cancelado E para evitar duas entradas
+    ``user`` consecutivas (que DeepSeek/OpenAI colapsam com ``/`` como
+    separador — bug histórico que motivou o rollback original).
+
+    Apaga apenas eventuais entradas ``assistant`` parciais que o agente
+    tenha escrito antes do cancel (caso o stream tenha começado a responder
+    antes do ESC).
+
+    Por que essa é a opção certa: visualmente o texto da request cancelada
+    fica no scrollback do terminal. Se o histórico do LLM não tivesse
+    aquela entrada, o usuário olharia para a tela e pensaria "ele viu
+    isso", mandaria uma mensagem dependente daquilo, e o LLM teria
+    amnésia da request anterior. Manter a entrada (com marker explícito
+    de cancelamento) preserva o mental model do usuário.
     """
     history = getattr(session, "conversation_history", None)
     if history is None:
         return
+
+    # Apaga entradas parciais APÓS a entrada user do turno cancelado.
+    # Mantém a entrada user em ``baseline_len`` (se houver — algumas
+    # callsites podem invocar com baseline_len == len(history)).
+    if len(history) > baseline_len + 1:
+        del history[baseline_len + 1:]
+
+    # Se há uma entrada user em ``baseline_len``, adiciona placeholder
+    # assistant. Sem isso, próximo turno teria duas user consecutivas
+    # (o bug histórico do separador ``/`` em DeepSeek/OpenAI).
     if len(history) > baseline_len:
-        del history[baseline_len:]
+        entry = history[baseline_len]
+        if entry.get("role") == "user":
+            import time as _time
+            history.append({
+                "role": "assistant",
+                "content": marker_text,
+                "timestamp": _time.time(),
+                "metadata": {"cancelled": True},
+            })
+
+
+# Alias retrocompatível para callers externos que ainda esperem
+# ``rollback_history``. Comportamento agora é "mark cancelled", não
+# "delete". Documentação atualizada acima.
+rollback_history = mark_turn_cancelled
 
 
 def replay_history(ui: Any, session: Any, history: list) -> None:
