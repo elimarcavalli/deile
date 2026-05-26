@@ -676,6 +676,20 @@ def is_claude_mode(dispatch_mode: Optional[str]) -> bool:
     )
 
 
+def _build_claude_implementer_with_warning() -> "ClaudeImplementer":
+    """Factory single-callsite para :class:`ClaudeImplementer` — emite o
+    aviso de PATH-missing antes de instanciar.
+
+    Toda construção de ``ClaudeImplementer`` em ``build_implementer`` passa
+    por aqui — evita que um caminho novo (ex.: alias acrescentado em
+    ``CLAUDE_ALIASES``) esqueça do warning. Compatibilidade pública: o
+    nome legacy ``_warn_if_claude_unavailable`` continua aceito como alias
+    pra não quebrar callers externos (testes antigos, ferramentas).
+    """
+    _warn_if_claude_unavailable()
+    return ClaudeImplementer()
+
+
 def _warn_if_claude_unavailable() -> None:
     """Aviso de boot quando dispatch_mode=claude mas ``claude`` não tá no PATH.
 
@@ -698,9 +712,12 @@ def _warn_if_claude_unavailable() -> None:
     if shutil.which("claude") is None:
         logger.warning(
             "pipeline dispatch_mode=claude mas binary 'claude' não encontrado "
-            "no PATH. A próxima dispatch falhará com ENOENT. Instale o "
-            "claude CLI (ou rode `claude login`) antes de usar este modo. "
-            "Detalhe: deile/orchestration/pipeline/claude_dispatcher.py "
+            "no PATH. A próxima dispatch PODE falhar com ENOENT — a menos que "
+            "o binary esteja sendo montado por volume/initContainer que "
+            "`shutil.which` não enxerga ainda. Para resolver no caminho "
+            "comum, instale o claude CLI (ou rode `claude login`) antes de "
+            "usar este modo. Detalhe: "
+            "deile/orchestration/pipeline/claude_dispatcher.py "
             "usa shutil.which('claude') ou cai em literal 'claude'."
         )
 
@@ -718,20 +735,20 @@ def build_implementer(
     (ex.: ``deile_woker``) usaria a chave da Anthropic e queimaria budget
     sem o operador perceber. Fail-fast surface o erro imediatamente.
 
-    Issue #309: quando o modo resolvido é ``claude`` mas o binary ``claude``
-    não está no PATH, emite warning de boot. Sem fail-fast — ver
-    :func:`_warn_if_claude_unavailable`.
+    Issue #309: a construção de ``ClaudeImplementer`` é centralizada em
+    :func:`_build_claude_implementer_with_warning`, que emite o warning de
+    boot quando o binary ``claude`` não está no PATH — todo caminho novo
+    para ClaudeImplementer aqui herda o aviso sem precisar repetir a
+    chamada.
     """
     if not dispatch_mode or not dispatch_mode.strip():
         # Legacy default (vazio/None) — usa Claude.
-        _warn_if_claude_unavailable()
-        return ClaudeImplementer()
+        return _build_claude_implementer_with_warning()
     mode = dispatch_mode.strip().lower()
     if mode in WORKER_ALIASES:
         return WorkerImplementer(client=worker_client)
     if mode in CLAUDE_ALIASES:
-        _warn_if_claude_unavailable()
-        return ClaudeImplementer()
+        return _build_claude_implementer_with_warning()
     raise ValueError(
         f"unknown pipeline dispatch_mode {dispatch_mode!r}; "
         f"expected one of {sorted(WORKER_ALIASES | CLAUDE_ALIASES)} "

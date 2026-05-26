@@ -61,6 +61,8 @@ from _panel_data import _fmt_age  # noqa: F401
 from _panel_data import kubectl_bin  # noqa: F401
 from _panel_data import BackgroundRefresher, PanelData  # noqa: F401
 from _panel_data import \
+    _audit_dispatch_mode_change as pd_audit_dispatch_mode_change
+from _panel_data import \
     _audit_security_policy_change as pd_audit_security_policy_change
 from _panel_data import \
     clear_pipeline_dispatch_mode as pd_clear_pipeline_dispatch_mode
@@ -3468,13 +3470,34 @@ class DispatchModeView(View):
 
     def _handle_set_confirm_key(self, key: str) -> ActionResult:
         mode = self.mode_modal[1] if self.mode_modal else None
+        # Guarda explícita contra mode_modal degenerado (('set', '') /
+        # ('set', None)): em vez de cair silenciosamente no ramo de
+        # cancelamento, fechamos com erro visível pra o operador notar.
+        if key == "y" and not mode:
+            self.mode_modal = None
+            self.last_msg = (
+                "estado interno inconsistente: modo do modal vazio"
+            )
+            self.last_ok = False
+            pd_audit_dispatch_mode_change(
+                None, result="failed",
+                detail="modal state degenerado em _handle_set_confirm_key",
+            )
+            return ActionResult.refresh()
         if key == "y" and mode:
             self._apply_set(mode)
             self.mode_modal = None
             if self.data is not None:
                 self.data.dispatch_mode._cache.invalidate()  # noqa: SLF001
             return ActionResult.refresh()
-        # ESC / n / anything else cancels (default-deny).
+        # ESC / n / anything else cancels (default-deny). Audita
+        # ``cancelled`` para paridade com ModelSwitcherView — o branch
+        # ``cancelled`` em ``_audit_dispatch_mode_change`` não fica morto.
+        reason = ("operador cancelou na confirmação" if key in ("n", "ESC")
+                  else f"tecla inesperada na confirmação: {key!r}")
+        pd_audit_dispatch_mode_change(
+            mode, result="cancelled", detail=reason,
+        )
         self.mode_modal = None
         self.last_msg = "cancelado pelo operador"
         self.last_ok = False
@@ -3487,6 +3510,13 @@ class DispatchModeView(View):
             if self.data is not None:
                 self.data.dispatch_mode._cache.invalidate()  # noqa: SLF001
             return ActionResult.refresh()
+        # Cancelamento auditado — paridade com ModelSwitcherView e com o
+        # ramo "cancelled" reconhecido em ``_audit_dispatch_mode_change``.
+        reason = ("operador cancelou na confirmação" if key in ("n", "ESC")
+                  else f"tecla inesperada na confirmação: {key!r}")
+        pd_audit_dispatch_mode_change(
+            None, result="cancelled", detail=reason,
+        )
         self.mode_modal = None
         self.last_msg = "cancelado pelo operador"
         self.last_ok = False

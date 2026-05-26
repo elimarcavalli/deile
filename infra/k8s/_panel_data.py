@@ -2153,13 +2153,27 @@ class DispatchModeProvider(_KubectlProviderMixin):
     Mirrors :class:`CurrentModelProvider` (um único ``kubectl get -o json``)
     mas extrai ``DEILE_PIPELINE_DISPATCH_MODE`` em vez de
     ``DEILE_PREFERRED_MODEL``. TTL alinhado com ``CurrentModelProvider`` (3s).
+
+    Multi-NS (PR #315): aceita ``namespace=`` no construtor para casar com o
+    namespace efetivo do painel. Quando o operador escolhe NS via menu, o
+    provider precisa ler do mesmo NS que :func:`set_pipeline_dispatch_mode`
+    escreve — senão a leitura mostra estado de outro cluster.
     """
 
+    # Default declarado no ConfigMap ``deile-runtime-config`` (manifest 47).
+    # **Drift risk**: se o ConfigMap mudar (ex.: novo default ``claude``), este
+    # valor precisa ser bumpado em sincronia. Hoje não há leitor de ConfigMap
+    # aqui — o painel não monta o ConfigMap no host. Aceito como pequena
+    # constante de espelhamento; alternativa (ler via ``kubectl get cm
+    # deile-runtime-config -o jsonpath=…``) acrescenta um subprocess por
+    # refresh e foi rejeitada pelo custo.
     _DEFAULT_FROM_CONFIGMAP = "deile_worker"
 
-    def __init__(self, ttl_s: float = 3.0, enabled: bool = True):
+    def __init__(self, ttl_s: float = 3.0, enabled: bool = True,
+                 namespace: str = NS):
         self._kubectl = kubectl_bin()
         self._enabled = enabled
+        self._namespace = namespace
         self._cache: Cache[DispatchModeEntry] = Cache(
             ttl_s, self._fetch,
             fallback=DispatchModeEntry(
@@ -2181,7 +2195,7 @@ class DispatchModeProvider(_KubectlProviderMixin):
         if self._kubectl is None:
             raise RuntimeError("kubectl não encontrado")
         data = _capture_json(
-            [self._kubectl, "-n", NS, "get",
+            [self._kubectl, "-n", self._namespace, "get",
              f"deployment/{_DISPATCH_DEPLOYMENT}", "-o", "json"],
             timeout=4.0,
         )
@@ -2196,7 +2210,13 @@ class DispatchModeProvider(_KubectlProviderMixin):
             if env.get("name") == _DISPATCH_ENV_VAR:
                 raw = env.get("value")
                 if isinstance(raw, str) and raw.strip():
-                    env_value = raw.strip().lower()
+                    # Canonicaliza aliases (``worker``, ``claude_code``...) para
+                    # o conjunto whitelist da UI. Se alguém setou manualmente
+                    # ``DEILE_PIPELINE_DISPATCH_MODE=worker`` (alias válido para
+                    # ``build_implementer``), o painel mostra ``deile_worker``
+                    # — alinhado com a opção que aparece no picker, em vez de
+                    # exibir um valor que não destaca nenhuma linha.
+                    env_value = _canonicalize_dispatch_alias(raw)
                 break
         if env_value:
             return DispatchModeEntry(
@@ -2206,6 +2226,27 @@ class DispatchModeProvider(_KubectlProviderMixin):
             mode=None, source="default",
             effective=self._DEFAULT_FROM_CONFIGMAP,
         )
+
+
+def _canonicalize_dispatch_alias(raw: str) -> str:
+    """Normaliza aliases de dispatch_mode para o conjunto canônico da UI.
+
+    ``build_implementer`` aceita aliases (``worker``, ``deile-worker``,
+    ``claude_code``...), mas o painel mostra só o conjunto canônico
+    (``claude`` | ``deile_worker``). Esse helper traduz: alias conhecido →
+    forma canônica; valor desconhecido → devolvido como-veio em lowercase
+    (não esconde valor estranho na UI; o operador vê o que está no cluster).
+    """
+    # Import local pra evitar dependência circular (deile.* importado de
+    # infra/k8s/_panel_data.py durante boot do painel).
+    from deile.orchestration.pipeline.implementer import (  # noqa: PLC0415
+        CLAUDE_ALIASES, WORKER_ALIASES)
+    lo = raw.strip().lower()
+    if lo in WORKER_ALIASES:
+        return "deile_worker"
+    if lo in CLAUDE_ALIASES:
+        return "claude"
+    return lo
 
 
 def _audit_dispatch_mode_change(
@@ -3370,7 +3411,11 @@ class PanelData:
             # `DispatchModeProvider` (issue #309) lê
             # ``DEILE_PIPELINE_DISPATCH_MODE`` da Deployment
             # ``deile-pipeline`` — single read, baixa frequência (3s).
-            dispatch_mode=DispatchModeProvider(enabled=k8s_on),
+            # ``namespace`` propagado do contexto (multi-NS / PR #315) — sem
+            # isso o painel lê de ``deile`` mas escreve no NS escolhido,
+            # quebrando a sincronia de leitura/escrita.
+            dispatch_mode=DispatchModeProvider(enabled=k8s_on,
+                                               namespace=context.namespace),
             notifier=NotifierProvider(namespace=context.namespace,
                                       deploy=context.bot_deploy,
                                       enabled=k8s_on),

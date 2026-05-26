@@ -113,6 +113,59 @@ class TestDispatchModeProvider:
             entry = DispatchModeProvider().get(force=True)
         assert entry.mode == "claude"
 
+    def test_aliases_are_canonicalized(self):
+        """Se alguém setou ``worker``/``deile-worker``/``claude_code`` via
+        kubectl set env direto (aliases válidos para ``build_implementer``),
+        o provider canonicaliza para o conjunto whitelist da UI — o picker
+        sabe destacar a linha certa em vez de mostrar um valor solto."""
+        from _panel_data import DispatchModeProvider
+        for raw, expected in [
+            ("worker", "deile_worker"),
+            ("deile-worker", "deile_worker"),
+            ("claude_code", "claude"),
+            ("claude-code", "claude"),
+        ]:
+            with patch("_panel_data._capture_json",
+                       return_value=_deployment_json_with_env({
+                           "DEILE_PIPELINE_DISPATCH_MODE": raw,
+                       })), \
+                 patch("_panel_data.kubectl_bin",
+                       return_value="/fake/kubectl"):
+                entry = DispatchModeProvider().get(force=True)
+            assert entry.mode == expected, (
+                f"alias {raw!r} deveria canonicalizar para {expected!r}, "
+                f"got {entry.mode!r}"
+            )
+
+    def test_unknown_value_passes_through_lowercased(self):
+        """Valor estranho (não-alias, não-canônico) deve passar como-veio em
+        lowercase — não esconde do operador o que está no cluster."""
+        from _panel_data import DispatchModeProvider
+        with patch("_panel_data._capture_json",
+                   return_value=_deployment_json_with_env({
+                       "DEILE_PIPELINE_DISPATCH_MODE": "WeIrD_MoDe",
+                   })), \
+             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+            entry = DispatchModeProvider().get(force=True)
+        assert entry.mode == "weird_mode"
+
+    def test_namespace_kwarg_passed_to_kubectl(self):
+        """Multi-NS (PR #315): o construtor aceita namespace= e o argv reflete."""
+        from _panel_data import DispatchModeProvider
+        captured_argv = []
+
+        def _capture(argv, timeout=None):
+            captured_argv.append(list(argv))
+            return _deployment_json_with_env({})
+
+        with patch("_panel_data._capture_json", side_effect=_capture), \
+             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+            DispatchModeProvider(namespace="customns").get(force=True)
+        # `-n customns` no argv (em vez do default `deile`).
+        assert "customns" in captured_argv[0]
+        # E NÃO o default `deile`.
+        # (NS default importado de _panel_data; aqui só validamos o customns.)
+
 
 # ---------------------------------------------------------------------------
 # set_pipeline_dispatch_mode
@@ -202,6 +255,28 @@ class TestSetPipelineDispatchMode:
         assert ok is False
         assert "forbidden" in msg
 
+    def test_subprocess_oserror_returns_clear_error(self):
+        """Quando ``subprocess.run`` levanta ``OSError`` (ex.: kubectl binary
+        sumiu entre o ``kubectl_bin()`` e o ``run``), o setter responde
+        ``(False, msg)`` em vez de propagar a exceção e quebrar o painel."""
+        import subprocess as _sp
+
+        from _panel_data import set_pipeline_dispatch_mode
+        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
+             patch("_panel_data.subprocess.run",
+                   side_effect=OSError("binary missing")):
+            ok, msg = set_pipeline_dispatch_mode("claude")
+        assert ok is False
+        assert "binary missing" in msg or "OSError" in msg or "executar" in msg.lower()
+        # Pra garantir que o tipo nominal `subprocess.TimeoutExpired` continua
+        # capturado também (defesa via composição de except (OSError, TE)).
+        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
+             patch("_panel_data.subprocess.run",
+                   side_effect=_sp.TimeoutExpired(cmd="kubectl", timeout=15)):
+            ok, msg = set_pipeline_dispatch_mode("claude")
+        assert ok is False
+        assert "executar" in msg.lower() or "timeout" in msg.lower()
+
     def test_namespace_passed_through(self):
         """O painel TUI suporta multi-NS (PR #315). A função deve respeitar
         o ``namespace=`` kwarg em vez de hardcoded ``NS``."""
@@ -220,6 +295,86 @@ class TestSetPipelineDispatchMode:
 # ---------------------------------------------------------------------------
 # clear_pipeline_dispatch_mode
 # ---------------------------------------------------------------------------
+
+
+class TestAuditDispatchModeChange:
+    """Pilar 08 exige que toda mutação privilegiada emita audit. Validamos
+    aqui que ``set_pipeline_dispatch_mode`` chama o audit logger em cada
+    transição relevante (denied, allowed, completed, failed), com o
+    envelope correto (``SECURITY_POLICY_CHANGED``, actor canônico,
+    resource apontando para a env var)."""
+
+    def test_audit_emitted_on_denied_unknown_mode(self):
+        from _panel_data import set_pipeline_dispatch_mode
+        with patch("_panel_data._audit_dispatch_mode_change") as audit:
+            set_pipeline_dispatch_mode("garbage")
+        # Pelo menos uma chamada com result="denied".
+        denied = [c for c in audit.call_args_list
+                  if c.kwargs.get("result") == "denied"]
+        assert denied, audit.call_args_list
+
+    def test_audit_emitted_on_kubectl_missing(self):
+        from _panel_data import set_pipeline_dispatch_mode
+        with patch("_panel_data.kubectl_bin", return_value=None), \
+             patch("_panel_data._audit_dispatch_mode_change") as audit:
+            set_pipeline_dispatch_mode("claude")
+        failed = [c for c in audit.call_args_list
+                  if c.kwargs.get("result") == "failed"]
+        assert failed, audit.call_args_list
+
+    def test_audit_emitted_on_success_allowed_then_completed(self):
+        """O setter audita 2x no caminho feliz: ``allowed`` antes do
+        subprocess (registra a intenção), ``completed`` depois (sucesso
+        confirmado). Isso garante trilha mesmo se o subprocess travar."""
+        from _panel_data import set_pipeline_dispatch_mode
+        fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
+        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
+             patch("_panel_data.subprocess.run", return_value=fake_proc), \
+             patch("_panel_data._audit_dispatch_mode_change") as audit:
+            set_pipeline_dispatch_mode("claude")
+        results = [c.kwargs.get("result") for c in audit.call_args_list]
+        assert "allowed" in results
+        assert "completed" in results
+
+    def test_audit_emitted_on_subprocess_failure(self):
+        from _panel_data import set_pipeline_dispatch_mode
+        fake_proc = MagicMock(returncode=1, stdout="",
+                              stderr="forbidden: deployments.apps")
+        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
+             patch("_panel_data.subprocess.run", return_value=fake_proc), \
+             patch("_panel_data._audit_dispatch_mode_change") as audit:
+            set_pipeline_dispatch_mode("claude")
+        results = [c.kwargs.get("result") for c in audit.call_args_list]
+        assert "failed" in results
+
+    def test_audit_emitted_on_clear_success(self):
+        from _panel_data import clear_pipeline_dispatch_mode
+        fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
+        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
+             patch("_panel_data.subprocess.run", return_value=fake_proc), \
+             patch("_panel_data._audit_dispatch_mode_change") as audit:
+            clear_pipeline_dispatch_mode()
+        results = [c.kwargs.get("result") for c in audit.call_args_list]
+        # Clear path: allowed + completed; ``mode=None`` em todas as chamadas.
+        assert "allowed" in results
+        assert "completed" in results
+        for call in audit.call_args_list:
+            assert call.args[0] is None  # mode arg sempre None no clear
+
+    def test_audit_envelope_is_security_policy_changed(self):
+        """Smoke do envelope real: ``_audit_dispatch_mode_change`` chama o
+        AuditLogger com ``SECURITY_POLICY_CHANGED`` e actor canônico."""
+        from _panel_data import _audit_dispatch_mode_change
+        with patch("deile.security.audit_logger.get_audit_logger") as gal:
+            mock_logger = MagicMock()
+            gal.return_value = mock_logger
+            _audit_dispatch_mode_change(
+                "claude", result="completed", detail="ok",
+            )
+        assert mock_logger.log_event.called
+        kw = mock_logger.log_event.call_args.kwargs
+        assert "SECURITY_POLICY_CHANGED" in str(kw.get("event_type"))
+        assert kw.get("actor") == "panel:set_pipeline_dispatch_mode"
 
 
 class TestClearPipelineDispatchMode:
@@ -361,6 +516,37 @@ class TestDispatchModeViewKeyHandling:
         assert view.mode_modal is None
         assert view.last_ok is False  # default-deny audit msg
 
+    def test_set_confirm_n_emits_cancelled_audit(self):
+        """Paridade com ModelSwitcherView: cancelamento explícito ([n])
+        emite AuditEvent com result='cancelled' — não fica em branch morto."""
+        view, app = self._new_view()
+        view.handle_key("\r", app)
+        with patch("_panel.pd_audit_dispatch_mode_change") as audit:
+            view.handle_key("n", app)
+        results = [c.kwargs.get("result") for c in audit.call_args_list]
+        assert "cancelled" in results
+
+    def test_clear_confirm_n_emits_cancelled_audit(self):
+        view, app = self._new_view()
+        view.handle_key("c", app)
+        with patch("_panel.pd_audit_dispatch_mode_change") as audit:
+            view.handle_key("n", app)
+        results = [c.kwargs.get("result") for c in audit.call_args_list]
+        assert "cancelled" in results
+
+    def test_degenerate_set_modal_state_is_handled(self):
+        """Guarda explícita para o cenário ('set', '') / ('set', None) —
+        em vez de cair silenciosamente em cancel, fecha com erro visível."""
+        view, app = self._new_view()
+        view.mode_modal = ("set", "")
+        with patch("_panel.pd_audit_dispatch_mode_change") as audit:
+            view.handle_key("y", app)
+        assert view.mode_modal is None
+        assert view.last_ok is False
+        # Audit registra "failed" pra trilha — não é cancelamento legítimo.
+        results = [c.kwargs.get("result") for c in audit.call_args_list]
+        assert "failed" in results
+
     def test_set_confirm_unexpected_key_cancels_default_deny(self):
         """Qualquer tecla diferente de [y] cancela. Padrão default-deny
         mirror do ModelSwitcherView (issue #305)."""
@@ -427,6 +613,38 @@ class TestDashboardHotkey:
         assert result.kind == Action.NAV
         assert result.target == "dispatch-mode"
 
+    def test_d_hotkey_only_set_in_dashboard_nav(self):
+        """O ``[d]`` é hotkey exclusiva do dashboard — não deve colidir com
+        outras views. Verificamos que outras views (PodPickerView,
+        IssuesPRsView, StageModelsView, etc) NÃO mapeiam ``d`` no seu
+        ``handle_key`` para uma navegação global (ActionResult.nav).
+
+        Isso protege contra um futuro PR que adicione ``d`` numa view
+        diferente e cause conflito de propagação (hoje o panel propaga
+        global após a view não interceptar — então um ``d`` numa view
+        que não tem handler local cai no dashboard handler depois)."""
+        from _panel import (DashboardView, DispatchModeView, ModelSwitcherView,
+                            PodPickerView, StageModelsView)
+
+        # Cada view abaixo NÃO deve ter um shortcut "d" próprio. O dispatch
+        # view tem `d` listada nas hotkeys da statusline mas não no
+        # handle_key — porque [d] é chamado do dashboard pra abrir essa
+        # view; uma vez na view, a tecla é capturada pelo modal/nav.
+        for view_cls in (PodPickerView, ModelSwitcherView, StageModelsView,
+                         DispatchModeView):
+            # Smoke: instanciar com data=None (demo) não deve crashar e
+            # `handle_key("d", ...)` deve retornar ActionResult sem .target
+            # casando outra view.
+            v = view_cls(data=None)
+            result = v.handle_key("d", MagicMock())
+            # Aceita ActionResult() padrão (default-pass) ou refresh.
+            assert getattr(result, "target", None) != "dispatch-mode" \
+                or view_cls is DashboardView, (
+                f"{view_cls.__name__}.handle_key('d') deveria não navegar para "
+                f"dispatch-mode (só DashboardView pode), got target="
+                f"{getattr(result, 'target', None)}"
+            )
+
 
 # ---------------------------------------------------------------------------
 # build_implementer claude-binary warning (issue #309)
@@ -458,6 +676,9 @@ class TestBuildImplementerClaudeWarning:
         assert mock_warn.called
         msg = mock_warn.call_args[0][0].lower()
         assert "claude" in msg
+        # Mensagem hedged ("PODE falhar") aceita os mesmos tokens da
+        # versão categórica ("vai falhar"); pra os 2 modos serem testados
+        # por um único set de checks, validamos o keyword central.
         assert ("não encontrado" in msg or "not found" in msg
                 or "enoent" in msg)
 
