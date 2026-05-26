@@ -14,7 +14,6 @@ import json
 import subprocess
 import sys
 
-
 SHELL_POD = "deploy/deile-shell"  # ajuste se label diferente
 
 
