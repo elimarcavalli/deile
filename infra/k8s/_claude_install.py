@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -29,16 +30,86 @@ class ClaudeLoginResult:
     error: Optional[str] = None
 
 
-def _read_credentials(home: Path) -> Optional[dict]:
-    """Lê ~/.claude/credentials.json se existir e válido."""
+def _check_claude_logged_in() -> Optional[dict]:
+    """Returns dict de ``claude auth status --json`` se loggedIn=true; senão None.
+
+    Idempotente — primeira coisa que ``bootstrap_claude_worker`` chama, evita
+    abrir browser desnecessariamente quando claude já está logado.
+    """
+    try:
+        result = subprocess.run(
+            ["claude", "auth", "status", "--json"],
+            capture_output=True, text=True, check=False, timeout=15,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or not data.get("loggedIn"):
+        return None
+    return data
+
+
+def _read_credentials_from_keychain() -> Optional[dict]:
+    """macOS Keychain: extrai JSON do service 'Claude Code-credentials'.
+
+    Returns o JSON parseado (contém ``claudeAiOauth`` com access_token,
+    refresh_token, scopes etc) ou None se ausente / não-Darwin / falha.
+
+    NÃO loga o conteúdo — segredos não entram em log.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password",
+             "-s", "Claude Code-credentials", "-w"],
+            capture_output=True, text=True, check=False, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    try:
+        return json.loads(result.stdout.strip())
+    except json.JSONDecodeError as exc:
+        logger.warning("Keychain content not JSON: %s", exc)
+        return None
+
+
+def _read_credentials_from_file(home: Path) -> Optional[dict]:
+    """Linux/headless fallback: lê ~/.claude/credentials.json se existir."""
     cred_path = home / ".claude" / "credentials.json"
     if not cred_path.exists():
         return None
     try:
         return json.loads(cred_path.read_text())
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 — log + None é OK
         logger.warning("failed to parse %s: %s", cred_path, exc)
         return None
+
+
+def _read_credentials(home: Path) -> Optional[dict]:
+    """Retorna credenciais Claude OAuth do host.
+
+    Estratégia em camadas (primeira que retornar venceu):
+      1. macOS Keychain (``security find-generic-password -s 'Claude Code-credentials'``)
+         — onde claude CLI armazena por padrão no macOS.
+      2. ``~/.claude/credentials.json`` — fallback Linux/headless, ou
+         operadores que usam apiKeyHelper.
+
+    Returns None se nenhuma camada produzir credenciais válidas.
+    """
+    # macOS: Keychain primeiro (storage default do claude CLI)
+    creds = _read_credentials_from_keychain()
+    if creds is not None:
+        return creds
+    # Linux ou headless: arquivo
+    return _read_credentials_from_file(home)
 
 
 def _run_claude_login(*, logout_first: bool = False) -> bool:
@@ -167,31 +238,70 @@ def bootstrap_claude_worker(
     """
     home = home or Path(os.environ.get("HOME", str(Path.home())))
 
-    # 1. Credentials
+    # 1. Credentials — fluxo idempotente que evita loop OAuth:
+    #
+    #    1a. Pre-check: `claude auth status --json` — se já logado, evita
+    #        browser ride desnecessário (a menos que force_relogin=True).
+    #    1b. Read credenciais (Keychain macOS / file Linux).
+    #    1c. Se ausente E interactive=True → claude auth login + re-read.
+    #
+    # IMPORTANTE: `_read_credentials` agora tem Keychain support no macOS;
+    # antes assumia ~/.claude/credentials.json (que NÃO EXISTE no macOS —
+    # claude CLI usa Keychain) → causava loop infinito de OAuth.
+    auth_status = _check_claude_logged_in()  # None ou dict com loggedIn=true
     creds = _read_credentials(home)
-    if force_relogin or creds is None:
+
+    need_login = force_relogin or (auth_status is None and creds is None)
+    if need_login:
         if not interactive:
             return ClaudeLoginResult(
                 ok=False,
                 error=(
-                    "No credentials found at ~/.claude/credentials.json and "
-                    "interactive=False; run with --interactive or pre-create "
-                    "the credentials file"
+                    "Sem credenciais Claude detectadas (Keychain/file ausentes) "
+                    "E interactive=False. Rode com --interactive ou faça "
+                    "`claude auth login` no host primeiro."
                 ),
             )
         if not _run_claude_login(logout_first=force_relogin):
-            return ClaudeLoginResult(ok=False, error="`claude login` failed")
+            return ClaudeLoginResult(ok=False, error="`claude auth login` falhou")
+        # Re-check após login. Se ainda ausente, ABORT (evita loop infinito).
+        auth_status = _check_claude_logged_in()
         creds = _read_credentials(home)
-        if creds is None:
+        if auth_status is None and creds is None:
             return ClaudeLoginResult(
                 ok=False,
                 error=(
-                    "`claude login` succeeded but credentials.json still "
-                    "missing — unexpected"
+                    "`claude auth login` reportou sucesso mas credenciais ainda "
+                    "não foram detectadas no Keychain/file. Possíveis causas: "
+                    "(a) login interrompido antes de salvar; (b) keychain "
+                    "lock; (c) plataforma não suportada. NÃO vou re-tentar "
+                    "(evita loop OAuth)."
                 ),
             )
 
-    email = creds.get("email") if isinstance(creds, dict) else None
+    # Prioridade pra email: status > credentials > None
+    email = None
+    if auth_status and isinstance(auth_status, dict):
+        email = auth_status.get("email")
+    if not email and isinstance(creds, dict):
+        # Procura email em campos comuns (root, ou aninhado em oauth)
+        email = creds.get("email")
+        if not email and isinstance(creds.get("claudeAiOauth"), dict):
+            email = creds["claudeAiOauth"].get("email")
+
+    # Hard requirement: precisamos do JSON pra montar Secret. Se chegamos
+    # aqui sem creds (raro: auth_status=true mas Keychain extract falhou —
+    # access denied etc), aborta limpo.
+    if creds is None:
+        return ClaudeLoginResult(
+            ok=False, account_email=email,
+            error=(
+                "`claude auth status` reportou loggedIn=true mas não foi "
+                "possível extrair credentials do Keychain (macOS) ou do "
+                "arquivo ~/.claude/credentials.json (Linux). Verifique "
+                "permissões do Keychain ou re-rode `claude auth login`."
+            ),
+        )
 
     # 2. Secret
     if not _kubectl_apply_secret(creds, namespace=namespace):

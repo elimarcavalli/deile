@@ -28,14 +28,30 @@ def claude_install_module():
 def test_bootstrap_returns_error_when_no_credentials_and_not_interactive(
     claude_install_module, tmp_path, monkeypatch,
 ):
-    """No credentials at host + interactive=False -> fail fast."""
-    monkeypatch.setenv("HOME", str(tmp_path))  # ~/.claude/credentials.json ausente
+    """No credentials at host + interactive=False -> fail fast.
+
+    Patch dos detectores de credenciais (Keychain + file) para garantir que
+    o teste é portável (não depende do estado real do Keychain do CI/host
+    onde rodar). O fluxo testado é: sem creds detectadas E interactive=False
+    → ClaudeLoginResult.ok=False com mensagem clara.
+    """
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        claude_install_module, "_check_claude_logged_in", lambda: None,
+    )
+    monkeypatch.setattr(
+        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+    )
 
     result = claude_install_module.bootstrap_claude_worker(
         interactive=False, force_relogin=False, home=tmp_path,
     )
     assert result.ok is False
-    assert "credentials" in (result.error or "").lower()
+    # Aceita tanto PT-BR ("credenciais") quanto EN ("credentials") no error
+    error_lower = (result.error or "").lower()
+    assert ("credenciais" in error_lower
+            or "credentials" in error_lower
+            or "claude auth login" in error_lower)
 
 
 def test_bootstrap_idempotent_when_credentials_present(
@@ -67,10 +83,16 @@ def test_bootstrap_idempotent_when_credentials_present(
 def test_bootstrap_force_relogin_runs_claude_logout_then_login(
     claude_install_module, tmp_path, monkeypatch,
 ):
-    """force_relogin=True -> claude logout + claude login antes de continuar."""
+    """force_relogin=True -> claude auth logout + claude auth login antes de continuar.
+
+    Patch dos detectores antes do force-relogin (simula estado inicial sem
+    creds detectadas) para o fluxo cair em ``_run_claude_login``, e mocka
+    ``subprocess.run`` para capturar os args sem rodar realmente. Após login,
+    re-injeta ``_read_credentials`` retornando creds válidas para o resto do
+    fluxo (Secret/manifests/rollout) prosseguir.
+    """
     fake_home = tmp_path / ".claude"
     fake_home.mkdir()
-    (fake_home / "credentials.json").write_text(json.dumps({"email": "u@x"}))
     monkeypatch.setenv("HOME", str(tmp_path))
 
     called_commands = []
@@ -79,7 +101,21 @@ def test_bootstrap_force_relogin_runs_claude_logout_then_login(
         called_commands.append(cmd)
         ret = MagicMock()
         ret.returncode = 0
+        ret.stdout = ""  # _check_claude_logged_in pode tentar parse — vazio é ignorado
         return ret
+
+    # Estado inicial: NÃO logado (força flow de login)
+    auth_states = [None, {"loggedIn": True, "email": "u@x"}]  # antes / depois
+    monkeypatch.setattr(
+        claude_install_module, "_check_claude_logged_in",
+        lambda: auth_states.pop(0) if auth_states else {"loggedIn": True, "email": "u@x"},
+    )
+    # Estado inicial: sem creds; depois do login, retorna creds.
+    cred_states = [None, {"claudeAiOauth": {"access_token": "fake", "email": "u@x"}}]
+    monkeypatch.setattr(
+        claude_install_module, "_read_credentials",
+        lambda home=None: cred_states.pop(0) if cred_states else {"claudeAiOauth": {"access_token": "fake", "email": "u@x"}},
+    )
 
     with patch.object(claude_install_module.subprocess, "run", side_effect=fake_run), \
          patch.object(claude_install_module, "_kubectl_apply_secret", return_value=True), \
@@ -91,10 +127,11 @@ def test_bootstrap_force_relogin_runs_claude_logout_then_login(
 
     assert result.ok is True
     cmd_strs = [" ".join(c) if isinstance(c, list) else str(c) for c in called_commands]
-    assert any("logout" in s for s in cmd_strs), \
-        f"expected `claude logout` in {cmd_strs}"
-    assert any("login" in s for s in cmd_strs), \
-        f"expected `claude login` in {cmd_strs}"
+    # Espera `claude auth logout` + `claude auth login` (não `claude login`).
+    assert any("auth" in s and "logout" in s for s in cmd_strs), \
+        f"expected `claude auth logout` in {cmd_strs}"
+    assert any("auth" in s and "login" in s for s in cmd_strs), \
+        f"expected `claude auth login` in {cmd_strs}"
 
 
 def test_bootstrap_failure_in_secret_apply_returns_error(
