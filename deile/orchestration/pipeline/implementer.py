@@ -467,16 +467,14 @@ class WorkerImplementer(PipelineImplementer):
     ) -> WorkOutcome:
         branch = monitor.branch_for_issue(issue.number)
         forge_cfg = monitor.forge.config
-        if resume:
-            brief = _render_worker_implement_resume_brief(
-                monitor.config.repo, monitor.config.main_branch, branch,
-                issue.number, issue.title, issue.body, forge=forge_cfg,
-            )
-        else:
-            brief = _render_worker_implement_brief(
-                monitor.config.repo, monitor.config.main_branch, branch,
-                issue.number, issue.title, issue.body, forge=forge_cfg,
-            )
+        render = (
+            _render_worker_implement_resume_brief if resume
+            else _render_worker_implement_brief
+        )
+        brief = render(
+            monitor.config.repo, monitor.config.main_branch, branch,
+            issue.number, issue.title, issue.body, forge=forge_cfg,
+        )
         resume_block = _build_resume_block(
             monitor.config.repo, monitor.config.main_branch, branch,
             resume=resume, expect_merge=False,
@@ -536,16 +534,14 @@ class WorkerImplementer(PipelineImplementer):
         self, monitor: "PipelineMonitor", pr: "PrRef", *, resume: bool = False
     ) -> WorkOutcome:
         forge_cfg = monitor.forge.config
-        if resume:
-            brief = _render_worker_review_resume_brief(
-                monitor.config.repo, monitor.config.main_branch, pr.number,
-                forge=forge_cfg,
-            )
-        else:
-            brief = _render_worker_review_brief(
-                monitor.config.repo, monitor.config.main_branch, pr.number,
-                forge=forge_cfg,
-            )
+        render = (
+            _render_worker_review_resume_brief if resume
+            else _render_worker_review_brief
+        )
+        brief = render(
+            monitor.config.repo, monitor.config.main_branch, pr.number,
+            forge=forge_cfg,
+        )
         resume_block = _build_resume_block(
             monitor.config.repo, monitor.config.main_branch,
             pr.head_ref or f"pr/{pr.number}", resume=resume, expect_merge=True,
@@ -696,12 +692,12 @@ def build_implementer(
         # Legacy default (vazio/None) — usa Claude.
         return ClaudeImplementer()
     mode = dispatch_mode.strip().lower()
-    if mode in _WORKER_ALIASES:
+    if mode in WORKER_ALIASES:
         return WorkerImplementer(client=worker_client)
-    if mode in _CLAUDE_ALIASES:
+    if mode in CLAUDE_ALIASES:
         return ClaudeImplementer()
     raise ValueError(
         f"unknown pipeline dispatch_mode {dispatch_mode!r}; "
-        f"expected one of {sorted(_WORKER_ALIASES | _CLAUDE_ALIASES)} "
+        f"expected one of {sorted(WORKER_ALIASES | CLAUDE_ALIASES)} "
         "(set DEILE_PIPELINE_DISPATCH_MODE explicitly)"
     )
