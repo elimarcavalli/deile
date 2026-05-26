@@ -899,7 +899,14 @@ def _run_textual_ui() -> int:
     extra ``[ui]`` instalado — usuarios que nunca passam ``--ui textual``
     nao precisam de ``textual`` na cadeia de import. Quando o extra falta,
     devolvemos um erro claro (exit 2) com instrucao de install.
+
+    Mensagens de erro usam ``type(exc).__name__`` em vez de ``str(exc)`` no
+    stderr para evitar vazar caminhos absolutos do filesystem em erros de
+    ``ImportError`` (pilar 08). O stacktrace completo vai pro logger via
+    ``exc_info=True`` — operadores com log file ativo veem o detalhe.
     """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
     try:
         from deile.ui.textual_app import (TEXTUAL_INSTALL_HINT,
                                           ensure_textual_available,
@@ -907,8 +914,12 @@ def _run_textual_ui() -> int:
     except ImportError as exc:
         # Caminho raro: ``deile/ui/textual_app.py`` esta no pacote (definido
         # nas extras_packages), mas algum import interno explodiu antes do
-        # try/except do modulo. Surfacear o erro original ajuda o usuario.
-        print(f"ERROR: nao consegui carregar deile.ui.textual_app: {exc}", file=sys.stderr)
+        # try/except do modulo.
+        _log.error("Falha ao importar deile.ui.textual_app", exc_info=True)
+        print(
+            f"ERROR: nao consegui carregar deile.ui.textual_app ({type(exc).__name__}).",
+            file=sys.stderr,
+        )
         return 2
     try:
         ensure_textual_available()
@@ -918,7 +929,11 @@ def _run_textual_ui() -> int:
     try:
         return run_textual_app()
     except Exception as exc:  # noqa: BLE001 — last-resort para nao mascarar bugs
-        print(f"ERROR: falha ao executar a app Textual: {exc}", file=sys.stderr)
+        _log.error("Falha ao executar a app Textual", exc_info=True)
+        print(
+            f"ERROR: falha ao executar a app Textual ({type(exc).__name__}).",
+            file=sys.stderr,
+        )
         return 1
 
 
@@ -1091,10 +1106,20 @@ def main(argv: Optional[list[str]] = None) -> int:
     msg = " ".join(args.message).strip()
     if not msg and not sys.stdin.isatty():
         msg = sys.stdin.read().strip()
+    # --ui textual + mensagem positional: a flag exige um shell interativo,
+    # mas a mensagem dispara one-shot. O usuario provavelmente esqueceu uma
+    # das duas — emitimos warning e seguimos no one-shot (preserva o intent
+    # de "responda a essa mensagem"). Sem warning, a UX silenciosa confunde.
+    if msg and getattr(args, "ui", "legacy") == "textual":
+        print(
+            "WARNING: --ui textual ignorado em modo one-shot (mensagem posicional "
+            "presente). Rode 'deile --ui textual' sem mensagem para abrir o shell "
+            "Textual.",
+            file=sys.stderr,
+        )
     if not msg:
         # --ui textual launches the experimental Textual shell (issue #317
-        # Phase 0+1 — opt-in). Combined with a positional message, --ui is
-        # silently ignored: one-shot mode has no interactive shell to swap.
+        # Phase 0+1 — opt-in).
         if getattr(args, "ui", "legacy") == "textual":
             _silence_logging()
             return _run_textual_ui()

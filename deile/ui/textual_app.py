@@ -30,6 +30,7 @@ from typing import Any, Dict, Optional
 _TEXTUAL_AVAILABLE = True
 _TEXTUAL_IMPORT_ERROR: Optional[ImportError] = None
 try:
+    from rich.markup import escape as _rich_escape
     from textual import on
     from textual.app import App, ComposeResult
     from textual.containers import Vertical
@@ -38,6 +39,10 @@ try:
 except ImportError as exc:  # pragma: no cover — exercised when extra absent
     _TEXTUAL_AVAILABLE = False
     _TEXTUAL_IMPORT_ERROR = exc
+
+    def _rich_escape(text: str) -> str:  # type: ignore[no-redef]
+        """Fallback identity escape — usado nos shims sem textual instalado."""
+        return text
 
 
 __all__ = [
@@ -80,15 +85,23 @@ _CSS_FILE = Path(__file__).with_suffix(".tcss")
 def _snapshot_instance_state() -> Dict[str, Any]:
     """Retorna snapshot defensivo do InstanceState do processo, ou {}.
 
-    Best-effort: a Fase 1 deste refactor nao requer InstanceState para
-    funcionar (alguns ambientes de teste nem instanciam o singleton). Quando
-    indisponivel, o Header degrada para placeholders. Issue #303 ja garante
-    que o singleton e barato de criar — o try/except aqui cobre o caso de
-    instanciacao bloqueada (filesystem read-only, sandbox sem $HOME, etc.).
+    **Nao cria singleton**: lemos diretamente o ``_instance_singleton`` do
+    modulo. Se a CLI principal nao bootou (caso da app Textual ainda em
+    Fase 1, sem integracao com ``_DeileCLI.initialize``), o singleton e
+    ``None`` e o Header degrada para placeholders — sem side-effect de
+    publicar state file, registrar no Registry ou abrir StatusServer. Esses
+    side-effects sao responsabilidade do bootstrap da CLI/worker/bot,
+    nao de uma surface de UI lida em ``on_mount``.
+
+    Issue #317 + #303 (DECISOES #37/#38): o singleton e dono do estado vivo
+    e atexit. Sub-readers (Header, painel) so consomem; nunca produzem.
     """
     try:
-        from deile.runtime.instance_state import get_instance_state
-        return get_instance_state().snapshot()
+        from deile.runtime import instance_state as _is_mod
+        singleton = getattr(_is_mod, "_instance_singleton", None)
+        if singleton is None:
+            return {}
+        return singleton.snapshot()
     except Exception:  # noqa: BLE001 — Header is best-effort
         return {}
 
@@ -184,19 +197,25 @@ else:
             log.write("")
 
         @on(Input.Submitted, "#prompt")
-        def _handle_submit(self, event: "Input.Submitted") -> None:  # type: ignore[name-defined]
+        async def _handle_submit(self, event: "Input.Submitted") -> None:  # type: ignore[name-defined]
             """Eco o input no historico e limpa o campo.
 
             Fase 1: implementacao minima — apenas registra a mensagem do
             usuario no ``RichLog``. Fase 2 substituira o corpo por
             ``await agent.process_input_stream(...)`` iterando os eventos
-            e atualizando um container de streaming dedicado.
+            e atualizando um container de streaming dedicado. Mantendo o
+            handler ``async`` ja agora alinha com §1 (Async-First) e reduz
+            churn no PR da Fase 2.
+
+            Sanitizacao: a entrada do usuario passa por ``rich.markup.escape``
+            antes de ir ao ``RichLog`` (que tem ``markup=True``) para evitar
+            spoofing visual via ``[red]oops[/red]`` etc. Pilar 08 (Security).
             """
             text = (event.value or "").strip()
             if not text:
                 return
             log = self.query_one("#chat_history", RichLog)
-            log.write(f"[bold]>[/bold] {text}")
+            log.write(f"[bold]>[/bold] {_rich_escape(text)}")
             log.write(
                 "[yellow](integracao com o agente vira na Fase 2 — "
                 "issue #317)[/yellow]"

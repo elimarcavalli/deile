@@ -75,7 +75,13 @@ dependencies = [
 bot = ["deilebot @ git+https://github.com/elimarcavalli/deilebot.git@main"]
 scheduler = ["apscheduler>=3.10"]
 webhook = ["fastapi>=0.100", "uvicorn>=0.23"]
-test = ["aiohttp>=3.9", "pytest>=7", "pytest-asyncio>=0.23", "pytest-cov>=4"]
+test = [
+    "aiohttp>=3.9",
+    "pytest>=7",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=4",
+    "pytest-textual-snapshot>=1.0",
+]
 # Observabilidade enterprise via OpenTelemetry (issue #303 fase 4).
 # DEILE roda em no-op se este extra não está instalado OU se
 # DEILE_OTLP_ENDPOINT não está set — instale apenas quando quiser correlacionar
@@ -89,9 +95,10 @@ otel = [
 # Quando ``textual`` nao esta instalado, ``python3 deile.py --ui textual``
 # falha graciosamente com mensagem clara apontando ``pip install -e ".[ui]"``.
 # O shell legado (sem flag) continua intocado e nao depende de textual.
+# Plugin de teste (``pytest-textual-snapshot``) vive na extra ``[test]`` —
+# usuario final nao precisa instalar pytest pra usar o shell.
 ui = [
     "textual>=0.80",
-    "pytest-textual-snapshot>=1.0",
 ]
 
 [project.scripts]

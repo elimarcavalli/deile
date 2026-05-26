@@ -229,3 +229,93 @@ async def test_app_clear_log_binding_empties_history():
         await pilot.press("ctrl+l")
         await pilot.pause()
         assert len(log.lines) == 0
+
+
+def _rendered_text(rich_log) -> str:
+    """Helper: extrai o texto cru de todos os segments do RichLog.
+
+    ``RichLog.lines`` devolve ``rich.segment.Strip`` (lista de ``Segment``);
+    ``str(line)`` e o repr (com truncamento), nao o texto renderizado.
+    Concatenamos ``segment.text`` em ordem para obter a string visivel.
+    """
+    parts = []
+    for strip in rich_log.lines:
+        for segment in strip:
+            parts.append(segment.text)
+        parts.append("\n")
+    return "".join(parts)
+
+
+@pytest.mark.ui
+async def test_app_escapes_rich_markup_in_user_input():
+    """Regressao do achado de seguranca do Revisor 2: usuario digita
+    ``[red]inject[/red]`` no Input — o RichLog tem ``markup=True`` e ecoaria
+    como Rich markup (spoofing visual). A sanitizacao via
+    ``rich.markup.escape`` deve renderizar as tags como texto literal."""
+    if not textual_app.TEXTUAL_AVAILABLE:
+        pytest.skip("textual nao instalado — pulando smoke real do App")
+
+    from textual.widgets import Input, RichLog
+
+    app = textual_app.DEILEApp(
+        instance_state_snapshot={"role": "cli", "stats": {"turns": 0}}
+    )
+    payloads = [
+        "[red]inject[/red]",
+        "ola unicode áéíóú \U0001f680",
+    ]
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        prompt = app.screen.query_one("#prompt", Input)
+        log = app.screen.query_one("#chat_history", RichLog)
+        for payload in payloads:
+            prompt.value = payload
+            await pilot.press("enter")
+            await pilot.pause()
+        rendered = _rendered_text(log)
+        # As tags brutas (com colchetes) precisam estar literais no buffer:
+        # sem o escape, Rich consumiria ``[red]...[/red]`` como style e
+        # nenhum texto literal apareceria.
+        assert "[red]inject[/red]" in rendered, rendered
+        # Acentos/emoji devem aparecer intactos (Unicode-clean path).
+        assert "áéíóú" in rendered, rendered
+        assert "\U0001f680" in rendered, rendered
+
+
+@pytest.mark.ui
+def test_snapshot_instance_state_does_not_create_singleton(monkeypatch):
+    """Regressao do achado major do Revisor 2: ``_snapshot_instance_state``
+    NAO pode criar o singleton InstanceState (que dispara side-effects:
+    state file, atexit, StatusServer, Registry). Quando o singleton e None,
+    deve retornar ``{}`` sem importar/criar nada novo."""
+    from deile.runtime import instance_state as _is_mod
+
+    # Garante que comecamos sem singleton.
+    monkeypatch.setattr(_is_mod, "_instance_singleton", None, raising=False)
+    snap = textual_app._snapshot_instance_state()
+    assert snap == {}
+    # E o singleton continua None — nada foi instanciado.
+    assert _is_mod._instance_singleton is None
+
+
+@pytest.mark.ui
+def test_cli_warns_when_ui_textual_combined_with_message(monkeypatch, capsys):
+    """Regressao do achado minor (R1+R2): combinar ``--ui textual`` com
+    mensagem one-shot deve emitir warning em stderr explicando o conflito,
+    em vez de ignorar silenciosamente."""
+    import sys as _sys
+
+    from deile import cli as cli_module
+
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+
+    async def _fake_oneshot(*args, **kwargs) -> int:
+        return 0
+
+    monkeypatch.setattr(cli_module, "_run_oneshot", _fake_oneshot)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-ignored-by-fake-oneshot")
+    cli_module.main(["--ui", "textual", "olha so essa mensagem"])
+    captured = capsys.readouterr()
+    assert "WARNING" in captured.err
+    assert "--ui textual" in captured.err
+    assert "one-shot" in captured.err
