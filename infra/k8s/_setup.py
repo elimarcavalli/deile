@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import json
 import re
+import secrets as _secrets
 import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass, field
+from getpass import getpass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -60,18 +62,23 @@ class NamespacePlan:
 
     Tudo o que o operador escolheu em prompt vive aqui — Secrets e
     ConfigMap por NS são derivados deste objeto sem novo prompt.
+
+    Campos sensíveis (tokens, bearers, llm_keys) usam ``field(repr=False)``
+    para que ``logger.exception(plan)`` ou qualquer formatador padrão de
+    dataclass não vaze segredos na trilha de auditoria.
     """
 
     name: str
-    forge_kind: str  # "github" | "gitlab"
+    forge_kind: str  # "github" | "gitlab" | "auto" (auto = pipeline detecta GH vs GL por URL)
     repo: str
     dispatch_mode: str  # "deile_worker" | "claude_subprocess"
-    llm_keys: Dict[str, str] = field(default_factory=dict)
-    github_token: str = ""
-    gitlab_token: str = ""
-    discord_token: str = ""
-    bot_bearer: str = ""  # gerado automaticamente se vazio
-    worker_bearer: str = ""  # gerado automaticamente se vazio
+    bot_enabled: bool = False  # True quando o operador habilitou bot Discord neste NS
+    llm_keys: Dict[str, str] = field(default_factory=dict, repr=False)
+    github_token: str = field(default="", repr=False)
+    gitlab_token: str = field(default="", repr=False)
+    discord_token: str = field(default="", repr=False)
+    bot_bearer: str = field(default="", repr=False)  # gerado automaticamente se vazio
+    worker_bearer: str = field(default="", repr=False)  # gerado automaticamente se vazio
 
     def secrets_kv(self) -> Tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
         """Retorna (bot_secrets, deile_secrets, worker_bearer) pra aplicar."""
@@ -196,23 +203,26 @@ def _validate_token_format(env_var: str, raw: str) -> bool:
     return bool(pattern.fullmatch(raw)) if pattern else True
 
 
-def _ask_secret_validated(env_var: str, *, optional: bool) -> str:
+def _ask_secret_validated(env_var: str, *, optional: bool, dry_run: bool = False) -> str:
     """Pede um segredo via ``getpass``, valida prefixo, oferece pular.
 
+    - ``dry_run=True``: retorna ``"<dry-run>"`` (sentinel não-vazio) sem
+      prompt — evita forçar o operador a digitar segredos em modo de
+      visualização do plano.
     - Vazio: pula (retorna "") se ``optional=True``; senão repete.
     - Inválido: avisa e pede ``s`` para aceitar mesmo assim, ``n`` para
       tentar de novo. Esse opt-out cobre quando o pattern fica defasado.
     """
+    if dry_run:
+        # Sentinel não-vazio — o caller distingue "operador informou" de
+        # "pulado" pelo truthiness; em dry-run não há valor real, mas o
+        # presença da entrada importa pra modelar o plano corretamente.
+        return "<dry-run>"
     prompt = f"{env_var}"
     if optional:
         prompt += " (Enter para pular)"
+    prefix = ui.paint("  ? ", "cyan", "bold")
     while True:
-        # ``ask_secret`` em ``_cli_ui`` repete até não-vazio; aqui queremos
-        # permitir vazio quando opcional. Usar ``getpass`` direto, com o
-        # mesmo prefixo visual de cor (paint("?")).
-        from getpass import getpass
-
-        prefix = ui.paint("  ? ", "cyan", "bold")
         raw = getpass(f"{prefix}{prompt}: ").strip()
         if not raw:
             if optional:
@@ -225,87 +235,106 @@ def _ask_secret_validated(env_var: str, *, optional: bool) -> str:
         ui.warn(f"o valor não casa com o formato esperado de {env_var}.")
         if ui.confirm("Aceitar mesmo assim?", default=False):
             return raw
-        # senão, próximo loop pede de novo
 
 
-def _ask_llm_keys(plan_idx: int) -> Dict[str, str]:
-    """Pergunta as 4 LLM keys; exige ao menos UMA (bootstrap_providers)."""
-    ui.section(f"Ambiente {plan_idx}: chaves de LLM (ao menos uma)")
-    collected: Dict[str, str] = {}
-    for env_var in LLM_KEYS:
-        val = _ask_secret_validated(env_var, optional=True)
-        if val:
-            collected[env_var] = val
-    if not collected:
+def _ask_llm_keys(plan_idx: int, dry_run: bool = False) -> Dict[str, str]:
+    """Pergunta as 4 LLM keys; exige ao menos UMA (bootstrap_providers).
+
+    Loop até obter ao menos uma chave (sem recursão — evita stack growth
+    em interações longas com erros).
+    """
+    while True:
+        ui.section(f"Ambiente {plan_idx}: chaves de LLM (ao menos uma)")
+        collected: Dict[str, str] = {}
+        for env_var in LLM_KEYS:
+            val = _ask_secret_validated(env_var, optional=True, dry_run=dry_run)
+            if val:
+                collected[env_var] = val
+        if collected:
+            return collected
         ui.err(
             "nenhuma chave de LLM configurada — DEILE não sobe sem ao menos uma "
             "de ANTHROPIC/OPENAI/DEEPSEEK/GOOGLE. Repetindo este bloco."
         )
-        return _ask_llm_keys(plan_idx)
-    return collected
 
 
-def _ask_forge(plan_idx: int) -> Tuple[str, str, str, str]:
-    """Pergunta forge_kind + repo + tokens (GH e/ou GL conforme o modo)."""
-    ui.section(f"Ambiente {plan_idx}: forge alvo")
-    forge_kind = ui.choose(
-        "Qual forge este ambiente atende?",
-        [
-            ("github", "GitHub.com ou GHES (single-forge)"),
-            ("gitlab", "GitLab.com ou self-hosted (single-forge)"),
-            ("dual", "Ambos (GH + GL) na mesma stack"),
-        ],
-    )
-    repo_help = (
-        "owner/repo (GH) ou group/(sub/)*project (GL)"
-        if forge_kind in ("github", "gitlab")
-        else "repo padrão do pipeline (owner/repo no caso de dual)"
-    )
+def _ask_forge(
+    plan_idx: int, dry_run: bool = False
+) -> Tuple[str, str, str, str, str]:
+    """Pergunta forge_kind + repo + tokens (GH e/ou GL conforme o modo).
+
+    Retorna ``(kind_for_settings, repo, gh_token, gl_token, ui_label)``:
+    o ``ui_label`` preserva o termo escolhido pelo operador (``dual``)
+    para apresentação, enquanto ``kind_for_settings`` é o que vai para o
+    JSON do ConfigMap (``auto`` quando o operador escolheu ``dual``,
+    deixando o detector decidir GH vs GL por URL).
+    """
     while True:
-        repo = ui.ask(f"Repositório principal — {repo_help}").strip()
-        if _REPO_RE.fullmatch(repo):
-            break
-        ui.err("formato inválido — use `owner/repo` ou `group/sub/project`.")
-
-    gh_token = ""
-    gl_token = ""
-    if forge_kind in ("github", "dual"):
-        gh_token = _ask_secret_validated(
-            "GITHUB_TOKEN", optional=(forge_kind == "dual")
+        ui.section(f"Ambiente {plan_idx}: forge alvo")
+        forge_choice = ui.choose(
+            "Qual forge este ambiente atende?",
+            [
+                ("github", "GitHub.com ou GHES (single-forge)"),
+                ("gitlab", "GitLab.com ou self-hosted (single-forge)"),
+                ("dual", "Ambos (GH + GL) na mesma stack"),
+            ],
         )
-    if forge_kind in ("gitlab", "dual"):
-        gl_token = _ask_secret_validated(
-            "GITLAB_TOKEN", optional=(forge_kind == "dual")
+        repo_help = (
+            "owner/repo (GH) ou group/(sub/)*project (GL)"
+            if forge_choice in ("github", "gitlab")
+            else "repo padrão do pipeline (owner/repo no caso de dual)"
         )
-    # Em modo dual, ao menos um token deve existir para o pipeline rodar.
-    if forge_kind == "dual" and not gh_token and not gl_token:
-        ui.err(
-            "modo dual exige ao menos um dos tokens (GH ou GL). Repetindo o forge."
-        )
-        return _ask_forge(plan_idx)
+        while True:
+            repo = ui.ask(f"Repositório principal — {repo_help}").strip()
+            if _REPO_RE.fullmatch(repo):
+                break
+            ui.err("formato inválido — use `owner/repo` ou `group/sub/project`.")
 
-    # ``forge_kind`` resolvido pro settings JSON: dual fica como "auto"
-    # para o detector decidir via URL/host.
-    kind_for_settings = "auto" if forge_kind == "dual" else forge_kind
-    return kind_for_settings, repo, gh_token, gl_token
+        gh_token = ""
+        gl_token = ""
+        if forge_choice in ("github", "dual"):
+            gh_token = _ask_secret_validated(
+                "GITHUB_TOKEN",
+                optional=(forge_choice == "dual"),
+                dry_run=dry_run,
+            )
+        if forge_choice in ("gitlab", "dual"):
+            gl_token = _ask_secret_validated(
+                "GITLAB_TOKEN",
+                optional=(forge_choice == "dual"),
+                dry_run=dry_run,
+            )
+        if forge_choice == "dual" and not gh_token and not gl_token:
+            ui.err(
+                "modo dual exige ao menos um dos tokens (GH ou GL). Repetindo o forge."
+            )
+            continue
+
+        kind_for_settings = "auto" if forge_choice == "dual" else forge_choice
+        return kind_for_settings, repo, gh_token, gl_token, forge_choice
 
 
-def _ask_bot(plan_idx: int) -> Tuple[str, str]:
-    """Pergunta token do Discord + bearer do bot. Ambos opcionais (bot pode
-    ficar desabilitado neste NS) — o bearer auto-gerado se vazio."""
+def _ask_bot(plan_idx: int, dry_run: bool = False) -> Tuple[bool, str, str]:
+    """Pergunta token do Discord + bearer do bot. Retorna
+    ``(enabled, discord_token, bearer)`` — ``enabled=False`` desliga o
+    deployment do bot inteiramente neste NS (skip de ``20-bot-deployment.yaml``).
+    O bearer manual é opcional (auto-gerado se vazio)."""
     ui.section(f"Ambiente {plan_idx}: bot Discord (opcional)")
     if not ui.confirm("Habilitar o bot Discord neste namespace?", default=False):
-        return "", ""
-    discord = _ask_secret_validated("DEILE_BOT_DISCORD_TOKEN", optional=False)
+        return False, "", ""
+    discord = _ask_secret_validated(
+        "DEILE_BOT_DISCORD_TOKEN", optional=False, dry_run=dry_run
+    )
     bearer = _ask_secret_validated(
         "DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN (Enter = gerar automaticamente)",
         optional=True,
+        dry_run=dry_run,
     )
-    return discord, bearer
+    return True, discord, bearer
 
 
 def _build_namespace_plan(
-    plan_idx: int, existing_ns: List[str]
+    plan_idx: int, existing_ns: List[str], dry_run: bool = False
 ) -> NamespacePlan:
     """Monta um ``NamespacePlan`` interativamente."""
     ui.section(f"Ambiente {plan_idx}: identidade")
@@ -323,7 +352,7 @@ def _build_namespace_plan(
         if name in existing_ns:
             ui.warn(
                 f"o namespace `{name}` já existe — `setup` não sobrescreve. "
-                "Escolha outro nome ou rode `k8s up --namespace {name}` "
+                f"Escolha outro nome ou rode `k8s up --namespace {name}` "
                 "manualmente para atualizar."
             )
             continue
@@ -336,12 +365,9 @@ def _build_namespace_plan(
             ("claude_subprocess", "via claude -p (CCR cloud / subscription)"),
         ],
     )
-    kind, repo, gh_token, gl_token = _ask_forge(plan_idx)
-    llm = _ask_llm_keys(plan_idx)
-    discord, bearer_manual = _ask_bot(plan_idx)
-
-    # Bearers auto-gerados quando vazios — entropy do ``secrets`` stdlib.
-    import secrets as _secrets
+    kind, repo, gh_token, gl_token, _forge_ui = _ask_forge(plan_idx, dry_run=dry_run)
+    llm = _ask_llm_keys(plan_idx, dry_run=dry_run)
+    bot_enabled, discord, bearer_manual = _ask_bot(plan_idx, dry_run=dry_run)
 
     bot_bearer = bearer_manual or _secrets.token_urlsafe(32)
     worker_bearer = _secrets.token_urlsafe(32)
@@ -351,6 +377,7 @@ def _build_namespace_plan(
         forge_kind=kind,
         repo=repo,
         dispatch_mode=dispatch_mode,
+        bot_enabled=bot_enabled,
         llm_keys=llm,
         github_token=gh_token,
         gitlab_token=gl_token,
@@ -361,18 +388,15 @@ def _build_namespace_plan(
 
 
 def _collect_namespace_plans(
-    yes: bool, existing_ns: List[str]
-) -> List[NamespacePlan]:
-    """Coleta N planos de NS via prompts. ``--yes`` aborta — o fluxo é
-    fundamentalmente interativo (segredos via getpass)."""
-    if yes:
-        ui.err(
-            "`k8s setup` é interativo (segredos via getpass) — `--yes` não "
-            "se aplica aqui. Para automação não-interativa, use "
-            "`k8s up` com Secrets pré-criados via `kubectl apply`."
-        )
-        return []
+    existing_ns: List[str], dry_run: bool = False
+) -> Optional[List[NamespacePlan]]:
+    """Coleta N planos de NS via prompts.
 
+    Retorna ``None`` para indicar abort (operador cancelou ou input
+    inválido recorrente); ``list`` (não-vazia) para indicar sucesso. A
+    rejeição de ``--yes`` fica em ``run_setup`` — esta função pressupõe
+    fluxo interativo.
+    """
     while True:
         raw = ui.ask(
             "Quantos ambientes (namespaces) DEILE você quer criar?", default="1"
@@ -389,7 +413,7 @@ def _collect_namespace_plans(
     plans: List[NamespacePlan] = []
     taken = list(existing_ns)
     for i in range(1, count + 1):
-        plan = _build_namespace_plan(i, taken)
+        plan = _build_namespace_plan(i, taken, dry_run=dry_run)
         plans.append(plan)
         taken.append(plan.name)
     return plans
@@ -416,14 +440,13 @@ def _ensure_namespace(kubectl: str, name: str, deile_ns_label: str) -> bool:
         if create.returncode != 0:
             ui.err(f"falha ao criar namespace `{name}`: {create.stderr.strip()}")
             return False
-    label_key, label_val = deile_ns_label.split("=", 1)
     label = subprocess.run(
         [
             kubectl,
             "label",
             "namespace",
             name,
-            f"{label_key}={label_val}",
+            deile_ns_label,
             "pod-security.kubernetes.io/enforce=restricted",
             "pod-security.kubernetes.io/enforce-version=v1.29",
             "pod-security.kubernetes.io/audit=restricted",
@@ -446,8 +469,13 @@ def _apply_runtime_configmap(
 ) -> bool:
     """Renderiza e aplica o ``deile-runtime-config`` ConfigMap por NS.
 
-    Usa arquivo temporário modo ``0600`` para não passar JSON multilinha
-    por argv (escape inferno no shell)."""
+    Materializa o JSON multilinha em arquivos sob ``TemporaryDirectory`` e
+    delega a renderização ao ``kubectl create configmap --from-file ...
+    --dry-run=client -o yaml`` — sem JSON em argv (escape hell no shell).
+    O ConfigMap contém apenas configuração funcional (forge.kind,
+    pipeline.repo, dispatch_mode); zero token. ``Path.write_text`` segue
+    o ``umask`` corrente, e o diretório temp é apagado ao sair do bloco.
+    """
     data = plan.runtime_configmap_data()
     with tempfile.TemporaryDirectory(prefix="deile-cm-") as tmpdir:
         tmp_path = Path(tmpdir)
@@ -478,8 +506,6 @@ def _apply_runtime_configmap(
                 f"para `{ns}`: {rendered.stderr.strip()}"
             )
             return False
-        # Patch labels do manifest 47 (app: deile) — kubectl create cm não
-        # adiciona labels; injetamos via apply de patch leve em sequência.
         apply = subprocess.run(
             [kubectl, "apply", "-f", "-"],
             input=rendered.stdout,
@@ -492,7 +518,11 @@ def _apply_runtime_configmap(
                 f"em `{ns}`: {apply.stderr.strip()}"
             )
             return False
-        subprocess.run(
+        # Label ``app=deile`` para alinhar com o ConfigMap base do manifest
+        # 47 (filtros do panel selecionam por essa label). Falha aqui não
+        # bloqueia o NS — o ConfigMap funcional já foi aplicado — mas
+        # avisa para o operador não procurar bug fantasma depois.
+        label = subprocess.run(
             [
                 kubectl,
                 "-n",
@@ -503,9 +533,14 @@ def _apply_runtime_configmap(
                 "app=deile",
                 "--overwrite",
             ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
         )
+        if label.returncode != 0:
+            ui.warn(
+                f"[{ns}] não consegui aplicar label `app=deile` no "
+                f"ConfigMap (não-fatal): {label.stderr.strip()}"
+            )
     return True
 
 
@@ -517,7 +552,12 @@ def _apply_namespace(
     deile_ns_label: str,
 ) -> bool:
     """Provisiona um NS inteiro: namespace + network policy + secrets + cm +
-    PVCs + Deployments. Idempotente — chama os manifests existentes."""
+    PVCs + Deployments. Idempotente — chama os manifests existentes.
+
+    Quando ``plan.bot_enabled`` é False, os manifests do bot (15-bot-config,
+    19-bot-data-pvc, 20-bot-deployment) são pulados — sem ``bot-secrets``
+    com discord token, o deployment crashlooparia e travaria o ``_validate``.
+    """
     ns = plan.name
     ui.info(f"[{ns}] provisionando namespace + labels PSS restricted")
     if not _ensure_namespace(kubectl, ns, deile_ns_label):
@@ -533,8 +573,11 @@ def _apply_namespace(
 
     bot_kv, deile_kv, worker_kv = plan.secrets_kv()
     ui.info(f"[{ns}] criando Secrets (nada é impresso)")
-    if not apply_secret_fn(kubectl, "bot-secrets", bot_kv, ns=ns):
-        return False
+    # bot-secrets só sai quando o bot foi habilitado — caso contrário,
+    # nenhum pod consumidor existe (manifests do bot são pulados abaixo).
+    if plan.bot_enabled:
+        if not apply_secret_fn(kubectl, "bot-secrets", bot_kv, ns=ns):
+            return False
     if not apply_secret_fn(kubectl, "deile-secrets", deile_kv, ns=ns):
         return False
     if not apply_secret_fn(kubectl, "worker-bearer", worker_kv, ns=ns):
@@ -544,16 +587,18 @@ def _apply_namespace(
     if not _apply_runtime_configmap(kubectl, ns, plan):
         return False
 
-    ui.info(f"[{ns}] aplicando ConfigMap bot-config + PVCs + Deployments")
-    for manifest in (
-        "15-bot-config.yaml",
-        "19-bot-data-pvc.yaml",
-        "20-bot-deployment.yaml",
+    ui.info(f"[{ns}] aplicando PVCs + Deployments")
+    bot_manifests = ("15-bot-config.yaml", "19-bot-data-pvc.yaml", "20-bot-deployment.yaml")
+    core_manifests = (
         "35-deile-interactive.yaml",
         "41-worker-pvc.yaml",
         "45-deile-worker-deployment.yaml",
         "46-deile-pipeline-deployment.yaml",
-    ):
+    )
+    manifests_to_apply = (bot_manifests + core_manifests) if plan.bot_enabled else core_manifests
+    if not plan.bot_enabled:
+        ui.info(f"[{ns}] bot Discord desabilitado — pulando manifests do bot")
+    for manifest in manifests_to_apply:
         rc = subprocess.run(
             [kubectl, "apply", "-n", ns, "-f", str(manifests_dir / manifest)]
         ).returncode
@@ -573,7 +618,12 @@ def _wait_for_pods_ready(
     deployments: Tuple[str, ...],
     timeout_s: int = 90,
 ) -> bool:
-    """Aguarda cada deployment ficar pronto. Falhas viram logs (não-fatal)."""
+    """Aguarda cada deployment ficar pronto. Falhas viram logs (não-fatal).
+
+    ``deployments`` é o conjunto que o caller espera ver Ready — para um
+    NS sem bot habilitado, ``deilebot`` é omitido pelo caller (não é
+    deployado neste NS).
+    """
     all_ok = True
     for dep in deployments:
         exists = subprocess.run(
@@ -605,18 +655,34 @@ def _wait_for_pods_ready(
     return all_ok
 
 
+def _deployments_to_wait_for(
+    plan: NamespacePlan, all_deployments: Tuple[str, ...]
+) -> Tuple[str, ...]:
+    """Filtra o conjunto base por ``plan.bot_enabled`` — sem bot habilitado,
+    ``deilebot`` é omitido (manifest do bot foi pulado em ``_apply_namespace``).
+    """
+    if plan.bot_enabled:
+        return all_deployments
+    return tuple(d for d in all_deployments if d != "deilebot")
+
+
 def _validate(
     kubectl: str,
     plans: List[NamespacePlan],
     deployments: Tuple[str, ...],
     timeout_s: int = 90,
 ) -> bool:
-    """Para cada NS: aguarda pods + imprime status final."""
+    """Para cada NS: aguarda pods esperados + imprime status final."""
     ui.section("Validação pós-setup")
     overall = True
     for plan in plans:
         ui.info(f"[{plan.name}] aguardando pods ficarem prontos…")
-        ok = _wait_for_pods_ready(kubectl, plan.name, deployments, timeout_s)
+        ok = _wait_for_pods_ready(
+            kubectl,
+            plan.name,
+            _deployments_to_wait_for(plan, deployments),
+            timeout_s,
+        )
         # Status sempre — mesmo se pods não vieram, queremos o snapshot.
         subprocess.run(
             [kubectl, "-n", plan.name, "get", "pods,deployments,services"]
@@ -634,11 +700,18 @@ def _validate(
 
 def _print_plan(plans: List[NamespacePlan]) -> None:
     """Imprime resumo declarativo do que será aplicado (segredos como
-    contagem, jamais valores)."""
+    presença/ausência, jamais valores). O label do ``forge`` traduz
+    ``auto`` para ``dual`` quando ambos os tokens estão presentes — o
+    operador escolheu ``dual``, e ``auto`` é detalhe de implementação do
+    ConfigMap.
+    """
     ui.section("Plano consolidado")
     for plan in plans:
+        ui_forge = plan.forge_kind
+        if plan.forge_kind == "auto":
+            ui_forge = "dual (auto-detect)"
         ui.info(
-            f"  • {plan.name}: forge={plan.forge_kind} repo={plan.repo} "
+            f"  • {plan.name}: forge={ui_forge} repo={plan.repo} "
             f"dispatch={plan.dispatch_mode}"
         )
         keys_n = len(plan.llm_keys)
@@ -647,9 +720,35 @@ def _print_plan(plans: List[NamespacePlan]) -> None:
             flags.append("GITHUB_TOKEN")
         if plan.gitlab_token:
             flags.append("GITLAB_TOKEN")
-        if plan.discord_token:
-            flags.append("Discord")
+        if plan.bot_enabled:
+            flags.append("Discord bot")
+        else:
+            flags.append("bot desabilitado")
         ui.detail("    Secrets: " + ", ".join(flags))
+
+
+def _summarize_partial(applied: List[NamespacePlan], failed: List[str]) -> None:
+    """Emite guidance para o operador sobre cleanup/resume de NS parciais."""
+    if applied:
+        ui.warn(
+            "Namespaces que JÁ FORAM aplicados (continuam no cluster): "
+            + ", ".join(p.name for p in applied)
+        )
+        ui.info(
+            "Para remover esses NS: rode `deploy.py --namespace <ns> k8s down` "
+            "em cada um. Para tentar reaproveitar e seguir manualmente: "
+            "`deploy.py --namespace <ns> k8s up`."
+        )
+    if failed:
+        ui.err(
+            "Namespaces que FALHARAM (Secrets/ConfigMap podem ter sido "
+            "criados parcialmente): " + ", ".join(failed)
+        )
+        ui.info(
+            "Verifique com `kubectl -n <ns> get all,configmap,secret` e "
+            "decida entre rodar `k8s down` para limpar ou aplicar de novo "
+            "via `deploy.py k8s setup`."
+        )
 
 
 def run_setup(
@@ -672,6 +771,19 @@ def run_setup(
     yes = bool(args.get("yes"))
     dry_run = bool(args.get("dry_run"))
 
+    # ``--yes`` é incompatível com qualquer fase deste verbo (F1 chama
+    # setup_environment.py que respeita --yes, mas F2 não pode rodar sem
+    # TTY). Rejeitar logo no topo evita gastar tempo na detecção de k8s
+    # para depois abortar na coleta de planos.
+    if yes:
+        ui.err(
+            "`k8s setup` é fundamentalmente interativo (segredos via getpass) "
+            "— `--yes` não se aplica. Para CI/automação não-interativa, use "
+            "`deploy.py k8s up` com Secrets/ConfigMaps pré-criados via "
+            "`kubectl apply` manual."
+        )
+        return 2
+
     ui.header("DEILE — setup interativo (k8s do zero ao pipeline)")
     ui.info("Este verbo:")
     ui.detail("• detecta o cluster k8s (oferece instalar se faltar)")
@@ -679,15 +791,24 @@ def run_setup(
     ui.detail("• pergunta segredos via getpass (nada vai pra history do shell)")
     ui.detail("• aplica Secrets + ConfigMap por NS")
     ui.detail("• aguarda pods ficarem prontos e imprime status")
+    if dry_run:
+        ui.info(
+            "--dry-run: vou perguntar identidade/forge/dispatch/bot e modelar "
+            "o plano, mas tokens NÃO serão pedidos e nada será aplicado."
+        )
 
-    # F1 — k8s
-    ui.section("1. Cluster Kubernetes")
-    if not _ensure_kubernetes(yes, cluster_reachable_fn, setup_env_path):
-        return 1
-    kubectl = kubectl_resolver()
-    if kubectl is None:
-        ui.err("kubectl ainda inacessível após a checagem — abortando.")
-        return 1
+    # F1 — k8s (pulado em dry-run; ``--yes`` aqui é sempre False).
+    if not dry_run:
+        ui.section("1. Cluster Kubernetes")
+        if not _ensure_kubernetes(False, cluster_reachable_fn, setup_env_path):
+            return 1
+        kubectl = kubectl_resolver()
+        if kubectl is None:
+            ui.err("kubectl ainda inacessível após a checagem — abortando.")
+            return 1
+    else:
+        ui.section("1. Cluster Kubernetes (pulado em --dry-run)")
+        kubectl = kubectl_resolver() or ""
 
     # F2 — coleta
     existing_ns = discover_existing_fn() if not dry_run else []
@@ -695,7 +816,7 @@ def run_setup(
         ui.info(
             "Namespaces DEILE já presentes no cluster: " + ", ".join(existing_ns)
         )
-    plans = _collect_namespace_plans(yes, existing_ns)
+    plans = _collect_namespace_plans(existing_ns, dry_run=dry_run)
     if not plans:
         return 2
 
@@ -709,18 +830,22 @@ def run_setup(
 
     # F2 — apply
     ui.section("2. Aplicando manifests")
+    applied: List[NamespacePlan] = []
     failed: List[str] = []
     for plan in plans:
         ok = _apply_namespace(
             kubectl, plan, apply_secret_fn, manifests_dir, deile_ns_label
         )
-        if not ok:
+        if ok:
+            applied.append(plan)
+        else:
             failed.append(plan.name)
     if failed:
         ui.err(
             f"falha em {len(failed)} de {len(plans)} namespace(s): "
             + ", ".join(failed)
         )
+        _summarize_partial(applied, failed)
         return 1
 
     # F3 — validação
