@@ -85,6 +85,14 @@ otel = [
     "opentelemetry-sdk>=1.27.0",
     "opentelemetry-exporter-otlp-proto-grpc>=1.27.0",
 ]
+# Shell CLI baseado em Textual (issue #317, Fase 0+1 — opt-in).
+# Quando ``textual`` nao esta instalado, ``python3 deile.py --ui textual``
+# falha graciosamente com mensagem clara apontando ``pip install -e ".[ui]"``.
+# O shell legado (sem flag) continua intocado e nao depende de textual.
+ui = [
+    "textual>=0.80",
+    "pytest-textual-snapshot>=1.0",
+]
 
 [project.scripts]
 deile = "deile.cli:main"
