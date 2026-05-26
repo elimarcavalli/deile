@@ -1,0 +1,231 @@
+"""Smoke tests do shell Textual (issue #317 Fase 0+1).
+
+Estes testes:
+  1. Sao skipped quando ``textual`` nao esta instalado (extra ``[ui]``
+     opcional, evita quebrar a suite default).
+  2. Cobrem o caminho de erro sem dependencia externa: stubs/helpers do
+     proprio modulo (``TEXTUAL_INSTALL_HINT``, ``_format_header_subtitle``).
+  3. Quando ``textual`` esta presente, sobem a app via ``App.run_test()`` e
+     simulam 3 mensagens via ``Input``, verificando que o ``RichLog``
+     contem cada uma.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from deile.ui import textual_app
+
+
+@pytest.mark.ui
+def test_install_hint_mentions_extra():
+    """A mensagem de install precisa mencionar a extra ``[ui]`` exatamente
+    como aparece em ``pyproject.toml``, para que o usuario consiga copiar e
+    colar sem traducao."""
+    assert "[ui]" in textual_app.TEXTUAL_INSTALL_HINT
+    assert "pip install" in textual_app.TEXTUAL_INSTALL_HINT
+
+
+@pytest.mark.ui
+def test_ensure_textual_available_raises_clearly_when_absent():
+    """Quando textual nao esta instalado, ``ensure_textual_available`` levanta
+    um ``ImportError`` com mensagem util — nao um ``ModuleNotFoundError`` cru
+    de uma linha de import interna."""
+    if textual_app.TEXTUAL_AVAILABLE:
+        pytest.skip("textual instalado — caso de erro nao reproduzivel sem mock")
+    with pytest.raises(ImportError) as excinfo:
+        textual_app.ensure_textual_available()
+    assert "[ui]" in str(excinfo.value)
+
+
+@pytest.mark.ui
+@pytest.mark.parametrize(
+    "snap,expected_substrings",
+    [
+        ({}, ["role=?", "action=idle", "turns=0"]),
+        (
+            {
+                "role": "cli",
+                "current_action": {"kind": "tool_execution", "detail": "execute_bash"},
+                "stats": {"turns": 7},
+            },
+            ["role=cli", "action=tool_execution:execute_bash", "turns=7"],
+        ),
+        (
+            {
+                "role": "worker",
+                "current_action": None,
+                "stats": {"turns": 0, "cost_usd": 0.42},
+            },
+            ["role=worker", "action=idle", "turns=0"],
+        ),
+    ],
+)
+def test_format_header_subtitle_handles_partial_snapshots(snap, expected_substrings):
+    """O Header deve degradar gracioso quando o snapshot do InstanceState
+    nao tem todas as chaves. Cobre os tres cenarios principais: snapshot
+    vazio (sem singleton), snapshot completo com acao em curso, snapshot
+    com ``current_action=None`` (idle)."""
+    out = textual_app._format_header_subtitle(snap)
+    for expected in expected_substrings:
+        assert expected in out, f"esperava '{expected}' em '{out}'"
+
+
+@pytest.mark.ui
+async def test_app_run_test_renders_input_messages():
+    """App.run_test smoke: instancia a DEILEApp, simula tres submits no Input
+    e verifica que o ``RichLog`` contem cada mensagem (echo)."""
+    if not textual_app.TEXTUAL_AVAILABLE:
+        pytest.skip("textual nao instalado — pulando smoke real do App")
+
+    # Importacao tardia: so quando textual existe.
+    from textual.widgets import Input, RichLog
+
+    app = textual_app.DEILEApp(
+        instance_state_snapshot={"role": "cli", "stats": {"turns": 0}}
+    )
+    messages = ["primeira", "segunda", "terceira"]
+
+    async with app.run_test() as pilot:
+        # Espera o ChatScreen ser empurrado e widgets virem mounted.
+        await pilot.pause()
+        # ``query_one`` em escopo de app desce ate a tela ativa via ``screen``.
+        prompt = app.screen.query_one("#prompt", Input)
+        log = app.screen.query_one("#chat_history", RichLog)
+        assert prompt is not None
+        assert log is not None
+
+        for msg in messages:
+            prompt.value = msg
+            await pilot.press("enter")
+            await pilot.pause()
+
+        # O ``RichLog.lines`` expoe cada linha renderizada. Procuramos cada
+        # mensagem em qualquer linha (o handler prepende ``> `` + tag bold).
+        rendered = "\n".join(str(line) for line in log.lines)
+        for msg in messages:
+            assert msg in rendered, f"mensagem '{msg}' nao apareceu no log"
+
+        # E o input deve estar limpo apos cada submit.
+        assert prompt.value == ""
+
+
+@pytest.mark.ui
+async def test_app_subtitle_reflects_injected_snapshot():
+    """A subtitle do App deve refletir o snapshot injetado (testabilidade
+    sem precisar de InstanceState singleton)."""
+    if not textual_app.TEXTUAL_AVAILABLE:
+        pytest.skip("textual nao instalado — pulando smoke real do App")
+
+    app = textual_app.DEILEApp(
+        instance_state_snapshot={
+            "role": "cli",
+            "current_action": {"kind": "llm_call", "detail": "anthropic"},
+            "stats": {"turns": 3},
+        }
+    )
+    async with app.run_test():
+        # on_mount roda sincrono antes do primeiro frame; sub_title ja foi
+        # setado quando run_test entrega o controle.
+        assert app.sub_title == "role=cli | action=llm_call:anthropic | turns=3"
+
+
+@pytest.mark.ui
+def test_cli_flag_routes_to_textual_runner(monkeypatch):
+    """``deile --ui textual`` (sem mensagem) deve invocar ``_run_textual_ui``
+    e devolver o exit code dele, sem cair no caminho legacy."""
+    import sys as _sys
+
+    from deile import cli as cli_module
+
+    # Limpa qualquer env de chave que possa fazer a CLI tentar bootstrap.
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+
+    # ``main`` so cai no ``sys.stdin.read()`` quando o stdin nao e TTY (o pytest
+    # captura stdin → ``isatty()`` retorna False). Forcamos True para evitar
+    # OSError "reading from stdin while output is captured".
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+
+    calls = {"count": 0}
+
+    def _fake_runner() -> int:
+        calls["count"] += 1
+        return 0
+
+    monkeypatch.setattr(cli_module, "_run_textual_ui", _fake_runner)
+    exit_code = cli_module.main(["--ui", "textual"])
+    assert exit_code == 0
+    assert calls["count"] == 1
+
+
+@pytest.mark.ui
+def test_cli_flag_default_legacy_does_not_call_textual(monkeypatch):
+    """Sem ``--ui textual`` (default legacy + uma mensagem one-shot),
+    ``_run_textual_ui`` NUNCA pode ser chamado — invariante anti-regressao
+    pra evitar o Textual ser bootado por engano e quebrar o caminho default."""
+    import sys as _sys
+
+    from deile import cli as cli_module
+
+    monkeypatch.setattr(_sys.stdin, "isatty", lambda: True)
+
+    called = {"textual": 0, "oneshot": 0}
+
+    def _fake_textual() -> int:
+        called["textual"] += 1
+        return 0
+
+    async def _fake_oneshot(*args, **kwargs) -> int:
+        called["oneshot"] += 1
+        return 0
+
+    monkeypatch.setattr(cli_module, "_run_textual_ui", _fake_textual)
+    monkeypatch.setattr(cli_module, "_run_oneshot", _fake_oneshot)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-ignored-by-fake-oneshot")
+    cli_module.main(["mensagem qualquer"])
+    assert called["textual"] == 0
+
+
+@pytest.mark.ui
+def test_run_textual_ui_emits_install_hint_when_extra_missing(monkeypatch, capsys):
+    """Quando ``ensure_textual_available`` levanta ``ImportError``, o helper
+    da CLI deve imprimir o ``TEXTUAL_INSTALL_HINT`` no stderr e devolver
+    exit code 2 — usuario sai sem stacktrace e com instrucao acionavel."""
+    from deile import cli as cli_module
+    from deile.ui import textual_app as ta
+
+    def _raise() -> None:
+        raise ImportError(ta.TEXTUAL_INSTALL_HINT)
+
+    monkeypatch.setattr(ta, "ensure_textual_available", _raise)
+    code = cli_module._run_textual_ui()
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "[ui]" in captured.err
+
+
+@pytest.mark.ui
+async def test_app_clear_log_binding_empties_history():
+    """Ctrl+L deve limpar o RichLog sem encerrar a app."""
+    if not textual_app.TEXTUAL_AVAILABLE:
+        pytest.skip("textual nao instalado — pulando smoke real do App")
+
+    from textual.widgets import Input, RichLog
+
+    app = textual_app.DEILEApp(
+        instance_state_snapshot={"role": "cli", "stats": {"turns": 0}}
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        prompt = app.screen.query_one("#prompt", Input)
+        log = app.screen.query_one("#chat_history", RichLog)
+
+        prompt.value = "mensagem antes do clear"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert len(log.lines) > 0
+
+        await pilot.press("ctrl+l")
+        await pilot.pause()
+        assert len(log.lines) == 0
