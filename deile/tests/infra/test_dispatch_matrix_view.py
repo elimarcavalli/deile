@@ -167,3 +167,115 @@ def test_q_returns_to_dashboard(mock_data_with_claude):
     from _panel import Action
     assert result is not None
     assert result.kind in (Action.NAV, Action.BACK, Action.QUIT)
+
+
+# ===========================================================================
+# Task 19 — pickers contextuais Worker + Model
+# ===========================================================================
+
+
+def test_worker_picker_options(mock_data_with_claude):
+    """Worker picker mostra deile-worker, claude-worker, (global default)."""
+    from _panel import DispatchMatrixView
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    options = view._worker_picker_options()
+    assert "deile-worker" in options
+    assert "claude-worker" in options
+    assert any("global" in o.lower() or "default" in o.lower() for o in options)
+
+
+def test_model_picker_restricted_when_claude_worker(mock_data_with_claude):
+    """Worker=claude-worker → model picker só anthropic:* + (default)."""
+    from _panel import DispatchMatrixView
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    # Faz `_load_all_models` usar o fallback estático com providers múltiplos.
+    options = view._model_picker_options(worker="claude-worker")
+
+    # Toda opção (exceto sentinelas de "default/clear") deve ser anthropic:*.
+    for opt in options:
+        is_anthropic = opt.startswith("anthropic:")
+        is_sentinel = ("default" in opt.lower() or "clear" in opt.lower())
+        assert is_anthropic or is_sentinel, \
+            f"option {opt!r} não é anthropic-eligible nem sentinela"
+    # Pelo menos um anthropic concreto deve existir.
+    assert any(o.startswith("anthropic:") for o in options), \
+        "picker restrito não tem nenhum anthropic:* concreto"
+
+
+def test_model_picker_open_when_deile_worker(mock_data_with_claude):
+    """Worker=deile-worker → model picker mostra TODOS providers."""
+    from _panel import DispatchMatrixView
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    options = view._model_picker_options(worker="deile-worker")
+
+    # Pelo menos 2 providers diferentes devem aparecer (ex: anthropic,
+    # openai, deepseek, google) — confirma que não há restrição.
+    providers = {opt.split(":", 1)[0] for opt in options if ":" in opt}
+    assert len(providers) >= 2, \
+        f"só providers {providers} no picker — esperado múltiplos"
+
+
+def test_enter_on_worker_column_routes_to_worker_picker(mock_data_with_claude):
+    """[enter] na coluna 0 (Worker) deve mudar para estado de picker de worker."""
+    from _panel import DispatchMatrixView
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    view.cursor_row = 0  # primeira stage
+    view.cursor_col = 0  # coluna Worker
+    result = view.handle_key("\r", MagicMock())
+
+    # Picker abriu — view tem estado modal ativo (mode != None).
+    assert view.mode is not None
+    assert view.mode[0] == "worker"
+    # ActionResult não é NOOP (algo aconteceu).
+    from _panel import Action
+    assert result.kind != Action.NOOP
+
+
+def test_enter_on_model_column_routes_to_model_picker(mock_data_with_claude):
+    """[enter] na coluna 1 (Model) deve abrir picker de model."""
+    from _panel import DispatchMatrixView
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    view.cursor_row = 0
+    view.cursor_col = 1  # coluna Model
+    result = view.handle_key("\r", MagicMock())
+
+    assert view.mode is not None
+    assert view.mode[0] == "model"
+    from _panel import Action
+    assert result.kind != Action.NOOP
+
+
+def test_enter_on_global_row_opens_global_picker(mock_data_with_claude):
+    """[enter] na linha 'Global default' (cursor_row == N) abre picker global."""
+    from _panel import DispatchMatrixView
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    # Mover para a linha "Global default" (índice == len(stages)).
+    view.cursor_row = 5  # 5 stages → global row at index 5
+    view.cursor_col = 0
+    result = view.handle_key("\r", MagicMock())
+
+    # Picker abriu — estado modal ativo, e a flag global indica.
+    assert view.mode is not None
+    assert view.mode[0] in ("global_worker", "global_model")
+    from _panel import Action
+    assert result.kind != Action.NOOP
+
+
+def test_esc_in_picker_closes_picker_modal(mock_data_with_claude):
+    """ESC dentro do picker fecha o modal sem aplicar nada."""
+    from _panel import DispatchMatrixView
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    view.cursor_row = 0
+    view.cursor_col = 0
+    view.handle_key("\r", MagicMock())  # abre worker picker
+    assert view.mode is not None
+
+    view.handle_key("ESC", MagicMock())  # fecha
+    assert view.mode is None

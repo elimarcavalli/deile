@@ -1919,3 +1919,131 @@ class TestClaudeWorkerStatus:
         assert status.deployment_applied is False
         assert status.pod_ready is False
         assert status.logged_in_email is None
+
+
+# ===========================================================================
+# Task 19 — set_pipeline_dispatch_stage (per-stage dispatcher override)
+# ===========================================================================
+
+class TestSetPipelineDispatchStage:
+    """``set_pipeline_dispatch_stage`` espelha ``set_pipeline_dispatch_mode``
+    (global flip da PR #330) para o caminho per-stage da issue #309 fase 2.
+
+    Escreve ``DEILE_PIPELINE_DISPATCH_<STAGE>`` no Deployment ``deile-pipeline``
+    via ``kubectl set env``. Validação contra :data:`PIPELINE_STAGES` +
+    :func:`is_valid_dispatcher`. Audit ``SECURITY_POLICY_CHANGED``.
+    """
+
+    def test_rejects_invalid_stage(self):
+        from _panel_data import set_pipeline_dispatch_stage
+        ok, msg = set_pipeline_dispatch_stage("garbage", "claude-worker",
+                                              namespace="deile")
+        assert ok is False
+        assert "stage" in msg.lower()
+        assert "garbage" in msg or "invalid" in msg.lower()
+
+    def test_rejects_invalid_dispatcher(self):
+        from _panel_data import set_pipeline_dispatch_stage
+        ok, msg = set_pipeline_dispatch_stage("implement", "fake-worker",
+                                              namespace="deile")
+        assert ok is False
+        assert "dispatcher" in msg.lower() or "invalid" in msg.lower()
+
+    def test_success_issues_correct_kubectl_argv(self):
+        from _panel_data import set_pipeline_dispatch_stage
+        fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
+        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
+             patch("_panel_data.subprocess.run",
+                   return_value=fake_proc) as mock_run:
+            ok, msg = set_pipeline_dispatch_stage(
+                "implement", "claude-worker", namespace="deile",
+            )
+        assert ok is True
+        argv = mock_run.call_args[0][0]
+        assert argv[0] == "/fake/kubectl"
+        assert "deploy/deile-pipeline" in argv
+        # A env var precisa estar no formato KEY=VALUE canônico.
+        assert any("DEILE_PIPELINE_DISPATCH_IMPLEMENT=claude-worker" in a
+                   for a in argv), f"argv missing env var: {argv}"
+
+    def test_clear_with_none_uses_trailing_dash(self):
+        """``dispatcher=None`` → ``kubectl set env … VAR-`` (clear)."""
+        from _panel_data import set_pipeline_dispatch_stage
+        fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
+        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
+             patch("_panel_data.subprocess.run",
+                   return_value=fake_proc) as mock_run:
+            ok, _ = set_pipeline_dispatch_stage(
+                "implement", None, namespace="deile",
+            )
+        assert ok is True
+        argv = mock_run.call_args[0][0]
+        # Sintaxe kubectl `VAR-` (com hífen final) = unset.
+        assert any(a == "DEILE_PIPELINE_DISPATCH_IMPLEMENT-" for a in argv), \
+            f"argv missing trailing-dash unset: {argv}"
+
+    def test_accepts_legacy_aliases(self):
+        """Aliases de _DISPATCHER_ALIASES (``deile_worker``, ``claude``, etc.)
+        passam pelo validador — :func:`is_valid_dispatcher` aceita todos.
+        """
+        from _panel_data import set_pipeline_dispatch_stage
+        fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
+        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
+             patch("_panel_data.subprocess.run", return_value=fake_proc):
+            ok, _ = set_pipeline_dispatch_stage(
+                "implement", "claude", namespace="deile",
+            )
+            assert ok is True
+            ok, _ = set_pipeline_dispatch_stage(
+                "implement", "deile_worker", namespace="deile",
+            )
+            assert ok is True
+
+    def test_kubectl_missing_returns_clear_error(self):
+        from _panel_data import set_pipeline_dispatch_stage
+        with patch("_panel_data.kubectl_bin", return_value=None):
+            ok, msg = set_pipeline_dispatch_stage(
+                "implement", "claude-worker", namespace="deile",
+            )
+        assert ok is False
+        assert "kubectl" in msg.lower()
+
+    def test_nonzero_returncode_surfaces_stderr(self):
+        from _panel_data import set_pipeline_dispatch_stage
+        fake_proc = MagicMock(returncode=1, stdout="",
+                              stderr="forbidden: deployments.apps")
+        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
+             patch("_panel_data.subprocess.run", return_value=fake_proc):
+            ok, msg = set_pipeline_dispatch_stage(
+                "implement", "claude-worker", namespace="deile",
+            )
+        assert ok is False
+        assert "forbidden" in msg
+
+    def test_subprocess_oserror_caught(self):
+        from _panel_data import set_pipeline_dispatch_stage
+        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
+             patch("_panel_data.subprocess.run",
+                   side_effect=OSError("binary missing")):
+            ok, msg = set_pipeline_dispatch_stage(
+                "implement", "claude-worker", namespace="deile",
+            )
+        assert ok is False
+        assert ("binary missing" in msg
+                or "executar" in msg.lower()
+                or "OSError" in msg)
+
+    def test_namespace_passed_through(self):
+        """O painel TUI suporta multi-NS (PR #315). A função deve respeitar
+        o ``namespace=`` kwarg em vez de hardcoded ``NS``."""
+        from _panel_data import set_pipeline_dispatch_stage
+        fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
+        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
+             patch("_panel_data.subprocess.run",
+                   return_value=fake_proc) as mock_run:
+            ok, _ = set_pipeline_dispatch_stage(
+                "implement", "claude-worker", namespace="custom-ns",
+            )
+        assert ok is True
+        argv = mock_run.call_args[0][0]
+        assert "custom-ns" in argv

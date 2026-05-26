@@ -69,6 +69,8 @@ from _panel_data import \
 from _panel_data import clear_stage_model as pd_clear_stage_model
 from _panel_data import \
     set_pipeline_dispatch_mode as pd_set_pipeline_dispatch_mode
+from _panel_data import \
+    set_pipeline_dispatch_stage as pd_set_pipeline_dispatch_stage
 from _panel_data import set_preferred_model as pd_set_preferred_model
 from _panel_data import set_stage_model as pd_set_stage_model
 from rich import box
@@ -3618,6 +3620,26 @@ class DispatchMatrixView(View):
     _STAGES_FALLBACK = ("classify", "refine", "implement", "pr_review",
                         "follow_ups")
 
+    # Fallback estático dos modelos quando ``ModelsProvider`` está vazio
+    # (catálogo do YAML não carregou) ou em modo demo. Espelha o conjunto
+    # bundled em ``deile/config/model_providers.yaml`` — não é doctrinaire,
+    # mas garante que o picker sempre tenha opções para o operador
+    # escolher (ex.: em CI sem yaml acessível ou em demo sem cluster).
+    _MODELS_FALLBACK_STATIC = (
+        "anthropic:claude-opus-4-7",
+        "anthropic:claude-sonnet-4-6",
+        "anthropic:claude-haiku-4-5",
+        "openai:gpt-4",
+        "openai:gpt-4-turbo",
+        "deepseek:deepseek-chat",
+        "google:gemini-2.5-pro",
+    )
+
+    # Sentinelas do picker — exibidas como primeira opção. Selecionar
+    # qualquer uma chama ``clear_*`` (kubectl ``VAR-``) no apply.
+    _CLEAR_SENTINEL_WORKER = "(global default)"
+    _CLEAR_SENTINEL_MODEL = "(default — clear override)"
+
     def __init__(self, data: Optional[PanelData] = None):
         self.data = data
         # cursor_row ∈ [0, N] — N inclusive corresponde à linha "Global
@@ -3626,6 +3648,35 @@ class DispatchMatrixView(View):
         # cursor_col ∈ {0, 1} — 0 = Worker, 1 = Model. As colunas Stage e
         # Source não são editáveis (label estático + metadado read-only).
         self.cursor_col: int = 0
+        # --- Picker modal state (Task 19). ``None`` = browsing.
+        # Forma: ``(kind, stage_or_None, options)`` onde ``kind`` é:
+        #   * "worker"        — picker de worker para um stage específico
+        #   * "model"         — picker de model para um stage específico
+        #   * "global_worker" — picker de dispatch_mode (global)
+        #   * "global_model"  — picker de DEILE_PREFERRED_MODEL (global)
+        # ``stage_or_None`` é o nome do stage para per-stage pickers, ou
+        # ``None`` para os global_*.
+        # ``options`` é a lista pré-computada (filtrada) que o picker
+        # exibe — captura o estado da row no momento de abertura para
+        # que mudar de row durante a navegação do picker não troque a
+        # lista de opções (UX previsível).
+        self.mode: Optional[tuple] = None
+        self.picker_cursor: int = 0
+        # Última ação para feedback no painel (paridade com
+        # ``DispatchModeView`` / ``StageModelsView``).
+        self.last_msg: str = ""
+        self.last_ok: Optional[bool] = None
+
+    # --- View lifecycle / key interception ------------------------------
+
+    def on_unmount(self, app) -> None:
+        # Reentry sempre na matriz, nunca num picker stale.
+        self.mode = None
+        self.picker_cursor = 0
+
+    def intercepts_key(self, key: str) -> bool:
+        # ESC dentro do picker fecha o modal (handle_key), não pop a view.
+        return key == "ESC" and self.mode is not None
 
     # --- data accessors --------------------------------------------------
 
@@ -3657,6 +3708,53 @@ class DispatchMatrixView(View):
             ]
         return self.data.stage_dispatch.get_all_stages()
 
+    def _load_all_models(self) -> List[str]:
+        """Lista de slugs do catálogo (``ModelsProvider``) com fallback.
+
+        Quando ``data`` é ``None`` ou o provider está vazio (yaml não
+        carregou), cai no ``_MODELS_FALLBACK_STATIC`` para o picker ainda
+        ter opções.
+        """
+        if self.data is not None:
+            try:
+                models = self.data.models.get()
+            except Exception:  # noqa: BLE001
+                # MagicMock pode não ter ``.models`` configurado; cai no
+                # fallback para o teste/demo ainda funcionar.
+                models = []
+            if models:
+                slugs = []
+                for m in models:
+                    slug = getattr(m, "slug", None)
+                    if isinstance(slug, str) and slug:
+                        slugs.append(slug)
+                if slugs:
+                    return slugs
+        return list(self._MODELS_FALLBACK_STATIC)
+
+    # --- picker option builders (Task 19) -------------------------------
+
+    def _worker_picker_options(self) -> List[str]:
+        """Opções do picker de worker (3 itens fixos)."""
+        return [
+            self._CLEAR_SENTINEL_WORKER,  # primeiro = "limpar override"
+            "deile-worker",
+            "claude-worker",
+        ]
+
+    def _model_picker_options(self, *, worker: str) -> List[str]:
+        """Opções do picker de model, contextualizadas por ``worker``.
+
+        ``worker == "claude-worker"`` restringe o catálogo a ``anthropic:*``
+        (único provider que o claude binary aceita). Qualquer outro worker
+        (``deile-worker`` é o padrão) mostra o catálogo completo.
+        """
+        all_models = self._load_all_models()
+        if worker == "claude-worker":
+            filtered = [m for m in all_models if m.startswith("anthropic:")]
+            return [self._CLEAR_SENTINEL_MODEL, *filtered]
+        return [self._CLEAR_SENTINEL_MODEL, *all_models]
+
     def _claude_status(self):
         """Status do Deployment ``claude-worker``. Demo → não instalado."""
         if self.data is None:
@@ -3670,11 +3768,13 @@ class DispatchMatrixView(View):
     # --- rendering -------------------------------------------------------
 
     def render(self, app) -> RenderableType:
-        """Constrói o Group com (header de status, matriz, rodapé hotkeys).
+        """Constrói o Group com (header de status, matriz, picker?, rodapé).
 
-        Não usa ``app`` no momento — assinatura mantida para compat com o
-        :class:`View` contract; ``app.console.size.width`` pode entrar em
-        Tasks futuras quando o layout ficar adaptativo.
+        Quando ``self.mode`` está ativo, intercala um Panel com o picker
+        contextual (worker/model, per-stage/global) entre a matriz e o
+        rodapé. ``app`` não é usado hoje — assinatura mantida para compat
+        com o :class:`View` contract; Tasks futuras podem ler
+        ``app.console.size.width`` para layout adaptativo.
         """
         entries = self._entries()
         cw = self._claude_status()
@@ -3734,23 +3834,84 @@ class DispatchMatrixView(View):
             global_m_txt = f"[reverse]{global_m_txt}[/reverse]"
         tbl.add_row("Global default", global_w_txt, global_m_txt, "env")
 
-        return Group(
+        # --- Compose: header + matrix + (picker?) + (status?) + hotkeys --
+        parts: List[RenderableType] = [
             Text(status_text, style=status_style),
             tbl,
-            Text(self.HOTKEYS, style="dim"),
+        ]
+        if self.mode is not None:
+            parts.append(self._render_picker())
+        if self.last_msg:
+            border = "green" if self.last_ok else "red"
+            parts.append(Panel(
+                Text(self.last_msg,
+                     style="bold green" if self.last_ok else "bold red"),
+                title="[bold]ÚLTIMA AÇÃO[/bold]",
+                title_align="left", border_style=border,
+            ))
+        parts.append(Text(self.HOTKEYS, style="dim"))
+        return Group(*parts)
+
+    def _render_picker(self) -> RenderableType:
+        """Renderiza o Panel do picker corrente (worker / model / global)."""
+        kind, stage, options = self.mode  # type: ignore[misc]
+        # Título descritivo para o operador entender o que vai mudar.
+        if kind == "worker":
+            title = f"ESCOLHA WORKER PARA STAGE '{stage}'"
+        elif kind == "model":
+            title = f"ESCOLHA MODEL PARA STAGE '{stage}'"
+        elif kind == "global_worker":
+            title = "ESCOLHA DISPATCH MODE GLOBAL (DEILE_PIPELINE_DISPATCH_MODE)"
+        else:  # global_model
+            title = "ESCOLHA MODEL GLOBAL (DEILE_PREFERRED_MODEL)"
+
+        if not options:
+            return Panel(
+                Text("(sem opções disponíveis)", style="dim"),
+                title=f"[bold yellow]{title}[/bold yellow]",
+                title_align="left", border_style="yellow",
+            )
+
+        self.picker_cursor = max(0, min(self.picker_cursor, len(options) - 1))
+        tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False,
+                    show_header=False)
+        tbl.add_column(" ", width=2)
+        tbl.add_column("opção", style="bold")
+        for i, opt in enumerate(options):
+            marker = "▶" if i == self.picker_cursor else " "
+            tbl.add_row(Text(marker, style="bold cyan"), Text(opt))
+        return Panel(
+            Group(
+                tbl,
+                Text("[↑/↓] navega   [enter] confirma   [esc] cancela",
+                     style="dim cyan"),
+            ),
+            title=f"[bold yellow]{title}[/bold yellow]",
+            title_align="left", border_style="yellow",
         )
 
     # --- input -----------------------------------------------------------
 
     def handle_key(self, key: str, app) -> ActionResult:
-        """Roteador de teclas. Pickers/actions são STUBS para Tasks 19-20.
+        """Roteador de teclas.
 
-        - Navegação: ↑/↓ row, ←/→ col, com clamp em [0, N] × [0, 1].
-          N corresponde à linha "Global default" (inclusive).
-        - [q] / ESC → :meth:`ActionResult.nav` para o dashboard.
-        - [enter] / [r] / [L] / [I] → :class:`ActionResult` neutro;
-          Tasks 19-20 plugam pickers, reset, switch-login, install.
+        - Picker modal ativo → :meth:`_handle_picker_key` (↑/↓ navega,
+          enter confirma, ESC cancela).
+        - Browsing (sem modal):
+            * Navegação ↑/↓ row, ←/→ col com clamp em [0, N] × [0, 1].
+            * [q]/ESC → :meth:`ActionResult.nav` para o dashboard.
+            * [enter] → abre picker contextual:
+                - row < N + col 0 → :meth:`_open_worker_picker`
+                - row < N + col 1 → :meth:`_open_model_picker`
+                - row == N (Global default) → picker global
+                  (worker/model conforme col).
+            * [r] / [L] / [I] → STUBS pra Tasks 19-20-restantes (reset
+              cell / switch login / install on-the-fly).
         """
+        # Picker modal — todas as teclas vão pro handler dedicado.
+        if self.mode is not None:
+            return self._handle_picker_key(key)
+
         # Última linha editável é o "Global default" (inclusive).
         max_row = len(self._stages())  # == len(entries) no fluxo normal
 
@@ -3776,11 +3937,22 @@ class DispatchMatrixView(View):
             self.cursor_col = min(1, self.cursor_col + 1)
             return ActionResult.refresh()
 
-        # --- STUBS (Tasks 19-20) -----------------------------------------
+        # --- [enter]: abre picker contextual ------------------------------
         if key in ("\r", "\n"):
-            # Task 19 — picker contextual: worker (claude-worker se logado)
-            # ou model (catálogo do ModelsProvider).
-            return ActionResult()
+            entries = self._entries()
+            n_stages = len(entries)
+            # Row na linha "Global default" → picker global.
+            if self.cursor_row >= n_stages:
+                if self.cursor_col == 0:
+                    return self._open_global_worker_picker()
+                return self._open_global_model_picker()
+            # Row dentro das stages → picker per-stage.
+            entry = entries[self.cursor_row]
+            if self.cursor_col == 0:
+                return self._open_worker_picker(entry)
+            return self._open_model_picker(entry)
+
+        # --- STUBS (Tasks 19-20-restantes) -------------------------------
         if key == "r":
             # Task 19 — reset da célula corrente (kubectl set env --remove
             # do override específico, voltando para a chain de fallback).
@@ -3797,6 +3969,175 @@ class DispatchMatrixView(View):
             return ActionResult()
 
         return ActionResult()
+
+    # --- picker openers --------------------------------------------------
+
+    def _open_worker_picker(self, entry) -> ActionResult:
+        """Abre picker per-stage de worker (col 0 numa stage row)."""
+        self.mode = ("worker", entry.stage, self._worker_picker_options())
+        self.picker_cursor = 0
+        return ActionResult.refresh()
+
+    def _open_model_picker(self, entry) -> ActionResult:
+        """Abre picker per-stage de model (col 1 numa stage row).
+
+        O picker é contextualizado pelo ``worker`` corrente da MESMA linha
+        (entry.worker) — escolher um worker ``claude-worker`` restringe
+        a lista de models a ``anthropic:*``.
+        """
+        opts = self._model_picker_options(worker=entry.worker)
+        self.mode = ("model", entry.stage, opts)
+        self.picker_cursor = 0
+        return ActionResult.refresh()
+
+    def _open_global_worker_picker(self) -> ActionResult:
+        """Abre picker global de worker (DEILE_PIPELINE_DISPATCH_MODE)."""
+        # Global picker NÃO oferece "(global default)" (que é ele mesmo).
+        # Em vez disso, oferece "(clear override)" + os 2 valores válidos.
+        opts = ["(clear override)", "deile-worker", "claude-worker"]
+        self.mode = ("global_worker", None, opts)
+        self.picker_cursor = 0
+        return ActionResult.refresh()
+
+    def _open_global_model_picker(self) -> ActionResult:
+        """Abre picker global de model (DEILE_PREFERRED_MODEL em deile-worker)."""
+        # Global model picker mostra TODOS os providers — sem
+        # restrição por worker (worker é per-stage).
+        all_models = self._load_all_models()
+        opts = ["(clear override)", *all_models]
+        self.mode = ("global_model", None, opts)
+        self.picker_cursor = 0
+        return ActionResult.refresh()
+
+    # --- picker key handler ---------------------------------------------
+
+    def _handle_picker_key(self, key: str) -> ActionResult:
+        """Roteia teclas quando ``self.mode`` está ativo.
+
+        - ESC → fecha o modal sem aplicar (cancela).
+        - ↑/↓ → navega na lista de opções.
+        - enter → confirma seleção, chama :meth:`_apply_picker_selection`,
+          fecha o modal e invalida o cache do provider.
+        """
+        if key == "ESC":
+            self.mode = None
+            self.picker_cursor = 0
+            return ActionResult.refresh()
+        if self.mode is None:  # defesa — não deveria chegar aqui
+            return ActionResult()
+        _kind, _stage, options = self.mode
+        n = len(options)
+        if n == 0:
+            # Nada a navegar — qualquer tecla fecha.
+            if key in ("\r", "\n"):
+                self.mode = None
+            return ActionResult()
+        if key in ("UP", "k"):
+            self.picker_cursor = (self.picker_cursor - 1) % n
+            return ActionResult.refresh()
+        if key in ("DOWN", "j"):
+            self.picker_cursor = (self.picker_cursor + 1) % n
+            return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            self._apply_picker_selection()
+            self.mode = None
+            self.picker_cursor = 0
+            # Invalida cache do StageDispatchProvider para a próxima
+            # render mostrar o valor novo (sem precisar de [r] manual).
+            if self.data is not None:
+                try:
+                    self.data.stage_dispatch._cache.invalidate()  # noqa: SLF001
+                    self.data.stage_dispatch._status_cache.invalidate()  # noqa: SLF001
+                except (AttributeError, TypeError):
+                    # MagicMock pode não ter o atributo — ignora.
+                    pass
+            return ActionResult.refresh()
+        return ActionResult()
+
+    # --- apply (writes) --------------------------------------------------
+
+    def _apply_picker_selection(self) -> None:
+        """Despacha a seleção corrente do picker para o helper apropriado.
+
+        Cada branch espelha o callsite equivalente em :class:`StageModelsView`
+        / :class:`DispatchModeView`. Em modo demo (``data=None``) só
+        registra ``last_msg`` sem chamar kubectl.
+        """
+        if self.mode is None:
+            return
+        kind, stage, options = self.mode
+        selected = options[self.picker_cursor]
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        if self.data is None:
+            self.last_msg = f"[demo] {kind}: '{selected}' (sem cluster, no-op)"
+            self.last_ok = False
+            return
+
+        # --- per-stage worker -------------------------------------------
+        if kind == "worker":
+            if selected == self._CLEAR_SENTINEL_WORKER:
+                ok, msg = pd_set_pipeline_dispatch_stage(
+                    stage, None, namespace=ns,
+                )
+            else:
+                ok, msg = pd_set_pipeline_dispatch_stage(
+                    stage, selected, namespace=ns,
+                )
+            self.last_ok = ok
+            self.last_msg = msg
+            return
+
+        # --- per-stage model --------------------------------------------
+        if kind == "model":
+            if selected == self._CLEAR_SENTINEL_MODEL:
+                ok, msg = pd_clear_stage_model(stage)
+            else:
+                ok, msg = pd_set_stage_model(stage, selected)
+            self.last_ok = ok
+            self.last_msg = msg
+            return
+
+        # --- global worker (DEILE_PIPELINE_DISPATCH_MODE) ---------------
+        if kind == "global_worker":
+            if selected == "(clear override)":
+                ok, msg = pd_clear_pipeline_dispatch_mode(namespace=ns)
+            else:
+                # set_pipeline_dispatch_mode espera "claude" | "deile_worker"
+                # (conjunto canônico do _DISPATCH_MODES_ALLOWED). O picker
+                # mostra "deile-worker" / "claude-worker" (hyphen, paridade
+                # com o per-stage). Mapeia hyphen→underscore aqui.
+                mode_for_global = (
+                    "deile_worker" if selected == "deile-worker"
+                    else "claude" if selected == "claude-worker"
+                    else selected
+                )
+                ok, msg = pd_set_pipeline_dispatch_mode(
+                    mode_for_global, namespace=ns,
+                )
+            self.last_ok = ok
+            self.last_msg = msg
+            return
+
+        # --- global model (DEILE_PREFERRED_MODEL em deile-worker) -------
+        if kind == "global_model":
+            if selected == "(clear override)":
+                # ``set_preferred_model`` não tem variante clear; o operador
+                # usa o reset action do Task 19 (próximo PR). Por ora,
+                # avisa que clear global ainda não está wired.
+                self.last_ok = False
+                self.last_msg = (
+                    "clear de DEILE_PREFERRED_MODEL ainda não implementado "
+                    "— use [r] na célula (Task 19 — reset)"
+                )
+                return
+            ok, msg = pd_set_preferred_model(
+                "deile-worker", selected, namespace=ns,
+            )
+            self.last_ok = ok
+            self.last_msg = msg
+            return
 
 
 class StubView(View):

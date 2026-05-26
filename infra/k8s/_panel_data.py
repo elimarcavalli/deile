@@ -2407,6 +2407,189 @@ def clear_pipeline_dispatch_mode(
     return True, f"{_DISPATCH_ENV_VAR} unset ({msg})"
 
 
+# ===== Per-stage dispatch override (issue #309 fase 2 — Task 19) ===========
+#
+# ``set_pipeline_dispatch_stage`` espelha :func:`set_pipeline_dispatch_mode`
+# (global flip da PR #330) para a chain per-stage da issue #309 fase 2. Escreve
+# ``DEILE_PIPELINE_DISPATCH_<STAGE>=<dispatcher>`` no Deployment
+# ``deile-pipeline`` via ``kubectl set env``. O resolver (:func:`resolve_stage_dispatcher`
+# em ``deile.orchestration.pipeline.dispatch_resolver``) prefere essa env var
+# por-stage sobre o global ``DEILE_PIPELINE_DISPATCH_MODE``.
+#
+# Validação por duas camadas:
+#   1. *stage* deve estar em :data:`PIPELINE_STAGES` — rejeita typo antes do
+#      argv para nunca escrever ``DEILE_PIPELINE_DISPATCH_GARBAGE=...`` no pod.
+#   2. *dispatcher* (quando não-None) deve passar por
+#      :func:`is_valid_dispatcher` — aceita aliases legacy (``deile_worker``,
+#      ``claude``, ``worker``) E a forma canônica (``deile-worker`` |
+#      ``claude-worker``). Sem isso, escrever um typo (``claud-worker``) faria
+#      a próxima dispatch cair silenciosamente em ``deile-worker`` por
+#      fail-open do _canonicalize do resolver.
+#
+# ``dispatcher=None`` é o caminho de clear/reset: kubectl ``VAR-`` (com hífen
+# final), idêntico a :func:`clear_pipeline_dispatch_mode` e :func:`clear_stage_model`.
+def _audit_dispatch_stage_change(
+    stage: str, dispatcher: Optional[str], *, result: str, detail: str,
+    namespace: str = NS,
+) -> None:
+    """Audit ``SECURITY_POLICY_CHANGED`` para troca de dispatcher per-stage.
+
+    Espelha :func:`_audit_dispatch_mode_change` (global flip) e
+    :func:`_audit_stage_model_change` (per-stage model) — mesmo event type
+    para que dashboards grepem os três sob a mesma envelope. ``dispatcher=None``
+    é a variante clear/reset (volta ao fallback global / built-in).
+    """
+    try:
+        from deile.security.audit_logger import (  # noqa: PLC0415
+            AuditEventType, SeverityLevel, get_audit_logger)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "audit logger indisponível para set_pipeline_dispatch_stage: %s",
+            exc,
+        )
+        return
+    severity = (SeverityLevel.INFO
+                if result in ("allowed", "completed", "cancelled")
+                else SeverityLevel.WARNING)
+    env_var = f"DEILE_PIPELINE_DISPATCH_{stage.upper()}"
+    try:
+        get_audit_logger().log_event(
+            event_type=AuditEventType.SECURITY_POLICY_CHANGED,
+            severity=severity,
+            actor="panel:set_pipeline_dispatch_stage",
+            resource=f"deployment:{namespace}/{_DISPATCH_DEPLOYMENT}:{env_var}",
+            action="kubectl_set_env" if dispatcher else "kubectl_unset_env",
+            result=result,
+            details={
+                "stage": stage,
+                # ``dispatcher`` mantém ``None`` no envelope canônico (clear /
+                # cancel-of-clear paths) para o log analysis poder distinguir
+                # "dispatcher vazio (set degenerado)" de "dispatcher ausente".
+                "dispatcher": dispatcher,
+                "detail": detail[:200],
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "falha emitindo AuditEvent (dispatch_stage): %s", exc,
+        )
+
+
+def set_pipeline_dispatch_stage(
+    stage: str, dispatcher: Optional[str], *,
+    namespace: str = NS, timeout: float = 15.0,
+) -> tuple:
+    """Pin ``DEILE_PIPELINE_DISPATCH_<STAGE>=<dispatcher>`` em ``deile-pipeline``.
+
+    Usa ``kubectl set env deploy/deile-pipeline`` e dispara o rollout (strategy
+    ``Recreate`` do pipeline). Returns ``(ok, msg)``.
+
+    Args:
+        stage: nome canônico do stage (um de :data:`PIPELINE_STAGES`).
+            Validado ANTES de virar argv.
+        dispatcher: ``"deile-worker"`` | ``"claude-worker"`` | alias legacy
+            aceito por :func:`is_valid_dispatcher`. ``None`` = clear (kubectl
+            ``VAR-``); o pipeline volta a usar a chain global +
+            built-in default.
+        namespace: K8s namespace alvo (multi-NS / PR #315).
+        timeout: timeout do ``kubectl set env``.
+
+    Emite ``SECURITY_POLICY_CHANGED`` em todos os outcomes (allowed/denied/
+    completed/failed) com a mesma envelope de :func:`set_pipeline_dispatch_mode`.
+    """
+    # --- Validação 1: stage canônico. Lazy import de PIPELINE_STAGES +
+    # is_valid_dispatcher para não puxar deile.orchestration no cold-import.
+    try:
+        from deile.orchestration.pipeline.dispatch_resolver import (  # noqa: PLC0415
+            PIPELINE_STAGES, is_valid_dispatcher)
+    except ImportError as exc:
+        # Fallback hardcoded — só ocorre se dispatch_resolver tiver sido
+        # removido (programming bug). O painel tem que devolver erro claro
+        # em vez de levantar (UI quebra silenciosa é o pior caso).
+        _audit_dispatch_stage_change(
+            str(stage), dispatcher, result="failed",
+            detail=f"dispatch_resolver import falhou: {exc}",
+            namespace=namespace,
+        )
+        return False, f"dispatch_resolver indisponível: {exc}"
+
+    if stage not in PIPELINE_STAGES:
+        msg_detail = "stage fora do conjunto canônico"
+        _audit_dispatch_stage_change(
+            str(stage), dispatcher, result="denied", detail=msg_detail,
+            namespace=namespace,
+        )
+        allowed = ", ".join(PIPELINE_STAGES)
+        return False, (
+            f"invalid stage {stage!r} — esperado um de: {allowed}"
+        )
+
+    # --- Validação 2: dispatcher (quando não-None). ``None`` = clear path.
+    if dispatcher is not None and not is_valid_dispatcher(dispatcher):
+        _audit_dispatch_stage_change(
+            stage, dispatcher, result="denied",
+            detail="dispatcher fora do conjunto whitelisted",
+            namespace=namespace,
+        )
+        return False, (
+            f"invalid dispatcher {dispatcher!r} — esperado canônico "
+            f"'deile-worker'/'claude-worker' ou alias"
+        )
+
+    env_var = f"DEILE_PIPELINE_DISPATCH_{stage.upper()}"
+
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        _audit_dispatch_stage_change(
+            stage, dispatcher, result="failed", detail="kubectl não encontrado",
+            namespace=namespace,
+        )
+        return False, "kubectl não encontrado"
+
+    # --- argv: set ou clear (trailing dash). Espelha set_stage_model /
+    # clear_pipeline_dispatch_mode.
+    if dispatcher is None:
+        argv = [kubectl, "-n", namespace, "set", "env",
+                f"deploy/{_DISPATCH_DEPLOYMENT}", f"{env_var}-"]
+        op_detail = f"executando kubectl set env {env_var}-"
+    else:
+        argv = [kubectl, "-n", namespace, "set", "env",
+                f"deploy/{_DISPATCH_DEPLOYMENT}", f"{env_var}={dispatcher}"]
+        op_detail = f"executando kubectl set env {env_var}={dispatcher}"
+
+    _audit_dispatch_stage_change(
+        stage, dispatcher, result="allowed", detail=op_detail,
+        namespace=namespace,
+    )
+
+    try:
+        proc = subprocess.run(
+            argv, capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _audit_dispatch_stage_change(
+            stage, dispatcher, result="failed", detail=f"subprocess: {exc}",
+            namespace=namespace,
+        )
+        return False, f"falha ao executar kubectl: {exc}"
+
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+        _audit_dispatch_stage_change(
+            stage, dispatcher, result="failed",
+            detail=f"rc={proc.returncode} {err}", namespace=namespace,
+        )
+        return False, err
+
+    msg = (proc.stdout or "rollout disparado").strip()
+    _audit_dispatch_stage_change(
+        stage, dispatcher, result="completed", detail=msg, namespace=namespace,
+    )
+    if dispatcher is None:
+        return True, f"{env_var} unset ({msg})"
+    return True, f"{env_var}={dispatcher} ({msg})"
+
+
 # ===== Stage dispatch (worker + model) consolidado — issue #309 fase 2 ======
 #
 # ``StageDispatchProvider`` unifica 3 leituras separadas em uma única view:
