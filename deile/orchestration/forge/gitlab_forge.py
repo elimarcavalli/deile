@@ -27,6 +27,7 @@ API v4. Differences worth flagging up-front:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -52,6 +53,15 @@ logger = logging.getLogger(__name__)
 # Default REST API page size — every list endpoint accepts ``per_page``.
 # 100 is the hard cap GitLab enforces server-side.
 _PER_PAGE = 100
+
+
+def _pages_for_limit(limit: int) -> int:
+    """Return ``ceil(limit / _PER_PAGE)``, at least 1.
+
+    Convenience for the ``max_pages=`` argument of :meth:`_api_paginated`
+    — turns a user-facing record cap into a page cap.
+    """
+    return max(1, (limit + _PER_PAGE - 1) // _PER_PAGE)
 
 # GitLab username regex — alphanumeric start, depois alnum/dot/underscore/hyphen
 # até 255 chars. Usado como guard defensivo simétrico ao ``_GH_LOGIN_RE`` do
@@ -236,7 +246,7 @@ class GitLabForge(ForgeClient):
                 "-f", "state=opened",
                 "-f", f"labels={label}",
             ],
-            max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+            max_pages=_pages_for_limit(limit),
         )
         return [IssueRef.from_gl_json(it) for it in items[:limit]]
 
@@ -261,7 +271,7 @@ class GitLabForge(ForgeClient):
                     "-f", "state=opened",
                     "-f", f"assignee_username={login}",
                 ],
-                max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+                max_pages=_pages_for_limit(limit),
             )
         except ForgeCommandError as exc:
             logger.warning("list_issues_assigned_to failed: %s", exc)
@@ -272,7 +282,7 @@ class GitLabForge(ForgeClient):
         items = await self._api_paginated(
             f"projects/{self._project_ref}/issues",
             params=["-f", "state=opened"],
-            max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+            max_pages=_pages_for_limit(limit),
         )
         result: List[IssueRef] = []
         for it in items:
@@ -311,8 +321,7 @@ class GitLabForge(ForgeClient):
         # pode usar ``/-/work_items/<iid>`` (sucessor unificado de issues e
         # tasks) em vez de ``/-/issues/<iid>``. Ambos compartilham o mesmo
         # ``iid`` por projeto, então tolerar os dois é suficiente.
-        import re as _re
-        m = _re.search(r"/(?:issues|work_items)/(\d+)", out)
+        m = re.search(r"/(?:issues|work_items)/(\d+)", out)
         return int(m.group(1)) if m else 0
 
     async def comment_on_issue(self, number: int, text: str) -> None:
@@ -472,7 +481,7 @@ class GitLabForge(ForgeClient):
         items = await self._api_paginated(
             f"projects/{self._project_ref}/merge_requests",
             params=["-f", "state=opened"],
-            max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+            max_pages=_pages_for_limit(limit),
         )
         return [PrRef.from_gl_json(it) for it in items[:limit]]
 
@@ -486,7 +495,7 @@ class GitLabForge(ForgeClient):
                     "-f", "state=opened",
                     "-f", f"assignee_username={login}",
                 ],
-                max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+                max_pages=_pages_for_limit(limit),
             )
         except ForgeCommandError as exc:
             logger.warning("list_prs_assigned_to failed: %s", exc)
@@ -534,7 +543,7 @@ class GitLabForge(ForgeClient):
                     "-f", "order_by=updated_at",
                     "-f", "sort=desc",
                 ],
-                max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+                max_pages=_pages_for_limit(limit),
             )
         except ForgeCommandError as exc:
             logger.warning("list_prs_updated_since failed: %s", exc)
@@ -554,7 +563,7 @@ class GitLabForge(ForgeClient):
                     "-f", "order_by=updated_at",
                     "-f", "sort=desc",
                 ],
-                max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+                max_pages=_pages_for_limit(limit),
             )
         except ForgeCommandError as exc:
             logger.warning("list_issues_updated_since failed: %s", exc)
@@ -878,14 +887,12 @@ class GitLabForge(ForgeClient):
             logger.debug("ensure_label %s: rc=%d err=%s", name, rc, err.strip()[:200])
 
     async def ensure_pipeline_labels(self) -> None:
-        import asyncio as _asyncio
-
         async def _create_one(label: str) -> None:
             color = LABEL_COLORS.get(label, "ededed")
             description = LABEL_DESCRIPTIONS.get(label, "Pipeline-managed label")
             await self._ensure_label(label, color=color, description=description)
 
-        await _asyncio.gather(*[
+        await asyncio.gather(*[
             _create_one(label)
             for label in (*WORKFLOW_LABELS, *REVIEW_LABELS, *MENTION_LABELS, *REFINE_LABELS)
         ])
@@ -1029,15 +1036,13 @@ class GitLabForge(ForgeClient):
         in parallel — GitLab does not have a unified "issues+MRs" search
         like GH does.
         """
-        import asyncio as _asyncio
-
         issues_task = self._api_paginated(
             f"projects/{self._project_ref}/search",
             params=[
                 "-f", "scope=issues",
                 "-f", f"search={query}",
             ],
-            max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+            max_pages=_pages_for_limit(limit),
         )
         mrs_task = self._api_paginated(
             f"projects/{self._project_ref}/search",
@@ -1045,10 +1050,10 @@ class GitLabForge(ForgeClient):
                 "-f", "scope=merge_requests",
                 "-f", f"search={query}",
             ],
-            max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+            max_pages=_pages_for_limit(limit),
         )
         try:
-            issues_raw, mrs_raw = await _asyncio.gather(issues_task, mrs_task)
+            issues_raw, mrs_raw = await asyncio.gather(issues_task, mrs_task)
         except ForgeCommandError as exc:
             logger.warning("search_items_mentioning failed: %s", exc)
             return [], []
