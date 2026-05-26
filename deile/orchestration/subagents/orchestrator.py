@@ -37,14 +37,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, ClassVar, List, Literal, Optional, TextIO
+from typing import Any, Callable, ClassVar, List, Literal, Optional, Set, TextIO
 
 from deile.config.settings import get_settings
 
-from ._capture import (CappedBuffer, _capture_lock_holder,
-                       get_capture_buffer_max_bytes, get_capture_lock)
+from ._capture import (CappedBuffer, SwitchableStream, _capture_lock_holder,
+                       _DiscardSink, get_capture_buffer_max_bytes,
+                       get_capture_lock)
 from ._loop_lock import LoopBoundLock
 from .events import SubAgentEvent, SubAgentState, SubAgentTask
 from .runner import SubAgentRunner
@@ -281,6 +283,7 @@ class SubAgentOrchestrator:
         # o painel continua aparecendo no terminal mesmo enquanto ``sys.stdout``
         # está redirecionado para suprimir os ``print()`` dos sub-DEILEs.
         real_stdout: TextIO = sys.stdout
+        real_stderr: TextIO = sys.stderr
 
         # Renderer é opcional: tests + chamadas headless passam None.
         renderer = None
@@ -302,13 +305,52 @@ class SubAgentOrchestrator:
         # diretamente, e isso polui o terminal do usuário em sub-DEILEs locais.
         # Redirecionamos sys.stdout/sys.stderr para buffers durante a execução.
         # O painel mantém referência ao stdout REAL, então continua renderizando.
+        #
+        # Issue #297-bookkeeping (orphan-thread leak): a versão anterior
+        # reatribuía ``sys.stdout = prev_stdout`` no ``finally``. Quando uma
+        # ``asyncio.to_thread(execute_sync)`` invocação ignorava cancel
+        # (caso típico: ``bash_tool`` no meio de ``subprocess.run`` longo,
+        # cancel pelo budget/ESC), a thread orfã continuava rodando e
+        # invocava ``print(data, end='')`` em sequência — escrevia direto no
+        # terminal real porque ``sys.stdout`` já tinha sido restaurado.
+        #
+        # A fix instala um :class:`SwitchableStream` UMA VEZ. Trocas de
+        # destino são feitas via ``set_target`` (atomic). Threads orfãs
+        # continuam escrevendo no wrapper; no encerramento, redirecionamos
+        # seus writes para :class:`_DiscardSink` (silencia sem error) em
+        # vez de para o terminal real.
         captured_out = _CappedBuffer() if self._capture_output else None
         captured_err = _CappedBuffer() if self._capture_output else None
         prev_stdout = sys.stdout
         prev_stderr = sys.stderr
+        switch_out: Optional[SwitchableStream] = None
+        switch_err: Optional[SwitchableStream] = None
         if self._capture_output:
-            sys.stdout = captured_out  # type: ignore[assignment]
-            sys.stderr = captured_err  # type: ignore[assignment]
+            # Idempotente: se já há um SwitchableStream instalado (dispatch
+            # aninhado seria proibido pelo lock, mas por defesa), reusa-o
+            # para evitar empilhamento de wrappers.
+            if isinstance(prev_stdout, SwitchableStream):
+                switch_out = prev_stdout
+            else:
+                switch_out = SwitchableStream(prev_stdout)
+                sys.stdout = switch_out  # type: ignore[assignment]
+            if isinstance(prev_stderr, SwitchableStream):
+                switch_err = prev_stderr
+            else:
+                switch_err = SwitchableStream(prev_stderr)
+                sys.stderr = switch_err  # type: ignore[assignment]
+            # Aponta para o buffer de captura — começa a capturar agora.
+            switch_out.set_target(captured_out)
+            switch_err.set_target(captured_err)
+
+        # Snapshot do conjunto de threads vivas pré-dispatch. Usado para
+        # detectar threads "orfãs" no encerramento: ``asyncio.to_thread``
+        # cancela o Task mas NÃO a thread do executor — bash_tool no meio
+        # de ``subprocess.run`` longo continua escrevendo em ``sys.stdout``
+        # após ``await asyncio.to_thread(...)`` ter sido cancelado.
+        # ``threading.enumerate()`` é thread-safe e barato (snapshot do
+        # internal _active dict).
+        pre_threads: Set[int] = {t.ident for t in threading.enumerate() if t.ident is not None}
 
         runner_tasks: List[asyncio.Task] = []
         renderer_task: Optional[asyncio.Task] = None
@@ -446,9 +488,68 @@ class SubAgentOrchestrator:
                         logger.error("runner task raised: %s", exc, exc_info=exc)
         finally:
             # Restore stdout/stderr ANTES de qualquer print pós-execução.
-            if self._capture_output:
-                sys.stdout = prev_stdout
-                sys.stderr = prev_stderr
+            #
+            # Issue #297-bookkeeping (orphan-thread leak): se algum runner ainda
+            # está vivo (orfã que ignorou cancel — caso típico:
+            # ``asyncio.to_thread(execute_sync)`` no meio de ``subprocess.run``
+            # longo), NÃO reatribuir ``sys.stdout = prev_stdout`` — a thread
+            # orfã, em seu próximo ``print(data, ...)``, escreveria direto no
+            # terminal real e visualmente vazaria por cima do painel/CLI.
+            #
+            # Em vez disso, deixamos o :class:`SwitchableStream` permanentemente
+            # instalado em ``sys.stdout``/``sys.stderr`` e:
+            #   * Apontamos ``target`` para :class:`_DiscardSink` — writes
+            #     orfãos são silenciosamente descartados (não vazam, não
+            #     enchem buffer).
+            #   * Quem chamar ``sys.stdout`` legitimamente após este ponto
+            #     (CLI principal, próximo turno) deveria reatribuir ``target``
+            #     ou substituir ``sys.stdout`` — o caller principal (cli.py)
+            #     também envelopa internamente, então o wrapper é transparente.
+            #
+            # Quando NÃO há orfãs, restauramos normalmente para não vazar o
+            # SwitchableStream para callers que não conhecem ele.
+            if self._capture_output and switch_out is not None and switch_err is not None:
+                # Detecção de orfãs em DUAS camadas:
+                #   (a) asyncio Tasks que ainda não retornaram (raro — só
+                #       quando ``asyncio.wait_for`` desistiu por timeout);
+                #   (b) THREADS do executor (asyncio.to_thread) que continuam
+                #       vivas após ``await`` ter sido cancelado — caso típico
+                #       de ``bash_tool`` no meio de ``subprocess.run`` longo
+                #       (a thread só termina quando ``execute_sync`` retorna).
+                # Comparamos enumerate() atual vs snapshot pre-dispatch.
+                task_orphans = sum(1 for t in runner_tasks if not t.done())
+                new_threads = [
+                    t for t in threading.enumerate()
+                    if t.ident is not None and t.ident not in pre_threads and t.is_alive()
+                ]
+                thread_orphans = len(new_threads)
+                if task_orphans > 0 or thread_orphans > 0:
+                    logger.warning(
+                        "SubAgentOrchestrator: %d task(s) + %d thread(s) ainda "
+                        "vivo(s) no encerramento; mantendo SwitchableStream + "
+                        "DISCARD para evitar leak no terminal.",
+                        task_orphans, thread_orphans,
+                    )
+                    # Aponta para o sink que descarta — orfãs imprimindo
+                    # ``print(data, ...)`` no ``sys.stdout`` corrente cairão
+                    # aqui, NÃO no terminal real.
+                    #
+                    # Nota: NÃO restauramos ``sys.stdout`` para ``prev_stdout``
+                    # — o SwitchableStream fica permanentemente lá. Como ele
+                    # é um proxy transparente, callers normais que escrevem
+                    # via ``print()`` continuam funcionando (write delega
+                    # ao ``target``). Quando o próximo dispatch acontece,
+                    # ele reusa este mesmo wrapper (ramo idempotente acima).
+                    switch_out.set_target(_DiscardSink())
+                    switch_err.set_target(_DiscardSink())
+                else:
+                    # Caminho normal: restaura sys.stdout/stderr para o stream
+                    # original. Idempotente — se o caller já instalou outro
+                    # wrapper entre o início e agora, respeita esse outro.
+                    if sys.stdout is switch_out:
+                        sys.stdout = prev_stdout
+                    if sys.stderr is switch_err:
+                        sys.stderr = prev_stderr
 
         # MA3 (iter-2 review): se o cancel veio do parent, re-raise APÓS o
         # cleanup completo (Pilar 03 §6 — CancelledError nunca capturada

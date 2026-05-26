@@ -122,6 +122,134 @@ class CappedBuffer:
         return "".join(self._chunks)
 
 
+class _DiscardSink:
+    """``TextIO``-like sink que descarta silenciosamente todo write.
+
+    Usado como destino de fallback para o :class:`SwitchableStream` depois que
+    o dispatch encerra — qualquer thread orfã que ainda tente escrever recebe
+    sucesso (sem ``BrokenPipeError``, sem flooding na captura) mas o byte é
+    aniquilado.
+    """
+
+    __slots__ = ()
+
+    def write(self, s) -> int:  # noqa: D401 — file protocol
+        return len(s) if isinstance(s, str) else 0
+
+    def flush(self) -> None:
+        return None
+
+    def writelines(self, lines) -> None:
+        return None
+
+    def isatty(self) -> bool:
+        return False
+
+    @property
+    def encoding(self) -> str:
+        return "utf-8"
+
+
+class SwitchableStream:
+    """``TextIO``-like proxy que delega para um destino mutável.
+
+    Substituído por :class:`SubAgentOrchestrator` no lugar de ``sys.stdout`` /
+    ``sys.stderr`` durante a execução. ``set_target(target)`` troca o destino
+    em tempo real **sem reatribuir** ``sys.stdout``.
+
+    Issue #257 round-X fix (orphan-thread leak): ``asyncio.to_thread`` cria
+    worker threads no pool global que **não respondem a `Task.cancel()`** —
+    quando o budget estoura ou o caller cancela, o orquestrador cancela a
+    task de await mas a thread continua rodando ``execute_sync`` (ex.:
+    ``bash_tool`` no meio de ``subprocess.run`` longo). O ``finally`` então
+    restaurava ``sys.stdout = prev_stdout``; a thread orfã, ao chamar
+    ``print(data, ...)`` em sequência, escrevia direto no terminal real.
+
+    Solução: nunca reatribuir ``sys.stdout`` para o stream original. Em vez
+    disso, instalar este wrapper ``UMA VEZ``; trocar ``target`` para o buffer
+    de captura no início, e para o **stream real** ou para :class:`_DiscardSink`
+    no encerramento. Threads orfãs que herdaram a referência ao
+    ``SwitchableStream`` continuam escrevendo nele sem afetar o terminal.
+
+    No ``release()`` chamado pelo orquestrador, o caller decide pra onde os
+    writes pós-dispatch devem ir: ``DISCARD`` para silenciá-los (default em
+    ``capture_output=True``) ou ``PASSTHROUGH`` para deixá-los aparecer no
+    terminal (caso onde o caller quer transparência total para writes legítimos
+    do CLI principal após o dispatch terminar — explicado abaixo).
+
+    Threading: ``set_target`` é atômico (assignment de atributo é GIL-protegido
+    em CPython); leituras em ``write`` veem o valor mais recente ou um valor
+    consistente anterior. Aceita-se a janela em que uma thread orfã pode
+    escrever no ``_CappedBuffer`` por mais alguns writes após ``release()`` —
+    é exatamente o resultado que queremos (não vazar para o terminal).
+    """
+
+    __slots__ = ("_target", "_real")
+
+    def __init__(self, real_stream) -> None:
+        # ``_real`` é o stream original do processo (terminal/pipe). Mantido para
+        # restauração no modo PASSTHROUGH, isatty/encoding fallback e o painel
+        # construir seu próprio Console com ``file=real_stream``.
+        self._real = real_stream
+        self._target = real_stream
+
+    @property
+    def real(self):
+        """O stream original que envelopamos — usado pelo painel para
+        renderizar diretamente no terminal mesmo enquanto a captura está
+        ativa."""
+        return self._real
+
+    def set_target(self, target) -> None:
+        """Troca o destino atual atomicamente. ``target`` deve ter ``write``."""
+        self._target = target
+
+    def write(self, s) -> int:
+        try:
+            return self._target.write(s)
+        except (BrokenPipeError, ValueError):
+            # ``ValueError`` cobre StringIO já fechado em pytest teardown;
+            # ``BrokenPipeError`` quando o terminal real foi fechado.
+            return len(s) if isinstance(s, str) else 0
+
+    def flush(self) -> None:
+        try:
+            self._target.flush()
+        except (BrokenPipeError, ValueError):
+            pass
+
+    def writelines(self, lines) -> None:
+        for line in lines:
+            self.write(line)
+
+    def isatty(self) -> bool:
+        try:
+            return self._real.isatty()
+        except Exception:
+            return False
+
+    @property
+    def encoding(self) -> str:
+        return getattr(self._real, "encoding", "utf-8") or "utf-8"
+
+    @property
+    def buffer(self):
+        # Algumas libs (Rich, prompt_toolkit) consultam ``sys.stdout.buffer``
+        # para escrever bytes crus. Expõe o buffer do stream real — esses
+        # writes BYPASSAM a captura intencionalmente (são para uso de coisas
+        # como o painel que JÁ queremos no terminal). Sub-DEILEs não usam
+        # ``buffer`` diretamente; ``print()`` e ``subprocess`` passam por
+        # ``write``, que é o caminho redirecionado.
+        return getattr(self._real, "buffer", None)
+
+    def fileno(self) -> int:
+        # Quando o destino é o real stream, retorna fd dele; quando é o
+        # _CappedBuffer, levanta UnsupportedOperation como qualquer StringIO.
+        # Subprocessos que herdam fds não passam por aqui — usam o fd 1
+        # diretamente, fora do nosso controle.
+        return self._real.fileno()
+
+
 # Singleton ``LoopBoundLock`` que serializa dispatches do orquestrador com
 # ``capture_output=True``. Vive aqui (módulo de captura) em vez de attribute
 # da classe ``SubAgentOrchestrator`` — a classe ainda expõe o atributo
@@ -143,6 +271,8 @@ def get_capture_lock() -> asyncio.Lock:
 
 __all__ = [
     "CappedBuffer",
+    "SwitchableStream",
+    "_DiscardSink",
     "get_capture_buffer_max_bytes",
     "get_capture_lock",
     "_capture_lock_holder",
