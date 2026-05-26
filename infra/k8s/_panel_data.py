@@ -2407,6 +2407,276 @@ def clear_pipeline_dispatch_mode(
     return True, f"{_DISPATCH_ENV_VAR} unset ({msg})"
 
 
+# ===== Stage dispatch (worker + model) consolidado — issue #309 fase 2 ======
+#
+# ``StageDispatchProvider`` unifica 3 leituras separadas em uma única view:
+#   1. Worker per-stage: ``DEILE_PIPELINE_DISPATCH_<STAGE>`` (env do
+#      Deployment ``deile-pipeline``), com fallback no global
+#      ``DEILE_PIPELINE_DISPATCH_MODE``; sem isso, default ``deile-worker``.
+#   2. Model per-stage: ``DEILE_PIPELINE_MODEL_<STAGE>`` (env do Deployment
+#      ``deile-worker``), com fallback no global ``DEILE_PIPELINE_MODEL``
+#      (também conhecido como ``DEILE_PREFERRED_MODEL``).
+#   3. Status do ``claude-worker``: Deployment aplicado? pod ready?
+#      email logado (do Secret ``claude-credentials``)?
+#
+# Substitui (a partir da Task 21) ``DispatchModeProvider`` (PR #330) +
+# ``StageModelsProvider`` (#305) — a view ``[d]`` consolidada do painel TUI
+# vai consumir só este provider para evitar 3 fetches separados.
+#
+# Mantém TTL 3s alinhado com sibling providers (``CurrentModelProvider``,
+# ``StageModelsProvider``, ``DispatchModeProvider``) — um único ``[r]``
+# refresha tudo. Lê de DOIS Deployments (``deile-pipeline`` para worker
+# dispatch, ``deile-worker`` para models) + UM Secret (``claude-credentials``
+# para email), totalizando 3 ``kubectl get -o json`` por refresh.
+
+_CLAUDE_WORKER_DEPLOYMENT = "claude-worker"
+_CLAUDE_CREDENTIALS_SECRET = "claude-credentials"
+
+
+@dataclass(frozen=True)
+class StageDispatchEntry:
+    """Snapshot per-stage do dispatcher + model resolvidos pelo runtime.
+
+    - ``stage`` — canonical stage name (one of :data:`PIPELINE_STAGES`).
+    - ``worker`` — qual worker pod receberá o dispatch deste stage:
+      ``deile-worker`` (default) ou ``claude-worker``.
+    - ``model`` — slug do modelo (ex.: ``anthropic:claude-opus-4-7``) ou
+      ``None`` quando nenhum override per-stage nem global está setado.
+    - ``source`` — ``"env"`` quando o WORKER veio de
+      ``DEILE_PIPELINE_DISPATCH_<STAGE>`` (override específico do stage),
+      ``"global"`` quando veio do fallback ``DEILE_PIPELINE_DISPATCH_MODE``,
+      ``"default"`` quando ambos ausentes (cai no built-in ``deile-worker``).
+    """
+
+    stage: str
+    worker: str
+    model: Optional[str]
+    source: str
+
+
+@dataclass(frozen=True)
+class ClaudeWorkerStatus:
+    """Status operacional do Deployment ``claude-worker`` no cluster.
+
+    - ``deployment_applied`` — True quando ``kubectl get deployment claude-worker``
+      retorna manifest válido (i.e., o operador já aplicou o YAML).
+    - ``pod_ready`` — True quando ``status.readyReplicas == status.replicas``
+      e ``replicas > 0`` (pod live e healthy).
+    - ``logged_in_email`` — email extraído de ``credentials.json`` no Secret
+      ``claude-credentials`` (campo ``email`` do JSON base64-decoded). ``None``
+      quando o Secret não existe, está malformado ou sem o campo email.
+    """
+
+    deployment_applied: bool
+    pod_ready: bool
+    logged_in_email: Optional[str]
+
+
+class StageDispatchProvider(_KubectlProviderMixin):
+    """Consolida leitura per-stage de worker + model + status claude-worker.
+
+    A partir da Task 21 (issue #309 fase 2), substitui ``DispatchModeProvider``
+    (PR #330) e ``StageModelsProvider`` (#305) na view unificada ``[d]`` do
+    painel TUI — uma view única lê tudo de um provider só.
+
+    O provider faz três fetches por refresh:
+      * ``kubectl get deployment/deile-pipeline -o json`` — para a chain de
+        worker dispatch (per-stage env + global env).
+      * ``kubectl get deployment/deile-worker -o json`` — para a chain de
+        model overrides per-stage + global.
+      * ``kubectl get secret/claude-credentials -o json`` — para o email
+        logado (best-effort; falha silenciosa não afeta as 5 entradas).
+
+    TTL 3s espelha :class:`StageModelsProvider` e :class:`DispatchModeProvider`
+    para um único ``[r]`` refrescar a view inteira sem disparada de subprocess
+    desnecessária.
+    """
+
+    def __init__(self, ttl_s: float = 3.0, enabled: bool = True,
+                 namespace: str = NS):
+        self._kubectl = kubectl_bin()
+        self._enabled = enabled
+        self._namespace = namespace
+        # Cache da lista de entries — fallback vazio quando provider desabilitado
+        # ou cluster down. Errors são capturados pelo Cache.last_error.
+        self._cache: Cache[List[StageDispatchEntry]] = Cache(
+            ttl_s, self._fetch_entries, fallback=[],
+        )
+        # Cache separado do status claude-worker — TTL idêntico, fallback
+        # neutro (deployment_applied=False) deixa a view mostrar "not applied".
+        self._status_cache: Cache[ClaudeWorkerStatus] = Cache(
+            ttl_s, self._fetch_status,
+            fallback=ClaudeWorkerStatus(
+                deployment_applied=False, pod_ready=False, logged_in_email=None,
+            ),
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get_all_stages(self, force: bool = False) -> List[StageDispatchEntry]:
+        """Returns 5 entries (uma por stage de :data:`PIPELINE_STAGES`).
+
+        ``force=True`` ignora TTL e re-fetcha do cluster. Usado pelo ``[r]``
+        do painel; chamadas regulares (rendering loop) usam o TTL.
+        """
+        return self._cache.get(force)
+
+    def get_claude_worker_status(self, force: bool = False) -> ClaudeWorkerStatus:
+        """Status do Deployment ``claude-worker`` + email do Secret.
+
+        Best-effort: falha de qualquer fetch cai no fallback neutro
+        (``deployment_applied=False``, ``pod_ready=False``, ``email=None``).
+        """
+        return self._status_cache.get(force)
+
+    def _fetch_entries(self) -> List[StageDispatchEntry]:
+        """Lê env vars dos dois Deployments e monta as 5 entries.
+
+        Lazy import de :data:`PIPELINE_STAGES` + :func:`is_valid_dispatcher`
+        para não puxar ``deile.orchestration`` no boot do painel (cold-import
+        custa ~200ms).
+        """
+        # Lazy import — único call site no provider, custo amortizado.
+        from deile.orchestration.pipeline.dispatch_resolver import (  # noqa: PLC0415
+            _DISPATCHER_ALIASES, PIPELINE_STAGES)
+
+        # --local-only → cai no fallback vazio do Cache sem chamar kubectl.
+        if not self._enabled:
+            return [
+                StageDispatchEntry(s, _DEFAULT_WORKER, None, "default")
+                for s in PIPELINE_STAGES
+            ]
+
+        def canonicalize(raw: str) -> str:
+            """Worker alias → canônico (``deile-worker`` | ``claude-worker``)."""
+            # Espelha :func:`_canonicalize` do dispatch_resolver, mas tolerante:
+            # valor desconhecido devolve lowercase em vez de raise, pra o
+            # painel mostrar o que está no cluster (visibility > strictness).
+            return _DISPATCHER_ALIASES.get(raw.strip().lower(),
+                                           raw.strip().lower())
+
+        self._resolve_kubectl()
+        if self._kubectl is None:
+            raise RuntimeError("kubectl não encontrado")
+        # Pipeline Deployment carrega o worker dispatch chain.
+        pipeline_data = _capture_json(
+            [self._kubectl, "-n", self._namespace, "get",
+             f"deployment/{_DISPATCH_DEPLOYMENT}", "-o", "json"],
+            timeout=4.0,
+        )
+        if not pipeline_data:
+            # Pipeline absent → tudo default. Não levanta para deixar o
+            # painel continuar a renderizar (cluster pode estar mid-deploy).
+            return [
+                StageDispatchEntry(s, _DEFAULT_WORKER, None, "default")
+                for s in PIPELINE_STAGES
+            ]
+        pipeline_env = StageModelsProvider._extract_env_map(pipeline_data)
+        # Worker Deployment carrega o model chain (usa o mesmo extractor).
+        worker_data = _capture_json(
+            [self._kubectl, "-n", self._namespace, "get",
+             f"deployment/{_STAGE_DEPLOYMENT}", "-o", "json"],
+            timeout=4.0,
+        )
+        worker_env = (StageModelsProvider._extract_env_map(worker_data)
+                      if worker_data else {})
+
+        global_worker_raw = pipeline_env.get(_DISPATCH_ENV_VAR)
+        # Aceita ``DEILE_PIPELINE_MODEL`` como alias canônico de
+        # ``DEILE_PREFERRED_MODEL`` — ambos significam "model global default
+        # do worker"; o painel usa o último como fonte autoritativa (paridade
+        # com ``StageModelsProvider``).
+        global_model = (worker_env.get("DEILE_PIPELINE_MODEL")
+                        or worker_env.get("DEILE_PREFERRED_MODEL") or None)
+
+        result: List[StageDispatchEntry] = []
+        for stage in PIPELINE_STAGES:
+            stage_worker_raw = pipeline_env.get(
+                f"DEILE_PIPELINE_DISPATCH_{stage.upper()}"
+            )
+            stage_model_raw = worker_env.get(
+                f"DEILE_PIPELINE_MODEL_{stage.upper()}"
+            )
+            # Worker chain: per-stage env → global env → default.
+            # Canonicaliza via _DISPATCHER_ALIASES para apresentar nome no
+            # formato canônico do dispatch_resolver (``deile-worker`` |
+            # ``claude-worker``), que é o que a view ``[d]`` consolidada
+            # espera (alinha com :func:`resolve_stage_dispatcher`).
+            if stage_worker_raw and stage_worker_raw.strip():
+                worker = canonicalize(stage_worker_raw)
+                source = "env"
+            elif global_worker_raw and global_worker_raw.strip():
+                worker = canonicalize(global_worker_raw)
+                source = "global"
+            else:
+                worker = _DEFAULT_WORKER
+                source = "default"
+            # Model chain: per-stage env → global env → None.
+            model = ((stage_model_raw or "").strip() or global_model or None)
+            result.append(StageDispatchEntry(stage, worker, model, source))
+        return result
+
+    def _fetch_status(self) -> ClaudeWorkerStatus:
+        """Lê Deployment ``claude-worker`` + Secret ``claude-credentials``.
+
+        Fallback neutro quando provider desabilitado ou cluster down.
+        Email é best-effort — falha do Secret não afeta o restante.
+        """
+        if not self._enabled:
+            return ClaudeWorkerStatus(False, False, None)
+        self._resolve_kubectl()
+        if self._kubectl is None:
+            raise RuntimeError("kubectl não encontrado")
+        deployment = _capture_json(
+            [self._kubectl, "-n", self._namespace, "get",
+             f"deployment/{_CLAUDE_WORKER_DEPLOYMENT}", "-o", "json"],
+            timeout=4.0,
+        )
+        if not deployment:
+            return ClaudeWorkerStatus(False, False, None)
+        status = deployment.get("status", {}) or {}
+        ready_replicas = status.get("readyReplicas", 0) or 0
+        replicas = status.get("replicas", 0) or 0
+        pod_ready = (ready_replicas == replicas) and replicas > 0
+        email = self._read_claude_credentials_email()
+        return ClaudeWorkerStatus(True, pod_ready, email)
+
+    def _read_claude_credentials_email(self) -> Optional[str]:
+        """Best-effort: lê ``credentials.json`` do Secret ``claude-credentials``.
+
+        Retorna ``None`` em qualquer falha (Secret ausente, base64 malformado,
+        JSON inválido, sem campo ``email``). Não levanta para não derrubar o
+        ``_fetch_status`` inteiro por causa do Secret ausente.
+        """
+        if self._kubectl is None:
+            return None
+        secret = _capture_json(
+            [self._kubectl, "-n", self._namespace, "get",
+             f"secret/{_CLAUDE_CREDENTIALS_SECRET}", "-o", "json"],
+            timeout=4.0,
+        )
+        if not secret:
+            return None
+        import base64  # noqa: PLC0415 (lazy — só quando o Secret existe)
+        try:
+            data_b64 = (secret.get("data", {}) or {}).get("credentials.json", "")
+            if not data_b64:
+                return None
+            decoded = base64.b64decode(data_b64)
+            payload = json.loads(decoded)
+            email = payload.get("email")
+            return email if isinstance(email, str) and email else None
+        except (ValueError, json.JSONDecodeError, KeyError, TypeError):
+            return None
+
+
+# Default declarado em :data:`_DISPATCHER_ALIASES` (dispatch_resolver) —
+# espelhado aqui para evitar import circular no fast path do _fetch_entries.
+_DEFAULT_WORKER = "deile-worker"
+
+
 # ===== Notifier (bot audit log) =============================================
 
 class NotifierProvider(_KubectlProviderMixin):
