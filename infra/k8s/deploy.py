@@ -432,6 +432,48 @@ def k8s_down(args: dict) -> int:
     return rc
 
 
+# ===== k8s: setup (interativo, multi-NS, prompts seguros) ====================
+
+def k8s_setup(args: dict) -> int:
+    """Setup interativo da stack DEILE — issue #328.
+
+    Delega a ``infra/k8s/_setup.py``. Conduz o operador do host limpo
+    (sem k8s, sem NS) até o pipeline rodando, com Secrets carregados via
+    ``getpass`` e ConfigMaps gerados por NS com os overrides escolhidos.
+
+    Para CI/automação não-interativa, prefira ``k8s up`` com Secrets
+    pré-criados manualmente — ``setup`` é fundamentalmente interativo
+    (segredos via getpass).
+    """
+    # Import tardio: ``_setup`` carrega apenas em sessões interativas, não
+    # paga o custo de import quando o operador chama outro verbo.
+    from _setup import run_setup  # noqa: PLC0415
+
+    # ``discover_deile_namespaces`` vive em ``_panel_data`` (mesmo módulo
+    # que ``cmd_menu`` já reusa) — evita duplicar a query de label.
+    def _discover() -> List[str]:
+        if _kubectl() is None:
+            return []
+        try:
+            from _panel_data import discover_deile_namespaces  # noqa: PLC0415
+
+            return list(discover_deile_namespaces())
+        except (ImportError, OSError):
+            return []
+
+    return run_setup(
+        args,
+        kubectl_resolver=_kubectl,
+        cluster_reachable_fn=cluster_reachable,
+        apply_secret_fn=_apply_secret,
+        discover_existing_fn=_discover,
+        manifests_dir=MANIFESTS,
+        setup_env_path=SETUP_ENV,
+        deile_ns_label=_DEILE_NS_LABEL,
+        deployments=K8S_DEPLOYMENTS,
+    )
+
+
 # ===== k8s: ciclo de vida (scale / rollout) ==================================
 
 def k8s_start(args: dict) -> int:
@@ -928,6 +970,7 @@ _K8S = {
     "restart": k8s_restart, "status": k8s_status, "logs": k8s_logs,
     "build": k8s_build, "test": k8s_test, "clone": k8s_clone,
     "list": k8s_list, "panel": k8s_panel, "doctor": cmd_doctor,
+    "setup": k8s_setup,
 }
 _LOCAL = {
     "start": local_start, "stop": local_stop, "restart": local_restart,
@@ -938,6 +981,7 @@ _LOCAL = {
 # menu por exigir um argumento <owner/repo>.
 _K8S_ACTIONS = [
     ("panel", "painel TUI ao vivo (pods + pipeline + GitHub + custos)"),
+    ("setup", "setup interativo do zero ao pipeline (multi-NS, getpass)"),
     ("list", "listar namespaces DEILE no cluster"),
     ("status", "ver pods, deployments e services"),
     ("up", "provisionar / atualizar a stack (idempotente)"),
