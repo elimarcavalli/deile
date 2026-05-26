@@ -20,21 +20,39 @@ PIPELINE_POLL_INTERVAL_SECONDS: int = get_settings().pipeline_poll_interval
 #: Seconds ``stop()`` waits for the loop task before cancelling it.
 PIPELINE_STOP_TIMEOUT_SECONDS: int = 5
 
-# ── GitHub / pipeline repo ────────────────────────────────────────────────
-#: Default ``owner/name`` when ``pipeline.repo`` is not set.
+# ── Forge / pipeline repo ─────────────────────────────────────────────────
+#: Default project path (``owner/repo`` on GH, ``group/.../project`` on GL)
+#: when ``forge.repo`` / ``pipeline.repo`` is not set.
 PIPELINE_DEFAULT_REPO: str = "elimarcavalli/deile"
 
 
-def resolve_pipeline_repo() -> str:
-    """Return the active ``owner/name`` for the pipeline repository.
+def resolve_forge_repo() -> str:
+    """Return the active project path for the pipeline repository.
 
-    Reads ``pipeline_repo`` from `Settings` (which itself layers
-    ``~/.deile/settings.json`` over project settings); falls back to
-    `PIPELINE_DEFAULT_REPO`. Single source of truth for both the
+    Accepts both shapes: GitHub ``owner/repo`` and GitLab
+    ``group/(subgroup/)*project``. Reads ``forge.repo`` from
+    :class:`Settings` first (new canonical), falling back to the legacy
+    ``pipeline.repo`` for transitional compatibility, then to
+    :data:`PIPELINE_DEFAULT_REPO`. Single source of truth for both the
     pipeline tool and the slash command — they used to inline the same
     expression independently.
     """
-    return get_settings().pipeline_repo or PIPELINE_DEFAULT_REPO
+    settings = get_settings()
+    return (
+        getattr(settings, "forge_repo", "")
+        or settings.pipeline_repo
+        or PIPELINE_DEFAULT_REPO
+    )
+
+
+def resolve_pipeline_repo() -> str:
+    """Deprecated alias for :func:`resolve_forge_repo`.
+
+    Kept here so callers (especially tests) do not have to migrate in
+    lock-step with the rename. New code should use
+    :func:`resolve_forge_repo`.
+    """
+    return resolve_forge_repo()
 
 # ── Prompt / message truncation ───────────────────────────────────────────
 #: Max chars of issue body EMBEDDED in a worker brief. Kept well under the 8000

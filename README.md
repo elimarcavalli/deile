@@ -71,6 +71,191 @@ Documentação completa: [`docs/2026-05-06_PIPELINE-AUTONOMO.md`](docs/2026-05-0
 
 ---
 
+## 🌳 Forge — GitHub & GitLab (issue #297)
+
+O DEILE é **forge-agnóstico**. O mesmo agente, o mesmo pipeline autônomo e os mesmos briefs operam **idênticos** em repos **GitHub** (cloud, GHES) e **GitLab** (cloud, self-hosted). O CLI usado por baixo (`gh` ou `glab`) é detalhe de transporte — você só decide para **onde** o trabalho vai.
+
+### 🎛️ Como decidir qual forge usar
+
+```
+            ┌─────────────────────────────────────┐
+            │ Onde está o repositório do projeto? │
+            └──────────┬──────────────────────────┘
+                       │
+        ┌──────────────┴───────────────┐
+        │                              │
+   github.com                     gitlab.com
+   ou GHES                        ou self-hosted
+        │                              │
+        ▼                              ▼
+   DEILE_FORGE_KIND=github        DEILE_FORGE_KIND=gitlab
+   GITHUB_TOKEN=ghp_…             GITLAB_TOKEN=glpat-…
+   (DEILE_GITHUB_HOST=…)          (DEILE_GITLAB_HOST=…)
+        │                              │
+        └──────────────┬───────────────┘
+                       ▼
+              ✅ Funciona idêntico
+       (mesma máquina de estados, mesmos briefs)
+```
+
+| Cenário | `DEILE_FORGE_KIND` | Hosts | Tokens necessários |
+|---|---|---|---|
+| 🐙 **GitHub cloud** (padrão) | `auto` ou `github` | — (default `github.com`) | `GITHUB_TOKEN` |
+| 🦊 **GitLab cloud** | `gitlab` | — (default `gitlab.com`) | `GITLAB_TOKEN` |
+| 🏢 **GitHub Enterprise Server** | `github` | `DEILE_GITHUB_HOST=ghe.empresa.com` | `GITHUB_TOKEN` (do seu GHES) |
+| 🏠 **GitLab self-hosted** | `gitlab` | `DEILE_GITLAB_HOST=gitlab.empresa.com` | `GITLAB_TOKEN` (do seu GL) |
+| 🌐 **Multi-forge na sessão CLI** | `auto` | ambos hosts declarados | **AMBOS** (`GITHUB_TOKEN` + `GITLAB_TOKEN`) |
+
+### 🔑 Onde obter o token e quais escopos
+
+#### 🐙 GitHub (cloud ou GHES)
+
+1. Acesse: **https://github.com/settings/tokens** (em GHES: `https://<seu-ghes>/settings/tokens`)
+2. Clique em **"Generate new token (classic)"**
+3. Marque os escopos:
+
+| Escopo | Para que serve |
+|---|---|
+| ✅ `repo` (todo) | Ler/escrever issues, PRs, labels, commits |
+| ✅ `workflow` | Pipeline labela PRs e gerencia branches `auto/issue-N` |
+| ⬜ `read:org` | **NÃO marque** — o pipeline foi desenhado pra funcionar sem isso |
+
+4. Copie o token (formato `ghp_…`). **Você só vê uma vez.**
+
+#### 🦊 GitLab (cloud ou self-hosted)
+
+1. Acesse: **https://gitlab.com/-/user_settings/personal_access_tokens** (self-hosted: `https://<seu-gitlab>/-/user_settings/personal_access_tokens`)
+2. Clique em **"Add new token"**, dê um nome (ex.: `deile-pipeline`) e data de expiração
+3. Marque os escopos:
+
+| Escopo | Para que serve |
+|---|---|
+| ✅ `api` | Acesso completo à API (issues, MRs, notes, merge, labels) |
+| ✅ `read_repository` | Clone via HTTPS + leitura de arquivos (templates `.gitlab/issue_templates/`) |
+| ✅ `write_repository` | Push de commits + branches `auto/issue-N` |
+| ⬜ `read_user` / `read_registry` | Não necessários |
+
+4. Copie o token (formato `glpat-…`). **Você só vê uma vez.**
+
+### 🔐 Autenticação git: HTTPS+token vs SSH vs GPG
+
+Para o DEILE em produção (containerizado), a recomendação é **clara**:
+
+| Opção | Recomendação | Por quê |
+|---|---|---|
+| 🟢 **HTTPS + Personal Access Token** | ✅ **USE ISTO** | É o que o `wrapper.py` configura automaticamente; o token vai pro `~/.git-credentials` em mode `0600`; sem prompt interativo; mesmo padrão pra os dois forges; rotação simples (substitui no Secret). |
+| 🟡 **SSH key** | ❌ Evite | Exige montar `~/.ssh/id_*` como Secret separado, `known_hosts` pré-populado, agent socket no Pod — toda essa cerimônia só pra alcançar o mesmo resultado do HTTPS+token. |
+| 🟠 **GPG signing** | ➖ Opcional | É **ortogonal** à autenticação — GPG só assina o conteúdo do commit, não autentica `git push`. Se você quer commits assinados, pode adicionar `signingkey` no `~/.gitconfig` separadamente, mas não substitui o token. Default do DEILE é não assinar. |
+
+> 💡 **TL;DR**: gere um PAT no forge, joga no K8s Secret, esquece. SSH só faz sentido se o seu time TEM uma política que proíbe HTTPS — o que é raro hoje em dia.
+
+### 🪛 Configuração — escolha sua via
+
+#### 🏠 Local (laptop / dev)
+
+```bash
+# 1. Adicione ao seu .env (gitignored):
+DEILE_FORGE_KIND=gitlab                    # ou "github" / "auto"
+DEILE_FORGE_REPO=group/sub/projeto         # owner/repo no GH, group/.../proj no GL
+DEILE_GITLAB_HOST=gitlab.com               # ou seu self-hosted
+GITLAB_TOKEN=glpat-XXXXXXXXXXXXXXXXXXXX    # token gerado acima
+
+# Para multi-forge na sessão CLI, defina TAMBÉM:
+GITHUB_TOKEN=ghp_XXXXXXXXXXXXXXXXXXXXXX
+
+# 2. Rode normalmente
+python3 deile.py
+```
+
+#### ☸️ Kubernetes (deile-pipeline / deile-worker / deile-shell)
+
+```bash
+# 1. Patch no Secret existente (NÃO recrie o Secret inteiro pra preservar o GITHUB_TOKEN/LLM keys):
+GL_PAT='glpat-XXXXXXXXXXXXXXXXXXXX'
+kubectl -n deile patch secret deile-secrets \
+  -p "{\"stringData\":{\"GITLAB_TOKEN\":\"${GL_PAT}\"}}"
+
+# 2. Defina as env vars no Deployment do pipeline:
+kubectl -n deile set env deploy/deile-pipeline \
+  DEILE_FORGE_KIND=gitlab \
+  DEILE_FORGE_REPO=group/sub/projeto \
+  DEILE_GITLAB_HOST=gitlab.com   # (omita se for gitlab.com)
+
+# 3. Reconstrua e reinicie (deploy.py faz tudo idempotente):
+python3 infra/k8s/deploy.py k8s build --restart --yes
+```
+
+### 🔄 Como funciona por dentro (decisão run-time)
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                  Pipeline tick (ou agente CLI)                  │
+└──────────────────────────────┬───────────────────────────────────┘
+                               ▼
+            ┌──────────────────────────────────┐
+            │  build_forge(project_path, env)  │
+            └──────────────┬───────────────────┘
+                           ▼
+       ┌───────────────────────────────────────────┐
+       │  detect_forge_kind() — 3 camadas:         │
+       │  1. DEILE_FORGE_KIND="github"|"gitlab"?   │ ✅ Override explícito
+       │  2. URL host bate "github.com"/"gitlab.com"│ ✅ Detecção por URL
+       │     ou DEILE_*_HOST declarado?            │
+       │  3. project_path 3+ segmentos → GitLab    │ ✅ Heurística de path
+       │     2 segmentos → GitHub (compat)         │
+       └──────────────┬────────────────────────────┘
+                      ▼
+        ┌─────────────────────────────┐
+        │  Resolve ForgeClient:       │
+        │  github → GitHubForge(gh)   │
+        │  gitlab → GitLabForge(glab) │
+        └─────────────┬───────────────┘
+                      ▼
+       ┌─────────────────────────────────┐
+       │ Briefs forge-aware:             │
+       │   {forge_create_pr_cmd}         │ → "gh pr create …" OU "glab mr create …"
+       │   {pr_url_pattern}              │ → "github.com/…/pull/N" OU "gitlab.com/…/-/merge_requests/N"
+       │   {merge_cmd}                   │ → "gh api PUT …" OU "glab api PUT …"
+       └─────────────────────────────────┘
+```
+
+### 🗺️ Mapeamento GitHub ↔ GitLab (vocabulário canônico)
+
+| Conceito interno | GitHub | GitLab |
+|---|---|---|
+| Mudança proposta | **PR** (Pull Request) | **MR** (Merge Request) |
+| Comentário | `comment` | `note` |
+| Thread de review | review comment | discussion |
+| Reviewer | `requested_reviewers[]` | `reviewers[]` |
+| Numeração | `pr.number` | `mr.iid` (interno ao projeto) |
+| URL pública | `/<owner>/<repo>/pull/N` | `/<group>/.../<proj>/-/merge_requests/N` |
+| Templates de issue | `.github/ISSUE_TEMPLATE/*.md` | `.gitlab/issue_templates/*.md` |
+| API base | `api.github.com` (cloud) ou `<host>/api/v3` (GHES) | `<host>/api/v4` |
+| CLI | `gh` | `glab` |
+| Cross-ref de PR/MR | `#N` (mesmo namespace de issue) | `!N` (namespace separado) |
+
+### 🧩 Multi-forge na sessão CLI (modo dual)
+
+Numa mesma sessão `python3 deile.py` ou `deile-shell`, você pode trabalhar com repos GitHub **e** GitLab. O `ForgeRouter` cacheia um cliente por `(host, project)` — você só precisa que **os dois tokens** estejam configurados:
+
+```bash
+export GITHUB_TOKEN=ghp_...
+export GITLAB_TOKEN=glpat-...
+# DEILE_FORGE_KIND fica "auto" (default) — cada URL escolhe seu adapter
+```
+
+> ⚠️ **Pipeline ≠ CLI**: o `deile-pipeline` (autônomo) é **per-repo, per-forge** — uma instância serve UM repo. Para operar GH e GL simultaneamente em modo autônomo, rode **duas instâncias** do pipeline (Decisão #18 — `MonitorIdentity` + shard), cada uma com sua `DEILE_FORGE_REPO`.
+
+### ✅ Garantias
+
+- 🔒 Tokens **nunca** ficam em `/proc/self/environ` — `wrapper.py` move pra `~/.git-credentials` (mode `0600`) + `~/.config/gh/hosts.yml` + `~/.config/glab-cli/config.yml` e remove de `os.environ` antes do agente subir.
+- 🛡️ `secrets_scanner` detecta vazamento de tokens GitHub (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, `github_pat_`) **e** GitLab (`glpat-`, `gldt-`, `glptt-`, `glsoat-`).
+- 🔁 **Backwards-compat 100%**: se você já rodava com GitHub, **nada muda** — `DEILE_PIPELINE_REPO` continua aceito como alias, `monitor.github` continua funcionando, `_setup_gh_auth` continua existindo. O `glab` fica dormente até você definir `DEILE_FORGE_KIND=gitlab`.
+
+> 🚫 **Honestidade**: rate-limit sleep ativo e HTTP probe opt-in estão documentados mas **não implementados** nesta release — o cliente lê e propaga erros de rate limit do CLI, mas não dorme até reset automaticamente. Se o piloto GitLab esbarrar no limite (`gitlab.com`: 600 req/min/usuário), abriremos issue derivada. Mitigação imediata: `DEILE_PIPELINE_POLL_INTERVAL` mais conservador.
+
+---
+
 ## 🧩 Sub-DEILEs paralelos (decomposição em sessão CLI)
 
 Durante uma conversa interativa, o DEILE pode identificar autonomamente sub-tarefas **independentes e substanciais** dentro do seu pedido e dispará-las em paralelo — cada uma rodando num sub-DEILE com **sessão limpa** (contexto/histórico próprios). Você vê o progresso ao vivo num painel multipanel discreto.

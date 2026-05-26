@@ -2,7 +2,6 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: deile-oneshot
-  namespace: deile
   labels:
     app: deile
     role: deile
@@ -52,7 +51,7 @@ spec:
               value: "1"
             # Endpoint of the bot's control plane (within the cluster).
             - name: DEILE_BOT_ENDPOINT
-              value: "http://deilebot.deile.svc.cluster.local:8765"
+              value: "http://deilebot:8765"
             # approval.auto=true vem de /etc/deile/settings.json via ConfigMap
             # deile-runtime-config (manifest 47) — substitui
             # DEILE_BOT_APPROVAL_AUTO depreciada (issue #111). Audit log

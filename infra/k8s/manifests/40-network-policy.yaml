@@ -11,7 +11,6 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: default-deny-all
-  namespace: deile
 spec:
   podSelector: {}
   policyTypes:
@@ -23,7 +22,6 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: allow-dns-egress
-  namespace: deile
 spec:
   podSelector: {}
   policyTypes:
@@ -44,7 +42,6 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: bot-ingress-from-deile
-  namespace: deile
 spec:
   podSelector:
     matchLabels:
@@ -65,7 +62,6 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: deile-egress-to-bot
-  namespace: deile
 spec:
   podSelector:
     matchLabels:
@@ -89,7 +85,6 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: deile-egress-https-llm
-  namespace: deile
 spec:
   podSelector:
     matchLabels:
@@ -116,7 +111,6 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: bot-egress-https-discord
-  namespace: deile
 spec:
   podSelector:
     matchLabels:
@@ -144,7 +138,6 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: worker-ingress-from-bot
-  namespace: deile
 spec:
   podSelector:
     matchLabels:
@@ -168,7 +161,6 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: bot-egress-to-worker
-  namespace: deile
 spec:
   podSelector:
     matchLabels:
@@ -192,7 +184,6 @@ apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: pipeline-egress-to-worker
-  namespace: deile
 spec:
   podSelector:
     matchLabels:

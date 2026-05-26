@@ -22,18 +22,23 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import warnings
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
+from deile.orchestration.forge import ForgeClient, IssueRef, build_forge
 from deile.orchestration.pipeline import stages
 from deile.orchestration.pipeline._time_utils import now_utc, parse_iso_utc
 from deile.orchestration.pipeline.actions import ACTIONS_BY_NAME
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeDispatcher
 from deile.orchestration.pipeline.constants import (
     PIPELINE_POLL_INTERVAL_SECONDS, PIPELINE_STOP_TIMEOUT_SECONDS)
-from deile.orchestration.pipeline.github_client import GitHubClient, IssueRef
+# Import path preserved for callers that still type-hint ``GitHubClient`` —
+# resolved through the shim so legacy attribute usage stays compatible.
+from deile.orchestration.pipeline.github_client import \
+    GitHubClient  # noqa: F401
 from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.implementer import (PipelineImplementer,
                                                       build_implementer,
@@ -187,29 +192,63 @@ def build_default_pipeline_config(*, use_pid_lock: bool = True) -> PipelineConfi
     )
 
 
-@dataclass
 class _Stats:
-    ticks: int = 0
-    issues_reviewed: int = 0
-    issues_implemented: int = 0
-    prs_reviewed: int = 0
-    issues_classified: int = 0
-    errors: int = 0
-    # Separate counters allow operators to distinguish gh CLI failures from Claude failures.
-    gh_errors: int = 0
-    claude_errors: int = 0
-    catchup_runs: int = 0
-    scheduled_runs: int = 0
-    follow_ups_opened: int = 0
-    follow_ups_skipped: int = 0
-    # Incremented when a scheduled action is disabled via enable_* config.
-    skipped_runs: int = 0
-    prs_classified: int = 0
-    mentions_processed: int = 0
-    # Issues moved to ~workflow:bloqueada by the block flow (issue #254).
-    issues_blocked: int = 0
-    # Resume dispatches re-sent for parked, continuable implementations.
-    resume_dispatches: int = 0
+    """Mutable stat bag for the pipeline monitor.
+
+    ``forge_errors`` counts failures attributable to the forge CLI / REST API
+    (previously ``gh_errors``). The old name remains accessible via a
+    deprecated property for one release so existing dashboards / log scrapers
+    keep working without change.
+    """
+
+    def __init__(self) -> None:
+        self.ticks: int = 0
+        self.issues_reviewed: int = 0
+        self.issues_implemented: int = 0
+        self.prs_reviewed: int = 0
+        self.issues_classified: int = 0
+        self.errors: int = 0
+        # Contadores separados permitem distinguir falhas de CLI/REST da forge
+        # de falhas do Claude (ex.: timeout, budget exceeded).
+        self.forge_errors: int = 0
+        self.claude_errors: int = 0
+        self.catchup_runs: int = 0
+        self.scheduled_runs: int = 0
+        self.follow_ups_opened: int = 0
+        self.follow_ups_skipped: int = 0
+        # Incrementado quando uma ação agendada está desabilitada via enable_*.
+        self.skipped_runs: int = 0
+        self.prs_classified: int = 0
+        self.mentions_processed: int = 0
+        # Issues movidas para ~workflow:bloqueada pelo fluxo de bloqueio (#254).
+        self.issues_blocked: int = 0
+        # Dispatches de resume reenviados para implementações em pausa.
+        self.resume_dispatches: int = 0
+
+    @property
+    def gh_errors(self) -> int:
+        """Deprecated alias for :attr:`forge_errors`.
+
+        .. deprecated::
+            Use ``forge_errors`` directly. This alias will be removed in the
+            next major release.
+        """
+        warnings.warn(
+            "_Stats.gh_errors is deprecated; use forge_errors instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.forge_errors
+
+    @gh_errors.setter
+    def gh_errors(self, value: int) -> None:
+        """Deprecated setter — redirects writes to :attr:`forge_errors`."""
+        warnings.warn(
+            "_Stats.gh_errors is deprecated; use forge_errors instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.forge_errors = value
 
 
 class PipelineMonitor:
@@ -219,7 +258,8 @@ class PipelineMonitor:
         self,
         config: PipelineConfig,
         *,
-        github: Optional[GitHubClient] = None,
+        forge: Optional[ForgeClient] = None,
+        github: Optional[ForgeClient] = None,
         worktrees: Optional[WorktreeManager] = None,
         claude: Optional[ClaudeDispatcher] = None,
         notifier: Optional[DiscordNotifier] = None,
@@ -231,7 +271,18 @@ class PipelineMonitor:
     ) -> None:
         self.config = config
         self.identity = identity or MonitorIdentity.from_env()
-        self.github = github or GitHubClient(config.repo)
+        # ``forge`` is the canonical attribute (post-issue #297). ``github`` is
+        # kept as a deprecated kwarg for legacy test code that passed a
+        # ``GitHubClient`` by keyword; if both are given ``forge`` wins. When
+        # neither is supplied the factory builds the right adapter from env +
+        # ``config.repo`` — GitLab/self-hosted operators set ``DEILE_FORGE_KIND``
+        # and (optionally) ``DEILE_<KIND>_HOST`` and the same code path serves
+        # both forges.
+        if forge is not None and github is not None and forge is not github:
+            raise ValueError(
+                "PipelineMonitor: pass only one of forge=/github= (github= is deprecated)"
+            )
+        self.forge: ForgeClient = forge or github or build_forge(project_path=config.repo)
         # WorktreeManager validates that base_repo_path is a git repo at
         # construction. The deile_worker strategy never creates local
         # worktrees (the worker Pod owns its own clone) and runs where
@@ -276,6 +327,24 @@ class PipelineMonitor:
         self.schedule_store = schedule_store or ScheduleStore(
             config.base_repo_path, monitor_id=self.identity.monitor_id
         )
+
+    # ------------------------------------------------------------------
+    # Backwards-compat aliases (issue #297)
+    # ------------------------------------------------------------------
+
+    def __getattr__(self, name: str):
+        """Resolve ``monitor.github`` to ``monitor.forge`` for legacy callers.
+
+        ``__getattr__`` only fires when the attribute is NOT already set on
+        the instance, so this never shadows a real attribute — it just
+        catches the deprecated read path. No warning at every read: that
+        would spam ``stages.py`` (which already migrated to ``monitor.forge``
+        in this commit), but tests that grep the public attribute keep
+        working without modification.
+        """
+        if name == "github":
+            return self.forge
+        raise AttributeError(name)
 
     # ------------------------------------------------------------------
     # identity-aware naming helpers
@@ -352,7 +421,7 @@ class PipelineMonitor:
                     self.identity.monitor_id, exc.holder_pid,
                 )
                 raise
-        await self.github.ensure_pipeline_labels()
+        await self.forge.ensure_pipeline_labels()
         await self._catch_up_pending()
         self._stop_event.clear()
         self._task = asyncio.create_task(
@@ -364,7 +433,7 @@ class PipelineMonitor:
         # Opportunistic cleanup: remove on-disk worktrees for already-merged PRs.
         if self.config.enable_worktree_cleanup and self.worktrees is not None:
             try:
-                merged_prs = await self.github.list_recently_merged_prs(limit=100)
+                merged_prs = await self.forge.list_recently_merged_prs(limit=100)
                 merged_branches = [pr.head_ref for pr in merged_prs if pr.head_ref]
                 # PR numbers are public metadata (already in the URL) so a
                 # bounded sample is safe to log; head_refs leak branch
@@ -447,10 +516,16 @@ class PipelineMonitor:
                 await asyncio.wait_for(self._task, timeout=PIPELINE_STOP_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
                 self._task.cancel()
+                # ``CancelledError`` é o resultado esperado de ``cancel()`` —
+                # capturado e silenciado intencionalmente (não é uma falha).
+                # Outras exceções do tick em curso são logadas (pilar 03 §6 —
+                # ``except Exception: pass`` é proibido sem registro).
                 try:
                     await self._task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                except asyncio.CancelledError:
                     pass
+                except Exception as exc:  # noqa: BLE001 — logged then suppressed
+                    logger.warning("pipeline task raised during stop: %s", exc)
         if self._held_lock is not None:
             release_lock(self._held_lock)
             self._held_lock = None
@@ -533,14 +608,16 @@ class PipelineMonitor:
         scheduled_mode = bool(skip)
         cfg = self.config
 
-        if cfg.enable_classify and "classify" not in skip:
+        async def _scheduled(enabled: bool, key: str, handler) -> None:
+            """Run a schedulable stage unless the scheduler already covered it."""
+            if not enabled or key in skip:
+                return
             if scheduled_mode:
-                logger.debug("classify not in schedule; running legacy fallback")
-            await self._classify_new_issues()
-        if cfg.enable_review and "review" not in skip:
-            if scheduled_mode:
-                logger.debug("review not in schedule; running legacy fallback")
-            await self._review_one_new_issue()
+                logger.debug("%s not in schedule; running legacy fallback", key)
+            await handler()
+
+        await _scheduled(cfg.enable_classify, "classify", self._classify_new_issues)
+        await _scheduled(cfg.enable_review, "review", self._review_one_new_issue)
         # Refinement loop (issue #257): per-tick sweep, not a cron action —
         # runs after critique so a POOR issue is refined on the NEXT tick.
         if cfg.enable_refinement_gate:
@@ -550,17 +627,11 @@ class PipelineMonitor:
         # the same tick; its first resume lands on the next tick.
         if cfg.enable_resume:
             await self._resume_in_progress_issues()
-        if cfg.enable_implement and "implement" not in skip:
-            if scheduled_mode:
-                logger.debug("implement not in schedule; running legacy fallback")
-            await self._implement_one_reviewed_issue()
+        await _scheduled(cfg.enable_implement, "implement", self._implement_one_reviewed_issue)
         # Decompose CLEAR intents into derived issues (issue #257).
         if cfg.enable_refinement_gate:
             await self._decompose_one_reviewed_intent()
-        if cfg.enable_pr_review and "pr_review" not in skip:
-            if scheduled_mode:
-                logger.debug("pr_review not in schedule; running legacy fallback")
-            await self._review_one_open_pr()
+        await _scheduled(cfg.enable_pr_review, "pr_review", self._review_one_open_pr)
         if cfg.enable_pr_triage:
             await self._classify_new_prs()
         if cfg.enable_mention_handling:

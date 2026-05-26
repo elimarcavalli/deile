@@ -14,7 +14,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: deile-worker
-  namespace: deile
   labels:
     app: deile-worker
     role: deile        # so existing NetworkPolicies (deile-egress-to-bot,
@@ -61,7 +60,7 @@ spec:
             - { name: PYTHONDONTWRITEBYTECODE,      value: "1" }
             # The worker calls back into the bot's control-plane to
             # post/edit Discord status messages and react.
-            - { name: DEILE_BOT_ENDPOINT,           value: "http://deilebot.deile.svc.cluster.local:8765" }
+            - { name: DEILE_BOT_ENDPOINT,           value: "http://deilebot:8765" }
             - { name: DEILE_DEFAULT_PERSONA,        value: developer }
             # Worker's own listener.
             - { name: DEILE_WORKER_HOST,            value: "0.0.0.0" }
@@ -148,7 +147,6 @@ apiVersion: v1
 kind: Service
 metadata:
   name: deile-worker
-  namespace: deile
   labels:
     app: deile-worker
 spec:

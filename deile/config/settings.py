@@ -41,6 +41,17 @@ _DEILE_DEPRECATED_ENV_VARS: Dict[str, str] = {
     "DEILE_PIPELINE_RESUME_INTERVAL": "pipeline.resume_interval",
     "DEILE_PIPELINE_RESUME_MAX_ATTEMPTS": "pipeline.resume_max_attempts",
     "DEILE_PIPELINE_RESUME_BUDGET": "pipeline.resume_budget",
+    # Forge layer (issue #297) — every new env var routes through Settings
+    # the same way the pipeline knobs do. ``DEILE_FORGE_REPO`` supersedes
+    # ``DEILE_PIPELINE_REPO`` (above) but the legacy name keeps working.
+    "DEILE_FORGE_REPO": "forge.repo",
+    "DEILE_FORGE_KIND": "forge.kind",
+    "DEILE_GITHUB_HOST": "forge.github_host",
+    "DEILE_GITLAB_HOST": "forge.gitlab_host",
+    "DEILE_FORGE_PROBE": "forge.probe_enabled",
+    "DEILE_FORGE_BOT_LOGIN": "forge.bot_login",
+    "DEILE_GITLAB_API_VERSION": "forge.gitlab_api_version",
+    "DEILE_GITHUB_API_PREFIX": "forge.github_api_prefix",
     "DEILE_CRON_DB_PATH": "cron.db_path",
     "DEILE_CRON_POLL_INTERVAL": "cron.poll_interval",
     "DEILE_DEBUG": "debug.enabled",
@@ -384,6 +395,29 @@ class Settings:
     pipeline_resume_budget: int = 0
     pipeline_refine_max_attempts: int = 5
     pipeline_max_parallel: int = 2
+
+    # Forge layer (issue #297) — selects which provider (GitHub or GitLab)
+    # backs the pipeline and the agent CLI. ``forge_repo`` is the new
+    # canonical name for the project path; ``pipeline_repo`` above stays as
+    # the deprecated alias (resolve_forge_repo prefers ``forge_repo`` when
+    # both are set). ``forge_kind`` controls auto-detection: ``auto`` (the
+    # default) uses the URL/path heuristics in :mod:`deile.orchestration.forge.detection`;
+    # ``github`` / ``gitlab`` force the choice. ``forge_github_host`` and
+    # ``forge_gitlab_host`` declare custom hosts for GHES / self-hosted
+    # GitLab — the URL parser only accepts these explicitly (no guessing).
+    # ``forge_probe_enabled`` enables an opt-in HTTP probe for hosts that
+    # match neither cloud default (disabled by default — adds network).
+    forge_repo: str = ""
+    forge_kind: str = "auto"
+    forge_github_host: str = "github.com"
+    forge_gitlab_host: str = "gitlab.com"
+    forge_probe_enabled: bool = False
+    # ``forge_bot_login`` is the mention handle the pipeline watches for —
+    # the canonical handle is ``@deile-one`` on both forges. Centralised
+    # here so a fork can override without touching code.
+    forge_bot_login: str = "@deile-one"
+    forge_gitlab_api_version: str = "4"
+    forge_github_api_prefix: str = "api"
 
     # Pipeline per-stage model override (issue #305) — local-CLI path. The
     # cluster path uses `DEILE_PIPELINE_MODEL_<STAGE>` env on the worker
@@ -744,6 +778,17 @@ _JSON_ONLY_FIELD_MAP: Dict[str, str] = {
     "pipeline.notify_user_id": "pipeline_notify_user_id",
     "pipeline.autostart": "pipeline_autostart",
     "pipeline.dispatch_mode": "pipeline_dispatch_mode",
+    # Forge layer (issue #297). These JSON paths are accepted by the
+    # loose loader; the env vars in ``_ENV_OVERRIDE_MAP`` resolve to these
+    # same paths.
+    "forge.repo": "forge_repo",
+    "forge.kind": "forge_kind",
+    "forge.github_host": "forge_github_host",
+    "forge.gitlab_host": "forge_gitlab_host",
+    "forge.probe_enabled": "forge_probe_enabled",
+    "forge.bot_login": "forge_bot_login",
+    "forge.gitlab_api_version": "forge_gitlab_api_version",
+    "forge.github_api_prefix": "forge_github_api_prefix",
     "cron.db_path": "cron_db_path",
     "cron.poll_interval": "cron_poll_interval",
     # Sub-DEILEs paralelos (issue #257)
@@ -945,6 +990,18 @@ _ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any], bool], ...] = (
     ("DEILE_PIPELINE_RESUME_INTERVAL",       "pipeline_resume_interval",       _int_floor(0),     True),
     ("DEILE_PIPELINE_RESUME_MAX_ATTEMPTS",   "pipeline_resume_max_attempts",   _int_floor(1),     True),
     ("DEILE_PIPELINE_RESUME_BUDGET",         "pipeline_resume_budget",         _int_floor(0),     True),
+    # Forge layer (issue #297) — current knobs, no deprecation. Validation
+    # of ``forge_kind`` is loose here (raw lowercase string) and tightened
+    # in :func:`deile.orchestration.forge.detection.detect_forge_kind`,
+    # which is the only consumer that needs to reject typos.
+    ("DEILE_FORGE_REPO",                     "forge_repo",                     str,               False),
+    ("DEILE_FORGE_KIND",                     "forge_kind",                     lambda s: s.strip().lower(), False),
+    ("DEILE_GITHUB_HOST",                    "forge_github_host",              str,               False),
+    ("DEILE_GITLAB_HOST",                    "forge_gitlab_host",              str,               False),
+    ("DEILE_FORGE_PROBE",                    "forge_probe_enabled",            _env_bool,         False),
+    ("DEILE_FORGE_BOT_LOGIN",                "forge_bot_login",                str,               False),
+    ("DEILE_GITLAB_API_VERSION",             "forge_gitlab_api_version",       str,               False),
+    ("DEILE_GITHUB_API_PREFIX",              "forge_github_api_prefix",        str,               False),
     ("DEILE_CRON_DB_PATH",                   "cron_db_path",                   _resolved_path,    True),
     ("DEILE_CRON_POLL_INTERVAL",             "cron_poll_interval",             int,               True),
     # Current knob (no deprecation): agent tool-loop cap.

@@ -55,9 +55,8 @@ class AgentStreamingMixin:
                                                      StreamEventType,
                                                      UnifiedStreamEvent)
 
-        from .agent import (AgentStatus, _BudgetExceeded,
-                            _finalize_turn_span, _open_turn_span,
-                            _record_turn_error)
+        from .agent import (AgentStatus, _BudgetExceeded, _finalize_turn_span,
+                            _open_turn_span, _record_turn_error)
 
         start_time = time.time()
         self._status = AgentStatus.PROCESSING

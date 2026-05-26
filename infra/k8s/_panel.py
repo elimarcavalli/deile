@@ -60,6 +60,7 @@ from _panel_data import kubectl_bin  # noqa: F401
 from _panel_data import BackgroundRefresher, PanelData  # noqa: F401
 from _panel_data import \
     _audit_security_policy_change as pd_audit_security_policy_change
+from _panel_data import NS as _NS_DEFAULT  # noqa: F401  # PR #315 — multi-namespace
 from _panel_data import clear_stage_model as pd_clear_stage_model
 from _panel_data import set_preferred_model as pd_set_preferred_model
 from _panel_data import set_stage_model as pd_set_stage_model
@@ -550,10 +551,12 @@ def _head_panel(view_title: str, app: "PanelApp") -> Panel:
                       else "bold cyan" if "k8s" in ctx.mode_label
                       else "bold yellow" if "local" in ctx.mode_label
                       else "bold red")
+        forge_txt = (ctx.forge_kind or "auto") if hasattr(ctx, "forge_kind") else "auto"
         sub = Text.assemble(
             ("mode: ", "dim"), (ctx.mode_label, mode_style),
             ("   cluster: ", "dim"), (ctx.cluster_label, "dim"),
             ("   namespace: ", "dim"), (ctx.namespace, "bold"),
+            ("   forge: ", "dim"), (forge_txt, "bold magenta"),
             ("   repo: ", "dim"), (ctx.repo or "—", "dim"),
         )
     else:
@@ -1224,9 +1227,16 @@ class PodPickerView(View):
                                   rollout_restart_all,
                                   rollout_restart_deployment)
 
+        # Multi-NS (issue #297): propagar o namespace do contexto em vez de
+        # deixar as funções caírem no default ``NS`` (env DEILE_K8S_NAMESPACE
+        # ou "deile"). Sem isso, o operador no painel de ``deile-gl`` recebia
+        # ``Error from server (NotFound): pods "<name>" not found`` porque o
+        # kubectl rodava em ``-n deile``.
+        ns = getattr(self.data.context, "namespace", None) or _NS_DEFAULT
+
         rows = self._rows()
         if action == "R":
-            results = rollout_restart_all()
+            results = rollout_restart_all(namespace=ns)
             all_ok = all(ok for _, ok, _ in results)
             self.last_ok = all_ok
             self.last_msg = " | ".join(
@@ -1248,7 +1258,7 @@ class PodPickerView(View):
                     return
                 ok, msg = kill_local_pid(pid)
             else:
-                ok, msg = delete_pod(row.name)
+                ok, msg = delete_pod(row.name, namespace=ns)
             self.last_ok = ok
             self.last_msg = msg
             return
@@ -1260,7 +1270,7 @@ class PodPickerView(View):
                 )
                 self.last_ok = False
                 return
-            ok, msg = rollout_restart_deployment(dep)
+            ok, msg = rollout_restart_deployment(dep, namespace=ns)
             self.last_ok = ok
             self.last_msg = msg
             return
@@ -1495,7 +1505,7 @@ class PodWatchView(View):
             return
         ns = (self.data.context.namespace
               if self.data is not None and self.data.context is not None
-              else "deile")
+              else _NS_DEFAULT)
         self.streamer = _LogStreamer(kubectl, ns, self.pod_name,
                                      tail=40, maxlen=400)
         self.streamer.start()
@@ -2837,7 +2847,7 @@ class ModelSwitcherView(View):
             for dep in deployments:
                 prev_slugs[dep] = current_snap.get(dep)
 
-        ns = self.data.context.namespace if self.data.context else "deile"
+        ns = self.data.context.namespace if self.data.context else _NS_DEFAULT
         results: List[tuple] = []
         rolled_back: List[str] = []
         for dep in deployments:
@@ -3647,11 +3657,50 @@ def run_panel(context: "Optional[Any]" = None,
     locais (modo "local only"). Demo agora exige opt-in explícito.
     """
     # Import local para evitar import circular no topo.
-    from _panel_data import RuntimeContext  # noqa: PLC0415
+    from _panel_data import RuntimeContext, discover_deile_namespaces  # noqa: PLC0415
 
     if force_demo:
         data: Optional[PanelData] = None
     else:
+        # Quando o operador não especificou --namespace explicitamente E há
+        # múltiplos namespaces DEILE no cluster, apresenta um menu de seleção
+        # antes de abrir o painel.
+        if context is None or (
+            getattr(context, "namespace", _NS_DEFAULT) == _NS_DEFAULT
+            and not getattr(context, "k8s_force", False)
+            and not getattr(context, "local_force", False)
+        ):
+            available_ns = discover_deile_namespaces()
+            if len(available_ns) > 1:
+                # Prompt simples sem Rich (terminal pode não suportar fancy UI
+                # antes do Live iniciar) — mostra a lista e pede número.
+                print("\nVários namespaces DEILE detectados no cluster:")
+                for idx, ns in enumerate(available_ns, 1):
+                    print(f"  [{idx}] {ns}")
+                selected_ns: Optional[str] = None
+                while selected_ns is None:
+                    try:
+                        raw = input(
+                            f"Escolha o namespace [1-{len(available_ns)}] "
+                            f"(Enter = {available_ns[0]}): "
+                        ).strip()
+                        if raw == "":
+                            selected_ns = available_ns[0]
+                        elif raw.isdigit() and 1 <= int(raw) <= len(available_ns):
+                            selected_ns = available_ns[int(raw) - 1]
+                        else:
+                            print("  Número inválido — tente novamente.")
+                    except (EOFError, KeyboardInterrupt):
+                        # Não-interativo ou Ctrl-C: usa o primeiro NS.
+                        selected_ns = available_ns[0]
+                        print(f"\nUsando namespace: {selected_ns}")
+                if context is None:
+                    context = RuntimeContext.detect(namespace=selected_ns)
+                elif hasattr(context, "__class__"):
+                    # RuntimeContext é frozen; cria novo com namespace correto.
+                    from dataclasses import replace as _dc_replace  # noqa: PLC0415
+                    context = _dc_replace(context, namespace=selected_ns)
+
         ctx = context if context is not None else RuntimeContext.detect()
         try:
             data = PanelData.from_context(ctx)

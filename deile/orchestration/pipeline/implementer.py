@@ -300,7 +300,8 @@ class ClaudeImplementer(PipelineImplementer):
         # flag does not change behaviour here beyond the existing reuse.
         branch = monitor.branch_for_issue(issue.number)
         prompt = render_implement_prompt(
-            monitor.config.repo, issue.number, issue.title, issue.body
+            monitor.config.repo, issue.number, issue.title, issue.body,
+            forge=monitor.forge.config,
         )
         return await self._run_in_worktree(
             monitor, branch, prompt, label=f"#{issue.number}"
@@ -310,7 +311,9 @@ class ClaudeImplementer(PipelineImplementer):
         self, monitor: "PipelineMonitor", pr: "PrRef", *, resume: bool = False
     ) -> WorkOutcome:
         worktree_branch = pr.head_ref or f"pr/{pr.number}"
-        prompt = render_review_prompt(monitor.config.repo, pr.number, pr.title)
+        prompt = render_review_prompt(
+            monitor.config.repo, pr.number, pr.title, forge=monitor.forge.config,
+        )
         return await self._run_in_worktree(
             monitor, worktree_branch, prompt, label=f"PR #{pr.number}"
         )
@@ -328,7 +331,8 @@ class ClaudeImplementer(PipelineImplementer):
         # ``mode``/``resume`` are accepted for interface parity with the worker
         # path; the legacy Claude path keeps its single context-aware prompt.
         prompt = _render_claude_mention_prompt(
-            monitor.config.repo, ref, trigger_types or [], all_triggers or []
+            monitor.config.repo, ref, trigger_types or [], all_triggers or [],
+            forge=monitor.forge.config,
         )
         # mention runs at base_repo_path; no per-issue branch worktree.
         return await self._run_in_worktree(monitor, None, prompt, label="mention")
@@ -462,16 +466,15 @@ class WorkerImplementer(PipelineImplementer):
         self, monitor: "PipelineMonitor", issue: "IssueRef", *, resume: bool = False
     ) -> WorkOutcome:
         branch = monitor.branch_for_issue(issue.number)
-        if resume:
-            brief = _render_worker_implement_resume_brief(
-                monitor.config.repo, monitor.config.main_branch, branch,
-                issue.number, issue.title, issue.body,
-            )
-        else:
-            brief = _render_worker_implement_brief(
-                monitor.config.repo, monitor.config.main_branch, branch,
-                issue.number, issue.title, issue.body,
-            )
+        forge_cfg = monitor.forge.config
+        render = (
+            _render_worker_implement_resume_brief if resume
+            else _render_worker_implement_brief
+        )
+        brief = render(
+            monitor.config.repo, monitor.config.main_branch, branch,
+            issue.number, issue.title, issue.body, forge=forge_cfg,
+        )
         resume_block = _build_resume_block(
             monitor.config.repo, monitor.config.main_branch, branch,
             resume=resume, expect_merge=False,
@@ -494,6 +497,7 @@ class WorkerImplementer(PipelineImplementer):
         brief = _render_worker_critique_brief(
             monitor.config.repo, issue.number, issue.title, issue.body,
             issue_type=issue_type or "", template=template_for_type(issue_type) or "intent.md",
+            forge=monitor.forge.config,
         )
         return await self._dispatch(
             brief, channel_id=f"pipeline-issue-{issue.number}",
@@ -507,6 +511,7 @@ class WorkerImplementer(PipelineImplementer):
         brief = _render_worker_refine_brief(
             monitor.config.repo, issue.number, issue.title, issue.body,
             issue_type=issue_type or "", template=template_for_type(issue_type) or "intent.md",
+            forge=monitor.forge.config,
         )
         return await self._dispatch(
             brief, channel_id=f"pipeline-issue-{issue.number}",
@@ -518,6 +523,7 @@ class WorkerImplementer(PipelineImplementer):
     ) -> WorkOutcome:
         brief = _render_worker_decompose_brief(
             monitor.config.repo, issue.number, issue.title, issue.body,
+            forge=monitor.forge.config,
         )
         return await self._dispatch(
             brief, channel_id=f"pipeline-issue-{issue.number}",
@@ -527,14 +533,15 @@ class WorkerImplementer(PipelineImplementer):
     async def review(
         self, monitor: "PipelineMonitor", pr: "PrRef", *, resume: bool = False
     ) -> WorkOutcome:
-        if resume:
-            brief = _render_worker_review_resume_brief(
-                monitor.config.repo, monitor.config.main_branch, pr.number
-            )
-        else:
-            brief = _render_worker_review_brief(
-                monitor.config.repo, monitor.config.main_branch, pr.number
-            )
+        forge_cfg = monitor.forge.config
+        render = (
+            _render_worker_review_resume_brief if resume
+            else _render_worker_review_brief
+        )
+        brief = render(
+            monitor.config.repo, monitor.config.main_branch, pr.number,
+            forge=forge_cfg,
+        )
         resume_block = _build_resume_block(
             monitor.config.repo, monitor.config.main_branch,
             pr.head_ref or f"pr/{pr.number}", resume=resume, expect_merge=True,
@@ -585,15 +592,19 @@ class WorkerImplementer(PipelineImplementer):
         # PR-scoped reviewer modes dispatched under the ``reviewer`` persona
         # with a resume block. ``work_merge`` is the only mode that merges and
         # the only one resume-aware (uses the review-resume brief on retry).
+        # ForgeConfig do monitor — usado nos briefs forge-aware (issue #297).
+        forge_cfg = monitor.forge.config
         # Stage for per-stage model override (issue #305): PR-scoped modes are
         # review work (``pr_review`` stage); issue-scoped comments are
         # follow-up work (``follow_ups`` stage). See PIPELINE_STAGES.
         if mode in _MENTION_REVIEWER_MODES:
             brief_fn, expect_merge = _MENTION_REVIEWER_MODES[mode]
             if mode == "work_merge" and resume:
-                reviewer_brief = _render_worker_review_resume_brief(repo, main, number)
+                reviewer_brief = _render_worker_review_resume_brief(
+                    repo, main, number, forge=forge_cfg,
+                )
             else:
-                reviewer_brief = brief_fn(repo, main, number)
+                reviewer_brief = brief_fn(repo, main, number, forge=forge_cfg)
             return await self._dispatch(
                 reviewer_brief, channel_id=channel_id, persona="reviewer",
                 resume_block=_build_resume_block(
@@ -604,7 +615,7 @@ class WorkerImplementer(PipelineImplementer):
             )
         # Default: comment mention on an issue → do what the comment says.
         brief = _render_worker_mention_brief(
-            repo, ref, trigger_types or [], all_triggers or [],
+            repo, ref, trigger_types or [], all_triggers or [], forge=forge_cfg,
         )
         return await self._dispatch(
             brief, channel_id=channel_id, persona="developer",
@@ -643,8 +654,25 @@ def is_claude_mode(dispatch_mode: Optional[str]) -> bool:
 
     Handles ``None``, empty, whitespace, and case variations uniformly so callers
     don't reproduce the ``(mode or "claude").strip().lower() in (...)`` idiom.
+
+    **Validação consistente com :func:`build_implementer`** (PR review iter 2):
+    um valor não-vazio fora dos aliases conhecidos dispara :class:`ValueError`,
+    em vez de retornar ``False`` silenciosamente (que faria a montagem da
+    :class:`PipelineConfig` aplicar worker-semantics ANTES do erro real,
+    expondo flags de configuração para um modo inexistente).
     """
-    return (dispatch_mode or "claude").strip().lower() in CLAUDE_ALIASES
+    if not dispatch_mode or not dispatch_mode.strip():
+        return True
+    mode = dispatch_mode.strip().lower()
+    if mode in CLAUDE_ALIASES:
+        return True
+    if mode in WORKER_ALIASES:
+        return False
+    raise ValueError(
+        f"unknown pipeline dispatch_mode {dispatch_mode!r}; "
+        f"expected one of {sorted(WORKER_ALIASES | CLAUDE_ALIASES)} "
+        "(set DEILE_PIPELINE_DISPATCH_MODE explicitly)"
+    )
 
 
 def build_implementer(
@@ -653,13 +681,23 @@ def build_implementer(
     """Return the implementer strategy selected by ``dispatch_mode``.
 
     ``deile_worker`` (and aliases) → :class:`WorkerImplementer`;
-    ``claude`` (and aliases) → :class:`ClaudeImplementer`. An unknown value
-    falls back to Claude with a warning, since that is the original behaviour.
+    ``claude`` (and aliases) → :class:`ClaudeImplementer`. An empty/None mode
+    defaults to Claude (legacy behaviour). Um valor **não-vazio** que não
+    case com nenhum alias dispara :class:`ValueError` em vez de cair em
+    Claude silenciosamente — um typo em ``DEILE_PIPELINE_DISPATCH_MODE``
+    (ex.: ``deile_woker``) usaria a chave da Anthropic e queimaria budget
+    sem o operador perceber. Fail-fast surface o erro imediatamente.
     """
-    mode = (dispatch_mode or "claude").strip().lower()
-    if mode in _WORKER_ALIASES:
-        return WorkerImplementer(client=worker_client)
-    if mode in _CLAUDE_ALIASES:
+    if not dispatch_mode or not dispatch_mode.strip():
+        # Legacy default (vazio/None) — usa Claude.
         return ClaudeImplementer()
-    logger.warning("unknown pipeline dispatch_mode %r; falling back to 'claude'", dispatch_mode)
-    return ClaudeImplementer()
+    mode = dispatch_mode.strip().lower()
+    if mode in WORKER_ALIASES:
+        return WorkerImplementer(client=worker_client)
+    if mode in CLAUDE_ALIASES:
+        return ClaudeImplementer()
+    raise ValueError(
+        f"unknown pipeline dispatch_mode {dispatch_mode!r}; "
+        f"expected one of {sorted(WORKER_ALIASES | CLAUDE_ALIASES)} "
+        "(set DEILE_PIPELINE_DISPATCH_MODE explicitly)"
+    )

@@ -54,7 +54,9 @@ T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
-NS = "deile"
+# Namespace padrão: lido do env DEILE_K8S_NAMESPACE; fallback "deile".
+# Providers usam `RuntimeContext.namespace`, nunca esta constante diretamente.
+NS = os.environ.get("DEILE_K8S_NAMESPACE", "deile")
 # Tamanho máximo de log (bytes) que parsers carregam em memória — protege
 # contra pods com saídas multi-MB. Aplicado antes de `splitlines()`.
 MAX_LOG_BYTES = 256_000
@@ -108,6 +110,51 @@ REPO_DEFAULT = _detect_default_repo()
 USAGE_DB = Path.home() / ".deile" / "db" / "usage.db"
 LOGS_DIR = Path.home() / ".deile" / "logs"
 SESSIONS_DIR = Path.home() / ".deile" / "sessions"
+
+# Label aplicada a namespaces gerenciados pelo DEILE (mesma do deploy.py).
+_DEILE_NS_LABEL = "app.kubernetes.io/managed-by=deile"
+
+
+def discover_deile_namespaces() -> List[str]:
+    """Enumera namespaces DEILE acessíveis no cluster atual.
+
+    Estratégia combinada (mesmo critério de `k8s list` no deploy.py):
+    1. Namespaces com label `app.kubernetes.io/managed-by=deile`.
+    2. Fallback: namespaces que têm pods com `app=deile-pipeline`.
+
+    Devolve lista ordenada. Retorna lista vazia se kubectl ausente,
+    cluster inacessível ou nenhum namespace encontrado — o chamador
+    decide o que exibir.
+    """
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return []
+    try:
+        by_label = subprocess.run(
+            [kubectl, "get", "ns", "-l", _DEILE_NS_LABEL,
+             "-o", "jsonpath={.items[*].metadata.name}"],
+            capture_output=True, text=True, timeout=5.0,
+        )
+        labeled: set = set()
+        if by_label.returncode == 0 and by_label.stdout.strip():
+            labeled = set(by_label.stdout.strip().split())
+    except (OSError, subprocess.TimeoutExpired):
+        labeled = set()
+
+    try:
+        by_pod = subprocess.run(
+            [kubectl, "get", "pods", "--all-namespaces",
+             "-l", "app=deile-pipeline",
+             "-o", "jsonpath={.items[*].metadata.namespace}"],
+            capture_output=True, text=True, timeout=5.0,
+        )
+        from_pods: set = set()
+        if by_pod.returncode == 0 and by_pod.stdout.strip():
+            from_pods = set(by_pod.stdout.strip().split())
+    except (OSError, subprocess.TimeoutExpired):
+        from_pods = set()
+
+    return sorted(labeled | from_pods)
 # Diretório onde instâncias DEILE publicam seu `<instance_id>.json` (state
 # file por processo, atualizado em volta de tools/heartbeat — issue #303).
 # Override-able via `DEILE_RUNTIME_DIR` env var; `LocalInstancesProvider`
@@ -149,14 +196,15 @@ class RuntimeContext:
 
     Resolve namespace, deployment names, paths e modo (k8s/local/demo) num
     objeto imutável que os providers consomem. Defaults batem com o
-    layout `infra/k8s/manifests/` (namespace `deile`, deployments
+    layout `infra/k8s/manifests/` (namespace padrão = ``NS``, deployments
     `deile-pipeline`/`deile-worker`/`deilebot`/`deile-shell`).
 
     Use `RuntimeContext.detect(**overrides)` para construir aplicando
     overrides do CLI (`--namespace`, `--pipeline-deploy`, etc).
     """
 
-    namespace: str = "deile"
+    # NS é o namespace default do painel: env DEILE_K8S_NAMESPACE ou "deile".
+    namespace: str = field(default_factory=lambda: NS)
     pipeline_deploy: str = "deile-pipeline"
     worker_deploy: str = "deile-worker"
     bot_deploy: str = "deilebot"
@@ -167,14 +215,34 @@ class RuntimeContext:
     sessions_dir: Path = field(default_factory=lambda: SESSIONS_DIR)
     cluster_label: str = "rancher-desktop (k3s)"
     image_label: str = "deile-stack:local"
+    # forge_kind: "github" | "gitlab" | "" (auto-detect ou indisponível).
+    # Lido do env DEILE_FORGE_KIND no deployment deile-pipeline, se possível.
+    forge_kind: str = ""
     k8s_force: bool = False
     local_force: bool = False
     demo: bool = False
 
     @classmethod
     def detect(cls, **overrides: Any) -> "RuntimeContext":
-        """Constrói o contexto, resolvendo defaults quando overrides faltam."""
-        repo = overrides.pop("repo", None) or _detect_default_repo()
+        """Constrói o contexto, resolvendo defaults quando overrides faltam.
+
+        Ordem de resolução do ``repo``:
+
+        1. ``overrides["repo"]`` — operador declarou no CLI.
+        2. ``_read_forge_repo(ns)`` — ConfigMap ``deile-runtime-config`` do
+           NS escolhido. **Sempre** consultado quando há kubectl e o NS
+           difere do default; permite o painel apontar ao repo correto
+           num NS GitLab (``_detect_default_repo`` só conhece github.com).
+        3. ``_detect_default_repo()`` — ``git remote get-url origin``
+           local; fallback histórico.
+        """
+        ns_choice = overrides.get("namespace") or NS
+        repo = overrides.pop("repo", None) or ""
+        if not repo:
+            repo = _read_forge_repo(ns_choice) or _detect_default_repo()
+        # Tenta ler o forge_kind do cluster se não foi passado como override.
+        if "forge_kind" not in overrides:
+            overrides["forge_kind"] = _read_forge_kind(ns_choice)
         return cls(repo=repo, **overrides)
 
     @property
@@ -207,6 +275,71 @@ class RuntimeContext:
         if ll:
             return "local only"
         return "vazio (sem fontes)"
+
+
+def _read_forge_repo(namespace: str) -> str:
+    """Lê ``pipeline.repo`` do ConfigMap ``deile-runtime-config`` do NS.
+
+    Quando o painel aponta para um namespace que carrega forge GitLab, o
+    repo certo a listar **não** é o ``owner/repo`` do clone local (que
+    ``_detect_default_repo()`` retornaria via ``gh repo view``) — é o repo
+    que o pipeline está orquestrando, declarado no ConfigMap layered.
+    Falha graciosamente para ``""`` (callsite cai no default).
+    """
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return ""
+    try:
+        out = subprocess.run(
+            [kubectl, "-n", namespace, "get", "configmap",
+             "deile-runtime-config",
+             "-o", "jsonpath={.data.pipeline-settings\\.json}"],
+            capture_output=True, text=True, timeout=3.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if out.returncode != 0 or not out.stdout.strip():
+        return ""
+    try:
+        payload = json.loads(out.stdout)
+    except json.JSONDecodeError:
+        return ""
+    pipeline = payload.get("pipeline") if isinstance(payload, dict) else None
+    if isinstance(pipeline, dict):
+        repo = pipeline.get("repo")
+        if isinstance(repo, str) and repo.strip():
+            return repo.strip()
+    return ""
+
+
+def _read_forge_kind(namespace: str) -> str:
+    """Lê o env DEILE_FORGE_KIND do deploy deile-pipeline no namespace dado.
+
+    Retorna "github" | "gitlab" | "" (auto/erro). Faz uma única chamada
+    kubectl silenciosa; nunca lança exceção — fallback é "".
+    """
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return ""
+    try:
+        out = subprocess.run(
+            [kubectl, "-n", namespace, "get", "deploy", "deile-pipeline",
+             "-o", "jsonpath={.spec.template.spec.containers[0].env}"],
+            capture_output=True, text=True, timeout=3.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if out.returncode != 0 or not out.stdout.strip():
+        return ""
+    # O jsonpath devolve o array de env vars como JSON-like; procura DEILE_FORGE_KIND.
+    try:
+        envs = json.loads(out.stdout)
+        for entry in envs:
+            if isinstance(entry, dict) and entry.get("name") == "DEILE_FORGE_KIND":
+                return (entry.get("value") or "").strip().lower()
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return ""
 
 
 def _has_local_deile_process() -> bool:
@@ -477,7 +610,7 @@ _ROLE_BY_APP = {
 
 
 class PodsProvider(_KubectlProviderMixin):
-    """Lista os pods do namespace em forma tipada (default `deile`)."""
+    """Lista os pods do namespace em forma tipada (default = NS)."""
 
     def __init__(self, ttl_s: float = 1.0, namespace: str = NS,
                  enabled: bool = True):
@@ -670,6 +803,21 @@ class PipelineProvider(_KubectlProviderMixin):
         self._resolve_kubectl()
         if self._kubectl is None:
             raise RuntimeError("kubectl não encontrado")
+        # Pre-check: ``kubectl logs deploy/<name>`` espera até 20s por um pod
+        # quando o deployment está com 0 replicas (scale stop). No painel,
+        # ``_capture_text`` corta em 5s e devolve ``None`` — cada refresh
+        # tick virava 5s travados, o que o operador percebe como painel
+        # "lento". Consulta barata (~50ms) ao spec.replicas evita o timeout
+        # e devolve um ``PipelineState`` vazio rapidamente.
+        replicas_text = _capture_text(
+            [self._kubectl, "-n", self._namespace, "get",
+             f"deploy/{self._deploy}",
+             "-o", "jsonpath={.spec.replicas}"],
+            timeout=2.0,
+        )
+        if replicas_text is not None and replicas_text.strip() in ("0", ""):
+            # Deploy parado (scale=0) ou ausente — devolve estado vazio.
+            return PipelineState()
         text = _capture_text(
             [self._kubectl, "-n", self._namespace, "logs",
              f"deploy/{self._deploy}",
@@ -900,15 +1048,31 @@ def _derive_review(labels: List[str]) -> str:
 
 
 class GitHubProvider:
-    """Lista issues e PRs abertos via `gh api`."""
+    """Lista issues e PRs/MRs abertos via ``gh api`` (GitHub) ou ``glab api`` (GitLab).
+
+    Forge-aware (PR #297): quando ``forge_kind="gitlab"`` é informado, o
+    provider chama ``glab api`` no endpoint REST v4 equivalente; quando
+    ``"github"`` (default), mantém o comportamento legado via ``gh api``.
+    O nome da classe continua ``GitHubProvider`` para compat — o renderer
+    do painel não distingue PR de MR (ambos viram :class:`GitHubIssue`
+    com ``is_pr=True``).
+    """
 
     PER_PAGE = 100
 
-    def __init__(self, repo: str = REPO_DEFAULT, ttl_s: float = 10.0):
-        # 10s: `gh api --paginate` custa rate-limit (5000/h auth = 1.4/s);
-        # 10s = 360/h, folga confortável.
+    def __init__(
+        self,
+        repo: str = REPO_DEFAULT,
+        ttl_s: float = 10.0,
+        *,
+        forge_kind: str = "",
+    ):
+        # 10s: rate-limit auth-only no GH (5000/h = 1.4/s) e GL (600/min/usuário
+        # autenticado em gitlab.com). 10s/ciclo = 360/h, folga em ambos.
         self._gh = gh_bin()
+        self._glab = shutil.which("glab")
         self._repo = repo
+        self._forge_kind = (forge_kind or "").strip().lower()
         self._cache: Cache[GitHubSnapshot] = Cache(
             ttl_s, self._fetch, fallback=GitHubSnapshot(),
         )
@@ -921,6 +1085,15 @@ class GitHubProvider:
         return self._cache.get(force)
 
     def _fetch(self) -> GitHubSnapshot:
+        # Roteia pelo forge_kind detectado — evita o pior caso anterior em que
+        # o painel apontado a um NS GitLab tentava ``gh api`` num repo
+        # inexistente no GitHub, esperando o timeout de 15s a cada refresh
+        # (cache TTL de 10s causava ciclos consecutivos travando a UX).
+        if self._forge_kind == "gitlab":
+            return self._fetch_gitlab()
+        return self._fetch_github()
+
+    def _fetch_github(self) -> GitHubSnapshot:
         if self._gh is None:
             raise RuntimeError("gh não encontrado")
         # /issues retorna issues + PRs no mesmo array; PR tem chave 'pull_request'.
@@ -936,8 +1109,6 @@ class GitHubProvider:
         if data is None:
             raise RuntimeError("gh api issues falhou")
         snap = GitHubSnapshot()
-        # `--paginate` pode retornar lista única ou várias páginas concatenadas
-        # (lista de listas) dependendo do gh — normaliza.
         items: List[Dict[str, Any]] = []
         if isinstance(data, list):
             for chunk in data:
@@ -967,6 +1138,70 @@ class GitHubProvider:
                 snap.prs.append(obj)
             else:
                 snap.issues.append(obj)
+        snap.issues.sort(key=lambda x: x.number, reverse=True)
+        snap.prs.sort(key=lambda x: x.number, reverse=True)
+        return snap
+
+    def _fetch_gitlab(self) -> GitHubSnapshot:
+        """Lista issues + MRs do projeto GitLab via ``glab api``.
+
+        Duas chamadas paralelas via subprocess síncrono: ``projects/<encoded>/
+        issues?state=opened`` e ``projects/<encoded>/merge_requests?state=opened``.
+        Forçamos ``-X GET`` porque ``glab api -f`` (PR #297 / E2E descobriu)
+        muda o método HTTP para POST quando há parâmetros, gerando HTTP 400.
+        """
+        if self._glab is None:
+            raise RuntimeError("glab não encontrado")
+        from urllib.parse import quote as _quote
+        encoded = _quote(self._repo, safe="")
+
+        def _list(endpoint_suffix: str) -> List[Dict[str, Any]]:
+            data = _capture_json(
+                [self._glab, "api", "-X", "GET",
+                 f"projects/{encoded}/{endpoint_suffix}",
+                 "-f", "state=opened",
+                 "-f", f"per_page={self.PER_PAGE}"],
+                timeout=15.0,
+            )
+            if data is None:
+                raise RuntimeError(f"glab api {endpoint_suffix} falhou")
+            return data if isinstance(data, list) else []
+
+        snap = GitHubSnapshot()
+        for it in _list("issues"):
+            labels = it.get("labels") or []
+            if labels and isinstance(labels[0], dict):
+                labels = [lbl.get("name", "") for lbl in labels]
+            assignees = [a.get("username", "")
+                         for a in it.get("assignees", []) or []]
+            iid = int(it.get("iid") or it.get("number") or 0)
+            snap.issues.append(GitHubIssue(
+                number=iid, title=it.get("title", ""), is_pr=False,
+                state="open", labels=list(labels), assignees=assignees,
+                updated_at=_parse_k8s_ts(it.get("updated_at")),
+                url=it.get("web_url", ""),
+                workflow=_derive_workflow(list(labels)),
+                review=_derive_review(list(labels)),
+                blocked=_BLOCKED_LABEL in labels,
+                refining=any(lbl == "refinar" for lbl in labels),
+            ))
+        for it in _list("merge_requests"):
+            labels = it.get("labels") or []
+            if labels and isinstance(labels[0], dict):
+                labels = [lbl.get("name", "") for lbl in labels]
+            assignees = [a.get("username", "")
+                         for a in it.get("assignees", []) or []]
+            iid = int(it.get("iid") or it.get("number") or 0)
+            snap.prs.append(GitHubIssue(
+                number=iid, title=it.get("title", ""), is_pr=True,
+                state="open", labels=list(labels), assignees=assignees,
+                updated_at=_parse_k8s_ts(it.get("updated_at")),
+                url=it.get("web_url", ""),
+                workflow=_derive_workflow(list(labels)),
+                review=_derive_review(list(labels)),
+                blocked=_BLOCKED_LABEL in labels,
+                refining=any(lbl == "refinar" for lbl in labels),
+            ))
         snap.issues.sort(key=lambda x: x.number, reverse=True)
         snap.prs.sort(key=lambda x: x.number, reverse=True)
         return snap
@@ -2854,7 +3089,14 @@ class PanelData:
                                    enabled=k8s_on),
             # `context.repo` pode vir vazio se o operador construiu o
             # ctx direto (sem `.detect()`) — resolve no fallback global.
-            github=GitHubProvider(repo=context.repo or REPO_DEFAULT),
+            # forge_kind do contexto (lido do deployment do NS) decide se
+            # o provider usa ``gh api`` (GitHub) ou ``glab api`` (GitLab) —
+            # evita o timeout de 15s/refresh do PR #297 quando um NS GitLab
+            # tentava listar issues via ``gh`` num repo inexistente.
+            github=GitHubProvider(
+                repo=context.repo or REPO_DEFAULT,
+                forge_kind=context.forge_kind,
+            ),
             costs=CostsProvider(db_path=context.usage_db),
             models=ModelsProvider(),
             current_model=CurrentModelProvider(
@@ -2878,7 +3120,7 @@ class PanelData:
 
     @classmethod
     def default(cls, repo: str = REPO_DEFAULT) -> "PanelData":
-        """Backwards-compat: contexto padrão (namespace `deile`)."""
+        """Backwards-compat: contexto padrão (namespace via env DEILE_K8S_NAMESPACE)."""
         return cls.from_context(RuntimeContext.detect(repo=repo))
 
     def _all_providers(self) -> tuple:

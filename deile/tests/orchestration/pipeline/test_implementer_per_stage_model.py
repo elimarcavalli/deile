@@ -58,6 +58,17 @@ def _make_monitor():
         repo="owner/name", main_branch="main", base_repo_path=Path("/tmp/x"),
     )
     monitor.branch_for_issue = lambda n: f"auto/issue-{n}"
+    # Forge layer (PR #297) — implementer lê ``monitor.forge.config`` para
+    # passar ao renderer de briefs. Stub mínimo com kind=GitHub default.
+    from deile.orchestration.forge.base import ForgeConfig, ForgeKind
+    monitor.forge = SimpleNamespace(
+        config=ForgeConfig(
+            kind=ForgeKind.GITHUB,
+            host="github.com",
+            project_path="owner/name",
+            cli_path="/usr/bin/gh",
+        ),
+    )
     return monitor
 
 

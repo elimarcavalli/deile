@@ -204,7 +204,14 @@ O daemon em si vive em `elimarcavalli/deilebot` e tem extras próprios (`discord
 
 | Variável | Uso | Default |
 |---|---|---|
-| `DEILE_PIPELINE_REPO` | Repositório GitHub alvo no formato `owner/repo` | `elimarcavalli/deile` |
+| `DEILE_PIPELINE_REPO` | **Deprecated alias** — use `DEILE_FORGE_REPO`. Repositório alvo (`owner/repo` GH ou `group/.../project` GL) | `elimarcavalli/deile` |
+| `DEILE_FORGE_REPO` | Project path do forge ativo (`owner/repo` GH ou `group/(subgroup/)*project` GL) — Decisão #41 | (cai pra `DEILE_PIPELINE_REPO`) |
+| `DEILE_FORGE_KIND` | `github`\|`gitlab`\|`auto` (default `auto`: detecta por URL host → path heuristic) — Decisão #41 | `auto` |
+| `DEILE_GITHUB_HOST` | Hosts GitHub adicionais (CSV; ex.: `ghe.empresa.com`). `github.com` é sempre aceito | `github.com` |
+| `DEILE_GITLAB_HOST` | Hosts GitLab adicionais (CSV; ex.: `gitlab.empresa.com`). `gitlab.com` é sempre aceito | `gitlab.com` |
+| `DEILE_FORGE_PROBE` | Habilita HTTP probe opt-in para detectar forge em hosts desconhecidos | `false` |
+| `DEILE_FORGE_BOT_LOGIN` | Handle do bot que o pipeline observa nos mentions (`@deile-one`) | `@deile-one` |
+| `GITLAB_TOKEN` / `GL_TOKEN` | PAT GitLab (escopos `api`, `read_repository`, `write_repository`) | nenhum |
 | `DEILE_PIPELINE_BASE_PATH` | Caminho absoluto da raiz do repositório onde `.worktrees/` será criado | Detectado automaticamente (busca ancestral com `.git` + `deile.py`) |
 | `DEILE_PIPELINE_NOTIFY_USER_ID` | Discord snowflake para DMs de notificação de transições de estado | nenhum |
 | `DEILE_PIPELINE_MONITOR_ID` | Identificador único deste monitor (1-32 chars `[a-zA-Z0-9_-]`); aparece em branch names, labels e worktree paths | `default` |

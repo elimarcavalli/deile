@@ -49,13 +49,28 @@ ENV_FILE = ROOT / ".env"
 DEPLOY_STATE = ROOT / ".deile" / "deploy.json"
 SETUP_ENV = _INFRA / "setup_environment.py"
 
-NS = "deile"
+# Namespace padrão: lido do env DEILE_K8S_NAMESPACE; fallback "deile".
+# Sobrescrito pelo flag global --namespace/-n em qualquer subcomando k8s.
+NS_DEFAULT = os.environ.get("DEILE_K8S_NAMESPACE", "deile")
 IMAGE = "deile-stack:local"
 LLM_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY")
 K8S_DEPLOYMENTS = ("deilebot", "deile-worker", "deile-shell", "deile-pipeline")
 
+# Label aplicada a todos os namespaces gerenciados pelo DEILE para que
+# `k8s list` possa enumerá-los sem ambiguidade.
+_DEILE_NS_LABEL = "app.kubernetes.io/managed-by=deile"
+
 
 # ===== helpers ===============================================================
+
+def _ns(args: dict) -> str:
+    """Resolve o namespace efetivo para um comando k8s.
+
+    Prioridade: ``args["k8s_namespace"]`` (flag --namespace/-n) >
+    ``NS_DEFAULT`` (env DEILE_K8S_NAMESPACE ou literal "deile").
+    """
+    return args.get("k8s_namespace") or NS_DEFAULT
+
 
 def _resolve(tool: str) -> Optional[str]:
     """Acha um binário no PATH ou no diretório do Rancher Desktop."""
@@ -138,12 +153,17 @@ def cluster_reachable() -> bool:
         return False
 
 
-def namespace_exists() -> bool:
+def namespace_exists(ns: Optional[str] = None) -> bool:
+    """Verifica se o namespace ``ns`` existe no cluster.
+
+    Se ``ns`` for omitido, usa ``NS_DEFAULT``.
+    """
+    ns = ns or NS_DEFAULT
     kubectl = _kubectl()
     if kubectl is None:
         return False
     return _run(
-        [kubectl, "get", "namespace", NS],
+        [kubectl, "get", "namespace", ns],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     ) == 0
 
@@ -211,20 +231,21 @@ def _image_build_cmd() -> Optional[List[str]]:
     return None
 
 
-def _rollout_restart_all() -> None:
+def _rollout_restart_all(ns: str) -> None:
     """Reinicia os deployments existentes para pegarem a nova imagem."""
     kubectl = _kubectl()
     if kubectl is None:
         return
     for dep in K8S_DEPLOYMENTS:
-        if _run([kubectl, "-n", NS, "get", "deployment", dep],
+        if _run([kubectl, "-n", ns, "get", "deployment", dep],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
             ui.info(f"reiniciando deployment/{dep} para pegar a nova imagem")
-            _run([kubectl, "-n", NS, "rollout", "restart", f"deployment/{dep}"],
+            _run([kubectl, "-n", ns, "rollout", "restart", f"deployment/{dep}"],
                  stdout=subprocess.DEVNULL)
 
 
 def k8s_build(args: dict) -> int:
+    ns = _ns(args)
     restart = bool(args.get("restart"))
     steps = [f"build da imagem {IMAGE} (nerdctl/colima/docker)"]
     if restart:
@@ -247,7 +268,7 @@ def k8s_build(args: dict) -> int:
     ui.ok("imagem construída.")
     # imagePullPolicy: Never → um rebuild só vale após reiniciar os pods.
     if restart:
-        _rollout_restart_all()
+        _rollout_restart_all(ns)
     else:
         ui.info("imagem pronta; rode `k8s restart` (ou `k8s build --restart`) "
                 "para os pods pegarem a nova imagem.")
@@ -256,12 +277,14 @@ def k8s_build(args: dict) -> int:
 
 # ===== k8s: up / down ========================================================
 
-def _apply_secret(kubectl: str, name: str, kv: Dict[str, str]) -> bool:
+def _apply_secret(kubectl: str, name: str, kv: Dict[str, str], ns: str = "") -> bool:
     """Cria/atualiza um Secret a partir de pares chave=valor.
 
     Usa um arquivo temporário modo 0600 (apagado em seguida) — os valores
     nunca aparecem em argv (`ps`) nem ficam num Secret pela metade.
+    ``ns`` é o namespace destino; se omitido, usa ``NS_DEFAULT``.
     """
+    ns = ns or NS_DEFAULT
     fd, tmp = tempfile.mkstemp(prefix="deile-secret-", suffix=".env")
     try:
         os.chmod(tmp, 0o600)
@@ -269,7 +292,7 @@ def _apply_secret(kubectl: str, name: str, kv: Dict[str, str]) -> bool:
             for key, val in kv.items():
                 fh.write(f"{key}={val}\n")
         rendered = _capture([
-            kubectl, "-n", NS, "create", "secret", "generic", name,
+            kubectl, "-n", ns, "create", "secret", "generic", name,
             f"--from-env-file={tmp}", "--dry-run=client", "-o", "yaml",
         ])
         if rendered is None:
@@ -291,10 +314,12 @@ def _apply_secret(kubectl: str, name: str, kv: Dict[str, str]) -> bool:
 
 
 def k8s_up(args: dict) -> int:
+    ns = _ns(args)
     if not announce_plan(
-        args, "k8s up", f"Kubernetes (namespace `{NS}`)",
+        args, "k8s up", f"Kubernetes (namespace `{ns}`)",
         [
-            "aplica namespace + network policies",
+            "cria o namespace (se ausente) + etiqueta para DEILE",
+            "aplica network policies",
             "cria/atualiza os Secrets (bot, deile, worker) — nada é impresso",
             "aplica ConfigMap, PVCs, Deployments e Services",
             "aguarda os pods ficarem prontos (até 180s cada)",
@@ -326,9 +351,25 @@ def k8s_up(args: dict) -> int:
     )
     github_token = env.get("GITHUB_TOKEN", "").strip()
 
-    ui.info("aplicando namespace e network policies")
-    _run([kubectl, "apply", "-f", str(MANIFESTS / "00-namespace.yaml")])
-    _run([kubectl, "apply", "-f", str(MANIFESTS / "40-network-policy.yaml")])
+    # Cria o namespace (idempotente) e etiqueta para descoberta por `k8s list`.
+    # Para o namespace padrão "deile", aplica o manifest completo com PSS labels.
+    # Para namespaces customizados, cria e etiqueta programaticamente.
+    ui.info(f"garantindo namespace `{ns}` com label DEILE")
+    if ns == "deile":
+        _run([kubectl, "apply", "-f", str(MANIFESTS / "00-namespace.yaml")])
+    else:
+        _run([kubectl, "create", "namespace", ns, "--dry-run=client", "-o", "yaml",
+              "|", kubectl, "apply", "-f", "-"],
+             shell=True)
+        # Garante a label de managed-by + PSS restricted para o namespace custom.
+        _run([kubectl, "label", "namespace", ns,
+              _DEILE_NS_LABEL.split("=")[0] + "=" + _DEILE_NS_LABEL.split("=")[1],
+              "pod-security.kubernetes.io/enforce=restricted",
+              "pod-security.kubernetes.io/enforce-version=v1.29",
+              "--overwrite"])
+
+    ui.info("aplicando network policies")
+    _run([kubectl, "apply", "-n", ns, "-f", str(MANIFESTS / "40-network-policy.yaml")])
 
     ui.info("criando os Secrets (nada é impresso)")
     bot_secret = {"DEILE_BOT_DISCORD_TOKEN": discord_token,
@@ -339,7 +380,7 @@ def k8s_up(args: dict) -> int:
     for name, kv in (("bot-secrets", bot_secret),
                      ("deile-secrets", deile_secret),
                      ("worker-bearer", {"AUTH_TOKEN": worker_token})):
-        if not _apply_secret(kubectl, name, kv):
+        if not _apply_secret(kubectl, name, kv, ns=ns):
             return 1
 
     ui.info("aplicando ConfigMap, PVCs, Deployments e Services")
@@ -352,31 +393,32 @@ def k8s_up(args: dict) -> int:
                      "20-bot-deployment.yaml", "35-deile-interactive.yaml",
                      "41-worker-pvc.yaml", "45-deile-worker-deployment.yaml",
                      "46-deile-pipeline-deployment.yaml"):
-        _run([kubectl, "apply", "-f", str(MANIFESTS / manifest)])
+        _run([kubectl, "apply", "-n", ns, "-f", str(MANIFESTS / manifest)])
 
     for dep in K8S_DEPLOYMENTS:
-        _run([kubectl, "-n", NS, "rollout", "restart", f"deployment/{dep}"],
+        _run([kubectl, "-n", ns, "rollout", "restart", f"deployment/{dep}"],
              stdout=subprocess.DEVNULL)
 
     ui.info("aguardando os pods ficarem prontos (até 180s cada)")
     for dep in K8S_DEPLOYMENTS:
-        if _run([kubectl, "-n", NS, "rollout", "status",
+        if _run([kubectl, "-n", ns, "rollout", "status",
                  f"deployment/{dep}", "--timeout=180s"]) != 0:
             ui.err(f"{dep} não ficou pronto.")
-            _run([kubectl, "-n", NS, "logs", f"deploy/{dep}", "--tail=60"])
+            _run([kubectl, "-n", ns, "logs", f"deploy/{dep}", "--tail=60"])
             return 1
     ui.ok("stack no ar.")
     return 0
 
 
 def k8s_down(args: dict) -> int:
+    ns = _ns(args)
     kubectl = _kubectl()
     if kubectl is None:
         ui.err("kubectl não encontrado.")
         return 1
     if not announce_plan(
-        args, "k8s down", f"Kubernetes (namespace `{NS}`)",
-        [f"DELETA o namespace `{NS}` inteiro: pods, Secrets, PVCs e "
+        args, "k8s down", f"Kubernetes (namespace `{ns}`)",
+        [f"DELETA o namespace `{ns}` inteiro: pods, Secrets, PVCs e "
          "TODOS os dados (histórico, cron, sessões)"],
     ):
         return 0
@@ -384,7 +426,7 @@ def k8s_down(args: dict) -> int:
     if not args["yes"] and not ui.confirm("Confirmar o teardown?", default=False):
         ui.info("Cancelado.")
         return 1
-    rc = _run([kubectl, "delete", "namespace", NS, "--ignore-not-found"])
+    rc = _run([kubectl, "delete", "namespace", ns, "--ignore-not-found"])
     if rc == 0:
         ui.ok("namespace removido.")
     return rc
@@ -393,75 +435,80 @@ def k8s_down(args: dict) -> int:
 # ===== k8s: ciclo de vida (scale / rollout) ==================================
 
 def k8s_start(args: dict) -> int:
+    ns = _ns(args)
     kubectl = _kubectl()
-    if kubectl is None or not namespace_exists():
-        ui.err(f"namespace `{NS}` ausente — rode `deploy.py k8s up` primeiro.")
+    if kubectl is None or not namespace_exists(ns):
+        ui.err(f"namespace `{ns}` ausente — rode `deploy.py k8s up` primeiro.")
         return 1
     if not announce_plan(
-        args, "k8s start", f"Kubernetes (namespace `{NS}`)",
+        args, "k8s start", f"Kubernetes (namespace `{ns}`)",
         ["religa os deployments (scale → 1): " + ", ".join(K8S_DEPLOYMENTS)],
     ):
         return 0
     for dep in K8S_DEPLOYMENTS:
-        _run([kubectl, "-n", NS, "scale", f"deployment/{dep}", "--replicas=1"],
+        _run([kubectl, "-n", ns, "scale", f"deployment/{dep}", "--replicas=1"],
              stdout=subprocess.DEVNULL)
     ui.ok("deployments religados (scale → 1).")
     return 0
 
 
 def k8s_stop(args: dict) -> int:
+    ns = _ns(args)
     kubectl = _kubectl()
-    if kubectl is None or not namespace_exists():
+    if kubectl is None or not namespace_exists(ns):
         ui.warn("nada para parar (namespace ausente).")
         return 0
     if not announce_plan(
-        args, "k8s stop", f"Kubernetes (namespace `{NS}`)",
+        args, "k8s stop", f"Kubernetes (namespace `{ns}`)",
         ["escala os deployments para 0 (os dados e os Secrets ficam intactos)"],
     ):
         return 0
     for dep in K8S_DEPLOYMENTS:
-        _run([kubectl, "-n", NS, "scale", f"deployment/{dep}", "--replicas=0"],
+        _run([kubectl, "-n", ns, "scale", f"deployment/{dep}", "--replicas=0"],
              stdout=subprocess.DEVNULL)
     ui.ok("bot parado (scale → 0).")
     return 0
 
 
 def k8s_restart(args: dict) -> int:
+    ns = _ns(args)
     kubectl = _kubectl()
-    if kubectl is None or not namespace_exists():
-        ui.err(f"namespace `{NS}` ausente — rode `deploy.py k8s up`.")
+    if kubectl is None or not namespace_exists(ns):
+        ui.err(f"namespace `{ns}` ausente — rode `deploy.py k8s up`.")
         return 1
     if not announce_plan(
-        args, "k8s restart", f"Kubernetes (namespace `{NS}`)",
+        args, "k8s restart", f"Kubernetes (namespace `{ns}`)",
         ["rollout restart dos deployments: " + ", ".join(K8S_DEPLOYMENTS)],
     ):
         return 0
     for dep in K8S_DEPLOYMENTS:
-        _run([kubectl, "-n", NS, "rollout", "restart", f"deployment/{dep}"],
+        _run([kubectl, "-n", ns, "rollout", "restart", f"deployment/{dep}"],
              stdout=subprocess.DEVNULL)
     ui.ok("rollout restart disparado.")
     return 0
 
 
 def k8s_status(args: dict) -> int:
-    ui.section("Status — Kubernetes")
+    ns = _ns(args)
+    ui.section(f"Status — Kubernetes (namespace `{ns}`)")
     kubectl = _kubectl()
     if kubectl is None:
         ui.err("kubectl não encontrado.")
         return 1
-    if not namespace_exists():
-        ui.warn(f"namespace `{NS}` ausente — a stack não está no ar.")
+    if not namespace_exists(ns):
+        ui.warn(f"namespace `{ns}` ausente — a stack não está no ar.")
         ui.info("Rode `deploy.py k8s up` para subir.")
         return 0
-    _run([kubectl, "-n", NS, "get", "pods,deployments,services"])
+    _run([kubectl, "-n", ns, "get", "pods,deployments,services"])
     return 0
 
 
 def k8s_logs(args: dict) -> int:
-    ui.section("Logs — Kubernetes")
+    ns = _ns(args)
+    ui.section(f"Logs — Kubernetes (namespace `{ns}`)")
     kubectl = _kubectl()
-    if kubectl is None or not namespace_exists():
-        ui.err(f"namespace `{NS}` ausente.")
+    if kubectl is None or not namespace_exists(ns):
+        ui.err(f"namespace `{ns}` ausente.")
         return 1
     alias = {"bot": "deilebot", "worker": "deile-worker", "shell": "deile-shell"}
     which_pod = args["extra"][0] if args["extra"] else "all"
@@ -469,7 +516,7 @@ def k8s_logs(args: dict) -> int:
         else [alias.get(which_pod, which_pod)]
     for dep in deps:
         ui.info(f"logs de {dep} (tail 80):")
-        _run([kubectl, "-n", NS, "logs", f"deploy/{dep}", "--tail=80"])
+        _run([kubectl, "-n", ns, "logs", f"deploy/{dep}", "--tail=80"])
     return 0
 
 
@@ -511,6 +558,17 @@ def k8s_panel(args: dict) -> int:
     if "_error" in overrides:
         ui.err(overrides["_error"])
         return 64
+    # Bug-fix: a flag GLOBAL ``--namespace``/``-n`` é capturada em
+    # ``args["k8s_namespace"]`` pelo argparser top-level (multi-NS no PR #315),
+    # mas o ``_parse_panel_flags`` só lê ``args["extra"]`` (flags do subcomando).
+    # Sem propagar a global, ``RuntimeContext.namespace`` cai no default
+    # (``_NS_DEFAULT``) e o ``run_panel`` apresenta o prompt de seleção mesmo
+    # com o operador tendo declarado o NS explicitamente.
+    # Flag do subcomando (``deploy.py k8s panel --namespace X``) tem precedência
+    # sobre a global (``deploy.py --namespace X k8s panel``) para preservar a
+    # ergonomia de override pontual.
+    if "namespace" not in overrides:
+        overrides["namespace"] = _ns(args)
     ctx = RuntimeContext.detect(**overrides)
     # K8s não é mais obrigatório, mas avisa quando o operador pediu
     # explicitamente k8s e ele não está disponível.
@@ -600,24 +658,25 @@ def _parse_panel_flags(extra: List[str]) -> tuple:
 
 
 def k8s_test(args: dict) -> int:
+    ns = _ns(args)
     kubectl = _kubectl()
     if kubectl is None or not cluster_reachable():
         ui.err("cluster Kubernetes inacessível.")
         return 1
     if not announce_plan(
-        args, "k8s test", f"Kubernetes (namespace `{NS}`)",
+        args, "k8s test", f"Kubernetes (namespace `{ns}`)",
         ["remove um Job deile-oneshot anterior (se houver)",
          "aplica o manifest 30-deile-job.yaml (prompt fixo)",
          "streama os logs do pod do Job"],
     ):
         return 0
-    _run([kubectl, "-n", NS, "delete", "job", "deile-oneshot", "--ignore-not-found"],
+    _run([kubectl, "-n", ns, "delete", "job", "deile-oneshot", "--ignore-not-found"],
          stdout=subprocess.DEVNULL)
-    _run([kubectl, "apply", "-f", str(MANIFESTS / "30-deile-job.yaml")])
+    _run([kubectl, "apply", "-n", ns, "-f", str(MANIFESTS / "30-deile-job.yaml")])
 
     def _oneshot_pod() -> str:
         return (_capture([
-            kubectl, "-n", NS, "get", "pods", "-l", "job-name=deile-oneshot",
+            kubectl, "-n", ns, "get", "pods", "-l", "job-name=deile-oneshot",
             "-o", "jsonpath={.items[0].metadata.name}",
         ]) or "").strip()
 
@@ -629,7 +688,7 @@ def k8s_test(args: dict) -> int:
         ui.err("o pod do Job não apareceu.")
         return 1
     ui.info("streamando os logs do Job (Ctrl-C para o stream, não o Job)")
-    _run([kubectl, "-n", NS, "logs", "--pod-running-timeout=120s", "-f", pod])
+    _run([kubectl, "-n", ns, "logs", "--pod-running-timeout=120s", "-f", pod])
     return 0
 
 
@@ -688,12 +747,13 @@ sys.exit(result.returncode)
 
 
 def k8s_clone(args: dict) -> int:
+    ns = _ns(args)
     if not args["extra"]:
         ui.err("uso: deploy.py k8s clone <owner/repo>")
         return 1
     repo = args["extra"][0]
     kubectl = _kubectl()
-    if kubectl is None or not namespace_exists():
+    if kubectl is None or not namespace_exists(ns):
         ui.err("namespace não encontrado — rode `deploy.py k8s up` primeiro.")
         return 1
     name = repo.rstrip("/").split("/")[-1]
@@ -720,14 +780,15 @@ def k8s_clone(args: dict) -> int:
     ui.info("injetando o GITHUB_TOKEN no Secret deile-secrets")
     if not _apply_secret(kubectl, "deile-secrets",
                          {"DEILE_BOT_AUTH_TOKEN": bearer,
-                          "GITHUB_TOKEN": github_token, **llm}):
+                          "GITHUB_TOKEN": github_token, **llm},
+                         ns=ns):
         return 1
 
     ui.info("aguardando o kubelet sincronizar o token no pod (até 90s)")
     deadline = time.time() + 90
     synced = False
     while time.time() < deadline:
-        if _run([kubectl, "-n", NS, "exec", "deploy/deile-shell", "--",
+        if _run([kubectl, "-n", ns, "exec", "deploy/deile-shell", "--",
                  "test", "-f", "/run/secrets/deile/GITHUB_TOKEN"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0:
             synced = True
@@ -738,7 +799,7 @@ def k8s_clone(args: dict) -> int:
         return 1
 
     ui.info(f"clonando {clone_url} → {work_dir}")
-    rc = _run([kubectl, "-n", NS, "exec", "deploy/deile-shell", "--",
+    rc = _run([kubectl, "-n", ns, "exec", "deploy/deile-shell", "--",
                "python3", "-c", _CLONE_SNIPPET, clone_url, work_dir])
     if rc == 0:
         ui.ok(f"repo disponível em {work_dir} (dentro do deile-shell).")
@@ -806,24 +867,67 @@ def cmd_doctor(args: dict) -> int:
     return _run([sys.executable, str(SETUP_ENV), "--check", "--mode", mode])
 
 
-def _k8s_state_label() -> str:
+def k8s_list(args: dict) -> int:
+    """Enumera namespaces k8s com label `app.kubernetes.io/managed-by=deile`.
+
+    Também detecta pods com `app=deile-pipeline` em qualquer namespace
+    como fallback para clusters sem a label de managed-by.
+    """
+    ui.section("Namespaces DEILE no cluster")
+    kubectl = _kubectl()
+    if kubectl is None:
+        ui.err("kubectl não encontrado.")
+        return 1
+    # Busca por label canônica.
+    by_label = _capture([
+        kubectl, "get", "ns",
+        "-l", _DEILE_NS_LABEL,
+        "-o", "jsonpath={.items[*].metadata.name}",
+    ]) or ""
+    labeled = set(by_label.split()) if by_label.strip() else set()
+
+    # Fallback: namespaces que têm pods com app=deile-pipeline.
+    by_pod = _capture([
+        kubectl, "get", "pods", "--all-namespaces",
+        "-l", "app=deile-pipeline",
+        "-o", "jsonpath={.items[*].metadata.namespace}",
+    ]) or ""
+    from_pods = set(by_pod.split()) if by_pod.strip() else set()
+
+    all_ns = sorted(labeled | from_pods)
+    if not all_ns:
+        ui.warn("nenhum namespace DEILE encontrado no cluster.")
+        ui.info("Rode `deploy.py k8s up` para provisionar o primeiro.")
+        return 0
+    for ns in all_ns:
+        source = ""
+        if ns in labeled and ns not in from_pods:
+            source = " (label)"
+        elif ns in from_pods and ns not in labeled:
+            source = " (pods)"
+        ui.info(f"  {ns}{source}")
+    return 0
+
+
+def _k8s_state_label(ns: Optional[str] = None) -> str:
     """Rótulo curto do estado do k8s para o menu/diagnóstico."""
+    ns = ns or NS_DEFAULT
     if _kubectl() is None:
         return "kubectl não encontrado"
     if not cluster_reachable():
         return "cluster inacessível"
-    if not namespace_exists():
-        return "namespace ausente (não provisionado)"
-    pods = _capture([_kubectl(), "-n", NS, "get", "pods", "--no-headers"]) or ""
+    if not namespace_exists(ns):
+        return f"namespace `{ns}` ausente (não provisionado)"
+    pods = _capture([_kubectl(), "-n", ns, "get", "pods", "--no-headers"]) or ""
     n = len([ln for ln in pods.splitlines() if ln.strip()])
-    return f"no ar ({n} pod(s))" if n else "provisionado, 0 pods (parado)"
+    return f"no ar ({n} pod(s)) [ns={ns}]" if n else f"provisionado, 0 pods (parado) [ns={ns}]"
 
 
 _K8S = {
     "up": k8s_up, "down": k8s_down, "start": k8s_start, "stop": k8s_stop,
     "restart": k8s_restart, "status": k8s_status, "logs": k8s_logs,
     "build": k8s_build, "test": k8s_test, "clone": k8s_clone,
-    "panel": k8s_panel, "doctor": cmd_doctor,
+    "list": k8s_list, "panel": k8s_panel, "doctor": cmd_doctor,
 }
 _LOCAL = {
     "start": local_start, "stop": local_stop, "restart": local_restart,
@@ -834,6 +938,7 @@ _LOCAL = {
 # menu por exigir um argumento <owner/repo>.
 _K8S_ACTIONS = [
     ("panel", "painel TUI ao vivo (pods + pipeline + GitHub + custos)"),
+    ("list", "listar namespaces DEILE no cluster"),
     ("status", "ver pods, deployments e services"),
     ("up", "provisionar / atualizar a stack (idempotente)"),
     ("build", "rebuildar a imagem (--restart religa os pods)"),
@@ -870,6 +975,8 @@ def cmd_help(_args: dict) -> int:
     ui.command_table(_LOCAL_ACTIONS)
     ui.section("Flags")
     ui.command_table([
+        ("--namespace <ns> / -n <ns>",
+         f"namespace k8s (default: env DEILE_K8S_NAMESPACE ou \"{NS_DEFAULT}\")"),
         ("--dry-run", "mostra o plano e sai (só nos comandos que alteram algo)"),
         ("--restart", "no `k8s build`, religa os deployments após o build"),
         ("--yes / -y", "não pergunta nada (não-interativo)"),
@@ -897,27 +1004,85 @@ def _run_action(namespace: str, action: str, args: dict) -> int:
 
 
 def cmd_menu(args: dict, preset_ns: Optional[str] = None) -> int:
-    """Menu interativo: detecta o estado, pergunta o alvo e a ação."""
+    """Menu interativo: detecta o estado, pergunta o alvo e a ação.
+
+    Suporta multi-namespace (issue #297): quando há mais de um namespace
+    DEILE no cluster — coexistência GH + GL paralelos — o menu lista cada
+    um com seu estado e pede ao operador qual será o alvo. O NS escolhido
+    é propagado por ``args["k8s_namespace"]`` em todas as ações
+    subsequentes (status / logs / restart / panel / ...).
+    """
     if not sys.stdin.isatty():
         ui.warn("sem terminal interativo — mostrando a ajuda.")
         return cmd_help(args)
     ui.header("deploy.py — deilebot / DEILE")
-    k8s_label = _k8s_state_label()
+
+    # Detecta namespaces DEILE no cluster (label
+    # ``app.kubernetes.io/managed-by=deile`` + fallback por pods).
+    # Import lazy: ``_panel_data`` puxa providers Rich/etc. desnecessários
+    # para callers que invocam o ``deploy.py`` apenas via subcomando.
+    from _panel_data import discover_deile_namespaces  # noqa: PLC0415
+    detected_ns = discover_deile_namespaces() if _kubectl() is not None else []
+
+    # Se uma flag global ``--namespace``/``-n`` foi passada, ela tem
+    # precedência sobre a detecção (operador já declarou).
+    explicit_ns = args.get("k8s_namespace")
+
+    # Estado por NS — uma chamada ``_k8s_state_label`` por namespace
+    # detectado (~50 ms cada via ``kubectl get pods --no-headers``).
+    if detected_ns:
+        ns_labels = [(ns, _k8s_state_label(ns)) for ns in detected_ns]
+    else:
+        # Cluster sem nenhum NS DEILE: mostra apenas o default para
+        # operador rodar ``k8s up`` (que provisiona-do-zero).
+        ns_labels = [(_ns(args), _k8s_state_label(_ns(args)))]
+
     _, local_detail = LocalService(ROOT).status()
     ui.section("Estado atual")
-    ui.info(f"k8s:   {k8s_label}")
+    for ns, label in ns_labels:
+        marker = " ←" if explicit_ns == ns else ""
+        ui.info(f"k8s:   {label}{marker}")
     ui.info(f"local: {local_detail}")
 
     namespace = preset_ns
     if namespace is None:
+        # Mostra apenas {k8s, local}; se houver múltiplos NS k8s, faz um
+        # segundo prompt para escolher qual NS depois que o operador
+        # confirmou "k8s".
+        k8s_summary = (
+            f"{len(detected_ns)} ns DEILE detectados"
+            if len(detected_ns) > 1
+            else (ns_labels[0][1] if ns_labels else "kubectl indisponível")
+        )
         namespace = ui.choose("Qual alvo?", [
-            ("k8s", k8s_label),
+            ("k8s", k8s_summary),
             ("local", local_detail),
         ])
+
+    # Se o alvo é k8s e há múltiplos NS detectados (e nenhum foi declarado
+    # explicitamente), pergunta qual usar. Caso contrário, propaga o NS já
+    # resolvido por ``_ns(args)`` (flag global / env / default).
+    if namespace == "k8s":
+        if explicit_ns:
+            args["k8s_namespace"] = explicit_ns
+        elif len(detected_ns) > 1:
+            ui.section("Namespace k8s")
+            chosen_ns = ui.choose(
+                "Qual namespace?",
+                [(ns, label) for ns, label in ns_labels],
+            )
+            args["k8s_namespace"] = chosen_ns
+        elif len(detected_ns) == 1:
+            args["k8s_namespace"] = detected_ns[0]
+        # Se 0 NS detectados, ``args["k8s_namespace"]`` permanece ``None``
+        # e ``_ns(args)`` cai no default. Ações como ``up`` ou ``setup``
+        # ainda funcionam (criam o NS).
+
     actions = _K8S_ACTIONS if namespace == "k8s" else _LOCAL_ACTIONS
     # `clone` precisa de argumento — fora do menu.
     menu_actions = [(a, d) for a, d in actions if a != "clone"]
-    ui.section(f"Ações — {namespace}")
+    ns_suffix = f" (ns={args.get('k8s_namespace') or _ns(args)})" if namespace == "k8s" else ""
+    ui.section(f"Ações — {namespace}{ns_suffix}")
     action = ui.choose("Qual ação?", menu_actions)
     return _run_action(namespace, action, args)
 
@@ -957,15 +1122,22 @@ def _handle_legacy(args: dict, positionals: List[str]) -> int:
 # ===== parsing / main ========================================================
 
 def parse_args(argv: List[str]) -> dict:
+    # ``k8s_namespace`` é o namespace efetivo para operações k8s.
+    # Lido de --namespace/-n; se omitido, ``_ns()`` cai para NS_DEFAULT.
     args = {"target": None, "yes": False, "no_color": False,
             "dry_run": False, "restart": False, "extra": [],
-            "namespace": None, "positionals": []}
+            "namespace": None, "k8s_namespace": None, "positionals": []}
     positionals: List[str] = []
     i = 0
     while i < len(argv):
         a = argv[i]
         if a == "--target" and i + 1 < len(argv):
             args["target"] = argv[i + 1]
+            i += 2
+            continue
+        if a in ("--namespace", "-n") and i + 1 < len(argv):
+            # Flag global de namespace k8s — qualquer subcomando k8s a herda.
+            args["k8s_namespace"] = argv[i + 1]
             i += 2
             continue
         if a in ("--yes", "-y"):

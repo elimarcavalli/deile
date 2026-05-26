@@ -63,9 +63,8 @@ def _ensure_initialized() -> None:
                 # como o "current hour" no raiz pra compatibilidade com
                 # leitores existentes (`tail -F`, painel TUI, etc.).
                 # Retenção default 30 dias.
-                from .log_rotation import (  # noqa: PLC0415
-                    HourlyDailyDirRotatingHandler,
-                )
+                from .log_rotation import \
+                    HourlyDailyDirRotatingHandler  # noqa: PLC0415
                 handler = HourlyDailyDirRotatingHandler(
                     filename=str(log_dir / "deile.log"),
                     encoding="utf-8",

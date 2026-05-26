@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import os
 import sys
+import warnings
 from pathlib import Path
 from typing import Callable, List
 
@@ -53,6 +54,11 @@ _SENSITIVE_KEYS = (
     "DEEPSEEK_API_KEY",
     "GOOGLE_API_KEY",
     "GITHUB_TOKEN",
+    # GitLab tokens (issue #297) — stripped after wrapper bootstrap so they
+    # never appear in /proc/self/environ. ``GITLAB_TOKEN`` is the canonical
+    # name accepted by ``glab``; ``GL_TOKEN`` is the documented alias.
+    "GITLAB_TOKEN",
+    "GL_TOKEN",
     "DEILE_BOT_AUTH_TOKEN",
     "DEILE_BOT_DISCORD_TOKEN",
     "DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN",
@@ -177,59 +183,83 @@ def _has_llm_key(loaded: List[str]) -> bool:
     return any(k.endswith("_API_KEY") for k in loaded)
 
 
-def _setup_git_credentials() -> None:
-    """Wire GITHUB_TOKEN (if loaded) into ~/.git-credentials.
+def _atomic_write_secret(path: Path, content: str) -> None:
+    """Create ``path`` at 0o600 atomically and write ``content``.
 
-    Reads the token from os.environ (already injected by _load_secret_files),
-    writes the credential store file atomically (O_WRONLY|O_CREAT|O_TRUNC at
-    mode 0o600 — no TOCTOU window), and configures git's credential helper
-    so every subsequent ``git clone/fetch/push`` finds it automatically.
+    ``O_CREAT | O_WRONLY | O_TRUNC`` with explicit mode means the file is
+    never readable by anyone other than the owner — there is no TOCTOU
+    window between create and chmod. Raises :class:`OSError` on failure so
+    the caller can fall back / log without partial state.
+    """
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        fh = os.fdopen(fd, "w", encoding="utf-8")
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    with fh:
+        fh.write(content)
 
-    Security: the file is created 0o600 (owner-read only). The token never
-    appears in argv or /proc/<pid>/environ — it stays in the file only.
-    After writing, GITHUB_TOKEN is removed from os.environ so subprocesses
-    (bash_tool, python_execute) inherit a clean environment.
+
+def _append_git_credential(creds_file: Path, host: str, token: str) -> None:
+    """Append a ``https://oauth2:<token>@<host>`` line to ``~/.git-credentials``.
+
+    git resolves credentials by exact host match, so two lines (one per
+    forge) coexist peacefully. The file is rewritten with the union of
+    existing lines + the new one so each call is idempotent (no duplicate
+    lines for the same host) and never wipes the other forge's credential.
+
+    Dedup é feita por **hostname canônico** (via ``urlparse``), não por
+    ``endswith(f"@{host}")``: linhas que carregam path (ex.
+    ``https://oauth2:TOK@github.com/owner/repo``) ou outras combinações
+    válidas seriam preservadas em paralelo com uma duplicata pelo dedup
+    naive baseado em sufixo.
+    """
+    from urllib.parse import urlparse as _urlparse
+
+    existing = ""
+    if creds_file.exists():
+        try:
+            existing = creds_file.read_text(encoding="utf-8")
+        except OSError:
+            existing = ""
+    new_line = f"https://oauth2:{token}@{host}"
+    host_lc = host.lower()
+    kept: List[str] = []
+    for line in existing.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            line_host = (_urlparse(stripped).hostname or "").lower()
+        except ValueError:
+            line_host = ""
+        if line_host == host_lc:
+            continue
+        kept.append(stripped)
+    kept.append(new_line)
+    _atomic_write_secret(creds_file, "\n".join(kept) + "\n")
+
+
+def _configure_git_global_identity() -> None:
+    """Configure the global git identity + credential helper (idempotent).
+
+    Required because every commit needs ``user.email``/``user.name``. The
+    settings are global so they apply to every clone the agent creates.
     """
     import subprocess as _subprocess
 
-    token = os.environ.get("GITHUB_TOKEN", "").strip()
-    if not token:
-        return
-
-    home = Path(os.environ.get("HOME", "/home/deile"))
-    creds_file = home / ".git-credentials"
-    try:
-        # Atomic create-and-write: O_CREAT|O_WRONLY|O_TRUNC with mode 0o600
-        # means the file is never readable by others even between creation
-        # and the explicit chmod call — no TOCTOU window.
-        fd = os.open(str(creds_file), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            fh = os.fdopen(fd, "w", encoding="utf-8")
-        except Exception:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-            raise
-        with fh:
-            fh.write(f"https://oauth2:{token}@github.com\n")
-    except OSError as exc:
-        print(f"wrapper: could not write ~/.git-credentials: {exc}", file=sys.stderr)
-        os.environ.pop("GITHUB_TOKEN", None)
-        return
-
-    # Use git config so the update is atomic and idempotent.
     try:
         _subprocess.run(
             ["git", "config", "--global", "credential.helper", "store"],
             check=False,
         )
-        # Author identity — REQUIRED to `git commit`. Without these the worker
-        # silently fails every commit step ("fatal: unable to auto-detect email
-        # address (got 'deile@...(none)')"), reviews finalize without applying
-        # fixes, and the issue ends up "incompleto sem PR". Regression observed
-        # on PR #293 review on 2026-05-23: gemini-pro responded fine, but
-        # every git commit attempt died at the identity check.
+        # Regression observed on PR #293 (2026-05-23): without the global
+        # identity every git commit dies on "unable to auto-detect email
+        # address". Set the defaults here so both forges see them.
         _subprocess.run(
             ["git", "config", "--global", "user.email", "deile@deile.info"],
             check=False,
@@ -241,46 +271,152 @@ def _setup_git_credentials() -> None:
     except OSError as exc:
         print(f"wrapper: could not update ~/.gitconfig: {exc}", file=sys.stderr)
 
-    # Remove GITHUB_TOKEN from the environment so subprocesses (bash_tool,
-    # python_execute) cannot read it via /proc/self/environ or printenv.
-    os.environ.pop("GITHUB_TOKEN", None)
 
-    print("wrapper(deile): GITHUB_TOKEN wired into ~/.git-credentials", file=sys.stderr)
+def _setup_forge_credentials() -> None:
+    """Wire ``GITHUB_TOKEN`` / ``GITLAB_TOKEN`` into the forge stacks.
+
+    Symmetric across forges (issue #297):
+
+    - **GitHub** (when ``GITHUB_TOKEN`` is present): line in
+      ``~/.git-credentials`` for ``$DEILE_GITHUB_HOST`` (default
+      ``github.com``) + ``~/.config/gh/hosts.yml`` for ``gh``.
+    - **GitLab** (when ``GITLAB_TOKEN`` / ``GL_TOKEN`` is present): line in
+      ``~/.git-credentials`` for ``$DEILE_GITLAB_HOST`` (default
+      ``gitlab.com``) + ``~/.config/glab-cli/config.yml`` for ``glab``.
+
+    Both env vars are removed from ``os.environ`` after the bootstrap so
+    subprocesses (bash_tool, python_execute) cannot read them via
+    ``/proc/self/environ`` or ``printenv``. Global git identity is
+    configured exactly once regardless of which forge(s) are wired.
+    """
+    home = Path(os.environ.get("HOME", "/home/deile"))
+    creds_file = home / ".git-credentials"
+    wired_any = False
+
+    # --- GitHub ----------------------------------------------------------
+    gh_token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if gh_token:
+        gh_host = os.environ.get("DEILE_GITHUB_HOST", "").strip() or "github.com"
+        try:
+            _append_git_credential(creds_file, gh_host, gh_token)
+        except OSError as exc:
+            print(
+                f"wrapper: could not write ~/.git-credentials (github): {exc}",
+                file=sys.stderr,
+            )
+        else:
+            wired_any = True
+            print(
+                f"wrapper(deile): GITHUB_TOKEN wired into ~/.git-credentials "
+                f"for {gh_host}",
+                file=sys.stderr,
+            )
+            # ``gh`` config file — same atomic 0600 write as the rest.
+            try:
+                gh_dir = home / ".config" / "gh"
+                gh_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                _atomic_write_secret(
+                    gh_dir / "hosts.yml",
+                    f"{gh_host}:\n"
+                    f"    oauth_token: {gh_token}\n"
+                    f"    git_protocol: https\n",
+                )
+                print(
+                    f"wrapper: GITHUB_TOKEN wired into ~/.config/gh/hosts.yml "
+                    f"({gh_host})",
+                    file=sys.stderr,
+                )
+            except OSError as exc:
+                print(
+                    f"wrapper: could not write ~/.config/gh/hosts.yml: {exc}",
+                    file=sys.stderr,
+                )
+        os.environ.pop("GITHUB_TOKEN", None)
+
+    # --- GitLab (issue #297) --------------------------------------------
+    gl_token = (
+        os.environ.get("GITLAB_TOKEN", "").strip()
+        or os.environ.get("GL_TOKEN", "").strip()
+    )
+    if gl_token:
+        gl_host = os.environ.get("DEILE_GITLAB_HOST", "").strip() or "gitlab.com"
+        try:
+            _append_git_credential(creds_file, gl_host, gl_token)
+        except OSError as exc:
+            print(
+                f"wrapper: could not write ~/.git-credentials (gitlab): {exc}",
+                file=sys.stderr,
+            )
+        else:
+            wired_any = True
+            print(
+                f"wrapper(deile): GITLAB_TOKEN wired into ~/.git-credentials "
+                f"for {gl_host}",
+                file=sys.stderr,
+            )
+            try:
+                glab_dir = home / ".config" / "glab-cli"
+                glab_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+                # ``glab`` reads ``hosts.<host>.token`` from this YAML.
+                _atomic_write_secret(
+                    glab_dir / "config.yml",
+                    "hosts:\n"
+                    f"  {gl_host}:\n"
+                    f"    token: {gl_token}\n"
+                    f"    api_protocol: https\n"
+                    f"    api_host: {gl_host}\n",
+                )
+                print(
+                    f"wrapper: GITLAB_TOKEN wired into "
+                    f"~/.config/glab-cli/config.yml ({gl_host})",
+                    file=sys.stderr,
+                )
+            except OSError as exc:
+                print(
+                    f"wrapper: could not write ~/.config/glab-cli/config.yml: {exc}",
+                    file=sys.stderr,
+                )
+        os.environ.pop("GITLAB_TOKEN", None)
+        os.environ.pop("GL_TOKEN", None)
+
+    if wired_any:
+        _configure_git_global_identity()
+
+
+# Backwards-compatibility shims (issue #297): legacy bootstrap code called
+# ``_setup_git_credentials`` and ``_setup_gh_auth`` separately. Both names
+# now delegate to the unified ``_setup_forge_credentials`` so callers don't
+# need to migrate in lock-step. The order matters only for the cosmetic
+# log lines — credentials end up wired exactly once.
+def _setup_git_credentials() -> None:
+    _setup_forge_credentials()
+
+
+_setup_gh_auth_warned: bool = False
 
 
 def _setup_gh_auth() -> None:
-    """Wire GITHUB_TOKEN into the GitHub CLI's auth config.
+    """Deprecated compat-shim for ``_setup_forge_credentials``.
 
-    Parallels _setup_git_credentials but for `gh`, which reads
-    ~/.config/gh/hosts.yml. Writing the token there (mode 0600) lets the
-    worker run `gh issue create` / `gh pr create` / `gh repo clone`
-    without the token living in os.environ — subprocesses still inherit a
-    clean environment, same posture as the git credential store.
-
-    MUST be called BEFORE _setup_git_credentials(), which pops
-    GITHUB_TOKEN from the environment.
+    .. deprecated::
+        ``_setup_gh_auth`` was replaced by ``_setup_forge_credentials``, which
+        handles both GitHub and GitLab credentials uniformly (issue #297).
+        This shim delegates to ``_setup_forge_credentials`` and emits a
+        ``DeprecationWarning`` on the first invocation per process.  Remove
+        calls to this function — use ``_setup_forge_credentials`` directly.
     """
-    token = os.environ.get("GITHUB_TOKEN", "").strip()
-    if not token:
-        return
-    home = Path(os.environ.get("HOME", "/home/deile"))
-    gh_dir = home / ".config" / "gh"
-    try:
-        gh_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        hosts = gh_dir / "hosts.yml"
-        # Atomic 0600 create — the token is never world-readable, even
-        # transiently, so there is no TOCTOU window.
-        fd = os.open(str(hosts), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(
-                "github.com:\n"
-                f"    oauth_token: {token}\n"
-                "    git_protocol: https\n"
-            )
-    except OSError as exc:
-        print(f"wrapper: could not write ~/.config/gh/hosts.yml: {exc}", file=sys.stderr)
-        return
-    print("wrapper: GITHUB_TOKEN wired into ~/.config/gh/hosts.yml", file=sys.stderr)
+    global _setup_gh_auth_warned
+    if not _setup_gh_auth_warned:
+        warnings.warn(
+            "_setup_gh_auth() is deprecated and will be removed in a future release; "
+            "call _setup_forge_credentials() instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        _setup_gh_auth_warned = True
+    # A função _setup_forge_credentials já gerencia o hosts.yml do gh; chamar
+    # ambas em sequência é inofensivo (o arquivo é sobrescrito idempotentemente).
+    _setup_forge_credentials()
 
 
 def _setup_git_clone_guard(config_path: str = "") -> None:
@@ -339,6 +475,23 @@ def _setup_git_clone_guard(config_path: str = "") -> None:
     # repr() of a list of strings produces a safe Python literal.
     allowlist_literal = repr(allowlist)
 
+    # Bake também as listas de hosts conhecidas (GitHub e GitLab) — assim o
+    # guard pode normalizar SSH/HTTPS de ambos os forges para o caminho
+    # canônico (``owner/repo`` ou ``group/.../project``) antes de comparar
+    # com o allowlist. Sem isto o GitHub é normalizado mas o GitLab cai no
+    # ``url.removesuffix(".git")``, quebrando a simetria forge-agnostic
+    # (issue #297).
+    _gh_extra = [
+        h.strip().lower() for h in os.environ.get("DEILE_GITHUB_HOST", "")
+        .replace(",", " ").split() if h.strip()
+    ]
+    _gl_extra = [
+        h.strip().lower() for h in os.environ.get("DEILE_GITLAB_HOST", "")
+        .replace(",", " ").split() if h.strip()
+    ]
+    gh_hosts_literal = repr(["github.com", *_gh_extra])
+    gl_hosts_literal = repr(["gitlab.com", *_gl_extra])
+
     guard_script = bin_dir / "git"
     guard_script.write_text(
         f"""\
@@ -348,6 +501,8 @@ import fnmatch, os, posixpath, subprocess, sys, urllib.parse
 
 # Allowlist baked in at wrapper startup — not read from env at runtime.
 _PATTERNS = {allowlist_literal}
+_GH_HOSTS = {gh_hosts_literal}
+_GL_HOSTS = {gl_hosts_literal}
 
 args = sys.argv[1:]
 # Locate the git subcommand: skip global options, handling two-token forms
@@ -379,11 +534,15 @@ if _subcommand == "clone":
                   file=sys.stderr)
             sys.exit(1)
         url = urls[0].rstrip("/")
+        # Normalize GitHub e GitLab (cloud + declared hosts) para o caminho
+        # canônico antes de comparar com o allowlist — assim padrões como
+        # ``owner/repo`` ou ``group/sub/project`` valem para ambos forges.
         if url.startswith("git@"):
-            # SCP-style: git@host:owner/repo.git — urlparse returns hostname=None.
+            # SCP-style: git@host:path.git — urlparse retorna hostname=None.
             _host_path = url[len("git@"):]
             _host, _, _path = _host_path.partition(":")
-            if _host.lower() == "github.com":
+            _host = _host.lower()
+            if _host in _GH_HOSTS or _host in _GL_HOSTS:
                 repo_path = posixpath.normpath(_path.removesuffix(".git"))
             else:
                 repo_path = url.removesuffix(".git")
@@ -391,7 +550,8 @@ if _subcommand == "clone":
             # Use urlparse so userinfo tricks like 'https://evil@github.com/...'
             # are rejected correctly.
             parsed = urllib.parse.urlparse(url)
-            if parsed.hostname == "github.com":
+            _host = (parsed.hostname or "").lower()
+            if _host in _GH_HOSTS or _host in _GL_HOSTS:
                 repo_path = posixpath.normpath(
                     parsed.path.lstrip("/").removesuffix(".git")
                 )
@@ -562,8 +722,9 @@ def _run_deile(passthrough: List[str]) -> int:
         )
         return 78  # EX_CONFIG
 
-    _setup_gh_auth()
-    _setup_git_credentials()
+    # Issue #297: unified forge auth (writes gh + glab configs and the
+    # ~/.git-credentials lines for whichever token(s) are present).
+    _setup_forge_credentials()
     _setup_git_clone_guard()
     _patch_deile_bootstrap()
 
@@ -675,8 +836,9 @@ def _run_worker(passthrough: List[str]) -> int:
         )
         return 78
 
-    _setup_gh_auth()
-    _setup_git_credentials()
+    # Issue #297: unified forge auth (writes gh + glab configs and the
+    # ~/.git-credentials lines for whichever token(s) are present).
+    _setup_forge_credentials()
     _setup_git_clone_guard()
     _patch_deile_bootstrap()
 
@@ -762,18 +924,27 @@ def _run_pipeline(passthrough: List[str]) -> int:
     """
     _harden_runtime_dirs()
     loaded = _load_secret_files(Path("/run/secrets/deile"))
-    # GITHUB_TOKEN is the only hard requirement: the loop cannot list/label
-    # issues or PRs without it. LLM keys are optional (work goes to the worker).
-    if "GITHUB_TOKEN" not in loaded and not os.environ.get("GITHUB_TOKEN"):
+    # Forge auth (issue #297): the pipeline needs at least ONE forge token to
+    # drive its loop. GitHub-only operators set GITHUB_TOKEN; GitLab-only
+    # operators set GITLAB_TOKEN; dual-forge operators set both. Without
+    # either, list/label calls are impossible — exit 78 ("config error").
+    has_gh = "GITHUB_TOKEN" in loaded or bool(os.environ.get("GITHUB_TOKEN"))
+    has_gl = (
+        "GITLAB_TOKEN" in loaded
+        or bool(os.environ.get("GITLAB_TOKEN"))
+        or "GL_TOKEN" in loaded
+        or bool(os.environ.get("GL_TOKEN"))
+    )
+    if not (has_gh or has_gl):
         print(
-            "wrapper(pipeline): no GITHUB_TOKEN under /run/secrets/deile — "
-            "the pipeline cannot drive GitHub.",
+            "wrapper(pipeline): no GITHUB_TOKEN or GITLAB_TOKEN under "
+            "/run/secrets/deile — the pipeline cannot drive any forge.",
             file=sys.stderr,
         )
         return 78
 
-    _setup_gh_auth()
-    _setup_git_credentials()
+    # Unified setup for both forges (no-op for the absent one).
+    _setup_forge_credentials()
 
     # Worker bearer — needed to dispatch implement/review work to the worker.
     bearer = Path("/run/secrets/worker/AUTH_TOKEN")

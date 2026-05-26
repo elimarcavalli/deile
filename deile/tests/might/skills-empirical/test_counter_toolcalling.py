@@ -20,8 +20,8 @@ from dotenv import load_dotenv  # noqa: E402
 load_dotenv(PROJECT_ROOT / ".env")
 
 from deile.config.manager import ConfigManager  # noqa: E402
-from deile.core.agent import (DeileAgent,  # noqa: E402
-                              _normalize_history_content)
+from deile.core.agent import DeileAgent  # noqa: E402
+from deile.core.agent import _normalize_history_content  # noqa: E402
 from deile.core.models.bootstrap import bootstrap_providers  # noqa: E402
 from deile.core.models.router import get_model_router  # noqa: E402
 
@@ -52,7 +52,8 @@ def _tool_names(response):
 
 
 async def main():
-    cm = ConfigManager(); cm.load_config()
+    cm = ConfigManager()
+    cm.load_config()
     router = get_model_router()
     registered = bootstrap_providers(router=router)
     print(f"providers: {registered}  model: {MODEL_KEY}")

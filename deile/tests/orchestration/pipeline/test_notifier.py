@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import deile.orchestration.pipeline.notifier as notifier_module
 from deile.orchestration.pipeline.notifier import DiscordNotifier
 
 

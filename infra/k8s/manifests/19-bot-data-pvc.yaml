@@ -7,7 +7,6 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: deilebot-data
-  namespace: deile
   labels:
     app: deilebot
 spec:

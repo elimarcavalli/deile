@@ -22,6 +22,7 @@ class SecretType(Enum):
     SSN = "ssn"
     AWS_ACCESS_KEY = "aws_access_key"
     GITHUB_TOKEN = "github_token"
+    GITLAB_TOKEN = "gitlab_token"
     SLACK_TOKEN = "slack_token"
     GENERIC_SECRET = "generic_secret"
 
@@ -81,7 +82,31 @@ class SecretsScanner:
             
             SecretType.GITHUB_TOKEN: [
                 (re.compile(r'ghp_[A-Za-z0-9_]{36}'), 0.95),
+                (re.compile(r'gho_[A-Za-z0-9_]{36}'), 0.95),
+                (re.compile(r'ghu_[A-Za-z0-9_]{36}'), 0.95),
+                (re.compile(r'ghs_[A-Za-z0-9_]{36}'), 0.95),
+                (re.compile(r'ghr_[A-Za-z0-9_]{36}'), 0.95),
+                (re.compile(r'github_pat_[A-Za-z0-9_]{82}'), 0.95),
                 (re.compile(r'github_token.*[:=]\s*["\']([A-Za-z0-9_]{20,})["\']', re.IGNORECASE), 0.8),
+            ],
+
+            # GitLab tokens (issue #297). Catalogue covers every PAT prefix
+            # documented by GitLab as of v17:
+            # - ``glpat-`` — personal access tokens.
+            # - ``gldt-`` — deploy tokens.
+            # - ``glptt-``/``glsoat-`` — project trigger / agent OAuth.
+            # The generic catch-all (``gl[a-z]+-``) lives last with lower
+            # confidence so a future prefix doesn't silently slip through.
+            SecretType.GITLAB_TOKEN: [
+                (re.compile(r'glpat-[A-Za-z0-9_\-]{20,}'), 0.95),
+                (re.compile(r'gldt-[A-Za-z0-9_\-]{20,}'), 0.95),
+                (re.compile(r'glptt-[A-Za-z0-9_\-]{20,}'), 0.95),
+                (re.compile(r'glsoat-[A-Za-z0-9_\-]{20,}'), 0.95),
+                (re.compile(r'GITLAB_TOKEN\s*[:=]\s*["\']?([A-Za-z0-9_\-]{20,})["\']?'), 0.85),
+                (re.compile(r'GL_TOKEN\s*[:=]\s*["\']?([A-Za-z0-9_\-]{20,})["\']?'), 0.85),
+                (re.compile(r'CI_JOB_TOKEN\s*[:=]\s*["\']?([A-Za-z0-9_\-]{20,})["\']?'), 0.85),
+                # Defensive catch-all for any future ``gl<prefix>-`` shape.
+                (re.compile(r'\bgl[a-z]+-[A-Za-z0-9_\-]{20,}\b'), 0.6),
             ],
             
             SecretType.SLACK_TOKEN: [
@@ -95,7 +120,7 @@ class SecretsScanner:
             ],
             
             SecretType.EMAIL: [
-                (re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'), 0.6),
+                (re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'), 0.6),
             ],
             
             SecretType.CREDIT_CARD: [
@@ -249,12 +274,14 @@ class SecretsScanner:
         if any(cache_dir in file_path.parts for cache_dir in cache_dirs):
             return True
             
-        # Skip very large files (>10MB)
+        # Skip very large files (>10MB). ``stat()`` can raise ``OSError`` if
+        # the file disappears between scan iteration and check; treat that as
+        # "not skipped" (caller will hit the same OSError on read and handle).
         try:
             if file_path.stat().st_size > 10 * 1024 * 1024:
                 return True
-        except Exception:
-            pass
+        except OSError as exc:
+            logger.debug("_should_skip_file: stat(%s) failed: %s", file_path, exc)
 
         return False
     
