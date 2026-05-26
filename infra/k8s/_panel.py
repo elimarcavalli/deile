@@ -1227,9 +1227,16 @@ class PodPickerView(View):
                                   rollout_restart_all,
                                   rollout_restart_deployment)
 
+        # Multi-NS (issue #297): propagar o namespace do contexto em vez de
+        # deixar as funções caírem no default ``NS`` (env DEILE_K8S_NAMESPACE
+        # ou "deile"). Sem isso, o operador no painel de ``deile-gl`` recebia
+        # ``Error from server (NotFound): pods "<name>" not found`` porque o
+        # kubectl rodava em ``-n deile``.
+        ns = getattr(self.data.context, "namespace", None) or _NS_DEFAULT
+
         rows = self._rows()
         if action == "R":
-            results = rollout_restart_all()
+            results = rollout_restart_all(namespace=ns)
             all_ok = all(ok for _, ok, _ in results)
             self.last_ok = all_ok
             self.last_msg = " | ".join(
@@ -1251,7 +1258,7 @@ class PodPickerView(View):
                     return
                 ok, msg = kill_local_pid(pid)
             else:
-                ok, msg = delete_pod(row.name)
+                ok, msg = delete_pod(row.name, namespace=ns)
             self.last_ok = ok
             self.last_msg = msg
             return
@@ -1263,7 +1270,7 @@ class PodPickerView(View):
                 )
                 self.last_ok = False
                 return
-            ok, msg = rollout_restart_deployment(dep)
+            ok, msg = rollout_restart_deployment(dep, namespace=ns)
             self.last_ok = ok
             self.last_msg = msg
             return

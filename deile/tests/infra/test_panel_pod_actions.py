@@ -218,6 +218,9 @@ class TestPodPickerHotkeys:
         v = panel.PodPickerView()
         v._rows = lambda: rows  # type: ignore[assignment]
         v.data = MagicMock()    # truthy para passar do "modo demo"
+        # PR #297: ações destrutivas leem o NS do RuntimeContext em vez de
+        # cair no default. Configura o mock para devolver "deile" (default).
+        v.data.context.namespace = "deile"
         return v
 
     def test_deployment_for_role_mapping(self):
@@ -287,7 +290,8 @@ class TestPodPickerHotkeys:
         with patch.object(pd, "delete_pod",
                           return_value=(True, 'pod "deile-worker-abc" deleted')) as dp:
             v.handle_key("y", app=MagicMock())
-        dp.assert_called_once_with("deile-worker-abc")
+        # PR #297: NS é propagado do RuntimeContext via kwarg.
+        dp.assert_called_once_with("deile-worker-abc", namespace="deile")
         assert v.last_ok is True
         assert v.confirm_action is None
 
@@ -306,7 +310,8 @@ class TestPodPickerHotkeys:
         with patch.object(pd, "rollout_restart_deployment",
                           return_value=(True, "deployment.apps/deilebot restarted")) as rr:
             v.handle_key("y", app=MagicMock())
-        rr.assert_called_once_with("deilebot")
+        # PR #297: NS é propagado do RuntimeContext via kwarg.
+        rr.assert_called_once_with("deilebot", namespace="deile")
         assert v.last_ok is True
 
     def test_apply_R_calls_rollout_all(self):
@@ -321,7 +326,7 @@ class TestPodPickerHotkeys:
         with patch.object(pd, "rollout_restart_all",
                           return_value=fake_results) as ra:
             v.handle_key("y", app=MagicMock())
-        ra.assert_called_once()
+        ra.assert_called_once_with(namespace="deile")
         assert v.last_ok is True
         assert all(dep in v.last_msg
                    for dep, _, _ in fake_results)
@@ -360,7 +365,8 @@ class TestPodPickerHotkeys:
         with patch.object(pd, "delete_pod",
                           return_value=(True, "deleted")) as dp:
             v.handle_key("x", app=MagicMock())  # confirma via double-tap
-        dp.assert_called_once_with("deile-worker-abc")
+        # PR #297: NS é propagado do RuntimeContext via kwarg.
+        dp.assert_called_once_with("deile-worker-abc", namespace="deile")
         assert v.last_ok is True
         assert v.confirm_action is None
 
@@ -371,7 +377,7 @@ class TestPodPickerHotkeys:
         with patch.object(pd, "rollout_restart_deployment",
                           return_value=(True, "restarted")) as rr:
             v.handle_key("r", app=MagicMock())
-        rr.assert_called_once_with("deile-worker")
+        rr.assert_called_once_with("deile-worker", namespace="deile")
         assert v.last_ok is True
 
     def test_R_double_tap_applies(self):
@@ -383,7 +389,7 @@ class TestPodPickerHotkeys:
         with patch.object(pd, "rollout_restart_all",
                           return_value=fake) as ra:
             v.handle_key("R", app=MagicMock())
-        ra.assert_called_once()
+        ra.assert_called_once_with(namespace="deile")
         assert v.last_ok is True
 
     def test_y_still_works_as_universal_confirm(self):
