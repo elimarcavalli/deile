@@ -671,15 +671,21 @@ class TestDispatchModeViewKeyHandling:
 
 
 class TestDashboardHotkey:
-    """O dashboard mapeia ``[d]`` para a dispatch-mode view (issue #309)."""
+    """O dashboard mapeia ``[d]`` para a dispatch-mode-matrix view.
 
-    def test_d_hotkey_navigates_to_dispatch_mode(self):
+    A partir do cutover da issue #309 fase 2 (Task 21), ``[d]`` passou a
+    apontar para a matriz unificada (``DispatchMatrixView``) que absorveu
+    tanto o flip global de despacho da ``DispatchModeView`` (PR #330)
+    quanto o per-stage model override da ``StageModelsView`` (#305).
+    """
+
+    def test_d_hotkey_navigates_to_dispatch_mode_matrix(self):
         from _panel import Action, DashboardView, PanelApp
         dash = DashboardView(data=None)
         app = PanelApp(views={"dashboard": dash}, root="dashboard", data=None)
         result = dash.handle_key("d", app)
         assert result.kind == Action.NAV
-        assert result.target == "dispatch-mode"
+        assert result.target == "dispatch-mode-matrix"
 
     def test_d_hotkey_only_set_in_dashboard_nav(self):
         """O ``[d]`` é hotkey exclusiva do dashboard — não deve colidir com
@@ -691,23 +697,27 @@ class TestDashboardHotkey:
         diferente e cause conflito de propagação (hoje o panel propaga
         global após a view não interceptar — então um ``d`` numa view
         que não tem handler local cai no dashboard handler depois)."""
-        from _panel import (DispatchModeView, ModelSwitcherView, PodPickerView,
-                            StageModelsView)
+        from _panel import (DispatchMatrixView, DispatchModeView,
+                            ModelSwitcherView, PodPickerView, StageModelsView)
 
-        # Cada view abaixo NÃO deve ter um shortcut "d" próprio. O dispatch
-        # view tem `d` listada nas hotkeys da statusline mas não no
-        # handle_key — porque [d] é chamado do dashboard pra abrir essa
-        # view; uma vez na view, a tecla é capturada pelo modal/nav.
+        # Cada view abaixo NÃO deve ter um shortcut "d" próprio. As views
+        # legadas (DispatchModeView, StageModelsView) ainda existem no
+        # módulo (FU cleanup) — mas mesmo elas não devem responder a ``d``.
+        # A view de destino agora é ``dispatch-mode-matrix``; as legadas
+        # ``dispatch-mode`` e ``stage-models`` saíram do registry mas
+        # ainda são checadas aqui para garantir que nenhuma view captura
+        # ``d`` localmente.
+        nav_targets_dispatch = {"dispatch-mode", "dispatch-mode-matrix",
+                                "stage-models"}
         for view_cls in (PodPickerView, ModelSwitcherView, StageModelsView,
-                         DispatchModeView):
+                         DispatchModeView, DispatchMatrixView):
             v = view_cls(data=None)
             result = v.handle_key("d", MagicMock())
-            # Aceita ActionResult() padrão (default-pass) ou refresh — só
-            # rejeita NAV explícito para dispatch-mode.
-            assert getattr(result, "target", None) != "dispatch-mode", (
+            target = getattr(result, "target", None)
+            assert target not in nav_targets_dispatch, (
                 f"{view_cls.__name__}.handle_key('d') deveria não navegar "
-                f"para dispatch-mode (só DashboardView pode), got target="
-                f"{getattr(result, 'target', None)}"
+                f"para nenhuma view de dispatch (só DashboardView pode), "
+                f"got target={target}"
             )
 
 

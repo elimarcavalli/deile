@@ -610,7 +610,7 @@ class DashboardView(View):
     HOTKEYS = (
         "[1]Pod watch  [2]Pipeline  [3]Issues/PRs  [4]Logs split  "
         "[5]Tokens  [n]otifier  [a]ctions  [m]odel/runtime  "
-        "[M]odel/stage  [?]help  [q]uit"
+        "[d]ispatch (workers & models)  [?]help  [q]uit"
     )
 
     def __init__(self, data: Optional[PanelData] = None):
@@ -875,14 +875,15 @@ class DashboardView(View):
             "n": "notifier-echo",
             "a": "actions",
             "m": "model-switcher",
-            # Per-stage model overrides (issue #305) — uppercase 'M' is a
-            # distinct keystroke (Shift+m) so it doesn't collide with the
-            # deployment-wide ModelSwitcherView on lowercase 'm'.
-            "M": "stage-models",
-            # Pipeline dispatch mode (issue #309) — flip
-            # ``DEILE_PIPELINE_DISPATCH_MODE`` (claude vs deile_worker) sem
-            # editar manifests.
-            "d": "dispatch-mode",
+            # Pipeline Stage Configuration (issue #309 fase 2 — Task 21 cutover):
+            # matriz unificada que substitui (a) o flip global de
+            # ``DEILE_PIPELINE_DISPATCH_MODE`` da ``DispatchModeView`` (PR #330)
+            # e (b) o per-stage model override da ``StageModelsView`` (#305).
+            # A coluna ``Worker`` cobre o flip de despacho por stage e a coluna
+            # ``Model`` cobre o override de modelo — ambos consolidados nesta
+            # única view. As views legadas continuam no código (não foram
+            # deletadas) mas saíram do registry — limpeza fica para FU PR.
+            "d": "dispatch-mode-matrix",
         }
         if key in nav:
             return ActionResult.nav(nav[key])
@@ -4446,9 +4447,9 @@ class HelpView(View):
         tbl.add_column("tecla", style="bold cyan", width=18)
         tbl.add_column("ação")
         rows = [
-            ("1-5, a, m, M, d, n",  "drill em sub-view (no dashboard)"),
-            ("m / M",         "modelo do deployment / modelo por etapa (settings)"),
-            ("d",             "modo de despacho do pipeline (claude | deile_worker)"),
+            ("1-5, a, m, d, n",  "drill em sub-view (no dashboard)"),
+            ("m",             "modelo do deployment (runtime)"),
+            ("d",             "pipeline stage configuration (workers & models por etapa)"),
             ("↑/↓ ou j/k",    "navega em listas (picker, issues/PRs, modelos)"),
             ("enter",         "seleciona o item destacado"),
             ("esc",           "volta à view anterior (ou ao dashboard)"),
@@ -4816,9 +4817,11 @@ def _build_views(data: Optional[PanelData] = None) -> Dict[str, View]:
         "actions": ActionsView(data=data),
         "notifier-echo": NotifierEchoView(data=data),
         "model-switcher": ModelSwitcherView(data=data),
-        "stage-models": StageModelsView(data=data),
-        # Issue #309 — flip pipeline dispatch_mode (deile_worker | claude).
-        "dispatch-mode": DispatchModeView(data=data),
+        # Issue #309 fase 2 — Task 21 cutover. A matriz unificada substitui
+        # ``DispatchModeView`` (PR #330, key ``dispatch-mode``) e
+        # ``StageModelsView`` (#305, key ``stage-models``) — ambas saíram do
+        # registry mas as classes ainda existem no módulo (FU cleanup).
+        "dispatch-mode-matrix": DispatchMatrixView(data=data),
     }
 
 
