@@ -1125,38 +1125,48 @@ class TestDeployFlags:
 
     def test_parses_value_flags(self):
         import deploy  # noqa: PLC0415
-        ov, demo = deploy._parse_panel_flags(
+        ov, demo, standalone = deploy._parse_panel_flags(
             ["--namespace", "x", "--repo", "o/r", "--pipeline-deploy", "p"]
         )
         assert ov == {"namespace": "x", "repo": "o/r", "pipeline_deploy": "p"}
         assert demo is False
+        assert standalone == {}
 
     def test_parses_bool_flags(self):
         import deploy  # noqa: PLC0415
-        ov, demo = deploy._parse_panel_flags(["--k8s-only"])
+        ov, demo, _ = deploy._parse_panel_flags(["--k8s-only"])
         assert ov == {"k8s_force": True}
-        ov, _ = deploy._parse_panel_flags(["--local-only"])
+        ov, _, _ = deploy._parse_panel_flags(["--local-only"])
         assert ov == {"local_force": True}
-        ov, demo = deploy._parse_panel_flags(["--demo"])
+        ov, demo, _ = deploy._parse_panel_flags(["--demo"])
         assert ov == {}
         assert demo is True
 
     def test_paths_resolved(self):
         import deploy  # noqa: PLC0415
-        ov, _ = deploy._parse_panel_flags(["--usage-db", "/tmp/u.db"])
+        ov, _, _ = deploy._parse_panel_flags(["--usage-db", "/tmp/u.db"])
         assert isinstance(ov["usage_db"], Path)
         assert str(ov["usage_db"]).endswith("u.db")
 
     def test_rejects_missing_value(self):
         import deploy  # noqa: PLC0415
-        err, _ = deploy._parse_panel_flags(["--namespace"])
+        err, _, _ = deploy._parse_panel_flags(["--namespace"])
         assert "_error" in err
         assert "namespace" in err["_error"]
 
     def test_rejects_unknown_flag(self):
         import deploy  # noqa: PLC0415
-        err, _ = deploy._parse_panel_flags(["--never-seen"])
+        err, _, _ = deploy._parse_panel_flags(["--never-seen"])
         assert "_error" in err
+
+    def test_parses_memdebug_standalone_flag(self):
+        """`--memdebug` não é override de RuntimeContext; deve ir pro slot
+        `standalone` (que `k8s_panel` passa pro `run_panel(memdebug=...)`)."""
+        import deploy  # noqa: PLC0415
+        ov, demo, standalone = deploy._parse_panel_flags(["--memdebug"])
+        assert ov == {}
+        assert demo is False
+        assert standalone == {"memdebug": True}
 
 
 # ===== Local instances (state files per PID — issue #303) ==================

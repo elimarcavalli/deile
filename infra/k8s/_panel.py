@@ -555,6 +555,10 @@ def _head_panel(view_title: str, app: "PanelApp") -> Panel:
         for icon, msg in toasts[-2:]:
             toast_line.append(f"{icon} {msg}  ", style="bold yellow")
         pieces.append(toast_line)
+    # Linha de memdebug quando ligado via --memdebug. Off por default.
+    mem_line = app.memdebug_line()
+    if mem_line:
+        pieces.append(Text(mem_line, style="dim magenta"))
     return Panel(Group(*pieces), border_style="cyan", box=box.HEAVY)
 
 
@@ -2951,7 +2955,8 @@ class PanelApp:
     """
 
     def __init__(self, views: Dict[str, View], root: str = "dashboard",
-                 data: Optional[PanelData] = None):
+                 data: Optional[PanelData] = None,
+                 memdebug: bool = False):
         self.views = views
         self.stack: List[View] = [views[root]]
         self.running = True
@@ -2960,6 +2965,16 @@ class PanelApp:
         self.data = data
         self.last_payload: Dict[str, Any] = {}
         self._last_render = 0.0
+        # `--memdebug`: liga tracemalloc + amostragem periódica do top N.
+        # Default OFF (não há overhead em uso normal). Quando ligado,
+        # `_memdebug_line()` devolve a string que vai pro head do painel.
+        self._memdebug = bool(memdebug)
+        self._memdebug_last_sample_at: float = 0.0
+        self._memdebug_summary: str = ""
+        if self._memdebug:
+            import tracemalloc  # noqa: PLC0415 — opt-in import
+            if not tracemalloc.is_tracing():
+                tracemalloc.start(10)  # 10 frames são suficientes p/ atribuir
 
     # --- propriedades de conveniência expostas às views ---
 
@@ -2999,6 +3014,53 @@ class PanelApp:
 
     def quit(self) -> None:
         self.running = False
+
+    # --- memdebug (--memdebug) -----------------------------------------
+    # Quando ligado, faz `tracemalloc.snapshot()` a cada 60s e calcula
+    # o crescimento desde o último snapshot. Mostra:
+    #   "mem: cur 42.1MB · peak 51.3MB · Δ60s +1.2MB · top: <file>:<line>"
+    # Off por default — overhead do tracemalloc é não-trivial.
+
+    _MEMDEBUG_INTERVAL_S = 60.0
+
+    def memdebug_line(self) -> str:
+        if not self._memdebug:
+            return ""
+        now = time.monotonic()
+        if now - self._memdebug_last_sample_at < self._MEMDEBUG_INTERVAL_S:
+            return self._memdebug_summary
+        try:
+            import tracemalloc  # noqa: PLC0415
+            cur, peak = tracemalloc.get_traced_memory()
+            snap = tracemalloc.take_snapshot()
+            # Top alocador por linha — útil pra identificar leak source.
+            stats = snap.statistics("lineno")
+            top_line = ""
+            if stats:
+                top = stats[0]
+                # tracemalloc.StatisticDiff/Statistic.traceback[-1] é o frame
+                # mais profundo (call site real).
+                frame = top.traceback[-1]
+                fpath = Path(frame.filename).name
+                top_line = (f" · top: {fpath}:{frame.lineno} "
+                            f"({top.size / 1024:.0f}KB)")
+            # Delta vs último sample (se houver).
+            delta_str = ""
+            prev = getattr(self, "_memdebug_prev_cur", None)
+            if prev is not None:
+                delta = (cur - prev) / 1024
+                sign = "+" if delta >= 0 else ""
+                delta_str = f" · Δ{int(self._MEMDEBUG_INTERVAL_S)}s {sign}{delta:.0f}KB"
+            self._memdebug_prev_cur = cur
+            self._memdebug_summary = (
+                f"mem: cur {cur / 1024 / 1024:.1f}MB · "
+                f"peak {peak / 1024 / 1024:.1f}MB{delta_str}{top_line}"
+            )
+            self._memdebug_last_sample_at = now
+        except Exception as exc:  # noqa: BLE001 — memdebug nunca quebra UI
+            self._memdebug_summary = f"mem: erro tracemalloc ({exc})"
+            self._memdebug_last_sample_at = now
+        return self._memdebug_summary
 
     # --- snapshots ---
 
@@ -3135,7 +3197,13 @@ class PanelApp:
             self.current_view.render(self),
             console=self.console,
             screen=True,
-            refresh_per_second=30,
+            # 10 FPS é suficiente pra UI fluida (TUI não é jogo). 30 FPS
+            # mantinha o render-pipeline do Rich quente o tempo todo,
+            # acumulando alocações em sessões longas (relato do operador:
+            # Cursor matava o processo após horas com painel aberto).
+            # Combinado com BackgroundRefresher.DEFAULT_TICK_S=1.0, reduz
+            # ~3x a CPU sustained do painel.
+            refresh_per_second=10,
             transient=False,
         ) as live:
             self._last_render = time.monotonic()
@@ -3203,7 +3271,8 @@ def _build_views(data: Optional[PanelData] = None) -> Dict[str, View]:
 
 
 def run_panel(context: "Optional[Any]" = None,
-              force_demo: bool = False) -> int:
+              force_demo: bool = False,
+              memdebug: bool = False) -> int:
     """Entry point chamado pelo `deploy.py panel`.
 
     Levanta os providers reais. Suporta 3 modos:
@@ -3237,7 +3306,7 @@ def run_panel(context: "Optional[Any]" = None,
             )
             data = None
 
-    app = PanelApp(_build_views(data), data=data)
+    app = PanelApp(_build_views(data), data=data, memdebug=memdebug)
     try:
         return app.run()
     except KeyboardInterrupt:

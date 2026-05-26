@@ -2659,7 +2659,12 @@ class BackgroundRefresher:
     processo se algo der errado.
     """
 
-    DEFAULT_TICK_S = 0.5  # frequência de checagem; fetch real respeita TTL
+    # Frequência de checagem; fetch real respeita TTL. 1.0s é o
+    # compromisso entre frescor visual (TTL dos providers locais é
+    # 2s — não vale checar mais rápido que isso) e fork/exec
+    # sustained (cada tick spawna até 8 subprocess.run; em sessões
+    # longas, 0.5s gerava pressão de memória notável no macOS).
+    DEFAULT_TICK_S = 1.0
 
     def __init__(self, data: PanelData, tick_s: float = DEFAULT_TICK_S):
         self._data = data

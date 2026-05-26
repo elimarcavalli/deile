@@ -491,6 +491,10 @@ def k8s_panel(args: dict) -> int:
       --k8s-only                Não detecta processos locais nem tail de logs
       --local-only              Não tenta kubectl (mesmo se disponível)
       --demo                    Mocks puros (não toca fontes reais)
+      --memdebug                Liga tracemalloc + linha "mem: ..." no head
+                                do painel (sample a cada 60s, top alocador).
+                                Overhead não-trivial — só para diagnóstico
+                                de memory leak em sessões longas.
 
     Diferente da versão anterior, **não exige cluster k8s** — se k8s
     estiver fora, o painel ainda abre em "local only" (lê
@@ -499,7 +503,9 @@ def k8s_panel(args: dict) -> int:
     from _panel import run_panel  # import tardio: rich só é carregado se usado
     from _panel_data import RuntimeContext
 
-    overrides, demo_flag = _parse_panel_flags(args.get("extra") or [])
+    overrides, demo_flag, standalone = _parse_panel_flags(
+        args.get("extra") or []
+    )
     # Validação leve antes de bootar — operador erra `--namespace` (sem valor),
     # melhor avisar antes que o painel abra com defaults silenciosos.
     if "_error" in overrides:
@@ -518,7 +524,11 @@ def k8s_panel(args: dict) -> int:
                 "ou inicie DEILE/k8s primeiro.")
         return 1
     # `panel` é inspeção pura (não muta nada); sem `announce_plan`.
-    return run_panel(context=ctx, force_demo=demo_flag)
+    return run_panel(
+        context=ctx,
+        force_demo=demo_flag,
+        memdebug=bool(standalone.get("memdebug", False)),
+    )
 
 
 _PANEL_FLAG_VALUE = {
@@ -538,15 +548,25 @@ _PANEL_FLAG_BOOL = {
     "--k8s-only": "k8s_force",
     "--local-only": "local_force",
 }
+# Flags do painel que NÃO viram override do RuntimeContext (vão direto pro
+# `run_panel(...)`). Mantemos esse split pra `_parse_panel_flags` continuar
+# devolvendo apenas o que `RuntimeContext.detect(**overrides)` aceita.
+_PANEL_FLAG_STANDALONE = {
+    "--memdebug",
+}
 
 
 def _parse_panel_flags(extra: List[str]) -> tuple:
-    """Decodifica os flags do `panel` para um dict de overrides + demo flag.
+    """Decodifica os flags do `panel` para um dict de overrides + flags extras.
 
-    Devolve `({field: value, ...}, demo_bool)` ou `{"_error": msg}` se
-    algum flag vier sem valor.
+    Devolve `(overrides, demo_bool, standalone_flags)`. ``overrides`` vai
+    pro ``RuntimeContext.detect(**overrides)``. ``standalone_flags`` é
+    um dict de flags que não pertencem ao RuntimeContext (ex.: ``memdebug``)
+    e são passadas direto pro ``run_panel(...)``. Devolve ``{"_error": msg}``
+    em qualquer slot se algum flag vier sem valor / for desconhecido.
     """
     overrides: Dict[str, object] = {}
+    standalone: Dict[str, object] = {}
     demo = False
     i = 0
     while i < len(extra):
@@ -555,13 +575,18 @@ def _parse_panel_flags(extra: List[str]) -> tuple:
             demo = True
             i += 1
             continue
+        if a in _PANEL_FLAG_STANDALONE:
+            # Bool flags standalone — sempre True.
+            standalone[a.lstrip("-").replace("-", "_")] = True
+            i += 1
+            continue
         if a in _PANEL_FLAG_BOOL:
             overrides[_PANEL_FLAG_BOOL[a]] = True
             i += 1
             continue
         if a in _PANEL_FLAG_VALUE:
             if i + 1 >= len(extra):
-                return {"_error": f"flag `{a}` exige um valor"}, False
+                return {"_error": f"flag `{a}` exige um valor"}, False, {}
             field = _PANEL_FLAG_VALUE[a]
             val: object = extra[i + 1]
             if field in ("usage_db", "logs_dir", "sessions_dir"):
@@ -570,8 +595,8 @@ def _parse_panel_flags(extra: List[str]) -> tuple:
             overrides[field] = val
             i += 2
             continue
-        return {"_error": f"flag desconhecido: `{a}`"}, False
-    return overrides, demo
+        return {"_error": f"flag desconhecido: `{a}`"}, False, {}
+    return overrides, demo, standalone
 
 
 def k8s_test(args: dict) -> int:

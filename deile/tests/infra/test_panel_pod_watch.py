@@ -312,3 +312,38 @@ class TestHandleKeyDot:
     def test_hotkeys_footer_mentions_dot(self):
         """Regressão: ninguém remova `.` do footer sem ajustar a help."""
         assert "[.] abrir log" in panel.PodWatchView.HOTKEYS
+
+
+# ---------------------------------------------------------------------------
+# Memdebug (--memdebug) — off por default, opcional via flag
+# ---------------------------------------------------------------------------
+
+class TestMemdebug:
+    def test_off_by_default_returns_empty_string(self):
+        """`memdebug=False` (default): nunca instancia tracemalloc, sempre
+        devolve `""`. Garante zero overhead em uso normal."""
+        app = panel.PanelApp(views={"dashboard": panel.HelpView()})
+        assert app._memdebug is False
+        assert app.memdebug_line() == ""
+
+    def test_on_returns_mem_line_after_first_sample(self):
+        """`memdebug=True`: o primeiro call faz snapshot e devolve uma
+        string `mem: cur ... peak ...`. Calls subsequentes dentro do
+        intervalo devolvem o cache, não re-amostram."""
+        app = panel.PanelApp(views={"dashboard": panel.HelpView()},
+                             memdebug=True)
+        line = app.memdebug_line()
+        assert line.startswith("mem: cur ")
+        assert "peak" in line
+        # Segunda chamada imediata devolve o mesmo cache (sem re-sample):
+        assert app.memdebug_line() == line
+
+    def test_on_records_delta_between_samples(self):
+        """Quando o intervalo passa, o segundo sample inclui `Δ60s`."""
+        app = panel.PanelApp(views={"dashboard": panel.HelpView()},
+                             memdebug=True)
+        app.memdebug_line()  # primeiro sample (sem delta)
+        # Força o "intervalo" passar:
+        app._memdebug_last_sample_at = 0.0
+        line2 = app.memdebug_line()
+        assert "Δ" in line2  # tem o delta agora
