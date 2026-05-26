@@ -77,17 +77,6 @@ async def test_health_returns_500_when_binary_missing(
         assert "claude" in body["error"].lower()
 
 
-async def test_dispatch_returns_501_stub(claude_worker_module):
-    """``POST /v1/dispatch`` é stub na Task 12; Task 13 implementa o spawn
-    do ``claude -p`` e a serialização da resposta."""
-    app = claude_worker_module.build_app()
-    async with TestClient(TestServer(app)) as client:
-        resp = await client.post(
-            "/v1/dispatch", json={"brief": "x", "channel_id": "y"},
-        )
-        assert resp.status == 501
-
-
 async def test_progress_returns_501_stub(claude_worker_module):
     """``GET /v1/progress/{task_id}`` é stub na Task 12; Task 14 implementa
     o tail dos arquivos de stdout/stderr persistidos no PVC."""
@@ -95,3 +84,184 @@ async def test_progress_returns_501_stub(claude_worker_module):
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/v1/progress/abc12345")
         assert resp.status == 501
+
+
+# --------------------------------------------------------------------------- #
+# Task 13: /v1/dispatch
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_dispatch_rejects_non_anthropic_model(claude_worker_module, monkeypatch):
+    """``claude-worker`` só aceita ``preferred_model`` no namespace ``anthropic:*``.
+
+    O CLI ``claude`` não roteia para outros provedores; o pipeline pode até
+    enviar slugs de outros providers, mas eles devem ser barrados com 400 +
+    mensagem clara para que o operador entenda o motivo do dispatch ter falhado.
+    """
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+
+    app = claude_worker_module.build_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/v1/dispatch", json={
+            "brief": "test",
+            "channel_id": "x",
+            "preferred_model": "openai:gpt-4",
+            "stage": "implement",
+        })
+        assert resp.status == 400
+        body = await resp.json()
+        assert "anthropic" in body["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_translates_model_slug(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Slug ``anthropic:claude-opus-4-7`` vira ``--model claude-opus-4-7`` na call.
+
+    O prefixo ``anthropic:`` é convenção interna do DEILE; o CLI ``claude``
+    espera só a parte após os dois pontos. Também garante que o invocador
+    está passando ``-p`` (modo print) e ``--permission-mode bypassPermissions``.
+    """
+    captured = {}
+
+    async def fake_run(args, *, cwd, task_id, timeout):
+        captured["args"] = list(args)
+        return claude_worker_module.SubprocessResult(
+            returncode=0, stdout="ok\n", stderr="", duration_seconds=1.0,
+        )
+
+    monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+
+    app = claude_worker_module.build_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/v1/dispatch", json={
+            "brief": "implement #1",
+            "channel_id": "auto/issue-1",
+            "preferred_model": "anthropic:claude-opus-4-7",
+            "stage": "implement",
+            "issue_number": 1,
+            "branch": "auto/issue-1",
+        })
+        assert resp.status == 200
+
+    args = captured["args"]
+    assert "claude" in args[0] or args[0] == "claude"
+    assert "-p" in args
+    assert "--model" in args
+    model_idx = args.index("--model")
+    assert args[model_idx + 1] == "claude-opus-4-7"
+    assert "--permission-mode" in args
+    perm_idx = args.index("--permission-mode")
+    assert args[perm_idx + 1] == "bypassPermissions"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_response_shape(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Response inclui ``ok``, ``stdout``, ``stderr``, ``task_id``,
+    ``duration_seconds`` e ``returncode`` — contrato consumido pelo
+    ``deile-pipeline`` e pelo painel TUI."""
+    async def fake_run(args, *, cwd, task_id, timeout):
+        return claude_worker_module.SubprocessResult(
+            returncode=0, stdout="success\n", stderr="", duration_seconds=42.0,
+        )
+
+    monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+
+    app = claude_worker_module.build_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/v1/dispatch", json={
+            "brief": "x", "channel_id": "y",
+            "preferred_model": "anthropic:claude-sonnet-4-6",
+        })
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["ok"] is True
+        assert "stdout" in body
+        assert "stderr" in body
+        assert "task_id" in body
+        # ``secrets.token_hex(8)`` produz 16 chars hex.
+        assert len(body["task_id"]) == 16
+        assert body["duration_seconds"] == 42.0
+        assert body["returncode"] == 0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_creates_workspace_dir(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Cada dispatch cria ``DEILE_CLAUDE_WORKER_ROOT/<task_id>/`` fresh.
+
+    O ``claude`` é executado com ``cwd`` apontando para esse diretório, de
+    modo que cada brief tem worktree isolado — sem leakage cross-task de
+    arquivos/staged changes."""
+    captured_cwd = []
+
+    async def fake_run(args, *, cwd, task_id, timeout):
+        captured_cwd.append(cwd)
+        assert cwd.exists(), f"workspace {cwd} should exist before exec"
+        return claude_worker_module.SubprocessResult(0, "", "", 0.1)
+
+    monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+
+    app = claude_worker_module.build_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/v1/dispatch", json={
+            "brief": "x", "channel_id": "y",
+            "preferred_model": "anthropic:claude-haiku-4-5",
+        })
+        assert resp.status == 200
+        body = await resp.json()
+
+        # ``cwd`` deve ser ``tmp_path/<task_id>``.
+        assert captured_cwd[0].parent == tmp_path
+        assert captured_cwd[0].name == body["task_id"]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_passes_brief_with_preamble(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Brief recebido pelo dispatch vai como sufixo do preamble do stage.
+
+    Verifica três coisas: o marker do brief vai pro prompt, o preamble por
+    stage está renderizado (identidade do agente + contrato de output) e o
+    ``$BRANCH`` é substituído no template antes do exec."""
+    captured_args = []
+
+    async def fake_run(args, *, cwd, task_id, timeout):
+        captured_args.extend(args)
+        return claude_worker_module.SubprocessResult(0, "", "", 0.1)
+
+    monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+
+    app = claude_worker_module.build_app()
+    async with TestClient(TestServer(app)) as client:
+        await client.post("/v1/dispatch", json={
+            "brief": "MARKER_BRIEF_TEXT_42",
+            "channel_id": "y",
+            "preferred_model": "anthropic:claude-haiku-4-5",
+            "stage": "implement",
+            "branch": "auto/issue-42",
+        })
+
+    # O último argumento do CLI ``claude`` é o ``full_prompt`` (preamble + brief).
+    full_prompt = captured_args[-1]
+    assert "MARKER_BRIEF_TEXT_42" in full_prompt
+    # Identidade do agente vinda do preamble.
+    assert "Claude Code" in full_prompt or "claude-worker" in full_prompt
+    # Substituição de ``$BRANCH`` no template.
+    assert "auto/issue-42" in full_prompt
+    # Contrato de output presente no preamble.
+    assert "STATUS: SUCCESS" in full_prompt
