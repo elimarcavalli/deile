@@ -60,7 +60,8 @@ async def main():
     router = get_model_router()
     bootstrap_providers(router=router)
 
-    log_buffer.seek(0); log_buffer.truncate(0)
+    log_buffer.seek(0)
+    log_buffer.truncate(0)
     agent = DeileAgent(model_router=router, config_manager=cm)
     await agent.initialize()
 
@@ -79,7 +80,8 @@ async def main():
     )
     session.context_data["forced_model"] = MODEL_KEY
 
-    log_buffer.seek(0); log_buffer.truncate(0)
+    log_buffer.seek(0)
+    log_buffer.truncate(0)
 
     stages: list[tuple[int, str]] = []
     text_chars = 0

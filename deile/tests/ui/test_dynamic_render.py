@@ -15,7 +15,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
-from deile.ui.dynamic_render import is_interactive_tty, live_for, turn_separator
+from deile.ui.dynamic_render import (is_interactive_tty, live_for,
+                                     turn_separator)
 
 
 @pytest.mark.unit

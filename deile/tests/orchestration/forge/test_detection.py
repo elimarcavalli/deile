@@ -8,7 +8,7 @@ import pytest
 
 from deile.orchestration.forge import (ForgeDetectionError, ForgeKind,
                                        declared_hosts, detect_forge_kind)
-from deile.orchestration.forge.detection import _probe_host, _probe_cache
+from deile.orchestration.forge.detection import _probe_cache, _probe_host
 
 
 def test_detect_explicit_override_wins_github():
@@ -129,7 +129,6 @@ async def test_probe_returns_gitlab_when_v4_version_responds() -> None:
     _probe_cache.pop("unknown-gl.empresa.com", None)
 
     gl_resp = _make_mock_response(200)
-    gh_resp = MagicMock(side_effect=Exception("connection refused"))
 
     def fake_urlopen(req, timeout=None):
         if "/api/v4/" in req.full_url:

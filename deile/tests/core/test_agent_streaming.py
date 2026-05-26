@@ -333,12 +333,12 @@ async def test_skip_autonomous_kwarg_also_skips_workflow_path(configured_agent, 
     configured_agent.model_router.select_provider = AsyncMock(return_value=fake)
     session = configured_agent.create_session("skip_wf", working_directory=str(tmp_path))
 
-    events = [
-        e async for e in configured_agent.process_input_stream(
-            user_input="multi-step task", session_id=session.session_id, _skip_autonomous=True,
-        )
-    ]
-    # Workflow predicate should NOT have been called (skipped before)
+    # Consome o stream sem inspecionar eventos — só importa que
+    # ``_should_create_workflow`` NÃO seja invocado quando ``_skip_autonomous``.
+    async for _ in configured_agent.process_input_stream(
+        user_input="multi-step task", session_id=session.session_id, _skip_autonomous=True,
+    ):
+        pass
     configured_agent._should_create_workflow.assert_not_called()
 
 

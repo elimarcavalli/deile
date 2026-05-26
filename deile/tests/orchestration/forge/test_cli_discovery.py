@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from deile.orchestration.forge import (ForgeCliNotFound, discover_cli)
+from deile.orchestration.forge import ForgeCliNotFound, discover_cli
 
 
 def test_discover_cli_returns_path_when_present(monkeypatch):

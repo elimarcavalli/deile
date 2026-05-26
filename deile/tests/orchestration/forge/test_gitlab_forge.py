@@ -16,8 +16,8 @@ from typing import Tuple
 import pytest
 
 from deile.orchestration.forge import GitLabForge
-from deile.orchestration.forge.base import (ForgeCommandError, ForgeConfig,
-                                            ForgeKind, MergeBlocked,
+from deile.orchestration.forge.base import (ForgeConfig, ForgeKind,
+                                            MergeBlocked,
                                             MergeBlockedByPipeline)
 
 
@@ -152,12 +152,13 @@ async def test_assign_issue_resolves_username_to_user_id(fake_glab):
     assert "-f" not in put_call, "PUT assignee_ids deve usar query string, não -f"
 
 
-async def test_assign_issue_logs_replace_warning(fake_glab):
-    """assign_issue deve emitir WARNING explícito sobre semântica REPLACE.
+async def test_assign_issue_logs_replace_at_debug(fake_glab):
+    """assign_issue documenta a semântica REPLACE em log DEBUG (não WARNING).
 
-    Usa handler direto no logger-alvo + restaura logging.disable(NOTSET) para
-    contornar side-effects de outros testes que deixam o logging global desabilitado
-    (padrão documentado em test_gap_regressions.py e test_settings_layered.py).
+    Pre-PR-review esta mensagem era ``logger.warning(...)`` em toda chamada,
+    gerando ruído sob auto-routing. Rebaixada a ``logger.debug`` (a contratação
+    REPLACE continua documentada no docstring + CLAUDE.md). O teste passa a
+    capturar em DEBUG para garantir que o sinal não sumiu por completo.
     """
     import logging
 
@@ -172,10 +173,10 @@ async def test_assign_issue_logs_replace_warning(fake_glab):
             captured.append(record.getMessage())
 
     _logger = logging.getLogger("deile.orchestration.forge.gitlab_forge")
-    handler = _Capture(level=logging.WARNING)
+    handler = _Capture(level=logging.DEBUG)
     _logger.addHandler(handler)
     original_level = _logger.level
-    _logger.setLevel(logging.WARNING)
+    _logger.setLevel(logging.DEBUG)
     # Restaura o estado global do logging caso outro teste tenha chamado
     # logging.disable() e esquecido de reverter (padrão conhecido na suíte).
     previous_disable = logging.root.manager.disable
@@ -378,6 +379,7 @@ async def test_pr_reviewer_still_requested_fails_open(fake_glab):
 
 async def test_invalid_project_path_raises():
     from deile.orchestration.forge.base import ForgeConfigError
+
     # A 1-segment path is not valid for GitLab (needs at least 2).
     with pytest.raises(ForgeConfigError):
         ForgeConfig(

@@ -99,10 +99,16 @@ class TestFactory:
         impl = build_implementer(mode, worker_client=MagicMock())
         assert isinstance(impl, WorkerImplementer)
 
-    def test_unknown_mode_falls_back_to_claude(self):
-        assert isinstance(build_implementer("nonsense"), ClaudeImplementer)
+    def test_unknown_mode_raises(self):
+        # Pre-PR-review esta entrada caía silenciosamente em ClaudeImplementer
+        # com logger.warning — um typo em DEILE_PIPELINE_DISPATCH_MODE (ex.:
+        # "deile_woker") queimaria ANTHROPIC_API_KEY sem alerta. Fail-fast
+        # ValueError surface o erro imediatamente (pilar 03 §6 + dispatch UX).
+        with pytest.raises(ValueError, match="unknown pipeline dispatch_mode"):
+            build_implementer("nonsense")
 
     def test_empty_mode_falls_back_to_claude(self):
+        # Default legado mantido: vazio/None → Claude (compat de bootstrap).
         assert isinstance(build_implementer(""), ClaudeImplementer)
 
 

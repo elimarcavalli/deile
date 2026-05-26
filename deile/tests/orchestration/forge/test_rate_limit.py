@@ -7,18 +7,12 @@ Cobre :meth:`ForgeClient._maybe_sleep_for_rate_limit` e o helper
 from __future__ import annotations
 
 import time
-from typing import Optional
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from deile.orchestration.forge.base import (
-    ForgeClient,
-    ForgeConfig,
-    ForgeKind,
-    _parse_headers_and_body,
-)
-
+from deile.orchestration.forge.base import (ForgeClient, ForgeConfig,
+                                            _parse_headers_and_body)
 
 # ---------------------------------------------------------------------------
 # Implementação mínima de ForgeClient para testes

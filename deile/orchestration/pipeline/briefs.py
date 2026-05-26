@@ -110,6 +110,19 @@ def _render_brief(template: str, *, params: dict[str, Any]) -> str:
     return template.format(**params)
 
 
+def _inject_view_issue_template(params: dict[str, Any], number: int) -> None:
+    """Add ``view_issue_cmd_template`` (the cmd with ``<N>`` placeholder).
+
+    The review briefs reference ``gh issue view <N> --comments`` where ``<N>``
+    is the issue closed by the PR — unknown at brief-render time. Replace the
+    concrete number in ``view_issue_cmd`` with the ``<N>`` literal so the
+    worker fills it in after parsing the closing reference.
+    """
+    params["view_issue_cmd_template"] = params["view_issue_cmd"].replace(
+        f" {number} ", " <N> ", 1,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Implement / review briefs
 # ---------------------------------------------------------------------------
@@ -448,14 +461,7 @@ def _render_worker_review_brief(
     params = _build_brief_params(
         repo=repo, main=main, branch=branch_for_render, number=number, forge=forge,
     )
-    # Cross-reference: review brief mentions ``gh issue view <N> --comments``
-    # where <N> is the issue closed by the PR — not yet known. The
-    # ``view_issue_cmd_template`` placeholder is the same forge command with
-    # ``<N>`` as a literal placeholder for the worker to fill in after it
-    # parses the closing reference.
-    params["view_issue_cmd_template"] = params["view_issue_cmd"].replace(
-        f" {number} ", " <N> ", 1,
-    )
+    _inject_view_issue_template(params, number)
     return _render_brief(_WORKER_REVIEW_BRIEF, params=params)
 
 
@@ -501,9 +507,7 @@ def _render_worker_review_resume_brief(
         repo=repo, main=main, branch=branch_for_render, number=number, forge=forge,
         extras={"progress_block": _PROGRESS_BLOCK},
     )
-    params["view_issue_cmd_template"] = params["view_issue_cmd"].replace(
-        f" {number} ", " <N> ", 1,
-    )
+    _inject_view_issue_template(params, number)
     return _render_brief(_WORKER_REVIEW_RESUME_BRIEF, params=params)
 
 
@@ -725,9 +729,7 @@ def _render_worker_review_only_brief(
     params = _build_brief_params(
         repo=repo, main=main, branch=branch_for_render, number=number, forge=forge,
     )
-    params["view_issue_cmd_template"] = params["view_issue_cmd"].replace(
-        f" {number} ", " <N> ", 1,
-    )
+    _inject_view_issue_template(params, number)
     return _render_brief(_WORKER_REVIEW_ONLY_BRIEF, params=params)
 
 

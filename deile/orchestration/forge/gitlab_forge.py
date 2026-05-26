@@ -27,8 +27,10 @@ API v4. Differences worth flagging up-front:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Iterable, List, Literal, Optional, Tuple
 
@@ -51,6 +53,22 @@ logger = logging.getLogger(__name__)
 # Default REST API page size — every list endpoint accepts ``per_page``.
 # 100 is the hard cap GitLab enforces server-side.
 _PER_PAGE = 100
+
+
+def _pages_for_limit(limit: int) -> int:
+    """Return ``ceil(limit / _PER_PAGE)``, at least 1.
+
+    Convenience for the ``max_pages=`` argument of :meth:`_api_paginated`
+    — turns a user-facing record cap into a page cap.
+    """
+    return max(1, (limit + _PER_PAGE - 1) // _PER_PAGE)
+
+# GitLab username regex — alphanumeric start, depois alnum/dot/underscore/hyphen
+# até 255 chars. Usado como guard defensivo simétrico ao ``_GH_LOGIN_RE`` do
+# adapter GitHub antes de injetar ``login`` num lookup ``users?username={login}``.
+# Embora ``glab api -f`` seja form-encoded (sem risco direto de injection), a
+# simetria de validação fecha o invariante de defesa em profundidade.
+_GL_LOGIN_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,254}\Z")
 
 
 def _standup_item_from_gl_json(item: dict) -> dict:
@@ -228,7 +246,7 @@ class GitLabForge(ForgeClient):
                 "-f", "state=opened",
                 "-f", f"labels={label}",
             ],
-            max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+            max_pages=_pages_for_limit(limit),
         )
         return [IssueRef.from_gl_json(it) for it in items[:limit]]
 
@@ -253,7 +271,7 @@ class GitLabForge(ForgeClient):
                     "-f", "state=opened",
                     "-f", f"assignee_username={login}",
                 ],
-                max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+                max_pages=_pages_for_limit(limit),
             )
         except ForgeCommandError as exc:
             logger.warning("list_issues_assigned_to failed: %s", exc)
@@ -264,7 +282,7 @@ class GitLabForge(ForgeClient):
         items = await self._api_paginated(
             f"projects/{self._project_ref}/issues",
             params=["-f", "state=opened"],
-            max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+            max_pages=_pages_for_limit(limit),
         )
         result: List[IssueRef] = []
         for it in items:
@@ -303,8 +321,7 @@ class GitLabForge(ForgeClient):
         # pode usar ``/-/work_items/<iid>`` (sucessor unificado de issues e
         # tasks) em vez de ``/-/issues/<iid>``. Ambos compartilham o mesmo
         # ``iid`` por projeto, então tolerar os dois é suficiente.
-        import re as _re
-        m = _re.search(r"/(?:issues|work_items)/(\d+)", out)
+        m = re.search(r"/(?:issues|work_items)/(\d+)", out)
         return int(m.group(1)) if m else 0
 
     async def comment_on_issue(self, number: int, text: str) -> None:
@@ -342,10 +359,23 @@ class GitLabForge(ForgeClient):
         """
         if not login:
             return
-        logger.warning(
-            "assign_issue #%d: operação REPLACE — todos os assignees anteriores "
-            "serão removidos (GitLab PUT assignee_ids[] é full-replace, sem add)",
-            number,
+        # Defesa simétrica ao adapter GitHub: ``login`` é interpolado em
+        # ``-f username={login}`` no lookup abaixo. Validamos contra o
+        # alfabeto de usernames GitLab antes de gastar o round-trip e
+        # fechamos o invariante de defesa em profundidade.
+        if not _GL_LOGIN_RE.fullmatch(login):
+            logger.warning(
+                "assign_issue #%d: login %r não é um GitLab username válido "
+                "(alnum start, alnum/dot/_/hyphen, ≤255 chars) — rejeitando",
+                number, login,
+            )
+            return
+        # GitLab PUT é semântica REPLACE — registramos em DEBUG (operacional,
+        # documentado no docstring/CLAUDE.md). Anteriormente era ``warning``
+        # em toda chamada, gerando ruído sob auto-routing.
+        logger.debug(
+            "assign_issue #%d: PUT assignee_ids[] (REPLACE; substitui qualquer "
+            "assignee anterior)", number,
         )
         try:
             users = await self._api_get_json("users", "-f", f"username={login}")
@@ -355,9 +385,21 @@ class GitLabForge(ForgeClient):
         if not isinstance(users, list) or not users:
             logger.warning("assign_issue: user %r not found", login)
             return
-        user_id = users[0].get("id")
-        if not user_id:
+        user_id_raw = users[0].get("id")
+        if not user_id_raw:
             logger.warning("assign_issue: user %r has no id in payload", login)
+            return
+        # Defesa em profundidade: GitLab REST retorna ``id`` como int, mas
+        # interpolar direto na URL sem cast aceita strings arbitrárias se o
+        # payload for adulterado por proxy/MITM. ``int()`` força coerção
+        # numérica e falha cedo se o servidor mandar lixo.
+        try:
+            user_id = int(user_id_raw)
+        except (TypeError, ValueError):
+            logger.warning(
+                "assign_issue: user %r tem id não-numérico %r — rejeitando",
+                login, user_id_raw,
+            )
             return
         # IMPORTANTE: glab/GitLab rejeita ``-f assignee_ids[]=N`` para PUT —
         # o GitLab REST espera o array em query string (``?assignee_ids[]=N``),
@@ -439,7 +481,7 @@ class GitLabForge(ForgeClient):
         items = await self._api_paginated(
             f"projects/{self._project_ref}/merge_requests",
             params=["-f", "state=opened"],
-            max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+            max_pages=_pages_for_limit(limit),
         )
         return [PrRef.from_gl_json(it) for it in items[:limit]]
 
@@ -453,7 +495,7 @@ class GitLabForge(ForgeClient):
                     "-f", "state=opened",
                     "-f", f"assignee_username={login}",
                 ],
-                max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+                max_pages=_pages_for_limit(limit),
             )
         except ForgeCommandError as exc:
             logger.warning("list_prs_assigned_to failed: %s", exc)
@@ -501,7 +543,7 @@ class GitLabForge(ForgeClient):
                     "-f", "order_by=updated_at",
                     "-f", "sort=desc",
                 ],
-                max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+                max_pages=_pages_for_limit(limit),
             )
         except ForgeCommandError as exc:
             logger.warning("list_prs_updated_since failed: %s", exc)
@@ -521,7 +563,7 @@ class GitLabForge(ForgeClient):
                     "-f", "order_by=updated_at",
                     "-f", "sort=desc",
                 ],
-                max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+                max_pages=_pages_for_limit(limit),
             )
         except ForgeCommandError as exc:
             logger.warning("list_issues_updated_since failed: %s", exc)
@@ -653,10 +695,10 @@ class GitLabForge(ForgeClient):
             "need_rebase": "rebase necessário antes do merge",
             "cannot_be_merged": "GitLab indica que o MR não pode ser mergeado",
         }
-        # Valores neutros: não bloqueamos no pre-check; o PUT dispara o cômputo.
-        _DETAILED_NEUTRAL = frozenset({
-            "unchecked", "checking", "preparing", "approvals_syncing", "mergeable",
-        })
+        # Valores neutros (unchecked/checking/preparing/approvals_syncing/
+        # mergeable) NÃO bloqueiam o pre-check: o PUT dispara o cômputo final
+        # no servidor. Documentados aqui para que qualquer mudança no GitLab
+        # (novo valor) seja revisada antes de bloquear silenciosamente.
 
         # Pre-check: se o status já diz não, falha rápido com motivo claro.
         # Evita o loop "MR recusado, tenta de novo".
@@ -760,7 +802,7 @@ class GitLabForge(ForgeClient):
     # ------------------------------------------------------------------
 
     async def add_labels(self, kind: str, number: int, labels: Iterable[str]) -> None:
-        labels_list = [lb for lb in labels if lb]
+        labels_list = self._validate_label_names(labels)
         if not labels_list:
             return
         endpoint = self._label_target_endpoint(kind, number)
@@ -772,7 +814,7 @@ class GitLabForge(ForgeClient):
     async def remove_labels(
         self, kind: str, number: int, labels: Iterable[str],
     ) -> None:
-        labels_list = [lb for lb in labels if lb]
+        labels_list = self._validate_label_names(labels)
         if not labels_list:
             return
         endpoint = self._label_target_endpoint(kind, number)
@@ -800,6 +842,29 @@ class GitLabForge(ForgeClient):
             return f"projects/{self._project_ref}/merge_requests/{number}"
         raise ValueError(f"kind must be 'issue' or 'pr', got {kind!r}")
 
+    @staticmethod
+    def _validate_label_names(labels: Iterable[str]) -> List[str]:
+        """Filter+validate label names antes do CSV-join em ``add/remove_labels``.
+
+        O REST do GitLab aceita ``add_labels``/``remove_labels`` como CSV
+        delimitado por vírgula. Se uma label individual contiver ``,``, o
+        servidor a dividiria silenciosamente em duas labels — defesa em
+        profundidade: rejeitamos qualquer label com vírgula (logando WARNING),
+        em vez de corromper o destino. Vazias também são descartadas.
+        """
+        result: List[str] = []
+        for lb in labels:
+            if not lb:
+                continue
+            if "," in lb:
+                logger.warning(
+                    "label %r contém ',' — descartada (CSV add_labels/remove_labels)",
+                    lb,
+                )
+                continue
+            result.append(lb)
+        return result
+
     async def _ensure_label(self, name: str, *, color: str, description: str) -> None:
         """Create a project label if it does not exist (idempotent).
 
@@ -822,14 +887,12 @@ class GitLabForge(ForgeClient):
             logger.debug("ensure_label %s: rc=%d err=%s", name, rc, err.strip()[:200])
 
     async def ensure_pipeline_labels(self) -> None:
-        import asyncio as _asyncio
-
         async def _create_one(label: str) -> None:
             color = LABEL_COLORS.get(label, "ededed")
             description = LABEL_DESCRIPTIONS.get(label, "Pipeline-managed label")
             await self._ensure_label(label, color=color, description=description)
 
-        await _asyncio.gather(*[
+        await asyncio.gather(*[
             _create_one(label)
             for label in (*WORKFLOW_LABELS, *REVIEW_LABELS, *MENTION_LABELS, *REFINE_LABELS)
         ])
@@ -973,15 +1036,13 @@ class GitLabForge(ForgeClient):
         in parallel — GitLab does not have a unified "issues+MRs" search
         like GH does.
         """
-        import asyncio as _asyncio
-
         issues_task = self._api_paginated(
             f"projects/{self._project_ref}/search",
             params=[
                 "-f", "scope=issues",
                 "-f", f"search={query}",
             ],
-            max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+            max_pages=_pages_for_limit(limit),
         )
         mrs_task = self._api_paginated(
             f"projects/{self._project_ref}/search",
@@ -989,10 +1050,10 @@ class GitLabForge(ForgeClient):
                 "-f", "scope=merge_requests",
                 "-f", f"search={query}",
             ],
-            max_pages=max(1, (limit + _PER_PAGE - 1) // _PER_PAGE),
+            max_pages=_pages_for_limit(limit),
         )
         try:
-            issues_raw, mrs_raw = await _asyncio.gather(issues_task, mrs_task)
+            issues_raw, mrs_raw = await asyncio.gather(issues_task, mrs_task)
         except ForgeCommandError as exc:
             logger.warning("search_items_mentioning failed: %s", exc)
             return [], []

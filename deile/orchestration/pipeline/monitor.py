@@ -28,16 +28,17 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
+from deile.orchestration.forge import ForgeClient, IssueRef, build_forge
 from deile.orchestration.pipeline import stages
 from deile.orchestration.pipeline._time_utils import now_utc, parse_iso_utc
 from deile.orchestration.pipeline.actions import ACTIONS_BY_NAME
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeDispatcher
 from deile.orchestration.pipeline.constants import (
     PIPELINE_POLL_INTERVAL_SECONDS, PIPELINE_STOP_TIMEOUT_SECONDS)
-from deile.orchestration.forge import (ForgeClient, IssueRef, build_forge)
 # Import path preserved for callers that still type-hint ``GitHubClient`` —
 # resolved through the shim so legacy attribute usage stays compatible.
-from deile.orchestration.pipeline.github_client import GitHubClient  # noqa: F401
+from deile.orchestration.pipeline.github_client import \
+    GitHubClient  # noqa: F401
 from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.implementer import (PipelineImplementer,
                                                       build_implementer,
@@ -515,10 +516,16 @@ class PipelineMonitor:
                 await asyncio.wait_for(self._task, timeout=PIPELINE_STOP_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
                 self._task.cancel()
+                # ``CancelledError`` é o resultado esperado de ``cancel()`` —
+                # capturado e silenciado intencionalmente (não é uma falha).
+                # Outras exceções do tick em curso são logadas (pilar 03 §6 —
+                # ``except Exception: pass`` é proibido sem registro).
                 try:
                     await self._task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                except asyncio.CancelledError:
                     pass
+                except Exception as exc:  # noqa: BLE001 — logged then suppressed
+                    logger.warning("pipeline task raised during stop: %s", exc)
         if self._held_lock is not None:
             release_lock(self._held_lock)
             self._held_lock = None
@@ -601,14 +608,16 @@ class PipelineMonitor:
         scheduled_mode = bool(skip)
         cfg = self.config
 
-        if cfg.enable_classify and "classify" not in skip:
+        async def _scheduled(enabled: bool, key: str, handler) -> None:
+            """Run a schedulable stage unless the scheduler already covered it."""
+            if not enabled or key in skip:
+                return
             if scheduled_mode:
-                logger.debug("classify not in schedule; running legacy fallback")
-            await self._classify_new_issues()
-        if cfg.enable_review and "review" not in skip:
-            if scheduled_mode:
-                logger.debug("review not in schedule; running legacy fallback")
-            await self._review_one_new_issue()
+                logger.debug("%s not in schedule; running legacy fallback", key)
+            await handler()
+
+        await _scheduled(cfg.enable_classify, "classify", self._classify_new_issues)
+        await _scheduled(cfg.enable_review, "review", self._review_one_new_issue)
         # Refinement loop (issue #257): per-tick sweep, not a cron action —
         # runs after critique so a POOR issue is refined on the NEXT tick.
         if cfg.enable_refinement_gate:
@@ -618,17 +627,11 @@ class PipelineMonitor:
         # the same tick; its first resume lands on the next tick.
         if cfg.enable_resume:
             await self._resume_in_progress_issues()
-        if cfg.enable_implement and "implement" not in skip:
-            if scheduled_mode:
-                logger.debug("implement not in schedule; running legacy fallback")
-            await self._implement_one_reviewed_issue()
+        await _scheduled(cfg.enable_implement, "implement", self._implement_one_reviewed_issue)
         # Decompose CLEAR intents into derived issues (issue #257).
         if cfg.enable_refinement_gate:
             await self._decompose_one_reviewed_intent()
-        if cfg.enable_pr_review and "pr_review" not in skip:
-            if scheduled_mode:
-                logger.debug("pr_review not in schedule; running legacy fallback")
-            await self._review_one_open_pr()
+        await _scheduled(cfg.enable_pr_review, "pr_review", self._review_one_open_pr)
         if cfg.enable_pr_triage:
             await self._classify_new_prs()
         if cfg.enable_mention_handling:

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from deile.orchestration.forge import (ForgeKind, find_first_pr_url,
                                        find_last_pr_url, parse_forge_url)
 

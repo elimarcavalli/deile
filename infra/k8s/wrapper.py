@@ -211,7 +211,15 @@ def _append_git_credential(creds_file: Path, host: str, token: str) -> None:
     forge) coexist peacefully. The file is rewritten with the union of
     existing lines + the new one so each call is idempotent (no duplicate
     lines for the same host) and never wipes the other forge's credential.
+
+    Dedup é feita por **hostname canônico** (via ``urlparse``), não por
+    ``endswith(f"@{host}")``: linhas que carregam path (ex.
+    ``https://oauth2:TOK@github.com/owner/repo``) ou outras combinações
+    válidas seriam preservadas em paralelo com uma duplicata pelo dedup
+    naive baseado em sufixo.
     """
+    from urllib.parse import urlparse as _urlparse
+
     existing = ""
     if creds_file.exists():
         try:
@@ -219,10 +227,19 @@ def _append_git_credential(creds_file: Path, host: str, token: str) -> None:
         except OSError:
             existing = ""
     new_line = f"https://oauth2:{token}@{host}"
-    kept = [
-        line for line in existing.splitlines()
-        if line.strip() and not line.strip().endswith(f"@{host}")
-    ]
+    host_lc = host.lower()
+    kept: List[str] = []
+    for line in existing.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            line_host = (_urlparse(stripped).hostname or "").lower()
+        except ValueError:
+            line_host = ""
+        if line_host == host_lc:
+            continue
+        kept.append(stripped)
     kept.append(new_line)
     _atomic_write_secret(creds_file, "\n".join(kept) + "\n")
 
@@ -458,6 +475,23 @@ def _setup_git_clone_guard(config_path: str = "") -> None:
     # repr() of a list of strings produces a safe Python literal.
     allowlist_literal = repr(allowlist)
 
+    # Bake também as listas de hosts conhecidas (GitHub e GitLab) — assim o
+    # guard pode normalizar SSH/HTTPS de ambos os forges para o caminho
+    # canônico (``owner/repo`` ou ``group/.../project``) antes de comparar
+    # com o allowlist. Sem isto o GitHub é normalizado mas o GitLab cai no
+    # ``url.removesuffix(".git")``, quebrando a simetria forge-agnostic
+    # (issue #297).
+    _gh_extra = [
+        h.strip().lower() for h in os.environ.get("DEILE_GITHUB_HOST", "")
+        .replace(",", " ").split() if h.strip()
+    ]
+    _gl_extra = [
+        h.strip().lower() for h in os.environ.get("DEILE_GITLAB_HOST", "")
+        .replace(",", " ").split() if h.strip()
+    ]
+    gh_hosts_literal = repr(["github.com", *_gh_extra])
+    gl_hosts_literal = repr(["gitlab.com", *_gl_extra])
+
     guard_script = bin_dir / "git"
     guard_script.write_text(
         f"""\
@@ -467,6 +501,8 @@ import fnmatch, os, posixpath, subprocess, sys, urllib.parse
 
 # Allowlist baked in at wrapper startup — not read from env at runtime.
 _PATTERNS = {allowlist_literal}
+_GH_HOSTS = {gh_hosts_literal}
+_GL_HOSTS = {gl_hosts_literal}
 
 args = sys.argv[1:]
 # Locate the git subcommand: skip global options, handling two-token forms
@@ -498,11 +534,15 @@ if _subcommand == "clone":
                   file=sys.stderr)
             sys.exit(1)
         url = urls[0].rstrip("/")
+        # Normalize GitHub e GitLab (cloud + declared hosts) para o caminho
+        # canônico antes de comparar com o allowlist — assim padrões como
+        # ``owner/repo`` ou ``group/sub/project`` valem para ambos forges.
         if url.startswith("git@"):
-            # SCP-style: git@host:owner/repo.git — urlparse returns hostname=None.
+            # SCP-style: git@host:path.git — urlparse retorna hostname=None.
             _host_path = url[len("git@"):]
             _host, _, _path = _host_path.partition(":")
-            if _host.lower() == "github.com":
+            _host = _host.lower()
+            if _host in _GH_HOSTS or _host in _GL_HOSTS:
                 repo_path = posixpath.normpath(_path.removesuffix(".git"))
             else:
                 repo_path = url.removesuffix(".git")
@@ -510,7 +550,8 @@ if _subcommand == "clone":
             # Use urlparse so userinfo tricks like 'https://evil@github.com/...'
             # are rejected correctly.
             parsed = urllib.parse.urlparse(url)
-            if parsed.hostname == "github.com":
+            _host = (parsed.hostname or "").lower()
+            if _host in _GH_HOSTS or _host in _GL_HOSTS:
                 repo_path = posixpath.normpath(
                     parsed.path.lstrip("/").removesuffix(".git")
                 )

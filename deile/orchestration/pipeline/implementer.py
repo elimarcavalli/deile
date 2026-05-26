@@ -467,16 +467,14 @@ class WorkerImplementer(PipelineImplementer):
     ) -> WorkOutcome:
         branch = monitor.branch_for_issue(issue.number)
         forge_cfg = monitor.forge.config
-        if resume:
-            brief = _render_worker_implement_resume_brief(
-                monitor.config.repo, monitor.config.main_branch, branch,
-                issue.number, issue.title, issue.body, forge=forge_cfg,
-            )
-        else:
-            brief = _render_worker_implement_brief(
-                monitor.config.repo, monitor.config.main_branch, branch,
-                issue.number, issue.title, issue.body, forge=forge_cfg,
-            )
+        render = (
+            _render_worker_implement_resume_brief if resume
+            else _render_worker_implement_brief
+        )
+        brief = render(
+            monitor.config.repo, monitor.config.main_branch, branch,
+            issue.number, issue.title, issue.body, forge=forge_cfg,
+        )
         resume_block = _build_resume_block(
             monitor.config.repo, monitor.config.main_branch, branch,
             resume=resume, expect_merge=False,
@@ -536,16 +534,14 @@ class WorkerImplementer(PipelineImplementer):
         self, monitor: "PipelineMonitor", pr: "PrRef", *, resume: bool = False
     ) -> WorkOutcome:
         forge_cfg = monitor.forge.config
-        if resume:
-            brief = _render_worker_review_resume_brief(
-                monitor.config.repo, monitor.config.main_branch, pr.number,
-                forge=forge_cfg,
-            )
-        else:
-            brief = _render_worker_review_brief(
-                monitor.config.repo, monitor.config.main_branch, pr.number,
-                forge=forge_cfg,
-            )
+        render = (
+            _render_worker_review_resume_brief if resume
+            else _render_worker_review_brief
+        )
+        brief = render(
+            monitor.config.repo, monitor.config.main_branch, pr.number,
+            forge=forge_cfg,
+        )
         resume_block = _build_resume_block(
             monitor.config.repo, monitor.config.main_branch,
             pr.head_ref or f"pr/{pr.number}", resume=resume, expect_merge=True,
@@ -658,8 +654,25 @@ def is_claude_mode(dispatch_mode: Optional[str]) -> bool:
 
     Handles ``None``, empty, whitespace, and case variations uniformly so callers
     don't reproduce the ``(mode or "claude").strip().lower() in (...)`` idiom.
+
+    **Validação consistente com :func:`build_implementer`** (PR review iter 2):
+    um valor não-vazio fora dos aliases conhecidos dispara :class:`ValueError`,
+    em vez de retornar ``False`` silenciosamente (que faria a montagem da
+    :class:`PipelineConfig` aplicar worker-semantics ANTES do erro real,
+    expondo flags de configuração para um modo inexistente).
     """
-    return (dispatch_mode or "claude").strip().lower() in CLAUDE_ALIASES
+    if not dispatch_mode or not dispatch_mode.strip():
+        return True
+    mode = dispatch_mode.strip().lower()
+    if mode in CLAUDE_ALIASES:
+        return True
+    if mode in WORKER_ALIASES:
+        return False
+    raise ValueError(
+        f"unknown pipeline dispatch_mode {dispatch_mode!r}; "
+        f"expected one of {sorted(WORKER_ALIASES | CLAUDE_ALIASES)} "
+        "(set DEILE_PIPELINE_DISPATCH_MODE explicitly)"
+    )
 
 
 def build_implementer(
@@ -668,13 +681,23 @@ def build_implementer(
     """Return the implementer strategy selected by ``dispatch_mode``.
 
     ``deile_worker`` (and aliases) → :class:`WorkerImplementer`;
-    ``claude`` (and aliases) → :class:`ClaudeImplementer`. An unknown value
-    falls back to Claude with a warning, since that is the original behaviour.
+    ``claude`` (and aliases) → :class:`ClaudeImplementer`. An empty/None mode
+    defaults to Claude (legacy behaviour). Um valor **não-vazio** que não
+    case com nenhum alias dispara :class:`ValueError` em vez de cair em
+    Claude silenciosamente — um typo em ``DEILE_PIPELINE_DISPATCH_MODE``
+    (ex.: ``deile_woker``) usaria a chave da Anthropic e queimaria budget
+    sem o operador perceber. Fail-fast surface o erro imediatamente.
     """
-    mode = (dispatch_mode or "claude").strip().lower()
-    if mode in _WORKER_ALIASES:
-        return WorkerImplementer(client=worker_client)
-    if mode in _CLAUDE_ALIASES:
+    if not dispatch_mode or not dispatch_mode.strip():
+        # Legacy default (vazio/None) — usa Claude.
         return ClaudeImplementer()
-    logger.warning("unknown pipeline dispatch_mode %r; falling back to 'claude'", dispatch_mode)
-    return ClaudeImplementer()
+    mode = dispatch_mode.strip().lower()
+    if mode in WORKER_ALIASES:
+        return WorkerImplementer(client=worker_client)
+    if mode in CLAUDE_ALIASES:
+        return ClaudeImplementer()
+    raise ValueError(
+        f"unknown pipeline dispatch_mode {dispatch_mode!r}; "
+        f"expected one of {sorted(WORKER_ALIASES | CLAUDE_ALIASES)} "
+        "(set DEILE_PIPELINE_DISPATCH_MODE explicitly)"
+    )

@@ -17,8 +17,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 # Repo root resolved from this test file's location: tests/orchestration/forge/x.py
 # Go up 4 levels to reach the repo root.
 REPO_ROOT = Path(__file__).resolve().parents[4]

@@ -28,9 +28,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from deile.storage.log_rotation import (HourlyDailyDirRotatingHandler,
-                                         current_log_path,
-                                         list_archived_log_files)
-
+                                        current_log_path,
+                                        list_archived_log_files)
 
 # ---------------------------------------------------------------------------
 # namer
@@ -268,6 +267,7 @@ class TestPytestGuard:
         ``~/.deile/logs/deile.log`` (estamos rodando dentro de pytest;
         o guard tem que disparar)."""
         from deile.storage import logs as logs_mod
+
         # Reset do estado pra forçar reinicialização sob pytest:
         logs_mod._initialized = False
         deile_logger = logging.getLogger("deile")
@@ -279,7 +279,8 @@ class TestPytestGuard:
             assert lg.handlers, "get_logger deve instalar pelo menos 1 handler"
             assert any(isinstance(h, logging.NullHandler) for h in lg.handlers)
             # NÃO deve haver FileHandler nem subclass (incl. nosso rotator).
-            from deile.storage.log_rotation import HourlyDailyDirRotatingHandler
+            from deile.storage.log_rotation import \
+                HourlyDailyDirRotatingHandler
             assert not any(isinstance(h, (logging.FileHandler,
                                           HourlyDailyDirRotatingHandler))
                            for h in lg.handlers)

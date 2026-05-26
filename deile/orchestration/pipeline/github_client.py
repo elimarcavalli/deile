@@ -25,16 +25,16 @@ from deile.orchestration.forge import (CommentRef, ForgeCommandError,
                                        GhCommandError, GitHubForge, IssueRef,
                                        MentionTrigger, PrRef,
                                        compute_batch_id_for_number)
+# Re-export the module-level ``logger`` so legacy tests that do
+# ``patch.object(gh.logger, "warning")`` keep working — eles patcham o
+# logger do parser que emite WARNING, ainda residente na forge layer.
 # Module-private helpers that pre-#297 tests still import. Re-exported from
 # the new home in ``forge.github_forge`` so legacy ``from
 # pipeline.github_client import _parse_gh_jq_output`` / ``_standup_item_from_gh_json``
 # keep working without any test rewrite.
+from deile.orchestration.forge.github_forge import logger  # noqa: F401
 from deile.orchestration.forge.github_forge import (_parse_gh_jq_output,
                                                     _standup_item_from_gh_json)
-# Re-export the module-level ``logger`` so legacy tests that do
-# ``patch.object(gh.logger, "warning")`` keep working — they patch the
-# logger of the warning-emitting parser, which still lives in the forge layer.
-from deile.orchestration.forge.github_forge import logger
 
 # Historical class name — kept as a strict alias so ``isinstance`` checks
 # in legacy callers still match.

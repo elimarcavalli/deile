@@ -34,7 +34,7 @@ import logging
 from threading import Lock
 from typing import Dict, Mapping, Optional, Tuple
 
-from deile.orchestration.forge.base import (ForgeCliNotFound, ForgeClient,
+from deile.orchestration.forge.base import (ForgeClient, ForgeCliNotFound,
                                             ForgeCommandError, ForgeConfig,
                                             ForgeConfigError,
                                             ForgeDetectionError, ForgeError,
@@ -120,8 +120,10 @@ class ForgeRouter:
         rules in :func:`build_forge_config` decide.
         """
         if env is None:
-            import os
-            env = os.environ
+            # Pilar 03 §7 — config-centralizado. ``settings_as_env`` projeta os
+            # campos forge_* do Settings singleton de volta no shape DEILE_*.
+            from deile.orchestration.forge.detection import settings_as_env
+            env = settings_as_env()
         if url and not project_path:
             parsed = parse_forge_url(url, **declared_hosts(env))
             if parsed is None:

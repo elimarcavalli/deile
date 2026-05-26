@@ -36,16 +36,76 @@ def _env(env: Mapping[str, str], key: str, default: str = "") -> str:
     return value or default
 
 
+def settings_as_env() -> Mapping[str, str]:
+    """Build a mapping of forge-relevant env keys from :class:`Settings`.
+
+    Pilar 03 §7 — config-centralized: o forge layer não lê ``os.environ``
+    direto. Quando o caller não passa ``env=``, esta função projeta os
+    campos ``forge_*`` do :class:`Settings` singleton de volta para os
+    nomes ``DEILE_*`` que o resto do módulo entende. Caímos em
+    ``os.environ`` apenas se o singleton ainda não foi materializado
+    (raro — só durante imports muito precoces), e mesmo aí lemos só os
+    quatro nomes documentados (sem expor o ambiente inteiro).
+    """
+    try:
+        from deile.config.settings import get_settings
+        s = get_settings()
+    except Exception as exc:  # pragma: no cover — defensive: settings not loaded yet
+        # Pilar 03 §6: logamos o motivo do fallback para diagnose de bootstrap
+        # quebrado (ex.: dependência circular, YAML malformado).
+        import os
+        logger.debug(
+            "settings_as_env: get_settings() falhou (%s) — fallback "
+            "lendo %d env vars conhecidas direto de os.environ",
+            exc, 4,
+        )
+        return {
+            "DEILE_FORGE_KIND": os.environ.get("DEILE_FORGE_KIND", ""),
+            "DEILE_GITHUB_HOST": os.environ.get("DEILE_GITHUB_HOST", ""),
+            "DEILE_GITLAB_HOST": os.environ.get("DEILE_GITLAB_HOST", ""),
+            "DEILE_FORGE_PROBE": os.environ.get("DEILE_FORGE_PROBE", ""),
+        }
+    return {
+        "DEILE_FORGE_KIND": str(getattr(s, "forge_kind", "") or ""),
+        "DEILE_GITHUB_HOST": str(getattr(s, "forge_github_host", "") or ""),
+        "DEILE_GITLAB_HOST": str(getattr(s, "forge_gitlab_host", "") or ""),
+        "DEILE_FORGE_PROBE": "1" if getattr(s, "forge_probe_enabled", False) else "",
+    }
+
+
 def _probe_host_sync(host: str) -> Optional[ForgeKind]:
     """Wrapper síncrono de :func:`_probe_host` para uso em ``detect_forge_kind``.
 
     Verifica primeiro o cache (sem I/O). Se ausente, executa as sondas HTTP
     bloqueantes diretamente (sem event loop) — ``detect_forge_kind`` é chamado
     em contextos síncronos (bootstrap, CLI) onde não há loop rodando.
+
+    **Defesa em profundidade contra event-loop block** (pilar 03 §1): se o
+    chamador estiver dentro de um event loop ativo (ou seja, alguém chamou
+    ``detect_forge_kind`` de dentro de ``async def``), abrimos mão da sondagem
+    e devolvemos o cache se existir, ``None`` caso contrário. Isso impede que
+    até 6s de ``urllib.urlopen`` síncrono trave o loop. Callers async devem
+    pré-resolver o ``ForgeKind`` chamando :func:`_probe_host` (async) e
+    passar ``forge_kind=`` explicitamente para :func:`build_forge_config`.
     """
     with _probe_cache_lock:
         if host in _probe_cache:
             return _probe_cache[host]
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        in_loop = False
+    else:
+        in_loop = True
+
+    if in_loop:
+        logger.warning(
+            "_probe_host_sync(%s): chamado de dentro de event loop async — "
+            "pulando probe HTTP para não bloquear; pre-resolva via _probe_host (async)",
+            host,
+        )
+        return None
 
     result = _do_probe_sync(host)
 
@@ -58,15 +118,11 @@ def _probe_host_sync(host: str) -> Optional[ForgeKind]:
     return result
 
 
-def _do_probe_sync(host: str) -> Optional[ForgeKind]:
-    """Executa as sondas HTTP de forma síncrona (sem event loop).
-
-    Chama as duas funções de probe em sequência (GitLab primeiro, depois GHES).
-    """
+def _check_gitlab_endpoint(host: str) -> Optional[ForgeKind]:
+    """Probe ``https://<host>/api/v4/version`` and return :data:`ForgeKind.GITLAB`
+    on HTTP 200, else ``None``. Never raises."""
     import urllib.error
     import urllib.request
-
-    # Tenta GitLab.
     try:
         req = urllib.request.Request(f"https://{host}/api/v4/version", method="GET")
         with urllib.request.urlopen(req, timeout=3) as resp:
@@ -74,17 +130,38 @@ def _do_probe_sync(host: str) -> Optional[ForgeKind]:
                 return ForgeKind.GITLAB
     except (urllib.error.URLError, OSError, ValueError):
         pass
+    return None
 
-    # Tenta GHES.
+
+def _check_github_endpoint(host: str) -> Optional[ForgeKind]:
+    """Probe ``https://<host>/api/v3/`` for GHES.
+
+    Só aceita como GitHub quando o header ``X-GitHub-Enterprise-Version``
+    está presente — assim um endpoint arbitrário respondendo 200 a
+    ``/api/v3/`` não é misclassificado como GitHub (defesa contra proxies/IDS
+    retornando 200 genérico).
+    """
+    import urllib.error
+    import urllib.request
     try:
         req = urllib.request.Request(f"https://{host}/api/v3/", method="GET")
         with urllib.request.urlopen(req, timeout=3) as resp:
-            if resp.status == 200:
+            if resp.status == 200 and any(
+                k.lower() == "x-github-enterprise-version"
+                for k in dict(resp.headers)
+            ):
                 return ForgeKind.GITHUB
     except (urllib.error.URLError, OSError, ValueError):
         pass
-
     return None
+
+
+def _do_probe_sync(host: str) -> Optional[ForgeKind]:
+    """Executa as sondas HTTP de forma síncrona (sem event loop).
+
+    Chama as duas funções de probe em sequência (GitLab primeiro, depois GHES).
+    """
+    return _check_gitlab_endpoint(host) or _check_github_endpoint(host)
 
 
 def detect_forge_kind(
@@ -118,8 +195,7 @@ def detect_forge_kind(
         var the operator could set to fix the situation.
     """
     if env is None:
-        import os
-        env = os.environ
+        env = settings_as_env()
 
     # Step 1 — explicit override always wins.
     explicit = _env(env, "DEILE_FORGE_KIND").lower()
@@ -219,41 +295,9 @@ async def _probe_host(host: str) -> Optional[ForgeKind]:
 
 async def _do_probe(host: str) -> Optional[ForgeKind]:
     """Executa as sondas HTTP em paralelo e retorna o kind do primeiro sucesso."""
-    import urllib.error
-    import urllib.request
-
-    def _check_gitlab() -> Optional[ForgeKind]:
-        url = f"https://{host}/api/v4/version"
-        try:
-            req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                if resp.status == 200:
-                    return ForgeKind.GITLAB
-        except (urllib.error.URLError, OSError, ValueError):
-            pass
-        return None
-
-    def _check_github() -> Optional[ForgeKind]:
-        url = f"https://{host}/api/v3/"
-        try:
-            req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                if resp.status == 200:
-                    # GHES expõe o header X-GitHub-Enterprise-Version
-                    headers = dict(resp.headers)
-                    has_gh_header = any(
-                        k.lower() == "x-github-enterprise-version"
-                        for k in headers
-                    )
-                    if has_gh_header or resp.status == 200:
-                        return ForgeKind.GITHUB
-        except (urllib.error.URLError, OSError, ValueError):
-            pass
-        return None
-
     loop = asyncio.get_event_loop()
-    gl_task = loop.run_in_executor(None, _check_gitlab)
-    gh_task = loop.run_in_executor(None, _check_github)
+    gl_task = loop.run_in_executor(None, _check_gitlab_endpoint, host)
+    gh_task = loop.run_in_executor(None, _check_github_endpoint, host)
 
     # Espera ambas em paralelo; pega o primeiro resultado não-None.
     results = await asyncio.gather(gl_task, gh_task, return_exceptions=True)
@@ -299,8 +343,7 @@ def build_forge_config(
         Explicit host (skips env lookup).
     """
     if env is None:
-        import os
-        env = os.environ
+        env = settings_as_env()
 
     kind = forge_kind or detect_forge_kind(project_path=project_path, env=env)
     if host_override:
@@ -331,12 +374,17 @@ def declared_hosts(env: Optional[Mapping[str, str]] = None) -> dict:
     themselves (e.g. ``find_first_pr_url`` in stages.py).
     """
     if env is None:
-        import os
-        env = os.environ
+        env = settings_as_env()
     return {
         "github_hosts": _split_hosts(_env(env, "DEILE_GITHUB_HOST")),
         "gitlab_hosts": _split_hosts(_env(env, "DEILE_GITLAB_HOST")),
     }
 
 
-__all__ = ["detect_forge_kind", "build_forge_config", "declared_hosts", "_probe_host"]
+__all__ = [
+    "detect_forge_kind",
+    "build_forge_config",
+    "declared_hosts",
+    "settings_as_env",
+    "_probe_host",
+]

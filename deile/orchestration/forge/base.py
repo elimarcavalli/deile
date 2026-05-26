@@ -35,8 +35,7 @@ from typing import (Any, Callable, Iterable, List, Literal, Optional, Sequence,
                     Tuple)
 
 from deile.core.exceptions import DEILEError
-from deile.orchestration.forge.refs import (CommentRef, IssueRef,
-                                            PrRef,
+from deile.orchestration.forge.refs import (CommentRef, IssueRef, PrRef,
                                             compute_batch_id_for_number)
 
 logger = logging.getLogger(__name__)
@@ -168,27 +167,19 @@ class MergeBlockedByPipeline(MergeBlocked):
 # Project path validation regexes — defence in depth against shell metachars,
 # whitespace and path traversal. GitHub is ``owner/repo`` (exactly two
 # segments); GitLab supports nested groups (``group/sub*/project`` — 2+
-# segments). Both reject ``..`` and any character outside the documented
-# alphabet for project identifiers.
-_GH_REPO_RE = re.compile(r"\A[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\Z")
-_GL_PROJECT_RE = re.compile(
-    r"\A[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)+\Z"
-)
-
-
-def _default_api_base(kind: ForgeKind, host: str) -> str:
-    """Return the canonical API base URL for *kind* + *host*.
-
-    Cloud GitHub uses the dedicated ``api.github.com`` apex; every other
-    case puts ``/api/<version>`` on the host itself (GHES + every GitLab
-    instance, cloud or self-hosted).
-    """
-    if kind is ForgeKind.GITHUB:
-        if host == "github.com":
-            return "https://api.github.com"
-        return f"https://{host}/api/v3"
-    # GitLab — v4 is the only public version today.
-    return f"https://{host}/api/v4"
+# segments). Cada segmento precisa:
+# - começar por alnum ou ``_`` (rejeita ``.foo/bar``, ``-x/y``);
+# - terminar por alnum ou ``_`` (rejeita ``foo./bar``, ``x-/y``);
+# - usar apenas alnum/dot/underscore/hyphen no meio;
+# - ter no máximo ``_SEG_MAX_LEN`` (100) caracteres — fecha invariante de
+#   path length anti-DoS na composição de URLs REST. GitHub limita org/repo
+#   a 39+100 e GitLab a 255 por segmento; 100 é o teto conservador para
+#   ambos enquanto deixa folga para o padrão ``owner/sub-pkg-name``.
+_SEG_MAX_LEN = 100
+# ``_SEG``: single char (alnum/_) OU alnum/_ + … + alnum/_ até _SEG_MAX_LEN.
+_SEG = rf"[A-Za-z0-9_](?:[A-Za-z0-9._-]{{0,{_SEG_MAX_LEN - 2}}}[A-Za-z0-9_])?"
+_GH_REPO_RE = re.compile(rf"\A{_SEG}/{_SEG}\Z")
+_GL_PROJECT_RE = re.compile(rf"\A{_SEG}(?:/{_SEG})+\Z")
 
 
 @dataclass
@@ -206,7 +197,8 @@ class ForgeConfig:
     host: str
     project_path: str
     cli_path: str
-    api_base: str = ""
+    # Web URL base (``https://<host>``). Derivado em ``__post_init__`` quando
+    # não fornecido. Usado por ``web_issue_url``/``web_pr_url``.
     web_base: str = ""
     # GitLab-only: numeric project ID, cached after first ``GET /projects/<encoded>``.
     # Mutable on the dataclass so the cache shares the config's lifetime.
@@ -238,13 +230,12 @@ class ForgeConfig:
             raise ForgeConfigError(f"unknown forge kind: {self.kind!r}")
         if not self.host:
             raise ForgeConfigError("forge host required")
-        # Derive the base URLs from kind+host if the caller did not provide
-        # them explicitly. Keeps construction sites short while letting tests
-        # override the bases without re-deriving.
-        if not self.api_base:
-            object.__setattr__(self, "api_base", _default_api_base(self.kind, self.host))
+        # Derive ``web_base`` lazily quando não fornecido. ``object.__setattr__``
+        # é desnecessário aqui porque o dataclass não é ``frozen`` — atribuição
+        # direta funciona, mas é mantida via API explícita para preservar a
+        # forma usada anteriormente (igualdade dos testes).
         if not self.web_base:
-            object.__setattr__(self, "web_base", f"https://{self.host}")
+            self.web_base = f"https://{self.host}"
 
     @property
     def encoded_project_path(self) -> str:
@@ -753,8 +744,13 @@ def _parse_headers_and_body(raw: str) -> Tuple[dict, dict]:
     """
     import json as _json
 
-    # Separa a seção de headers do corpo pelo primeiro ``\\n\\n`` (linha em branco).
-    parts = raw.split("\n\n", 1)
+    # Separa a seção de headers do corpo pelo primeiro ``\\r?\\n\\r?\\n``.
+    # ``gh api --include`` em geral emite LF puro, mas a especificação HTTP
+    # usa CRLF; alguns proxies/intermediários preservam o CRLF. Normalizar
+    # antes do split mantém o parser tolerante a ambos sem falhar silenciosa-
+    # mente em CRLF (que deixaria ``body_block`` vazio).
+    normalized = raw.replace("\r\n", "\n")
+    parts = normalized.split("\n\n", 1)
     header_block = parts[0] if parts else ""
     body_block = parts[1].strip() if len(parts) > 1 else ""
 

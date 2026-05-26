@@ -136,7 +136,7 @@ async def test_stop_on_failure_halts_outer_loop(plan_manager) -> None:
     plan_manager._save_plan = noop_save  # type: ignore[assignment]
 
     plan_manager._stop_flags[plan.id] = False
-    result = await plan_manager._execute_plan_steps(plan, auto_approve_low_risk=True)
+    await plan_manager._execute_plan_steps(plan, auto_approve_low_risk=True)
 
     # s1 should have failed; s2 must NOT have run.
     assert executed == [], f"step after failure ran despite stop_on_failure: {executed}"

@@ -17,12 +17,9 @@ from __future__ import annotations
 
 import os
 import signal
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 _REPO = Path(__file__).resolve().parents[3]
 for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
@@ -31,7 +28,6 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
 
 import _panel as panel  # noqa: E402
 import _panel_data as pd  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # delete_pod
