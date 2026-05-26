@@ -2237,8 +2237,11 @@ def _canonicalize_dispatch_alias(raw: str) -> str:
     forma canônica; valor desconhecido → devolvido como-veio em lowercase
     (não esconde valor estranho na UI; o operador vê o que está no cluster).
     """
-    # Import local pra evitar dependência circular (deile.* importado de
-    # infra/k8s/_panel_data.py durante boot do painel).
+    # Import local NÃO por dependência circular (infra/k8s/ é leaf no grafo
+    # de imports do DEILE) mas por custo de cold-import: puxar o módulo
+    # ``implementer`` inteiro só pra ler duas frozensets adiciona ~500ms ao
+    # boot do painel. Deferir o import para o primeiro `kubectl get` (que já
+    # paga o custo do subprocess) deixa o painel responsivo na abertura.
     from deile.orchestration.pipeline.implementer import (  # noqa: PLC0415
         CLAUDE_ALIASES, WORKER_ALIASES)
     lo = raw.strip().lower()
@@ -2280,7 +2283,11 @@ def _audit_dispatch_mode_change(
             resource=f"deployment:{namespace}/{_DISPATCH_DEPLOYMENT}:{_DISPATCH_ENV_VAR}",
             action="kubectl_set_env" if mode else "kubectl_unset_env",
             result=result,
-            details={"mode": mode or "", "detail": detail[:200]},
+            # ``mode`` é ``None`` em clear/cancel-without-mode paths — o JSON
+            # canônico do envelope mantém ``None`` em vez de coage para ``""``,
+            # pra log analysis distinguir "mode vazio (set degenerado)" de
+            # "modo absent (clear/cancel-of-clear)".
+            details={"mode": mode, "detail": detail[:200]},
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("falha emitindo AuditEvent (dispatch_mode): %s", exc)

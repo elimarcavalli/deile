@@ -3495,8 +3495,18 @@ class DispatchModeView(View):
         # ``cancelled`` em ``_audit_dispatch_mode_change`` não fica morto.
         reason = ("operador cancelou na confirmação" if key in ("n", "ESC")
                   else f"tecla inesperada na confirmação: {key!r}")
+        # ``mode`` pode ser falsy (degenerate set state) — passa ``None`` ao
+        # audit nesse caso pra não confundir o discriminador ``action`` (que
+        # vira ``kubectl_unset_env`` quando mode é falsy). ``detail`` carrega
+        # o motivo original e a string vazia/falsy é registrada lá pra log
+        # analysis se necessário.
+        audit_mode = mode if mode else None
+        audit_detail = (
+            reason if mode
+            else f"{reason} (modal state degenerado: mode={mode!r})"
+        )
         pd_audit_dispatch_mode_change(
-            mode, result="cancelled", detail=reason,
+            audit_mode, result="cancelled", detail=audit_detail,
         )
         self.mode_modal = None
         self.last_msg = "cancelado pelo operador"

@@ -151,6 +151,7 @@ class TestDispatchModeProvider:
 
     def test_namespace_kwarg_passed_to_kubectl(self):
         """Multi-NS (PR #315): o construtor aceita namespace= e o argv reflete."""
+        from _panel_data import NS as DEFAULT_NS
         from _panel_data import DispatchModeProvider
         captured_argv = []
 
@@ -161,10 +162,63 @@ class TestDispatchModeProvider:
         with patch("_panel_data._capture_json", side_effect=_capture), \
              patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
             DispatchModeProvider(namespace="customns").get(force=True)
-        # `-n customns` no argv (em vez do default `deile`).
-        assert "customns" in captured_argv[0]
-        # E NÃO o default `deile`.
-        # (NS default importado de _panel_data; aqui só validamos o customns.)
+        argv = captured_argv[0]
+        # Posição canônica do `-n customns` no argv (kubectl convenção).
+        assert "-n" in argv
+        ns_idx = argv.index("-n")
+        assert argv[ns_idx + 1] == "customns"
+        # E NÃO o default `deile` no argv inteiro (a menos que NS default
+        # seja literalmente "customns" — robusto a renomeio futuro).
+        if DEFAULT_NS != "customns":
+            assert DEFAULT_NS not in argv
+
+    def test_provider_enabled_false_short_circuits(self):
+        """Demo / --local-only (enabled=False): provider devolve fallback
+        sem chamar kubectl. Sem isso o operador veria erro de subprocess no
+        modo local-only sempre."""
+        from _panel_data import DispatchModeProvider
+        with patch("_panel_data._capture_json") as mock_capture, \
+             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+            entry = DispatchModeProvider(enabled=False).get(force=True)
+        # Fallback do Cache (DispatchModeEntry com source="default").
+        assert entry.source == "default"
+        assert entry.mode is None
+        # Crucial: subprocess NÃO foi chamado.
+        mock_capture.assert_not_called()
+
+
+class TestCanonicalizeDispatchAlias:
+    """Cobertura unitária direta do helper de canonicalização — isola
+    regressão do lazy import (custo de cold-import deferido) e da política
+    de fallback (lo em vez de raise)."""
+
+    def test_worker_aliases_to_canonical(self):
+        from _panel_data import _canonicalize_dispatch_alias
+
+        # Cada alias do conjunto WORKER_ALIASES → "deile_worker".
+        for raw in ("worker", "deile-worker", "deile_worker", "deile"):
+            assert _canonicalize_dispatch_alias(raw) == "deile_worker", raw
+
+    def test_claude_aliases_to_canonical(self):
+        from _panel_data import _canonicalize_dispatch_alias
+        for raw in ("claude", "claude_code", "claude-code"):
+            assert _canonicalize_dispatch_alias(raw) == "claude", raw
+
+    def test_uppercase_normalized(self):
+        from _panel_data import _canonicalize_dispatch_alias
+        assert _canonicalize_dispatch_alias("CLAUDE") == "claude"
+        assert _canonicalize_dispatch_alias("WORKER") == "deile_worker"
+
+    def test_whitespace_stripped(self):
+        from _panel_data import _canonicalize_dispatch_alias
+        assert _canonicalize_dispatch_alias("  claude  ") == "claude"
+
+    def test_unknown_value_passes_through(self):
+        """Valor desconhecido NÃO levanta — devolve lowercase. O caller
+        (provider) sabe lidar com isso (exibe no painel)."""
+        from _panel_data import _canonicalize_dispatch_alias
+        assert _canonicalize_dispatch_alias("WeIrD") == "weird"
+        assert _canonicalize_dispatch_alias("xyz") == "xyz"
 
 
 # ---------------------------------------------------------------------------
@@ -526,6 +580,20 @@ class TestDispatchModeViewKeyHandling:
         results = [c.kwargs.get("result") for c in audit.call_args_list]
         assert "cancelled" in results
 
+    def test_set_confirm_unexpected_key_also_emits_cancelled_audit(self):
+        """A rama default-deny (tecla diferente de [y]/[n]/ESC) também
+        precisa emitir audit cancelled com motivo distinto — sem isso, log
+        analysis não distingue cancel intencional de tecla acidental."""
+        view, app = self._new_view()
+        view.handle_key("\r", app)  # → modal set, mode=deile_worker
+        with patch("_panel.pd_audit_dispatch_mode_change") as audit:
+            view.handle_key("Z", app)  # tecla aleatória
+        results = [c.kwargs.get("result") for c in audit.call_args_list]
+        assert "cancelled" in results
+        # O detail carrega a tecla pra trilha de evidência.
+        details = [c.kwargs.get("detail", "") for c in audit.call_args_list]
+        assert any("tecla inesperada" in d or "Z" in d for d in details)
+
     def test_clear_confirm_n_emits_cancelled_audit(self):
         view, app = self._new_view()
         view.handle_key("c", app)
@@ -623,8 +691,8 @@ class TestDashboardHotkey:
         diferente e cause conflito de propagação (hoje o panel propaga
         global após a view não interceptar — então um ``d`` numa view
         que não tem handler local cai no dashboard handler depois)."""
-        from _panel import (DashboardView, DispatchModeView, ModelSwitcherView,
-                            PodPickerView, StageModelsView)
+        from _panel import (DispatchModeView, ModelSwitcherView, PodPickerView,
+                            StageModelsView)
 
         # Cada view abaixo NÃO deve ter um shortcut "d" próprio. O dispatch
         # view tem `d` listada nas hotkeys da statusline mas não no
@@ -632,16 +700,13 @@ class TestDashboardHotkey:
         # view; uma vez na view, a tecla é capturada pelo modal/nav.
         for view_cls in (PodPickerView, ModelSwitcherView, StageModelsView,
                          DispatchModeView):
-            # Smoke: instanciar com data=None (demo) não deve crashar e
-            # `handle_key("d", ...)` deve retornar ActionResult sem .target
-            # casando outra view.
             v = view_cls(data=None)
             result = v.handle_key("d", MagicMock())
-            # Aceita ActionResult() padrão (default-pass) ou refresh.
-            assert getattr(result, "target", None) != "dispatch-mode" \
-                or view_cls is DashboardView, (
-                f"{view_cls.__name__}.handle_key('d') deveria não navegar para "
-                f"dispatch-mode (só DashboardView pode), got target="
+            # Aceita ActionResult() padrão (default-pass) ou refresh — só
+            # rejeita NAV explícito para dispatch-mode.
+            assert getattr(result, "target", None) != "dispatch-mode", (
+                f"{view_cls.__name__}.handle_key('d') deveria não navegar "
+                f"para dispatch-mode (só DashboardView pode), got target="
                 f"{getattr(result, 'target', None)}"
             )
 

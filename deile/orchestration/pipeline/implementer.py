@@ -682,9 +682,10 @@ def _build_claude_implementer_with_warning() -> "ClaudeImplementer":
 
     Toda construção de ``ClaudeImplementer`` em ``build_implementer`` passa
     por aqui — evita que um caminho novo (ex.: alias acrescentado em
-    ``CLAUDE_ALIASES``) esqueça do warning. Compatibilidade pública: o
-    nome legacy ``_warn_if_claude_unavailable`` continua aceito como alias
-    pra não quebrar callers externos (testes antigos, ferramentas).
+    ``CLAUDE_ALIASES``) esqueça do warning. Esta função é um wrapper de
+    duas etapas (aviso + instanciação), NÃO um alias: o detector de PATH
+    fica em :func:`_warn_if_claude_unavailable` (continua público para
+    callers externos que queiram checar sem instanciar).
     """
     _warn_if_claude_unavailable()
     return ClaudeImplementer()
