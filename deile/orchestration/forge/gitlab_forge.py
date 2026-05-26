@@ -342,10 +342,12 @@ class GitLabForge(ForgeClient):
         """
         if not login:
             return
-        logger.warning(
-            "assign_issue #%d: operação REPLACE — todos os assignees anteriores "
-            "serão removidos (GitLab PUT assignee_ids[] é full-replace, sem add)",
-            number,
+        # GitLab PUT é semântica REPLACE — registramos em DEBUG (operacional,
+        # documentado no docstring/CLAUDE.md). Anteriormente era ``warning``
+        # em toda chamada, gerando ruído sob auto-routing.
+        logger.debug(
+            "assign_issue #%d: PUT assignee_ids[] (REPLACE; substitui qualquer "
+            "assignee anterior)", number,
         )
         try:
             users = await self._api_get_json("users", "-f", f"username={login}")
@@ -653,10 +655,10 @@ class GitLabForge(ForgeClient):
             "need_rebase": "rebase necessário antes do merge",
             "cannot_be_merged": "GitLab indica que o MR não pode ser mergeado",
         }
-        # Valores neutros: não bloqueamos no pre-check; o PUT dispara o cômputo.
-        _DETAILED_NEUTRAL = frozenset({
-            "unchecked", "checking", "preparing", "approvals_syncing", "mergeable",
-        })
+        # Valores neutros (unchecked/checking/preparing/approvals_syncing/
+        # mergeable) NÃO bloqueiam o pre-check: o PUT dispara o cômputo final
+        # no servidor. Documentados aqui para que qualquer mudança no GitLab
+        # (novo valor) seja revisada antes de bloquear silenciosamente.
 
         # Pre-check: se o status já diz não, falha rápido com motivo claro.
         # Evita o loop "MR recusado, tenta de novo".
@@ -760,7 +762,7 @@ class GitLabForge(ForgeClient):
     # ------------------------------------------------------------------
 
     async def add_labels(self, kind: str, number: int, labels: Iterable[str]) -> None:
-        labels_list = [lb for lb in labels if lb]
+        labels_list = self._validate_label_names(labels)
         if not labels_list:
             return
         endpoint = self._label_target_endpoint(kind, number)
@@ -772,7 +774,7 @@ class GitLabForge(ForgeClient):
     async def remove_labels(
         self, kind: str, number: int, labels: Iterable[str],
     ) -> None:
-        labels_list = [lb for lb in labels if lb]
+        labels_list = self._validate_label_names(labels)
         if not labels_list:
             return
         endpoint = self._label_target_endpoint(kind, number)
@@ -799,6 +801,29 @@ class GitLabForge(ForgeClient):
         if kind == "pr":
             return f"projects/{self._project_ref}/merge_requests/{number}"
         raise ValueError(f"kind must be 'issue' or 'pr', got {kind!r}")
+
+    @staticmethod
+    def _validate_label_names(labels: Iterable[str]) -> List[str]:
+        """Filter+validate label names antes do CSV-join em ``add/remove_labels``.
+
+        O REST do GitLab aceita ``add_labels``/``remove_labels`` como CSV
+        delimitado por vírgula. Se uma label individual contiver ``,``, o
+        servidor a dividiria silenciosamente em duas labels — defesa em
+        profundidade: rejeitamos qualquer label com vírgula (logando WARNING),
+        em vez de corromper o destino. Vazias também são descartadas.
+        """
+        result: List[str] = []
+        for lb in labels:
+            if not lb:
+                continue
+            if "," in lb:
+                logger.warning(
+                    "label %r contém ',' — descartada (CSV add_labels/remove_labels)",
+                    lb,
+                )
+                continue
+            result.append(lb)
+        return result
 
     async def _ensure_label(self, name: str, *, color: str, description: str) -> None:
         """Create a project label if it does not exist (idempotent).

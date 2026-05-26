@@ -24,11 +24,12 @@ import time
 import warnings
 from typing import TYPE_CHECKING, Optional
 
+from deile.orchestration.forge import (CommentRef, GhCommandError,
+                                       MentionTrigger, declared_hosts,
+                                       find_last_pr_url)
 from deile.orchestration.pipeline._time_utils import now_utc
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
 from deile.orchestration.pipeline.follow_up_detector import detect_follow_ups
-from deile.orchestration.forge import (CommentRef, GhCommandError, MentionTrigger,
-                                       declared_hosts, find_last_pr_url)
 from deile.orchestration.pipeline.implementer import (parse_critique_verdict,
                                                       parse_decompose_result,
                                                       parse_refine_verdict)
@@ -1073,10 +1074,29 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
     # Dispatch all claimed implementations concurrently; the worker Service load-
     # balances them across replicas. ``return_exceptions`` so one failure does not
     # cancel its siblings — each is finalized independently from ground truth.
-    outcomes = await asyncio.gather(
-        *[monitor.implementer.implement(monitor, t, resume=False) for t in claimed],
-        return_exceptions=True,
-    )
+    # Wrap em ``wait_for`` com cap generoso (3h) — defesa contra HTTP-hang
+    # silencioso onde nem o worker timeout (10min) nem o TCP keepalive
+    # disparam: o gather inteiro travaria, segurando o stop_event do monitor.
+    # Pilar 03 §1 — toda I/O externa precisa de teto explícito de tempo.
+    _DISPATCH_HARD_CAP_S = 3 * 60 * 60
+    try:
+        outcomes = await asyncio.wait_for(
+            asyncio.gather(
+                *[monitor.implementer.implement(monitor, t, resume=False) for t in claimed],
+                return_exceptions=True,
+            ),
+            timeout=_DISPATCH_HARD_CAP_S,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "implement gather() excedeu o cap de %ds com %d targets; abortando o "
+            "batch (cada target será re-tentado no próximo tick via resume)",
+            _DISPATCH_HARD_CAP_S, len(claimed),
+        )
+        outcomes = [
+            asyncio.TimeoutError(f"dispatch hard cap exceeded ({_DISPATCH_HARD_CAP_S}s)")
+            for _ in claimed
+        ]
     for target, outcome in zip(claimed, outcomes):
         if isinstance(outcome, BaseException):
             logger.exception("implement dispatch for #%d raised", target.number, exc_info=outcome)

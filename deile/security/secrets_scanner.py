@@ -120,7 +120,7 @@ class SecretsScanner:
             ],
             
             SecretType.EMAIL: [
-                (re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'), 0.6),
+                (re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'), 0.6),
             ],
             
             SecretType.CREDIT_CARD: [
@@ -274,12 +274,14 @@ class SecretsScanner:
         if any(cache_dir in file_path.parts for cache_dir in cache_dirs):
             return True
             
-        # Skip very large files (>10MB)
+        # Skip very large files (>10MB). ``stat()`` can raise ``OSError`` if
+        # the file disappears between scan iteration and check; treat that as
+        # "not skipped" (caller will hit the same OSError on read and handle).
         try:
             if file_path.stat().st_size > 10 * 1024 * 1024:
                 return True
-        except Exception:
-            pass
+        except OSError as exc:
+            logger.debug("_should_skip_file: stat(%s) failed: %s", file_path, exc)
 
         return False
     

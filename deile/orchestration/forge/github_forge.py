@@ -29,7 +29,7 @@ from urllib.parse import quote
 from deile.orchestration.forge.base import (ForgeClient, ForgeCommandError,
                                             ForgeConfig, ForgeKind,
                                             MergeBlocked, discover_cli)
-from deile.orchestration.forge.refs import (CommentRef, IssueRef, PrRef)
+from deile.orchestration.forge.refs import CommentRef, IssueRef, PrRef
 from deile.orchestration.pipeline._time_utils import format_iso_utc
 from deile.orchestration.pipeline.labels import (LABEL_COLORS,
                                                  LABEL_DESCRIPTIONS,
@@ -38,6 +38,13 @@ from deile.orchestration.pipeline.labels import (LABEL_COLORS,
                                                  WORKFLOW_LABELS)
 
 logger = logging.getLogger(__name__)
+
+# GitHub username syntax — alnum or hyphen; 1-39 chars; cannot start/end with
+# hyphen. Used as a defensive guard before interpolating ``login`` into a jq
+# filter string (``list_prs_with_review_requests``). Anything outside this
+# alphabet is rejected before it reaches the shell, eliminating jq-filter
+# injection via crafted ``login`` arguments.
+_GH_LOGIN_RE = re.compile(r"\A[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?\Z")
 
 
 # Legacy alias kept for callers that ``except GhCommandError``. Subclasses
@@ -429,6 +436,20 @@ class GitHubForge(ForgeClient):
         return False
 
     async def list_prs_with_review_requests(self, login: str) -> List[PrRef]:
+        # Defesa em profundidade contra jq-filter injection: ``login`` é
+        # interpolado abaixo dentro do filtro ``--jq``. ``gh api --jq`` não
+        # tem equivalente ao ``--arg`` do ``jq``, então qualquer caractere
+        # fora do alfabeto de usernames do GitHub é rejeitado antes de
+        # alcançar o shell (loop guard fail-open mantém invariância:
+        # ``[]`` em vez de raise quando a validação rejeita).
+        if not _GH_LOGIN_RE.fullmatch(login or ""):
+            logger.warning(
+                "list_prs_with_review_requests: login %r is not a valid GitHub "
+                "username (alnum/hyphen, 1-39 chars) — rejecting to prevent jq "
+                "filter injection",
+                login,
+            )
+            return []
         try:
             out = await self._run_checked(
                 "api", "-X", "GET", f"repos/{self.repo}/pulls",
@@ -526,19 +547,34 @@ class GitHubForge(ForgeClient):
     async def get_ci_status(
         self, number: int,
     ) -> Literal["passing", "failing", "pending", "none"]:
-        """Run ``gh pr checks`` and collapse the table to a single status."""
+        """Run ``gh pr checks --json`` and collapse the result to one status.
+
+        Usa o output JSON estruturado em vez de substring match no texto
+        cru — check names como ``bypass-validator`` ou ``failure-recovery``
+        casariam o substring ``fail`` antes do status real, gerando false
+        positives. O campo ``bucket`` agrupa cada check em
+        ``pass|fail|pending|cancel|skipping``.
+        """
         rc, out, _ = await self._run(
             "pr", "checks", str(number), "--repo", self.repo,
+            "--json", "bucket,state,conclusion",
         )
         if rc != 0 or not out.strip():
             return "none"
-        text = out.lower()
-        # gh pr checks lines start with a coloured status word — count them.
-        if "fail" in text:
+        try:
+            checks = json.loads(out)
+        except json.JSONDecodeError:
+            return "none"
+        if not isinstance(checks, list) or not checks:
+            return "none"
+        buckets = {str((c or {}).get("bucket") or "").lower() for c in checks}
+        # Prioridade: fail > pending > pass. Buckets neutros (skip/cancel)
+        # não contribuem para nenhum dos três rótulos de saída.
+        if "fail" in buckets:
             return "failing"
-        if "pending" in text or "in progress" in text or "queued" in text:
+        if "pending" in buckets:
             return "pending"
-        if "pass" in text:
+        if "pass" in buckets:
             return "passing"
         return "none"
 

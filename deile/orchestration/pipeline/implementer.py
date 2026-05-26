@@ -668,13 +668,23 @@ def build_implementer(
     """Return the implementer strategy selected by ``dispatch_mode``.
 
     ``deile_worker`` (and aliases) → :class:`WorkerImplementer`;
-    ``claude`` (and aliases) → :class:`ClaudeImplementer`. An unknown value
-    falls back to Claude with a warning, since that is the original behaviour.
+    ``claude`` (and aliases) → :class:`ClaudeImplementer`. An empty/None mode
+    defaults to Claude (legacy behaviour). Um valor **não-vazio** que não
+    case com nenhum alias dispara :class:`ValueError` em vez de cair em
+    Claude silenciosamente — um typo em ``DEILE_PIPELINE_DISPATCH_MODE``
+    (ex.: ``deile_woker``) usaria a chave da Anthropic e queimaria budget
+    sem o operador perceber. Fail-fast surface o erro imediatamente.
     """
-    mode = (dispatch_mode or "claude").strip().lower()
+    if not dispatch_mode or not dispatch_mode.strip():
+        # Legacy default (vazio/None) — usa Claude.
+        return ClaudeImplementer()
+    mode = dispatch_mode.strip().lower()
     if mode in _WORKER_ALIASES:
         return WorkerImplementer(client=worker_client)
     if mode in _CLAUDE_ALIASES:
         return ClaudeImplementer()
-    logger.warning("unknown pipeline dispatch_mode %r; falling back to 'claude'", dispatch_mode)
-    return ClaudeImplementer()
+    raise ValueError(
+        f"unknown pipeline dispatch_mode {dispatch_mode!r}; "
+        f"expected one of {sorted(_WORKER_ALIASES | _CLAUDE_ALIASES)} "
+        "(set DEILE_PIPELINE_DISPATCH_MODE explicitly)"
+    )

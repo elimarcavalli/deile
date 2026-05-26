@@ -34,7 +34,7 @@ import logging
 from threading import Lock
 from typing import Dict, Mapping, Optional, Tuple
 
-from deile.orchestration.forge.base import (ForgeCliNotFound, ForgeClient,
+from deile.orchestration.forge.base import (ForgeClient, ForgeCliNotFound,
                                             ForgeCommandError, ForgeConfig,
                                             ForgeConfigError,
                                             ForgeDetectionError, ForgeError,

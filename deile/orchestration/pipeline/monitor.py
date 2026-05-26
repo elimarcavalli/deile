@@ -28,16 +28,17 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
+from deile.orchestration.forge import ForgeClient, IssueRef, build_forge
 from deile.orchestration.pipeline import stages
 from deile.orchestration.pipeline._time_utils import now_utc, parse_iso_utc
 from deile.orchestration.pipeline.actions import ACTIONS_BY_NAME
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeDispatcher
 from deile.orchestration.pipeline.constants import (
     PIPELINE_POLL_INTERVAL_SECONDS, PIPELINE_STOP_TIMEOUT_SECONDS)
-from deile.orchestration.forge import (ForgeClient, IssueRef, build_forge)
 # Import path preserved for callers that still type-hint ``GitHubClient`` —
 # resolved through the shim so legacy attribute usage stays compatible.
-from deile.orchestration.pipeline.github_client import GitHubClient  # noqa: F401
+from deile.orchestration.pipeline.github_client import \
+    GitHubClient  # noqa: F401
 from deile.orchestration.pipeline.identity import MonitorIdentity
 from deile.orchestration.pipeline.implementer import (PipelineImplementer,
                                                       build_implementer,
@@ -515,10 +516,16 @@ class PipelineMonitor:
                 await asyncio.wait_for(self._task, timeout=PIPELINE_STOP_TIMEOUT_SECONDS)
             except asyncio.TimeoutError:
                 self._task.cancel()
+                # ``CancelledError`` é o resultado esperado de ``cancel()`` —
+                # capturado e silenciado intencionalmente (não é uma falha).
+                # Outras exceções do tick em curso são logadas (pilar 03 §6 —
+                # ``except Exception: pass`` é proibido sem registro).
                 try:
                     await self._task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                except asyncio.CancelledError:
                     pass
+                except Exception as exc:  # noqa: BLE001 — logged then suppressed
+                    logger.warning("pipeline task raised during stop: %s", exc)
         if self._held_lock is not None:
             release_lock(self._held_lock)
             self._held_lock = None

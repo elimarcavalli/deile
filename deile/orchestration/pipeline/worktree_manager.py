@@ -129,32 +129,45 @@ class WorktreeManager:
         await asyncio.to_thread(shutil.copytree, self.main_worktree, target,
                                 symlinks=False, ignore=None)
 
-        # Inside the copy, point origin at the parent base_repo so commits
-        # land back there (and from there get pushed to the upstream forge
-        # — GitHub or GitLab — by the pipeline).
-        await self._git_in(target, "remote", "set-url", "origin", str(self.base_repo))
+        # A partir daqui, qualquer falha precisa **reverter** o ``copytree``
+        # acima — sem rollback, a próxima tick reusaria a worktree
+        # silenciosamente quebrada (apenas o ``.git`` copiado, sem checkout
+        # da branch correta — pilar 03 §9 rollback em operação multi-step).
+        try:
+            # Inside the copy, point origin at the parent base_repo so commits
+            # land back there (and from there get pushed to the upstream forge
+            # — GitHub or GitLab — by the pipeline).
+            await self._git_in(target, "remote", "set-url", "origin", str(self.base_repo))
 
-        # Ensure a ``forge`` remote pointing directly at the upstream forge
-        # exists so ``gh pr create`` / ``glab mr create`` and ``git push
-        # forge <branch>`` work from within the worktree. We discover the
-        # URL from the base repo's existing ``forge`` (or legacy ``github``)
-        # remote, falling back to ``origin``. Errors are non-fatal — the
-        # agent can still push via ``origin`` and let the forge CLI figure
-        # it out. A legacy ``github`` alias is also created when the URL
-        # points at github.com so existing shell scripts keep working.
-        await self._ensure_forge_remote(target)
+            # Ensure a ``forge`` remote pointing directly at the upstream forge
+            # exists so ``gh pr create`` / ``glab mr create`` and ``git push
+            # forge <branch>`` work from within the worktree. We discover the
+            # URL from the base repo's existing ``forge`` (or legacy ``github``)
+            # remote, falling back to ``origin``. Errors são não-fatais.
+            await self._ensure_forge_remote(target)
 
-        # Create / switch to the feature branch.
-        rc, _, err = await self._git_in_capture(target, "checkout", "-b", branch)
-        if rc != 0:
-            # Branch may already exist; try plain checkout and surface both errors on failure.
-            logger.debug("checkout -b %s failed (%s); trying plain checkout", branch, err.strip()[:200])
-            rc2, _, err2 = await self._git_in_capture(target, "checkout", branch)
-            if rc2 != 0:
-                raise WorktreeError(
-                    f"could not create or checkout branch {branch!r} in {target}: "
-                    f"create-err={err.strip()[:200]!r} checkout-err={err2.strip()[:200]!r}"
-                )
+            # Create / switch to the feature branch.
+            rc, _, err = await self._git_in_capture(target, "checkout", "-b", branch)
+            if rc != 0:
+                # Branch may already exist; try plain checkout and surface both errors on failure.
+                logger.debug("checkout -b %s failed (%s); trying plain checkout", branch, err.strip()[:200])
+                rc2, _, err2 = await self._git_in_capture(target, "checkout", branch)
+                if rc2 != 0:
+                    raise WorktreeError(
+                        f"could not create or checkout branch {branch!r} in {target}: "
+                        f"create-err={err.strip()[:200]!r} checkout-err={err2.strip()[:200]!r}"
+                    )
+        except BaseException:
+            # Rollback do ``copytree``. ``BaseException`` (não só ``Exception``)
+            # para também limpar em ``CancelledError`` / ``KeyboardInterrupt`` —
+            # o rollback é re-raised abaixo, então a semântica não muda.
+            logger.warning(
+                "create_branch_worktree falhou após copytree; removendo "
+                "worktree parcial em %s para evitar reuso silenciosamente quebrado",
+                target,
+            )
+            await asyncio.to_thread(shutil.rmtree, target, ignore_errors=True)
+            raise
         return Worktree(path=target, branch=branch, base_repo=self.base_repo)
 
     async def cleanup_merged_branches(self, merged_branches: Sequence[str]) -> int:
