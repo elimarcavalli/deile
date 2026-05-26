@@ -179,6 +179,41 @@ def _to_optional_model_slug(value: Any) -> Optional[str]:
     return stripped
 
 
+def _to_optional_dispatcher(value: Any) -> Optional[str]:
+    """Strict converter for ``pipeline.dispatchers.<stage>`` entries (issue #309).
+
+    Espelha ``_to_optional_model_slug``: ``None`` / vazio colapsa para ``None``
+    (sem override); non-string ou valor fora do whitelist do
+    :func:`is_valid_dispatcher` levanta — ``apply_overrides`` engole e mantém
+    o valor anterior. Strict by design: um typo aqui rotearia silenciosamente
+    todo dispatch para o engine errado (claude-worker dispara billing de
+    subscription/API anthropic, deile-worker usa o provider configurado).
+
+    Note: o validator aceita aliases legacy de PR #330 (``deile_worker``,
+    ``claude_code``, etc.); a canonicalização para ``deile-worker`` /
+    ``claude-worker`` é responsabilidade do :mod:`dispatch_resolver` no
+    momento da resolução, não da camada de persistência.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"expected str, got {type(value).__name__}")
+    stripped = value.strip()
+    if not stripped:
+        return None
+    # Lazy import — evita import cycle settings → pipeline.dispatch_resolver →
+    # settings (resolver consome ``get_settings()`` em runtime).
+    from deile.orchestration.pipeline.dispatch_resolver import \
+        is_valid_dispatcher
+    if not is_valid_dispatcher(stripped):
+        raise ValueError(
+            f"invalid dispatcher {stripped!r}; expected one of "
+            "'deile-worker'/'claude-worker' (or legacy aliases "
+            "'deile_worker', 'claude_code', 'worker', 'claude', etc)"
+        )
+    return stripped
+
+
 # Map of nested JSON paths in ``.deile/settings.json`` to ``Settings`` flat
 # fields, with a converter for each. Unknown keys are silently ignored —
 # that's how future-compatible forward-compat works.
@@ -232,6 +267,12 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     "pipeline.models.implement":  ("pipeline_model_implement",  _to_optional_model_slug),
     "pipeline.models.pr_review":  ("pipeline_model_pr_review",  _to_optional_model_slug),
     "pipeline.models.follow_ups": ("pipeline_model_follow_ups", _to_optional_model_slug),
+    # Per-stage dispatcher override (issue #309) — see dispatch_resolver.
+    "pipeline.dispatchers.classify":   ("pipeline_dispatcher_classify",   _to_optional_dispatcher),
+    "pipeline.dispatchers.refine":     ("pipeline_dispatcher_refine",     _to_optional_dispatcher),
+    "pipeline.dispatchers.implement":  ("pipeline_dispatcher_implement",  _to_optional_dispatcher),
+    "pipeline.dispatchers.pr_review":  ("pipeline_dispatcher_pr_review",  _to_optional_dispatcher),
+    "pipeline.dispatchers.follow_ups": ("pipeline_dispatcher_follow_ups", _to_optional_dispatcher),
     # Sub-DEILEs paralelos (issue #257)
     "subagent.runner": ("subagent_runner", lambda v: str(v).strip().lower()),
     "subagent.max_parallel": ("subagent_max_parallel", _to_pos_int),
@@ -431,6 +472,22 @@ class Settings:
     pipeline_model_implement: Optional[str] = None
     pipeline_model_pr_review: Optional[str] = None
     pipeline_model_follow_ups: Optional[str] = None
+
+    # Pipeline per-stage dispatcher override (issue #309) — CLI persistence layer.
+    # Decide qual worker pod recebe o ``POST /v1/dispatch`` por etapa:
+    # ``deile-worker`` (DEILE-to-DEILE, default; usa o provider configurado)
+    # ou ``claude-worker`` (subprocesso ``claude -p``; força modelos anthropic).
+    # Aceita aliases legacy de PR #330 (``deile_worker``, ``claude_code``,
+    # ``worker``, ``claude``); canonicalização fica a cargo do
+    # ``dispatch_resolver`` no momento da resolução. Cluster path equivalente
+    # usa ``DEILE_PIPELINE_DISPATCH_<STAGE>`` env nos pods da Deployment.
+    # Stages sem override caem no global ``DEILE_PIPELINE_DISPATCH_MODE``;
+    # sem isso, ``deile-worker`` built-in.
+    pipeline_dispatcher_classify: Optional[str] = None
+    pipeline_dispatcher_refine: Optional[str] = None
+    pipeline_dispatcher_implement: Optional[str] = None
+    pipeline_dispatcher_pr_review: Optional[str] = None
+    pipeline_dispatcher_follow_ups: Optional[str] = None
 
     # Sub-DEILEs paralelos em sessão CLI (issue #257)
     # `subagent_runner`        — "local" (default; in-process via asyncio.gather de
@@ -1022,6 +1079,15 @@ _ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any], bool], ...] = (
     ("DEILE_PIPELINE_MODEL_IMPLEMENT",       "pipeline_model_implement",       _to_optional_model_slug, False),
     ("DEILE_PIPELINE_MODEL_PR_REVIEW",       "pipeline_model_pr_review",       _to_optional_model_slug, False),
     ("DEILE_PIPELINE_MODEL_FOLLOW_UPS",      "pipeline_model_follow_ups",      _to_optional_model_slug, False),
+    # Per-stage dispatcher override (issue #309) — cluster path. Operates em
+    # paridade com pipeline.dispatchers.<stage> em settings.json. Validator
+    # ``_to_optional_dispatcher`` consulta ``is_valid_dispatcher`` do
+    # :mod:`dispatch_resolver` — aceita canônico + aliases legacy de PR #330.
+    ("DEILE_PIPELINE_DISPATCH_CLASSIFY",     "pipeline_dispatcher_classify",   _to_optional_dispatcher, False),
+    ("DEILE_PIPELINE_DISPATCH_REFINE",       "pipeline_dispatcher_refine",     _to_optional_dispatcher, False),
+    ("DEILE_PIPELINE_DISPATCH_IMPLEMENT",    "pipeline_dispatcher_implement",  _to_optional_dispatcher, False),
+    ("DEILE_PIPELINE_DISPATCH_PR_REVIEW",    "pipeline_dispatcher_pr_review",  _to_optional_dispatcher, False),
+    ("DEILE_PIPELINE_DISPATCH_FOLLOW_UPS",   "pipeline_dispatcher_follow_ups", _to_optional_dispatcher, False),
 )
 
 
