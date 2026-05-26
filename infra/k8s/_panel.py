@@ -3566,6 +3566,239 @@ class DispatchModeView(View):
         self.last_msg = msg
 
 
+class DispatchMatrixView(View):
+    """Pipeline Stage Configuration unificada (issue #309 fase 2 — Task 18).
+
+    Substitui (Task 21 — wire de ``[d]`` no Dashboard) duas views legadas:
+
+    - :class:`DispatchModeView` (PR #330) — global flip único
+      (``DEILE_PIPELINE_DISPATCH_MODE``).
+    - :class:`StageModelsView` (#305) — per-stage model override
+      (``DEILE_PIPELINE_MODEL_<STAGE>``).
+
+    O resultado é uma matriz ``N+1`` linhas × 2 colunas editáveis:
+
+    - ``N`` linhas (uma por stage de :data:`PIPELINE_STAGES`) com colunas
+      ``{Stage, Worker, Model, Source}``.
+    - ``+1`` linha "Global default" para editar
+      ``DEILE_PIPELINE_DISPATCH_MODE`` (worker) e
+      ``DEILE_PIPELINE_MODEL`` (model) — fallback aplicado quando o stage
+      não tem override próprio.
+
+    O header da view mostra o status do Deployment ``claude-worker`` (lido
+    via :meth:`StageDispatchProvider.get_claude_worker_status`): ``ready`` com
+    email logado, ``NOT READY`` (deployment aplicado mas pod down), ou
+    ``NÃO INSTALADO`` (com hint da action ``[I]`` para o operador instalar
+    on-the-fly).
+
+    Esta task entrega apenas o skeleton (render + navegação ↑↓ ←→ q). As
+    actions ``[enter]`` (editar célula), ``[r]`` (reset célula),
+    ``[L]`` (switch login) e ``[I]`` (install on-the-fly) são STUBS
+    devolvendo :class:`ActionResult` neutro — Tasks 19-20 implementam os
+    pickers contextuais e modais de confirmação.
+
+    O wire de ``[d]`` no Dashboard fica para Task 21 — esta classe só é
+    instanciada pelo painel após o nav dict ser atualizado lá.
+    """
+
+    name = "dispatch-matrix"
+    title = "Pipeline Stage Configuration ([d])"
+    refresh_s = 1.0
+
+    HOTKEYS = (
+        "[↑/↓] linha   [←/→] coluna   [enter] editar   [r] reset   "
+        "[L] switch claude login   [I] install   [q] back"
+    )
+
+    # Source of truth do conjunto de stages — espelha
+    # ``deile.orchestration.pipeline.dispatch_resolver.PIPELINE_STAGES``.
+    # Listado aqui (e não importado no module scope) para a view continuar
+    # importável quando o painel roda de infra/k8s sem o pacote DEILE no
+    # path (mesmo padrão de :class:`StageModelsView`).
+    _STAGES_FALLBACK = ("classify", "refine", "implement", "pr_review",
+                        "follow_ups")
+
+    def __init__(self, data: Optional[PanelData] = None):
+        self.data = data
+        # cursor_row ∈ [0, N] — N inclusive corresponde à linha "Global
+        # default" no fim da matriz.
+        self.cursor_row: int = 0
+        # cursor_col ∈ {0, 1} — 0 = Worker, 1 = Model. As colunas Stage e
+        # Source não são editáveis (label estático + metadado read-only).
+        self.cursor_col: int = 0
+
+    # --- data accessors --------------------------------------------------
+
+    def _stages(self) -> tuple:
+        """Lazy import de :data:`PIPELINE_STAGES` com fallback estático.
+
+        Quando o painel roda de ``infra/k8s/`` sem o pacote ``deile`` no
+        path, o import falha — usamos a constante hardcoded acima (que é
+        verificada por ``StageDispatchProvider`` no provider side).
+        """
+        try:
+            from deile.orchestration.pipeline.dispatch_resolver import \
+                PIPELINE_STAGES  # noqa: PLC0415
+            return PIPELINE_STAGES
+        except ImportError:
+            return self._STAGES_FALLBACK
+
+    def _entries(self) -> List:
+        """Retorna as 5 entries do :class:`StageDispatchProvider`.
+
+        Em modo demo (``data=None``), monta entries vazias para a UI ainda
+        renderizar — o operador vê a estrutura da matriz mesmo sem cluster.
+        """
+        if self.data is None:
+            from _panel_data import StageDispatchEntry  # noqa: PLC0415
+            return [
+                StageDispatchEntry(s, "deile-worker", None, "default")
+                for s in self._stages()
+            ]
+        return self.data.stage_dispatch.get_all_stages()
+
+    def _claude_status(self):
+        """Status do Deployment ``claude-worker``. Demo → não instalado."""
+        if self.data is None:
+            from _panel_data import ClaudeWorkerStatus  # noqa: PLC0415
+            return ClaudeWorkerStatus(
+                deployment_applied=False, pod_ready=False,
+                logged_in_email=None,
+            )
+        return self.data.stage_dispatch.get_claude_worker_status()
+
+    # --- rendering -------------------------------------------------------
+
+    def render(self, app) -> RenderableType:
+        """Constrói o Group com (header de status, matriz, rodapé hotkeys).
+
+        Não usa ``app`` no momento — assinatura mantida para compat com o
+        :class:`View` contract; ``app.console.size.width`` pode entrar em
+        Tasks futuras quando o layout ficar adaptativo.
+        """
+        entries = self._entries()
+        cw = self._claude_status()
+
+        # --- Header: claude-worker status -------------------------------
+        if cw.deployment_applied:
+            ready_label = "ready" if cw.pod_ready else "NOT READY"
+            email_part = (f"  (logado como: {cw.logged_in_email})"
+                          if cw.logged_in_email else "")
+            status_text = f"claude-worker: {ready_label}{email_part}"
+            status_style = "bold green" if cw.pod_ready else "bold yellow"
+        else:
+            # Hint claro da action [I] que instala o Deployment on-the-fly
+            # (Task 20). Operador vê o caminho a seguir sem ler doc externa.
+            status_text = (
+                "claude-worker: NÃO INSTALADO  "
+                "([I] para instalar; [d] depois pra configurar stages)"
+            )
+            status_style = "dim yellow"
+
+        # --- Matrix table -----------------------------------------------
+        # Sem ``width=N`` literal em add_column — princípio 15
+        # (UI resize-adaptativa, issue #307). Rich auto-calcula a largura
+        # ótima por coluna em cada render usando ``console.width`` corrente.
+        tbl = Table(show_header=True, box=box.SIMPLE_HEAVY, expand=True)
+        tbl.add_column("Stage", style="bold cyan")
+        tbl.add_column("Worker")
+        tbl.add_column("Model")
+        tbl.add_column("Source", style="dim")
+
+        for i, entry in enumerate(entries):
+            highlight_w = (i == self.cursor_row and self.cursor_col == 0)
+            highlight_m = (i == self.cursor_row and self.cursor_col == 1)
+
+            worker_cell = (f"[reverse]{entry.worker}[/reverse]"
+                           if highlight_w else entry.worker)
+            model_txt = entry.model or "(default)"
+            model_cell = (f"[reverse]{model_txt}[/reverse]"
+                          if highlight_m else model_txt)
+            tbl.add_row(entry.stage, worker_cell, model_cell, entry.source)
+
+        # Separador visual entre stages e a linha "Global default".
+        tbl.add_row("─" * 12, "─" * 14, "─" * 28, "─" * 8, style="dim")
+
+        # Linha "Global default" — ``cursor_row == len(entries)`` aponta
+        # aqui (mas só dentro dos limites de ``handle_key``).
+        global_idx = len(entries)
+        highlight_gw = (self.cursor_row == global_idx
+                        and self.cursor_col == 0)
+        highlight_gm = (self.cursor_row == global_idx
+                        and self.cursor_col == 1)
+        global_w_txt = "(DEILE_PIPELINE_DISPATCH_MODE)"
+        global_m_txt = "(DEILE_PIPELINE_MODEL)"
+        if highlight_gw:
+            global_w_txt = f"[reverse]{global_w_txt}[/reverse]"
+        if highlight_gm:
+            global_m_txt = f"[reverse]{global_m_txt}[/reverse]"
+        tbl.add_row("Global default", global_w_txt, global_m_txt, "env")
+
+        return Group(
+            Text(status_text, style=status_style),
+            tbl,
+            Text(self.HOTKEYS, style="dim"),
+        )
+
+    # --- input -----------------------------------------------------------
+
+    def handle_key(self, key: str, app) -> ActionResult:
+        """Roteador de teclas. Pickers/actions são STUBS para Tasks 19-20.
+
+        - Navegação: ↑/↓ row, ←/→ col, com clamp em [0, N] × [0, 1].
+          N corresponde à linha "Global default" (inclusive).
+        - [q] / ESC → :meth:`ActionResult.nav` para o dashboard.
+        - [enter] / [r] / [L] / [I] → :class:`ActionResult` neutro;
+          Tasks 19-20 plugam pickers, reset, switch-login, install.
+        """
+        # Última linha editável é o "Global default" (inclusive).
+        max_row = len(self._stages())  # == len(entries) no fluxo normal
+
+        # --- back / quit --------------------------------------------------
+        if key == "q" or key == "ESC":
+            # Tasks futuras podem trocar para ``ActionResult.back()`` se o
+            # painel mantiver stack — por ora, nav explícita ao dashboard.
+            return ActionResult.nav("dashboard")
+
+        # --- navegação row ------------------------------------------------
+        if key in ("UP", "k"):
+            self.cursor_row = max(0, self.cursor_row - 1)
+            return ActionResult.refresh()
+        if key in ("DOWN", "j"):
+            self.cursor_row = min(max_row, self.cursor_row + 1)
+            return ActionResult.refresh()
+
+        # --- navegação col ------------------------------------------------
+        if key in ("LEFT", "h"):
+            self.cursor_col = max(0, self.cursor_col - 1)
+            return ActionResult.refresh()
+        if key in ("RIGHT", "l"):
+            self.cursor_col = min(1, self.cursor_col + 1)
+            return ActionResult.refresh()
+
+        # --- STUBS (Tasks 19-20) -----------------------------------------
+        if key in ("\r", "\n"):
+            # Task 19 — picker contextual: worker (claude-worker se logado)
+            # ou model (catálogo do ModelsProvider).
+            return ActionResult()
+        if key == "r":
+            # Task 19 — reset da célula corrente (kubectl set env --remove
+            # do override específico, voltando para a chain de fallback).
+            return ActionResult()
+        if key in ("L",):
+            # Task 20 — modal de switch-login do claude-worker (re-cria
+            # Secret ``claude-credentials`` a partir de novo
+            # ``credentials.json`` ou ``CLAUDE_API_KEY`` do operador).
+            return ActionResult()
+        if key in ("I",):
+            # Task 20 — install on-the-fly: aplica os manifests do
+            # claude-worker (kubectl apply -f infra/k8s/claude-worker.yaml)
+            # e oferece em sequência o switch de login se aceitar.
+            return ActionResult()
+
+        return ActionResult()
+
+
 class StubView(View):
     """Sub-view placeholder enquanto a Fase correspondente não foi feita."""
 
