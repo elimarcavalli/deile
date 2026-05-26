@@ -279,3 +279,108 @@ def test_esc_in_picker_closes_picker_modal(mock_data_with_claude):
 
     view.handle_key("ESC", MagicMock())  # fecha
     assert view.mode is None
+
+
+# ===========================================================================
+# Task 20 — [I] install-on-the-fly + [L] switch-login modals
+# ===========================================================================
+
+
+def test_i_key_triggers_install_modal_when_claude_absent(
+    mock_data_no_claude, monkeypatch,
+):
+    """[I] quando claude-worker NÃO instalado → mostra modal de install."""
+    from _panel import DispatchMatrixView
+
+    view = DispatchMatrixView(data=mock_data_no_claude)
+    result = view.handle_key("I", MagicMock())
+
+    # State: modal de install aberto (via mode state).
+    assert view.mode is not None and "install" in str(view.mode).lower(), (
+        f"expected install modal triggered; view.mode={view.mode}, "
+        f"result={result}"
+    )
+
+
+def test_i_key_noop_when_claude_already_installed(mock_data_with_claude):
+    """[I] quando claude-worker JÁ instalado → noop ou warning."""
+    from _panel import DispatchMatrixView
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    initial_mode = getattr(view, "mode", None)
+    view.handle_key("I", MagicMock())
+    # Não deve abrir install modal (claude já está rodando)
+    assert view.mode == initial_mode or (
+        view.mode and "install" not in str(view.mode).lower()
+    )
+
+
+def test_l_key_triggers_switch_login_when_claude_installed(
+    mock_data_with_claude,
+):
+    """[L] quando claude-worker instalado → modal de switch login com email atual."""
+    from _panel import DispatchMatrixView
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    result = view.handle_key("L", MagicMock())
+
+    assert view.mode is not None and (
+        "login" in str(view.mode).lower()
+        or "switch" in str(view.mode).lower()
+    ), (
+        f"expected switch-login modal triggered; view.mode={view.mode}, "
+        f"result={result}"
+    )
+
+
+def test_l_key_noop_when_claude_not_installed(mock_data_no_claude):
+    """[L] quando claude-worker NÃO instalado → noop (não pode switch sem install)."""
+    from _panel import DispatchMatrixView
+
+    view = DispatchMatrixView(data=mock_data_no_claude)
+    initial_mode = getattr(view, "mode", None)
+    view.handle_key("L", MagicMock())
+
+    # Não pode abrir switch login se não há claude
+    assert view.mode == initial_mode or "login" not in str(
+        view.mode or "",
+    ).lower()
+
+
+def test_selecting_claude_worker_when_absent_triggers_install_flow(
+    mock_data_no_claude, monkeypatch,
+):
+    """Selecionar claude-worker no picker quando Deployment absent →
+    install antes de persist."""
+    import _claude_install
+    from _panel import DispatchMatrixView
+
+    # Mock bootstrap_claude_worker para não chamar kubectl real.
+    bootstrap_called = {"flag": False, "kwargs": None}
+
+    def fake_bootstrap(**kwargs):
+        bootstrap_called["flag"] = True
+        bootstrap_called["kwargs"] = kwargs
+        return _claude_install.ClaudeLoginResult(
+            ok=True, account_email="user@new.com",
+            secret_applied=True, deployment_applied=True, rollout_ready=True,
+        )
+
+    monkeypatch.setattr(
+        _claude_install, "bootstrap_claude_worker", fake_bootstrap,
+    )
+
+    view = DispatchMatrixView(data=mock_data_no_claude)
+
+    # Simulate selecting claude-worker via apply selection.
+    if hasattr(view, "_on_worker_selected"):
+        view._on_worker_selected("implement", "claude-worker")
+
+    # Após install confirm flow, bootstrap deve ter sido chamado.
+    # Aceitamos: ou bootstrap foi chamado, OU modal de confirm está aberto.
+    assert bootstrap_called["flag"] is True or (
+        view.mode and "install" in str(view.mode).lower()
+    ), (
+        f"esperado bootstrap chamado ou modal aberto; "
+        f"called={bootstrap_called['flag']}, mode={view.mode}"
+    )

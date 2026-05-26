@@ -3853,7 +3853,9 @@ class DispatchMatrixView(View):
         return Group(*parts)
 
     def _render_picker(self) -> RenderableType:
-        """Renderiza o Panel do picker corrente (worker / model / global)."""
+        """Renderiza o Panel do picker corrente (worker / model / global /
+        install-confirm / switch-login-confirm).
+        """
         kind, stage, options = self.mode  # type: ignore[misc]
         # Título descritivo para o operador entender o que vai mudar.
         if kind == "worker":
@@ -3862,8 +3864,16 @@ class DispatchMatrixView(View):
             title = f"ESCOLHA MODEL PARA STAGE '{stage}'"
         elif kind == "global_worker":
             title = "ESCOLHA DISPATCH MODE GLOBAL (DEILE_PIPELINE_DISPATCH_MODE)"
-        else:  # global_model
+        elif kind == "global_model":
             title = "ESCOLHA MODEL GLOBAL (DEILE_PREFERRED_MODEL)"
+        elif kind == "install_confirm":
+            # ``stage`` carrega o prompt textual para a confirmação
+            # (reuso do slot, sem alocar campo dedicado no tuple).
+            title = "INSTALAR CLAUDE-WORKER?"
+        elif kind == "switch_login_confirm":
+            title = "TROCAR CONTA DO CLAUDE-WORKER?"
+        else:  # defensivo
+            title = "AÇÃO"
 
         if not options:
             return Panel(
@@ -3880,12 +3890,24 @@ class DispatchMatrixView(View):
         for i, opt in enumerate(options):
             marker = "▶" if i == self.picker_cursor else " "
             tbl.add_row(Text(marker, style="bold cyan"), Text(opt))
-        return Panel(
-            Group(
+
+        # Modais de confirmação Y/N usam um prompt e atalhos Y/N visíveis;
+        # pickers convencionais usam enter/esc.
+        if kind in ("install_confirm", "switch_login_confirm"):
+            # ``stage`` carrega o texto explicativo da operação.
+            prompt = Text(str(stage) if stage else "", style="bold")
+            hint = Text("[Y] confirma   [N]/[esc] cancela",
+                        style="dim cyan")
+            body: RenderableType = Group(prompt, Text(""), tbl, hint)
+        else:
+            body = Group(
                 tbl,
                 Text("[↑/↓] navega   [enter] confirma   [esc] cancela",
                      style="dim cyan"),
-            ),
+            )
+
+        return Panel(
+            body,
             title=f"[bold yellow]{title}[/bold yellow]",
             title_align="left", border_style="yellow",
         )
@@ -3958,15 +3980,31 @@ class DispatchMatrixView(View):
             # do override específico, voltando para a chain de fallback).
             return ActionResult()
         if key in ("L",):
-            # Task 20 — modal de switch-login do claude-worker (re-cria
-            # Secret ``claude-credentials`` a partir de novo
-            # ``credentials.json`` ou ``CLAUDE_API_KEY`` do operador).
-            return ActionResult()
+            # Task 20 — modal de switch-login do claude-worker. Só faz
+            # sentido quando o Deployment já está aplicado; senão sugere [I].
+            cw_status = self._claude_status()
+            if not cw_status.deployment_applied:
+                self.last_msg = (
+                    "claude-worker não está instalado — use [I] para "
+                    "instalar primeiro"
+                )
+                self.last_ok = False
+                return ActionResult.refresh()
+            return self._open_switch_login_modal(
+                current_email=cw_status.logged_in_email,
+            )
         if key in ("I",):
-            # Task 20 — install on-the-fly: aplica os manifests do
-            # claude-worker (kubectl apply -f infra/k8s/claude-worker.yaml)
-            # e oferece em sequência o switch de login se aceitar.
-            return ActionResult()
+            # Task 20 — install on-the-fly. Só abre o modal se o Deployment
+            # ainda NÃO foi aplicado; caso contrário avisa e aponta [L].
+            cw_status = self._claude_status()
+            if cw_status.deployment_applied:
+                self.last_msg = (
+                    "claude-worker já está instalado — use [L] para "
+                    "trocar de conta"
+                )
+                self.last_ok = None  # informativo, sem vermelho
+                return ActionResult.refresh()
+            return self._open_install_modal()
 
         return ActionResult()
 
@@ -4009,6 +4047,232 @@ class DispatchMatrixView(View):
         self.picker_cursor = 0
         return ActionResult.refresh()
 
+    # --- install / switch-login modals (Task 20) ------------------------
+
+    def _open_install_modal(self) -> ActionResult:
+        """Modal Y/N para instalar o claude-worker on-the-fly.
+
+        Reusa o mesmo slot ``self.mode`` dos pickers; o ``stage`` slot
+        carrega o prompt textual (renderizado por :meth:`_render_picker`
+        com layout especializado). Confirmação por Y; cancelamento por N
+        ou ESC.
+        """
+        prompt = (
+            "Vou: (1) capturar credenciais (claude login se necessário); "
+            "(2) criar Secret claude-credentials; (3) aplicar manifests; "
+            "(4) aguardar Ready do pod."
+        )
+        self.mode = ("install_confirm", prompt,
+                     ["Sim, instalar agora", "Cancelar"])
+        self.picker_cursor = 0
+        self.last_msg = ""
+        self.last_ok = None
+        return ActionResult.refresh()
+
+    def _open_switch_login_modal(
+        self, *, current_email: Optional[str],
+    ) -> ActionResult:
+        """Modal Y/N para trocar a conta logada no claude-worker.
+
+        Exibe o email corrente (best-effort — lido do Secret
+        ``claude-credentials`` pelo provider). Confirmação dispara
+        ``bootstrap_claude_worker(force_relogin=True)`` que faz
+        ``claude logout`` + nova OAuth no host antes de re-aplicar o Secret.
+        """
+        email_repr = current_email or "(desconhecido)"
+        prompt = (
+            f"Conta atual: {email_repr}. Browser vai abrir para nova "
+            "OAuth; depois o Secret é re-aplicado e o Deployment "
+            "reiniciado."
+        )
+        self.mode = ("switch_login_confirm", prompt,
+                     ["Sim, trocar conta", "Cancelar"])
+        self.picker_cursor = 0
+        self.last_msg = ""
+        self.last_ok = None
+        return ActionResult.refresh()
+
+    def _handle_install_confirm(self, key: str) -> ActionResult:
+        """Roteia Y/N (+ enter sobre o cursor) no modal de install."""
+        if key in ("Y", "y"):
+            self.mode = None
+            self.picker_cursor = 0
+            self._perform_install(force_relogin=False)
+            return ActionResult.refresh()
+        if key in ("N", "n", "ESC"):
+            self.mode = None
+            self.picker_cursor = 0
+            self.last_msg = "instalação cancelada"
+            self.last_ok = None
+            return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            # Confirma via enter SE o cursor estiver na opção "Sim";
+            # se estiver em "Cancelar", trata como N.
+            if self.picker_cursor == 0:
+                return self._handle_install_confirm("Y")
+            return self._handle_install_confirm("N")
+        if key in ("UP", "k", "DOWN", "j"):
+            # Movimentação dentro das 2 opções (Sim/Cancelar).
+            _, _, options = self.mode  # type: ignore[misc]
+            n = len(options)
+            if n:
+                delta = -1 if key in ("UP", "k") else 1
+                self.picker_cursor = (self.picker_cursor + delta) % n
+            return ActionResult.refresh()
+        return ActionResult()
+
+    def _handle_switch_login_confirm(self, key: str) -> ActionResult:
+        """Roteia Y/N (+ enter sobre o cursor) no modal de switch login."""
+        if key in ("Y", "y"):
+            self.mode = None
+            self.picker_cursor = 0
+            self._perform_install(force_relogin=True)
+            return ActionResult.refresh()
+        if key in ("N", "n", "ESC"):
+            self.mode = None
+            self.picker_cursor = 0
+            self.last_msg = "troca de conta cancelada"
+            self.last_ok = None
+            return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            if self.picker_cursor == 0:
+                return self._handle_switch_login_confirm("Y")
+            return self._handle_switch_login_confirm("N")
+        if key in ("UP", "k", "DOWN", "j"):
+            _, _, options = self.mode  # type: ignore[misc]
+            n = len(options)
+            if n:
+                delta = -1 if key in ("UP", "k") else 1
+                self.picker_cursor = (self.picker_cursor + delta) % n
+            return ActionResult.refresh()
+        return ActionResult()
+
+    def _perform_install(self, *, force_relogin: bool) -> None:
+        """Invoca :func:`bootstrap_claude_worker` e atualiza feedback.
+
+        Importação lazy + indireção pelo módulo (não pelo símbolo) para
+        que o monkeypatch dos testes pegue a substituição em
+        ``infra.k8s._claude_install.bootstrap_claude_worker``.
+
+        Cache invalidation defensiva pós-install: zera o ``_status_cache``
+        do provider para o próximo render mostrar o estado novo sem
+        depender de [r] manual nem do TTL.
+        """
+        from _claude_install import \
+            bootstrap_claude_worker as _direct_bootstrap  # noqa: PLC0415
+
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        # Em mocks (testes) ``self.data.namespace`` pode estar setado em
+        # vez de ``context.namespace`` — fallback resiliente.
+        if (self.data is not None
+                and getattr(self.data, "context", None) is None):
+            ns = getattr(self.data, "namespace", None) or _NS_DEFAULT
+
+        action_kind = "switch-login" if force_relogin else "install"
+        self.last_msg = (
+            f"executando {action_kind} do claude-worker "
+            f"(force_relogin={force_relogin})…"
+        )
+        self.last_ok = None
+
+        # Indireção: re-resolver via módulo para o monkeypatch funcionar.
+        try:
+            import _claude_install  # noqa: PLC0415
+            bootstrap_fn = getattr(
+                _claude_install, "bootstrap_claude_worker", _direct_bootstrap,
+            )
+        except ImportError:
+            bootstrap_fn = _direct_bootstrap
+
+        try:
+            result = bootstrap_fn(
+                namespace=ns,
+                force_relogin=force_relogin,
+                interactive=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.last_msg = (
+                f"falha em bootstrap_claude_worker: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self.last_ok = False
+            return
+
+        if not getattr(result, "ok", False):
+            self.last_msg = (
+                f"bootstrap retornou erro: "
+                f"{getattr(result, 'error', None) or '(sem detalhe)'}"
+            )
+            self.last_ok = False
+        else:
+            email = getattr(result, "account_email", None) or "?"
+            verb = "logado novamente" if force_relogin else "instalado"
+            self.last_msg = (
+                f"claude-worker {verb} com sucesso "
+                f"(conta: {email})"
+            )
+            self.last_ok = True
+
+        # Cache invalidation — força re-fetch no próximo render.
+        if self.data is not None:
+            try:
+                self.data.stage_dispatch._cache.invalidate()  # noqa: SLF001
+                self.data.stage_dispatch._status_cache.invalidate()  # noqa: SLF001
+            except (AttributeError, TypeError):
+                # MagicMock pode não ter o atributo — ignora.
+                pass
+
+    def _on_worker_selected(self, stage: str, choice: str) -> None:
+        """Hook chamado quando o operador escolhe um worker no picker.
+
+        Se ``choice == 'claude-worker'`` e o Deployment ainda não foi
+        aplicado, dispara o install antes de persistir a configuração
+        per-stage — evita o caso "operador escolhe claude-worker e o
+        pipeline tenta despachar pra um pod inexistente".
+
+        Em qualquer outro caso, delega para
+        :func:`set_pipeline_dispatch_stage`.
+        """
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        if (self.data is not None
+                and getattr(self.data, "context", None) is None):
+            ns = getattr(self.data, "namespace", None) or _NS_DEFAULT
+
+        if choice == "claude-worker":
+            cw_status = self._claude_status()
+            if not cw_status.deployment_applied:
+                # Install antes de persistir. Em modo interativo do painel
+                # o ideal seria um modal — para a Task 20 chamamos direto
+                # (testes monkeypatcham bootstrap; uso real do painel
+                # passa pelo modal [I] antes de chegar aqui na maioria dos
+                # casos. Quando o operador pula direto pro picker, este
+                # branch garante consistência).
+                self._perform_install(force_relogin=False)
+                cw_status = self._claude_status()
+                if not cw_status.deployment_applied:
+                    self.last_msg = (
+                        "install do claude-worker falhou — worker não "
+                        "persistido"
+                    )
+                    self.last_ok = False
+                    return
+
+        # Persistir override per-stage.
+        if choice == self._CLEAR_SENTINEL_WORKER:
+            ok, msg = pd_set_pipeline_dispatch_stage(
+                stage, None, namespace=ns,
+            )
+        else:
+            ok, msg = pd_set_pipeline_dispatch_stage(
+                stage, choice, namespace=ns,
+            )
+        self.last_ok = ok
+        self.last_msg = msg
+
     # --- picker key handler ---------------------------------------------
 
     def _handle_picker_key(self, key: str) -> ActionResult:
@@ -4018,7 +4282,13 @@ class DispatchMatrixView(View):
         - ↑/↓ → navega na lista de opções.
         - enter → confirma seleção, chama :meth:`_apply_picker_selection`,
           fecha o modal e invalida o cache do provider.
+        - install_confirm / switch_login_confirm → handlers dedicados
+          (Y/N + enter sobre cursor).
         """
+        if self.mode is not None and self.mode[0] == "install_confirm":
+            return self._handle_install_confirm(key)
+        if self.mode is not None and self.mode[0] == "switch_login_confirm":
+            return self._handle_switch_login_confirm(key)
         if key == "ESC":
             self.mode = None
             self.picker_cursor = 0
@@ -4077,16 +4347,10 @@ class DispatchMatrixView(View):
 
         # --- per-stage worker -------------------------------------------
         if kind == "worker":
-            if selected == self._CLEAR_SENTINEL_WORKER:
-                ok, msg = pd_set_pipeline_dispatch_stage(
-                    stage, None, namespace=ns,
-                )
-            else:
-                ok, msg = pd_set_pipeline_dispatch_stage(
-                    stage, selected, namespace=ns,
-                )
-            self.last_ok = ok
-            self.last_msg = msg
+            # Delega a :meth:`_on_worker_selected` para reusar o hook de
+            # install-on-the-fly quando ``selected == 'claude-worker'``
+            # e o Deployment ainda não foi aplicado (Task 20).
+            self._on_worker_selected(stage, selected)
             return
 
         # --- per-stage model --------------------------------------------
