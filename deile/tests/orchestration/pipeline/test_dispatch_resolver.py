@@ -63,7 +63,7 @@ def test_resolve_invalid_stage_raises(monkeypatch):
         resolve_stage_dispatcher("non_existent")
 
 
-def test_resolve_invalid_dispatcher_in_env_falls_through(monkeypatch):
+def test_resolve_invalid_dispatcher_in_env_raises(monkeypatch):
     """Valor inválido em env → ValueError com mensagem clara."""
     _clear_env(monkeypatch)
     monkeypatch.setenv("DEILE_PIPELINE_DISPATCH_IMPLEMENT", "garbage")
@@ -108,3 +108,33 @@ def test_is_valid_dispatcher_table():
     assert is_valid_dispatcher("garbage") is False
     assert is_valid_dispatcher("") is False
     assert is_valid_dispatcher(None) is False
+
+
+def test_resolve_accepts_legacy_worker_aliases(monkeypatch):
+    """Aliases legacy de WORKER_ALIASES (PR #330) devem mapear para canônico
+    'deile-worker'. Compat retroativa com DEILE_PIPELINE_DISPATCH_MODE setado
+    em deployments existentes."""
+    _clear_env(monkeypatch)
+    for legacy in ("deile_worker", "worker", "deile"):
+        monkeypatch.setenv("DEILE_PIPELINE_DISPATCH_MODE", legacy)
+        assert resolve_stage_dispatcher("implement") == "deile-worker", \
+            f"alias {legacy!r} should canonicalize to 'deile-worker'"
+
+
+def test_resolve_accepts_legacy_claude_aliases(monkeypatch):
+    """Aliases legacy de CLAUDE_ALIASES (PR #330) devem mapear para canônico
+    'claude-worker'."""
+    _clear_env(monkeypatch)
+    for legacy in ("claude", "claude_code", "claude-code"):
+        monkeypatch.setenv("DEILE_PIPELINE_DISPATCH_MODE", legacy)
+        assert resolve_stage_dispatcher("implement") == "claude-worker", \
+            f"alias {legacy!r} should canonicalize to 'claude-worker'"
+
+
+def test_is_valid_dispatcher_accepts_legacy_aliases():
+    """is_valid_dispatcher também aceita legacy aliases (case-insensitive)."""
+    for legacy in ("deile_worker", "worker", "deile", "claude", "claude_code", "claude-code"):
+        assert is_valid_dispatcher(legacy) is True, \
+            f"legacy alias {legacy!r} should validate"
+    # Sanity: garbage still rejected
+    assert is_valid_dispatcher("garbage") is False

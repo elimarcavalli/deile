@@ -27,6 +27,22 @@ PIPELINE_STAGES: Tuple[str, ...] = (
 #: Valores aceitos. Frozen para evitar mutação acidental.
 VALID_DISPATCHERS: FrozenSet[str] = frozenset({"deile-worker", "claude-worker"})
 
+#: Aliases legacy de PR #330 que canonicalizam para os 2 valores válidos.
+#: Necessário para compat com deployments existentes que tenham
+#: ``DEILE_PIPELINE_DISPATCH_MODE`` no formato underscore ou abreviado.
+#: Mantém em paridade com ``WORKER_ALIASES`` / ``CLAUDE_ALIASES`` de
+#: :mod:`deile.orchestration.pipeline.implementer`.
+_DISPATCHER_ALIASES: dict[str, str] = {
+    "deile_worker": "deile-worker",
+    "worker": "deile-worker",
+    "deile": "deile-worker",
+    "deile-worker": "deile-worker",
+    "claude": "claude-worker",
+    "claude_code": "claude-worker",
+    "claude-code": "claude-worker",
+    "claude-worker": "claude-worker",
+}
+
 _DEFAULT_DISPATCHER = "deile-worker"
 
 # Default endpoints. Env vars sobrescrevem (útil pra dev local fora do cluster).
@@ -41,20 +57,30 @@ _ENDPOINT_ENV_VARS = {
 
 
 def is_valid_dispatcher(value: Optional[str]) -> bool:
-    """Retorna True se *value* casa com :data:`VALID_DISPATCHERS` (case-insensitive)."""
+    """Returns True se *value* é dispatcher válido (canônico OU legacy alias).
+
+    Case-insensitive; whitespace stripped. Falsy / não-string → False.
+    """
     if not value or not isinstance(value, str):
         return False
-    return value.strip().lower() in VALID_DISPATCHERS
+    return value.strip().lower() in _DISPATCHER_ALIASES
 
 
 def _canonicalize(value: Optional[str]) -> Optional[str]:
-    """Normaliza para forma canônica em VALID_DISPATCHERS; None se vazio."""
+    """Normaliza para forma canônica em VALID_DISPATCHERS; None se vazio.
+
+    Aceita aliases legacy (PR #330) e canonicaliza para os 2 valores válidos.
+    Valor não reconhecido → ValueError fail-fast (típico typo).
+    """
     if not value or not value.strip():
         return None
-    canonical = value.strip().lower()
-    if canonical not in VALID_DISPATCHERS:
+    normalized = value.strip().lower()
+    canonical = _DISPATCHER_ALIASES.get(normalized)
+    if canonical is None:
         raise ValueError(
-            f"unknown dispatcher {value!r}; expected one of {sorted(VALID_DISPATCHERS)}"
+            f"unknown dispatcher {value!r}; expected one of "
+            f"{sorted(VALID_DISPATCHERS)} (or aliases "
+            f"{sorted(set(_DISPATCHER_ALIASES) - VALID_DISPATCHERS)})"
         )
     return canonical
 
