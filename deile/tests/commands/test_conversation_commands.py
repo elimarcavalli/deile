@@ -261,7 +261,9 @@ class TestRewindCommand:
         cmd = RewindCommand()
         result = await cmd.execute(ctx)
         assert result.success
-        # No session switch when history is empty
+        # Histórico vazio: fecha silenciosamente (paridade com cancel via ESC).
+        assert result.content == ""
+        assert result.metadata.get("suppress_response_display") is True
         assert SWITCH_SESSION_KEY not in ctx.session.context_data
 
     @pytest.mark.unit
