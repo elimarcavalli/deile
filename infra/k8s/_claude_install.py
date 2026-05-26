@@ -42,23 +42,28 @@ def _read_credentials(home: Path) -> Optional[dict]:
 
 
 def _run_claude_login(*, logout_first: bool = False) -> bool:
-    """Spawn `claude login` no host. Returns True se completou OK.
+    """Spawn `claude auth login` no host. Returns True se completou OK.
 
-    Se logout_first=True, faz `claude logout` antes (descarta conta atual).
+    O subcomando correto é ``claude auth login`` — ``claude login`` (sem
+    ``auth``) é interpretado pelo CLI como prompt posicional (``[prompt]``)
+    e abre uma sessão interativa com o texto "login", em vez de iniciar
+    OAuth. Mesmo trato para ``claude auth logout``.
+
+    Se logout_first=True, faz `claude auth logout` antes (descarta conta atual).
     Timeout 5 min — OAuth interativo pode demorar.
     """
     if logout_first:
-        logger.info("running `claude logout` (force relogin)")
+        logger.info("running `claude auth logout` (force relogin)")
         subprocess.run(
-            ["claude", "logout"], check=False, timeout=30,
+            ["claude", "auth", "logout"], check=False, timeout=30,
         )
 
     logger.info(
-        "running `claude login` — browser will open; complete OAuth there"
+        "running `claude auth login` — browser will open; complete OAuth there"
     )
     try:
         result = subprocess.run(
-            ["claude", "login"], check=False, timeout=300,
+            ["claude", "auth", "login"], check=False, timeout=300,
         )
         return result.returncode == 0
     except FileNotFoundError:

@@ -3794,10 +3794,16 @@ class PanelData:
     models: ModelsProvider
     current_model: CurrentModelProvider
     stage_models: "StageModelsProvider"
-    # Dispatch mode do pipeline (issue #309). Lê
+    # Dispatch mode do pipeline (issue #309 — PR #330, global flip). Lê
     # ``DEILE_PIPELINE_DISPATCH_MODE`` da Deployment ``deile-pipeline`` para
     # mostrar/editar via panel TUI.
     dispatch_mode: "DispatchModeProvider"
+    # Per-stage dispatch + model consolidados (issue #309 fase 2 — PR #336).
+    # Lê DEILE_PIPELINE_DISPATCH_<STAGE> + DEILE_PIPELINE_MODEL_<STAGE> da
+    # Deployment ``deile-pipeline`` + status do ``claude-worker`` Deployment
+    # + email logado do Secret ``claude-credentials``. Consumido pela
+    # ``DispatchMatrixView`` (hotkey [d]). TTL 3s.
+    stage_dispatch: "StageDispatchProvider"
     notifier: NotifierProvider
     local_processes: Optional[LocalProcessesProvider] = None
     local_logs: Optional[LocalLogsProvider] = None
@@ -3877,6 +3883,13 @@ class PanelData:
             # quebrando a sincronia de leitura/escrita.
             dispatch_mode=DispatchModeProvider(enabled=k8s_on,
                                                namespace=context.namespace),
+            # ``StageDispatchProvider`` (issue #309 fase 2 — PR #336)
+            # é consumido pela ``DispatchMatrixView`` ([d]). Namespace
+            # propagado para sincronia read/write (multi-NS PR #315) e
+            # leitura do Deployment claude-worker no MESMO namespace que
+            # o operador está vendo no painel.
+            stage_dispatch=StageDispatchProvider(enabled=k8s_on,
+                                                 namespace=context.namespace),
             notifier=NotifierProvider(namespace=context.namespace,
                                       deploy=context.bot_deploy,
                                       enabled=k8s_on),
@@ -3896,7 +3909,8 @@ class PanelData:
         """Ordem usada por `force_refresh_all` e `errors`."""
         base = (self.pods, self.pipeline, self.workers, self.github,
                 self.costs, self.models, self.current_model,
-                self.stage_models, self.dispatch_mode, self.notifier)
+                self.stage_models, self.dispatch_mode, self.stage_dispatch,
+                self.notifier)
         locals_ = tuple(p for p in (self.local_processes, self.local_logs,
                                     self.local_audit, self.local_instances,
                                     self.local_registry)
@@ -3922,7 +3936,7 @@ class PanelData:
         """
         names = ["pods", "pipeline", "workers", "github", "costs",
                  "models", "current_model", "stage_models",
-                 "dispatch_mode", "notifier"]
+                 "dispatch_mode", "stage_dispatch", "notifier"]
         if self.local_processes is not None:
             names.append("local_processes")
         if self.local_logs is not None:

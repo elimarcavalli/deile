@@ -609,8 +609,45 @@ def k8s_panel(args: dict) -> int:
     # Flag do subcomando (``deploy.py k8s panel --namespace X``) tem precedência
     # sobre a global (``deploy.py --namespace X k8s panel``) para preservar a
     # ergonomia de override pontual.
+    # Resolução de namespace:
+    # 1. --namespace no subcomando (overrides["namespace"]) → respeita
+    # 2. -n/--namespace global (args["k8s_namespace"]) → respeita
+    # 3. Nenhum dos dois → auto-discover via discover_deile_namespaces:
+    #    - 0 NS DEILE detectados → cai no default _ns(args) ("deile")
+    #    - 1 NS DEILE detectado → usa diretamente (mesmo que ≠ default)
+    #    - ≥2 NS DEILE detectados → prompt interativo (TTY) ou warn+default (não-TTY)
+    #
+    # Sem este auto-discover, `deploy.py k8s panel` (sem flags) sempre cai no
+    # default "deile" — operador em cluster multi-NS (GitHub+GitLab paralelos)
+    # via abrir o painel vazio achando que está vendo o NS correto.
     if "namespace" not in overrides:
-        overrides["namespace"] = _ns(args)
+        explicit = args.get("k8s_namespace")
+        if explicit:
+            overrides["namespace"] = explicit
+        else:
+            from _panel_data import discover_deile_namespaces  # noqa: PLC0415
+            detected = discover_deile_namespaces()
+            if len(detected) == 0:
+                overrides["namespace"] = _ns(args)
+            elif len(detected) == 1:
+                overrides["namespace"] = detected[0]
+                if detected[0] != _ns(args):
+                    ui.info(f"namespace auto-detectado: {detected[0]} "
+                            f"(use --namespace {_ns(args)} para forçar default)")
+            else:
+                # Multi-NS: prompt em TTY; fallback em pipe/script.
+                if sys.stdin.isatty():
+                    ui.section("Multi-namespace detectado")
+                    chosen = ui.choose(
+                        "Qual namespace abrir no painel?",
+                        [(ns, _k8s_state_label(ns)) for ns in detected],
+                    )
+                    overrides["namespace"] = chosen
+                else:
+                    overrides["namespace"] = _ns(args)
+                    ui.warn(f"Multi-NS detectado ({', '.join(detected)}) "
+                            f"sem TTY — usando default {overrides['namespace']!r}. "
+                            f"Force com --namespace <ns>.")
     ctx = RuntimeContext.detect(**overrides)
     # K8s não é mais obrigatório, mas avisa quando o operador pediu
     # explicitamente k8s e ele não está disponível.
