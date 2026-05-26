@@ -30,6 +30,7 @@ logs/
 work_items/
 storage/
 !deile/storage/
+!deile/tests/storage/
 upgrades/
 tasks/
 old/
