@@ -440,7 +440,11 @@ class DeileWorkerClient:
     """
 
     async def dispatch(
-        self, payload: Dict[str, Any], *, wait: bool
+        self,
+        payload: Dict[str, Any],
+        *,
+        wait: bool,
+        endpoint_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """POST a dispatch payload to the worker and return its parsed JSON body.
 
@@ -448,6 +452,20 @@ class DeileWorkerClient:
         every failure mode: missing/malformed credentials, missing ``httpx``,
         transport timeout/unreachable, non-JSON body, or an HTTP >= 400
         response.
+
+        Args:
+            payload: dispatch body (validated against :class:`DispatchPayload`).
+            wait: ``True`` para esperar o resultado (timeout longo,
+                ``MAX_DISPATCH_BUDGET_S``); ``False`` para fire-and-forget
+                (timeout curto, ``_NOWAIT_TIMEOUT_S``).
+            endpoint_url: opcional, **issue #309 fase 2** — sobrescreve a
+                URL base resolvida via ``DEILE_WORKER_ENDPOINT``. Quando
+                setado (não-falsy), o POST vai para ``{endpoint_url}/v1/dispatch``
+                em vez do default. Habilita o roteamento per-stage do
+                pipeline (``WorkerImplementer._resolve_endpoint(stage)``
+                aponta ``pr_review`` → claude-worker:8767 e ``implement`` →
+                deile-worker:8766 no mesmo cliente). Ausência ou string
+                vazia mantém o comportamento legacy (env var).
         """
         # Valida o payload antes de tocar em I/O — falhas locais não
         # contam contra o cooldown anti-loop da tool.
@@ -462,7 +480,12 @@ class DeileWorkerClient:
         validated = validate_dispatch_payload(payload)
         body = validated.model_dump(exclude_none=True)
 
-        endpoint = _resolve_endpoint().rstrip("/") + _DISPATCH_PATH
+        # Issue #309 fase 2: ``endpoint_url`` (per-stage routing) sobrescreve
+        # o resolver legacy quando truthy. Empty-string e ``None`` caem no
+        # fallback de env var — paridade com ``_resolve_endpoint`` no
+        # implementer, que considera unset == "use o default".
+        base = endpoint_url if endpoint_url else _resolve_endpoint()
+        endpoint = base.rstrip("/") + _DISPATCH_PATH
         # Token resolution touches secret files on disk — keep that blocking
         # I/O off the event loop. The token is a secret: it must never be
         # interpolated into log or error messages.
