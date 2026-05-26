@@ -1,4 +1,4 @@
-default_model: deepseek:deepseek-v4-pro
+default_model: deepseek:deepseek-v4-flash
 gemini:
   generation_config:
     candidate_count: 1
