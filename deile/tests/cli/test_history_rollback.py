@@ -1,16 +1,19 @@
-"""Regression test for ESC-cancel rollback of conversation history.
+"""Regressão: ESC durante streaming MARCA o turno como cancelado, não apaga.
 
-Before this fix, pressing ESC during a streaming turn would cancel the
-asyncio task but leave the user message that ``DeileAgent.process_input_stream``
-had already appended to ``session.conversation_history``. The orphan user
-entry poisoned the next turn — providers (DeepSeek/OpenAI) collapse two
-consecutive ``user`` messages with ``/`` as a separator, so the next turn
-would echo the cancelled message in the assistant's reply (manifested as
-``"o que eu pedi / o que acabei de dizer?"``).
+Antes, ``_rollback_history`` apagava a entrada ``user`` do histórico — o
+LLM perdia a memória do que o usuário tinha pedido. Mas o texto ficava no
+scrollback do terminal, então o usuário olhava pra tela achando que o LLM
+"viu" e mandava follow-ups que dependiam daquilo. Resultado: amnésia
+silenciosa.
 
-This test exercises ``_DeileCLI._rollback_history`` directly with a fake
-session, since spinning up the full agent + a real ESC keypress is not
-feasible in pytest.
+Agora a entrada ``user`` fica preservada, eventuais entradas ``assistant``
+parciais (escritas antes do cancel) são removidas, e um placeholder
+``assistant`` com ``"(cancelado pelo usuário)"`` é inserido. Isso:
+
+* mantém o mental model do usuário (o LLM "lembra" da request cancelada);
+* explicita o cancelamento pro LLM via marker textual;
+* evita duas entradas ``user`` consecutivas (que DeepSeek/OpenAI colapsavam
+  com ``/`` como separador — bug histórico que motivou o rollback original).
 """
 
 from __future__ import annotations
@@ -26,7 +29,8 @@ def _make_cli(history: list) -> _DeileCLI:
     return cli
 
 
-def test_rollback_removes_orphan_user_entry() -> None:
+def test_cancel_preserves_user_entry_and_adds_placeholder() -> None:
+    """ESC após o user enviar a mensagem: entrada user fica + placeholder."""
     history = [
         {"role": "user", "content": "earlier turn", "timestamp": 0.0, "metadata": {}},
         {"role": "assistant", "content": "earlier reply", "timestamp": 0.1, "metadata": {}},
@@ -34,14 +38,17 @@ def test_rollback_removes_orphan_user_entry() -> None:
     ]
     cli = _make_cli(history)
     cli._rollback_history(baseline_len=2)
-    assert len(history) == 2
+
+    assert len(history) == 4
+    assert history[-2]["role"] == "user"
+    assert history[-2]["content"] == "cancelled message"
     assert history[-1]["role"] == "assistant"
-    assert history[-1]["content"] == "earlier reply"
+    assert "cancelado" in history[-1]["content"].lower()
+    assert history[-1]["metadata"].get("cancelled") is True
 
 
-def test_rollback_removes_orphan_user_plus_partial_assistant() -> None:
-    """Cancellation during the assistant generation must also clear any
-    partial assistant entry the agent wrote before the cancel point."""
+def test_cancel_during_partial_response_removes_partial_keeps_user() -> None:
+    """ESC com partial assistant: apaga só o partial, mantém user + placeholder."""
     history = [
         {"role": "user", "content": "earlier turn", "timestamp": 0.0, "metadata": {}},
         {"role": "assistant", "content": "earlier reply", "timestamp": 0.1, "metadata": {}},
@@ -50,13 +57,18 @@ def test_rollback_removes_orphan_user_plus_partial_assistant() -> None:
     ]
     cli = _make_cli(history)
     cli._rollback_history(baseline_len=2)
-    assert len(history) == 2
-    assert history[-1]["content"] == "earlier reply"
+
+    # 'half of a reply' partial foi removido; user permanece; placeholder adicionado
+    assert len(history) == 4
+    contents = [e["content"] for e in history]
+    assert "half of a reply" not in contents
+    assert "cancelled message" in contents
+    assert history[-1]["role"] == "assistant"
+    assert history[-1]["metadata"].get("cancelled") is True
 
 
-def test_rollback_noop_when_history_already_at_baseline() -> None:
-    """If the turn completed cleanly (no cancel), the baseline-length call
-    on the *unchanged* post-turn length should not delete anything."""
+def test_no_cancel_no_change() -> None:
+    """Se a baseline já cobre todo o histórico, nada muda."""
     history = [
         {"role": "user", "content": "u1", "timestamp": 0.0, "metadata": {}},
         {"role": "assistant", "content": "a1", "timestamp": 0.1, "metadata": {}},
@@ -64,21 +76,49 @@ def test_rollback_noop_when_history_already_at_baseline() -> None:
     cli = _make_cli(history)
     cli._rollback_history(baseline_len=2)
     assert len(history) == 2
+    # Nenhum placeholder porque não há entrada user em baseline_len=2.
 
 
-def test_rollback_handles_session_without_history_attribute() -> None:
-    """Must not crash if the session somehow lacks ``conversation_history``."""
+def test_handles_session_without_history_attribute() -> None:
+    """Não crasha se a sessão não tem ``conversation_history``."""
     cli = _DeileCLI()
-    cli.default_session = SimpleNamespace()  # no conversation_history
-    cli._rollback_history(baseline_len=0)  # should silently no-op
+    cli.default_session = SimpleNamespace()
+    cli._rollback_history(baseline_len=0)  # silent no-op
 
 
-def test_rollback_from_empty_baseline() -> None:
-    """First-ever turn cancelled: baseline_len=0, history had one entry
-    appended by the agent, rollback must clear everything."""
+def test_first_turn_cancel_keeps_user_and_adds_placeholder() -> None:
+    """Primeira mensagem cancelada: user fica + placeholder, total 2 entradas."""
     history = [
         {"role": "user", "content": "first ever", "timestamp": 0.0, "metadata": {}},
     ]
     cli = _make_cli(history)
     cli._rollback_history(baseline_len=0)
-    assert history == []
+
+    assert len(history) == 2
+    assert history[0]["role"] == "user"
+    assert history[0]["content"] == "first ever"
+    assert history[1]["role"] == "assistant"
+    assert history[1]["metadata"].get("cancelled") is True
+
+
+def test_cancel_then_new_turn_preserves_alternation() -> None:
+    """Próxima mensagem após cancel: alternância user→assistant→user mantida.
+
+    Esse é o invariante que protege contra o bug histórico onde providers
+    (DeepSeek/OpenAI) colapsavam 2 entradas user consecutivas usando ``/``
+    como separador. Com o placeholder, NUNCA há duas user consecutivas.
+    """
+    history = [
+        {"role": "user", "content": "cancelled", "timestamp": 0.0, "metadata": {}},
+    ]
+    cli = _make_cli(history)
+    cli._rollback_history(baseline_len=0)
+    # Simula a próxima mensagem user que o CLI adicionaria
+    history.append({"role": "user", "content": "next turn", "timestamp": 1.0, "metadata": {}})
+
+    # Sequência final: user → assistant(cancelado) → user
+    roles = [e["role"] for e in history]
+    assert roles == ["user", "assistant", "user"]
+    # E nenhum par consecutivo é user-user
+    for i in range(len(roles) - 1):
+        assert not (roles[i] == "user" and roles[i + 1] == "user")
