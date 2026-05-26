@@ -803,6 +803,21 @@ class PipelineProvider(_KubectlProviderMixin):
         self._resolve_kubectl()
         if self._kubectl is None:
             raise RuntimeError("kubectl não encontrado")
+        # Pre-check: ``kubectl logs deploy/<name>`` espera até 20s por um pod
+        # quando o deployment está com 0 replicas (scale stop). No painel,
+        # ``_capture_text`` corta em 5s e devolve ``None`` — cada refresh
+        # tick virava 5s travados, o que o operador percebe como painel
+        # "lento". Consulta barata (~50ms) ao spec.replicas evita o timeout
+        # e devolve um ``PipelineState`` vazio rapidamente.
+        replicas_text = _capture_text(
+            [self._kubectl, "-n", self._namespace, "get",
+             f"deploy/{self._deploy}",
+             "-o", "jsonpath={.spec.replicas}"],
+            timeout=2.0,
+        )
+        if replicas_text is not None and replicas_text.strip() in ("0", ""):
+            # Deploy parado (scale=0) ou ausente — devolve estado vazio.
+            return PipelineState()
         text = _capture_text(
             [self._kubectl, "-n", self._namespace, "logs",
              f"deploy/{self._deploy}",
