@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Iterable, List, Literal, Optional, Tuple
 
@@ -51,6 +52,13 @@ logger = logging.getLogger(__name__)
 # Default REST API page size — every list endpoint accepts ``per_page``.
 # 100 is the hard cap GitLab enforces server-side.
 _PER_PAGE = 100
+
+# GitLab username regex — alphanumeric start, depois alnum/dot/underscore/hyphen
+# até 255 chars. Usado como guard defensivo simétrico ao ``_GH_LOGIN_RE`` do
+# adapter GitHub antes de injetar ``login`` num lookup ``users?username={login}``.
+# Embora ``glab api -f`` seja form-encoded (sem risco direto de injection), a
+# simetria de validação fecha o invariante de defesa em profundidade.
+_GL_LOGIN_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]{0,254}\Z")
 
 
 def _standup_item_from_gl_json(item: dict) -> dict:
@@ -341,6 +349,17 @@ class GitLabForge(ForgeClient):
             operador deve estar ciente ao usar multi-assignee.
         """
         if not login:
+            return
+        # Defesa simétrica ao adapter GitHub: ``login`` é interpolado em
+        # ``-f username={login}`` no lookup abaixo. Validamos contra o
+        # alfabeto de usernames GitLab antes de gastar o round-trip e
+        # fechamos o invariante de defesa em profundidade.
+        if not _GL_LOGIN_RE.fullmatch(login):
+            logger.warning(
+                "assign_issue #%d: login %r não é um GitLab username válido "
+                "(alnum start, alnum/dot/_/hyphen, ≤255 chars) — rejeitando",
+                number, login,
+            )
             return
         # GitLab PUT é semântica REPLACE — registramos em DEBUG (operacional,
         # documentado no docstring/CLAUDE.md). Anteriormente era ``warning``

@@ -36,7 +36,7 @@ def _env(env: Mapping[str, str], key: str, default: str = "") -> str:
     return value or default
 
 
-def _settings_as_env() -> Mapping[str, str]:
+def settings_as_env() -> Mapping[str, str]:
     """Build a mapping of forge-relevant env keys from :class:`Settings`.
 
     Pilar 03 §7 — config-centralized: o forge layer não lê ``os.environ``
@@ -55,7 +55,7 @@ def _settings_as_env() -> Mapping[str, str]:
         # quebrado (ex.: dependência circular, YAML malformado).
         import os
         logger.debug(
-            "_settings_as_env: get_settings() falhou (%s) — fallback "
+            "settings_as_env: get_settings() falhou (%s) — fallback "
             "lendo %d env vars conhecidas direto de os.environ",
             exc, 4,
         )
@@ -184,7 +184,7 @@ def detect_forge_kind(
         var the operator could set to fix the situation.
     """
     if env is None:
-        env = _settings_as_env()
+        env = settings_as_env()
 
     # Step 1 — explicit override always wins.
     explicit = _env(env, "DEILE_FORGE_KIND").lower()
@@ -368,7 +368,7 @@ def build_forge_config(
         Explicit host (skips env lookup).
     """
     if env is None:
-        env = _settings_as_env()
+        env = settings_as_env()
 
     kind = forge_kind or detect_forge_kind(project_path=project_path, env=env)
     if host_override:
@@ -399,11 +399,17 @@ def declared_hosts(env: Optional[Mapping[str, str]] = None) -> dict:
     themselves (e.g. ``find_first_pr_url`` in stages.py).
     """
     if env is None:
-        env = _settings_as_env()
+        env = settings_as_env()
     return {
         "github_hosts": _split_hosts(_env(env, "DEILE_GITHUB_HOST")),
         "gitlab_hosts": _split_hosts(_env(env, "DEILE_GITLAB_HOST")),
     }
 
 
-__all__ = ["detect_forge_kind", "build_forge_config", "declared_hosts", "_probe_host"]
+__all__ = [
+    "detect_forge_kind",
+    "build_forge_config",
+    "declared_hosts",
+    "settings_as_env",
+    "_probe_host",
+]
