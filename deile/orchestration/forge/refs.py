@@ -42,6 +42,14 @@ def _labels_from_payload(item: dict) -> Tuple[str, ...]:
     return tuple(out)
 
 
+def _first_batch_id(labels: Tuple[str, ...]) -> Optional[str]:
+    """Return the first ``~batch:<sha>`` id present in *labels*, else None."""
+    return next(
+        (batch_id_from_label(lb) for lb in labels if is_batch_label(lb)),
+        None,
+    )
+
+
 @dataclass(frozen=True)
 class IssueRef:
     """A forge-agnostic reference to an issue.
@@ -61,10 +69,7 @@ class IssueRef:
 
     @property
     def batch_id(self) -> Optional[str]:
-        return next(
-            (batch_id_from_label(lb) for lb in self.labels if is_batch_label(lb)),
-            None,
-        )
+        return _first_batch_id(self.labels)
 
     @classmethod
     def from_gh_json(cls, item: dict) -> "IssueRef":
@@ -127,10 +132,7 @@ class PrRef:
 
     @property
     def batch_id(self) -> Optional[str]:
-        return next(
-            (batch_id_from_label(lb) for lb in self.labels if is_batch_label(lb)),
-            None,
-        )
+        return _first_batch_id(self.labels)
 
     @classmethod
     def from_gh_json(cls, item: dict, *, default_state: str = "open") -> "PrRef":
