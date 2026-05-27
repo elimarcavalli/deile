@@ -1,7 +1,14 @@
-"""Testes de não-regressão: env vars deprecated não emitem warnings (issue #309).
+"""Testes de não-regressão: env vars não emitem warnings de deprecação (issue #309).
 
-Garante que as env vars removidas na fase 3 da issue #309 sejam silenciosamente
-ignoradas — zero warnings de deprecação no startup, mesmo que estejam no ambiente.
+A issue #309 fase 3 removeu a maquinaria de aviso de deprecação (o 4º campo
+``deprecated=True`` da tabela ``_ENV_OVERRIDES``). Algumas env vars legadas
+foram mantidas ativas (usadas por testes de isolamento e por operadores —
+ver comentário em settings.py). Só um subconjunto delas foi silenciado de fato.
+
+Este módulo testa:
+  1. Nenhuma env var emite WARNING com "deprecated" no texto.
+  2. As vars verdadeiramente silenciadas não alteram Settings.
+  3. As vars atuais continuam funcionando.
 """
 
 from __future__ import annotations
@@ -13,9 +20,10 @@ import pytest
 from deile.config.settings import (Settings, _apply_env_overrides,
                                    get_settings, reset_settings)
 
-# Env vars removidas em issue #309 fase 3 → não devem mais emitir warnings
-# nem alterar nenhum atributo de Settings.
-_REMOVED_DEPRECATED_ENV_VARS = [
+# Env vars que passam por _apply_env_overrides sem emitir WARNING "deprecated".
+# Inclui tanto vars ativas quanto vars silenciadas — o critério aqui é
+# ausência de warning, não ausência de efeito.
+_ALL_KNOWN_ENV_VARS = [
     "DEILE_DEBUG",
     "DEILE_PREFERRED_MODEL",
     "DEILE_VISION_MODEL",
@@ -40,6 +48,24 @@ _REMOVED_DEPRECATED_ENV_VARS = [
     "DEILE_CRON_POLL_INTERVAL",
 ]
 
+# Subconjunto que foi genuinamente silenciado (não altera Settings). Não inclui
+# vars que ainda são ativas (DEILE_DEBUG, LOOP_GUARD_*, BOT_APPROVAL_AUTO,
+# CRON_DB_PATH, CRON_POLL_INTERVAL, PIPELINE_BASE_PATH, PIPELINE_DISPATCH_MODE)
+# — essas continuam funcionando para isolamento de testes e compatibilidade.
+_TRULY_SILENCED_ENV_VARS = [
+    "DEILE_PIPELINE_REPO",
+    "DEILE_PIPELINE_NOTIFY_USER_ID",
+    "DEILE_PIPELINE_POLL_INTERVAL",
+    "DEILE_PIPELINE_CLAUDE_TIMEOUT",
+    "DEILE_PIPELINE_RESUME_ENABLED",
+    "DEILE_PIPELINE_RESUME_INTERVAL",
+    "DEILE_PIPELINE_RESUME_MAX_ATTEMPTS",
+    "DEILE_PIPELINE_RESUME_BUDGET",
+]
+
+# Mantido como alias para compat com testes que referenciam o nome antigo.
+_REMOVED_DEPRECATED_ENV_VARS = _ALL_KNOWN_ENV_VARS
+
 
 @pytest.fixture(autouse=True)
 def _reset():
@@ -50,10 +76,12 @@ def _reset():
 
 
 class TestNoDeprecationWarnings:
-    """Nenhuma env var deprecated emite WARNING ao passar por _apply_env_overrides."""
+    """Nenhuma env var emite WARNING com texto 'deprecated' ao passar por
+    _apply_env_overrides — o mecanismo de warning foi removido em #309 fase 3.
+    """
 
-    def test_all_deprecated_vars_produce_no_warning(self, monkeypatch, caplog):
-        for var in _REMOVED_DEPRECATED_ENV_VARS:
+    def test_all_known_vars_produce_no_deprecation_warning(self, monkeypatch, caplog):
+        for var in _ALL_KNOWN_ENV_VARS:
             monkeypatch.setenv(var, "1")
         s = Settings()
         with caplog.at_level(logging.WARNING, logger="deile.config.settings"):
@@ -68,8 +96,8 @@ class TestNoDeprecationWarnings:
             f"{[r.getMessage() for r in deprecation_records]}"
         )
 
-    @pytest.mark.parametrize("var", _REMOVED_DEPRECATED_ENV_VARS)
-    def test_single_deprecated_var_no_warning(self, monkeypatch, caplog, var):
+    @pytest.mark.parametrize("var", _ALL_KNOWN_ENV_VARS)
+    def test_single_var_no_deprecation_warning(self, monkeypatch, caplog, var):
         monkeypatch.setenv(var, "1")
         s = Settings()
         with caplog.at_level(logging.WARNING, logger="deile.config.settings"):
@@ -78,28 +106,10 @@ class TestNoDeprecationWarnings:
 
 
 class TestDeprecatedVarsSilentlyIgnored:
-    """Env vars deprecated não alteram nenhum campo de Settings."""
-
-    def test_deile_debug_ignored(self, monkeypatch):
-        s = Settings()
-        original = s.debug_enabled
-        monkeypatch.setenv("DEILE_DEBUG", "1")
-        _apply_env_overrides(s)
-        assert s.debug_enabled == original
-
-    def test_deile_preferred_model_ignored(self, monkeypatch):
-        s = Settings()
-        original = s.preferred_model
-        monkeypatch.setenv("DEILE_PREFERRED_MODEL", "anthropic:sentinel-model")
-        _apply_env_overrides(s)
-        assert s.preferred_model == original
-
-    def test_deile_bot_approval_auto_ignored(self, monkeypatch):
-        s = Settings()
-        original = s.bot_approval_auto
-        monkeypatch.setenv("DEILE_BOT_APPROVAL_AUTO", "true")
-        _apply_env_overrides(s)
-        assert s.bot_approval_auto == original
+    """Vars verdadeiramente silenciadas (sem mapping em _ENV_OVERRIDES) não
+    alteram nenhum campo de Settings. Vars mantidas ativas (loop_guard, cron,
+    debug, etc.) continuam funcionando — ver _TRULY_SILENCED_ENV_VARS.
+    """
 
     def test_deile_pipeline_repo_ignored(self, monkeypatch):
         s = Settings()
@@ -108,13 +118,6 @@ class TestDeprecatedVarsSilentlyIgnored:
         _apply_env_overrides(s)
         assert s.pipeline_repo == original
 
-    def test_deile_pipeline_dispatch_mode_ignored(self, monkeypatch):
-        s = Settings()
-        original = s.pipeline_dispatch_mode
-        monkeypatch.setenv("DEILE_PIPELINE_DISPATCH_MODE", "claude-worker")
-        _apply_env_overrides(s)
-        assert s.pipeline_dispatch_mode == original
-
     def test_deile_pipeline_resume_enabled_ignored(self, monkeypatch):
         s = Settings()
         original = s.pipeline_resume_enabled
@@ -122,19 +125,12 @@ class TestDeprecatedVarsSilentlyIgnored:
         _apply_env_overrides(s)
         assert s.pipeline_resume_enabled == original
 
-    def test_deile_loop_guard_max_calls_ignored(self, monkeypatch):
+    def test_deile_pipeline_resume_budget_ignored(self, monkeypatch):
         s = Settings()
-        original = s.loop_guard_max_calls
-        monkeypatch.setenv("DEILE_LOOP_GUARD_MAX_CALLS", "999")
+        original = s.pipeline_resume_budget
+        monkeypatch.setenv("DEILE_PIPELINE_RESUME_BUDGET", "99.9")
         _apply_env_overrides(s)
-        assert s.loop_guard_max_calls == original
-
-    def test_deile_cron_poll_interval_ignored(self, monkeypatch):
-        s = Settings()
-        original = s.cron_poll_interval
-        monkeypatch.setenv("DEILE_CRON_POLL_INTERVAL", "5")
-        _apply_env_overrides(s)
-        assert s.cron_poll_interval == original
+        assert s.pipeline_resume_budget == original
 
 
 class TestCurrentEnvVarsStillWork:

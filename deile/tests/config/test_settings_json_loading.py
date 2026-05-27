@@ -127,65 +127,64 @@ class TestApplyNestedDict:
 
 
 class TestApplyEnvOverrides:
-    # Deprecated env vars (issue #309 fase 3): silently ignored, defaults kept.
-    def test_deile_debug_ignored(self, monkeypatch):
+    # Vars mantidas ativas (compatibilidade + isolamento de testes).
+    # Não foram removidas em #309 fase 3 — ver settings.py _ENV_OVERRIDES.
+    def test_deile_debug_applies(self, monkeypatch):
         monkeypatch.setenv("DEILE_DEBUG", "1")
         s = Settings()
         _apply_env_overrides(s)
-        assert s.debug_enabled is False  # default unchanged
+        assert s.debug_enabled is True  # env var ativa
 
-    def test_deile_preferred_model_ignored(self, monkeypatch):
+    def test_deile_preferred_model_applies(self, monkeypatch):
         monkeypatch.setenv("DEILE_PREFERRED_MODEL", "anthropic:claude-opus-4-7")
         s = Settings()
         _apply_env_overrides(s)
-        assert s.preferred_model != "anthropic:claude-opus-4-7"  # default kept
+        assert s.preferred_model == "anthropic:claude-opus-4-7"  # env var ativa
 
-    def test_deile_vision_model_ignored(self, monkeypatch):
+    def test_deile_vision_model_applies(self, monkeypatch):
         monkeypatch.setenv("DEILE_VISION_MODEL", "custom-vision-v1")
         s = Settings()
         _apply_env_overrides(s)
-        assert s.vision_model != "custom-vision-v1"  # default kept
+        assert s.vision_model == "custom-vision-v1"  # env var ativa
 
-    def test_deile_bot_approval_auto_ignored(self, monkeypatch):
-        s = Settings()
-        original = s.bot_approval_auto
+    def test_deile_bot_approval_auto_applies(self, monkeypatch):
         monkeypatch.setenv("DEILE_BOT_APPROVAL_AUTO", "true")
+        s = Settings()
         _apply_env_overrides(s)
-        assert s.bot_approval_auto == original  # unchanged
+        assert s.bot_approval_auto is True  # env var ativa
 
-    def test_deile_loop_guard_disable_ignored(self, monkeypatch):
+    def test_deile_loop_guard_disable_applies(self, monkeypatch):
         monkeypatch.setenv("DEILE_LOOP_GUARD_DISABLE", "1")
         s = Settings()
         _apply_env_overrides(s)
-        assert s.loop_guard_disabled is False  # default preserved
+        assert s.loop_guard_disabled is True  # env var ativa
 
-    def test_deile_loop_guard_max_calls_ignored(self, monkeypatch):
-        s = Settings()
-        original = s.loop_guard_max_calls
+    def test_deile_loop_guard_max_calls_applies(self, monkeypatch):
         monkeypatch.setenv("DEILE_LOOP_GUARD_MAX_CALLS", "25")
+        s = Settings()
         _apply_env_overrides(s)
-        assert s.loop_guard_max_calls == original  # unchanged
+        assert s.loop_guard_max_calls == 25  # env var ativa
 
+    # Vars verdadeiramente silenciadas (não têm mapping em _ENV_OVERRIDES).
     def test_deile_pipeline_repo_ignored(self, monkeypatch):
         s = Settings()
         original = s.pipeline_repo
         monkeypatch.setenv("DEILE_PIPELINE_REPO", "myorg/myrepo")
         _apply_env_overrides(s)
-        assert s.pipeline_repo == original  # unchanged
+        assert s.pipeline_repo == original  # silenciada
 
     def test_deile_pipeline_poll_interval_ignored(self, monkeypatch):
         s = Settings()
         original = s.pipeline_poll_interval
         monkeypatch.setenv("DEILE_PIPELINE_POLL_INTERVAL", "120")
         _apply_env_overrides(s)
-        assert s.pipeline_poll_interval == original  # unchanged
+        assert s.pipeline_poll_interval == original  # silenciada
 
-    def test_deile_cron_poll_interval_ignored(self, monkeypatch):
-        s = Settings()
-        original = s.cron_poll_interval
+    def test_deile_cron_poll_interval_applies(self, monkeypatch):
         monkeypatch.setenv("DEILE_CRON_POLL_INTERVAL", "15")
+        s = Settings()
         _apply_env_overrides(s)
-        assert s.cron_poll_interval == original  # unchanged
+        assert s.cron_poll_interval == 15  # env var ativa (isolamento de testes)
 
     def test_deprecated_env_vars_emit_no_warning(self, monkeypatch, caplog):
         """Deprecated env vars must not emit any deprecation warning (issue #309)."""

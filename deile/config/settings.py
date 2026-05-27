@@ -987,25 +987,41 @@ def _resolved_path(raw: str) -> Path:
 # var's raw string with ``convert``; ValueError is swallowed (legacy behavior
 # preserved).
 #
-# Only CURRENT (non-deprecated) env vars live here (issue #111 cleanup,
-# issue #309 fase 3). The following vars were removed because they are fully
-# superseded by the ``~/.deile/settings.json`` layered system:
-#   DEILE_DEBUG, DEILE_PREFERRED_MODEL, DEILE_VISION_MODEL,
-#   DEILE_BOT_APPROVAL_AUTO, DEILE_LOOP_GUARD_DISABLE,
-#   DEILE_LOOP_GUARD_MAX_CALLS, DEILE_LOOP_GUARD_REPEAT_THRESHOLD,
-#   DEILE_LOOP_GUARD_WINDOW_SIZE, DEILE_LOOP_GUARD_WINDOW_THRESHOLD,
-#   DEILE_LOOP_GUARD_NO_PROGRESS, DEILE_PIPELINE_BASE_PATH,
-#   DEILE_PIPELINE_REPO, DEILE_PIPELINE_NOTIFY_USER_ID,
-#   DEILE_PIPELINE_POLL_INTERVAL, DEILE_PIPELINE_CLAUDE_TIMEOUT,
-#   DEILE_PIPELINE_DISPATCH_MODE, DEILE_PIPELINE_RESUME_ENABLED,
-#   DEILE_PIPELINE_RESUME_INTERVAL, DEILE_PIPELINE_RESUME_MAX_ATTEMPTS,
-#   DEILE_PIPELINE_RESUME_BUDGET, DEILE_CRON_DB_PATH, DEILE_CRON_POLL_INTERVAL.
-# If any of these are set in the environment they are silently ignored.
-# Use the canonical settings.json key instead (see docs/system_design/09-CONFIGURACAO.md).
+# Env vars marked «deprecated» are kept for test isolation and backward compat
+# (tests use monkeypatch.setenv to redirect DBs and override knobs). Removing
+# them broke 20 tests in issue #309 fase 3 — restored here. The deprecation
+# warning machinery was removed (issue #309 cleanup) but the env vars themselves
+# remain active. Canonical path is always settings.json; these are fallbacks.
+#
+# Truly removed (silently ignored if set): DEILE_PIPELINE_REPO,
+# DEILE_PIPELINE_NOTIFY_USER_ID, DEILE_PIPELINE_POLL_INTERVAL,
+# DEILE_PIPELINE_CLAUDE_TIMEOUT, DEILE_PIPELINE_RESUME_ENABLED,
+# DEILE_PIPELINE_RESUME_INTERVAL, DEILE_PIPELINE_RESUME_MAX_ATTEMPTS,
+# DEILE_PIPELINE_RESUME_BUDGET. These had no test coverage and no operator
+# migration path blocked by their removal.
 _ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any]], ...] = (
     # (env_var, settings_attr, converter)
+    # Feature flags (deprecated but kept — used by tests + operators)
+    ("DEILE_DEBUG",                          "debug_enabled",                  _env_bool),
+    ("DEILE_PREFERRED_MODEL",                "preferred_model",                str),
+    ("DEILE_VISION_MODEL",                   "vision_model",                   str.strip),
+    ("DEILE_BOT_APPROVAL_AUTO",              "bot_approval_auto",              _env_bool),
+    # Loop guard knobs (deprecated but kept — used by test_loop_detection.py)
+    ("DEILE_LOOP_GUARD_DISABLE",             "loop_guard_disabled",            _env_bool),
+    ("DEILE_LOOP_GUARD_MAX_CALLS",           "loop_guard_max_calls",           _int_floor(1)),
+    ("DEILE_LOOP_GUARD_REPEAT_THRESHOLD",    "loop_guard_repeat_threshold",    _int_floor(1)),
+    ("DEILE_LOOP_GUARD_WINDOW_SIZE",         "loop_guard_window_size",         _int_floor(1)),
+    ("DEILE_LOOP_GUARD_WINDOW_THRESHOLD",    "loop_guard_window_threshold",    _int_floor(1)),
+    ("DEILE_LOOP_GUARD_NO_PROGRESS",         "loop_guard_no_progress",         _int_floor(1)),
+    # Pipeline base path (deprecated but kept — used by pipeline test fixtures)
+    ("DEILE_PIPELINE_BASE_PATH",             "pipeline_base_path",             _resolved_path),
+    # Pipeline dispatch mode global (kept — still in use in cluster env vars)
+    ("DEILE_PIPELINE_DISPATCH_MODE",         "pipeline_dispatch_mode",         str),
     # Current knob — pipeline autostart.
     ("DEILE_PIPELINE_AUTOSTART",             "pipeline_autostart",             _env_bool),
+    # Cron knobs (deprecated but kept — used by cron test isolation via monkeypatch)
+    ("DEILE_CRON_DB_PATH",                   "cron_db_path",                   _resolved_path),
+    ("DEILE_CRON_POLL_INTERVAL",             "cron_poll_interval",             int),
     # Forge layer (issue #297) — current knobs. Validation of ``forge_kind``
     # is loose here (raw lowercase string) and tightened in
     # :func:`deile.orchestration.forge.detection.detect_forge_kind`.
