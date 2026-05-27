@@ -45,13 +45,13 @@ def test_erase_empty_prompt_echo_writes_two_line_cleanup_when_tty() -> None:
     written = fake_stdout.getvalue()
 
     # Deve conter o cursor-up + erase-line REPETIDOS (2x).
-    _cu = written.count("\033[A")
-    _el = written.count("\033[2K")
-    assert _cu == 2, (
-        f"deveria ter 2 cursor-up; got {_cu}: {written!r}"
+    up_count = written.count("\033[A")
+    assert up_count == 2, (
+        f"deveria ter 2 cursor-up; got {up_count}: {written!r}"
     )
-    assert _el == 2, (
-        f"deveria ter 2 erase-line; got {_el}: {written!r}"
+    erase_count = written.count("\033[2K")
+    assert erase_count == 2, (
+        f"deveria ter 2 erase-line; got {erase_count}: {written!r}"
     )
     # E reposicionar ao início (carriage return).
     assert written.endswith("\r"), f"deveria terminar em \\r: {written!r}"
