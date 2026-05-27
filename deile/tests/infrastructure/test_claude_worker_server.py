@@ -1061,6 +1061,66 @@ def test_is_claude_process_alive_finds_match(claude_worker_module, monkeypatch, 
     assert claude_worker_module._is_claude_process_alive("not-found-session") is False
 
 
+# Regression — triple-dispatch bug 2026-05-27:
+# Com 3 réplicas de claude-worker + Service round-robin, ``_is_claude_process_alive``
+# scaneava só o /proc local do pod que recebia a request. Quando claude rodava
+# em outra réplica, retornava False enganosamente → pipeline disparava RESUME
+# pensando que estava morto → triple-dispatch de Opus 4.7 paralelos.
+# Fix: fallback pra mtime do JSONL na PVC compartilhada.
+def test_is_claude_alive_falls_back_to_jsonl_mtime_when_proc_does_not_see_it(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Multi-replica safe: claude vivo em OUTRA réplica = JSONL recém-modificado."""
+    # /proc local vazio (não enxerga claude que está em outro pod).
+    empty_proc = tmp_path / "fake_proc_empty"
+    empty_proc.mkdir()
+    monkeypatch.setattr(claude_worker_module, "_PROC_ROOT", str(empty_proc))
+
+    # PVC compartilhada: JSONL existe e foi modificado AGORA (claude appendou
+    # via outra réplica).
+    home = tmp_path / "home"
+    project_dir = home / ".claude" / "projects" / "-home-claude-work-abc123"
+    project_dir.mkdir(parents=True)
+    sid = "multi-pod-session-xyz"
+    jsonl = project_dir / f"{sid}.jsonl"
+    jsonl.write_text('{"message":{"model":"claude-sonnet-4-6"}}\n')
+    monkeypatch.setenv("HOME", str(home))
+
+    # Resultado: True via fallback JSONL (mesmo com /proc vazio).
+    assert claude_worker_module._is_claude_process_alive(sid) is True
+
+
+def test_is_claude_alive_returns_false_when_jsonl_stale(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """JSONL antigo (> threshold) = sessão morta, fallback retorna False."""
+    import os, time
+    empty_proc = tmp_path / "fake_proc_empty"
+    empty_proc.mkdir()
+    monkeypatch.setattr(claude_worker_module, "_PROC_ROOT", str(empty_proc))
+
+    home = tmp_path / "home"
+    project_dir = home / ".claude" / "projects" / "-home-claude-work-abc"
+    project_dir.mkdir(parents=True)
+    sid = "stale-session"
+    jsonl = project_dir / f"{sid}.jsonl"
+    jsonl.write_text("{}\n")
+    # Backdate mtime para 5 minutos atrás (bem além do threshold de 60s).
+    stale_time = time.time() - 300
+    os.utime(jsonl, (stale_time, stale_time))
+    monkeypatch.setenv("HOME", str(home))
+
+    assert claude_worker_module._is_session_jsonl_recently_active(sid) is False
+    assert claude_worker_module._is_claude_process_alive(sid) is False
+
+
+def test_is_session_jsonl_recently_active_empty_session_returns_false(
+    claude_worker_module,
+):
+    """Guard explícito: session_id vazio nunca casa."""
+    assert claude_worker_module._is_session_jsonl_recently_active("") is False
+
+
 # --------------------------------------------------------------------------- #
 # Observability endpoints (issue #347)
 # --------------------------------------------------------------------------- #

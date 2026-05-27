@@ -390,19 +390,81 @@ def _load_session_meta(task_id: str) -> Optional[dict]:
 _PROC_ROOT: str = "/proc"
 
 
+#: Janela em segundos pra considerar uma sessão claude "viva" via mtime do JSONL.
+#: 60s cobre o caso de claude levando até 1 turno completo (incluindo tools)
+#: sem appendar — append típico em pytest run é <30s entre turns.
+_JSONL_ALIVE_THRESHOLD_S: int = 60
+
+
+def _is_session_jsonl_recently_active(
+    session_id: str, threshold_s: int = _JSONL_ALIVE_THRESHOLD_S,
+) -> bool:
+    """True se o JSONL da sessão claude foi modificado nos últimos
+    ``threshold_s`` segundos.
+
+    O JSONL vive em ``~/.claude/projects/-<workspace_hash>/<session_id>.jsonl``
+    no **PVC compartilhado** entre réplicas claude-worker. claude appenda
+    toda vez que recebe um turn — então se mtime é recente, a sessão
+    está VIVA mesmo que o processo não esteja visível neste ``/proc``
+    local (ex.: rodando em outra réplica do StatefulSet/Deployment).
+
+    Este check é o complemento multi-replica safe do scan via ``/proc``
+    (``_find_claude_pid``); juntos blindam contra triple-dispatch que
+    ocorria quando o Service ``claude-worker:8767`` distribuía
+    ``resume-info`` round-robin entre pods, e o pod que recebia a query
+    não enxergava o processo vivo no /proc do pod onde claude girava.
+
+    Best-effort: erros viram False (fail-open, igual ao caminho /proc).
+    """
+    if not session_id:
+        return False
+    try:
+        home = Path(os.environ.get("HOME", "/home/claude"))
+        projects_dir = home / ".claude" / "projects"
+        if not projects_dir.is_dir():
+            return False
+        cutoff = time.time() - threshold_s
+        for sub in projects_dir.iterdir():
+            if not sub.is_dir():
+                continue
+            jsonl = sub / f"{session_id}.jsonl"
+            try:
+                if jsonl.exists() and jsonl.stat().st_mtime > cutoff:
+                    return True
+            except OSError:
+                continue
+        return False
+    except OSError:
+        return False
+
+
 def _is_claude_process_alive(session_id: str) -> bool:
-    """True se houver processo com este session-id na cmdline.
+    """True se houver processo com este session-id na cmdline OU
+    se o JSONL da sessão foi appendado recentemente.
 
     Usado pelo endpoint /v1/dispatches/{task_id}/resume-info para o pipeline
     decidir entre "ainda rodando, não disturbar" vs "morto, pode reaper".
 
-    Implementação via ``/proc/<pid>/cmdline`` (POSIX-padrão em Linux,
-    funciona em qualquer container distroless/slim sem precisar instalar
-    ``procps``/``pgrep``). Best-effort: erros de I/O ou /proc ausente →
-    False (assume morto, fail-open). Falso negativo é OK (pipeline reaper
-    retry); falso positivo é pior (pipeline acha vivo e nunca retoma).
+    Dois sinais combinados (OR), pra ser **multi-replica safe**:
+      1. ``/proc/<pid>/cmdline`` no pod local — barato, definitivo quando
+         positivo, mas só vê o /proc deste pod.
+      2. mtime do JSONL da sessão na PVC compartilhada — captura claude
+         rodando em **outra réplica** do claude-worker (caso o Service
+         distribua o request pra pod diferente daquele onde claude girou).
+
+    Falso negativo é OK (pipeline reaper retry); falso positivo é pior
+    (pipeline acha vivo e nunca retoma) — daí o threshold de 60s do
+    fallback JSONL ser conservador.
+
+    BUG HISTÓRICO (corrigido aqui — 2026-05-27): com claude-worker em
+    3 réplicas e Service round-robin, ``_find_claude_pid`` retornava
+    None quando o request caía em pod diferente daquele onde claude
+    rodava → pipeline disparava RESUME pensando que estava morto →
+    triple-dispatch de Opus 4.7 paralelos na mesma issue.
     """
-    return _find_claude_pid(session_id) is not None
+    if _find_claude_pid(session_id) is not None:
+        return True
+    return _is_session_jsonl_recently_active(session_id)
 
 
 def _find_claude_pid(session_id: str) -> Optional[int]:
@@ -740,6 +802,32 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             "resume dispatch task_id=%s session=%s attempt=%d workdir=%s",
             task_id, session_id, attempt, workspace,
         )
+
+        # Defense-in-depth contra triple-dispatch (corrigido 2026-05-27).
+        # Se o claude da sessão anterior AINDA está vivo (no /proc local
+        # OU sinalizado pelo mtime do JSONL na PVC compartilhada — qualquer
+        # réplica), recusa o novo dispatch com 409. O caller (implementer.py)
+        # converte isso em ``WorkOutcome(ok=False, error="DISPATCH_SKIPPED_...")``,
+        # mantém a issue em ``~workflow:em_implementacao``, e o próximo tick
+        # do monitor re-tenta — sem multiplicar Opus na mesma issue.
+        if _is_claude_process_alive(session_id):
+            logger.warning(
+                "resume dispatch BLOCKED — claude session=%s ainda vivo "
+                "(pid local ou JSONL recém-modificado em outra réplica). "
+                "task_id=%s",
+                session_id, task_id,
+            )
+            return web.json_response({
+                "ok": False,
+                "error_code": "CONCURRENT_DISPATCH_BLOCKED",
+                "error": (
+                    f"claude session_id={session_id!r} ainda em execução "
+                    f"(detected via /proc local ou JSONL mtime); pipeline "
+                    f"deve aguardar próximo tick"
+                ),
+                "task_id": task_id,
+                "session_id": session_id,
+            }, status=409)
 
         # Issue #347 follow-up — TOKEN BUDGET CHECK: se a sessão anterior
         # consumiu > threshold, resume custaria muito (claude re-injeta TODA

@@ -152,7 +152,10 @@ class TestSetStageModel:
         assert ok is True
         argv = mock_run.call_args[0][0]
         assert argv[0] == "/fake/kubectl"
-        assert "deploy/deile-worker" in argv
+        # Fix 2026-05-27: DEILE_PIPELINE_MODEL_<STAGE> deve ser gravado no
+        # deile-pipeline (não deile-worker — só o pipeline consome estas vars
+        # via resolve_stage_model). Gravar no worker era silent cost amplifier.
+        assert "deploy/deile-pipeline" in argv
         # The env-var name must be the canonical one (uppercase, no typo).
         assert "DEILE_PIPELINE_MODEL_IMPLEMENT=anthropic:claude-opus-4-7" \
             in argv

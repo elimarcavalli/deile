@@ -1701,14 +1701,19 @@ class TestStageDispatchProvider:
         assert by_stage["classify"].source == "global"
 
     def test_per_stage_model_env_takes_precedence(self):
-        """``DEILE_PIPELINE_MODEL_<STAGE>`` vence o global ``DEILE_PIPELINE_MODEL``."""
+        """``DEILE_PIPELINE_MODEL_<STAGE>`` vence o global ``DEILE_PIPELINE_MODEL``.
+
+        Fix 2026-05-27: env vars de MODEL agora moram no ``deile-pipeline``
+        (não worker). Era bug silencioso — pipeline lia do seu próprio env,
+        nunca do worker, então a config era inútil.
+        """
         from _panel_data import StageDispatchProvider
         payloads = {
-            "deployment/deile-pipeline": _deployment_with_env({}),
-            "deployment/deile-worker": _deployment_with_env({
+            "deployment/deile-pipeline": _deployment_with_env({
                 "DEILE_PIPELINE_MODEL_IMPLEMENT": "anthropic:claude-opus-4-7",
                 "DEILE_PIPELINE_MODEL": "anthropic:claude-sonnet-4-6",
             }),
+            "deployment/deile-worker": _deployment_with_env({}),
         }
         with patch("_panel_data._capture_json",
                    side_effect=self._route_capture(payloads)), \
@@ -1726,10 +1731,10 @@ class TestStageDispatchProvider:
         """``DEILE_PREFERRED_MODEL`` é aceito como alias do model global."""
         from _panel_data import StageDispatchProvider
         payloads = {
-            "deployment/deile-pipeline": _deployment_with_env({}),
-            "deployment/deile-worker": _deployment_with_env({
+            "deployment/deile-pipeline": _deployment_with_env({
                 "DEILE_PREFERRED_MODEL": "deepseek:deepseek-v4-pro",
             }),
+            "deployment/deile-worker": _deployment_with_env({}),
         }
         with patch("_panel_data._capture_json",
                    side_effect=self._route_capture(payloads)), \
@@ -1744,10 +1749,9 @@ class TestStageDispatchProvider:
         payloads = {
             "deployment/deile-pipeline": _deployment_with_env({
                 "DEILE_PIPELINE_DISPATCH_IMPLEMENT": "claude-worker",
-            }),
-            "deployment/deile-worker": _deployment_with_env({
                 "DEILE_PIPELINE_MODEL_IMPLEMENT": "anthropic:claude-opus-4-7",
             }),
+            "deployment/deile-worker": _deployment_with_env({}),
         }
         with patch("_panel_data._capture_json",
                    side_effect=self._route_capture(payloads)), \

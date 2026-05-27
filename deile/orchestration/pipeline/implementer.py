@@ -745,6 +745,23 @@ class WorkerImplementer(PipelineImplementer):
         try:
             data = await self._post_dispatch(url, payload, wait=True)
         except WorkerDispatchError as exc:
+            # Defense-in-depth contra triple-dispatch (fix 2026-05-27).
+            # Worker recusa com 409 quando há claude vivo na mesma sessão
+            # (detectado via /proc local OU mtime do JSONL na PVC compartilhada
+            # entre réplicas). Trata exatamente como ``_still_alive`` acima:
+            # mantém em_andamento, próximo tick re-tenta — NÃO escala
+            # como erro porque não é falha do worker, é deduplicação correta.
+            if exc.error_code == "CONCURRENT_DISPATCH_BLOCKED":
+                logger.info(
+                    "dispatch skipped — worker reportou claude vivo na sessão "
+                    "anterior (CONCURRENT_DISPATCH_BLOCKED); aguarda próximo "
+                    "tick. ledger_key=%s", ledger_key,
+                )
+                return WorkOutcome(
+                    ok=False, text="",
+                    error="DISPATCH_SKIPPED_CONCURRENT: claude-worker já tem "
+                          "sessão ativa pro mesmo task; skip nesse tick",
+                )
             return WorkOutcome(ok=False, text="", error=f"{exc.error_code}: {exc}"[:500])
         except Exception as exc:  # noqa: BLE001 — never crash the tick
             logger.exception("worker dispatch raised")
