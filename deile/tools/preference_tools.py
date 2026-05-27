@@ -44,8 +44,15 @@ def _resolve_user_id(context: ToolContext) -> str:
     return "unknown"
 
 
-def _check_write_permission(context: ToolContext, key: str) -> bool:
-    """Consult PermissionManager before writing. Fail-closed."""
+def _check_write_permission(
+    context: ToolContext, tool_name: str, key: str
+) -> bool:
+    """Consult PermissionManager before writing. Fail-closed.
+
+    *tool_name* is the invoking tool (``remember_preference`` or
+    ``forget_preference``) — passed through so operators can write rules
+    that differentiate the two (e.g. allow remember, deny forget).
+    """
     try:
         from ..security.permissions import get_permission_manager
 
@@ -60,7 +67,7 @@ def _check_write_permission(context: ToolContext, key: str) -> bool:
     try:
         return bool(
             pm.check_permission(
-                tool_name="remember_preference",
+                tool_name=tool_name,
                 resource=resource,
                 action="write",
                 context={"key": key},
@@ -149,7 +156,7 @@ class RememberPreferenceTool(Tool):
         except ValueError as exc:
             return ToolResult.error_result(message=str(exc))
 
-        if not _check_write_permission(context, key):
+        if not _check_write_permission(context, "remember_preference", key):
             return ToolResult.error_result(
                 message=(
                     "Permission denied: preference writes are not enabled. "
@@ -274,7 +281,7 @@ class ForgetPreferenceTool(Tool):
 
         user_id = _resolve_user_id(context)
 
-        if not _check_write_permission(context, key):
+        if not _check_write_permission(context, "forget_preference", key):
             return ToolResult.error_result(
                 message=(
                     "Permission denied: preference writes are not enabled. "
