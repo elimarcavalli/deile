@@ -66,6 +66,7 @@
 | `plugins/` | `plugin_manager`, `dependency_resolver`, `hot_loader` (via `watchdog`), `marketplace`, `sandbox` (`PluginSandbox` — skeleton, não isola; ver issue #54) |
 | `evolution/` | `self_analyzer`, `code_modifier`, `improvement_loop` (gated atrás de `experimental=True`), `benchmarker`, `rollback_manager` |
 | `ui/` | `ConsoleUIManager`, `DisplayManager`, `streaming_renderer`, `emoji_support`, `themes/`, `components/`, `completers/` (`hybrid_completer`) |
+| `ui/panel/observability/` | Painel TUI ao-vivo (Decisão #44, issue #347): `ClaudeJsonlParser` (parser incremental do `~/.claude/projects/<hash>/<sid>.jsonl` produzido por `claude -p`, tolerante a JSON malformado, marca `tool_use` órfão como `in_progress`); `ClusterObservabilityClient` (aiohttp wrapper sobre os endpoints do `pipeline_status_server` e do `claude_worker_server`, com timeouts curtos e `ApiError` fallback — painel não trava se um pod estiver down); 3 screens Rich-based (`ClusterStatusScreen`/`LiveSessionScreen`/`HistoryScreen`) renderizando adaptativamente a `console.width`. Convive com o painel legado (`infra/k8s/_panel.py`) durante a transição. |
 | `tests/` | Suíte pytest + scripts standalone (ver `CLAUDE.md` para convenção dual) |
 
 ## Dependências entre subpacotes (direção real, observada nos imports)

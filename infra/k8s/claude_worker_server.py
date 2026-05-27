@@ -402,11 +402,22 @@ def _is_claude_process_alive(session_id: str) -> bool:
     False (assume morto, fail-open). Falso negativo é OK (pipeline reaper
     retry); falso positivo é pior (pipeline acha vivo e nunca retoma).
     """
+    return _find_claude_pid(session_id) is not None
+
+
+def _find_claude_pid(session_id: str) -> Optional[int]:
+    """Return the PID of the running ``claude`` for ``session_id``, or None.
+
+    Same scan as :func:`_is_claude_process_alive`; broken out so the kill
+    endpoint (issue #347) can target the discovered PID without needing
+    the session metadata to remember it (avoids a race between persisting
+    the PID and the actual fork).
+    """
     if not session_id:
-        return False
+        return None
     proc_root = Path(_PROC_ROOT)
     if not proc_root.is_dir():
-        return False
+        return None
     target = session_id.encode("utf-8")
     try:
         for proc_dir in proc_root.iterdir():
@@ -414,15 +425,17 @@ def _is_claude_process_alive(session_id: str) -> bool:
                 continue
             cmdline_path = proc_dir / "cmdline"
             try:
-                # cmdline usa \0 como separador entre args.
                 cmdline = cmdline_path.read_bytes().replace(b"\0", b" ")
             except OSError:
                 continue
             if target in cmdline:
-                return True
+                try:
+                    return int(proc_dir.name)
+                except ValueError:
+                    return None
     except OSError:
-        return False
-    return False
+        return None
+    return None
 
 
 def _parse_claude_json_output(stdout: str) -> dict:
@@ -665,6 +678,12 @@ async def dispatch_handler(request: web.Request) -> web.Response:
 
     timeout = int(os.environ.get("DEILE_CLAUDE_WORKER_TASK_TIMEOUT_S", "7200"))
 
+    # Persist the command+prompt BEFORE the spawn so the observability panel
+    # (issue #347) can show what's being executed even while it's running.
+    meta_pre["command"] = list(cmd)
+    meta_pre["full_prompt"] = full_prompt
+    _save_session_meta(task_id, meta_pre)
+
     try:
         result = await run_subprocess_with_progress(
             cmd, cwd=workspace, task_id=task_id, timeout=timeout,
@@ -886,6 +905,398 @@ async def resume_info_handler(request: web.Request) -> web.Response:
 
 
 # --------------------------------------------------------------------------- #
+# Observability endpoints (issue #347)
+#
+# These five read-only endpoints plus the ``kill``/``cleanup`` mutating pair
+# are consumed by the new TUI observability panel in
+# ``deile/ui/panel/observability/``.  They live alongside ``/v1/dispatch``
+# (operator-facing) but never block it — every handler is best-effort, never
+# spawns a subprocess, and only reads from the PVC.
+# --------------------------------------------------------------------------- #
+
+
+#: Environment variable names whose VALUE must never leave the cluster.  We
+#: redact them in :func:`sessions_command_handler` so the operator can see
+#: *which* knobs were active without exposing the secret string itself.
+_REDACTED_ENV_PATTERNS = (
+    re.compile(r".*_API_KEY$", re.IGNORECASE),
+    re.compile(r".*_TOKEN$", re.IGNORECASE),
+    re.compile(r".*_SECRET$", re.IGNORECASE),
+    re.compile(r".*PASSWORD.*", re.IGNORECASE),
+    re.compile(r"^ANTHROPIC_AUTH_TOKEN$", re.IGNORECASE),
+    re.compile(r"^DEILE_.*_AUTH_TOKEN$", re.IGNORECASE),
+)
+
+
+def _redact_env(env: dict) -> dict:
+    """Return a copy of ``env`` with sensitive values replaced by ``***``.
+
+    Match by *key* against :data:`_REDACTED_ENV_PATTERNS` (any pattern hit
+    redacts the value).  Non-string values are coerced to ``str`` for the
+    comparison but the resulting dict still uses strings only — JSON-safe.
+    """
+    out = {}
+    for key, value in env.items():
+        if not isinstance(key, str):
+            continue
+        redacted = any(pat.search(key) for pat in _REDACTED_ENV_PATTERNS)
+        out[key] = "***" if redacted else (value if isinstance(value, str) else str(value))
+    return out
+
+
+def _claude_jsonl_path(workdir: str, session_id: str) -> Optional[Path]:
+    """Compute the ``~/.claude/projects/<workspace-hash>/<sid>.jsonl`` path.
+
+    Claude derives ``<workspace-hash>`` by replacing ``/`` with ``-`` in the
+    absolute workdir.  The result is anchored at ``$HOME/.claude/projects/``.
+    Returns ``None`` if either input is empty.
+    """
+    if not workdir or not session_id:
+        return None
+    home = Path(os.environ.get("HOME", "/home/claude"))
+    workspace_hash = "-" + workdir.lstrip("/").replace("/", "-")
+    return home / ".claude" / "projects" / workspace_hash / f"{session_id}.jsonl"
+
+
+def _summarize_session_meta(task_id: str, meta: dict) -> dict:
+    """Project the on-disk ``session.json`` into the listing payload.
+
+    The listing must stay narrow — the panel polls it at ~1 Hz and only
+    needs enough state to render a row.  Full detail is fetched on demand
+    via the per-task endpoints below.
+    """
+    session_id = meta.get("session_id") or ""
+    return {
+        "task_id": task_id,
+        "session_id": session_id,
+        "stage": meta.get("stage"),
+        "branch": meta.get("branch"),
+        "model": meta.get("model"),
+        "attempt": meta.get("attempt", 1),
+        "started_at": meta.get("started_at"),
+        "last_completed_at": meta.get("last_completed_at"),
+        "last_is_error": meta.get("last_is_error"),
+        "last_returncode": meta.get("last_returncode"),
+        "last_duration_seconds": meta.get("last_duration_seconds"),
+        "last_total_cost_usd": meta.get("last_total_cost_usd"),
+        "alive": _is_claude_process_alive(session_id),
+        "workdir": meta.get("workdir"),
+        "workdir_exists": bool(meta.get("workdir") and Path(meta["workdir"]).is_dir()),
+    }
+
+
+async def sessions_list_handler(request: web.Request) -> web.Response:
+    """``GET /v1/sessions`` — list of all tasks the worker remembers.
+
+    Walks ``~/.claude/tasks/<task_id>/session.json`` and returns one summary
+    per valid task.  Orphan directories (missing ``session.json`` or whose
+    name does not match the hex pattern) are silently skipped so a partial
+    PVC does not bleed garbage into the panel.
+    """
+    base = _session_meta_dir()
+    items: List[dict] = []
+    if base.is_dir():
+        try:
+            children = sorted(base.iterdir(), key=lambda p: p.name)
+        except OSError as exc:
+            logger.warning("could not list %s: %s", base, exc)
+            children = []
+        for child in children:
+            if not child.is_dir():
+                continue
+            if not _TASK_ID_RE.fullmatch(child.name):
+                continue
+            meta = _load_session_meta(child.name)
+            if meta is None:
+                continue
+            items.append(_summarize_session_meta(child.name, meta))
+    # Sort newest-first by started_at so the most recent task shows up first.
+    items.sort(key=lambda r: r.get("started_at") or 0, reverse=True)
+    return web.json_response({"sessions": items})
+
+
+async def sessions_command_handler(request: web.Request) -> web.Response:
+    """``GET /v1/sessions/{task_id}/command`` — exact command line used.
+
+    The payload exposes the full ``argv`` list and the verbatim prompt that
+    was passed to ``claude -p``.  Sensitive environment variables are
+    redacted via :func:`_redact_env` before they leave the pod.  Useful for
+    the panel's ``[c] full command`` overlay.
+    """
+    task_id = request.match_info["task_id"]
+    if not _TASK_ID_RE.fullmatch(task_id):
+        return web.json_response(
+            {"error": "invalid task_id format (expected hex 16-char)"},
+            status=400,
+        )
+    meta = _load_session_meta(task_id)
+    if meta is None:
+        return web.json_response(
+            {"error": f"task_id {task_id} not found"}, status=404,
+        )
+    return web.json_response({
+        "task_id": task_id,
+        "cmd": meta.get("command") or [],
+        "full_prompt": meta.get("full_prompt") or "",
+        "stage": meta.get("stage"),
+        "branch": meta.get("branch"),
+        "model": meta.get("model"),
+        "subprocess_pid": meta.get("subprocess_pid"),
+        "env_redacted": _redact_env(dict(os.environ)),
+    })
+
+
+async def sessions_chat_handler(request: web.Request) -> web.Response:
+    """``GET /v1/sessions/{task_id}/chat?tail=N`` — parsed JSONL turns.
+
+    Re-uses :class:`deile.ui.panel.observability.jsonl_parser.ClaudeJsonlParser`
+    from inside the worker so the panel does not need PVC access — the
+    structured turn list is returned over HTTP.  ``tail`` defaults to ``50``
+    (capped at ``200`` to keep responses bounded).
+    """
+    task_id = request.match_info["task_id"]
+    if not _TASK_ID_RE.fullmatch(task_id):
+        return web.json_response(
+            {"error": "invalid task_id format (expected hex 16-char)"},
+            status=400,
+        )
+    meta = _load_session_meta(task_id)
+    if meta is None:
+        return web.json_response(
+            {"error": f"task_id {task_id} not found"}, status=404,
+        )
+
+    try:
+        tail = int(request.query.get("tail", "50"))
+    except ValueError:
+        tail = 50
+    tail = max(1, min(tail, 200))
+
+    workdir = meta.get("workdir") or ""
+    session_id = meta.get("session_id") or ""
+    jsonl_path = _claude_jsonl_path(workdir, session_id)
+    if not jsonl_path or not jsonl_path.exists():
+        return web.json_response({
+            "task_id": task_id,
+            "session_id": session_id,
+            "jsonl_path": str(jsonl_path) if jsonl_path else None,
+            "turns": [],
+            "missing": True,
+        })
+
+    parser = _load_jsonl_parser()
+    if parser is None:
+        return web.json_response(
+            {"error": "jsonl parser unavailable"}, status=500,
+        )
+    result = parser(jsonl_path).parse_all(max_turns=tail)
+    return web.json_response({
+        "task_id": task_id,
+        "session_id": session_id,
+        "jsonl_path": str(jsonl_path),
+        "turns": [_turn_to_payload(t) for t in result.turns],
+        "skipped_malformed_lines": result.skipped_malformed_lines,
+    })
+
+
+async def sessions_stdout_handler(request: web.Request) -> web.Response:
+    """``GET /v1/sessions/{task_id}/stdout?tail_bytes=K`` — raw tail of logs.
+
+    Alias-with-knobs over the progress file pair.  ``tail_bytes`` caps each
+    of stdout/stderr (default 8 KiB each, max 50 KiB) — the panel keeps the
+    chat view structured and reaches into this endpoint only when the
+    operator presses ``[t]`` to inspect untruncated logs.
+    """
+    task_id = request.match_info["task_id"]
+    if not _TASK_ID_RE.fullmatch(task_id):
+        return web.json_response(
+            {"error": "invalid task_id format (expected hex 16-char)"},
+            status=400,
+        )
+    try:
+        tail_bytes = int(request.query.get("tail_bytes", "8192"))
+    except ValueError:
+        tail_bytes = 8192
+    tail_bytes = max(64, min(tail_bytes, 50_000))
+
+    root = Path(os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work"))
+    stdout_path = root / ".progress" / f"{task_id}.stdout.log"
+    stderr_path = root / ".progress" / f"{task_id}.stderr.log"
+
+    if not stdout_path.exists() and not stderr_path.exists():
+        return web.json_response(
+            {"error": f"task_id {task_id} not found"}, status=404,
+        )
+
+    def _tail(p: Path) -> str:
+        try:
+            data = p.read_text() if p.exists() else ""
+        except OSError as exc:
+            logger.warning("failed to read %s: %s", p, exc)
+            return ""
+        return data[-tail_bytes:]
+
+    return web.json_response({
+        "task_id": task_id,
+        "stdout": _tail(stdout_path),
+        "stderr": _tail(stderr_path),
+        "tail_bytes": tail_bytes,
+    })
+
+
+async def sessions_kill_handler(request: web.Request) -> web.Response:
+    """``POST /v1/sessions/{task_id}/kill`` — terminate the running subprocess.
+
+    The body MUST contain ``{"confirm": "yes-task-<first 8 hex chars>"}`` —
+    a deliberate confirmation token so the panel cannot kill a task by
+    accident (e.g. operator hitting ``[k]`` on the wrong row).  Returns
+    ``400`` without the token, ``404`` when the task is unknown, and ``409``
+    when there is no live process to kill.
+    """
+    task_id = request.match_info["task_id"]
+    if not _TASK_ID_RE.fullmatch(task_id):
+        return web.json_response(
+            {"error": "invalid task_id format (expected hex 16-char)"},
+            status=400,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    expected_confirm = f"yes-task-{task_id[:8]}"
+    if not isinstance(body, dict) or body.get("confirm") != expected_confirm:
+        return web.json_response({
+            "error": "missing or invalid confirm token",
+            "expected": expected_confirm,
+        }, status=400)
+    meta = _load_session_meta(task_id)
+    if meta is None:
+        return web.json_response(
+            {"error": f"task_id {task_id} not found"}, status=404,
+        )
+    session_id = meta.get("session_id") or ""
+    pid = _find_claude_pid(session_id)
+    if pid is None:
+        return web.json_response({
+            "killed": False,
+            "task_id": task_id,
+            "reason": "no live claude subprocess",
+        }, status=409)
+    try:
+        os.kill(pid, 9)
+    except OSError as exc:
+        logger.warning("kill(%s) failed: %s", pid, exc)
+        return web.json_response({
+            "killed": False,
+            "task_id": task_id,
+            "reason": str(exc),
+        }, status=500)
+    return web.json_response({"killed": True, "task_id": task_id, "pid": pid})
+
+
+async def sessions_cleanup_handler(request: web.Request) -> web.Response:
+    """``DELETE /v1/sessions/{task_id}/cleanup`` — drop workdir + jsonl + meta.
+
+    The intent is reclaiming PVC space, NOT cancelling a task — refuses to
+    proceed when the task is still alive (``409``).  Removal is best-effort
+    and the response payload lists exactly what was removed; partial cleanup
+    is still considered a success because the dominant cost is the workdir.
+    """
+    task_id = request.match_info["task_id"]
+    if not _TASK_ID_RE.fullmatch(task_id):
+        return web.json_response(
+            {"error": "invalid task_id format (expected hex 16-char)"},
+            status=400,
+        )
+    meta = _load_session_meta(task_id)
+    if meta is None:
+        return web.json_response(
+            {"error": f"task_id {task_id} not found"}, status=404,
+        )
+    if _is_claude_process_alive(meta.get("session_id") or ""):
+        return web.json_response({
+            "error": "task is alive — kill first",
+            "task_id": task_id,
+        }, status=409)
+
+    removed = {"workdir": False, "session": False, "jsonl": False, "progress": False}
+
+    workdir = meta.get("workdir")
+    if workdir:
+        try:
+            shutil.rmtree(workdir, ignore_errors=True)
+            removed["workdir"] = not Path(workdir).exists()
+        except OSError as exc:
+            logger.warning("rmtree(%s) failed: %s", workdir, exc)
+
+    jsonl_path = _claude_jsonl_path(workdir or "", meta.get("session_id") or "")
+    if jsonl_path and jsonl_path.exists():
+        try:
+            jsonl_path.unlink()
+            removed["jsonl"] = True
+        except OSError as exc:
+            logger.warning("unlink(%s) failed: %s", jsonl_path, exc)
+
+    root = Path(os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work"))
+    for stream in ("stdout", "stderr"):
+        p = root / ".progress" / f"{task_id}.{stream}.log"
+        if p.exists():
+            try:
+                p.unlink()
+                removed["progress"] = True
+            except OSError as exc:
+                logger.warning("unlink(%s) failed: %s", p, exc)
+
+    session_dir = _session_meta_dir() / task_id
+    if session_dir.exists():
+        try:
+            shutil.rmtree(session_dir, ignore_errors=True)
+            removed["session"] = not session_dir.exists()
+        except OSError as exc:
+            logger.warning("rmtree(%s) failed: %s", session_dir, exc)
+
+    return web.json_response({"task_id": task_id, "removed": removed})
+
+
+# Lazy import of the JSONL parser — avoids hard-coupling the worker module
+# to the panel package at import time (the worker runs in pods that may not
+# need the panel sources, e.g. headless CI).
+def _load_jsonl_parser():
+    """Return :class:`ClaudeJsonlParser` or ``None`` if unavailable."""
+    try:
+        # ``infra/k8s/`` is NOT a Python package; the panel package lives in
+        # ``deile/ui/panel/observability/``.  In the worker pod the whole
+        # repo is laid out at ``/app`` and the ``deile`` package is on
+        # ``sys.path`` (see ``wrapper.py``).  Outside the pod the import
+        # also works as long as the repo root is on ``sys.path`` (the
+        # default for pytest invocations).
+        from deile.ui.panel.observability.jsonl_parser import ClaudeJsonlParser
+        return ClaudeJsonlParser
+    except Exception as exc:  # broad: this is best-effort soft-import
+        logger.warning("could not import ClaudeJsonlParser: %s", exc)
+        return None
+
+
+def _turn_to_payload(turn) -> dict:
+    """Serialize a parser Turn dataclass to a JSON-safe dict."""
+    payload = {
+        "index": turn.index,
+        "ts": turn.ts,
+        "role": getattr(turn, "role", None),
+        "in_progress": getattr(turn, "in_progress", False),
+        "type": turn.__class__.__name__,
+    }
+    for attr in ("content", "tool_name", "tool_input", "tool_use_id",
+                 "is_error", "model", "stop_reason", "usage",
+                 "type_label", "summary"):
+        if hasattr(turn, attr):
+            value = getattr(turn, attr)
+            # Coerce content blocks to short str; tool_input is already dict.
+            payload[attr] = value
+    return payload
+
+
+# --------------------------------------------------------------------------- #
 # Wiring
 # --------------------------------------------------------------------------- #
 
@@ -914,6 +1325,13 @@ def build_app(auth_token: Optional[str] = None) -> web.Application:
     app.router.add_get(
         "/v1/dispatches/{task_id}/resume-info", resume_info_handler,
     )
+    # Observability endpoints (issue #347).
+    app.router.add_get("/v1/sessions", sessions_list_handler)
+    app.router.add_get("/v1/sessions/{task_id}/command", sessions_command_handler)
+    app.router.add_get("/v1/sessions/{task_id}/chat", sessions_chat_handler)
+    app.router.add_get("/v1/sessions/{task_id}/stdout", sessions_stdout_handler)
+    app.router.add_post("/v1/sessions/{task_id}/kill", sessions_kill_handler)
+    app.router.add_delete("/v1/sessions/{task_id}/cleanup", sessions_cleanup_handler)
     return app
 
 
