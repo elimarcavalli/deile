@@ -186,6 +186,10 @@ COPY --from=builder --chown=deile:deile /build/deilebot /app/deilebot
 COPY --chown=deile:deile infra/k8s/wrapper.py /app/wrapper.py
 RUN chmod 0555 /app/wrapper.py
 
+# claude-worker HTTP server — entry point for the claude-worker pod (issue #309).
+COPY --chown=deile:deile infra/k8s/claude_worker_server.py /app/claude_worker_server.py
+RUN chmod 0555 /app/claude_worker_server.py
+
 # Worker HTTP server — entry point for the deile-worker pod.
 COPY --chown=deile:deile infra/k8s/worker_server.py /app/worker_server.py
 RUN chmod 0555 /app/worker_server.py
