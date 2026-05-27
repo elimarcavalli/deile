@@ -42,6 +42,7 @@ import sys
 import tempfile
 import threading
 import time
+import webbrowser
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
@@ -1566,6 +1567,42 @@ class PodWatchView(View):
                 (_fmt_age(wstate.last_activity_s) + " ago"
                  if wstate.last_activity_s is not None else "—", "bold"),
             ))
+            # "Current task" — issue/PR/MR/workflow que o worker está
+            # atendendo no momento (issue #309 fase 2 follow-up). Fonte
+            # de verdade: linha estruturada ``dispatch_started`` emitida
+            # pelo :func:`infra.k8s.worker_server.dispatch_handler` e
+            # parseada pelo :class:`WorkerProvider`. Forge-agnóstico: o
+            # ``target_label`` do CurrentTask devolve ``#N``/``PR#N``/
+            # ``mention …`` independentemente de GitHub ou GitLab — o
+            # vocabulário PR↔MR é abstraído upstream (ver Decisão #42).
+            # Quando idle ou worker antigo sem logs estruturados, mostra
+            # ``—`` (mesmo padrão das outras células do header).
+            ct = wstate.current_task
+            if ct is not None:
+                task_parts: List[Any] = [
+                    ("current task: ", "dim"),
+                    (ct.target_label, "bold magenta"),
+                ]
+                if ct.stage:
+                    task_parts.extend([
+                        ("   stage: ", "dim"),
+                        (ct.stage, "bold"),
+                    ])
+                if ct.branch:
+                    task_parts.extend([
+                        ("   branch: ", "dim"),
+                        (ct.branch, "dim italic"),
+                    ])
+                task_parts.extend([
+                    ("   running: ", "dim"),
+                    (_fmt_age(ct.elapsed_s), "bold"),
+                ])
+                lines.append(Text.assemble(*task_parts))
+            else:
+                lines.append(Text.assemble(
+                    ("current task: ", "dim"),
+                    ("— (idle)", "dim"),
+                ))
         return Group(*lines)
 
     def _local_header_body(self) -> RenderableType:
@@ -1636,12 +1673,17 @@ class PodWatchView(View):
 
     def render(self, app: "PanelApp") -> RenderableType:
         layout = Layout()
+        # ``size=7`` acomoda 4 linhas de header + bordas do Panel + título
+        # ([1] name/role/status + [2] uptime/restarts/ready/node + [3]
+        # worker/last activity + [4] current task — issue #309 fase 2).
+        # Workers idle ou pods não-worker mostram menos linhas; o Panel
+        # auto-encolhe sem corte porque o size é teto, não piso.
         layout.split_column(
             Layout(_head_panel(self.title, app), name="head", size=4),
             Layout(Panel(self._header_body(),
                          title="[bold]POD[/bold]", title_align="left",
                          border_style="cyan"),
-                   name="info", size=6),
+                   name="info", size=7),
             Layout(self._log_panel(), name="log"),
             Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
         )
@@ -1928,12 +1970,16 @@ class IssuesPRsView(View):
                          title=f"[bold]{label.upper()}[/bold]",
                          title_align="left", border_style="dim")
         tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
-        tbl.add_column(" ", width=2)
-        tbl.add_column("#", width=6)
-        tbl.add_column("workflow", width=22)
-        tbl.add_column("review", width=14)
-        tbl.add_column("updated", width=10)
-        tbl.add_column("assignees", width=18)
+        # Larguras como `max_width` (teto, não literal — princípio 15): Rich
+        # pode encolher cada coluna abaixo desse valor quando o terminal é
+        # estreito, em vez de travar a tabela. A coluna `title` fica sem teto
+        # para absorver o espaço restante.
+        tbl.add_column(" ", max_width=2)
+        tbl.add_column("#", max_width=6)
+        tbl.add_column("workflow", max_width=22)
+        tbl.add_column("review", max_width=14)
+        tbl.add_column("updated", max_width=10)
+        tbl.add_column("assignees", max_width=18)
         tbl.add_column("title")
         now = datetime.now(timezone.utc)
         flat = self._flat()
@@ -1999,7 +2045,14 @@ class IssuesPRsView(View):
             return ActionResult.refresh()
         if key in ("\r", "\n"):
             url = flat[self.cursor].url
-            _copy_to_clipboard(url)
+            if url:
+                # Abre no browser default do OS (forge-agnóstico — a URL já
+                # vem do `html_url` do GitHub ou do `web_url` do GitLab, o
+                # painel não monta nada). `webbrowser.open` é best-effort:
+                # em headless retorna False mas não levanta; o clipboard
+                # cai como fallback para o operador colar manualmente.
+                _open_in_browser(url)
+                _copy_to_clipboard(url)
             # Não temos toast ainda — devolve refresh para a próxima render
             # surgir com indicador. (Fase 6: ActionsOverlay com toast queue.)
             return ActionResult.refresh()
@@ -2023,6 +2076,26 @@ def _copy_to_clipboard(text: str) -> bool:
         "_copy_to_clipboard: nenhum bin (pbcopy/xclip/wl-copy) encontrado",
     )
     return False
+
+
+def _open_in_browser(url: str) -> bool:
+    """Abre `url` no browser default do OS — best-effort, nunca levanta.
+
+    Usa ``webbrowser.open`` da stdlib (delega para ``open`` no macOS,
+    ``xdg-open`` no Linux, ``start`` no Windows). Em ambiente headless
+    (CI, container sem DISPLAY) o ``webbrowser`` registra
+    ``BROWSER`` vazio e o ``open()`` retorna False; o operador ainda
+    tem a URL no clipboard via ``_copy_to_clipboard``. Qualquer exceção
+    é capturada e logada em WARNING — abrir browser não é crítico,
+    o painel não deve cair por isso.
+    """
+    if not url:
+        return False
+    try:
+        return bool(webbrowser.open(url, new=2, autoraise=True))
+    except Exception as exc:  # pragma: no cover — defensivo
+        logger.warning("_open_in_browser falhou para %s: %s", url, exc)
+        return False
 
 
 class TokensView(View):
@@ -3667,6 +3740,15 @@ class DispatchMatrixView(View):
         # ``DispatchModeView`` / ``StageModelsView``).
         self.last_msg: str = ""
         self.last_ok: Optional[bool] = None
+        # --- Background install state (issue #309 fase 2 hotfix #2) ---
+        # ``bootstrap_claude_worker`` chama ``claude auth login`` que pode
+        # bloquear até 5 min em ``subprocess.run``. O painel TUI tem event
+        # loop síncrono — chamar isso inline congela ESC, refresh e qualquer
+        # tecla. Solução: rodar em ``threading.Thread`` daemon, com flag
+        # para o handler de tecla rejeitar [I]/[L] concorrentes, e a thread
+        # publicar resultado em ``last_msg``/``last_ok`` quando termina.
+        self._install_thread: Optional["threading.Thread"] = None
+        self._install_in_progress: bool = False
 
     # --- View lifecycle / key interception ------------------------------
 
@@ -4027,6 +4109,15 @@ class DispatchMatrixView(View):
         # --- [r] reset da célula corrente -------------------------------
         if key == "r":
             return self._reset_current_cell()
+        if key in ("L", "I"):
+            # Bloqueia spawn duplo enquanto bootstrap em background.
+            if self._install_in_progress:
+                self.last_msg = (
+                    "instalação/login do claude-worker em andamento — "
+                    "aguarde o resultado aparecer aqui"
+                )
+                self.last_ok = None
+                return ActionResult.refresh()
         if key in ("L",):
             # Task 20 — modal de switch-login do claude-worker. Só faz
             # sentido quando o Deployment já está aplicado; senão sugere [I].
@@ -4243,19 +4334,48 @@ class DispatchMatrixView(View):
             return ActionResult.refresh()
         return ActionResult()
 
-    def _perform_install(self, *, force_relogin: bool) -> None:
-        """Invoca :func:`bootstrap_claude_worker` e atualiza feedback.
+    def _perform_install(self, *, force_relogin: bool,
+                         _blocking: bool = False) -> None:
+        """Spawna :func:`bootstrap_claude_worker` em thread daemon e retorna
+        imediatamente.
+
+        :param _blocking: força execução inline (usado por
+            :meth:`_on_worker_selected` que precisa verificar
+            ``cw_status.deployment_applied`` após o install, e por testes
+            que dependem da assertion ser síncrona). Default ``False`` —
+            UX do painel ([I]/[L] modals) nunca bloqueia.
+
+        ``bootstrap_claude_worker`` chama ``subprocess.run(["claude", "auth",
+        "login"], timeout=300)`` que bloqueia o caller até 5 min. O painel
+        TUI tem event loop síncrono — qualquer chamada bloqueante congela
+        ESC, refresh e qualquer tecla. Solução: rodar em thread daemon,
+        publicar resultado em ``last_msg``/``last_ok`` quando termina, e o
+        render normal mostra "executando…" → resultado naturalmente no
+        próximo tick.
+
+        Idempotente: se já há thread rodando, devolve mensagem informativa
+        e ignora (evita spawn duplo se o operador apertar [I]/[L] de novo).
 
         Importação lazy + indireção pelo módulo (não pelo símbolo) para
         que o monkeypatch dos testes pegue a substituição em
-        ``infra.k8s._claude_install.bootstrap_claude_worker``.
-
-        Cache invalidation defensiva pós-install: zera o ``_status_cache``
-        do provider para o próximo render mostrar o estado novo sem
-        depender de [r] manual nem do TTL.
+        ``infra.k8s._claude_install.bootstrap_claude_worker``. O modo
+        ``_install_blocking`` (testes) executa inline preservando o
+        contrato anterior (sem thread) para os asserts continuarem válidos.
         """
-        from _claude_install import \
-            bootstrap_claude_worker as _direct_bootstrap  # noqa: PLC0415
+        import threading  # noqa: PLC0415 — import lazy só quando necessário
+
+        # Idempotência: ignora call concorrente enquanto thread anterior
+        # ainda viva. ``_install_thread`` setado em spawn anterior; ``is_alive``
+        # robusto a thread já joined (devolve False).
+        if self._install_in_progress or (
+                self._install_thread is not None
+                and self._install_thread.is_alive()):
+            self.last_msg = (
+                "instalação/login do claude-worker já em andamento — "
+                "aguarde o resultado antes de tentar de novo"
+            )
+            self.last_ok = None
+            return
 
         ns = (self.data.context.namespace
               if self.data is not None and getattr(self.data, "context", None)
@@ -4268,12 +4388,47 @@ class DispatchMatrixView(View):
 
         action_kind = "switch-login" if force_relogin else "install"
         self.last_msg = (
-            f"executando {action_kind} do claude-worker "
-            f"(force_relogin={force_relogin})…"
+            f"executando {action_kind} do claude-worker em background "
+            f"(force_relogin={force_relogin}) — UI permanece responsiva, "
+            f"resultado aparecerá aqui em alguns segundos…"
         )
         self.last_ok = None
+        self._install_in_progress = True
 
-        # Indireção: re-resolver via módulo para o monkeypatch funcionar.
+        # Modo blocking: _on_worker_selected (verifica status após install)
+        # e testes que dependem da chamada ser síncrona. Em produção o
+        # painel ([I]/[L] modals) sempre passa _blocking=False.
+        if _blocking or getattr(self, "_install_blocking", False):
+            self._run_install_blocking(force_relogin=force_relogin,
+                                       namespace=ns)
+            return
+
+        # Thread daemon — não impede o painel de fechar via [q].
+        self._install_thread = threading.Thread(
+            target=self._run_install_blocking,
+            kwargs={"force_relogin": force_relogin, "namespace": ns},
+            name=f"claude-{action_kind}",
+            daemon=True,
+        )
+        self._install_thread.start()
+
+    def _run_install_blocking(self, *, force_relogin: bool,
+                              namespace: str) -> None:
+        """Worker body — executa o bootstrap síncrono e publica resultado.
+
+        Roda em :class:`threading.Thread` daemon spawnada por
+        :meth:`_perform_install`. Atualiza ``last_msg``/``last_ok``/
+        ``_install_in_progress`` ao final. Cache invalidation roda aqui
+        para o próximo render do painel mostrar o estado novo sem [r]
+        manual.
+
+        Thread safety: atribuições de string/bool a atributos de instância
+        são atomic em CPython (GIL). Pior caso: tick do render lê uma
+        atualização parcial — ele simplesmente re-lê no próximo tick (1s).
+        """
+        from _claude_install import \
+            bootstrap_claude_worker as _direct_bootstrap  # noqa: PLC0415
+
         try:
             import _claude_install  # noqa: PLC0415
             bootstrap_fn = getattr(
@@ -4284,9 +4439,13 @@ class DispatchMatrixView(View):
 
         try:
             result = bootstrap_fn(
-                namespace=ns,
+                namespace=namespace,
                 force_relogin=force_relogin,
                 interactive=True,
+                # Painel TUI: jamais inherit stdio do subprocess do claude,
+                # senão o display Rich é corrompido pelo OAuth URL/prompts.
+                # Output do claude é capturado e logado via logger.info.
+                inherit_stdio=False,
             )
         except Exception as exc:  # noqa: BLE001
             self.last_msg = (
@@ -4294,6 +4453,7 @@ class DispatchMatrixView(View):
                 f"{type(exc).__name__}: {exc}"
             )
             self.last_ok = False
+            self._install_in_progress = False
             return
 
         if not getattr(result, "ok", False):
@@ -4319,6 +4479,9 @@ class DispatchMatrixView(View):
             except (AttributeError, TypeError):
                 # MagicMock pode não ter o atributo — ignora.
                 pass
+
+        # Libera o slot por último — render observa estado completo antes.
+        self._install_in_progress = False
 
     def _on_worker_selected(self, stage: str, choice: str) -> None:
         """Hook chamado quando o operador escolhe um worker no picker.
@@ -4347,7 +4510,9 @@ class DispatchMatrixView(View):
                 # passa pelo modal [I] antes de chegar aqui na maioria dos
                 # casos. Quando o operador pula direto pro picker, este
                 # branch garante consistência).
-                self._perform_install(force_relogin=False)
+                # _blocking=True: precisamos do cw_status atualizado já
+                # na próxima linha; spawnar thread aqui criaria race.
+                self._perform_install(force_relogin=False, _blocking=True)
                 cw_status = self._claude_status()
                 if not cw_status.deployment_applied:
                     self.last_msg = (
