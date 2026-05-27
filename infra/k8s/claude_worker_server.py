@@ -438,6 +438,137 @@ def _find_claude_pid(session_id: str) -> Optional[int]:
     return None
 
 
+# --- Issue #347 follow-up: smart review resume helpers ----------------------
+#
+# Quando o pipeline resume com -r, ANTES do spawn:
+#   1. Token budget check (sessão JSONL não pode crescer infinitamente)
+#   2. git fast-forward no workdir (puxa commits novos do operador)
+#
+# Ambos best-effort: erros viram logger.warning, NÃO derrubam o dispatch.
+
+
+def _resolve_jsonl_path(session_id: str, workspace: Path) -> Optional[Path]:
+    """Localiza o JSONL da sessão claude no formato:
+
+        ~/.claude/projects/-home-claude-work-<task_id>/<session_id>.jsonl
+
+    onde ``<task_id>`` é derivado do nome do workspace. Retorna None se
+    arquivo ausente.
+    """
+    if not session_id or not workspace:
+        return None
+    workspace_hash = "-".join(str(workspace).strip("/").split("/"))
+    home = Path(os.environ.get("HOME", "/home/claude"))
+    candidate = home / ".claude" / "projects" / f"-{workspace_hash}" / f"{session_id}.jsonl"
+    if candidate.exists():
+        return candidate
+    # Fallback: lista o dir e procura pelo session_id (algumas versões
+    # do claude CLI normalizam hash de forma diferente).
+    projects_dir = home / ".claude" / "projects"
+    if projects_dir.is_dir():
+        for sub in projects_dir.iterdir():
+            if not sub.is_dir():
+                continue
+            f = sub / f"{session_id}.jsonl"
+            if f.exists():
+                return f
+    return None
+
+
+def _estimate_session_tokens(session_id: str, workspace: Path) -> int:
+    """Soma usage tokens do JSONL da sessão claude (input + output + cache).
+
+    Retorna 0 quando JSONL ausente / unreadable — fallback conservador
+    (não bloqueia resume por incapacidade de medir).
+    """
+    jsonl_path = _resolve_jsonl_path(session_id, workspace)
+    if jsonl_path is None:
+        return 0
+    total = 0
+    try:
+        with jsonl_path.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line or not line.startswith("{"):
+                    continue
+                try:
+                    d = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                msg = d.get("message") if isinstance(d, dict) else None
+                usage = (msg or {}).get("usage") if isinstance(msg, dict) else None
+                if not isinstance(usage, dict):
+                    usage = d.get("usage") if isinstance(d, dict) else None
+                if not isinstance(usage, dict):
+                    continue
+                for k in ("input_tokens", "output_tokens",
+                          "cache_read_input_tokens", "cache_creation_input_tokens"):
+                    v = usage.get(k)
+                    if isinstance(v, (int, float)):
+                        total += int(v)
+    except OSError as exc:
+        logger.warning("session token count failed for %s: %s", session_id, exc)
+        return 0
+    return total
+
+
+async def _git_fast_forward_workdir(workspace: Path, branch: Optional[str]) -> None:
+    """Best-effort git fetch + reset --hard origin/<branch> dentro do
+    workdir reaproveitado. Permite ao claude (em resume) ver commits
+    novos pushados pelo operador entre revisions.
+
+    Procura ``<workspace>/repo/.git`` (estrutura padrão criada pelo
+    primeiro dispatch via ``gh repo clone repo``). Se não existir,
+    no-op (claude pode fazer pull no próprio shell).
+
+    Erros viram ``logger.warning`` e função retorna — NUNCA levanta.
+    """
+    if not branch or not workspace:
+        return
+    repo_dir = workspace / "repo"
+    if not (repo_dir / ".git").exists():
+        logger.debug("git ff: no .git in %s/repo — skipping", workspace)
+        return
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "git", "-C", str(repo_dir), "fetch", "--quiet", "origin", branch,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _out, err = await asyncio.wait_for(proc.communicate(), timeout=60)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            logger.warning("git fetch timeout in %s", repo_dir)
+            return
+        if proc.returncode != 0:
+            logger.warning(
+                "git fetch %s failed (rc=%d): %s", branch, proc.returncode,
+                (err or b"").decode("utf-8", "replace")[:200],
+            )
+            return
+        proc = await asyncio.create_subprocess_exec(
+            "git", "-C", str(repo_dir), "reset", "--hard", f"origin/{branch}",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            logger.warning("git reset timeout in %s", repo_dir)
+            return
+        if proc.returncode == 0:
+            logger.info("git ff %s/repo to origin/%s OK", workspace.name, branch)
+        else:
+            logger.warning(
+                "git reset --hard origin/%s failed (rc=%d): %s", branch,
+                proc.returncode, (err or b"").decode("utf-8", "replace")[:200],
+            )
+    except (FileNotFoundError, OSError) as exc:
+        logger.warning("git ff failed in %s: %s", repo_dir, exc)
+
+
 def _parse_claude_json_output(stdout: str) -> dict:
     """Extrai campos estruturados do ``--output-format json`` do claude CLI.
 
@@ -609,6 +740,38 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             "resume dispatch task_id=%s session=%s attempt=%d workdir=%s",
             task_id, session_id, attempt, workspace,
         )
+
+        # Issue #347 follow-up — TOKEN BUDGET CHECK: se a sessão anterior
+        # consumiu > threshold, resume custaria muito (claude re-injeta TODA
+        # a história). Em vez disso devolve 413 explícito; pipeline pode
+        # decidir entre compact OU fallback fresh.
+        budget_limit = int(os.environ.get(
+            "DEILE_CLAUDE_RESUME_TOKEN_BUDGET", "500000",
+        ))
+        if budget_limit > 0:
+            jsonl_tokens = _estimate_session_tokens(session_id, workspace)
+            if jsonl_tokens > budget_limit:
+                logger.warning(
+                    "resume %s rejeitado: session JSONL acumulou %d tokens "
+                    "(threshold=%d). Pipeline deve compact ou fallback fresh.",
+                    session_id, jsonl_tokens, budget_limit,
+                )
+                return web.json_response({
+                    "ok": False,
+                    "error_code": "RESUME_BUDGET_EXCEEDED",
+                    "error": (
+                        f"sessão acumulou {jsonl_tokens} tokens (>{budget_limit}). "
+                        f"Resume custaria caro. Pipeline pode fallback pra fresh."
+                    ),
+                    "tokens_in_session": jsonl_tokens,
+                    "budget_limit": budget_limit,
+                }, status=413)
+
+        # Issue #347 follow-up — GIT PULL no workdir reaproveitado pra que
+        # claude veja os commits novos do operador. Best-effort: se falhar
+        # (sem .git, sem origin, conflito), log warning e continua —
+        # claude pode dar pull no próprio (tem `gh`/`git` no shell).
+        await _git_fast_forward_workdir(workspace, branch)
     else:
         # Fresh path: novo task_id + session-id + workspace.
         task_id = secrets.token_hex(8)
@@ -621,22 +784,31 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             task_id, session_id, stage, claude_model, branch,
         )
 
-    # Preamble: fresh dispatch recebe o template normal; resume recebe um
-    # nudge curto ("você foi interrompido, continue de onde parou — claude
-    # já tem todo o histórico via -r"). Sem repetir o brief original.
+    # Preamble:
+    #   • fresh dispatch — preamble do stage + brief original
+    #   • resume — usa o BRIEF VINDO DO PAYLOAD se o pipeline já mandou um
+    #     nudge contextual rico (issue #347 follow-up: _wrap_review_brief_for_resume
+    #     constrói nudge com delta + comentários + checklist). Fallback
+    #     pra nudge mínimo legacy quando brief é o default genérico.
     if is_resume:
-        full_prompt = (
-            f"Sua execução anterior (task_id={task_id}, attempt={attempt-1}) "
-            f"foi interrompida (timeout, kill, pod restart). Você está sendo "
-            f"retomado com `-r {session_id}` — você vê TODA a conversa "
-            f"anterior, incluindo as ações já completadas (tool calls, files "
-            f"editados, comments postados).\n\n"
-            f"REGRA: NÃO refaça trabalho já completado (não re-comente, não "
-            f"re-edite arquivos que já foram salvos com sucesso). Identifique "
-            f"o ponto exato onde parou e continue. Finalize com 'STATUS: "
-            f"SUCCESS' ou 'STATUS: BLOCKED_<motivo>' depois de postar comment "
-            f"final se for review."
-        )
+        # Heurística: brief que começa com "# RESUME" (do nudge novo do
+        # pipeline) é usado direto; brief sem marker = legacy → nudge mínimo.
+        if brief.startswith("# RESUME") or "RESUME DE REVIEW" in brief[:200]:
+            full_prompt = brief
+        else:
+            full_prompt = (
+                f"Sua execução anterior (task_id={task_id}, attempt={attempt-1}) "
+                f"foi interrompida (timeout, kill, pod restart). Você está sendo "
+                f"retomado com `-r {session_id}` — você vê TODA a conversa "
+                f"anterior, incluindo as ações já completadas (tool calls, files "
+                f"editados, comments postados).\n\n"
+                f"REGRA: NÃO refaça trabalho já completado (não re-comente, não "
+                f"re-edite arquivos que já foram salvos com sucesso). Identifique "
+                f"o ponto exato onde parou e continue. Finalize com 'STATUS: "
+                f"SUCCESS' ou 'STATUS: BLOCKED_<motivo>' depois de postar comment "
+                f"final se for review.\n\n"
+                f"Contexto do operador (se presente):\n\n{brief}"
+            )
     else:
         preamble = _render_preamble(stage, branch, task_id)
         full_prompt = preamble + "\n\n---\n\n" + brief
