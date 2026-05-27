@@ -254,3 +254,168 @@ def test_kubectl_sync_bearer_token_succeeds_when_worker_bearer_present(
     dry_run_cmd = call_log[1]
     assert any(token_plain in arg for arg in dry_run_cmd), \
         f"token plain não encontrado em {dry_run_cmd}"
+
+
+# ---------------------------------------------------------------------------
+# Testes de CLAUDE_OAUTH_ACCESS_TOKEN env var (#309 fase 3)
+# ---------------------------------------------------------------------------
+
+
+def test_read_credentials_from_env_returns_none_when_unset(
+    claude_install_module, monkeypatch,
+):
+    """Env var ausente (ou não definida) → retorna None."""
+    monkeypatch.delenv("CLAUDE_OAUTH_ACCESS_TOKEN", raising=False)
+    result = claude_install_module._read_credentials_from_env()
+    assert result is None
+
+
+def test_read_credentials_from_env_returns_dict_when_set(
+    claude_install_module, monkeypatch,
+):
+    """Env var setada → retorna dict com formato Keychain canônico."""
+    monkeypatch.setenv("CLAUDE_OAUTH_ACCESS_TOKEN", "my-oauth-token-abc123")
+    result = claude_install_module._read_credentials_from_env()
+    assert result is not None
+    assert result == {"claudeAiOauth": {"accessToken": "my-oauth-token-abc123"}}
+
+
+def test_read_credentials_from_env_strips_whitespace(
+    claude_install_module, monkeypatch,
+):
+    """Env var com espaços/newline ao redor → token stripado antes de retornar."""
+    monkeypatch.setenv("CLAUDE_OAUTH_ACCESS_TOKEN", "  token-with-spaces  \n")
+    result = claude_install_module._read_credentials_from_env()
+    assert result is not None
+    assert result["claudeAiOauth"]["accessToken"] == "token-with-spaces"
+
+
+def test_read_credentials_from_env_returns_none_when_empty(
+    claude_install_module, monkeypatch,
+):
+    """Env var setada mas vazia → retorna None (equivalente a não setada)."""
+    monkeypatch.setenv("CLAUDE_OAUTH_ACCESS_TOKEN", "   ")
+    result = claude_install_module._read_credentials_from_env()
+    assert result is None
+
+
+def test_bootstrap_uses_env_var_first_when_set(
+    claude_install_module, tmp_path, monkeypatch,
+):
+    """CLAUDE_OAUTH_ACCESS_TOKEN setada → usada como credencial, sem tocar Keychain/file.
+
+    Valida que a cadeia de precedência respeita a env var como primeira fonte.
+    Keychain e file ficam "indisponíveis" propositalmente — se o código tocar
+    em qualquer um deles, o teste falha.
+    """
+    monkeypatch.setenv("CLAUDE_OAUTH_ACCESS_TOKEN", "env-token-xyz")
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    keychain_called = []
+
+    def _keychain_should_not_be_called():
+        keychain_called.append(True)
+        return None  # mesmo que retorne None, registra a chamada indevida
+
+    monkeypatch.setattr(
+        claude_install_module, "_check_claude_logged_in", lambda: None,
+    )
+    monkeypatch.setattr(
+        claude_install_module, "_read_credentials_from_keychain",
+        _keychain_should_not_be_called,
+    )
+    # Não criamos ~/.claude/credentials.json — file também não deve ser lido.
+
+    captured_creds = {}
+
+    def fake_apply_secret(creds, *, namespace):
+        captured_creds.update(creds)
+        return True
+
+    with patch.object(claude_install_module, "_kubectl_apply_secret", side_effect=fake_apply_secret), \
+         patch.object(claude_install_module, "_kubectl_apply_manifests", return_value=True), \
+         patch.object(claude_install_module, "_kubectl_sync_bearer_token", return_value=True), \
+         patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True):
+        result = claude_install_module.bootstrap_claude_worker(
+            interactive=False, force_relogin=False, home=tmp_path,
+        )
+
+    assert result.ok is True
+    # Env var foi usada: Secret deve conter o token da env var.
+    oauth = captured_creds.get("claudeAiOauth", {})
+    assert oauth.get("accessToken") == "env-token-xyz", \
+        f"expected env-token-xyz, got {captured_creds!r}"
+    # Keychain não deveria ter sido chamado.
+    assert keychain_called == [], "Keychain foi chamado mesmo com env var setada"
+
+
+def test_bootstrap_falls_back_to_keychain_when_env_unset(
+    claude_install_module, tmp_path, monkeypatch,
+):
+    """Env var ausente → cai para Keychain (segunda prioridade)."""
+    monkeypatch.delenv("CLAUDE_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        claude_install_module, "_check_claude_logged_in", lambda: None,
+    )
+
+    fake_keychain_creds = {"claudeAiOauth": {"accessToken": "keychain-token"}}
+    monkeypatch.setattr(
+        claude_install_module, "_read_credentials_from_keychain",
+        lambda: fake_keychain_creds,
+    )
+    # Sem credentials.json — se o código cair no file path, terá None do file.
+
+    captured_creds = {}
+
+    def fake_apply_secret(creds, *, namespace):
+        captured_creds.update(creds)
+        return True
+
+    with patch.object(claude_install_module, "_kubectl_apply_secret", side_effect=fake_apply_secret), \
+         patch.object(claude_install_module, "_kubectl_apply_manifests", return_value=True), \
+         patch.object(claude_install_module, "_kubectl_sync_bearer_token", return_value=True), \
+         patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True):
+        result = claude_install_module.bootstrap_claude_worker(
+            interactive=False, force_relogin=False, home=tmp_path,
+        )
+
+    assert result.ok is True
+    assert captured_creds.get("claudeAiOauth", {}).get("accessToken") == "keychain-token"
+
+
+def test_bootstrap_falls_back_to_file_when_env_and_keychain_unset(
+    claude_install_module, tmp_path, monkeypatch,
+):
+    """Env var ausente + Keychain ausente → cai para ~/.claude/credentials.json."""
+    monkeypatch.delenv("CLAUDE_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        claude_install_module, "_check_claude_logged_in", lambda: None,
+    )
+    monkeypatch.setattr(
+        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+    )
+
+    # Cria credentials.json no path esperado.
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    file_creds = {"email": "file@test.com", "access_token": "file-token"}
+    (claude_dir / "credentials.json").write_text(json.dumps(file_creds))
+
+    captured_creds = {}
+
+    def fake_apply_secret(creds, *, namespace):
+        captured_creds.update(creds)
+        return True
+
+    with patch.object(claude_install_module, "_kubectl_apply_secret", side_effect=fake_apply_secret), \
+         patch.object(claude_install_module, "_kubectl_apply_manifests", return_value=True), \
+         patch.object(claude_install_module, "_kubectl_sync_bearer_token", return_value=True), \
+         patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True):
+        result = claude_install_module.bootstrap_claude_worker(
+            interactive=False, force_relogin=False, home=tmp_path,
+        )
+
+    assert result.ok is True
+    assert captured_creds.get("email") == "file@test.com"

@@ -54,6 +54,33 @@ def _check_claude_logged_in() -> Optional[dict]:
     return data
 
 
+def _read_credentials_from_env() -> Optional[dict]:
+    """Lê OAuth access token da env var ``CLAUDE_OAUTH_ACCESS_TOKEN``.
+
+    Atalho zero-touch: o Humano exporta a var no .env e o
+    ``bootstrap_claude_worker`` pula Keychain/file/browser. Útil pra:
+    - CI/CD (sem Chrome disponível)
+    - Re-deploy frequente (não precisa re-OAuth a cada subida)
+    - Operadores que preferem gerenciar token manualmente
+
+    Returns ``{"claudeAiOauth": {"accessToken": "<token>"}}`` (formato
+    Keychain canônico — o resto do código já trata esse shape) ou None
+    se a var não estiver setada / vazia.
+
+    NÃO loga o valor do token — princípio 08 (segredos não entram em log).
+    Loga apenas o comprimento, como evidência de leitura sem expor o segredo.
+    """
+    token = (os.environ.get("CLAUDE_OAUTH_ACCESS_TOKEN") or "").strip()
+    if not token:
+        return None
+    logger.info(
+        "CLAUDE_OAUTH_ACCESS_TOKEN detectado (len=%d) — "
+        "usando env var como credencial OAuth (pula Keychain/file/browser)",
+        len(token),
+    )
+    return {"claudeAiOauth": {"accessToken": token}}
+
+
 def _read_credentials_from_keychain() -> Optional[dict]:
     """macOS Keychain: extrai JSON do service 'Claude Code-credentials'.
 
@@ -96,19 +123,25 @@ def _read_credentials_from_file(home: Path) -> Optional[dict]:
 def _read_credentials(home: Path) -> Optional[dict]:
     """Retorna credenciais Claude OAuth do host.
 
-    Estratégia em camadas (primeira que retornar venceu):
-      1. macOS Keychain (``security find-generic-password -s 'Claude Code-credentials'``)
+    Ordem de precedência (primeira que retornar venceu):
+      1. ``CLAUDE_OAUTH_ACCESS_TOKEN`` env var — caminho zero-touch para CI/CD
+         ou operadores que gerenciam token manualmente. Pula Keychain/file/browser.
+      2. macOS Keychain (``security find-generic-password -s 'Claude Code-credentials'``)
          — onde claude CLI armazena por padrão no macOS.
-      2. ``~/.claude/credentials.json`` — fallback Linux/headless, ou
+      3. ``~/.claude/credentials.json`` — fallback Linux/headless, ou
          operadores que usam apiKeyHelper.
 
     Returns None se nenhuma camada produzir credenciais válidas.
     """
-    # macOS: Keychain primeiro (storage default do claude CLI)
+    # 1. Env var: zero-touch (CI/CD, re-deploy sem browser)
+    creds = _read_credentials_from_env()
+    if creds is not None:
+        return creds
+    # 2. macOS: Keychain (storage default do claude CLI)
     creds = _read_credentials_from_keychain()
     if creds is not None:
         return creds
-    # Linux ou headless: arquivo
+    # 3. Linux ou headless: arquivo
     return _read_credentials_from_file(home)
 
 

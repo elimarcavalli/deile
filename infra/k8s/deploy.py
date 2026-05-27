@@ -1008,18 +1008,29 @@ def _parse_claude_login_flags(extra: List[str]) -> Dict[str, object]:
 
       * ``--switch`` / ``--force-relogin`` -> ``force_relogin=True``
       * ``--no-interactive``               -> ``interactive=False``
+      * ``--from-env-only``                -> ``from_env_only=True``
+        (fail-fast se CLAUDE_OAUTH_ACCESS_TOKEN não estiver setado; implica
+        ``interactive=False``)
 
     Devolve ``{"_error": msg}`` se vier flag desconhecida. ``--namespace``
     é resolvido pelo flag global ``-n``/``--namespace`` (via ``_ns(args)``)
     e não é re-parseado aqui.
     """
-    parsed: Dict[str, object] = {"force_relogin": False, "interactive": True}
+    parsed: Dict[str, object] = {
+        "force_relogin": False,
+        "interactive": True,
+        "from_env_only": False,
+    }
     for token in extra:
         if token in ("--switch", "--force-relogin"):
             parsed["force_relogin"] = True
             continue
         if token == "--no-interactive":
             parsed["interactive"] = False
+            continue
+        if token == "--from-env-only":
+            parsed["from_env_only"] = True
+            parsed["interactive"] = False  # implica non-interactive
             continue
         return {"_error": f"flag desconhecido: `{token}`"}
     return parsed
@@ -1032,14 +1043,18 @@ def k8s_claude_login(args: dict) -> int:
     ``--switch`` (alias ``--force-relogin``) para forçar logout + nova OAuth
     (trocar conta). Use ``--no-interactive`` em CI para falhar se as
     credentials não estiverem presentes (não chama ``claude login``).
+    Use ``--from-env-only`` para falhar-rápido se ``CLAUDE_OAUTH_ACCESS_TOKEN``
+    não estiver setado (implica ``--no-interactive``; zero-touch para CI/CD).
 
-    Issue #309 fase 2 — delega o trabalho pesado a
+    Issue #309 fase 2/3 — delega o trabalho pesado a
     ``infra/k8s/_claude_install.bootstrap_claude_worker``.
     """
     flags = _parse_claude_login_flags(args.get("extra") or [])
     if "_error" in flags:
         ui.err(str(flags["_error"]))
-        ui.info("flags válidos: --switch (--force-relogin), --no-interactive")
+        ui.info(
+            "flags válidos: --switch (--force-relogin), --no-interactive, --from-env-only"
+        )
         return 64
 
     ns = _ns(args)
@@ -1055,10 +1070,22 @@ def k8s_claude_login(args: dict) -> int:
 
     force_relogin = bool(flags["force_relogin"])
     interactive = bool(flags["interactive"])
+    from_env_only = bool(flags["from_env_only"])
+
+    # Fail-fast: --from-env-only exige que a env var esteja presente.
+    if from_env_only:
+        import os  # noqa: PLC0415
+        if not (os.environ.get("CLAUDE_OAUTH_ACCESS_TOKEN") or "").strip():
+            ui.err(
+                "--from-env-only: CLAUDE_OAUTH_ACCESS_TOKEN não está setada "
+                "ou está vazia. Exporte a var antes de rodar."
+            )
+            return 1
 
     ui.section("k8s claude-login")
     ui.info(
         f"namespace={ns}, switch={force_relogin}, interactive={interactive}"
+        + (", from_env_only=True" if from_env_only else "")
     )
 
     result = bootstrap_claude_worker(
@@ -1596,7 +1623,7 @@ _K8S_ACTIONS = [
     ("test", "rodar o Job one-shot deile-oneshot"),
     ("clone", "clone <owner/repo> — clona um repo no deile-shell"),
     ("claude-login",
-     "instalar claude-worker no cluster (flags: --switch, --no-interactive)"),
+     "instalar claude-worker no cluster (flags: --switch, --no-interactive, --from-env-only)"),
     ("down", "APAGAR o namespace e TODOS os dados"),
 ]
 _LOCAL_ACTIONS = [
