@@ -376,7 +376,7 @@ def k8s_up(args: dict) -> int:
              shell=True)
         # Garante a label de managed-by + PSS restricted para o namespace custom.
         _run([kubectl, "label", "namespace", ns,
-              _DEILE_NS_LABEL.split("=")[0] + "=" + _DEILE_NS_LABEL.split("=")[1],
+              _DEILE_NS_LABEL,
               "pod-security.kubernetes.io/enforce=restricted",
               "pod-security.kubernetes.io/enforce-version=v1.29",
               "--overwrite"])
