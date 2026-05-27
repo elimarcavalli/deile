@@ -221,8 +221,14 @@ def ensure_container_prereqs(yes: bool) -> bool:
 # ===== k8s: build ============================================================
 
 def _image_build_cmd() -> Optional[List[str]]:
-    """Monta o comando de build conforme o runtime de container disponível."""
-    dockerfile = str(HERE / "Dockerfile")
+    """Monta o comando de build conforme o runtime de container disponível.
+
+    Dockerfile vive na RAIZ do repo (não em infra/k8s/) — BuildKit do
+    nerdctl ignora exceções de ``.dockerignore`` (``!infra/k8s/<file>``)
+    quando o Dockerfile está em subdir, e isso quebra o COPY de
+    ``worker_server.py`` / ``claude_worker_server.py`` / etc.
+    """
+    dockerfile = str(ROOT / "Dockerfile")
     nerdctl = _resolve("nerdctl")
     if nerdctl:
         # Rancher Desktop / containerd — k3s lê o namespace k8s.io.

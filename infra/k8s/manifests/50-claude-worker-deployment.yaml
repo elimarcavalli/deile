@@ -36,13 +36,22 @@ spec:
         runAsUser: 10001
         runAsGroup: 10001
         fsGroup: 10001
+        # OnRootMismatch evita o "chown recursivo" toda vez que o pod sobe
+        # (que tornaria a inicialização lenta em PVC grande). K8s só faz
+        # chown se uid/gid do root do volume divergir do fsGroup.
+        fsGroupChangePolicy: "OnRootMismatch"
         seccompProfile: { type: RuntimeDefault }
 
       # InitContainer: copia credentials.json do Secret pro PVC writable.
-      # Sempre overwrite — o operador rerruda `claude-login --switch` quando
-      # quer trocar conta; o refresh do claude CLI in-pod escreve no MESMO path
-      # (sobrevive entre dispatches no mesmo pod) mas é overrided por
+      # Sempre overwrite — o operador re-roda `claude-login --switch` quando
+      # quer trocar conta; o refresh do claude CLI in-pod escreve no MESMO
+      # path (sobrevive entre dispatches no mesmo pod) mas é overrided por
       # claude-login + restart.
+      #
+      # Roda como uid 10001 (PSS restricted-compliant). chown não é
+      # necessário porque ``fsGroup: 10001`` já garante que TUDO no PVC
+      # claude-home pertença ao gid 10001 — o cp herda esse gid e o chmod
+      # 0600 fica aplicável.
       initContainers:
         - name: bootstrap-creds
           image: deile-stack:local
@@ -54,7 +63,6 @@ spec:
               mkdir -p /home/claude/.claude
               cp /run/secrets/claude/credentials.json /home/claude/.claude/credentials.json
               chmod 0600 /home/claude/.claude/credentials.json
-              chown 10001:10001 /home/claude/.claude/credentials.json
               ls -la /home/claude/.claude/credentials.json
           volumeMounts:
             - name: claude-credentials
@@ -63,12 +71,14 @@ spec:
             - name: claude-home
               mountPath: /home/claude
           securityContext:
-            runAsUser: 0  # initContainer precisa de root para chown
-            runAsGroup: 0
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
-              add: ["CHOWN", "DAC_OVERRIDE", "FOWNER"]
+            seccompProfile: { type: RuntimeDefault }
 
       containers:
         - name: claude-worker

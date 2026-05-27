@@ -994,25 +994,30 @@ def _run_claude_worker(passthrough: List[str]) -> int:
     patterns = _load_allowed_repo_patterns()
     _install_git_repo_guard(patterns)
 
-    # Bearer do worker (compartilhado com deile-worker para padronizar a
-    # autorização do plano de dispatch). Montado em
-    # ``/run/secrets/worker/AUTH_TOKEN`` pelo manifest.
-    bearer = Path("/run/secrets/worker/AUTH_TOKEN")
+    # Bearer do claude-worker. Montado pelo manifest 50 em
+    # ``/run/secrets/claude-worker/CLAUDE_WORKER_BEARER_TOKEN``. O valor
+    # é sincronizado com ``worker-bearer`` do deile-worker (por
+    # ``_kubectl_sync_bearer_token`` no ``deploy.py k8s claude-login``)
+    # para que o ``DeileWorkerClient`` no pipeline envie o mesmo Bearer
+    # independente do destino. O servidor (``claude_worker_server``) lê
+    # esse arquivo direto via ``_read_auth_token`` — exportamos a env
+    # var apenas como fallback / diagnóstico.
+    bearer = Path("/run/secrets/claude-worker/CLAUDE_WORKER_BEARER_TOKEN")
     if bearer.is_file():
         try:
-            os.environ["DEILE_WORKER_AUTH_TOKEN"] = bearer.read_text(
-                encoding="utf-8"
-            ).strip()
+            token = bearer.read_text(encoding="utf-8").strip()
+            os.environ["DEILE_CLAUDE_WORKER_AUTH_TOKEN"] = token
         except OSError as exc:
             print(
-                f"wrapper(claude-worker): cannot read worker bearer: {exc}",
+                f"wrapper(claude-worker): cannot read claude-worker bearer: {exc}",
                 file=sys.stderr,
             )
             return 78
     else:
         print(
-            "wrapper(claude-worker): worker bearer not mounted at "
-            "/run/secrets/worker/AUTH_TOKEN",
+            "wrapper(claude-worker): bearer not mounted at "
+            "/run/secrets/claude-worker/CLAUDE_WORKER_BEARER_TOKEN — "
+            "rode `deploy.py k8s claude-login` para popular o Secret",
             file=sys.stderr,
         )
         return 78
