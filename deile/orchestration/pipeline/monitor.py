@@ -567,8 +567,15 @@ class PipelineMonitor:
     # ------------------------------------------------------------------
 
     async def tick(self) -> None:
+        import time as _time
+        tick_started = _time.monotonic()
         self._stats.ticks += 1
         logger.debug("pipeline tick #%d", self._stats.ticks)
+
+        # Issue #347 — publica state pro pipeline_status_server (best-effort).
+        # ``_status_state`` é injetado pelo runner.py quando o server sobe.
+        # Quando ausente (sem server, sem painel), no-op silencioso.
+        _status_state = getattr(self, "_status_state", None)
 
         # Issue #309 fase 3.5 — reaper FIRST: scaneia ~review:em_andamento /
         # ~workflow:em_implementacao com idade > threshold sem progresso e
@@ -610,9 +617,39 @@ class PipelineMonitor:
             if schedule.recurring:
                 scheduled_actions = {e.action for e in schedule.recurring if e.enabled}
                 await self._dispatch_stages(skip=scheduled_actions)
+            self._publish_status_state(_status_state, tick_started)
             return
 
         await self._dispatch_stages()
+        self._publish_status_state(_status_state, tick_started)
+
+    def _publish_status_state(self, state, tick_started: float) -> None:
+        """Best-effort: publica métricas + ledger snapshot pro pipeline_status_server.
+
+        Issue #347. Chamado no fim de cada tick. Silenciosamente no-op quando
+        ``state`` é None (sem server rodando).
+        """
+        if state is None:
+            return
+        import time as _time
+        try:
+            elapsed = _time.monotonic() - tick_started
+            if hasattr(state, "record_tick"):
+                state.record_tick(
+                    duration_seconds=elapsed,
+                    ticks_total=self._stats.ticks,
+                    errors_total=self._stats.errors,
+                )
+            if hasattr(state, "set_ledger_snapshot"):
+                try:
+                    impl = getattr(self, "implementer", None)
+                    ledger = getattr(impl, "_ledger", None) if impl else None
+                    if ledger is not None and hasattr(ledger, "list_all"):
+                        state.set_ledger_snapshot(ledger.list_all())
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("publish_status_state non-fatal: %s", exc)
 
     async def _dispatch_stages(self, skip: set[str] | None = None) -> None:
         """Run the per-tick stage sequence.
