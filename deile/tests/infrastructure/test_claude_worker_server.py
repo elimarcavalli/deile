@@ -1036,10 +1036,26 @@ def test_is_claude_process_alive_returns_false_for_empty_session(claude_worker_m
     assert claude_worker_module._is_claude_process_alive("") is False
 
 
-def test_is_claude_process_alive_when_pgrep_missing(claude_worker_module, monkeypatch):
-    """Se pgrep não está no PATH, retorna False (best-effort, não crasha)."""
-    import subprocess as _sub
-    def fake_run(*args, **kwargs):
-        raise FileNotFoundError("pgrep not found")
-    monkeypatch.setattr(_sub, "run", fake_run)
+def test_is_claude_process_alive_when_proc_missing(claude_worker_module, monkeypatch, tmp_path):
+    """Se /proc não está acessível (ex: macOS local), retorna False
+    best-effort sem crashar."""
+    nonexistent = tmp_path / "no-such-dir"
+    monkeypatch.setattr(claude_worker_module, "_PROC_ROOT", str(nonexistent))
     assert claude_worker_module._is_claude_process_alive("session-id") is False
+
+
+def test_is_claude_process_alive_finds_match(claude_worker_module, monkeypatch, tmp_path):
+    """Detecta session-id na cmdline de algum /proc/<pid>/."""
+    proc_root = tmp_path / "fake_proc"
+    proc_root.mkdir()
+    pid1 = proc_root / "12345"
+    pid1.mkdir()
+    (pid1 / "cmdline").write_bytes(b"claude\x00-p\x00--session-id\x00the-target-session\x00")
+    pid2 = proc_root / "67890"
+    pid2.mkdir()
+    (pid2 / "cmdline").write_bytes(b"bash\x00-c\x00echo\x00hi\x00")
+    (proc_root / "self").mkdir()  # ignored (não-numeric)
+
+    monkeypatch.setattr(claude_worker_module, "_PROC_ROOT", str(proc_root))
+    assert claude_worker_module._is_claude_process_alive("the-target-session") is True
+    assert claude_worker_module._is_claude_process_alive("not-found-session") is False

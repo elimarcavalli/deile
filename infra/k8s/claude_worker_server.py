@@ -385,28 +385,44 @@ def _load_session_meta(task_id: str) -> Optional[dict]:
         return None
 
 
+#: Default /proc root pra detecção de processo claude vivo. Testes
+#: monkeypatcham essa variável apontando pra fake dir.
+_PROC_ROOT: str = "/proc"
+
+
 def _is_claude_process_alive(session_id: str) -> bool:
-    """True se houver processo ``claude`` com este session-id na cmdline.
+    """True se houver processo com este session-id na cmdline.
 
     Usado pelo endpoint /v1/dispatches/{task_id}/resume-info para o pipeline
     decidir entre "ainda rodando, não disturbar" vs "morto, pode reaper".
 
-    Best-effort: ``pgrep`` ausente, timeout, ou erro de I/O → False (assume
-    morto). Falso negativo é OK (pipeline reaper retry); falso positivo
-    seria pior (pipeline acha vivo e nunca retoma).
+    Implementação via ``/proc/<pid>/cmdline`` (POSIX-padrão em Linux,
+    funciona em qualquer container distroless/slim sem precisar instalar
+    ``procps``/``pgrep``). Best-effort: erros de I/O ou /proc ausente →
+    False (assume morto, fail-open). Falso negativo é OK (pipeline reaper
+    retry); falso positivo é pior (pipeline acha vivo e nunca retoma).
     """
     if not session_id:
         return False
-    try:
-        result = subprocess.run(
-            ["pgrep", "-fa", "claude"],
-            capture_output=True, text=True, timeout=3,
-        )
-    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+    proc_root = Path(_PROC_ROOT)
+    if not proc_root.is_dir():
         return False
-    # Match exato do session_id na cmdline — evita false positive de
-    # processos não relacionados (ex: deile-worker chamando claude).
-    return session_id in (result.stdout or "")
+    target = session_id.encode("utf-8")
+    try:
+        for proc_dir in proc_root.iterdir():
+            if not proc_dir.name.isdigit():
+                continue
+            cmdline_path = proc_dir / "cmdline"
+            try:
+                # cmdline usa \0 como separador entre args.
+                cmdline = cmdline_path.read_bytes().replace(b"\0", b" ")
+            except OSError:
+                continue
+            if target in cmdline:
+                return True
+    except OSError:
+        return False
+    return False
 
 
 def _parse_claude_json_output(stdout: str) -> dict:
