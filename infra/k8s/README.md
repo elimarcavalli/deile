@@ -99,6 +99,56 @@ python3 infra/k8s/deploy.py k8s up      # namespace + NPs + Secrets + bot + work
 python3 infra/k8s/deploy.py k8s test    # cria o Job de prova → DM no Discord
 ```
 
+### 2.1 Multi-namespace — múltiplas stacks DEILE em paralelo
+
+A stack DEILE é **per-namespace**. Você pode rodar várias em paralelo (uma
+por forge, por repo, por ambiente), cada uma com seus próprios Secrets,
+PVCs, ConfigMaps e Deployments. Antes de qualquer operação, confira o
+mapa atual:
+
+```bash
+~/.rd/bin/kubectl get ns -L app.kubernetes.io/managed-by,deile.io/forge,deile.io/repo
+```
+
+Convenções:
+
+| Namespace | Para que serve |
+|---|---|
+| `deile` | **Default** — stack de produção (GitHub `elimarcavalli/deile`). Criada por `k8s up`. |
+| `deile-gl` | Piloto GitLab (issue #297). Criada por `k8s create-namespace --forge gitlab --repo <group/project>`. |
+| `deile-<algo>` | Convenção para namespaces extras (staging, sandbox, fork-X). Criada por `k8s create-namespace`. |
+| `default` | **Built-in do k8s.** Nunca deveria conter recursos DEILE. Se aparecer um pod/svc `deile-*` lá, é vazamento de algum `kubectl apply` sem `-n <ns>` — limpe. |
+
+Para apontar qualquer verbo do `deploy.py` a um namespace específico,
+use a flag global `-n <ns>` (ou `--namespace <ns>`) antes do verbo:
+
+```bash
+python3 infra/k8s/deploy.py -n deile-gl k8s status
+python3 infra/k8s/deploy.py -n deile-gl k8s start          # resume o piloto GitLab
+python3 infra/k8s/deploy.py -n deile-gl k8s logs pipeline
+python3 infra/k8s/deploy.py -n deile-staging k8s up        # sobe stack staging do zero
+```
+
+Mesma regra vale para `kubectl` direto: **sempre passe `-n <ns>`**. Sem
+flag, o `kubectl` cai no contexto `default` e o recurso vaza pra lá.
+
+#### 2.1.1 Criando um namespace novo (`k8s create-namespace`)
+
+Para subir uma stack DEILE limpa em outro namespace (ex: piloto GitLab,
+ambiente de staging, fork de teste), use o wizard interativo:
+
+```bash
+python3 infra/k8s/deploy.py k8s create-namespace
+```
+
+Ele pergunta nome, forge (GitHub/GitLab), repo alvo e flags opcionais
+(ativar claude-worker, scale inicial). O processo cria namespace + PSS
+labels + Secrets + ConfigMaps + Deployments do zero. Suporta também todos
+os parâmetros via flag (`--forge gitlab --repo group/project --enable-claude-worker`)
+para uso não-interativo.
+
+
+
 Sucesso = DM aparece no Discord (no canal direto entre você e o bot)
 e o Job termina `1/1 completions in XXs`. Logs:
 
@@ -125,15 +175,32 @@ infra/k8s/
 ├── run.sh                        ← orquestrador build/up/test/logs/clone/down
 ├── README.md                     ← este arquivo
 └── manifests/
-    ├── 00-namespace.yaml         namespace `deile` w/ PSS:restricted
-    ├── 15-bot-config.yaml        ConfigMap: deilebot.yaml com owners + clonable_repos
-    ├── 20-bot-deployment.yaml    bot Deployment + Service (ClusterIP :8765)
-    ├── 30-deile-job.yaml         one-shot deile Job (proof-of-DM)
-    ├── 35-deile-interactive.yaml long-running deile-shell (`kubectl exec`)
-    ├── 36-deile-shell-pvc.yaml   PVC opcional para /home/deile persistente
-    ├── 40-network-policy.yaml    default-deny + selective allow
-    └── 99-deile-debug.yaml       probe Pod (manual; off-path)
+    ├── 00-namespace.yaml                       namespace `deile` w/ PSS:restricted
+    ├── 15-bot-config.yaml                      ConfigMap: deilebot.yaml com owners + clonable_repos
+    ├── 19-bot-data-pvc.yaml                    PVC do SQLite do bot (audit/dlq persistentes)
+    ├── 20-bot-deployment.yaml                  bot Deployment + Service (ClusterIP :8765)
+    ├── 30-deile-job.yaml                       one-shot deile Job (proof-of-DM)
+    ├── 35-deile-interactive.yaml               long-running deile-shell (`kubectl exec`)
+    ├── 36-deile-shell-pvc.yaml                 PVC opcional para /home/deile persistente
+    ├── 40-network-policy.yaml                  default-deny + selective allow (todos os pods)
+    ├── 41-worker-pvc.yaml                      PVC do deile-worker (workdirs por canal)
+    ├── 42-worker-bearer-secret.yaml            Bearer token do deile-worker (pipeline → worker)
+    ├── 43-forge-tokens-secret.yaml             GITHUB_TOKEN + GITLAB_TOKEN (forge-agnostic, issue #297)
+    ├── 44-pipeline-status-bearer-secret.yaml   Bearer token do pipeline status server (:8768)
+    ├── 45-deile-worker-deployment.yaml         deile-worker Deployment + Service (:8766)
+    ├── 46-deile-pipeline-deployment.yaml       deile-pipeline Deployment + status Service (:8768)
+    ├── 47-claude-worker-allowed-repos.yaml     ConfigMap: repos que o claude-worker pode clonar
+    ├── 47-deile-runtime-config.yaml            ConfigMap com env vars de runtime do pipeline
+    ├── 48-claude-worker-bearer-secret.yaml     Bearer token do claude-worker (pipeline → claude)
+    ├── 49-claude-worker-pvc.yaml               PVC do claude-worker (worktrees + credentials)
+    ├── 50-claude-worker-deployment.yaml        claude-worker Deployment + Service (:8767)
+    └── 99-deile-debug.yaml                     probe Pod (manual; off-path)
 ```
+
+> O Secret `claude-credentials` (OAuth do `claude -p`) **não** está em
+> manifest — é criado pelo verbo `k8s claude-login` a partir do
+> `~/.claude/credentials.json` do host. Esse arquivo nunca entra no
+> repo nem na imagem.
 
 ### 3.1 Workflow
 
@@ -860,12 +927,19 @@ sugestão de `--demo`.
 ### 4.4 Diagnóstico rápido
 
 ```bash
-# tudo no namespace
+# antes de tudo: confira em qual namespace está olhando
+~/.rd/bin/kubectl get ns -L app.kubernetes.io/managed-by,deile.io/forge,deile.io/repo
+
+# tudo no namespace alvo (troque `deile` pelo seu)
 kubectl -n deile get all,secrets,configmaps,networkpolicies
 
 # bot
 kubectl -n deile logs deploy/deilebot --tail=50
 kubectl -n deile logs deploy/deilebot --follow
+
+# pipeline + claude-worker (cluster atual também tem esses)
+kubectl -n deile logs deploy/deile-pipeline --tail=80
+kubectl -n deile logs deploy/claude-worker --tail=80
 
 # último Job
 kubectl -n deile logs job/deile-oneshot

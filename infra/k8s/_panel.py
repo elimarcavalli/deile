@@ -2516,15 +2516,15 @@ class ActionsView(View):
         # é nossa, na view, antes de chamar.
         if k8s_on:
             actions: List[_ActionSpec] = [
-                _ActionSpec("status",             [py, deploy, "k8s", "status"]),
-                _ActionSpec("restart",            [py, deploy, "k8s", "restart", "--yes"], mutates=True),
-                _ActionSpec("build (no restart)", [py, deploy, "k8s", "build", "--yes"], mutates=True),
-                _ActionSpec("build + restart",    [py, deploy, "k8s", "build", "--restart", "--yes"], mutates=True),
-                _ActionSpec("up (provisiona)",    [py, deploy, "k8s", "up", "--yes"], mutates=True),
-                _ActionSpec("stop (scale 0)",     [py, deploy, "k8s", "stop", "--yes"], mutates=True),
-                _ActionSpec("start (scale 1)",    [py, deploy, "k8s", "start", "--yes"], mutates=True),
-                _ActionSpec("test (Job one-shot)",[py, deploy, "k8s", "test", "--yes"], mutates=True),
-                _ActionSpec("DOWN (apaga ns)",    [py, deploy, "k8s", "down", "--yes"], destructive=True, mutates=True),
+                _ActionSpec("status (lê cluster)",            [py, deploy, "k8s", "status"]),
+                _ActionSpec("restart pods (mesma imagem)",    [py, deploy, "k8s", "restart", "--yes"], mutates=True),
+                _ActionSpec("build imagem (pods ficam antigos)", [py, deploy, "k8s", "build", "--yes"], mutates=True),
+                _ActionSpec("build + restart pods (deploy)",  [py, deploy, "k8s", "build", "--restart", "--yes"], mutates=True),
+                _ActionSpec("up (cria ns + Secrets + Deploys)", [py, deploy, "k8s", "up", "--yes"], mutates=True),
+                _ActionSpec("stop (scale 0; mantém PVC)",     [py, deploy, "k8s", "stop", "--yes"], mutates=True),
+                _ActionSpec("start (scale 1; retoma)",        [py, deploy, "k8s", "start", "--yes"], mutates=True),
+                _ActionSpec("test (Job one-shot → DM)",       [py, deploy, "k8s", "test", "--yes"], mutates=True),
+                _ActionSpec("DOWN (apaga ns inteiro)",        [py, deploy, "k8s", "down", "--yes"], destructive=True, mutates=True),
             ]
         else:
             # Sem k8s: só status (que dirá "cluster inacessível" — útil
@@ -2628,11 +2628,23 @@ class ActionsView(View):
                 title="[bold]OUTPUT[/bold]", title_align="left",
                 border_style="dim",
             )
+        # Subtitle do Panel mostra o ROOT que `build` vai empacotar e a
+        # tag de imagem destino. Sempre visível — desambigua "qual versão
+        # vai pro k8s?" quando o painel roda numa worktree.
+        try:
+            repo_root_for_build = Path(__file__).resolve().parent.parent.parent
+            subtitle = (
+                f"[dim]build empacota: {repo_root_for_build}  →  "
+                f"imagem: deile-stack:local (imagePullPolicy: Never)[/dim]"
+            )
+        except Exception:
+            subtitle = None
         layout = Layout()
         layout.split_column(
             Layout(_head_panel(self.title, app), name="head", size=4),
             Layout(Panel(menu, title="[bold]AÇÕES[/bold]",
-                         title_align="left", border_style="cyan"),
+                         title_align="left", border_style="cyan",
+                         subtitle=subtitle, subtitle_align="left"),
                    name="menu", size=14),
             *([Layout(confirm_panel, name="confirm", size=6)]
               if confirm_panel is not None else []),

@@ -61,35 +61,85 @@ Entry point: `python3 deile.py` (CLI shell in `DeileAgentCLI`; all logic lives i
 | Imports | `isort --check-only deile/` |
 | Complexity | `radon cc deile/ -a` |
 
-## Kubernetes / cluster operations (deile-pipeline · deile-worker · deilebot · deile-shell)
+## Kubernetes / cluster operations
 
-The cluster runs on **Rancher Desktop (k3s/containerd)**, namespace **`deile`**, single image **`deile-stack:local`** (`imagePullPolicy: Never`). All four pods share that image; `/app` is **baked at build time** (not mounted), so **code changes only go live after a rebuild + pod restart**. `kubectl` lives at `~/.rd/bin/kubectl` (may not be on `PATH`).
+The cluster runs on **Rancher Desktop (k3s/containerd)** with the single image **`deile-stack:local`** (`imagePullPolicy: Never`). All five pods (`deile-pipeline`, `claude-worker`, `deile-worker`, `deilebot`, `deile-shell`) share that image; `/app` is **baked at build time** (not mounted), so **code changes only go live after a rebuild + pod restart**. `kubectl` lives at `~/.rd/bin/kubectl` (may not be on `PATH`).
 
-Everything is driven by the orchestrator **`infra/k8s/deploy.py`** (run from repo root). It prints a plan before any mutating action; `--yes` skips the prompt, `--dry-run` shows the plan only.
+### Multi-namespace — DEILE supports many concurrent stacks
+
+DEILE can run **multiple independent stacks side-by-side**, one per namespace. Each namespace gets its own pipeline + workers + bot + shell, with its own Secrets, ConfigMaps, PVCs and forge config. The default namespace is `deile`; create others via `k8s create-namespace`.
+
+**ALWAYS check the namespace landscape first before any cluster op:**
+
+```bash
+K=~/.rd/bin/kubectl
+$K get ns -L app.kubernetes.io/managed-by,deile.io/forge,deile.io/repo
+```
+
+Current namespaces (verify before assuming — drift is real):
+
+| Namespace | Forge | Repo | Status | Notes |
+|---|---|---|---|---|
+| `deile` | GitHub | `elimarcavalli/deile` | **prod, all running** | default; the production stack |
+| `deile-gl` | GitLab | (pilot) | scaled to 0 (paused) | issue #297 multi-forge pilot; `start` to resume |
+| `default` | — | — | **must stay empty of DEILE** | k8s built-in. If you see `deile-*` resources here, they leaked from a manifest applied without `-n <ns>` — clean up |
+| `kube-system`, `kube-public`, `kube-node-lease` | — | — | k3s internal | never touch |
+
+**Hard rule:** every `kubectl` command MUST carry `-n <ns>`. Every `deploy.py` k8s command MUST receive `--namespace <ns>` (or rely on the default `deile`). Forgetting the namespace flag on `kubectl apply -f manifest.yaml` puts the resource in `default` — that's how the `default` namespace gets polluted.
+
+### Orchestrator: `infra/k8s/deploy.py`
+
+Run from repo root. Prints a plan before any mutating action; `--yes` skips the prompt, `--dry-run` shows the plan only. **Global flag:** `-n <ns>` / `--namespace <ns>` selects the target namespace for every k8s verb (default: `deile`).
 
 | Goal | Command |
 |---|---|
 | Interactive menu / list all verbs | `python3 infra/k8s/deploy.py` / `... help` |
 | **Rebuild image + restart pods** (deploy code changes) | `python3 infra/k8s/deploy.py k8s build --restart --yes` |
 | Provision / update the whole stack (idempotent) | `python3 infra/k8s/deploy.py k8s up` |
+| Create a brand-new namespace from scratch (interactive) | `python3 infra/k8s/deploy.py k8s create-namespace` |
+| Scale workers up/down (`--worker N --claude-worker M`) | `python3 infra/k8s/deploy.py k8s scale --worker 2` |
 | Rollout restart (no rebuild) | `python3 infra/k8s/deploy.py k8s restart` |
 | Pause / resume (scale 0 / 1; keeps data + Secrets) | `... k8s stop` / `... k8s start` |
 | Status (pods, deployments, services) | `python3 infra/k8s/deploy.py k8s status` |
-| Logs (bot + worker) | `python3 infra/k8s/deploy.py k8s logs [bot\|worker]` |
+| Live TUI cockpit | `python3 infra/k8s/deploy.py k8s panel` |
+| Logs (bot, worker, pipeline, claude-worker) | `python3 infra/k8s/deploy.py k8s logs [bot\|worker\|pipeline\|claude-worker]` |
 | One-shot Job (fixed prompt) | `python3 infra/k8s/deploy.py k8s test` |
 | Clone a repo into `deile-shell` (allowlisted) | `python3 infra/k8s/deploy.py k8s clone <owner/repo>` |
-| **Teardown** (DELETES namespace + all data) | `python3 infra/k8s/deploy.py k8s down` |
+| Bootstrap claude-worker OAuth (full) | `python3 infra/k8s/deploy.py k8s claude-login [--switch \| --no-interactive]` |
+| Renew claude-worker OAuth token (lightweight refresh, no full bootstrap) | `python3 infra/k8s/deploy.py k8s claude-renew` |
+| **Teardown** (DELETES the target namespace + all data) | `python3 infra/k8s/deploy.py k8s down` |
 
-Direct `kubectl` (when you need a specific pod), `K=~/.rd/bin/kubectl`:
+Examples targeting a non-default namespace:
 
 ```bash
-$K -n deile get pods,deployments,services
-$K -n deile logs deploy/deile-pipeline --tail=80          # or deploy/deile-worker, deploy/deilebot
+python3 infra/k8s/deploy.py -n deile-gl k8s status
+python3 infra/k8s/deploy.py -n deile-gl k8s start          # resume the GitLab pilot
+python3 infra/k8s/deploy.py -n deile-gl k8s logs pipeline
+python3 infra/k8s/deploy.py -n deile-staging k8s up        # spin up a fresh staging stack
+```
+
+### Direct `kubectl` (when you need a specific pod)
+
+```bash
+K=~/.rd/bin/kubectl
+$K -n deile get pods,deployments,services                  # always pass -n
+$K -n deile logs deploy/deile-pipeline --tail=80           # or deile-worker, deilebot, claude-worker
 $K -n deile rollout status deployment/deile-pipeline --timeout=180s
 $K -n deile exec -it deploy/deile-shell -- python3 /app/wrapper.py deile   # interactive REPL in-cluster
 ```
 
-Roles & control-plane ports: **deilebot** `:8765` (Discord I/O), **deile-worker** `:8766` (runs DEILE in-process for dispatch), **deile-pipeline** (the forge monitor — no Service, only "calls out"), **deile-shell** (`kubectl exec` only). Only `deile-pipeline` runs the autonomous monitor; the others never autostart it.
+### Roles & ports
+
+| Pod | Port | Role |
+|---|---|---|
+| `deilebot` | `:8765` | Discord (and other channels) I/O bridge |
+| `deile-worker` | `:8766` | runs DEILE Python in-process; HTTP dispatch target for the pipeline |
+| `claude-worker` | `:8767` | runs `claude -p` subprocess in isolated worktrees; OAuth credentials live in PVC `claude-worker-home` |
+| `deile-pipeline-status` | `:8768` | status server (in-process aiohttp inside `deile-pipeline`); read-only telemetry for the panel |
+| `deile-pipeline` | — | the forge monitor — no Service for inbound, only "calls out" (dispatches to workers, talks to forge) |
+| `deile-shell` | — | `kubectl exec`-only sandbox; full toolset; prompt comes from the human via `kubectl exec` |
+
+**Only `deile-pipeline` runs the autonomous monitor**; the others never autostart it.
 
 ## claude-worker — dispatch pra Claude CLI dentro do cluster (issue #309 fase 2)
 

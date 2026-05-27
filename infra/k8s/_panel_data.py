@@ -1996,7 +1996,15 @@ _STAGE_ENV_VARS: tuple = (
     ("pr_review",   "DEILE_PIPELINE_MODEL_PR_REVIEW"),
     ("follow_ups",  "DEILE_PIPELINE_MODEL_FOLLOW_UPS"),
 )
-_STAGE_DEPLOYMENT = "deile-worker"
+#: The DEPLOYMENT that consumes the ``DEILE_PIPELINE_MODEL_<STAGE>`` env vars.
+#: MUST be ``deile-pipeline`` — it is the pod that calls ``resolve_stage_model()``
+#: (in ``deile/orchestration/pipeline/model_resolver.py``) and injects the
+#: result into ``DispatchPayload.preferred_model`` sent to claude-worker /
+#: deile-worker. Writing these env vars to ``deile-worker`` instead is silent
+#: cost amplifier: the override is invisible to the resolver, so the worker /
+#: claude-worker fall back to OAuth default (Opus 4.7 = $5/$25 per 1M tokens).
+#: Bug found 2026-05-27 — user configured sonnet-4-6 in the panel and got Opus.
+_STAGE_DEPLOYMENT = "deile-pipeline"
 
 
 @dataclass(frozen=True)
