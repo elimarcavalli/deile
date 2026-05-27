@@ -142,6 +142,18 @@ class PipelineConfig:
     # deile-worker Service; needs >=2 worker replicas to actually run in parallel).
     refine_max_attempts: int = 5
     max_parallel: int = 2
+    # Reaper de claim órfão (issue #309 fase 3.5): PRs/issues com label
+    # ~review:em_andamento ou ~workflow:em_implementacao há mais de
+    # ``reaper_stale_seconds`` sem progresso são re-claimed (com
+    # ``~attempt:N`` incrementado) para próximo tick retomar via resume.
+    # Default 45min: > timeout máximo do claude-worker (2h) seria over-cauteloso;
+    # 45min cobre o timeout antigo de 30min com folga. 0 desliga o reaper.
+    reaper_stale_seconds: int = 45 * 60
+    # Quando attempt >= reaper_max_attempts, o reaper bloqueia em vez de
+    # liberar. Espelha resume_max_attempts mas separado pq são caminhos
+    # distintos (resume = continuar trabalho parado; reaper = trabalho
+    # presumido morto). Default 3 = 3 ciclos de 45min = 2h15m max stuck.
+    reaper_max_attempts: int = 3
     # The refinement gate (critique → refine loop → decompose) is worker-only:
     # it dispatches type-specific personas (analyst/architect/debugger) to the
     # deile-worker. On the legacy Claude path it is OFF, so ``review`` keeps its
@@ -175,14 +187,13 @@ def build_default_pipeline_config(*, use_pid_lock: bool = True) -> PipelineConfi
         # pipeline process has no local clone, so the on-startup worktree
         # cleanup would only emit warnings. Keep it for the claude path.
         enable_worktree_cleanup=is_claude_mode(dispatch_mode),
-        # Resume of partial work (issue #254) — only meaningful on the worker
-        # path (the structured ground-truth contract lives there). Resolve all
-        # four knobs from settings so the product default mirrors the operator's
-        # ``pipeline_resume_*`` configuration.
-        enable_resume=(
-            bool(settings.pipeline_resume_enabled)
-            and not is_claude_mode(dispatch_mode)
-        ),
+        # Resume of partial work (issue #254 + #309 fase 3.5).
+        # Originalmente exclusivo do deile-worker (structured ground-truth via
+        # ``resume_block``); fase 3.5 estendeu ao claude-worker via
+        # ``DispatchLedger`` + ``--resume <session-id>`` no claude CLI.
+        # Hoje o resume vale pra QUALQUER dispatch_mode (resolve em runtime
+        # via DispatchLedger). Só o operator decide via setting.
+        enable_resume=bool(settings.pipeline_resume_enabled),
         resume_interval=int(settings.pipeline_resume_interval),
         resume_max_attempts=int(settings.pipeline_resume_max_attempts),
         resume_budget=int(settings.pipeline_resume_budget),
@@ -558,6 +569,16 @@ class PipelineMonitor:
     async def tick(self) -> None:
         self._stats.ticks += 1
         logger.debug("pipeline tick #%d", self._stats.ticks)
+
+        # Issue #309 fase 3.5 — reaper FIRST: scaneia ~review:em_andamento /
+        # ~workflow:em_implementacao com idade > threshold sem progresso e
+        # libera (próximo tick re-claim via resume). Best-effort: erros
+        # no reaper NÃO derrubam o tick (catch + log).
+        if self.config.reaper_stale_seconds > 0:
+            try:
+                await stages.reap_orphan_claims(self)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("reaper failed (non-fatal): %s", exc)
 
         # When a schedule file exists with at least one entry, the schedule
         # is authoritative: each tick runs only the actions whose cron

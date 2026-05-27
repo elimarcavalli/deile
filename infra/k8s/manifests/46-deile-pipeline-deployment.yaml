@@ -40,6 +40,75 @@ spec:
         fsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
+
+      # InitContainer: clona o repo alvo em /home/deile se ainda não estiver
+      # presente. O pipeline ESPERA estar dentro de um git repo com
+      # ``deile.py`` no root (resolve_base_path em
+      # ``deile/tools/_pipeline_paths.py``). Sem isso, ``WorktreeManager``
+      # crasha com "is not a git repository" no startup.
+      #
+      # Idempotente: se ``.git`` já existe (rollout restart, pod reschedule),
+      # faz fast-forward. Caso contrário, ``gh repo clone`` usando o
+      # GITHUB_TOKEN do Secret (deile-secrets). Falha hard se DEILE_PIPELINE_REPO
+      # não está setado — sem repo, o pipeline não tem o que monitorar.
+      initContainers:
+        - name: bootstrap-repo
+          image: deile-stack:local
+          imagePullPolicy: Never
+          workingDir: /home/deile
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              if [ -z "${DEILE_PIPELINE_REPO:-}" ]; then
+                echo "FATAL: DEILE_PIPELINE_REPO env var não setada"
+                exit 78
+              fi
+              if [ -f /home/deile/.git/HEAD ] || [ -f /home/deile/.git ]; then
+                echo "repo já presente em /home/deile — fast-forward"
+                cd /home/deile
+                git fetch --depth=1 origin "$(git rev-parse --abbrev-ref HEAD)" || true
+                git reset --hard "@{u}" || true
+              else
+                echo "clonando $DEILE_PIPELINE_REPO em /home/deile"
+                # gh CLI usa GITHUB_TOKEN automaticamente (lido do Secret)
+                GH_TOKEN_FILE=/run/secrets/deile/GITHUB_TOKEN
+                if [ -f "$GH_TOKEN_FILE" ]; then
+                  export GH_TOKEN="$(cat $GH_TOKEN_FILE)"
+                fi
+                # clone direto, evita gh dependency se não disponível
+                if [ -n "${DEILE_FORGE_KIND:-github}" ] && [ "${DEILE_FORGE_KIND:-github}" = "gitlab" ]; then
+                  GL_TOKEN_FILE=/run/secrets/deile/GITLAB_TOKEN
+                  GL_TOKEN_VAL=""
+                  [ -f "$GL_TOKEN_FILE" ] && GL_TOKEN_VAL=$(cat "$GL_TOKEN_FILE")
+                  HOST="${DEILE_GITLAB_HOST:-gitlab.com}"
+                  git clone --depth=1 "https://oauth2:${GL_TOKEN_VAL}@${HOST}/${DEILE_PIPELINE_REPO}.git" /home/deile
+                else
+                  HOST="${DEILE_GITHUB_HOST:-github.com}"
+                  git clone --depth=1 "https://x-access-token:${GH_TOKEN}@${HOST}/${DEILE_PIPELINE_REPO}.git" /home/deile
+                fi
+              fi
+              # Sanity: precisa ter deile.py (resolve_base_path checa esse marker)
+              if [ ! -f /home/deile/deile.py ]; then
+                echo "FATAL: /home/deile/deile.py ausente — repo errado?"
+                exit 78
+              fi
+              echo "bootstrap-repo OK"
+          env:
+            - { name: DEILE_PIPELINE_REPO,  value: "elimarcavalli/deile" }
+            - { name: DEILE_FORGE_KIND,     value: "github" }
+          volumeMounts:
+            - { name: deile-secrets, mountPath: /run/secrets/deile, readOnly: true }
+            - { name: home,          mountPath: /home/deile }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
+
       containers:
         - name: pipeline
           image: deile-stack:local
@@ -72,7 +141,12 @@ spec:
             # otherwise the client times out before the worker finishes — observed
             # on PR #293 review: client 660s vs worker 900s = false WORKER_TIMEOUT
             # while the worker was still running.
-            - { name: DEILE_WORKER_TASK_TIMEOUT_S,   value: "900" }
+            # 7230s = 7200 (worker DEILE_*_WORKER_TASK_TIMEOUT_S=2h) + 30s
+            # margem pro server responder/serializar. Alinhado tanto com
+            # deile-worker quanto com claude-worker. Antes era 1830s (30min)
+            # — review da PR #344 morreu aos 30min com claude no meio do
+            # trabalho (postou "Iniciando review..." mas não completou).
+            - { name: DEILE_WORKER_TASK_TIMEOUT_S,   value: "7230" }
           volumeMounts:
             # GITHUB_TOKEN (gh) + DEILE_BOT_AUTH_TOKEN (notifier) + LLM keys
             # (unused here, harmless) — same Secret as worker/shell.

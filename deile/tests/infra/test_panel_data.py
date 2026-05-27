@@ -1622,3 +1622,428 @@ class TestPanelShowsPerPidAction:
         # Sem AttributeError — getattr default {} é usado.
         rows = panel._local_process_rows(data)
         assert len(rows) == 1
+
+
+# ===== StageDispatchProvider (issue #309 fase 2 — Task 17) ==================
+
+def _deployment_with_env(envs: Dict[str, str]) -> Dict[str, Any]:
+    """Builda um kubectl-get-deployment JSON minimal com as env vars dadas."""
+    env_list = [{"name": k, "value": v} for k, v in envs.items()]
+    return {"spec": {"template": {"spec": {"containers": [{"env": env_list}]}}}}
+
+
+class TestStageDispatchProvider:
+    """Consolidador per-stage de worker + model + status do claude-worker.
+
+    Lê de DOIS Deployments (``deile-pipeline`` para worker dispatch,
+    ``deile-worker`` para models) + UM Secret (``claude-credentials`` para
+    email). Mock ``_capture_json`` para evitar cluster real.
+    """
+
+    @staticmethod
+    def _route_capture(payloads: Dict[str, Any]):
+        """Side-effect factory: roteia subprocess args para o payload certo.
+
+        ``payloads`` keys são os argv tokens distintivos (ex.:
+        ``"deployment/deile-pipeline"``); valor é o dict JSON a devolver
+        (ou ``None`` para simular fetch falho).
+        """
+        def fake(cmd, timeout=None):
+            for token, payload in payloads.items():
+                if token in cmd:
+                    return payload
+            return None
+        return fake
+
+    def test_returns_five_entries_one_per_stage(self):
+        from _panel_data import StageDispatchProvider
+
+        from deile.orchestration.pipeline.dispatch_resolver import \
+            PIPELINE_STAGES
+        payloads = {
+            "deployment/deile-pipeline": _deployment_with_env({}),
+            "deployment/deile-worker": _deployment_with_env({}),
+        }
+        with patch("_panel_data._capture_json",
+                   side_effect=self._route_capture(payloads)), \
+             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+            entries = StageDispatchProvider().get_all_stages(force=True)
+        assert len(entries) == 5
+        assert [e.stage for e in entries] == list(PIPELINE_STAGES)
+        # Sem nenhum env, todos caem no default.
+        for e in entries:
+            assert e.worker == "deile-worker"
+            assert e.source == "default"
+            assert e.model is None
+
+    def test_per_stage_worker_env_takes_precedence(self):
+        """``DEILE_PIPELINE_DISPATCH_<STAGE>`` vence o global ``DISPATCH_MODE``."""
+        from _panel_data import StageDispatchProvider
+        payloads = {
+            "deployment/deile-pipeline": _deployment_with_env({
+                "DEILE_PIPELINE_DISPATCH_IMPLEMENT": "claude-worker",
+                "DEILE_PIPELINE_DISPATCH_MODE": "deile-worker",
+            }),
+            "deployment/deile-worker": _deployment_with_env({}),
+        }
+        with patch("_panel_data._capture_json",
+                   side_effect=self._route_capture(payloads)), \
+             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+            by_stage = {
+                e.stage: e
+                for e in StageDispatchProvider().get_all_stages(force=True)
+            }
+        # implement: per-stage env wins.
+        assert by_stage["implement"].worker == "claude-worker"
+        assert by_stage["implement"].source == "env"
+        # classify: cai no global DISPATCH_MODE.
+        assert by_stage["classify"].worker == "deile-worker"
+        assert by_stage["classify"].source == "global"
+
+    def test_per_stage_model_env_takes_precedence(self):
+        """``DEILE_PIPELINE_MODEL_<STAGE>`` vence o global ``DEILE_PIPELINE_MODEL``."""
+        from _panel_data import StageDispatchProvider
+        payloads = {
+            "deployment/deile-pipeline": _deployment_with_env({}),
+            "deployment/deile-worker": _deployment_with_env({
+                "DEILE_PIPELINE_MODEL_IMPLEMENT": "anthropic:claude-opus-4-7",
+                "DEILE_PIPELINE_MODEL": "anthropic:claude-sonnet-4-6",
+            }),
+        }
+        with patch("_panel_data._capture_json",
+                   side_effect=self._route_capture(payloads)), \
+             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+            by_stage = {
+                e.stage: e
+                for e in StageDispatchProvider().get_all_stages(force=True)
+            }
+        # implement: per-stage env wins.
+        assert by_stage["implement"].model == "anthropic:claude-opus-4-7"
+        # refine: cai no global DEILE_PIPELINE_MODEL.
+        assert by_stage["refine"].model == "anthropic:claude-sonnet-4-6"
+
+    def test_preferred_model_aliases_pipeline_model(self):
+        """``DEILE_PREFERRED_MODEL`` é aceito como alias do model global."""
+        from _panel_data import StageDispatchProvider
+        payloads = {
+            "deployment/deile-pipeline": _deployment_with_env({}),
+            "deployment/deile-worker": _deployment_with_env({
+                "DEILE_PREFERRED_MODEL": "deepseek:deepseek-v4-pro",
+            }),
+        }
+        with patch("_panel_data._capture_json",
+                   side_effect=self._route_capture(payloads)), \
+             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+            entries = StageDispatchProvider().get_all_stages(force=True)
+        for e in entries:
+            assert e.model == "deepseek:deepseek-v4-pro"
+
+    def test_combined_per_stage_worker_and_model(self):
+        """Per-stage env de worker E model setados, source='env' no worker."""
+        from _panel_data import StageDispatchProvider
+        payloads = {
+            "deployment/deile-pipeline": _deployment_with_env({
+                "DEILE_PIPELINE_DISPATCH_IMPLEMENT": "claude-worker",
+            }),
+            "deployment/deile-worker": _deployment_with_env({
+                "DEILE_PIPELINE_MODEL_IMPLEMENT": "anthropic:claude-opus-4-7",
+            }),
+        }
+        with patch("_panel_data._capture_json",
+                   side_effect=self._route_capture(payloads)), \
+             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+            by_stage = {
+                e.stage: e
+                for e in StageDispatchProvider().get_all_stages(force=True)
+            }
+        assert by_stage["implement"].worker == "claude-worker"
+        assert by_stage["implement"].model == "anthropic:claude-opus-4-7"
+        assert by_stage["implement"].source == "env"
+
+    def test_canonicalizes_legacy_worker_aliases(self):
+        """``deile_worker`` (underscore) vira ``deile-worker`` na view."""
+        from _panel_data import StageDispatchProvider
+        payloads = {
+            "deployment/deile-pipeline": _deployment_with_env({
+                "DEILE_PIPELINE_DISPATCH_MODE": "deile_worker",
+            }),
+            "deployment/deile-worker": _deployment_with_env({}),
+        }
+        with patch("_panel_data._capture_json",
+                   side_effect=self._route_capture(payloads)), \
+             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+            entries = StageDispatchProvider().get_all_stages(force=True)
+        for e in entries:
+            assert e.worker == "deile-worker"
+            assert e.source == "global"
+
+    def test_blank_per_stage_env_falls_back_to_global(self):
+        """Env presente com value vazio é tratado como ausente."""
+        from _panel_data import StageDispatchProvider
+        payloads = {
+            "deployment/deile-pipeline": _deployment_with_env({
+                "DEILE_PIPELINE_DISPATCH_IMPLEMENT": "   ",
+                "DEILE_PIPELINE_DISPATCH_MODE": "claude-worker",
+            }),
+            "deployment/deile-worker": _deployment_with_env({}),
+        }
+        with patch("_panel_data._capture_json",
+                   side_effect=self._route_capture(payloads)), \
+             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+            by_stage = {
+                e.stage: e
+                for e in StageDispatchProvider().get_all_stages(force=True)
+            }
+        assert by_stage["implement"].worker == "claude-worker"
+        assert by_stage["implement"].source == "global"
+
+    def test_disabled_returns_five_default_entries(self):
+        """``enabled=False`` (modo --local-only) → 5 stages default sem kubectl."""
+        from _panel_data import StageDispatchProvider
+        with patch("_panel_data._capture_json") as fake_capture:
+            entries = StageDispatchProvider(enabled=False).get_all_stages(
+                force=True,
+            )
+            fake_capture.assert_not_called()
+        assert len(entries) == 5
+        for e in entries:
+            assert e.worker == "deile-worker"
+            assert e.source == "default"
+            assert e.model is None
+
+    def test_pipeline_deployment_absent_falls_back_to_default(self):
+        """Pipeline Deployment ausente → 5 stages default (não levanta)."""
+        from _panel_data import StageDispatchProvider
+        with patch("_panel_data._capture_json", return_value=None), \
+             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+            entries = StageDispatchProvider().get_all_stages(force=True)
+        assert len(entries) == 5
+        for e in entries:
+            assert e.worker == "deile-worker"
+            assert e.source == "default"
+
+
+class TestClaudeWorkerStatus:
+    """``get_claude_worker_status`` consolida Deployment + Secret."""
+
+    def test_deployment_absent_returns_not_applied(self):
+        from _panel_data import StageDispatchProvider
+        with patch("_panel_data._capture_json", return_value=None), \
+             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+            status = StageDispatchProvider().get_claude_worker_status(
+                force=True,
+            )
+        assert status.deployment_applied is False
+        assert status.pod_ready is False
+        assert status.logged_in_email is None
+
+    def test_deployment_ready_with_email(self):
+        """Deployment com readyReplicas == replicas + Secret válido."""
+        import base64
+        import json as _json
+
+        from _panel_data import StageDispatchProvider
+        fake_deployment = {"status": {"readyReplicas": 1, "replicas": 1}}
+        creds_b64 = base64.b64encode(
+            _json.dumps({"email": "user@example.com"}).encode()
+        ).decode()
+        fake_secret = {"data": {"credentials.json": creds_b64}}
+
+        def route(cmd, timeout=None):
+            if "deployment/claude-worker" in cmd:
+                return fake_deployment
+            if "secret/claude-credentials" in cmd:
+                return fake_secret
+            return None
+
+        with patch("_panel_data._capture_json", side_effect=route), \
+             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+            status = StageDispatchProvider().get_claude_worker_status(
+                force=True,
+            )
+        assert status.deployment_applied is True
+        assert status.pod_ready is True
+        assert status.logged_in_email == "user@example.com"
+
+    def test_deployment_applied_but_pod_not_ready(self):
+        """Deployment aplicado mas pod ainda subindo (readyReplicas < replicas)."""
+        from _panel_data import StageDispatchProvider
+        fake_deployment = {"status": {"readyReplicas": 0, "replicas": 1}}
+
+        def route(cmd, timeout=None):
+            if "deployment/claude-worker" in cmd:
+                return fake_deployment
+            return None
+
+        with patch("_panel_data._capture_json", side_effect=route), \
+             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+            status = StageDispatchProvider().get_claude_worker_status(
+                force=True,
+            )
+        assert status.deployment_applied is True
+        assert status.pod_ready is False
+        assert status.logged_in_email is None
+
+    def test_secret_malformed_email_returns_none(self):
+        """Secret presente mas base64/JSON malformado → email None silencioso."""
+        from _panel_data import StageDispatchProvider
+        fake_deployment = {"status": {"readyReplicas": 1, "replicas": 1}}
+        # base64 inválido → ValueError dentro do helper.
+        fake_secret = {"data": {"credentials.json": "not-base64-!!"}}
+
+        def route(cmd, timeout=None):
+            if "deployment/claude-worker" in cmd:
+                return fake_deployment
+            if "secret/claude-credentials" in cmd:
+                return fake_secret
+            return None
+
+        with patch("_panel_data._capture_json", side_effect=route), \
+             patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
+            status = StageDispatchProvider().get_claude_worker_status(
+                force=True,
+            )
+        # Deployment ainda ready; email cai pra None.
+        assert status.deployment_applied is True
+        assert status.pod_ready is True
+        assert status.logged_in_email is None
+
+    def test_disabled_returns_neutral_status(self):
+        """``enabled=False`` → status neutro sem chamar kubectl."""
+        from _panel_data import StageDispatchProvider
+        with patch("_panel_data._capture_json") as fake_capture:
+            status = StageDispatchProvider(
+                enabled=False,
+            ).get_claude_worker_status(force=True)
+            fake_capture.assert_not_called()
+        assert status.deployment_applied is False
+        assert status.pod_ready is False
+        assert status.logged_in_email is None
+
+
+# ===========================================================================
+# Task 19 — set_pipeline_dispatch_stage (per-stage dispatcher override)
+# ===========================================================================
+
+class TestSetPipelineDispatchStage:
+    """``set_pipeline_dispatch_stage`` espelha ``set_pipeline_dispatch_mode``
+    (global flip da PR #330) para o caminho per-stage da issue #309 fase 2.
+
+    Escreve ``DEILE_PIPELINE_DISPATCH_<STAGE>`` no Deployment ``deile-pipeline``
+    via ``kubectl set env``. Validação contra :data:`PIPELINE_STAGES` +
+    :func:`is_valid_dispatcher`. Audit ``SECURITY_POLICY_CHANGED``.
+    """
+
+    def test_rejects_invalid_stage(self):
+        from _panel_data import set_pipeline_dispatch_stage
+        ok, msg = set_pipeline_dispatch_stage("garbage", "claude-worker",
+                                              namespace="deile")
+        assert ok is False
+        assert "stage" in msg.lower()
+        assert "garbage" in msg or "invalid" in msg.lower()
+
+    def test_rejects_invalid_dispatcher(self):
+        from _panel_data import set_pipeline_dispatch_stage
+        ok, msg = set_pipeline_dispatch_stage("implement", "fake-worker",
+                                              namespace="deile")
+        assert ok is False
+        assert "dispatcher" in msg.lower() or "invalid" in msg.lower()
+
+    def test_success_issues_correct_kubectl_argv(self):
+        from _panel_data import set_pipeline_dispatch_stage
+        fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
+        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
+             patch("_panel_data.subprocess.run",
+                   return_value=fake_proc) as mock_run:
+            ok, msg = set_pipeline_dispatch_stage(
+                "implement", "claude-worker", namespace="deile",
+            )
+        assert ok is True
+        argv = mock_run.call_args[0][0]
+        assert argv[0] == "/fake/kubectl"
+        assert "deploy/deile-pipeline" in argv
+        # A env var precisa estar no formato KEY=VALUE canônico.
+        assert any("DEILE_PIPELINE_DISPATCH_IMPLEMENT=claude-worker" in a
+                   for a in argv), f"argv missing env var: {argv}"
+
+    def test_clear_with_none_uses_trailing_dash(self):
+        """``dispatcher=None`` → ``kubectl set env … VAR-`` (clear)."""
+        from _panel_data import set_pipeline_dispatch_stage
+        fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
+        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
+             patch("_panel_data.subprocess.run",
+                   return_value=fake_proc) as mock_run:
+            ok, _ = set_pipeline_dispatch_stage(
+                "implement", None, namespace="deile",
+            )
+        assert ok is True
+        argv = mock_run.call_args[0][0]
+        # Sintaxe kubectl `VAR-` (com hífen final) = unset.
+        assert any(a == "DEILE_PIPELINE_DISPATCH_IMPLEMENT-" for a in argv), \
+            f"argv missing trailing-dash unset: {argv}"
+
+    def test_accepts_legacy_aliases(self):
+        """Aliases de _DISPATCHER_ALIASES (``deile_worker``, ``claude``, etc.)
+        passam pelo validador — :func:`is_valid_dispatcher` aceita todos.
+        """
+        from _panel_data import set_pipeline_dispatch_stage
+        fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
+        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
+             patch("_panel_data.subprocess.run", return_value=fake_proc):
+            ok, _ = set_pipeline_dispatch_stage(
+                "implement", "claude", namespace="deile",
+            )
+            assert ok is True
+            ok, _ = set_pipeline_dispatch_stage(
+                "implement", "deile_worker", namespace="deile",
+            )
+            assert ok is True
+
+    def test_kubectl_missing_returns_clear_error(self):
+        from _panel_data import set_pipeline_dispatch_stage
+        with patch("_panel_data.kubectl_bin", return_value=None):
+            ok, msg = set_pipeline_dispatch_stage(
+                "implement", "claude-worker", namespace="deile",
+            )
+        assert ok is False
+        assert "kubectl" in msg.lower()
+
+    def test_nonzero_returncode_surfaces_stderr(self):
+        from _panel_data import set_pipeline_dispatch_stage
+        fake_proc = MagicMock(returncode=1, stdout="",
+                              stderr="forbidden: deployments.apps")
+        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
+             patch("_panel_data.subprocess.run", return_value=fake_proc):
+            ok, msg = set_pipeline_dispatch_stage(
+                "implement", "claude-worker", namespace="deile",
+            )
+        assert ok is False
+        assert "forbidden" in msg
+
+    def test_subprocess_oserror_caught(self):
+        from _panel_data import set_pipeline_dispatch_stage
+        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
+             patch("_panel_data.subprocess.run",
+                   side_effect=OSError("binary missing")):
+            ok, msg = set_pipeline_dispatch_stage(
+                "implement", "claude-worker", namespace="deile",
+            )
+        assert ok is False
+        assert ("binary missing" in msg
+                or "executar" in msg.lower()
+                or "OSError" in msg)
+
+    def test_namespace_passed_through(self):
+        """O painel TUI suporta multi-NS (PR #315). A função deve respeitar
+        o ``namespace=`` kwarg em vez de hardcoded ``NS``."""
+        from _panel_data import set_pipeline_dispatch_stage
+        fake_proc = MagicMock(returncode=0, stdout="updated", stderr="")
+        with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
+             patch("_panel_data.subprocess.run",
+                   return_value=fake_proc) as mock_run:
+            ok, _ = set_pipeline_dispatch_stage(
+                "implement", "claude-worker", namespace="custom-ns",
+            )
+        assert ok is True
+        argv = mock_run.call_args[0][0]
+        assert "custom-ns" in argv

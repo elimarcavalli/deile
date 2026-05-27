@@ -20,42 +20,6 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-_DEILE_DEPRECATED_ENV_VARS: Dict[str, str] = {
-    "DEILE_PREFERRED_MODEL": "model.preferred",
-    "DEILE_VISION_MODEL": "model.vision_model",
-    "DEILE_BOT_APPROVAL_AUTO": "approval.auto",
-    "DEILE_LOOP_GUARD_DISABLE": "loop_guard.disabled",
-    "DEILE_LOOP_GUARD_MAX_CALLS": "loop_guard.max_calls",
-    "DEILE_LOOP_GUARD_REPEAT_THRESHOLD": "loop_guard.repeat_threshold",
-    "DEILE_LOOP_GUARD_WINDOW_SIZE": "loop_guard.window_size",
-    "DEILE_LOOP_GUARD_WINDOW_THRESHOLD": "loop_guard.window_threshold",
-    "DEILE_LOOP_GUARD_NO_PROGRESS": "loop_guard.no_progress",
-    "DEILE_PIPELINE_BASE_PATH": "pipeline.base_path",
-    "DEILE_PIPELINE_REPO": "pipeline.repo",
-    "DEILE_PIPELINE_NOTIFY_USER_ID": "pipeline.notify_user_id",
-    "DEILE_PIPELINE_POLL_INTERVAL": "pipeline.poll_interval",
-    "DEILE_PIPELINE_CLAUDE_TIMEOUT": "pipeline.claude_timeout",
-    "DEILE_PIPELINE_AUTOSTART": "pipeline.autostart",
-    "DEILE_PIPELINE_DISPATCH_MODE": "pipeline.dispatch_mode",
-    "DEILE_PIPELINE_RESUME_ENABLED": "pipeline.resume_enabled",
-    "DEILE_PIPELINE_RESUME_INTERVAL": "pipeline.resume_interval",
-    "DEILE_PIPELINE_RESUME_MAX_ATTEMPTS": "pipeline.resume_max_attempts",
-    "DEILE_PIPELINE_RESUME_BUDGET": "pipeline.resume_budget",
-    # Forge layer (issue #297) — every new env var routes through Settings
-    # the same way the pipeline knobs do. ``DEILE_FORGE_REPO`` supersedes
-    # ``DEILE_PIPELINE_REPO`` (above) but the legacy name keeps working.
-    "DEILE_FORGE_REPO": "forge.repo",
-    "DEILE_FORGE_KIND": "forge.kind",
-    "DEILE_GITHUB_HOST": "forge.github_host",
-    "DEILE_GITLAB_HOST": "forge.gitlab_host",
-    "DEILE_FORGE_PROBE": "forge.probe_enabled",
-    "DEILE_FORGE_BOT_LOGIN": "forge.bot_login",
-    "DEILE_GITLAB_API_VERSION": "forge.gitlab_api_version",
-    "DEILE_GITHUB_API_PREFIX": "forge.github_api_prefix",
-    "DEILE_CRON_DB_PATH": "cron.db_path",
-    "DEILE_CRON_POLL_INTERVAL": "cron.poll_interval",
-    "DEILE_DEBUG": "debug.enabled",
-}
 
 
 class LogLevel(Enum):
@@ -179,6 +143,41 @@ def _to_optional_model_slug(value: Any) -> Optional[str]:
     return stripped
 
 
+def _to_optional_dispatcher(value: Any) -> Optional[str]:
+    """Strict converter for ``pipeline.dispatchers.<stage>`` entries (issue #309).
+
+    Espelha ``_to_optional_model_slug``: ``None`` / vazio colapsa para ``None``
+    (sem override); non-string ou valor fora do whitelist do
+    :func:`is_valid_dispatcher` levanta — ``apply_overrides`` engole e mantém
+    o valor anterior. Strict by design: um typo aqui rotearia silenciosamente
+    todo dispatch para o engine errado (claude-worker dispara billing de
+    subscription/API anthropic, deile-worker usa o provider configurado).
+
+    Note: o validator aceita aliases legacy de PR #330 (``deile_worker``,
+    ``claude_code``, etc.); a canonicalização para ``deile-worker`` /
+    ``claude-worker`` é responsabilidade do :mod:`dispatch_resolver` no
+    momento da resolução, não da camada de persistência.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f"expected str, got {type(value).__name__}")
+    stripped = value.strip()
+    if not stripped:
+        return None
+    # Lazy import — evita import cycle settings → pipeline.dispatch_resolver →
+    # settings (resolver consome ``get_settings()`` em runtime).
+    from deile.orchestration.pipeline.dispatch_resolver import \
+        is_valid_dispatcher
+    if not is_valid_dispatcher(stripped):
+        raise ValueError(
+            f"invalid dispatcher {stripped!r}; expected one of "
+            "'deile-worker'/'claude-worker' (or legacy aliases "
+            "'deile_worker', 'claude_code', 'worker', 'claude', etc)"
+        )
+    return stripped
+
+
 # Map of nested JSON paths in ``.deile/settings.json`` to ``Settings`` flat
 # fields, with a converter for each. Unknown keys are silently ignored —
 # that's how future-compatible forward-compat works.
@@ -232,6 +231,12 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     "pipeline.models.implement":  ("pipeline_model_implement",  _to_optional_model_slug),
     "pipeline.models.pr_review":  ("pipeline_model_pr_review",  _to_optional_model_slug),
     "pipeline.models.follow_ups": ("pipeline_model_follow_ups", _to_optional_model_slug),
+    # Per-stage dispatcher override (issue #309) — see dispatch_resolver.
+    "pipeline.dispatchers.classify":   ("pipeline_dispatcher_classify",   _to_optional_dispatcher),
+    "pipeline.dispatchers.refine":     ("pipeline_dispatcher_refine",     _to_optional_dispatcher),
+    "pipeline.dispatchers.implement":  ("pipeline_dispatcher_implement",  _to_optional_dispatcher),
+    "pipeline.dispatchers.pr_review":  ("pipeline_dispatcher_pr_review",  _to_optional_dispatcher),
+    "pipeline.dispatchers.follow_ups": ("pipeline_dispatcher_follow_ups", _to_optional_dispatcher),
     # Sub-DEILEs paralelos (issue #257)
     "subagent.runner": ("subagent_runner", lambda v: str(v).strip().lower()),
     "subagent.max_parallel": ("subagent_max_parallel", _to_pos_int),
@@ -431,6 +436,22 @@ class Settings:
     pipeline_model_implement: Optional[str] = None
     pipeline_model_pr_review: Optional[str] = None
     pipeline_model_follow_ups: Optional[str] = None
+
+    # Pipeline per-stage dispatcher override (issue #309) — CLI persistence layer.
+    # Decide qual worker pod recebe o ``POST /v1/dispatch`` por etapa:
+    # ``deile-worker`` (DEILE-to-DEILE, default; usa o provider configurado)
+    # ou ``claude-worker`` (subprocesso ``claude -p``; força modelos anthropic).
+    # Aceita aliases legacy de PR #330 (``deile_worker``, ``claude_code``,
+    # ``worker``, ``claude``); canonicalização fica a cargo do
+    # ``dispatch_resolver`` no momento da resolução. Cluster path equivalente
+    # usa ``DEILE_PIPELINE_DISPATCH_<STAGE>`` env nos pods da Deployment.
+    # Stages sem override caem no global ``DEILE_PIPELINE_DISPATCH_MODE``;
+    # sem isso, ``deile-worker`` built-in.
+    pipeline_dispatcher_classify: Optional[str] = None
+    pipeline_dispatcher_refine: Optional[str] = None
+    pipeline_dispatcher_implement: Optional[str] = None
+    pipeline_dispatcher_pr_review: Optional[str] = None
+    pipeline_dispatcher_follow_ups: Optional[str] = None
 
     # Sub-DEILEs paralelos em sessão CLI (issue #257)
     # `subagent_runner`        — "local" (default; in-process via asyncio.gather de
@@ -964,89 +985,101 @@ def _resolved_path(raw: str) -> Path:
 
 # Table-driven env-var → settings attribute mapping. Each row converts the env
 # var's raw string with ``convert``; ValueError is swallowed (legacy behavior
-# preserved). ``deprecated=True`` rows emit a deprecation pointer to the
-# matching key in ``_DEILE_DEPRECATED_ENV_VARS`` (issue #111 migration path).
-_ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any], bool], ...] = (
-    # (env_var, settings_attr, converter, deprecated)
-    ("DEILE_DEBUG",                          "debug_enabled",                  _env_bool,         True),
-    ("DEILE_PREFERRED_MODEL",                "preferred_model",                str,               True),
-    ("DEILE_VISION_MODEL",                   "vision_model",                   str.strip,         True),
-    ("DEILE_BOT_APPROVAL_AUTO",              "bot_approval_auto",              _env_bool,         True),
-    ("DEILE_LOOP_GUARD_DISABLE",             "loop_guard_disabled",            _env_bool,         True),
-    ("DEILE_LOOP_GUARD_MAX_CALLS",           "loop_guard_max_calls",           _int_floor(1),     True),
-    ("DEILE_LOOP_GUARD_REPEAT_THRESHOLD",    "loop_guard_repeat_threshold",    _int_floor(1),     True),
-    ("DEILE_LOOP_GUARD_WINDOW_SIZE",         "loop_guard_window_size",         _int_floor(1),     True),
-    ("DEILE_LOOP_GUARD_WINDOW_THRESHOLD",    "loop_guard_window_threshold",    _int_floor(1),     True),
-    ("DEILE_LOOP_GUARD_NO_PROGRESS",         "loop_guard_no_progress",         _int_floor(1),     True),
-    ("DEILE_PIPELINE_BASE_PATH",             "pipeline_base_path",             _resolved_path,    True),
-    ("DEILE_PIPELINE_REPO",                  "pipeline_repo",                  str,               True),
-    ("DEILE_PIPELINE_NOTIFY_USER_ID",        "pipeline_notify_user_id",        str,               True),
-    ("DEILE_PIPELINE_POLL_INTERVAL",         "pipeline_poll_interval",         int,               True),
-    ("DEILE_PIPELINE_CLAUDE_TIMEOUT",        "pipeline_claude_timeout",        int,               True),
-    # PIPELINE_AUTOSTART is a current knob (no deprecation warning).
-    ("DEILE_PIPELINE_AUTOSTART",             "pipeline_autostart",             _env_bool,         False),
-    ("DEILE_PIPELINE_DISPATCH_MODE",         "pipeline_dispatch_mode",         lambda s: s.strip().lower(), True),
-    ("DEILE_PIPELINE_RESUME_ENABLED",        "pipeline_resume_enabled",        _env_bool,         True),
-    ("DEILE_PIPELINE_RESUME_INTERVAL",       "pipeline_resume_interval",       _int_floor(0),     True),
-    ("DEILE_PIPELINE_RESUME_MAX_ATTEMPTS",   "pipeline_resume_max_attempts",   _int_floor(1),     True),
-    ("DEILE_PIPELINE_RESUME_BUDGET",         "pipeline_resume_budget",         _int_floor(0),     True),
-    # Forge layer (issue #297) — current knobs, no deprecation. Validation
-    # of ``forge_kind`` is loose here (raw lowercase string) and tightened
-    # in :func:`deile.orchestration.forge.detection.detect_forge_kind`,
-    # which is the only consumer that needs to reject typos.
-    ("DEILE_FORGE_REPO",                     "forge_repo",                     str,               False),
-    ("DEILE_FORGE_KIND",                     "forge_kind",                     lambda s: s.strip().lower(), False),
-    ("DEILE_GITHUB_HOST",                    "forge_github_host",              str,               False),
-    ("DEILE_GITLAB_HOST",                    "forge_gitlab_host",              str,               False),
-    ("DEILE_FORGE_PROBE",                    "forge_probe_enabled",            _env_bool,         False),
-    ("DEILE_FORGE_BOT_LOGIN",                "forge_bot_login",                str,               False),
-    ("DEILE_GITLAB_API_VERSION",             "forge_gitlab_api_version",       str,               False),
-    ("DEILE_GITHUB_API_PREFIX",              "forge_github_api_prefix",        str,               False),
-    ("DEILE_CRON_DB_PATH",                   "cron_db_path",                   _resolved_path,    True),
-    ("DEILE_CRON_POLL_INTERVAL",             "cron_poll_interval",             int,               True),
-    # Current knob (no deprecation): agent tool-loop cap.
-    ("DEILE_MAX_TOOL_ITERATIONS",            "max_tool_iterations",            _int_floor(1),     False),
-    # Sub-DEILEs paralelos (issue #257) — current knobs, no deprecation.
-    ("DEILE_SUBAGENT_RUNNER",                "subagent_runner",                lambda s: s.strip().lower(), False),
-    ("DEILE_SUBAGENT_MAX_PARALLEL",          "subagent_max_parallel",          _int_floor(1),     False),
-    ("DEILE_SUBAGENT_POLL_INTERVAL_S",       "subagent_poll_interval_s",       float,             False),
-    ("DEILE_SUBAGENT_BUDGET_S",              "subagent_budget_s",              float,             False),
-    ("DEILE_SUBAGENT_CAPTURE_BUFFER_MAX_BYTES", "subagent_capture_buffer_max_bytes", _int_floor(1), False),
+# preserved).
+#
+# Env vars marked «deprecated» are kept for test isolation and backward compat
+# (tests use monkeypatch.setenv to redirect DBs and override knobs). Removing
+# them broke 20 tests in issue #309 fase 3 — restored here. The deprecation
+# warning machinery was removed (issue #309 cleanup) but the env vars themselves
+# remain active. Canonical path is always settings.json; these are fallbacks.
+#
+# Truly removed (silently ignored if set): DEILE_PIPELINE_REPO,
+# DEILE_PIPELINE_NOTIFY_USER_ID, DEILE_PIPELINE_POLL_INTERVAL,
+# DEILE_PIPELINE_CLAUDE_TIMEOUT, DEILE_PIPELINE_RESUME_ENABLED,
+# DEILE_PIPELINE_RESUME_INTERVAL, DEILE_PIPELINE_RESUME_MAX_ATTEMPTS,
+# DEILE_PIPELINE_RESUME_BUDGET. These had no test coverage and no operator
+# migration path blocked by their removal.
+_ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any]], ...] = (
+    # (env_var, settings_attr, converter)
+    # Feature flags (deprecated but kept — used by tests + operators)
+    ("DEILE_DEBUG",                          "debug_enabled",                  _env_bool),
+    ("DEILE_PREFERRED_MODEL",                "preferred_model",                str),
+    ("DEILE_VISION_MODEL",                   "vision_model",                   str.strip),
+    ("DEILE_BOT_APPROVAL_AUTO",              "bot_approval_auto",              _env_bool),
+    # Loop guard knobs (deprecated but kept — used by test_loop_detection.py)
+    ("DEILE_LOOP_GUARD_DISABLE",             "loop_guard_disabled",            _env_bool),
+    ("DEILE_LOOP_GUARD_MAX_CALLS",           "loop_guard_max_calls",           _int_floor(1)),
+    ("DEILE_LOOP_GUARD_REPEAT_THRESHOLD",    "loop_guard_repeat_threshold",    _int_floor(1)),
+    ("DEILE_LOOP_GUARD_WINDOW_SIZE",         "loop_guard_window_size",         _int_floor(1)),
+    ("DEILE_LOOP_GUARD_WINDOW_THRESHOLD",    "loop_guard_window_threshold",    _int_floor(1)),
+    ("DEILE_LOOP_GUARD_NO_PROGRESS",         "loop_guard_no_progress",         _int_floor(1)),
+    # Pipeline base path (deprecated but kept — used by pipeline test fixtures)
+    ("DEILE_PIPELINE_BASE_PATH",             "pipeline_base_path",             _resolved_path),
+    # Pipeline dispatch mode global (kept — still in use in cluster env vars)
+    ("DEILE_PIPELINE_DISPATCH_MODE",         "pipeline_dispatch_mode",         str),
+    # Current knob — pipeline autostart.
+    ("DEILE_PIPELINE_AUTOSTART",             "pipeline_autostart",             _env_bool),
+    # Cron knobs (deprecated but kept — used by cron test isolation via monkeypatch)
+    ("DEILE_CRON_DB_PATH",                   "cron_db_path",                   _resolved_path),
+    ("DEILE_CRON_POLL_INTERVAL",             "cron_poll_interval",             int),
+    # Forge layer (issue #297) — current knobs. Validation of ``forge_kind``
+    # is loose here (raw lowercase string) and tightened in
+    # :func:`deile.orchestration.forge.detection.detect_forge_kind`.
+    ("DEILE_FORGE_REPO",                     "forge_repo",                     str),
+    ("DEILE_FORGE_KIND",                     "forge_kind",                     lambda s: s.strip().lower()),
+    ("DEILE_GITHUB_HOST",                    "forge_github_host",              str),
+    ("DEILE_GITLAB_HOST",                    "forge_gitlab_host",              str),
+    ("DEILE_FORGE_PROBE",                    "forge_probe_enabled",            _env_bool),
+    ("DEILE_FORGE_BOT_LOGIN",                "forge_bot_login",                str),
+    ("DEILE_GITLAB_API_VERSION",             "forge_gitlab_api_version",       str),
+    ("DEILE_GITHUB_API_PREFIX",              "forge_github_api_prefix",        str),
+    # Current knob — agent tool-loop cap.
+    ("DEILE_MAX_TOOL_ITERATIONS",            "max_tool_iterations",            _int_floor(1)),
+    # Sub-DEILEs paralelos (issue #257) — current knobs.
+    ("DEILE_SUBAGENT_RUNNER",                "subagent_runner",                lambda s: s.strip().lower()),
+    ("DEILE_SUBAGENT_MAX_PARALLEL",          "subagent_max_parallel",          _int_floor(1)),
+    ("DEILE_SUBAGENT_POLL_INTERVAL_S",       "subagent_poll_interval_s",       float),
+    ("DEILE_SUBAGENT_BUDGET_S",              "subagent_budget_s",              float),
+    ("DEILE_SUBAGENT_CAPTURE_BUFFER_MAX_BYTES", "subagent_capture_buffer_max_bytes", _int_floor(1)),
     # Per-stage model override (issue #305) — cluster path. The panel TUI
-    # writes these via ``kubectl set env deploy/deile-worker`` (parallel to
-    # ``set_preferred_model``). The CLI local path uses ``pipeline.models.*``
-    # in settings.json. Both layers run through ``_to_optional_model_slug``
-    # so a malformed slug is dropped with a warning, never silently used.
-    ("DEILE_PIPELINE_MODEL_CLASSIFY",        "pipeline_model_classify",        _to_optional_model_slug, False),
-    ("DEILE_PIPELINE_MODEL_REFINE",          "pipeline_model_refine",          _to_optional_model_slug, False),
-    ("DEILE_PIPELINE_MODEL_IMPLEMENT",       "pipeline_model_implement",       _to_optional_model_slug, False),
-    ("DEILE_PIPELINE_MODEL_PR_REVIEW",       "pipeline_model_pr_review",       _to_optional_model_slug, False),
-    ("DEILE_PIPELINE_MODEL_FOLLOW_UPS",      "pipeline_model_follow_ups",      _to_optional_model_slug, False),
+    # writes these via ``kubectl set env deploy/deile-worker``. The CLI local
+    # path uses ``pipeline.models.*`` in settings.json. Both layers run through
+    # ``_to_optional_model_slug`` so a malformed slug is dropped with a warning.
+    ("DEILE_PIPELINE_MODEL_CLASSIFY",        "pipeline_model_classify",        _to_optional_model_slug),
+    ("DEILE_PIPELINE_MODEL_REFINE",          "pipeline_model_refine",          _to_optional_model_slug),
+    ("DEILE_PIPELINE_MODEL_IMPLEMENT",       "pipeline_model_implement",       _to_optional_model_slug),
+    ("DEILE_PIPELINE_MODEL_PR_REVIEW",       "pipeline_model_pr_review",       _to_optional_model_slug),
+    ("DEILE_PIPELINE_MODEL_FOLLOW_UPS",      "pipeline_model_follow_ups",      _to_optional_model_slug),
+    # Per-stage dispatcher override (issue #309) — cluster path. Operates em
+    # paridade com pipeline.dispatchers.<stage> em settings.json. Validator
+    # ``_to_optional_dispatcher`` consulta ``is_valid_dispatcher`` do
+    # :mod:`dispatch_resolver` — aceita canônico + aliases legacy de PR #330.
+    ("DEILE_PIPELINE_DISPATCH_CLASSIFY",     "pipeline_dispatcher_classify",   _to_optional_dispatcher),
+    ("DEILE_PIPELINE_DISPATCH_REFINE",       "pipeline_dispatcher_refine",     _to_optional_dispatcher),
+    ("DEILE_PIPELINE_DISPATCH_IMPLEMENT",    "pipeline_dispatcher_implement",  _to_optional_dispatcher),
+    ("DEILE_PIPELINE_DISPATCH_PR_REVIEW",    "pipeline_dispatcher_pr_review",  _to_optional_dispatcher),
+    ("DEILE_PIPELINE_DISPATCH_FOLLOW_UPS",   "pipeline_dispatcher_follow_ups", _to_optional_dispatcher),
 )
 
 
 def _apply_env_overrides(settings: "Settings") -> None:
-    """Apply DEILE_* env vars on top of JSON settings, with deprecation warnings."""
+    """Apply current DEILE_* env vars on top of JSON settings.
+
+    Only env vars listed in ``_ENV_OVERRIDES`` are read. Deprecated env vars
+    (DEILE_PIPELINE_*, DEILE_BOT_APPROVAL_AUTO, etc.) were removed in issue
+    #309 fase 3 — they are silently ignored if present in the environment.
+    """
     env = os.environ.get
 
-    def _warn(var: str, json_key: str) -> None:
-        logger.warning(
-            "Env var %s is deprecated. Set '%s' in ~/.deile/settings.json instead.",
-            var,
-            json_key,
-        )
-
-    for env_var, attr, convert, deprecated in _ENV_OVERRIDES:
+    for env_var, attr, convert in _ENV_OVERRIDES:
         raw = env(env_var)
         if not raw:
             continue
-        if deprecated:
-            _warn(env_var, _DEILE_DEPRECATED_ENV_VARS.get(env_var, env_var))
         try:
             setattr(settings, attr, convert(raw))
         except (ValueError, TypeError):
-            # Legacy behavior: malformed env values are silently ignored, the
-            # default (or JSON layer value) stays in place.
+            # Malformed env values are silently ignored; the default (or JSON
+            # layer value) stays in place.
             pass
 
 
@@ -1264,8 +1297,8 @@ def _load_layered_settings() -> "Settings":
          migration policy is ``"auto"`` (the default). **Pulado quando o
          project_path coincide com o global_path** — evita aplicar o mesmo
          arquivo duas vezes (cenário comum em containers onde HOME == cwd).
-      4. Apply DEILE_* env vars as deprecated fallback (win over JSON for
-         backward compat).
+      4. Apply current DEILE_* env vars (forge, model, dispatcher, subagent
+         knobs) on top of JSON. Deprecated env vars are ignored (issue #309).
 
     If neither layer exists but the legacy ``config/settings.json`` is
     present, fall back to it once with a deprecation warning.
@@ -1304,7 +1337,7 @@ def _load_layered_settings() -> "Settings":
             _apply_env_overrides(legacy)
             return legacy
 
-    # Layer 3: env vars as deprecated fallback (win over JSON for backward compat)
+    # Layer 3: current DEILE_* env vars (forge/model/dispatcher knobs)
     _apply_env_overrides(settings)
 
     return settings

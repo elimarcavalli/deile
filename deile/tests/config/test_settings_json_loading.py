@@ -127,79 +127,105 @@ class TestApplyNestedDict:
 
 
 class TestApplyEnvOverrides:
+    # Vars mantidas ativas (compatibilidade + isolamento de testes).
+    # Não foram removidas em #309 fase 3 — ver settings.py _ENV_OVERRIDES.
     def test_deile_debug_applies(self, monkeypatch):
         monkeypatch.setenv("DEILE_DEBUG", "1")
         s = Settings()
         _apply_env_overrides(s)
-        assert s.debug_enabled is True
+        assert s.debug_enabled is True  # env var ativa
 
     def test_deile_preferred_model_applies(self, monkeypatch):
         monkeypatch.setenv("DEILE_PREFERRED_MODEL", "anthropic:claude-opus-4-7")
         s = Settings()
         _apply_env_overrides(s)
-        assert s.preferred_model == "anthropic:claude-opus-4-7"
+        assert s.preferred_model == "anthropic:claude-opus-4-7"  # env var ativa
 
     def test_deile_vision_model_applies(self, monkeypatch):
         monkeypatch.setenv("DEILE_VISION_MODEL", "custom-vision-v1")
         s = Settings()
         _apply_env_overrides(s)
-        assert s.vision_model == "custom-vision-v1"
+        assert s.vision_model == "custom-vision-v1"  # env var ativa
 
-    def test_deile_bot_approval_auto_truthy(self, monkeypatch):
+    def test_deile_bot_approval_auto_applies(self, monkeypatch):
         monkeypatch.setenv("DEILE_BOT_APPROVAL_AUTO", "true")
         s = Settings()
         _apply_env_overrides(s)
-        assert s.bot_approval_auto is True
+        assert s.bot_approval_auto is True  # env var ativa
 
-    def test_deile_bot_approval_auto_falsy(self, monkeypatch):
-        monkeypatch.setenv("DEILE_BOT_APPROVAL_AUTO", "0")
-        s = Settings()
-        _apply_env_overrides(s)
-        assert s.bot_approval_auto is False
-
-    def test_deile_loop_guard_disable(self, monkeypatch):
+    def test_deile_loop_guard_disable_applies(self, monkeypatch):
         monkeypatch.setenv("DEILE_LOOP_GUARD_DISABLE", "1")
         s = Settings()
         _apply_env_overrides(s)
-        assert s.loop_guard_disabled is True
+        assert s.loop_guard_disabled is True  # env var ativa
 
-    def test_deile_loop_guard_max_calls(self, monkeypatch):
+    def test_deile_loop_guard_max_calls_applies(self, monkeypatch):
         monkeypatch.setenv("DEILE_LOOP_GUARD_MAX_CALLS", "25")
         s = Settings()
         _apply_env_overrides(s)
-        assert s.loop_guard_max_calls == 25
+        assert s.loop_guard_max_calls == 25  # env var ativa
 
-    def test_deile_pipeline_repo(self, monkeypatch):
+    # Vars verdadeiramente silenciadas (não têm mapping em _ENV_OVERRIDES).
+    def test_deile_pipeline_repo_ignored(self, monkeypatch):
+        s = Settings()
+        original = s.pipeline_repo
         monkeypatch.setenv("DEILE_PIPELINE_REPO", "myorg/myrepo")
-        s = Settings()
         _apply_env_overrides(s)
-        assert s.pipeline_repo == "myorg/myrepo"
+        assert s.pipeline_repo == original  # silenciada
 
-    def test_deile_pipeline_poll_interval(self, monkeypatch):
+    def test_deile_pipeline_poll_interval_ignored(self, monkeypatch):
+        s = Settings()
+        original = s.pipeline_poll_interval
         monkeypatch.setenv("DEILE_PIPELINE_POLL_INTERVAL", "120")
-        s = Settings()
         _apply_env_overrides(s)
-        assert s.pipeline_poll_interval == 120
+        assert s.pipeline_poll_interval == original  # silenciada
 
-    def test_deile_cron_poll_interval(self, monkeypatch):
+    def test_deile_cron_poll_interval_applies(self, monkeypatch):
         monkeypatch.setenv("DEILE_CRON_POLL_INTERVAL", "15")
         s = Settings()
         _apply_env_overrides(s)
-        assert s.cron_poll_interval == 15
+        assert s.cron_poll_interval == 15  # env var ativa (isolamento de testes)
 
-    def test_env_override_emits_deprecation_warning(self, monkeypatch, caplog):
-        monkeypatch.setenv("DEILE_DEBUG", "1")
+    def test_deprecated_env_vars_emit_no_warning(self, monkeypatch, caplog):
+        """Deprecated env vars must not emit any deprecation warning (issue #309)."""
+        deprecated_vars = [
+            "DEILE_DEBUG", "DEILE_PREFERRED_MODEL", "DEILE_VISION_MODEL",
+            "DEILE_BOT_APPROVAL_AUTO", "DEILE_LOOP_GUARD_DISABLE",
+            "DEILE_LOOP_GUARD_MAX_CALLS", "DEILE_LOOP_GUARD_REPEAT_THRESHOLD",
+            "DEILE_LOOP_GUARD_WINDOW_SIZE", "DEILE_LOOP_GUARD_WINDOW_THRESHOLD",
+            "DEILE_LOOP_GUARD_NO_PROGRESS", "DEILE_PIPELINE_BASE_PATH",
+            "DEILE_PIPELINE_REPO", "DEILE_PIPELINE_NOTIFY_USER_ID",
+            "DEILE_PIPELINE_POLL_INTERVAL", "DEILE_PIPELINE_CLAUDE_TIMEOUT",
+            "DEILE_PIPELINE_DISPATCH_MODE", "DEILE_PIPELINE_RESUME_ENABLED",
+            "DEILE_PIPELINE_RESUME_INTERVAL", "DEILE_PIPELINE_RESUME_MAX_ATTEMPTS",
+            "DEILE_PIPELINE_RESUME_BUDGET", "DEILE_CRON_DB_PATH",
+            "DEILE_CRON_POLL_INTERVAL",
+        ]
+        for var in deprecated_vars:
+            monkeypatch.setenv(var, "1")
         s = Settings()
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.WARNING, logger="deile.config.settings"):
             _apply_env_overrides(s)
-        assert "deprecated" in caplog.text.lower()
-        assert "DEILE_DEBUG" in caplog.text
+        assert "deprecated" not in caplog.text.lower()
 
     def test_absent_env_var_leaves_default(self, monkeypatch):
         monkeypatch.delenv("DEILE_VISION_MODEL", raising=False)
         s = Settings()
         _apply_env_overrides(s)
         assert s.vision_model == "gemini-2.5-flash-lite"
+
+    # Current (non-deprecated) env vars still apply.
+    def test_deile_pipeline_autostart_still_applies(self, monkeypatch):
+        monkeypatch.setenv("DEILE_PIPELINE_AUTOSTART", "true")
+        s = Settings()
+        _apply_env_overrides(s)
+        assert s.pipeline_autostart is True
+
+    def test_deile_forge_repo_still_applies(self, monkeypatch):
+        monkeypatch.setenv("DEILE_FORGE_REPO", "myorg/myrepo")
+        s = Settings()
+        _apply_env_overrides(s)
+        assert s.forge_repo == "myorg/myrepo"
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +279,29 @@ class TestBuildSettings:
         reset_settings()
 
     def test_env_var_overrides_json(self, monkeypatch, tmp_path):
+        """Current (non-deprecated) env vars win over JSON settings.
+
+        Uses DEILE_FORGE_REPO (a current knob) to verify the env-override layer
+        still works after the deprecated-env-var cleanup in issue #309.
+        """
+        proj = tmp_path / "project"
+        proj.mkdir(parents=True)
+        _write_json(
+            proj / ".deile" / "settings.json",
+            {"forge": {"repo": "from-json/repo"}},
+        )
+        monkeypatch.setattr("deile.config.settings.Path.home", lambda: tmp_path / "home")
+        monkeypatch.chdir(proj)
+        monkeypatch.setenv("DEILE_FORGE_REPO", "from-env/repo")
+        reset_settings()
+        from deile.config.settings import get_settings
+
+        s = get_settings()
+        assert s.forge_repo == "from-env/repo"
+        reset_settings()
+
+    def test_deprecated_env_var_does_not_override_json(self, monkeypatch, tmp_path):
+        """Deprecated env vars are silently ignored — JSON layer wins (issue #309)."""
         proj = tmp_path / "project"
         proj.mkdir(parents=True)
         _write_json(
@@ -266,7 +315,7 @@ class TestBuildSettings:
         from deile.config.settings import get_settings
 
         s = get_settings()
-        assert s.pipeline_repo == "from-env/repo"
+        assert s.pipeline_repo == "from-json/repo"  # env var ignored, JSON wins
         reset_settings()
 
     def test_reset_clears_singleton(self, tmp_path, monkeypatch):

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
 from deile.orchestration.pipeline.github_client import PrRef
+from deile.orchestration.pipeline.implementer import WorkOutcome
 from deile.orchestration.pipeline.labels import REVIEW_PENDING
 from deile.orchestration.pipeline.monitor import (PipelineConfig,
                                                   PipelineMonitor)
@@ -136,6 +137,18 @@ def _make_monitor_with_cb(
         cmd=("claude", "-p", "x"),
     ))
 
+    # Issue #309 fase 2: build_implementer sempre retorna WorkerImplementer.
+    # Stub que respeita claude_rc/claude_stdout para manter semântica do teste.
+    outcome_for_test = WorkOutcome(
+        ok=(claude_rc == 0),
+        text=claude_stdout,
+        error="" if claude_rc == 0 else "boom",
+    )
+    implementer_stub = MagicMock()
+    implementer_stub.implement = AsyncMock(return_value=outcome_for_test)
+    implementer_stub.review = AsyncMock(return_value=outcome_for_test)
+    implementer_stub.mention = AsyncMock(return_value=outcome_for_test)
+
     monitor = PipelineMonitor(
         cfg,
         github=github,
@@ -143,6 +156,7 @@ def _make_monitor_with_cb(
         claude=claude,
         notifier=notifier,
         post_merge_callback=post_merge_callback,
+        implementer=implementer_stub,
     )
     monitor.config.enable_review = False
     monitor.config.enable_implement = False

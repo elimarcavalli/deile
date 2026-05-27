@@ -42,6 +42,7 @@ import sys
 import tempfile
 import threading
 import time
+import webbrowser
 from abc import ABC, abstractmethod
 from collections import deque
 from dataclasses import dataclass, field
@@ -69,6 +70,8 @@ from _panel_data import \
 from _panel_data import clear_stage_model as pd_clear_stage_model
 from _panel_data import \
     set_pipeline_dispatch_mode as pd_set_pipeline_dispatch_mode
+from _panel_data import \
+    set_pipeline_dispatch_stage as pd_set_pipeline_dispatch_stage
 from _panel_data import set_preferred_model as pd_set_preferred_model
 from _panel_data import set_stage_model as pd_set_stage_model
 from rich import box
@@ -608,7 +611,7 @@ class DashboardView(View):
     HOTKEYS = (
         "[1]Pod watch  [2]Pipeline  [3]Issues/PRs  [4]Logs split  "
         "[5]Tokens  [n]otifier  [a]ctions  [m]odel/runtime  "
-        "[M]odel/stage  [?]help  [q]uit"
+        "[d]ispatch (workers & models)  [?]help  [q]uit"
     )
 
     def __init__(self, data: Optional[PanelData] = None):
@@ -873,14 +876,15 @@ class DashboardView(View):
             "n": "notifier-echo",
             "a": "actions",
             "m": "model-switcher",
-            # Per-stage model overrides (issue #305) — uppercase 'M' is a
-            # distinct keystroke (Shift+m) so it doesn't collide with the
-            # deployment-wide ModelSwitcherView on lowercase 'm'.
-            "M": "stage-models",
-            # Pipeline dispatch mode (issue #309) — flip
-            # ``DEILE_PIPELINE_DISPATCH_MODE`` (claude vs deile_worker) sem
-            # editar manifests.
-            "d": "dispatch-mode",
+            # Pipeline Stage Configuration (issue #309 fase 2 — Task 21 cutover):
+            # matriz unificada que substitui (a) o flip global de
+            # ``DEILE_PIPELINE_DISPATCH_MODE`` da ``DispatchModeView`` (PR #330)
+            # e (b) o per-stage model override da ``StageModelsView`` (#305).
+            # A coluna ``Worker`` cobre o flip de despacho por stage e a coluna
+            # ``Model`` cobre o override de modelo — ambos consolidados nesta
+            # única view. As views legadas continuam no código (não foram
+            # deletadas) mas saíram do registry — limpeza fica para FU PR.
+            "d": "dispatch-mode-matrix",
         }
         if key in nav:
             return ActionResult.nav(nav[key])
@@ -1563,6 +1567,42 @@ class PodWatchView(View):
                 (_fmt_age(wstate.last_activity_s) + " ago"
                  if wstate.last_activity_s is not None else "—", "bold"),
             ))
+            # "Current task" — issue/PR/MR/workflow que o worker está
+            # atendendo no momento (issue #309 fase 2 follow-up). Fonte
+            # de verdade: linha estruturada ``dispatch_started`` emitida
+            # pelo :func:`infra.k8s.worker_server.dispatch_handler` e
+            # parseada pelo :class:`WorkerProvider`. Forge-agnóstico: o
+            # ``target_label`` do CurrentTask devolve ``#N``/``PR#N``/
+            # ``mention …`` independentemente de GitHub ou GitLab — o
+            # vocabulário PR↔MR é abstraído upstream (ver Decisão #42).
+            # Quando idle ou worker antigo sem logs estruturados, mostra
+            # ``—`` (mesmo padrão das outras células do header).
+            ct = wstate.current_task
+            if ct is not None:
+                task_parts: List[Any] = [
+                    ("current task: ", "dim"),
+                    (ct.target_label, "bold magenta"),
+                ]
+                if ct.stage:
+                    task_parts.extend([
+                        ("   stage: ", "dim"),
+                        (ct.stage, "bold"),
+                    ])
+                if ct.branch:
+                    task_parts.extend([
+                        ("   branch: ", "dim"),
+                        (ct.branch, "dim italic"),
+                    ])
+                task_parts.extend([
+                    ("   running: ", "dim"),
+                    (_fmt_age(ct.elapsed_s), "bold"),
+                ])
+                lines.append(Text.assemble(*task_parts))
+            else:
+                lines.append(Text.assemble(
+                    ("current task: ", "dim"),
+                    ("— (idle)", "dim"),
+                ))
         return Group(*lines)
 
     def _local_header_body(self) -> RenderableType:
@@ -1633,12 +1673,17 @@ class PodWatchView(View):
 
     def render(self, app: "PanelApp") -> RenderableType:
         layout = Layout()
+        # ``size=7`` acomoda 4 linhas de header + bordas do Panel + título
+        # ([1] name/role/status + [2] uptime/restarts/ready/node + [3]
+        # worker/last activity + [4] current task — issue #309 fase 2).
+        # Workers idle ou pods não-worker mostram menos linhas; o Panel
+        # auto-encolhe sem corte porque o size é teto, não piso.
         layout.split_column(
             Layout(_head_panel(self.title, app), name="head", size=4),
             Layout(Panel(self._header_body(),
                          title="[bold]POD[/bold]", title_align="left",
                          border_style="cyan"),
-                   name="info", size=6),
+                   name="info", size=7),
             Layout(self._log_panel(), name="log"),
             Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
         )
@@ -1925,12 +1970,16 @@ class IssuesPRsView(View):
                          title=f"[bold]{label.upper()}[/bold]",
                          title_align="left", border_style="dim")
         tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
-        tbl.add_column(" ", width=2)
-        tbl.add_column("#", width=6)
-        tbl.add_column("workflow", width=22)
-        tbl.add_column("review", width=14)
-        tbl.add_column("updated", width=10)
-        tbl.add_column("assignees", width=18)
+        # Larguras como `max_width` (teto, não literal — princípio 15): Rich
+        # pode encolher cada coluna abaixo desse valor quando o terminal é
+        # estreito, em vez de travar a tabela. A coluna `title` fica sem teto
+        # para absorver o espaço restante.
+        tbl.add_column(" ", max_width=2)
+        tbl.add_column("#", max_width=6)
+        tbl.add_column("workflow", max_width=22)
+        tbl.add_column("review", max_width=14)
+        tbl.add_column("updated", max_width=10)
+        tbl.add_column("assignees", max_width=18)
         tbl.add_column("title")
         now = datetime.now(timezone.utc)
         flat = self._flat()
@@ -1996,7 +2045,14 @@ class IssuesPRsView(View):
             return ActionResult.refresh()
         if key in ("\r", "\n"):
             url = flat[self.cursor].url
-            _copy_to_clipboard(url)
+            if url:
+                # Abre no browser default do OS (forge-agnóstico — a URL já
+                # vem do `html_url` do GitHub ou do `web_url` do GitLab, o
+                # painel não monta nada). `webbrowser.open` é best-effort:
+                # em headless retorna False mas não levanta; o clipboard
+                # cai como fallback para o operador colar manualmente.
+                _open_in_browser(url)
+                _copy_to_clipboard(url)
             # Não temos toast ainda — devolve refresh para a próxima render
             # surgir com indicador. (Fase 6: ActionsOverlay com toast queue.)
             return ActionResult.refresh()
@@ -2020,6 +2076,26 @@ def _copy_to_clipboard(text: str) -> bool:
         "_copy_to_clipboard: nenhum bin (pbcopy/xclip/wl-copy) encontrado",
     )
     return False
+
+
+def _open_in_browser(url: str) -> bool:
+    """Abre `url` no browser default do OS — best-effort, nunca levanta.
+
+    Usa ``webbrowser.open`` da stdlib (delega para ``open`` no macOS,
+    ``xdg-open`` no Linux, ``start`` no Windows). Em ambiente headless
+    (CI, container sem DISPLAY) o ``webbrowser`` registra
+    ``BROWSER`` vazio e o ``open()`` retorna False; o operador ainda
+    tem a URL no clipboard via ``_copy_to_clipboard``. Qualquer exceção
+    é capturada e logada em WARNING — abrir browser não é crítico,
+    o painel não deve cair por isso.
+    """
+    if not url:
+        return False
+    try:
+        return bool(webbrowser.open(url, new=2, autoraise=True))
+    except Exception as exc:  # pragma: no cover — defensivo
+        logger.warning("_open_in_browser falhou para %s: %s", url, exc)
+        return False
 
 
 class TokensView(View):
@@ -3566,6 +3642,1332 @@ class DispatchModeView(View):
         self.last_msg = msg
 
 
+class DispatchMatrixView(View):
+    """Pipeline Stage Configuration unificada (issue #309 fase 2 — Task 18).
+
+    Substitui (Task 21 — wire de ``[d]`` no Dashboard) duas views legadas:
+
+    - :class:`DispatchModeView` (PR #330) — global flip único
+      (``DEILE_PIPELINE_DISPATCH_MODE``).
+    - :class:`StageModelsView` (#305) — per-stage model override
+      (``DEILE_PIPELINE_MODEL_<STAGE>``).
+
+    O resultado é uma matriz ``N+1`` linhas × 2 colunas editáveis:
+
+    - ``N`` linhas (uma por stage de :data:`PIPELINE_STAGES`) com colunas
+      ``{Stage, Worker, Model, Source}``.
+    - ``+1`` linha "Global default" para editar
+      ``DEILE_PIPELINE_DISPATCH_MODE`` (worker) e
+      ``DEILE_PIPELINE_MODEL`` (model) — fallback aplicado quando o stage
+      não tem override próprio.
+
+    O header da view mostra o status do Deployment ``claude-worker`` (lido
+    via :meth:`StageDispatchProvider.get_claude_worker_status`): ``ready`` com
+    email logado, ``NOT READY`` (deployment aplicado mas pod down), ou
+    ``NÃO INSTALADO`` (com hint da action ``[I]`` para o operador instalar
+    on-the-fly).
+
+    Esta task entrega apenas o skeleton (render + navegação ↑↓ ←→ q). As
+    actions ``[enter]`` (editar célula), ``[r]`` (reset célula),
+    ``[L]`` (switch login) e ``[I]`` (install on-the-fly) são STUBS
+    devolvendo :class:`ActionResult` neutro — Tasks 19-20 implementam os
+    pickers contextuais e modais de confirmação.
+
+    O wire de ``[d]`` no Dashboard fica para Task 21 — esta classe só é
+    instanciada pelo painel após o nav dict ser atualizado lá.
+    """
+
+    name = "dispatch-matrix"
+    title = "Pipeline Stage Configuration ([d])"
+    refresh_s = 1.0
+
+    HOTKEYS = (
+        "[↑/↓] linha   [←/→] coluna   [enter] editar   [r] reset   "
+        "[L] switch claude login   [I] install   [U] uninstall   [q] back   "
+        "[s]caling row: enter digita réplicas (0-10)"
+    )
+
+    # Índice de row constante para a linha de scaling (após Global default).
+    # Calculado em runtime como ``len(entries) + 1`` — mantido aqui só como
+    # documentação da convenção.
+    _SCALING_ROW_OFFSET = 1  # offset relativo ao len(entries): global=+0, scaling=+1
+
+    # Source of truth do conjunto de stages — espelha
+    # ``deile.orchestration.pipeline.dispatch_resolver.PIPELINE_STAGES``.
+    # Listado aqui (e não importado no module scope) para a view continuar
+    # importável quando o painel roda de infra/k8s sem o pacote DEILE no
+    # path (mesmo padrão de :class:`StageModelsView`).
+    _STAGES_FALLBACK = ("classify", "refine", "implement", "pr_review",
+                        "follow_ups")
+
+    # Fallback estático dos modelos quando ``ModelsProvider`` está vazio
+    # (catálogo do YAML não carregou) ou em modo demo. Espelha o conjunto
+    # bundled em ``deile/config/model_providers.yaml`` — não é doctrinaire,
+    # mas garante que o picker sempre tenha opções para o operador
+    # escolher (ex.: em CI sem yaml acessível ou em demo sem cluster).
+    _MODELS_FALLBACK_STATIC = (
+        "anthropic:claude-opus-4-7",
+        "anthropic:claude-sonnet-4-6",
+        "anthropic:claude-haiku-4-5",
+        "openai:gpt-4",
+        "openai:gpt-4-turbo",
+        "deepseek:deepseek-chat",
+        "google:gemini-2.5-pro",
+    )
+
+    # Sentinelas do picker — exibidas como primeira opção. Selecionar
+    # qualquer uma chama ``clear_*`` (kubectl ``VAR-``) no apply.
+    _CLEAR_SENTINEL_WORKER = "(global default)"
+    _CLEAR_SENTINEL_MODEL = "(default — clear override)"
+
+    def __init__(self, data: Optional[PanelData] = None):
+        self.data = data
+        # cursor_row ∈ [0, N] — N inclusive corresponde à linha "Global
+        # default" no fim da matriz.
+        self.cursor_row: int = 0
+        # cursor_col ∈ {0, 1} — 0 = Worker, 1 = Model. As colunas Stage e
+        # Source não são editáveis (label estático + metadado read-only).
+        self.cursor_col: int = 0
+        # --- Picker modal state (Task 19). ``None`` = browsing.
+        # Forma: ``(kind, stage_or_None, options)`` onde ``kind`` é:
+        #   * "worker"        — picker de worker para um stage específico
+        #   * "model"         — picker de model para um stage específico
+        #   * "global_worker" — picker de dispatch_mode (global)
+        #   * "global_model"  — picker de DEILE_PREFERRED_MODEL (global)
+        # ``stage_or_None`` é o nome do stage para per-stage pickers, ou
+        # ``None`` para os global_*.
+        # ``options`` é a lista pré-computada (filtrada) que o picker
+        # exibe — captura o estado da row no momento de abertura para
+        # que mudar de row durante a navegação do picker não troque a
+        # lista de opções (UX previsível).
+        self.mode: Optional[tuple] = None
+        self.picker_cursor: int = 0
+        # Última ação para feedback no painel (paridade com
+        # ``DispatchModeView`` / ``StageModelsView``).
+        self.last_msg: str = ""
+        self.last_ok: Optional[bool] = None
+        # --- Background install state (issue #309 fase 2 hotfix #2) ---
+        # ``bootstrap_claude_worker`` chama ``claude auth login`` que pode
+        # bloquear até 5 min em ``subprocess.run``. O painel TUI tem event
+        # loop síncrono — chamar isso inline congela ESC, refresh e qualquer
+        # tecla. Solução: rodar em ``threading.Thread`` daemon, com flag
+        # para o handler de tecla rejeitar [I]/[L] concorrentes, e a thread
+        # publicar resultado em ``last_msg``/``last_ok`` quando termina.
+        self._install_thread: Optional["threading.Thread"] = None
+        self._install_in_progress: bool = False
+
+    # --- View lifecycle / key interception ------------------------------
+
+    def on_unmount(self, app) -> None:
+        # Reentry sempre na matriz, nunca num picker stale.
+        self.mode = None
+        self.picker_cursor = 0
+
+    def intercepts_key(self, key: str) -> bool:
+        # ESC dentro do picker fecha o modal (handle_key), não pop a view.
+        return key == "ESC" and self.mode is not None
+
+    # --- data accessors --------------------------------------------------
+
+    def _stages(self) -> tuple:
+        """Lazy import de :data:`PIPELINE_STAGES` com fallback estático.
+
+        Catch EXCEPTION (não só ImportError): se o pacote ``deile`` tem
+        SyntaxError numa cadeia de import (ex.: merge conflict não
+        resolvido em ``deile/tools/discovery.py``), o ``import`` levanta
+        ``SyntaxError`` (não ``ImportError``). O painel NÃO PODE crashar
+        por causa de código quebrado em outro módulo — usa o fallback
+        estático que já é a fonte autoritativa do PIPELINE_STAGES (Task 17
+        ``StageDispatchProvider`` faz a mesma proteção).
+        """
+        try:
+            from deile.orchestration.pipeline.dispatch_resolver import \
+                PIPELINE_STAGES  # noqa: PLC0415
+            return PIPELINE_STAGES
+        except Exception:  # noqa: BLE001 — proteção genérica é intencional
+            return self._STAGES_FALLBACK
+
+    def _entries(self) -> List:
+        """Retorna as 5 entries do :class:`StageDispatchProvider`.
+
+        Em modo demo (``data=None``), monta entries vazias para a UI ainda
+        renderizar — o operador vê a estrutura da matriz mesmo sem cluster.
+        """
+        if self.data is None:
+            from _panel_data import StageDispatchEntry  # noqa: PLC0415
+            return [
+                StageDispatchEntry(s, "deile-worker", None, "default")
+                for s in self._stages()
+            ]
+        return self.data.stage_dispatch.get_all_stages()
+
+    def _load_all_models(self) -> List[str]:
+        """Lista de slugs do catálogo (``ModelsProvider``) com fallback.
+
+        Quando ``data`` é ``None`` ou o provider está vazio (yaml não
+        carregou), cai no ``_MODELS_FALLBACK_STATIC`` para o picker ainda
+        ter opções.
+        """
+        if self.data is not None:
+            try:
+                models = self.data.models.get()
+            except Exception:  # noqa: BLE001
+                # MagicMock pode não ter ``.models`` configurado; cai no
+                # fallback para o teste/demo ainda funcionar.
+                models = []
+            if models:
+                slugs = []
+                for m in models:
+                    slug = getattr(m, "slug", None)
+                    if isinstance(slug, str) and slug:
+                        slugs.append(slug)
+                if slugs:
+                    return slugs
+        return list(self._MODELS_FALLBACK_STATIC)
+
+    # --- picker option builders (Task 19) -------------------------------
+
+    def _worker_picker_options(self) -> List[str]:
+        """Opções do picker de worker (3 itens fixos)."""
+        return [
+            self._CLEAR_SENTINEL_WORKER,  # primeiro = "limpar override"
+            "deile-worker",
+            "claude-worker",
+        ]
+
+    def _model_picker_options(self, *, worker: str) -> List[str]:
+        """Opções do picker de model, contextualizadas por ``worker``.
+
+        ``worker == "claude-worker"`` restringe o catálogo a ``anthropic:*``
+        (único provider que o claude binary aceita). Qualquer outro worker
+        (``deile-worker`` é o padrão) mostra o catálogo completo.
+        """
+        all_models = self._load_all_models()
+        if worker == "claude-worker":
+            filtered = [m for m in all_models if m.startswith("anthropic:")]
+            return [self._CLEAR_SENTINEL_MODEL, *filtered]
+        return [self._CLEAR_SENTINEL_MODEL, *all_models]
+
+    def _claude_status(self):
+        """Status do Deployment ``claude-worker``. Demo → não instalado."""
+        if self.data is None:
+            from _panel_data import ClaudeWorkerStatus  # noqa: PLC0415
+            return ClaudeWorkerStatus(
+                deployment_applied=False, pod_ready=False,
+                logged_in_email=None,
+            )
+        return self.data.stage_dispatch.get_claude_worker_status()
+
+    # --- rendering -------------------------------------------------------
+
+    def render(self, app) -> RenderableType:
+        """Wrapper defensivo: catch ANY exception → renderiza painel de
+        erro com stacktrace truncado em vez de crashar o loop principal.
+
+        Princípio enterprise: a view do painel TUI nunca pode derrubar o
+        processo. Erros em providers (kubectl down, syntax error em cadeia
+        de import, secret malformado etc) viram feedback visual com hint
+        de ação.
+        """
+        try:
+            return self._render_safe(app)
+        except Exception as exc:  # noqa: BLE001 — proteção genérica do view
+            import traceback as _tb  # noqa: PLC0415
+            tb_lines = _tb.format_exception_only(type(exc), exc)
+            tb_text = "".join(tb_lines).strip()
+            # Mantém o que conseguimos do render normal — pelo menos o
+            # rodapé de hotkeys e o painel de erro.
+            return Group(
+                Text("DispatchMatrixView: render falhou",
+                     style="bold red"),
+                Panel(
+                    Text(tb_text, style="red"),
+                    title="[bold red]ERRO DO PAINEL[/bold red]",
+                    title_align="left", border_style="red",
+                ),
+                Text(self.HOTKEYS, style="dim"),
+            )
+
+    def _render_safe(self, app) -> RenderableType:
+        """Render real (separado de :meth:`render` que é o wrapper de erro)."""
+        entries = self._entries()
+        cw = self._claude_status()
+
+        # --- Header: claude-worker status -------------------------------
+        if cw.deployment_applied:
+            ready_label = "ready" if cw.pod_ready else "NOT READY"
+            email_part = (f"  (logado como: {cw.logged_in_email})"
+                          if cw.logged_in_email else "")
+            status_text = f"claude-worker: {ready_label}{email_part}"
+            status_style = "bold green" if cw.pod_ready else "bold yellow"
+        else:
+            # Hint claro da action [I] que instala o Deployment on-the-fly
+            # (Task 20). Operador vê o caminho a seguir sem ler doc externa.
+            status_text = (
+                "claude-worker: NÃO INSTALADO  "
+                "([I] para instalar; [d] depois pra configurar stages)"
+            )
+            status_style = "dim yellow"
+
+        # --- Matrix table -----------------------------------------------
+        # Sem ``width=N`` literal em add_column — princípio 15
+        # (UI resize-adaptativa, issue #307). Rich auto-calcula a largura
+        # ótima por coluna em cada render usando ``console.width`` corrente.
+        tbl = Table(show_header=True, box=box.SIMPLE_HEAVY, expand=True)
+        tbl.add_column("Stage", style="bold cyan")
+        tbl.add_column("Worker")
+        tbl.add_column("Model")
+        tbl.add_column("Source", style="dim")
+
+        for i, entry in enumerate(entries):
+            highlight_w = (i == self.cursor_row and self.cursor_col == 0)
+            highlight_m = (i == self.cursor_row and self.cursor_col == 1)
+
+            worker_cell = (f"[reverse]{entry.worker}[/reverse]"
+                           if highlight_w else entry.worker)
+            model_txt = entry.model or "(default)"
+            model_cell = (f"[reverse]{model_txt}[/reverse]"
+                          if highlight_m else model_txt)
+            tbl.add_row(entry.stage, worker_cell, model_cell, entry.source)
+
+        # Separador visual entre stages e a linha "Global default".
+        tbl.add_row("─" * 12, "─" * 14, "─" * 28, "─" * 8, style="dim")
+
+        # Linha "Global default" — ``cursor_row == len(entries)`` aponta
+        # aqui (mas só dentro dos limites de ``handle_key``).
+        global_idx = len(entries)
+        highlight_gw = (self.cursor_row == global_idx
+                        and self.cursor_col == 0)
+        highlight_gm = (self.cursor_row == global_idx
+                        and self.cursor_col == 1)
+        global_w_txt = "(DEILE_PIPELINE_DISPATCH_MODE)"
+        global_m_txt = "(DEILE_PIPELINE_MODEL)"
+        if highlight_gw:
+            global_w_txt = f"[reverse]{global_w_txt}[/reverse]"
+        if highlight_gm:
+            global_m_txt = f"[reverse]{global_m_txt}[/reverse]"
+        tbl.add_row("Global default", global_w_txt, global_m_txt, "env")
+
+        # Linha "Worker Scaling" — edita réplicas de deile-worker / claude-worker
+        # via prompt numérico [enter] (issue #309 fase 3 Task 4).
+        # ``cursor_row == len(entries) + 1`` aponta aqui.
+        scaling_idx = len(entries) + 1
+        highlight_sw = (self.cursor_row == scaling_idx and self.cursor_col == 0)
+        highlight_sm = (self.cursor_row == scaling_idx and self.cursor_col == 1)
+        scale_w_txt = "(réplicas deile-worker)"
+        scale_m_txt = "(réplicas claude-worker)"
+        if highlight_sw:
+            scale_w_txt = f"[reverse]{scale_w_txt}[/reverse]"
+        if highlight_sm:
+            scale_m_txt = f"[reverse]{scale_m_txt}[/reverse]"
+        tbl.add_row("Worker Scaling", scale_w_txt, scale_m_txt, "kubectl")
+
+        # --- Compose: header + matrix + (picker?) + (status?) + hotkeys --
+        parts: List[RenderableType] = [
+            Text(status_text, style=status_style),
+            tbl,
+        ]
+        if self.mode is not None:
+            parts.append(self._render_picker())
+        if self.last_msg:
+            border = "green" if self.last_ok else "red"
+            parts.append(Panel(
+                Text(self.last_msg,
+                     style="bold green" if self.last_ok else "bold red"),
+                title="[bold]ÚLTIMA AÇÃO[/bold]",
+                title_align="left", border_style=border,
+            ))
+        parts.append(Text(self.HOTKEYS, style="dim"))
+        return Group(*parts)
+
+    def _render_picker(self) -> RenderableType:
+        """Renderiza o Panel do picker corrente (worker / model / global /
+        install-confirm / switch-login-confirm).
+        """
+        kind, stage, options = self.mode  # type: ignore[misc]
+        # Título descritivo para o operador entender o que vai mudar.
+        if kind == "worker":
+            title = f"ESCOLHA WORKER PARA STAGE '{stage}'"
+        elif kind == "model":
+            title = f"ESCOLHA MODEL PARA STAGE '{stage}'"
+        elif kind == "global_worker":
+            title = "ESCOLHA DISPATCH MODE GLOBAL (DEILE_PIPELINE_DISPATCH_MODE)"
+        elif kind == "global_model":
+            title = "ESCOLHA MODEL GLOBAL (DEILE_PREFERRED_MODEL)"
+        elif kind == "install_confirm":
+            # ``stage`` carrega o prompt textual para a confirmação
+            # (reuso do slot, sem alocar campo dedicado no tuple).
+            title = "INSTALAR CLAUDE-WORKER?"
+        elif kind == "switch_login_confirm":
+            title = "TROCAR CONTA DO CLAUDE-WORKER?"
+        elif kind == "uninstall_confirm":
+            title = "DESINSTALAR CLAUDE-WORKER?"
+        elif kind == "scale_prompt":
+            title = f"RÉPLICAS PARA '{stage}' (0-10)"
+        else:  # defensivo
+            title = "AÇÃO"
+
+        if not options:
+            return Panel(
+                Text("(sem opções disponíveis)", style="dim"),
+                title=f"[bold yellow]{title}[/bold yellow]",
+                title_align="left", border_style="yellow",
+            )
+
+        self.picker_cursor = max(0, min(self.picker_cursor, len(options) - 1))
+        tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False,
+                    show_header=False)
+        # max_width=2 (teto, princípio 15) — Rich encolhe se o terminal for
+        # estreito; o marcador ▶/espaço ocupa sempre 1 char, nunca mais.
+        tbl.add_column(" ", max_width=2)
+        tbl.add_column("opção", style="bold")
+        for i, opt in enumerate(options):
+            marker = "▶" if i == self.picker_cursor else " "
+            tbl.add_row(Text(marker, style="bold cyan"), Text(opt))
+
+        # Modais de confirmação Y/N usam um prompt e atalhos Y/N visíveis;
+        # pickers convencionais usam enter/esc.
+        if kind in ("install_confirm", "switch_login_confirm",
+                    "uninstall_confirm"):
+            # ``stage`` carrega o texto explicativo da operação.
+            prompt = Text(str(stage) if stage else "", style="bold")
+            hint = Text("[Y] confirma   [N]/[esc] cancela",
+                        style="dim cyan")
+            body: RenderableType = Group(prompt, Text(""), tbl, hint)
+        else:
+            body = Group(
+                tbl,
+                Text("[↑/↓] navega   [enter] confirma   [esc] cancela",
+                     style="dim cyan"),
+            )
+
+        return Panel(
+            body,
+            title=f"[bold yellow]{title}[/bold yellow]",
+            title_align="left", border_style="yellow",
+        )
+
+    # --- input -----------------------------------------------------------
+
+    def handle_key(self, key: str, app) -> ActionResult:
+        """Wrapper defensivo: catch ANY exception → mostra erro em
+        ``last_msg`` (vermelho) em vez de propagar pro main loop (que
+        derrubaria o painel inteiro).
+
+        Princípio enterprise: input handling do painel TUI NUNCA pode
+        crashar — operador precisa do painel up mesmo quando uma action
+        falhou.
+        """
+        try:
+            return self._handle_key_safe(key, app)
+        except Exception as exc:  # noqa: BLE001 — proteção genérica intencional
+            self.last_msg = (
+                f"erro no handler de tecla {key!r}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self.last_ok = False
+            # Fecha modal se estava aberto pra não travar
+            self.mode = None
+            self.picker_cursor = 0
+            return ActionResult.refresh()
+
+    def _handle_key_safe(self, key: str, app) -> ActionResult:
+        """Roteador de teclas real (separado de :meth:`handle_key` que é
+        wrapper defensivo).
+
+        - Picker modal ativo → :meth:`_handle_picker_key` (↑/↓ navega,
+          enter confirma, ESC cancela).
+        - Browsing (sem modal):
+            * Navegação ↑/↓ row, ←/→ col com clamp em [0, N] × [0, 1].
+            * [q]/ESC → :meth:`ActionResult.nav` para o dashboard.
+            * [enter] → abre picker contextual:
+                - row < N + col 0 → :meth:`_open_worker_picker`
+                - row < N + col 1 → :meth:`_open_model_picker`
+                - row == N (Global default) → picker global
+                  (worker/model conforme col).
+            * [r] → reseta a célula corrente (clear override).
+            * [L] → switch claude-worker login.
+            * [I] → install claude-worker on-the-fly.
+        """
+        # Picker modal — todas as teclas vão pro handler dedicado.
+        if self.mode is not None:
+            return self._handle_picker_key(key)
+
+        # Última linha editável é "Worker Scaling" (len+1; Global default = len).
+        max_row = len(self._stages()) + 1  # +1 para a linha "Worker Scaling"
+
+        # --- back / quit --------------------------------------------------
+        if key == "q" or key == "ESC":
+            # Tasks futuras podem trocar para ``ActionResult.back()`` se o
+            # painel mantiver stack — por ora, nav explícita ao dashboard.
+            return ActionResult.nav("dashboard")
+
+        # --- navegação row ------------------------------------------------
+        if key in ("UP", "k"):
+            self.cursor_row = max(0, self.cursor_row - 1)
+            return ActionResult.refresh()
+        if key in ("DOWN", "j"):
+            self.cursor_row = min(max_row, self.cursor_row + 1)
+            return ActionResult.refresh()
+
+        # --- navegação col ------------------------------------------------
+        if key in ("LEFT", "h"):
+            self.cursor_col = max(0, self.cursor_col - 1)
+            return ActionResult.refresh()
+        if key in ("RIGHT", "l"):
+            self.cursor_col = min(1, self.cursor_col + 1)
+            return ActionResult.refresh()
+
+        # --- [enter]: abre picker contextual ------------------------------
+        if key in ("\r", "\n"):
+            entries = self._entries()
+            n_stages = len(entries)
+            global_idx = n_stages       # "Global default"
+            scaling_idx = n_stages + 1  # "Worker Scaling"
+            if self.cursor_row == scaling_idx:
+                # Linha de scaling → prompt numérico de réplicas (Task 4).
+                return self._open_scaling_prompt()
+            # Row na linha "Global default" → picker global.
+            if self.cursor_row == global_idx:
+                if self.cursor_col == 0:
+                    return self._open_global_worker_picker()
+                return self._open_global_model_picker()
+            # Row dentro das stages → picker per-stage.
+            entry = entries[self.cursor_row]
+            if self.cursor_col == 0:
+                return self._open_worker_picker(entry)
+            return self._open_model_picker(entry)
+
+        # --- [r] reset da célula corrente -------------------------------
+        if key == "r":
+            return self._reset_current_cell()
+        if key in ("L", "I"):
+            # Bloqueia spawn duplo enquanto bootstrap em background.
+            if self._install_in_progress:
+                self.last_msg = (
+                    "instalação/login do claude-worker em andamento — "
+                    "aguarde o resultado aparecer aqui"
+                )
+                self.last_ok = None
+                return ActionResult.refresh()
+        if key in ("L",):
+            # Task 20 — modal de switch-login do claude-worker. Só faz
+            # sentido quando o Deployment já está aplicado; senão sugere [I].
+            cw_status = self._claude_status()
+            if not cw_status.deployment_applied:
+                self.last_msg = (
+                    "claude-worker não está instalado — use [I] para "
+                    "instalar primeiro"
+                )
+                self.last_ok = False
+                return ActionResult.refresh()
+            return self._open_switch_login_modal(
+                current_email=cw_status.logged_in_email,
+            )
+        if key in ("I",):
+            # Task 20 — install on-the-fly. Só abre o modal se o Deployment
+            # ainda NÃO foi aplicado; caso contrário avisa e aponta [L].
+            cw_status = self._claude_status()
+            if cw_status.deployment_applied:
+                self.last_msg = (
+                    "claude-worker já está instalado — use [L] para "
+                    "trocar de conta ou [U] para desinstalar"
+                )
+                self.last_ok = None  # informativo, sem vermelho
+                return ActionResult.refresh()
+            return self._open_install_modal()
+        if key in ("U",):
+            # Hotfix #309 fase 2 — uninstall on-the-fly. Útil quando rollout
+            # falha na metade ("did not become ready in time") e operador
+            # quer reinstalar do zero. Idempotente; recursos ausentes não
+            # crasham. Aceita SEMPRE (mesmo sem deployment_applied) porque
+            # install parcial pode deixar Secret/PVC órfãos que precisam
+            # limpeza.
+            if self._install_in_progress:
+                self.last_msg = (
+                    "instalação/login do claude-worker em andamento — "
+                    "aguarde o resultado antes de desinstalar"
+                )
+                self.last_ok = None
+                return ActionResult.refresh()
+            return self._open_uninstall_modal()
+
+        return ActionResult()
+
+    # --- picker openers --------------------------------------------------
+
+    def _open_worker_picker(self, entry) -> ActionResult:
+        """Abre picker per-stage de worker (col 0 numa stage row)."""
+        self.mode = ("worker", entry.stage, self._worker_picker_options())
+        self.picker_cursor = 0
+        return ActionResult.refresh()
+
+    def _open_model_picker(self, entry) -> ActionResult:
+        """Abre picker per-stage de model (col 1 numa stage row).
+
+        O picker é contextualizado pelo ``worker`` corrente da MESMA linha
+        (entry.worker) — escolher um worker ``claude-worker`` restringe
+        a lista de models a ``anthropic:*``.
+        """
+        opts = self._model_picker_options(worker=entry.worker)
+        self.mode = ("model", entry.stage, opts)
+        self.picker_cursor = 0
+        return ActionResult.refresh()
+
+    def _open_global_worker_picker(self) -> ActionResult:
+        """Abre picker global de worker (DEILE_PIPELINE_DISPATCH_MODE)."""
+        # Global picker NÃO oferece "(global default)" (que é ele mesmo).
+        # Em vez disso, oferece "(clear override)" + os 2 valores válidos.
+        opts = ["(clear override)", "deile-worker", "claude-worker"]
+        self.mode = ("global_worker", None, opts)
+        self.picker_cursor = 0
+        return ActionResult.refresh()
+
+    def _open_global_model_picker(self) -> ActionResult:
+        """Abre picker global de model (DEILE_PREFERRED_MODEL em deile-worker)."""
+        # Global model picker mostra TODOS os providers — sem
+        # restrição por worker (worker é per-stage).
+        all_models = self._load_all_models()
+        opts = ["(clear override)", *all_models]
+        self.mode = ("global_model", None, opts)
+        self.picker_cursor = 0
+        return ActionResult.refresh()
+
+    # --- [r] reset cell --------------------------------------------------
+
+    def _reset_current_cell(self) -> ActionResult:
+        """Clear do override da célula corrente — volta ao fallback chain.
+
+        Roteia conforme (cursor_row, cursor_col):
+          - Stage row + col 0 (Worker) → set_pipeline_dispatch_stage(stage, None)
+          - Stage row + col 1 (Model)  → clear_stage_model(stage)
+          - Global row + col 0 (Worker) → clear_pipeline_dispatch_mode()
+          - Global row + col 1 (Model)  → no-op com hint (sem helper hoje)
+
+        Cache do StageDispatchProvider é invalidado depois — próximo render
+        mostra o valor novo.
+        """
+        if self.data is None:
+            self.last_msg = "[demo] reset (sem cluster, no-op)"
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        entries = self._entries()
+        n_stages = len(entries)
+        ns = (self.data.context.namespace
+              if getattr(self.data, "context", None)
+              else getattr(self.data, "namespace", _NS_DEFAULT))
+
+        if self.cursor_row < n_stages:
+            entry = entries[self.cursor_row]
+            stage = entry.stage
+            if self.cursor_col == 0:
+                ok, msg = pd_set_pipeline_dispatch_stage(stage, None, namespace=ns)
+            else:
+                ok, msg = pd_clear_stage_model(stage)
+        else:  # Global default row
+            if self.cursor_col == 0:
+                ok, msg = pd_clear_pipeline_dispatch_mode(namespace=ns)
+            else:
+                ok, msg = (None, "clear de DEILE_PIPELINE_MODEL global ainda não suportado")
+
+        self.last_ok = ok
+        self.last_msg = msg
+        # Invalida cache pra próximo render refletir o reset.
+        try:
+            self.data.stage_dispatch._cache.invalidate()  # noqa: SLF001
+            self.data.stage_dispatch._status_cache.invalidate()  # noqa: SLF001
+        except (AttributeError, TypeError):
+            pass
+        return ActionResult.refresh()
+
+    # --- install / switch-login modals (Task 20) ------------------------
+
+    def _open_install_modal(self) -> ActionResult:
+        """Modal Y/N para instalar o claude-worker on-the-fly.
+
+        Reusa o mesmo slot ``self.mode`` dos pickers; o ``stage`` slot
+        carrega o prompt textual (renderizado por :meth:`_render_picker`
+        com layout especializado). Confirmação por Y; cancelamento por N
+        ou ESC.
+        """
+        prompt = (
+            "Vou: (1) capturar credenciais (claude login se necessário); "
+            "(2) criar Secret claude-credentials; (3) aplicar manifests; "
+            "(4) aguardar Ready do pod."
+        )
+        self.mode = ("install_confirm", prompt,
+                     ["Sim, instalar agora", "Cancelar"])
+        self.picker_cursor = 0
+        self.last_msg = ""
+        self.last_ok = None
+        return ActionResult.refresh()
+
+    def _open_switch_login_modal(
+        self, *, current_email: Optional[str],
+    ) -> ActionResult:
+        """Modal Y/N para trocar a conta logada no claude-worker.
+
+        Exibe o email corrente (best-effort — lido do Secret
+        ``claude-credentials`` pelo provider). Confirmação dispara
+        ``bootstrap_claude_worker(force_relogin=True)`` que faz
+        ``claude logout`` + nova OAuth no host antes de re-aplicar o Secret.
+        """
+        email_repr = current_email or "(desconhecido)"
+        prompt = (
+            f"Conta atual: {email_repr}. Browser vai abrir para nova "
+            "OAuth; depois o Secret é re-aplicado e o Deployment "
+            "reiniciado."
+        )
+        self.mode = ("switch_login_confirm", prompt,
+                     ["Sim, trocar conta", "Cancelar"])
+        self.picker_cursor = 0
+        self.last_msg = ""
+        self.last_ok = None
+        return ActionResult.refresh()
+
+    def _open_uninstall_modal(self) -> ActionResult:
+        """Modal Y/N para desinstalar o claude-worker do cluster.
+
+        Spawnado por ``[U]``. Idempotente — funciona mesmo se install
+        parcial deixou Secret/PVC órfãos. Deleta: Deployment, Service,
+        PVC ``claude-worker-home``, Secrets ``claude-credentials`` +
+        ``claude-worker-bearer``, ConfigMap allowed-repos. NetworkPolicy
+        NÃO é tocada (compartilhada com deile-worker).
+        """
+        prompt = (
+            "Vou deletar do cluster: Deployment + Service "
+            "+ PVC (claude-worker-home) + Secrets (claude-credentials, "
+            "claude-worker-bearer) + ConfigMap (allowed-repos). "
+            "Operação idempotente — recursos ausentes são ignorados. "
+            "NetworkPolicy NÃO é alterada (compartilhada com deile-worker)."
+        )
+        self.mode = ("uninstall_confirm", prompt,
+                     ["Sim, desinstalar agora", "Cancelar"])
+        self.picker_cursor = 0
+        self.last_msg = ""
+        self.last_ok = None
+        return ActionResult.refresh()
+
+    # --- Worker Scaling prompt (issue #309 fase 3 Task 4) ---------------
+
+    def _open_scaling_prompt(self) -> ActionResult:
+        """Abre o modal de edição numérica de réplicas.
+
+        Reusa o slot ``self.mode`` com kind ``"scale_prompt"``. O campo
+        ``stage`` carrega qual coluna está sendo editada:
+        ``"deile-worker"`` (col 0) ou ``"claude-worker"`` (col 1).
+        ``options`` carrega as opções numéricas [0..10] como strings.
+        """
+        deploy_name = ("deile-worker" if self.cursor_col == 0
+                       else "claude-worker")
+        opts = [str(n) for n in range(11)]  # 0 a 10
+        self.mode = ("scale_prompt", deploy_name, opts)
+        self.picker_cursor = 1  # default: 1 réplica
+        self.last_msg = ""
+        self.last_ok = None
+        return ActionResult.refresh()
+
+    def _apply_scaling(self, deploy_name: str, replicas: int) -> ActionResult:
+        """Executa ``kubectl scale deployment/<name> --replicas=N``.
+
+        Roda inline (síncrono) — operação rápida (~100ms kubectl API call).
+        Para install/uninstall (que podem bloquear minutos), usamos thread;
+        scale é fire-and-forget com retorno imediato do API server.
+        """
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        if self.data is None:
+            self.last_msg = (
+                f"[demo] scale {deploy_name} → {replicas} (sem cluster, no-op)"
+            )
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        kubectl = kubectl_bin()
+        if kubectl is None:
+            self.last_msg = "kubectl não encontrado — scale impossível"
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        # Verifica se o deployment existe antes de tentar.
+        check = subprocess.run(
+            [kubectl, "-n", ns, "get", "deployment", deploy_name],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if check.returncode != 0:
+            self.last_msg = (
+                f"deployment/{deploy_name} não encontrado em `{ns}` — "
+                "instale-o primeiro ([I] para claude-worker)"
+            )
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        result = subprocess.run(
+            [kubectl, "-n", ns, "scale",
+             f"deployment/{deploy_name}", f"--replicas={replicas}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        )
+        if result.returncode == 0:
+            self.last_msg = f"deployment/{deploy_name} → {replicas} réplica(s)"
+            self.last_ok = True
+        else:
+            self.last_msg = (
+                f"scale {deploy_name} falhou: "
+                f"{result.stderr.strip()[:120]}"
+            )
+            self.last_ok = False
+        return ActionResult.refresh()
+
+    def _handle_uninstall_confirm(self, key: str) -> ActionResult:
+        """Roteia Y/N (+ enter sobre o cursor) no modal de uninstall."""
+        if key in ("Y", "y"):
+            self.mode = None
+            self.picker_cursor = 0
+            self._perform_uninstall()
+            return ActionResult.refresh()
+        if key in ("N", "n", "ESC"):
+            self.mode = None
+            self.picker_cursor = 0
+            self.last_msg = "desinstalação cancelada"
+            self.last_ok = None
+            return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            if self.picker_cursor == 0:
+                return self._handle_uninstall_confirm("Y")
+            return self._handle_uninstall_confirm("N")
+        if key in ("UP", "k", "DOWN", "j"):
+            _, _, options = self.mode  # type: ignore[misc]
+            n = len(options)
+            if n:
+                delta = -1 if key in ("UP", "k") else 1
+                self.picker_cursor = (self.picker_cursor + delta) % n
+            return ActionResult.refresh()
+        return ActionResult()
+
+    def _perform_uninstall(self, *, _blocking: bool = False) -> None:
+        """Spawna :func:`uninstall_claude_worker` em thread daemon.
+
+        Idêntica estratégia de :meth:`_perform_install` — kubectl deletes
+        rodam em background pra não congelar o painel. Idempotente.
+
+        :param _blocking: força inline (testes); default ``False`` (UX
+            do painel nunca bloqueia).
+        """
+        import threading  # noqa: PLC0415
+
+        if self._install_in_progress or (
+                self._install_thread is not None
+                and self._install_thread.is_alive()):
+            self.last_msg = (
+                "operação em andamento — aguarde antes de desinstalar"
+            )
+            self.last_ok = None
+            return
+
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        if (self.data is not None
+                and getattr(self.data, "context", None) is None):
+            ns = getattr(self.data, "namespace", None) or _NS_DEFAULT
+
+        self.last_msg = (
+            "desinstalando claude-worker em background — UI permanece "
+            "responsiva, resultado em alguns segundos…"
+        )
+        self.last_ok = None
+        self._install_in_progress = True
+
+        if _blocking or getattr(self, "_install_blocking", False):
+            self._run_uninstall_blocking(namespace=ns)
+            return
+
+        self._install_thread = threading.Thread(
+            target=self._run_uninstall_blocking,
+            kwargs={"namespace": ns},
+            name="claude-uninstall",
+            daemon=True,
+        )
+        self._install_thread.start()
+
+    def _run_uninstall_blocking(self, *, namespace: str) -> None:
+        """Worker body — kubectl deletes síncronos + publica resultado."""
+        from _claude_install import \
+            uninstall_claude_worker as _direct_uninstall  # noqa: PLC0415
+
+        try:
+            import _claude_install  # noqa: PLC0415
+            uninstall_fn = getattr(
+                _claude_install, "uninstall_claude_worker",
+                _direct_uninstall,
+            )
+        except ImportError:
+            uninstall_fn = _direct_uninstall
+
+        try:
+            result = uninstall_fn(namespace=namespace)
+        except Exception as exc:  # noqa: BLE001
+            self.last_msg = (
+                f"falha em uninstall_claude_worker: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self.last_ok = False
+            self._install_in_progress = False
+            return
+
+        if getattr(result, "ok", False):
+            self.last_msg = (
+                "claude-worker desinstalado com sucesso — re-instale com [I]"
+            )
+            self.last_ok = True
+        else:
+            self.last_msg = (
+                f"uninstall retornou erro: "
+                f"{getattr(result, 'error', None) or '(sem detalhe)'}"
+            )
+            self.last_ok = False
+
+        if self.data is not None:
+            try:
+                self.data.stage_dispatch._cache.invalidate()  # noqa: SLF001
+                self.data.stage_dispatch._status_cache.invalidate()  # noqa: SLF001
+            except (AttributeError, TypeError):
+                pass
+
+        self._install_in_progress = False
+
+    def _handle_install_confirm(self, key: str) -> ActionResult:
+        """Roteia Y/N (+ enter sobre o cursor) no modal de install."""
+        if key in ("Y", "y"):
+            self.mode = None
+            self.picker_cursor = 0
+            self._perform_install(force_relogin=False)
+            return ActionResult.refresh()
+        if key in ("N", "n", "ESC"):
+            self.mode = None
+            self.picker_cursor = 0
+            self.last_msg = "instalação cancelada"
+            self.last_ok = None
+            return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            # Confirma via enter SE o cursor estiver na opção "Sim";
+            # se estiver em "Cancelar", trata como N.
+            if self.picker_cursor == 0:
+                return self._handle_install_confirm("Y")
+            return self._handle_install_confirm("N")
+        if key in ("UP", "k", "DOWN", "j"):
+            # Movimentação dentro das 2 opções (Sim/Cancelar).
+            _, _, options = self.mode  # type: ignore[misc]
+            n = len(options)
+            if n:
+                delta = -1 if key in ("UP", "k") else 1
+                self.picker_cursor = (self.picker_cursor + delta) % n
+            return ActionResult.refresh()
+        return ActionResult()
+
+    def _handle_switch_login_confirm(self, key: str) -> ActionResult:
+        """Roteia Y/N (+ enter sobre o cursor) no modal de switch login."""
+        if key in ("Y", "y"):
+            self.mode = None
+            self.picker_cursor = 0
+            self._perform_install(force_relogin=True)
+            return ActionResult.refresh()
+        if key in ("N", "n", "ESC"):
+            self.mode = None
+            self.picker_cursor = 0
+            self.last_msg = "troca de conta cancelada"
+            self.last_ok = None
+            return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            if self.picker_cursor == 0:
+                return self._handle_switch_login_confirm("Y")
+            return self._handle_switch_login_confirm("N")
+        if key in ("UP", "k", "DOWN", "j"):
+            _, _, options = self.mode  # type: ignore[misc]
+            n = len(options)
+            if n:
+                delta = -1 if key in ("UP", "k") else 1
+                self.picker_cursor = (self.picker_cursor + delta) % n
+            return ActionResult.refresh()
+        return ActionResult()
+
+    def _handle_scale_prompt_key(self, key: str) -> ActionResult:
+        """Roteia teclas no modal de escala numérica (0-10 réplicas).
+
+        ↑/↓: navega nas opções numéricas.
+        Enter: aplica kubectl scale.
+        ESC/N: cancela.
+        """
+        if self.mode is None:
+            return ActionResult()
+        _kind, deploy_name, options = self.mode
+
+        if key in ("N", "n", "ESC"):
+            self.mode = None
+            self.picker_cursor = 0
+            self.last_msg = "escala cancelada"
+            self.last_ok = None
+            return ActionResult.refresh()
+
+        if key in ("UP", "k"):
+            n = len(options)
+            self.picker_cursor = (self.picker_cursor - 1) % n if n else 0
+            return ActionResult.refresh()
+
+        if key in ("DOWN", "j"):
+            n = len(options)
+            self.picker_cursor = (self.picker_cursor + 1) % n if n else 0
+            return ActionResult.refresh()
+
+        if key in ("\r", "\n"):
+            try:
+                replicas = int(options[self.picker_cursor])
+            except (IndexError, ValueError):
+                replicas = 1
+            self.mode = None
+            self.picker_cursor = 0
+            return self._apply_scaling(str(deploy_name), replicas)
+
+        return ActionResult()
+
+    def _perform_install(self, *, force_relogin: bool,
+                         _blocking: bool = False) -> None:
+        """Spawna :func:`bootstrap_claude_worker` em thread daemon e retorna
+        imediatamente.
+
+        :param _blocking: força execução inline (usado por
+            :meth:`_on_worker_selected` que precisa verificar
+            ``cw_status.deployment_applied`` após o install, e por testes
+            que dependem da assertion ser síncrona). Default ``False`` —
+            UX do painel ([I]/[L] modals) nunca bloqueia.
+
+        ``bootstrap_claude_worker`` chama ``subprocess.run(["claude", "auth",
+        "login"], timeout=300)`` que bloqueia o caller até 5 min. O painel
+        TUI tem event loop síncrono — qualquer chamada bloqueante congela
+        ESC, refresh e qualquer tecla. Solução: rodar em thread daemon,
+        publicar resultado em ``last_msg``/``last_ok`` quando termina, e o
+        render normal mostra "executando…" → resultado naturalmente no
+        próximo tick.
+
+        Idempotente: se já há thread rodando, devolve mensagem informativa
+        e ignora (evita spawn duplo se o operador apertar [I]/[L] de novo).
+
+        Importação lazy + indireção pelo módulo (não pelo símbolo) para
+        que o monkeypatch dos testes pegue a substituição em
+        ``infra.k8s._claude_install.bootstrap_claude_worker``. O modo
+        ``_install_blocking`` (testes) executa inline preservando o
+        contrato anterior (sem thread) para os asserts continuarem válidos.
+        """
+        import threading  # noqa: PLC0415 — import lazy só quando necessário
+
+        # Idempotência: ignora call concorrente enquanto thread anterior
+        # ainda viva. ``_install_thread`` setado em spawn anterior; ``is_alive``
+        # robusto a thread já joined (devolve False).
+        if self._install_in_progress or (
+                self._install_thread is not None
+                and self._install_thread.is_alive()):
+            self.last_msg = (
+                "instalação/login do claude-worker já em andamento — "
+                "aguarde o resultado antes de tentar de novo"
+            )
+            self.last_ok = None
+            return
+
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        # Em mocks (testes) ``self.data.namespace`` pode estar setado em
+        # vez de ``context.namespace`` — fallback resiliente.
+        if (self.data is not None
+                and getattr(self.data, "context", None) is None):
+            ns = getattr(self.data, "namespace", None) or _NS_DEFAULT
+
+        action_kind = "switch-login" if force_relogin else "install"
+        self.last_msg = (
+            f"executando {action_kind} do claude-worker em background "
+            f"(force_relogin={force_relogin}) — UI permanece responsiva, "
+            f"resultado aparecerá aqui em alguns segundos…"
+        )
+        self.last_ok = None
+        self._install_in_progress = True
+
+        # Modo blocking: _on_worker_selected (verifica status após install)
+        # e testes que dependem da chamada ser síncrona. Em produção o
+        # painel ([I]/[L] modals) sempre passa _blocking=False.
+        if _blocking or getattr(self, "_install_blocking", False):
+            self._run_install_blocking(force_relogin=force_relogin,
+                                       namespace=ns)
+            return
+
+        # Thread daemon — não impede o painel de fechar via [q].
+        self._install_thread = threading.Thread(
+            target=self._run_install_blocking,
+            kwargs={"force_relogin": force_relogin, "namespace": ns},
+            name=f"claude-{action_kind}",
+            daemon=True,
+        )
+        self._install_thread.start()
+
+    def _run_install_blocking(self, *, force_relogin: bool,
+                              namespace: str) -> None:
+        """Worker body — executa o bootstrap síncrono e publica resultado.
+
+        Roda em :class:`threading.Thread` daemon spawnada por
+        :meth:`_perform_install`. Atualiza ``last_msg``/``last_ok``/
+        ``_install_in_progress`` ao final. Cache invalidation roda aqui
+        para o próximo render do painel mostrar o estado novo sem [r]
+        manual.
+
+        Thread safety: atribuições de string/bool a atributos de instância
+        são atomic em CPython (GIL). Pior caso: tick do render lê uma
+        atualização parcial — ele simplesmente re-lê no próximo tick (1s).
+        """
+        from _claude_install import \
+            bootstrap_claude_worker as _direct_bootstrap  # noqa: PLC0415
+
+        try:
+            import _claude_install  # noqa: PLC0415
+            bootstrap_fn = getattr(
+                _claude_install, "bootstrap_claude_worker", _direct_bootstrap,
+            )
+        except ImportError:
+            bootstrap_fn = _direct_bootstrap
+
+        try:
+            result = bootstrap_fn(
+                namespace=namespace,
+                force_relogin=force_relogin,
+                interactive=True,
+                # Painel TUI: jamais inherit stdio do subprocess do claude,
+                # senão o display Rich é corrompido pelo OAuth URL/prompts.
+                # Output do claude é capturado e logado via logger.info.
+                inherit_stdio=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.last_msg = (
+                f"falha em bootstrap_claude_worker: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self.last_ok = False
+            self._install_in_progress = False
+            return
+
+        if not getattr(result, "ok", False):
+            self.last_msg = (
+                f"bootstrap retornou erro: "
+                f"{getattr(result, 'error', None) or '(sem detalhe)'}"
+            )
+            self.last_ok = False
+        else:
+            email = getattr(result, "account_email", None) or "?"
+            verb = "logado novamente" if force_relogin else "instalado"
+            self.last_msg = (
+                f"claude-worker {verb} com sucesso "
+                f"(conta: {email})"
+            )
+            self.last_ok = True
+
+        # Cache invalidation — força re-fetch no próximo render.
+        if self.data is not None:
+            try:
+                self.data.stage_dispatch._cache.invalidate()  # noqa: SLF001
+                self.data.stage_dispatch._status_cache.invalidate()  # noqa: SLF001
+            except (AttributeError, TypeError):
+                # MagicMock pode não ter o atributo — ignora.
+                pass
+
+        # Libera o slot por último — render observa estado completo antes.
+        self._install_in_progress = False
+
+    def _on_worker_selected(self, stage: str, choice: str) -> None:
+        """Hook chamado quando o operador escolhe um worker no picker.
+
+        Se ``choice == 'claude-worker'`` e o Deployment ainda não foi
+        aplicado, dispara o install antes de persistir a configuração
+        per-stage — evita o caso "operador escolhe claude-worker e o
+        pipeline tenta despachar pra um pod inexistente".
+
+        Em qualquer outro caso, delega para
+        :func:`set_pipeline_dispatch_stage`.
+        """
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        if (self.data is not None
+                and getattr(self.data, "context", None) is None):
+            ns = getattr(self.data, "namespace", None) or _NS_DEFAULT
+
+        if choice == "claude-worker":
+            cw_status = self._claude_status()
+            if not cw_status.deployment_applied:
+                # Install antes de persistir. Em modo interativo do painel
+                # o ideal seria um modal — para a Task 20 chamamos direto
+                # (testes monkeypatcham bootstrap; uso real do painel
+                # passa pelo modal [I] antes de chegar aqui na maioria dos
+                # casos. Quando o operador pula direto pro picker, este
+                # branch garante consistência).
+                # _blocking=True: precisamos do cw_status atualizado já
+                # na próxima linha; spawnar thread aqui criaria race.
+                self._perform_install(force_relogin=False, _blocking=True)
+                cw_status = self._claude_status()
+                if not cw_status.deployment_applied:
+                    self.last_msg = (
+                        "install do claude-worker falhou — worker não "
+                        "persistido"
+                    )
+                    self.last_ok = False
+                    return
+
+        # Persistir override per-stage.
+        if choice == self._CLEAR_SENTINEL_WORKER:
+            ok, msg = pd_set_pipeline_dispatch_stage(
+                stage, None, namespace=ns,
+            )
+        else:
+            ok, msg = pd_set_pipeline_dispatch_stage(
+                stage, choice, namespace=ns,
+            )
+        self.last_ok = ok
+        self.last_msg = msg
+
+    # --- picker key handler ---------------------------------------------
+
+    def _handle_picker_key(self, key: str) -> ActionResult:
+        """Roteia teclas quando ``self.mode`` está ativo.
+
+        - ESC → fecha o modal sem aplicar (cancela).
+        - ↑/↓ → navega na lista de opções.
+        - enter → confirma seleção, chama :meth:`_apply_picker_selection`,
+          fecha o modal e invalida o cache do provider.
+        - install_confirm / switch_login_confirm / uninstall_confirm →
+          handlers dedicados (Y/N + enter sobre cursor).
+        - scale_prompt → handler de escala numérica (0-10 réplicas).
+        """
+        if self.mode is not None and self.mode[0] == "install_confirm":
+            return self._handle_install_confirm(key)
+        if self.mode is not None and self.mode[0] == "switch_login_confirm":
+            return self._handle_switch_login_confirm(key)
+        if self.mode is not None and self.mode[0] == "uninstall_confirm":
+            return self._handle_uninstall_confirm(key)
+        if self.mode is not None and self.mode[0] == "scale_prompt":
+            return self._handle_scale_prompt_key(key)
+        if key == "ESC":
+            self.mode = None
+            self.picker_cursor = 0
+            return ActionResult.refresh()
+        if self.mode is None:  # defesa — não deveria chegar aqui
+            return ActionResult()
+        _kind, _stage, options = self.mode
+        n = len(options)
+        if n == 0:
+            # Nada a navegar — qualquer tecla fecha.
+            if key in ("\r", "\n"):
+                self.mode = None
+            return ActionResult()
+        if key in ("UP", "k"):
+            self.picker_cursor = (self.picker_cursor - 1) % n
+            return ActionResult.refresh()
+        if key in ("DOWN", "j"):
+            self.picker_cursor = (self.picker_cursor + 1) % n
+            return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            self._apply_picker_selection()
+            self.mode = None
+            self.picker_cursor = 0
+            # Invalida cache do StageDispatchProvider para a próxima
+            # render mostrar o valor novo (sem precisar de [r] manual).
+            if self.data is not None:
+                try:
+                    self.data.stage_dispatch._cache.invalidate()  # noqa: SLF001
+                    self.data.stage_dispatch._status_cache.invalidate()  # noqa: SLF001
+                except (AttributeError, TypeError):
+                    # MagicMock pode não ter o atributo — ignora.
+                    pass
+            return ActionResult.refresh()
+        return ActionResult()
+
+    # --- apply (writes) --------------------------------------------------
+
+    def _apply_picker_selection(self) -> None:
+        """Despacha a seleção corrente do picker para o helper apropriado.
+
+        Cada branch espelha o callsite equivalente em :class:`StageModelsView`
+        / :class:`DispatchModeView`. Em modo demo (``data=None``) só
+        registra ``last_msg`` sem chamar kubectl.
+        """
+        if self.mode is None:
+            return
+        kind, stage, options = self.mode
+        selected = options[self.picker_cursor]
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        if self.data is None:
+            self.last_msg = f"[demo] {kind}: '{selected}' (sem cluster, no-op)"
+            self.last_ok = False
+            return
+
+        # --- per-stage worker -------------------------------------------
+        if kind == "worker":
+            # Delega a :meth:`_on_worker_selected` para reusar o hook de
+            # install-on-the-fly quando ``selected == 'claude-worker'``
+            # e o Deployment ainda não foi aplicado (Task 20).
+            self._on_worker_selected(stage, selected)
+            return
+
+        # --- per-stage model --------------------------------------------
+        if kind == "model":
+            if selected == self._CLEAR_SENTINEL_MODEL:
+                ok, msg = pd_clear_stage_model(stage)
+            else:
+                ok, msg = pd_set_stage_model(stage, selected)
+            self.last_ok = ok
+            self.last_msg = msg
+            return
+
+        # --- global worker (DEILE_PIPELINE_DISPATCH_MODE) ---------------
+        if kind == "global_worker":
+            if selected == "(clear override)":
+                ok, msg = pd_clear_pipeline_dispatch_mode(namespace=ns)
+            else:
+                # set_pipeline_dispatch_mode espera "claude" | "deile_worker"
+                # (conjunto canônico do _DISPATCH_MODES_ALLOWED). O picker
+                # mostra "deile-worker" / "claude-worker" (hyphen, paridade
+                # com o per-stage). Mapeia hyphen→underscore aqui.
+                mode_for_global = (
+                    "deile_worker" if selected == "deile-worker"
+                    else "claude" if selected == "claude-worker"
+                    else selected
+                )
+                ok, msg = pd_set_pipeline_dispatch_mode(
+                    mode_for_global, namespace=ns,
+                )
+            self.last_ok = ok
+            self.last_msg = msg
+            return
+
+        # --- global model (DEILE_PREFERRED_MODEL em deile-worker) -------
+        if kind == "global_model":
+            if selected == "(clear override)":
+                # ``set_preferred_model`` não tem variante clear; o operador
+                # usa o reset action do Task 19 (próximo PR). Por ora,
+                # avisa que clear global ainda não está wired.
+                self.last_ok = False
+                self.last_msg = (
+                    "clear de DEILE_PREFERRED_MODEL ainda não implementado "
+                    "— use [r] na célula (Task 19 — reset)"
+                )
+                return
+            ok, msg = pd_set_preferred_model(
+                "deile-worker", selected, namespace=ns,
+            )
+            self.last_ok = ok
+            self.last_msg = msg
+            return
+
+
 class StubView(View):
     """Sub-view placeholder enquanto a Fase correspondente não foi feita."""
 
@@ -3608,9 +5010,9 @@ class HelpView(View):
         tbl.add_column("tecla", style="bold cyan", width=18)
         tbl.add_column("ação")
         rows = [
-            ("1-5, a, m, M, d, n",  "drill em sub-view (no dashboard)"),
-            ("m / M",         "modelo do deployment / modelo por etapa (settings)"),
-            ("d",             "modo de despacho do pipeline (claude | deile_worker)"),
+            ("1-5, a, m, d, n",  "drill em sub-view (no dashboard)"),
+            ("m",             "modelo do deployment (runtime)"),
+            ("d",             "pipeline stage configuration (workers & models por etapa)"),
             ("↑/↓ ou j/k",    "navega em listas (picker, issues/PRs, modelos)"),
             ("enter",         "seleciona o item destacado"),
             ("esc",           "volta à view anterior (ou ao dashboard)"),
@@ -3978,9 +5380,11 @@ def _build_views(data: Optional[PanelData] = None) -> Dict[str, View]:
         "actions": ActionsView(data=data),
         "notifier-echo": NotifierEchoView(data=data),
         "model-switcher": ModelSwitcherView(data=data),
-        "stage-models": StageModelsView(data=data),
-        # Issue #309 — flip pipeline dispatch_mode (deile_worker | claude).
-        "dispatch-mode": DispatchModeView(data=data),
+        # Issue #309 fase 2 — Task 21 cutover. A matriz unificada substitui
+        # ``DispatchModeView`` (PR #330, key ``dispatch-mode``) e
+        # ``StageModelsView`` (#305, key ``stage-models``) — ambas saíram do
+        # registry mas as classes ainda existem no módulo (FU cleanup).
+        "dispatch-mode-matrix": DispatchMatrixView(data=data),
     }
 
 

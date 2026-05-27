@@ -87,7 +87,21 @@ def _make_monitor(
         cmd=("claude", "-p", "x"),
     ))
 
-    monitor = PipelineMonitor(cfg, github=github, worktrees=worktrees, claude=claude, notifier=notifier)
+    # Issue #309 fase 2: ``build_implementer`` agora sempre constrói
+    # ``WorkerImplementer``. Os testes de mention-handling não dependem
+    # da estratégia concreta (apenas do contrato ``mention/implement/review``);
+    # injetamos um stub que respeita ``claude_ok`` para preservar a semântica
+    # dos testes legacy (``claude_ok=False`` ⇒ dispatch falha).
+    implementer_stub = MagicMock()
+    outcome_ok = WorkOutcome(ok=claude_ok, text="done", error="" if claude_ok else "boom")
+    implementer_stub.implement = AsyncMock(return_value=outcome_ok)
+    implementer_stub.review = AsyncMock(return_value=outcome_ok)
+    implementer_stub.mention = AsyncMock(return_value=outcome_ok)
+
+    monitor = PipelineMonitor(
+        cfg, github=github, worktrees=worktrees, claude=claude,
+        notifier=notifier, implementer=implementer_stub,
+    )
     return monitor, github, notifier
 
 
@@ -536,4 +550,8 @@ class TestCommentMentionGateIntegration:
         monitor, github, notifier = _make_monitor(issue_comments=[comment])
         # default get_issue returns labels=() (not gated)
         await monitor._process_mentions()
-        monitor.claude.run.assert_called()  # one-shot dispatched
+        # Issue #309 fase 2: o dispatch agora vai pelo implementer stub
+        # (``WorkerImplementer.mention``), não mais por ``monitor.claude.run``
+        # diretamente. A semântica do teste (one-shot dispatch ocorreu) é
+        # preservada validando que o implementer.mention foi chamado.
+        monitor.implementer.mention.assert_called()  # one-shot dispatched

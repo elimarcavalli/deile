@@ -10,6 +10,11 @@ Cobertura:
    estável por pod.
 3. ``PodWatchView.handle_key('.')`` — dispara o opener e popula
    ``_status_msg`` (sucesso e falha); auto-limpa após TTL.
+4. ``PodWatchView._header_body()`` — linha "current task" mostra o
+   issue/PR/workflow que o worker está atendendo agora (issue #309
+   fase 2 follow-up). Fonte de verdade reutilizada: o
+   :class:`CurrentTask` populado pelo :class:`WorkerProvider` a partir
+   da linha estruturada ``dispatch_started`` emitida pelo worker.
 
 Importante: nada bate em editor real — todos os ``subprocess.Popen``
 são mockados. Os tempfiles criados pelo dump são limpos no teardown.
@@ -20,8 +25,11 @@ from __future__ import annotations
 import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+from rich.console import Console
 
 _REPO = Path(__file__).resolve().parents[3]
 for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
@@ -29,6 +37,7 @@ for _p in (_REPO / "infra", _REPO / "infra" / "k8s"):
         sys.path.insert(0, str(_p))
 
 import _panel as panel  # noqa: E402
+import _panel_data as pd  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # _open_path_in_editor — ordem de preferência e fallbacks
@@ -346,3 +355,311 @@ class TestMemdebug:
         app._memdebug_last_sample_at = 0.0
         line2 = app.memdebug_line()
         assert "Δ" in line2  # tem o delta agora
+
+
+# ---------------------------------------------------------------------------
+# CurrentTask + WorkerProvider — issue #309 fase 2 follow-up
+# ---------------------------------------------------------------------------
+
+def _ts_now_str(offset_s: int = 0) -> str:
+    """Format helper para timestamps no formato ``kubectl logs --timestamps``."""
+    from datetime import timedelta
+    ts = datetime.now(timezone.utc) - timedelta(seconds=offset_s)
+    return ts.strftime("%Y-%m-%dT%H:%M:%S.000000000+00:00")
+
+
+class TestCurrentTaskTargetLabel:
+    """``CurrentTask.target_label`` deve renderizar o rótulo de forma
+    forge-agnóstica e tolerar callers sem ``issue_number`` explícito —
+    nesse caso, extrai do ``channel_id`` no padrão
+    ``pipeline-(issue|pr|mention-issue|mention-pr)-<N>``.
+    """
+
+    def _now(self) -> datetime:
+        return datetime.now(timezone.utc)
+
+    def test_explicit_issue_number_wins(self):
+        ct = pd.CurrentTask(
+            task_id="abc", channel_id="pipeline-issue-309",
+            started_ts=self._now(), issue_number=309,
+        )
+        assert ct.target_label == "#309"
+
+    def test_pr_channel_renders_pr_prefix(self):
+        ct = pd.CurrentTask(
+            task_id="abc", channel_id="pipeline-pr-291",
+            started_ts=self._now(),
+        )
+        assert ct.target_label == "PR#291"
+
+    def test_issue_extracted_from_pipeline_channel_when_missing(self):
+        """Backward compat: pipeline antigo (sem ``issue_number`` no
+        payload) ainda renderiza corretamente extraindo do channel_id."""
+        ct = pd.CurrentTask(
+            task_id="abc", channel_id="pipeline-issue-309",
+            started_ts=self._now(),
+        )
+        assert ct.target_label == "#309"
+
+    def test_mention_issue_channel(self):
+        ct = pd.CurrentTask(
+            task_id="abc", channel_id="pipeline-mention-issue-257",
+            started_ts=self._now(),
+        )
+        assert "mention" in ct.target_label
+        assert "257" in ct.target_label
+
+    def test_mention_pr_channel(self):
+        ct = pd.CurrentTask(
+            task_id="abc", channel_id="pipeline-mention-pr-261",
+            started_ts=self._now(),
+        )
+        assert "mention" in ct.target_label
+        assert "261" in ct.target_label
+
+    def test_non_pipeline_channel_falls_back_to_channel_id(self):
+        """Dispatches do bot/CLI usam o snowflake do Discord — sem padrão
+        pipeline-* extraível, mostramos o channel_id truncado pra dar
+        algum contexto ao operador."""
+        ct = pd.CurrentTask(
+            task_id="abc", channel_id="1234567890123456789",
+            started_ts=self._now(),
+        )
+        assert ct.target_label.startswith("channel:")
+
+    def test_elapsed_is_non_negative(self):
+        ct = pd.CurrentTask(
+            task_id="abc", channel_id="x",
+            started_ts=datetime.now(timezone.utc),
+        )
+        assert ct.elapsed_s >= 0
+
+
+class TestWorkerProviderCurrentTask:
+    """``WorkerProvider._parse`` extrai ``current_task`` da linha
+    estruturada ``dispatch_started`` emitida pelo worker server e
+    encerra quando vê o ``dispatch_completed`` pareado."""
+
+    def _build(self) -> "pd.WorkerProvider":
+        prov = pd.WorkerProvider(ttl_s=0.0)
+        prov._kubectl = "kubectl"
+        return prov
+
+    def test_current_task_extracted_from_dispatch_started(self):
+        prov = self._build()
+        body = ("dispatch_started task=abc123def456 channel=pipeline-issue-309 "
+                "stage=implement kind=implement issue=309 branch=auto/issue-309")
+        text = f"{_ts_now_str(2)} {body}"
+        state = prov._parse("worker-1", text)
+        assert state.current_task is not None
+        assert state.current_task.task_id == "abc123def456"
+        assert state.current_task.channel_id == "pipeline-issue-309"
+        assert state.current_task.stage == "implement"
+        assert state.current_task.action_kind == "implement"
+        assert state.current_task.issue_number == 309
+        assert state.current_task.branch == "auto/issue-309"
+        assert state.current_task.target_label == "#309"
+
+    def test_current_task_cleared_after_dispatch_completed(self):
+        prov = self._build()
+        text = "\n".join([
+            f"{_ts_now_str(5)} dispatch_started task=abc123def456 "
+            f"channel=pipeline-issue-309 stage=implement issue=309",
+            f"{_ts_now_str(2)} dispatch_completed task=abc123def456 ok=True",
+        ])
+        state = prov._parse("worker-1", text)
+        # Pareamento started+completed → current_task = None (idle).
+        assert state.current_task is None
+
+    def test_current_task_is_latest_unmatched_start(self):
+        """Quando há múltiplas dispatches sobrepostas (raro, mas possível
+        em workers concurrent), current_task = a started mais recente
+        ainda sem completed pareado."""
+        prov = self._build()
+        text = "\n".join([
+            f"{_ts_now_str(10)} dispatch_started task=oldoldoldold1 "
+            f"channel=pipeline-issue-100 issue=100",
+            f"{_ts_now_str(8)} dispatch_completed task=oldoldoldold1 ok=True",
+            f"{_ts_now_str(5)} dispatch_started task=newnewnewnew1 "
+            f"channel=pipeline-issue-200 issue=200",
+        ])
+        state = prov._parse("worker-1", text)
+        assert state.current_task is not None
+        assert state.current_task.issue_number == 200
+        assert state.current_task.task_id == "newnewnewnew1"
+
+    def test_current_task_none_when_log_has_only_health(self):
+        prov = self._build()
+        text = (
+            f'{_ts_now_str(2)} aiohttp.access "GET /v1/health HTTP/1.1" 200 237'
+        )
+        state = prov._parse("worker-idle", text)
+        assert state.current_task is None
+
+    def test_current_task_survives_old_pipeline_without_issue_field(self):
+        """Worker antigo só logava ``channel`` — devemos extrair issue
+        do channel_id pra UI continuar útil."""
+        prov = self._build()
+        body = "dispatch_started task=abc123def456 channel=pipeline-issue-309"
+        text = f"{_ts_now_str(2)} {body}"
+        state = prov._parse("worker-1", text)
+        assert state.current_task is not None
+        # issue_number explícito ausente, mas target_label deriva do channel
+        assert state.current_task.issue_number is None
+        assert state.current_task.target_label == "#309"
+
+    def test_dispatch_started_does_not_double_count_substantive(self):
+        """``dispatch_started`` deve atualizar ``last_substantive_ts`` mas
+        não criar um second ``last_substantive_body`` separado da access
+        log normal — só queremos um ponto de "atividade real" por dispatch.
+        """
+        prov = self._build()
+        body = "dispatch_started task=abc123def456 channel=pipeline-issue-309 issue=309"
+        text = f"{_ts_now_str(2)} {body}"
+        state = prov._parse("worker-1", text)
+        # last_substantive_ts atualizado pela linha started.
+        assert state.last_substantive_ts is not None
+
+
+class TestPodWatchViewCurrentTask:
+    """``PodWatchView._header_body`` deve incluir uma linha "current task:"
+    com o rótulo do CurrentTask quando o worker está BUSY, e "— (idle)"
+    quando current_task=None. Pods não-worker NÃO ganham essa linha."""
+
+    def _setup_view_with_pod(self, *, current_task=None, busy: bool = False):
+        view = panel.PodWatchView(data=MagicMock())
+        view.pod_role = "worker"
+        view.pod_name = "deile-worker-7d49f9544b-5bwjk"
+        # Mock PodInfo minimal — _header_body usa name/role/status/age_s/
+        # restarts/ready/node.
+        pod = MagicMock()
+        pod.name = view.pod_name
+        pod.role = "worker"
+        pod.status = "Running"
+        pod.age_s = 120.0
+        pod.restarts = 0
+        pod.ready = True
+        pod.node = "worker-node-1"
+        view.data.pods.get.return_value = [pod]
+        # WorkerState com current_task.
+        wstate = pd.WorkerState(pod_name=view.pod_name, busy=busy,
+                                current_task=current_task)
+        view.data.workers.get.return_value = {view.pod_name: wstate}
+        return view
+
+    def _render_to_text(self, view: "panel.PodWatchView") -> str:
+        """Captura o output Rich do header como string plana pra asserts."""
+        renderable = view._header_body()
+        console = Console(record=True, width=200, force_terminal=False,
+                          color_system=None)
+        console.print(renderable)
+        return console.export_text()
+
+    def test_busy_worker_with_issue_shows_current_task_line(self):
+        ct = pd.CurrentTask(
+            task_id="abc", channel_id="pipeline-issue-309",
+            started_ts=datetime.now(timezone.utc), stage="implement",
+            issue_number=309, branch="auto/issue-309",
+        )
+        view = self._setup_view_with_pod(current_task=ct, busy=True)
+        out = self._render_to_text(view)
+        assert "current task:" in out
+        assert "#309" in out
+        assert "implement" in out  # stage
+        assert "auto/issue-309" in out  # branch
+
+    def test_busy_worker_with_pr_shows_pr_prefix(self):
+        ct = pd.CurrentTask(
+            task_id="abc", channel_id="pipeline-pr-291",
+            started_ts=datetime.now(timezone.utc), stage="pr_review",
+        )
+        view = self._setup_view_with_pod(current_task=ct, busy=True)
+        out = self._render_to_text(view)
+        assert "PR#291" in out
+        assert "pr_review" in out
+
+    def test_idle_worker_shows_dash(self):
+        view = self._setup_view_with_pod(current_task=None, busy=False)
+        out = self._render_to_text(view)
+        assert "current task:" in out
+        # Estado idle — não menciona um número de issue/PR
+        assert "idle" in out.lower()
+
+    def test_non_worker_pod_has_no_current_task_line(self):
+        """Pods que não são worker (bot, pipeline, shell) não tem
+        ``wstate`` no dict de workers — a linha "current task:" NÃO
+        aparece (mantém compat visual com pipeline/bot/shell)."""
+        view = panel.PodWatchView(data=MagicMock())
+        view.pod_role = "pipeline"  # não-worker
+        view.pod_name = "deile-pipeline-xyz"
+        pod = MagicMock()
+        pod.name = view.pod_name
+        pod.role = "pipeline"
+        pod.status = "Running"
+        pod.age_s = 600.0
+        pod.restarts = 0
+        pod.ready = True
+        pod.node = "n1"
+        view.data.pods.get.return_value = [pod]
+        # workers.get() devolve {} (sem este pod).
+        view.data.workers.get.return_value = {}
+        out = self._render_to_text(view)
+        assert "current task:" not in out
+
+    def test_target_label_is_forge_agnostic(self):
+        """O renderer não distingue GitHub de GitLab — usa o vocabulário
+        unificado ``#N`` / ``PR#N`` / ``mention …`` (Decisão #42).
+        Forge-specific PR↔MR é abstraído upstream na camada forge."""
+        # Mesma fixture pra dois forge "kinds" — o output é idêntico.
+        ct = pd.CurrentTask(
+            task_id="abc", channel_id="pipeline-issue-309",
+            started_ts=datetime.now(timezone.utc), issue_number=309,
+        )
+        view = self._setup_view_with_pod(current_task=ct, busy=True)
+        out = self._render_to_text(view)
+        # Não deve aparecer terminologia GitLab nem GitHub específica.
+        assert "!309" not in out  # GitLab MR prefix
+        assert "MR" not in out    # GitLab MR vocab
+        assert "#309" in out      # vocabulário unificado
+
+
+class TestPodWatchViewRenderSize:
+    """Layout deve acomodar 4 linhas + bordas sem cortar a linha de
+    current task — regression guard pro size=7 do split_column."""
+
+    def test_render_includes_current_task_section(self):
+        ct = pd.CurrentTask(
+            task_id="abc", channel_id="pipeline-issue-309",
+            started_ts=datetime.now(timezone.utc), issue_number=309,
+        )
+        view = panel.PodWatchView(data=MagicMock())
+        view.pod_role = "worker"
+        view.pod_name = "deile-worker-xyz"
+        pod = MagicMock()
+        pod.name = view.pod_name
+        pod.role = "worker"
+        pod.status = "Running"
+        pod.age_s = 60.0
+        pod.restarts = 0
+        pod.ready = True
+        pod.node = "n1"
+        view.data.pods.get.return_value = [pod]
+        view.data.workers.get.return_value = {
+            view.pod_name: pd.WorkerState(pod_name=view.pod_name,
+                                          busy=True, current_task=ct),
+        }
+        app = MagicMock()
+        app.pause = False  # _head_panel pode consultar
+        # Mock _head_panel direto pra não depender do PanelApp completo.
+        with patch.object(panel, "_head_panel",
+                          return_value=panel.Text("HEAD")):
+            with patch.object(panel, "_footer_panel",
+                              return_value=panel.Text("FOOTER")):
+                layout = view.render(app)
+        # Layout deve renderizar sem exceções.
+        console = Console(record=True, width=200, force_terminal=False,
+                          color_system=None, height=40)
+        console.print(layout)
+        out = console.export_text()
+        assert "#309" in out
+        assert "current task:" in out

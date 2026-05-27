@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeRunResult
 from deile.orchestration.pipeline.github_client import IssueRef, PrRef
+from deile.orchestration.pipeline.implementer import WorkOutcome
 from deile.orchestration.pipeline.labels import (REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
                                                  REVIEW_PENDING,
@@ -81,9 +82,25 @@ def _make_monitor(
     ):
         setattr(notifier, attr, AsyncMock())
 
+    # Issue #309 fase 2: ``build_implementer`` agora sempre retorna
+    # ``WorkerImplementer`` (resolver per-stage decide endpoint em runtime).
+    # Os testes legacy assumiam o caminho Claude (subprocess ``claude -p`` via
+    # ``claude.run``). Para preservar a semântica — sucesso quando
+    # ``claude_rc==0`` e falha quando ``claude_rc!=0`` — injetamos um stub
+    # que respeita os mesmos knobs (``claude_stdout``/``claude_rc``).
+    outcome_for_test = WorkOutcome(
+        ok=(claude_rc == 0),
+        text=claude_stdout,
+        error="" if claude_rc == 0 else "boom",
+    )
+    implementer_stub = MagicMock()
+    implementer_stub.implement = AsyncMock(return_value=outcome_for_test)
+    implementer_stub.review = AsyncMock(return_value=outcome_for_test)
+    implementer_stub.mention = AsyncMock(return_value=outcome_for_test)
+
     monitor = PipelineMonitor(
         cfg, github=github, worktrees=worktrees, claude=claude, notifier=notifier,
-        review_callback=review_callback,
+        review_callback=review_callback, implementer=implementer_stub,
     )
     return monitor, notifier
 

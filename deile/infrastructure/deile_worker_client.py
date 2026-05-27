@@ -28,6 +28,7 @@ from pydantic import (BaseModel, Field, ValidationError, ValidationInfo,
                       field_validator)
 
 from deile.core.exceptions import DEILEError
+from deile.orchestration.pipeline.dispatch_resolver import PIPELINE_STAGES
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +37,7 @@ logger = logging.getLogger(__name__)
 #: chance to finish (regression observed on PR #293: server raised to 900s, but
 #: client was stuck at 600s+60s buffer = 660s — review timed out client-side
 #: while the worker was still working).
-DEFAULT_TIMEOUT_S: float = float(os.environ.get("DEILE_WORKER_TASK_TIMEOUT_S", "600"))
+DEFAULT_TIMEOUT_S: float = float(os.environ.get("DEILE_WORKER_TASK_TIMEOUT_S", "7200"))
 # Budget máximo permitido para um dispatch ``wait=True`` — compartilhado
 # entre o ``max_execution_time`` da tool e o timeout do cliente httpx, de
 # modo que um cancel upstream não mascare ``WORKER_TIMEOUT`` como
@@ -48,6 +49,7 @@ _NOWAIT_TIMEOUT_S: float = 30.0
 _DISPATCH_PATH = "/v1/dispatch"
 _PROGRESS_PATH = "/v1/progress/{task_id}"
 _RESULT_PATH = "/v1/result/{task_id}"
+_RESUME_INFO_PATH = "/v1/dispatches/{task_id}/resume-info"
 _POLL_TIMEOUT_S: float = 5.0
 _DEFAULT_ENDPOINT = "http://deile-worker.deile.svc.cluster.local:8766"
 _ENDPOINT_ENV = "DEILE_WORKER_ENDPOINT"
@@ -117,6 +119,37 @@ class DispatchPayload(BaseModel):
     # The pipeline uses it to give each stage (classify/refine/implement/
     # pr_review/follow_ups) a different model; tools/CLI callers leave it None.
     preferred_model: Optional[str] = Field(default=None, max_length=128)
+    # --- Pipeline context (issue #309 fase 2) -------------------------------
+    # Todos opcionais. O worker (deile-worker ou claude-worker) usa quando
+    # presente, e ignora silenciosamente quando ausente — workers antigos que
+    # não conhecem estes campos continuam funcionando porque o cliente serializa
+    # com ``model_dump(exclude_none=True)``, omitindo os campos None do wire.
+    # ``stage``: qual etapa do pipeline está despachando (mapeia 1-pra-1 com
+    # :data:`deile.orchestration.pipeline.dispatch_resolver.PIPELINE_STAGES`).
+    # Validado contra esse tuple — typo aqui só apareceria como 5xx do worker
+    # muito mais tarde, então falhar local é melhor.
+    stage: Optional[str] = Field(default=None, max_length=32)
+    # ``action_kind``: tipo de ação concreto (``implement|review|mention|
+    # refine|decompose|...``). Não validamos contra um enum aqui porque o
+    # conjunto evolui mais rápido que o stage tuple; o worker é a autoridade.
+    action_kind: Optional[str] = Field(default=None, max_length=32)
+    # ``issue_number``: número da issue GitHub que originou o dispatch (quando
+    # houver). Permite o worker fazer telemetry/log correlation.
+    issue_number: Optional[int] = Field(default=None, ge=1)
+    # ``branch``: nome da branch git de trabalho (ex.: ``auto/issue-309``).
+    # Útil pro worker resolver o working tree correto em modos future.
+    branch: Optional[str] = Field(default=None, max_length=255)
+    # --- Resume context (issue #309 fase 3.5) -------------------------------
+    # ``resume_session_id``: UUID da sessão claude do dispatch anterior. Quando
+    # presente, o claude-worker spawna ``claude -p -r <session_id>`` em vez
+    # de ``--session-id <new_uuid>`` — claude lê o JSONL persistido e retoma a
+    # conversa em vez de começar do zero. Sem esse campo, dispatch é fresh.
+    resume_session_id: Optional[str] = Field(default=None, max_length=64)
+    # ``prev_task_id``: hex 16-char do dispatch anterior. claude-worker valida
+    # contra session.json persistido (workdir, session_id bate) antes de
+    # retomar — devolve 404/410/409 com error_code específico se invalido,
+    # pra o pipeline fallback pra fresh dispatch.
+    prev_task_id: Optional[str] = Field(default=None, max_length=16)
 
     @field_validator("brief")
     @classmethod
@@ -143,6 +176,28 @@ class DispatchPayload(BaseModel):
         if not _MODEL_SLUG_RE.match(stripped):
             raise ValueError(
                 f"preferred_model must match 'provider:model' (got {stripped!r})"
+            )
+        return stripped
+
+    @field_validator("stage")
+    @classmethod
+    def _validate_stage(cls, v: Optional[str]) -> Optional[str]:
+        """Reject unknown stages at the wire boundary (issue #309 fase 2).
+
+        ``PIPELINE_STAGES`` é importado no topo do módulo:
+        :mod:`deile.orchestration.pipeline.dispatch_resolver` só depende da
+        stdlib (``os`` / ``typing``), então não há ciclo de import.
+        ``None``/empty/whitespace colapsam pra ``None`` (sem override de
+        contexto de pipeline).
+        """
+        if v is None:
+            return None
+        stripped = v.strip()
+        if not stripped:
+            return None
+        if stripped not in PIPELINE_STAGES:
+            raise ValueError(
+                f"invalid stage {stripped!r}; expected one of {PIPELINE_STAGES}"
             )
         return stripped
 
@@ -210,6 +265,22 @@ def build_dispatch_payload(
     attachments: Optional[List[Dict[str, Any]]] = None,
     history: Optional[str] = None,
     preferred_model: Optional[str] = None,
+    # --- Pipeline context (issue #309 fase 2) -------------------------------
+    # Todos opcionais e adicionados ao FINAL para preservar a ordem dos kwargs
+    # existentes (callers que dependem da assinatura por posição continuam
+    # funcionando). Quando ``None`` (o default), a chave é dropada do payload
+    # — mesma disciplina dos campos opcionais antigos — para garantir
+    # backward compat com worker antigo que não conhece estes campos.
+    stage: Optional[str] = None,
+    action_kind: Optional[str] = None,
+    issue_number: Optional[int] = None,
+    branch: Optional[str] = None,
+    # --- Resume context (issue #309 fase 3.5) -------------------------------
+    # Quando ambos setados, o claude-worker spawna com ``-r <session_id>`` em
+    # vez de ``--session-id <new_uuid>`` — claude retoma a conversa anterior
+    # via JSONL persistido no PVC. Pipeline resolve via DispatchLedger.
+    resume_session_id: Optional[str] = None,
+    prev_task_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Assemble the JSON body POSTed to ``POST /v1/dispatch``.
 
@@ -222,6 +293,12 @@ def build_dispatch_payload(
     pipeline uses to dispatch each stage to a different LLM; tool / CLI
     callers leave it ``None`` and the worker resolves the model from its own
     ``DEILE_PREFERRED_MODEL`` / ``settings.preferred_model``.
+
+    ``stage`` / ``action_kind`` / ``issue_number`` / ``branch`` (issue #309
+    fase 2) carregam o contexto do pipeline para telemetry / log correlation
+    no worker. São opcionais e omitidos do wire quando ``None`` — workers
+    antigos que não conhecem estes campos continuam funcionando porque o
+    cliente serializa via ``model_dump(exclude_none=True)``.
     """
     payload: Dict[str, Any] = {
         "brief": brief,
@@ -237,6 +314,21 @@ def build_dispatch_payload(
         payload["history"] = str(history)
     if preferred_model:
         payload["preferred_model"] = str(preferred_model)
+    if stage:
+        payload["stage"] = str(stage)
+    if action_kind:
+        payload["action_kind"] = str(action_kind)
+    if issue_number is not None:
+        # ``issue_number`` é ``int``: ``if issue_number`` dropa 0
+        # (não-issue válida, mas mesmo assim distinguir é correto).
+        # Pydantic já valida ``ge=1`` na chegada, então 0 é rejeitado lá.
+        payload["issue_number"] = int(issue_number)
+    if branch:
+        payload["branch"] = str(branch)
+    if resume_session_id:
+        payload["resume_session_id"] = str(resume_session_id)
+    if prev_task_id:
+        payload["prev_task_id"] = str(prev_task_id)
     return payload
 
 
@@ -370,7 +462,11 @@ class DeileWorkerClient:
     """
 
     async def dispatch(
-        self, payload: Dict[str, Any], *, wait: bool
+        self,
+        payload: Dict[str, Any],
+        *,
+        wait: bool,
+        endpoint_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         """POST a dispatch payload to the worker and return its parsed JSON body.
 
@@ -378,6 +474,20 @@ class DeileWorkerClient:
         every failure mode: missing/malformed credentials, missing ``httpx``,
         transport timeout/unreachable, non-JSON body, or an HTTP >= 400
         response.
+
+        Args:
+            payload: dispatch body (validated against :class:`DispatchPayload`).
+            wait: ``True`` para esperar o resultado (timeout longo,
+                ``MAX_DISPATCH_BUDGET_S``); ``False`` para fire-and-forget
+                (timeout curto, ``_NOWAIT_TIMEOUT_S``).
+            endpoint_url: opcional, **issue #309 fase 2** — sobrescreve a
+                URL base resolvida via ``DEILE_WORKER_ENDPOINT``. Quando
+                setado (não-falsy), o POST vai para ``{endpoint_url}/v1/dispatch``
+                em vez do default. Habilita o roteamento per-stage do
+                pipeline (``WorkerImplementer._resolve_endpoint(stage)``
+                aponta ``pr_review`` → claude-worker:8767 e ``implement`` →
+                deile-worker:8766 no mesmo cliente). Ausência ou string
+                vazia mantém o comportamento legacy (env var).
         """
         # Valida o payload antes de tocar em I/O — falhas locais não
         # contam contra o cooldown anti-loop da tool.
@@ -392,7 +502,12 @@ class DeileWorkerClient:
         validated = validate_dispatch_payload(payload)
         body = validated.model_dump(exclude_none=True)
 
-        endpoint = _resolve_endpoint().rstrip("/") + _DISPATCH_PATH
+        # Issue #309 fase 2: ``endpoint_url`` (per-stage routing) sobrescreve
+        # o resolver legacy quando truthy. Empty-string e ``None`` caem no
+        # fallback de env var — paridade com ``_resolve_endpoint`` no
+        # implementer, que considera unset == "use o default".
+        base = endpoint_url if endpoint_url else _resolve_endpoint()
+        endpoint = base.rstrip("/") + _DISPATCH_PATH
         # Token resolution touches secret files on disk — keep that blocking
         # I/O off the event loop. The token is a secret: it must never be
         # interpolated into log or error messages.
@@ -471,14 +586,47 @@ class DeileWorkerClient:
         """
         return await self._get_json(_RESULT_PATH.format(task_id=task_id))
 
-    async def _get_json(self, path: str) -> Dict[str, Any]:
+    async def get_resume_info(
+        self,
+        task_id: str,
+        *,
+        endpoint_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """``GET /v1/dispatches/{task_id}/resume-info`` (claude-worker).
+
+        Retorna metadata da sessão claude pra o pipeline decidir entre
+        resume vs fresh dispatch. Mesmo error code map de :meth:`get_progress`
+        (NOT_FOUND/WORKER_TIMEOUT/WORKER_UNREACHABLE/etc).
+
+        Args:
+            task_id: hex 16-char do dispatch original (worker valida).
+            endpoint_url: opcional — base URL do worker (default = legacy
+                env var). Necessário pra apontar pra claude-worker:8767
+                quando o pipeline usa per-stage routing.
+        """
+        return await self._get_json(
+            _RESUME_INFO_PATH.format(task_id=task_id),
+            endpoint_url=endpoint_url,
+        )
+
+    async def _get_json(
+        self,
+        path: str,
+        *,
+        endpoint_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Helper compartilhado: GET autenticado + JSON parsing.
 
         Reusa a resolução de endpoint/token de :meth:`dispatch`, mas com
         timeout curto (polling, não dispatch). Erros mapeiam para os mesmos
         :class:`WorkerDispatchError` codes; o caller decide se é fatal.
+
+        ``endpoint_url`` opcional — quando truthy, sobrescreve a resolução
+        legacy via env var. Habilita GET contra claude-worker:8767 em
+        per-stage routing (paridade com :meth:`dispatch`).
         """
-        endpoint = _resolve_endpoint().rstrip("/") + path
+        base = endpoint_url if endpoint_url else _resolve_endpoint()
+        endpoint = base.rstrip("/") + path
         token, httpx = await _resolve_auth_and_httpx()
 
         headers = {

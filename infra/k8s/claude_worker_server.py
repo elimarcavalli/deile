@@ -1,0 +1,959 @@
+#!/usr/bin/env python3
+"""claude_worker_server — long-running ``claude-worker`` Pod (issue #309 fase 2).
+
+Servidor HTTP aiohttp dentro do Pod ``claude-worker``. Recebe dispatches do
+``deile-pipeline`` (Bearer auth, escopo do mesmo secret do ``deile-worker``)
+e executa ``claude -p`` em subprocess sob ``/home/claude/work/<task_id>/``.
+Diferenças de papel vs. o ``deile-worker``:
+
+* O ``deile-worker`` roda o agente DEILE in-process e usa provedores LLM via
+  ``*_API_KEY``. O ``claude-worker`` NÃO carrega API keys — o ``claude`` CLI
+  usa autenticação por assinatura do Claude Code; ``ANTHROPIC_API_KEY`` é
+  explicitamente removido pelo wrapper antes deste módulo subir.
+* A allowlist regex de repositórios (``/etc/claude-worker/allowed_repos.regex``)
+  é montada pelo wrapper e usada para barrar ``git push`` para destinos
+  arbitrários (defense-in-depth contra prompt-injection no brief).
+
+Endpoints:
+
+* ``GET  /v1/health``              — readiness/liveness probe (Task 12)
+* ``POST /v1/dispatch``            — receive brief + spawn ``claude -p`` (Task 13)
+* ``GET  /v1/progress/{task_id}``  — mid-flight snapshot via PVC tail (Task 14)
+
+Spec: ``docs/superpowers/specs/2026-05-26-claude-worker-design.md`` §4.4.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hmac
+import json
+import logging
+import os
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional
+
+from aiohttp import web
+
+logger = logging.getLogger("deile.claude_worker_server")
+
+
+# --------------------------------------------------------------------------- #
+# OAuth token extraction — claude CLI no Linux NÃO lê
+# ``~/.claude/credentials.json`` automaticamente (esse caminho é uma
+# convenção macOS — no Linux ele só lê variáveis de ambiente). Extraímos
+# o ``accessToken`` no startup e o exportamos como ``ANTHROPIC_AUTH_TOKEN``
+# antes de spawnar o subprocess do claude.
+# --------------------------------------------------------------------------- #
+
+
+def _load_oauth_token_into_env() -> bool:
+    """Lê ``credentials.json`` (mountado pelo initContainer) e exporta
+    ``ANTHROPIC_AUTH_TOKEN`` na env do processo.
+
+    Returns ``True`` se token foi carregado; ``False`` caso contrário (file
+    ausente, JSON malformado, sem ``claudeAiOauth.accessToken``). O server
+    continua subindo em qualquer caso — a falha real aparece quando o
+    ``claude -p`` rodar e reportar ``Not logged in``.
+    """
+    home = Path(os.environ.get("HOME", "/home/claude"))
+    creds_path = home / ".claude" / "credentials.json"
+    if not creds_path.exists():
+        logger.warning("credentials.json não encontrado em %s", creds_path)
+        return False
+    try:
+        creds = json.loads(creds_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("não foi possível parsear %s: %s", creds_path, exc)
+        return False
+    # macOS Keychain JSON: {"claudeAiOauth": {"accessToken": "..."}}
+    oauth = creds.get("claudeAiOauth") if isinstance(creds, dict) else None
+    token = (oauth or {}).get("accessToken") if isinstance(oauth, dict) else None
+    if not token:
+        # Fallback: tenta "accessToken" no root level (formatos diferentes).
+        token = creds.get("accessToken") if isinstance(creds, dict) else None
+    if not token:
+        logger.warning(
+            "credentials.json não contém claudeAiOauth.accessToken nem "
+            "accessToken root-level — claude CLI vai reportar 'Not logged in'",
+        )
+        return False
+    os.environ["ANTHROPIC_AUTH_TOKEN"] = token
+    logger.info("ANTHROPIC_AUTH_TOKEN carregado de %s (len=%d)",
+                creds_path, len(token))
+    return True
+
+
+# --------------------------------------------------------------------------- #
+# Bearer auth (defense-in-depth — NetworkPolicy bloqueia ingress fora do
+# deile-pipeline, mas auth no app-layer impede que pod comprometido dentro
+# do allowlist envie dispatch malicioso).
+# --------------------------------------------------------------------------- #
+
+
+def _read_auth_token() -> str:
+    """Lê o Bearer token do Secret K8s ``claude-worker-bearer``.
+
+    Caminhos em ordem (primeiro existente vence):
+    1. ``/run/secrets/claude-worker/CLAUDE_WORKER_BEARER_TOKEN`` (Secret
+       montado como file pelo manifest 50).
+    2. ``DEILE_CLAUDE_WORKER_AUTH_TOKEN_FILE`` env var (override pra dev).
+    3. ``DEILE_CLAUDE_WORKER_AUTH_TOKEN`` env var (testes apenas — nunca
+       loga o valor).
+
+    Raises:
+        RuntimeError: nenhuma source disponível (Secret não populado +
+            env vars vazias) — server abort no startup pra forçar fix.
+    """
+    candidates = [
+        Path("/run/secrets/claude-worker/CLAUDE_WORKER_BEARER_TOKEN"),
+        Path(os.environ.get("DEILE_CLAUDE_WORKER_AUTH_TOKEN_FILE", "")),
+    ]
+    for p in candidates:
+        if p and p.is_file():
+            token = p.read_text(encoding="utf-8").strip()
+            if token:
+                return token
+    env_val = os.environ.get("DEILE_CLAUDE_WORKER_AUTH_TOKEN", "").strip()
+    if env_val:
+        return env_val
+    raise RuntimeError(
+        "claude-worker auth token not found: expected "
+        "/run/secrets/claude-worker/CLAUDE_WORKER_BEARER_TOKEN "
+        "(populated by deploy.py k8s claude-login) or "
+        "DEILE_CLAUDE_WORKER_AUTH_TOKEN env"
+    )
+
+
+@web.middleware
+async def _bearer_auth_mw(request: web.Request, handler):
+    """Bearer auth middleware (paridade com ``worker_server._bearer_auth_mw``).
+
+    Whitelist ``/v1/health`` (readiness probe sem token). Demais paths
+    exigem ``Authorization: Bearer <token>`` comparado em constant-time
+    (``hmac.compare_digest``) para evitar timing-attack na descoberta.
+    """
+    if request.path == "/v1/health":
+        return await handler(request)
+    expected = request.app["auth_token"]
+    got = request.headers.get("Authorization", "")
+    if not got.startswith("Bearer ") or not hmac.compare_digest(
+            got[len("Bearer "):], expected):
+        return web.json_response(
+            {"error": {"code": "UNAUTHORIZED", "message": "bad bearer"}},
+            status=401,
+        )
+    return await handler(request)
+
+
+# --------------------------------------------------------------------------- #
+# Subprocess execution
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class SubprocessResult:
+    """Resultado de :func:`run_subprocess_with_progress`.
+
+    Encapsula o que o handler precisa devolver na resposta JSON. ``stdout`` e
+    ``stderr`` aqui são as strings completas (não truncadas); a truncagem por
+    bytes vive no handler, próxima do contrato de resposta.
+    """
+
+    returncode: int
+    stdout: str
+    stderr: str
+    duration_seconds: float
+
+
+#: Preambles por stage. Cada um descreve identidade + contrato de output, com
+#: placeholders ``$BRANCH``/``$TASK_ID`` substituídos por
+#: :func:`_render_preamble` antes do exec.
+PREAMBLE_TEMPLATES = {
+    "implement": (
+        "Você é Claude Code em modo autônomo (claude-worker pod, dispatch local).\n"
+        "Worktree: já checked out em $PWD, branch $BRANCH.\n"
+        "Tarefa: implemente o que está descrito após '---' abaixo.\n"
+        "Quando terminar com sucesso, imprima 'STATUS: SUCCESS' como última linha.\n"
+        "Em falha, 'STATUS: BLOCKED_<motivo>'.\n"
+        "NÃO faça merge, NÃO use push --force, NÃO use --no-verify."
+    ),
+    "review": (
+        "Você é Claude Code revisor (claude-worker pod). Worktree: $PWD, branch $BRANCH.\n"
+        "Tarefa: revise a PR descrita após '---'. Comente achados via gh CLI.\n"
+        "Imprima 'STATUS: SUCCESS' quando review estiver postado; "
+        "'STATUS: BLOCKED_<motivo>' em falha."
+    ),
+    "classify": (
+        "Você é Claude Code classificador (claude-worker pod). Tarefa: classifique "
+        "a issue descrita após '---'. Imprima JSON com {category, severity, "
+        "estimated_effort}. 'STATUS: SUCCESS' ao final."
+    ),
+    "refine": (
+        "Você é Claude Code refinador (claude-worker pod). Tarefa: refine o body "
+        "da issue descrita após '---' editando-a via gh CLI. 'STATUS: SUCCESS' ao final."
+    ),
+    "pr_review": (
+        "Você é Claude Code revisor de PR (claude-worker pod). Worktree: $PWD, "
+        "branch $BRANCH. Revise rigorosamente a PR descrita após '---'.\n"
+        "\n"
+        "REGRA OBRIGATÓRIA (não negociável): a EXECUÇÃO INTEIRA é considerada "
+        "FALHA se você terminar sem ter postado pelo menos um destes:\n"
+        "  - `gh pr review <pr_number> --comment --body \"<resumo>\"` (top-level), OU\n"
+        "  - `gh api repos/<owner>/<repo>/pulls/<pr>/comments -f body=...` (inline), OU\n"
+        "  - `gh issue comment <pr_number> --body \"<resumo>\"` (fallback simples)\n"
+        "\n"
+        "Não basta analisar e imprimir STATUS — o operador precisa VER a review "
+        "no GitHub. Faça primeiro o `gh pr review` (ou `gh issue comment`), CONFIRME "
+        "que postou (saída do comando contém URL), e SÓ ENTÃO imprima 'STATUS: APPROVE' "
+        "ou 'STATUS: REQUEST_CHANGES'. Em bloqueio real: imprima "
+        "'STATUS: BLOCKED_<motivo>' DEPOIS de também postar um `gh issue comment` "
+        "explicando o que faltou."
+    ),
+    "follow_ups": (
+        "Você é Claude Code follow-up handler (claude-worker pod). Worktree: $PWD. "
+        "Trate os follow-ups descritos após '---'. 'STATUS: SUCCESS' ao final."
+    ),
+}
+
+
+def _render_preamble(stage: str, branch: Optional[str], task_id: str) -> str:
+    """Renderiza o preamble por ``stage`` substituindo placeholders.
+
+    Stage desconhecido cai no template ``implement`` (default seguro: pede
+    ``STATUS: SUCCESS`` e desencoraja operações destrutivas). ``$PWD`` fica
+    vazio — o ``claude`` descobre via ``pwd`` na sessão; usamos a string só
+    para sinalizar ao agente que ele já está no diretório certo.
+    """
+    template = PREAMBLE_TEMPLATES.get(stage, PREAMBLE_TEMPLATES["implement"])
+    return (
+        template
+        .replace("$BRANCH", branch or "(no branch)")
+        .replace("$PWD", "")
+        .replace("$TASK_ID", task_id)
+    )
+
+
+async def run_subprocess_with_progress(
+    args: list,
+    *,
+    cwd: Path,
+    task_id: str,
+    timeout: int,
+) -> SubprocessResult:
+    """Spawn de ``claude -p`` com persistência de stdout/stderr para o PVC.
+
+    Os arquivos ``<task_id>.stdout.log``/``<task_id>.stderr.log`` ficam em
+    ``DEILE_CLAUDE_WORKER_ROOT/.progress/`` e serão consumidos pelo
+    ``/v1/progress/{task_id}`` (Task 14) para snapshot mid-flight no painel
+    TUI. Em timeout, devolvemos ``returncode=124`` (convenção do ``coreutils
+    timeout``) com mensagem em ``stderr``.
+    """
+    start = time.monotonic()
+
+    # Persistir progress files em DEILE_CLAUDE_WORKER_ROOT/.progress/.
+    root = Path(os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work"))
+    progress_dir = root / ".progress"
+    progress_dir.mkdir(parents=True, exist_ok=True)
+    stdout_path = progress_dir / f"{task_id}.stdout.log"
+    stderr_path = progress_dir / f"{task_id}.stderr.log"
+
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        cwd=str(cwd),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(
+            proc.communicate(), timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        duration = time.monotonic() - start
+        return SubprocessResult(
+            returncode=124, stdout="",
+            stderr=f"claude -p timed out after {timeout}s",
+            duration_seconds=duration,
+        )
+
+    duration = time.monotonic() - start
+    stdout = stdout_b.decode("utf-8", "replace")
+    stderr = stderr_b.decode("utf-8", "replace")
+
+    # Persiste para o ``/v1/progress`` (Task 14) — best-effort; falha em
+    # escrita NÃO derruba o dispatch (o cliente já recebeu o resultado).
+    try:
+        stdout_path.write_text(stdout)
+        stderr_path.write_text(stderr)
+    except OSError as exc:
+        logger.warning(
+            "failed to persist progress logs for task_id=%s: %s", task_id, exc,
+        )
+
+    return SubprocessResult(
+        returncode=proc.returncode or 0,
+        stdout=stdout,
+        stderr=stderr,
+        duration_seconds=duration,
+    )
+
+
+#: Slugs internos do DEILE têm forma ``provider:model``. O ``claude-worker``
+#: só aceita ``anthropic:*`` — outros providers são rejeitados em 400.
+_ANTHROPIC_SLUG_RE = re.compile(r"^anthropic:(.+)$")
+
+
+# --------------------------------------------------------------------------- #
+# Session metadata persistence (issue #309 fase 3.5 — resume support)
+# --------------------------------------------------------------------------- #
+#
+# Cada dispatch fixa um session-id UUID4 que é passado ao claude CLI via
+# ``--session-id``. claude grava a conversa em
+# ``~/.claude/projects/-home-claude-work-<task_id>/<session-id>.jsonl`` e
+# aceita retomada via ``-r <session-id>``. Persistimos o session-id + o
+# workdir + status final em ``~/.claude/tasks/<task_id>/session.json``
+# para que o pipeline possa orquestrar resume via novo endpoint
+# ``GET /v1/dispatches/{task_id}/resume-info``.
+#
+# Estrutura do session.json:
+#   {
+#     "task_id": "abc123...",                       # hex 16 (mesmo do dispatch)
+#     "session_id": "uuid4-aaaa-bbbb-cccc",         # passado ao claude
+#     "workdir": "/home/claude/work/abc123...",     # cwd do spawn
+#     "stage": "pr_review",                         # do payload
+#     "branch": "auto/issue-N",                     # do payload (opt)
+#     "model": "claude-sonnet-4-6",                 # do payload (opt)
+#     "started_at": 1716830000,                     # unix ts (created)
+#     "last_completed_at": 1716830420,              # unix ts (last exit)
+#     "last_is_error": false,                       # do JSON output do claude
+#     "last_result_summary": "Review postada...",   # first 300 chars do result
+#     "last_returncode": 0,                         # exit code do claude
+#     "last_duration_seconds": 420.5,               # do SubprocessResult
+#     "last_total_cost_usd": 0.137,                 # do JSON output do claude
+#     "prev_task_id": "xyz...",                     # se este dispatch foi resume
+#     "attempt": 2,                                 # 1 no fresh; +1 por resume
+#   }
+
+
+def _session_meta_dir() -> Path:
+    return Path(os.environ.get("HOME", "/home/claude")) / ".claude" / "tasks"
+
+
+def _session_meta_path(task_id: str) -> Path:
+    return _session_meta_dir() / task_id / "session.json"
+
+
+def _save_session_meta(task_id: str, meta: dict) -> None:
+    """Persiste atomicamente o session.json (write-tmp + replace).
+
+    Best-effort: falha de I/O vira logger.warning, NÃO derruba o dispatch
+    (o cliente já recebeu o resultado). Atomicidade evita meta corrompido
+    se o pod morrer no meio da escrita — pipeline lê estado consistente.
+    """
+    path = _session_meta_path(task_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(meta, indent=2, sort_keys=True))
+        os.replace(tmp, path)
+    except OSError as exc:
+        logger.warning("failed to write session meta for task_id=%s: %s",
+                       task_id, exc)
+
+
+def _load_session_meta(task_id: str) -> Optional[dict]:
+    """Carrega session.json. None se ausente, malformado, ou I/O error."""
+    path = _session_meta_path(task_id)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("failed to read session meta for task_id=%s: %s",
+                       task_id, exc)
+        return None
+
+
+#: Default /proc root pra detecção de processo claude vivo. Testes
+#: monkeypatcham essa variável apontando pra fake dir.
+_PROC_ROOT: str = "/proc"
+
+
+def _is_claude_process_alive(session_id: str) -> bool:
+    """True se houver processo com este session-id na cmdline.
+
+    Usado pelo endpoint /v1/dispatches/{task_id}/resume-info para o pipeline
+    decidir entre "ainda rodando, não disturbar" vs "morto, pode reaper".
+
+    Implementação via ``/proc/<pid>/cmdline`` (POSIX-padrão em Linux,
+    funciona em qualquer container distroless/slim sem precisar instalar
+    ``procps``/``pgrep``). Best-effort: erros de I/O ou /proc ausente →
+    False (assume morto, fail-open). Falso negativo é OK (pipeline reaper
+    retry); falso positivo é pior (pipeline acha vivo e nunca retoma).
+    """
+    if not session_id:
+        return False
+    proc_root = Path(_PROC_ROOT)
+    if not proc_root.is_dir():
+        return False
+    target = session_id.encode("utf-8")
+    try:
+        for proc_dir in proc_root.iterdir():
+            if not proc_dir.name.isdigit():
+                continue
+            cmdline_path = proc_dir / "cmdline"
+            try:
+                # cmdline usa \0 como separador entre args.
+                cmdline = cmdline_path.read_bytes().replace(b"\0", b" ")
+            except OSError:
+                continue
+            if target in cmdline:
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _parse_claude_json_output(stdout: str) -> dict:
+    """Extrai campos estruturados do ``--output-format json`` do claude CLI.
+
+    Esperado: stdout é UM JSON object por dispatch (final result). Em caso
+    de claude que CRASHOU antes de imprimir o JSON final (ex: kill -9),
+    stdout pode estar truncado/vazio — retornamos dict default seguro.
+
+    Returns:
+        dict com chaves: ``is_error`` (bool), ``result`` (str),
+        ``session_id`` (str), ``total_cost_usd`` (float),
+        ``duration_ms`` (int), ``num_turns`` (int). Todas opcionais
+        com defaults conservadores (is_error=True quando JSON ausente).
+    """
+    if not stdout or not stdout.strip():
+        return {"is_error": True, "result": "", "session_id": "",
+                "total_cost_usd": 0.0, "duration_ms": 0, "num_turns": 0}
+    # Tentar o stdout inteiro primeiro (caso comum).
+    try:
+        data = json.loads(stdout.strip())
+    except json.JSONDecodeError:
+        # Fallback: pegar a ÚLTIMA linha que é JSON válido (caso o stdout
+        # tenha logs antes do JSON final).
+        data = None
+        for line in reversed(stdout.strip().splitlines()):
+            line = line.strip()
+            if line.startswith("{") and line.endswith("}"):
+                try:
+                    data = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    continue
+        if data is None:
+            return {"is_error": True, "result": "", "session_id": "",
+                    "total_cost_usd": 0.0, "duration_ms": 0, "num_turns": 0}
+    return {
+        "is_error": bool(data.get("is_error", False)),
+        "result": str(data.get("result", "") or ""),
+        "session_id": str(data.get("session_id", "") or ""),
+        "total_cost_usd": float(data.get("total_cost_usd", 0) or 0),
+        "duration_ms": int(data.get("duration_ms", 0) or 0),
+        "num_turns": int(data.get("num_turns", 0) or 0),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Handlers
+# --------------------------------------------------------------------------- #
+
+
+async def health_handler(request: web.Request) -> web.Response:
+    """Readiness/liveness — verifica que o ``claude`` está acessível no ``PATH``.
+
+    O ``readinessProbe`` do Kubernetes consome este endpoint: 200 mantém o Pod
+    no Service (aceitando dispatches); 500 removes do Service. Como rodamos
+    com uma única réplica em V1, o sinal serve principalmente ao operador
+    (Pod ``NotReady`` aparece em ``kubectl get pods``).
+    """
+    claude_bin = shutil.which("claude")
+    if claude_bin is None:
+        return web.json_response(
+            {"status": "error", "error": "claude binary not found in PATH"},
+            status=500,
+        )
+    return web.json_response({"status": "ok", "claude_binary": claude_bin})
+
+
+async def dispatch_handler(request: web.Request) -> web.Response:
+    """``POST /v1/dispatch`` — executa ``claude -p`` em worktree isolado.
+
+    Modos de execução:
+
+    * **Fresh dispatch** (default): cria task_id novo + workspace + session-id
+      UUID4. claude spawnado com ``--session-id <uuid>``. Metadata persistida
+      em ``~/.claude/tasks/<task_id>/session.json`` antes E depois do spawn.
+    * **Resume dispatch**: payload contém ``prev_task_id`` + ``resume_session_id``.
+      Lê metadata do prev_task_id, reutiliza o workdir original (claude
+      precisa do mesmo workspace pra resolver o JSONL da sessão), spawna com
+      ``-r <session_id>`` em vez de ``--session-id``. Mesmo task_id é reutilizado
+      e metadata é UPDATEada (attempt += 1, last_*).
+
+    Sempre usa ``--output-format json``. O resultado JSON é parseado para
+    extrair ``is_error``, ``result``, ``total_cost_usd`` — mais confiável
+    que regex em stdout livre e detecta auth-expired estruturalmente
+    (``is_error: true`` + ``result: 'Not logged in ...'``).
+
+    Truncagem de tails: a resposta JSON limita ``stdout`` a 50 KiB e
+    ``stderr`` a 10 KiB para não inflar o body — os logs completos ficam no
+    PVC e podem ser inspecionados via ``/v1/progress`` ou ``kubectl exec``.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        return web.json_response(
+            {"ok": False, "error": "invalid JSON"}, status=400,
+        )
+
+    brief = payload.get("brief")
+    if not brief or not isinstance(brief, str):
+        return web.json_response(
+            {"ok": False, "error": "missing or invalid 'brief'"}, status=400,
+        )
+
+    stage = payload.get("stage", "implement")
+    branch = payload.get("branch")
+    model_slug = payload.get("preferred_model")
+    resume_session_id = payload.get("resume_session_id")
+    prev_task_id = payload.get("prev_task_id")
+
+    # claude-worker SÓ aceita anthropic:* — outros providers viraram 400.
+    claude_model: Optional[str] = None
+    if model_slug:
+        match = _ANTHROPIC_SLUG_RE.match(model_slug)
+        if not match:
+            return web.json_response({
+                "ok": False,
+                "error": (
+                    f"claude-worker requires 'anthropic:*' model, "
+                    f"got {model_slug!r}"
+                ),
+            }, status=400)
+        claude_model = match.group(1)
+
+    root = Path(os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work"))
+
+    # Resume path: reaproveita workdir + session-id existentes.
+    is_resume = bool(resume_session_id and prev_task_id)
+    if is_resume:
+        # Validação do prev_task_id (path traversal + format).
+        if not _TASK_ID_RE.fullmatch(prev_task_id or ""):
+            return web.json_response({
+                "ok": False,
+                "error": f"invalid prev_task_id format {prev_task_id!r}",
+            }, status=400)
+        prev_meta = _load_session_meta(prev_task_id)
+        if prev_meta is None:
+            return web.json_response({
+                "ok": False,
+                "error_code": "RESUME_META_MISSING",
+                "error": (
+                    f"prev_task_id={prev_task_id!r} não tem session metadata "
+                    f"(provavelmente pod foi recriado e PVC perdeu o arquivo). "
+                    f"Pipeline deve fallback pra dispatch fresh."
+                ),
+            }, status=404)
+        if prev_meta.get("session_id") != resume_session_id:
+            return web.json_response({
+                "ok": False,
+                "error_code": "RESUME_SESSION_MISMATCH",
+                "error": (
+                    f"resume_session_id no payload não bate com session_id "
+                    f"persistido no prev_task_id (corrupção do mini-ledger?)"
+                ),
+            }, status=409)
+        task_id = prev_task_id
+        session_id = resume_session_id
+        workspace = Path(prev_meta.get("workdir") or (root / task_id))
+        if not workspace.is_dir():
+            return web.json_response({
+                "ok": False,
+                "error_code": "RESUME_WORKDIR_LOST",
+                "error": (
+                    f"workdir {workspace!s} sumiu (pod foi recriado em outro "
+                    f"node, ou cleanup manual). Pipeline deve fallback pra "
+                    f"dispatch fresh."
+                ),
+            }, status=410)
+        attempt = int(prev_meta.get("attempt", 1)) + 1
+        logger.info(
+            "resume dispatch task_id=%s session=%s attempt=%d workdir=%s",
+            task_id, session_id, attempt, workspace,
+        )
+    else:
+        # Fresh path: novo task_id + session-id + workspace.
+        task_id = secrets.token_hex(8)
+        session_id = str(uuid.uuid4())
+        workspace = root / task_id
+        workspace.mkdir(parents=True, exist_ok=True)
+        attempt = 1
+        logger.info(
+            "fresh dispatch task_id=%s session=%s stage=%s model=%s branch=%s",
+            task_id, session_id, stage, claude_model, branch,
+        )
+
+    # Preamble: fresh dispatch recebe o template normal; resume recebe um
+    # nudge curto ("você foi interrompido, continue de onde parou — claude
+    # já tem todo o histórico via -r"). Sem repetir o brief original.
+    if is_resume:
+        full_prompt = (
+            f"Sua execução anterior (task_id={task_id}, attempt={attempt-1}) "
+            f"foi interrompida (timeout, kill, pod restart). Você está sendo "
+            f"retomado com `-r {session_id}` — você vê TODA a conversa "
+            f"anterior, incluindo as ações já completadas (tool calls, files "
+            f"editados, comments postados).\n\n"
+            f"REGRA: NÃO refaça trabalho já completado (não re-comente, não "
+            f"re-edite arquivos que já foram salvos com sucesso). Identifique "
+            f"o ponto exato onde parou e continue. Finalize com 'STATUS: "
+            f"SUCCESS' ou 'STATUS: BLOCKED_<motivo>' depois de postar comment "
+            f"final se for review."
+        )
+    else:
+        preamble = _render_preamble(stage, branch, task_id)
+        full_prompt = preamble + "\n\n---\n\n" + brief
+
+    # Persistir metadata ANTES do spawn (pro endpoint /resume-info poder
+    # detectar dispatches in-flight). Atomic via _save_session_meta.
+    meta_pre = {
+        "task_id": task_id,
+        "session_id": session_id,
+        "workdir": str(workspace),
+        "stage": stage,
+        "branch": branch,
+        "model": claude_model,
+        "started_at": int(time.time()),
+        "attempt": attempt,
+        "prev_task_id": prev_task_id if is_resume else None,
+        "last_is_error": None,  # populado pós-spawn
+        "last_result_summary": "",
+        "last_returncode": None,
+        "last_completed_at": None,
+        "last_duration_seconds": None,
+        "last_total_cost_usd": 0.0,
+    }
+    _save_session_meta(task_id, meta_pre)
+
+    claude_bin = shutil.which("claude") or "claude"
+    cmd = [
+        claude_bin, "-p",
+        "--permission-mode", "bypassPermissions",
+        "--output-format", "json",
+    ]
+    if is_resume:
+        cmd.extend(["-r", session_id])
+    else:
+        cmd.extend(["--session-id", session_id])
+    if claude_model:
+        cmd.extend(["--model", claude_model])
+    cmd.append(full_prompt)
+
+    timeout = int(os.environ.get("DEILE_CLAUDE_WORKER_TASK_TIMEOUT_S", "7200"))
+
+    try:
+        result = await run_subprocess_with_progress(
+            cmd, cwd=workspace, task_id=task_id, timeout=timeout,
+        )
+    except Exception as exc:
+        logger.exception("dispatch failed task_id=%s", task_id)
+        meta_pre["last_is_error"] = True
+        meta_pre["last_result_summary"] = f"{type(exc).__name__}: {exc}"[:300]
+        meta_pre["last_returncode"] = -1
+        meta_pre["last_completed_at"] = int(time.time())
+        _save_session_meta(task_id, meta_pre)
+        return web.json_response({
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "task_id": task_id,
+            "session_id": session_id,
+        }, status=500)
+
+    # Parse do JSON output (--output-format json) — fonte estruturada de
+    # verdade pra is_error, result, cost. Resolve Bug A do Opus de forma
+    # estrutural (sem regex frágil no stdout livre).
+    claude_result = _parse_claude_json_output(result.stdout)
+
+    # Detecção de auth expirado: estrutural (is_error=true + result contém
+    # signature de auth) E fallback regex no stdout/stderr crus (pra casos
+    # onde JSON output não veio — ex: timeout antes do final).
+    auth_expired_struct = (
+        claude_result["is_error"]
+        and any(sig in claude_result["result"].lower()
+                for sig in _AUTH_EXPIRED_SIGNATURES)
+    )
+    auth_expired_legacy = _detect_auth_expired(result.stdout, result.stderr)
+    auth_expired = auth_expired_struct or auth_expired_legacy
+    error_code = "WORKER_AUTH_EXPIRED" if auth_expired else None
+
+    # Considera "ok" se: rc=0 AND não auth_expired AND JSON output não diz
+    # is_error=true. JSON output sendo a fonte estrutural (claude pode
+    # imprimir rc=0 mesmo em falha de auth — vide investigação Opus).
+    ok = (
+        result.returncode == 0
+        and not auth_expired
+        and not claude_result["is_error"]
+    )
+
+    # Persistir metadata final.
+    meta_pre["last_is_error"] = claude_result["is_error"] or not ok
+    meta_pre["last_result_summary"] = claude_result["result"][:300]
+    meta_pre["last_returncode"] = result.returncode
+    meta_pre["last_completed_at"] = int(time.time())
+    meta_pre["last_duration_seconds"] = result.duration_seconds
+    meta_pre["last_total_cost_usd"] = claude_result["total_cost_usd"]
+    _save_session_meta(task_id, meta_pre)
+
+    response = {
+        "ok": ok,
+        "stdout": result.stdout[-50_000:],
+        "stderr": result.stderr[-10_000:],
+        "task_id": task_id,
+        "session_id": session_id,
+        "attempt": attempt,
+        "duration_seconds": result.duration_seconds,
+        "returncode": result.returncode,
+        "total_cost_usd": claude_result["total_cost_usd"],
+        "num_turns": claude_result["num_turns"],
+    }
+    if error_code:
+        response["error_code"] = error_code
+        response["error"] = (
+            "claude CLI reportou token OAuth expirado/inválido. "
+            "Rode `deploy.py k8s claude-renew` no host pra renovar."
+        )
+    elif not ok and claude_result["is_error"] and claude_result["result"]:
+        # Falha não-auth reportada pelo claude — propaga o erro pra pipeline.
+        response["error"] = claude_result["result"][:500]
+    return web.json_response(response)
+
+
+#: Sinais textuais (case-insensitive) de auth expirado/inválido produzidos
+#: pelo ``claude`` CLI no stdout/stderr. Mantenha conservador: melhor false
+#: negative (não detecta auth_expired, dispatch falha genérico) que false
+#: positive (marca como auth quando é outro erro — operador confunde).
+_AUTH_EXPIRED_SIGNATURES = (
+    "not logged in",
+    "invalid authentication credentials",
+    "401 unauthorized",
+    "401 invalid authentication",
+    "please run /login",
+    "please run `claude auth login`",
+)
+
+
+def _detect_auth_expired(stdout: str, stderr: str) -> bool:
+    """True se o output indica claramente OAuth token expirado/inválido.
+
+    Conservador: requer match de string específica do claude CLI, não
+    apenas "401" genérico (pode ser HTTP erro de outra source). False
+    se nenhum sinal — outros erros caem em ``ok=False`` genérico (com
+    ``returncode != 0``) e o pipeline trata como falha normal.
+    """
+    combined = (stdout + "\n" + stderr).lower()
+    return any(sig in combined for sig in _AUTH_EXPIRED_SIGNATURES)
+
+
+#: ``secrets.token_hex(8)`` em :func:`dispatch_handler` gera exatamente 16
+#: chars hex; qualquer outra forma é rejeitada para não permitir path traversal
+#: pela URL nem leitura de arquivos arbitrários no PVC.
+_TASK_ID_RE = re.compile(r"[0-9a-f]{16}")
+
+
+async def progress_handler(request: web.Request) -> web.Response:
+    """``GET /v1/progress/{task_id}`` — snapshot do task em execução ou completo.
+
+    Lê os arquivos persistidos por :func:`run_subprocess_with_progress` no PVC
+    (``DEILE_CLAUDE_WORKER_ROOT/.progress/<task_id>.<stream>.log``) e devolve
+    tail (stdout 50 KiB, stderr 10 KiB). Usado pelo painel TUI / subagent
+    orchestration para acompanhar mid-flight sem aguardar a resposta do
+    ``/v1/dispatch``.
+
+    Returns:
+        - ``200`` com ``{task_id, stdout, stderr}`` se algum dos arquivos existe.
+        - ``404`` se ``task_id`` tem formato válido mas nenhum dos arquivos
+          de progress está presente (task ainda não rodou, foi GCed, etc.).
+        - ``400`` se ``task_id`` não bate ``[0-9a-f]{16}`` — defende contra
+          path traversal pela URL e contra IDs vazados de outros sistemas.
+
+    Erros de I/O ao ler os arquivos viram ``logger.warning`` + string vazia
+    (best-effort): o que o cliente vê é o que conseguimos ler.
+    """
+    task_id = request.match_info["task_id"]
+
+    # Sanity: task_id deve ser hex 16-char (gerado por secrets.token_hex(8)).
+    if not _TASK_ID_RE.fullmatch(task_id):
+        return web.json_response(
+            {"error": "invalid task_id format (expected hex 16-char)"},
+            status=400,
+        )
+
+    root = Path(os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work"))
+    progress_dir = root / ".progress"
+    stdout_path = progress_dir / f"{task_id}.stdout.log"
+    stderr_path = progress_dir / f"{task_id}.stderr.log"
+
+    if not stdout_path.exists() and not stderr_path.exists():
+        return web.json_response(
+            {"error": f"task_id {task_id} not found"},
+            status=404,
+        )
+
+    try:
+        stdout = stdout_path.read_text() if stdout_path.exists() else ""
+    except OSError as exc:
+        logger.warning("failed to read %s: %s", stdout_path, exc)
+        stdout = ""
+
+    try:
+        stderr = stderr_path.read_text() if stderr_path.exists() else ""
+    except OSError as exc:
+        logger.warning("failed to read %s: %s", stderr_path, exc)
+        stderr = ""
+
+    return web.json_response({
+        "task_id": task_id,
+        "stdout": stdout[-50_000:],
+        "stderr": stderr[-10_000:],
+    })
+
+
+async def resume_info_handler(request: web.Request) -> web.Response:
+    """``GET /v1/dispatches/{task_id}/resume-info`` — snapshot do session
+    metadata pra decisão de resume vs fresh dispatch no pipeline.
+
+    Returns:
+        - ``200`` com ``{task_id, session_id, workdir, workdir_exists,
+          stage, branch, started_at, last_completed_at, last_is_error,
+          last_result_summary, attempt, claude_alive}``.
+        - ``404`` se task_id válido mas sem session metadata (task nunca
+          rodou no PVC atual — pode ter sido GCed ou pod foi recriado).
+        - ``400`` se task_id não bate ``[0-9a-f]{16}`` (path traversal guard).
+
+    ``claude_alive`` é heurística (``pgrep -f claude | grep <session_id>``):
+    true = ainda há processo claude rodando com esse session-id na cmdline,
+    false = processo morreu ou nunca existiu. Pipeline usa pra decidir entre
+    "ainda rodando, não disturbar" vs "morto, pode resume". Best-effort:
+    em erro de pgrep retorna false (assume morto — pipeline retry retoma).
+    """
+    task_id = request.match_info["task_id"]
+    if not _TASK_ID_RE.fullmatch(task_id):
+        return web.json_response(
+            {"error": "invalid task_id format (expected hex 16-char)"},
+            status=400,
+        )
+    meta = _load_session_meta(task_id)
+    if meta is None:
+        return web.json_response(
+            {"error": f"task_id {task_id} not found in session metadata"},
+            status=404,
+        )
+    workdir = Path(meta.get("workdir", "") or "")
+    session_id = meta.get("session_id", "") or ""
+    return web.json_response({
+        "task_id": task_id,
+        "session_id": session_id,
+        "workdir": str(workdir),
+        "workdir_exists": workdir.is_dir(),
+        "stage": meta.get("stage"),
+        "branch": meta.get("branch"),
+        "model": meta.get("model"),
+        "started_at": meta.get("started_at"),
+        "last_completed_at": meta.get("last_completed_at"),
+        "last_is_error": meta.get("last_is_error"),
+        "last_result_summary": (meta.get("last_result_summary") or "")[:300],
+        "last_returncode": meta.get("last_returncode"),
+        "last_duration_seconds": meta.get("last_duration_seconds"),
+        "last_total_cost_usd": meta.get("last_total_cost_usd"),
+        "attempt": meta.get("attempt", 1),
+        "prev_task_id": meta.get("prev_task_id"),
+        "claude_alive": _is_claude_process_alive(session_id),
+    })
+
+
+# --------------------------------------------------------------------------- #
+# Wiring
+# --------------------------------------------------------------------------- #
+
+
+def build_app(auth_token: Optional[str] = None) -> web.Application:
+    """Monta a ``aiohttp.web.Application`` com as três rotas do contrato.
+
+    Bearer middleware ativo por default (paridade com
+    ``worker_server.build_app``). O ``auth_token`` opcional permite testes
+    in-process passarem o token sem precisar mockar
+    :func:`_read_auth_token`. Em produção (chamado pelo :func:`main`), o
+    token vem de ``/run/secrets/claude-worker/CLAUDE_WORKER_BEARER_TOKEN``.
+
+    ``client_max_size=512 KiB`` limita o body do ``/v1/dispatch`` — briefs
+    de pipeline normalmente cabem em <50 KiB; o teto generoso (10x) ainda
+    barra payloads anômalos que poderiam encher o PVC.
+    """
+    app = web.Application(
+        middlewares=[_bearer_auth_mw],
+        client_max_size=512 * 1024,
+    )
+    app["auth_token"] = auth_token or _read_auth_token()
+    app.router.add_get("/v1/health", health_handler)
+    app.router.add_post("/v1/dispatch", dispatch_handler)
+    app.router.add_get("/v1/progress/{task_id}", progress_handler)
+    app.router.add_get(
+        "/v1/dispatches/{task_id}/resume-info", resume_info_handler,
+    )
+    return app
+
+
+def main(passthrough: Optional[List[str]] = None) -> int:
+    """Entry point chamado pelo ``wrapper.py`` no mode ``claude-worker``.
+
+    ``passthrough`` existe apenas para casar a assinatura usada pelo
+    ``wrapper.py`` (``server_main(passthrough)``); por enquanto não temos
+    flags de CLI próprias. Tasks futuras podem consumi-lo com ``argparse``.
+    """
+    del passthrough  # reservado para uso futuro (ver docstring).
+
+    logging.basicConfig(
+        level=os.environ.get("DEILE_CLAUDE_WORKER_LOG_LEVEL", "INFO"),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    host = os.environ.get("DEILE_CLAUDE_WORKER_HOST", "0.0.0.0")
+    port = int(os.environ.get("DEILE_CLAUDE_WORKER_PORT", "8767"))
+    root = Path(os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work"))
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.error("could not create work root %s: %s", root, exc)
+        return 78
+
+    # Carrega o OAuth token do ``credentials.json`` (montado pelo
+    # initContainer via Secret claude-credentials) e exporta como
+    # ``ANTHROPIC_AUTH_TOKEN``. SEM isso o claude CLI roda como
+    # "Not logged in" porque no Linux ele NÃO lê
+    # ``~/.claude/credentials.json`` automaticamente (esse path é
+    # convenção macOS — Linux só lê env vars).
+    _load_oauth_token_into_env()
+
+    logger.info(
+        "claude_worker_server listening on %s:%d, work root=%s", host, port, root,
+    )
+    app = build_app()
+    web.run_app(app, host=host, port=port, print=lambda *_: None)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -49,9 +49,9 @@ Cada Pod compartilha o mesmo image (`deile-stack:local`) — a diferença
 está no comando, nas variáveis de ambiente e na presença ou não de
 ingress.
 
-## Três modalidades de inicialização
+## Modalidades de inicialização
 
-O mesmo binário tem três entry points operacionais, escolhidos por quem
+O mesmo binário tem múltiplos entry points operacionais, escolhidos por quem
 controla o prompt:
 
 ### 1) Local — pip install / dev no host
@@ -111,6 +111,31 @@ tools — `bash_execute`, `python_execute`, `read_file`, `write_file`,
 > sandbox descartável onde DEILE pode `bash`/`pip install` à vontade
 > sem mexer no seu Mac, use `deile-shell`.
 
+### 4) claude-worker (issue #309 fase 2)
+
+Pod paralelo ao `deile-worker`, executa `claude -p` em worktrees isolados.
+O pipeline despacha tasks per-stage (`classify`, `refine`, `implement`,
+`pr_review`, `follow_ups`) escolhendo `deile-worker` OU `claude-worker`
+via `dispatch_resolver` (mesmo padrão dos per-stage models da decisão #41).
+
+| Campo | Valor |
+|---|---|
+| Replicas | 1 (V1; FU para RWX scale-up) |
+| Image | `deile-stack:local` (compartilhada; `claude` CLI baked via npm `@anthropic-ai/claude-code`) |
+| Args | `python3 /app/wrapper.py claude-worker` |
+| Port | `8767` |
+| PVC | `claude-worker-home` (1Gi RWO, `/home/claude` — persiste credentials + worktrees) |
+| Secrets | `claude-credentials` (OAuth Pro/Max) + `claude-worker-bearer` (HTTP bearer) |
+| InitContainer | `bootstrap-creds` — copia Secret → PVC writable em `~/.claude/credentials.json` mode `0600` |
+| NetworkPolicy | ingress só do `deile-pipeline`; egress 443 whitelisted + DNS |
+| ConfigMap | `claude-worker-allowed-repos` (regex de URLs git permitidas, enforcement no `wrapper.py`) |
+| Endpoints HTTP | `POST /v1/dispatch`, `GET /v1/health`, `GET /v1/progress/{task_id}` |
+
+Setup: `python3 infra/k8s/deploy.py k8s claude-login` (idempotente).
+Operação: per-stage routing via `DispatchMatrixView` (`[d]`) no painel TUI.
+
+Detalhe completo: [`docs/superpowers/specs/2026-05-26-claude-worker-design.md`](../superpowers/specs/2026-05-26-claude-worker-design.md).
+
 ### Tabela-resumo
 
 | Modalidade | Quem dita o prompt | Toolset | Acessa host | Uso típico |
@@ -119,6 +144,7 @@ tools — `bash_execute`, `python_execute`, `read_file`, `write_file`,
 | `deile-oneshot` Job | manifest YAML | só `messaging.*` (whitelist) | não | automação / CI |
 | `deile-shell` Deployment | operador via `kubectl exec` | full | não | sandbox isolado |
 | Bot embedded agent | usuários Discord (untrusted) | só `messaging.*` (whitelist) | não | Discord chat |
+| `claude-worker` Deployment | pipeline via `/v1/dispatch` | `claude -p` (CLI Anthropic) | não | dispatch per-stage de tarefas a Claude |
 
 ## Princípios de design
 
@@ -237,4 +263,4 @@ este pilar.
 - [`09-CONFIGURACAO.md`](09-CONFIGURACAO.md) — env vars e arquivos
   YAML/JSON que o wrapper monta em `/home/deile/config/`.
 - [`DECISOES.md`](DECISOES.md) — decisões #27 e #28 (containerização e
-  tool whitelist).
+  tool whitelist) e #43 (`claude-worker` + dispatch per-stage).

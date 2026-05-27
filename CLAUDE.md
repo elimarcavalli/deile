@@ -91,6 +91,45 @@ $K -n deile exec -it deploy/deile-shell -- python3 /app/wrapper.py deile   # int
 
 Roles & control-plane ports: **deilebot** `:8765` (Discord I/O), **deile-worker** `:8766` (runs DEILE in-process for dispatch), **deile-pipeline** (the forge monitor — no Service, only "calls out"), **deile-shell** (`kubectl exec` only). Only `deile-pipeline` runs the autonomous monitor; the others never autostart it.
 
+## claude-worker — dispatch pra Claude CLI dentro do cluster (issue #309 fase 2)
+
+Além do `deile-worker` (que roda DEILE python via `wrapper.py worker`), o cluster ganha um pod paralelo `claude-worker` (Service `:8767`) que executa `claude -p` em worktrees isolados sob o PVC `claude-worker-home`. O pipeline despacha tasks per-stage:
+
+- `classify`, `refine`, `implement`, `pr_review`, `follow_ups` — cada um pode apontar pra `deile-worker` OU `claude-worker`
+- Resolver: `deile/orchestration/pipeline/dispatch_resolver.py`
+  - env var per-stage: `DEILE_PIPELINE_DISPATCH_<STAGE>`
+  - env var global: `DEILE_PIPELINE_DISPATCH_MODE`
+  - default: `deile-worker`
+
+### Setup inicial (cluster zerado pra claude-worker)
+
+```bash
+# Captura credenciais do host, cria Secret, aplica manifests, aguarda Ready:
+python3 infra/k8s/deploy.py k8s claude-login
+
+# Força nova OAuth (trocar de conta):
+python3 infra/k8s/deploy.py k8s claude-login --switch
+
+# CI-friendly (falha se sem creds):
+python3 infra/k8s/deploy.py k8s claude-login --no-interactive
+```
+
+### Configurar per-stage no painel
+
+- Tecla `[d]` no painel TUI → `DispatchMatrixView` (substitui `[d]` global da PR #330 + `[M]` per-stage do #305)
+- Linha por stage: Worker (`deile-worker` / `claude-worker` / global) × Model (anthropic-only se `claude-worker`)
+- Linha "Global default" no rodapé funciona como fallback (env vars `DEILE_PIPELINE_DISPATCH_MODE` + `DEILE_PIPELINE_MODEL`)
+- `[L]` switch claude-worker login (`force_relogin`); `[I]` install se ausente
+- `[enter]` em uma célula abre picker contextual; `[r]` reseta a célula
+
+### Threat model resumido
+
+Credentials residem em `/home/claude/.claude/credentials.json` mode `0600` (PVC writable, refresh in-pod). NetworkPolicy egress whitelist `api.anthropic.com:443` + `github.com:443` + `gitlab.com:443` (granularidade de repo via ConfigMap `claude-worker-allowed-repos`, enforcement no `wrapper.py`).
+
+Gap conhecido (documentado em spec §7): prompt injection no claude pode exfiltrar credentials via canais legítimos (git push pra repo whitelisted no DNS mas com payload em commit message; data smuggling em headers HTTP legítimos). Mitigação V1 = audit logging do response do `/v1/dispatch` + pattern detection. FU prioritária: sidecar credential proxy (issue separada).
+
+Ver spec completa em `docs/superpowers/specs/2026-05-26-claude-worker-design.md` seção 7.
+
 ## Forge — GitHub e GitLab
 
 DEILE é **forge-agnóstico** (issue #297): o mesmo pipeline, briefs e tools operam sobre repos GitHub (cloud + GHES) e GitLab (cloud + self-hosted). A camada `deile/orchestration/forge/` esconde a diferença sob :class:`ForgeClient`; o pipeline nunca importa `gh`/`glab` direto.

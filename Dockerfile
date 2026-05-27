@@ -147,6 +147,26 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && gh --version \
     && glab --version
 
+# -----------------------------------------------------------------------------
+# claude CLI (issue #309 fase 2)
+#
+# Bake do claude CLI no image. Permite que o pod claude-worker rode
+# `claude -p` sem instalar em runtime (que exigiria egress npm e seria
+# bloqueado pela NetworkPolicy default-deny).
+#
+# Camada separada das anteriores (gh/glab) para layer cache em rebuilds que
+# não tocam claude.
+#
+# nodejs ~20 (LTS) via NodeSource (debian-based). Tamanho: ~80MB nodejs +
+# ~30MB claude CLI = ~110MB nesta camada.
+# -----------------------------------------------------------------------------
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/* \
+ && npm install -g --omit=dev @anthropic-ai/claude-code \
+ && claude --version
+
 # Non-root user. UID 10001 is well above the system uid range
 # and matches the runAsUser in the Pod manifests.
 RUN groupadd --system --gid 10001 deile \
@@ -165,6 +185,10 @@ COPY --from=builder --chown=deile:deile /build/deilebot /app/deilebot
 # Wrapper script — strips secrets before deile runs.
 COPY --chown=deile:deile infra/k8s/wrapper.py /app/wrapper.py
 RUN chmod 0555 /app/wrapper.py
+
+# claude-worker HTTP server — entry point for the claude-worker pod (issue #309).
+COPY --chown=deile:deile infra/k8s/claude_worker_server.py /app/claude_worker_server.py
+RUN chmod 0555 /app/claude_worker_server.py
 
 # Worker HTTP server — entry point for the deile-worker pod.
 COPY --chown=deile:deile infra/k8s/worker_server.py /app/worker_server.py

@@ -1,0 +1,22 @@
+# PVC para claude-worker. Holds:
+# - /home/claude/.claude/credentials.json  (escrito pelo initContainer; refresh in-pod
+#   atualiza in-place)
+# - /home/claude/work/<task_id>/...        (worktrees per-task)
+#
+# RWO single-node (local-path StorageClass do Rancher Desktop). FU #5 da
+# spec aborda RWX para multi-replica.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: claude-worker-home
+  namespace: deile
+  labels:
+    app: claude-worker
+    role: deile
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi

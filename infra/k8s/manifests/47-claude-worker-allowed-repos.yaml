@@ -1,0 +1,22 @@
+# ConfigMap com regex de repos permitidos para git clone/push do claude-worker.
+# Camada de defesa contra prompt-injection que tente exfiltrar credentials via
+# `git push owner-malicioso/leak-repo`. wrapper.py valida cada URL contra esses
+# patterns antes de exec do claude CLI.
+#
+# Issue #309 fase 2 — seção 7 do design.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: claude-worker-allowed-repos
+  namespace: deile
+  labels:
+    app: claude-worker
+    role: deile
+data:
+  # Lista de regex (uma por linha) — wrapper.py compila todas e exige match
+  # contra repo URL antes de permitir git operation.
+  allowed_repos.regex: |
+    ^https://github\.com/elimarcavalli/(deile|deilebot)(\.git)?$
+    ^https://gitlab\.com/elimarcavalli/(deile|deilebot)(\.git)?$
+    ^git@github\.com:elimarcavalli/(deile|deilebot)(\.git)?$
+    ^git@gitlab\.com:elimarcavalli/(deile|deilebot)(\.git)?$

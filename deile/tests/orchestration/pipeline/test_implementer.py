@@ -90,9 +90,25 @@ def _mention_trigger_assignee_issue(number: int = 100) -> MentionTrigger:
 # ----- factory ------------------------------------------------------------
 
 class TestFactory:
+    """A partir da fase 2 da issue #309, ``build_implementer`` SEMPRE retorna
+    :class:`WorkerImplementer` — a decisão de endpoint (``deile-worker`` vs
+    ``claude-worker``) é per-stage em runtime via ``dispatch_resolver``. O
+    parâmetro ``dispatch_mode`` continua aceito apenas para validar typos
+    (fail-fast) e manter compat com chamadas antigas.
+
+    Pré-#309-fase-2: aliases ``claude*`` retornavam :class:`ClaudeImplementer`.
+    Agora retornam :class:`WorkerImplementer`. Para construir o legacy
+    ClaudeImplementer (CLI local fora do cluster), use
+    :func:`get_local_claude_implementer`.
+    """
+
     @pytest.mark.parametrize("mode", ["claude", "claude_code", "claude-code"])
-    def test_claude_aliases(self, mode):
-        assert isinstance(build_implementer(mode), ClaudeImplementer)
+    def test_claude_aliases_return_worker_implementer(self, mode):
+        # Mudança semântica de #309 fase 2: aliases ``claude*`` não constroem
+        # mais ``ClaudeImplementer``. A escolha de endpoint é runtime via
+        # ``dispatch_resolver`` — ``WorkerImplementer`` resolve per-call.
+        impl = build_implementer(mode, worker_client=MagicMock())
+        assert isinstance(impl, WorkerImplementer)
 
     @pytest.mark.parametrize("mode", ["deile_worker", "worker", "deile", "deile-worker"])
     def test_worker_aliases(self, mode):
@@ -100,16 +116,30 @@ class TestFactory:
         assert isinstance(impl, WorkerImplementer)
 
     def test_unknown_mode_raises(self):
-        # Pre-PR-review esta entrada caía silenciosamente em ClaudeImplementer
+        # Pre-#309-fase-2 esta entrada caía silenciosamente em ClaudeImplementer
         # com logger.warning — um typo em DEILE_PIPELINE_DISPATCH_MODE (ex.:
         # "deile_woker") queimaria ANTHROPIC_API_KEY sem alerta. Fail-fast
         # ValueError surface o erro imediatamente (pilar 03 §6 + dispatch UX).
         with pytest.raises(ValueError, match="unknown pipeline dispatch_mode"):
             build_implementer("nonsense")
 
-    def test_empty_mode_falls_back_to_claude(self):
-        # Default legado mantido: vazio/None → Claude (compat de bootstrap).
-        assert isinstance(build_implementer(""), ClaudeImplementer)
+    def test_empty_mode_returns_worker_implementer(self):
+        # Default vazio/None: WorkerImplementer (resolver runtime decide endpoint).
+        impl = build_implementer("")
+        assert isinstance(impl, WorkerImplementer)
+
+    def test_none_mode_returns_worker_implementer(self):
+        # Sem argumento — mesmo comportamento de vazio.
+        impl = build_implementer()
+        assert isinstance(impl, WorkerImplementer)
+
+    def test_get_local_claude_implementer_returns_claude(self):
+        """Factory exclusiva para uso local fora do cluster (CLI). Continua
+        construindo :class:`ClaudeImplementer` (subprocess ``claude -p``)."""
+        from deile.orchestration.pipeline.implementer import \
+            get_local_claude_implementer
+        impl = get_local_claude_implementer()
+        assert isinstance(impl, ClaudeImplementer)
 
 
 # ----- ClaudeImplementer --------------------------------------------------

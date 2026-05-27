@@ -875,6 +875,77 @@ class PipelineProvider(_KubectlProviderMixin):
 # ===== Worker activity ======================================================
 
 @dataclass
+class CurrentTask:
+    """Snapshot da task em execução em um pod worker.
+
+    Populada pelo :class:`WorkerProvider` quando ele encontra uma linha
+    ``dispatch_started`` no log do worker sem um ``dispatch_completed``
+    correspondente — i.e., a última dispatch ainda está rodando. Surface
+    primária: cabeçalho do :class:`PodWatchView` no painel TUI (issue
+    #309 fase 2 follow-up), que mostra ao operador "o que esse worker
+    está fazendo agora" sem precisar interpretar o log bruto.
+
+    Forge-agnóstica: ``issue_number`` é apenas um inteiro (sem ``#``/
+    ``!``); o renderer da UI escolhe o prefixo apropriado. ``channel_id``
+    é mantido como fallback de display — quando o pipeline não envia
+    ``issue_number`` explícito, o parser extrai o número do padrão
+    ``pipeline-(issue|pr|mention-issue|mention-pr)-<N>`` do channel.
+
+    Segurança (pilar 08): nenhum desses campos carrega ``brief``,
+    histórico, credentials ou conteúdo do Discord — todos são metadata
+    de roteamento já validada na fronteira do worker.
+    """
+    task_id: str
+    channel_id: str
+    started_ts: datetime
+    stage: Optional[str] = None
+    action_kind: Optional[str] = None
+    issue_number: Optional[int] = None
+    branch: Optional[str] = None
+
+    @property
+    def target_label(self) -> str:
+        """Rótulo curto pro header (ex.: ``#309``, ``PR#291``, ``mention #257``).
+
+        Convenção alinhada com :func:`_classify_pipeline_line` (mesmo
+        vocabulário usado pelo :class:`PipelineTimelineView`). Quando
+        ``issue_number`` foi enviado explicitamente, usa ele; senão tenta
+        extrair do ``channel_id``. ``channel_id`` é a fonte canônica do
+        pipeline (``pipeline-issue-N`` / ``pipeline-pr-N`` /
+        ``pipeline-mention-{issue|pr}-N``); para dispatches não-pipeline
+        (snowflake do Discord), devolve uma rotulagem genérica curta.
+        """
+        n = self.issue_number
+        kind_hint = ""
+        if self.channel_id:
+            m = _PIPELINE_CHANNEL_RE.match(self.channel_id)
+            if m:
+                kind_hint = m.group(1)  # "issue" | "pr" | "mention-issue" | "mention-pr"
+                if n is None:
+                    try:
+                        n = int(m.group(2))
+                    except (ValueError, TypeError):
+                        n = None
+        if n is not None:
+            # Ordem importa: ``mention-pr`` casa com ``endswith("pr")`` E
+            # com ``startswith("mention-")``. Mention-routing precisa
+            # ganhar para o operador ver explicitamente que veio de uma
+            # mention (não de um dispatch direto da pipeline).
+            if kind_hint.startswith("mention-"):
+                kind_target = "PR" if kind_hint.endswith("pr") else "#"
+                return f"mention {kind_target}{n}"
+            if kind_hint.endswith("pr"):
+                return f"PR#{n}"
+            return f"#{n}"
+        # Fallback (CLI/bot passthrough): mostra o channel_id truncado.
+        return f"channel:{self.channel_id[:16]}"
+
+    @property
+    def elapsed_s(self) -> float:
+        return (datetime.now(_UTC) - self.started_ts).total_seconds()
+
+
+@dataclass
 class WorkerState:
     """Estado deduzido do log de um pod worker."""
     pod_name: str
@@ -883,6 +954,11 @@ class WorkerState:
     last_substantive_ts: Optional[datetime] = None
     last_health_ts: Optional[datetime] = None
     last_substantive_body: str = ""
+    # Task em execução agora (issue #309 fase 2 follow-up). ``None`` quando
+    # o pod está idle ou quando o log não tem nenhum ``dispatch_started``
+    # ativo (ainda não cobre todos os workers em deploy, então ``None`` é
+    # o caminho silencioso de compatibilidade).
+    current_task: Optional[CurrentTask] = None
 
     @property
     def last_activity_s(self) -> Optional[float]:
@@ -897,6 +973,27 @@ class WorkerState:
 _WORKER_HEALTH_RE = re.compile(r"GET /v1/health", re.IGNORECASE)
 _WORKER_DISPATCH_RE = re.compile(r"POST /v1/dispatch", re.IGNORECASE)
 _WORKER_BUSY_WINDOW_S = 90  # se houve POST /v1/dispatch nos últimos 90s, está busy
+
+# Structured dispatch markers emitted by ``infra.k8s.worker_server``
+# (``dispatch_handler``) — single source of truth for the "what is this
+# worker doing right now" header in :class:`PodWatchView`. Format must
+# stay in sync with the ``logger.info`` calls there; key order is
+# flexible (we extract by regex), but key NAMES are the wire contract.
+_DISPATCH_STARTED_RE = re.compile(
+    r"dispatch_started\s+(?P<kv>.+)$", re.IGNORECASE,
+)
+_DISPATCH_COMPLETED_RE = re.compile(
+    r"dispatch_completed\s+task=(?P<task_id>[a-f0-9]+)\b", re.IGNORECASE,
+)
+_KV_RE = re.compile(r"(\w+)=(\S+)")
+# Pipeline channel naming convention (see implementer.py:_dispatch /
+# stages.py mention routing): ``pipeline-(issue|pr|mention-issue|mention-pr)-<N>``.
+# Used by :class:`CurrentTask` to extract the target number when the
+# pipeline didn't pass ``issue_number`` explicitly (backward compat with
+# older pipeline versions or non-pipeline callers).
+_PIPELINE_CHANNEL_RE = re.compile(
+    r"^pipeline-(mention-issue|mention-pr|issue|pr)-(\d+)$"
+)
 
 
 class WorkerProvider(_KubectlProviderMixin):
@@ -955,12 +1052,59 @@ class WorkerProvider(_KubectlProviderMixin):
         # Cap defensivo contra logs muito grandes.
         if len(text) > MAX_LOG_BYTES:
             text = text[-MAX_LOG_BYTES:]
+        # Tracking de "task em execução agora" via pareamento de
+        # ``dispatch_started`` ↔ ``dispatch_completed`` (issue #309 fase 2
+        # follow-up). Mantemos um dict ``task_id -> CurrentTask`` enquanto
+        # parseia o log; o ``current_task`` final é o último started ainda
+        # vivo (mais recente). Logs antigos rotacionam o suficiente pra
+        # que o dict não cresça indefinidamente — TAIL_LINES=200 limita.
+        # Defensive: se um ``dispatch_started`` aparece sem o ``completed``
+        # correspondente (worker reiniciado mid-task, log truncado, etc.),
+        # o pareamento naturalmente reflete a realidade: a task "ficou
+        # presa" como current_task até que o log rotacione, o que casa
+        # com o comportamento observável do pod (busy/last_dispatch_ts
+        # também ficariam congelados num dispatch antigo).
+        live_tasks: Dict[str, CurrentTask] = {}
         for raw in text.splitlines():
             ll = _parse_log_line(raw)
             if ll is None:
                 continue
             if _WORKER_HEALTH_RE.search(ll.body):
                 state.last_health_ts = ll.ts
+                continue
+            # Pareamento started/completed — feito ANTES do dispatch-RE
+            # genérico porque ambos casam com "dispatch" no body.
+            m_done = _DISPATCH_COMPLETED_RE.search(ll.body)
+            if m_done:
+                live_tasks.pop(m_done.group("task_id"), None)
+                # Não é uma "atividade nova" — apenas o término de uma
+                # task já contabilizada via ``dispatch_started``; pular o
+                # restante do bookkeeping evita inflar last_substantive_ts
+                # com o ack final.
+                continue
+            m_start = _DISPATCH_STARTED_RE.search(ll.body)
+            if m_start:
+                kv = dict(_KV_RE.findall(m_start.group("kv")))
+                tid = kv.get("task", "")
+                ch = kv.get("channel", "")
+                if tid and ch:
+                    issue_num: Optional[int]
+                    try:
+                        issue_num = int(kv["issue"]) if "issue" in kv else None
+                    except (ValueError, KeyError):
+                        issue_num = None
+                    live_tasks[tid] = CurrentTask(
+                        task_id=tid, channel_id=ch, started_ts=ll.ts,
+                        stage=kv.get("stage"),
+                        action_kind=kv.get("kind"),
+                        issue_number=issue_num,
+                        branch=kv.get("branch"),
+                    )
+                # ``dispatch_started`` é atividade substantiva — atualiza
+                # last_substantive_ts/body também, para o cálculo de
+                # "última atividade" não regredir.
+                state.last_substantive_ts = ll.ts
+                state.last_substantive_body = ll.body[:100]
                 continue
             if _WORKER_DISPATCH_RE.search(ll.body):
                 # `last_dispatch_ts` é a fonte de verdade do busy-window —
@@ -979,6 +1123,13 @@ class WorkerProvider(_KubectlProviderMixin):
         if state.last_dispatch_ts is not None:
             since = (now - state.last_dispatch_ts).total_seconds()
             state.busy = since < _WORKER_BUSY_WINDOW_S
+        # ``current_task`` = task started mais recente ainda viva (sem
+        # completed). Quando o pod está idle, ``live_tasks`` é {} e
+        # current_task fica None — o renderer mostra "—".
+        if live_tasks:
+            state.current_task = max(
+                live_tasks.values(), key=lambda t: t.started_ts,
+            )
         return state
 
 
@@ -2407,6 +2558,480 @@ def clear_pipeline_dispatch_mode(
     return True, f"{_DISPATCH_ENV_VAR} unset ({msg})"
 
 
+# ===== Per-stage dispatch override (issue #309 fase 2 — Task 19) ===========
+#
+# ``set_pipeline_dispatch_stage`` espelha :func:`set_pipeline_dispatch_mode`
+# (global flip da PR #330) para a chain per-stage da issue #309 fase 2. Escreve
+# ``DEILE_PIPELINE_DISPATCH_<STAGE>=<dispatcher>`` no Deployment
+# ``deile-pipeline`` via ``kubectl set env``. O resolver (:func:`resolve_stage_dispatcher`
+# em ``deile.orchestration.pipeline.dispatch_resolver``) prefere essa env var
+# por-stage sobre o global ``DEILE_PIPELINE_DISPATCH_MODE``.
+#
+# Validação por duas camadas:
+#   1. *stage* deve estar em :data:`PIPELINE_STAGES` — rejeita typo antes do
+#      argv para nunca escrever ``DEILE_PIPELINE_DISPATCH_GARBAGE=...`` no pod.
+#   2. *dispatcher* (quando não-None) deve passar por
+#      :func:`is_valid_dispatcher` — aceita aliases legacy (``deile_worker``,
+#      ``claude``, ``worker``) E a forma canônica (``deile-worker`` |
+#      ``claude-worker``). Sem isso, escrever um typo (``claud-worker``) faria
+#      a próxima dispatch cair silenciosamente em ``deile-worker`` por
+#      fail-open do _canonicalize do resolver.
+#
+# ``dispatcher=None`` é o caminho de clear/reset: kubectl ``VAR-`` (com hífen
+# final), idêntico a :func:`clear_pipeline_dispatch_mode` e :func:`clear_stage_model`.
+def _audit_dispatch_stage_change(
+    stage: str, dispatcher: Optional[str], *, result: str, detail: str,
+    namespace: str = NS,
+) -> None:
+    """Audit ``SECURITY_POLICY_CHANGED`` para troca de dispatcher per-stage.
+
+    Espelha :func:`_audit_dispatch_mode_change` (global flip) e
+    :func:`_audit_stage_model_change` (per-stage model) — mesmo event type
+    para que dashboards grepem os três sob a mesma envelope. ``dispatcher=None``
+    é a variante clear/reset (volta ao fallback global / built-in).
+    """
+    try:
+        from deile.security.audit_logger import (  # noqa: PLC0415
+            AuditEventType, SeverityLevel, get_audit_logger)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "audit logger indisponível para set_pipeline_dispatch_stage: %s",
+            exc,
+        )
+        return
+    severity = (SeverityLevel.INFO
+                if result in ("allowed", "completed", "cancelled")
+                else SeverityLevel.WARNING)
+    env_var = f"DEILE_PIPELINE_DISPATCH_{stage.upper()}"
+    try:
+        get_audit_logger().log_event(
+            event_type=AuditEventType.SECURITY_POLICY_CHANGED,
+            severity=severity,
+            actor="panel:set_pipeline_dispatch_stage",
+            resource=f"deployment:{namespace}/{_DISPATCH_DEPLOYMENT}:{env_var}",
+            action="kubectl_set_env" if dispatcher else "kubectl_unset_env",
+            result=result,
+            details={
+                "stage": stage,
+                # ``dispatcher`` mantém ``None`` no envelope canônico (clear /
+                # cancel-of-clear paths) para o log analysis poder distinguir
+                # "dispatcher vazio (set degenerado)" de "dispatcher ausente".
+                "dispatcher": dispatcher,
+                "detail": detail[:200],
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "falha emitindo AuditEvent (dispatch_stage): %s", exc,
+        )
+
+
+def set_pipeline_dispatch_stage(
+    stage: str, dispatcher: Optional[str], *,
+    namespace: str = NS, timeout: float = 15.0,
+) -> tuple:
+    """Pin ``DEILE_PIPELINE_DISPATCH_<STAGE>=<dispatcher>`` em ``deile-pipeline``.
+
+    Usa ``kubectl set env deploy/deile-pipeline`` e dispara o rollout (strategy
+    ``Recreate`` do pipeline). Returns ``(ok, msg)``.
+
+    Args:
+        stage: nome canônico do stage (um de :data:`PIPELINE_STAGES`).
+            Validado ANTES de virar argv.
+        dispatcher: ``"deile-worker"`` | ``"claude-worker"`` | alias legacy
+            aceito por :func:`is_valid_dispatcher`. ``None`` = clear (kubectl
+            ``VAR-``); o pipeline volta a usar a chain global +
+            built-in default.
+        namespace: K8s namespace alvo (multi-NS / PR #315).
+        timeout: timeout do ``kubectl set env``.
+
+    Emite ``SECURITY_POLICY_CHANGED`` em todos os outcomes (allowed/denied/
+    completed/failed) com a mesma envelope de :func:`set_pipeline_dispatch_mode`.
+    """
+    # --- Validação 1: stage canônico. Lazy import de PIPELINE_STAGES +
+    # is_valid_dispatcher para não puxar deile.orchestration no cold-import.
+    try:
+        from deile.orchestration.pipeline.dispatch_resolver import (  # noqa: PLC0415
+            PIPELINE_STAGES, is_valid_dispatcher)
+    except ImportError as exc:
+        # Fallback hardcoded — só ocorre se dispatch_resolver tiver sido
+        # removido (programming bug). O painel tem que devolver erro claro
+        # em vez de levantar (UI quebra silenciosa é o pior caso).
+        _audit_dispatch_stage_change(
+            str(stage), dispatcher, result="failed",
+            detail=f"dispatch_resolver import falhou: {exc}",
+            namespace=namespace,
+        )
+        return False, f"dispatch_resolver indisponível: {exc}"
+
+    if stage not in PIPELINE_STAGES:
+        msg_detail = "stage fora do conjunto canônico"
+        _audit_dispatch_stage_change(
+            str(stage), dispatcher, result="denied", detail=msg_detail,
+            namespace=namespace,
+        )
+        allowed = ", ".join(PIPELINE_STAGES)
+        return False, (
+            f"invalid stage {stage!r} — esperado um de: {allowed}"
+        )
+
+    # --- Validação 2: dispatcher (quando não-None). ``None`` = clear path.
+    if dispatcher is not None and not is_valid_dispatcher(dispatcher):
+        _audit_dispatch_stage_change(
+            stage, dispatcher, result="denied",
+            detail="dispatcher fora do conjunto whitelisted",
+            namespace=namespace,
+        )
+        return False, (
+            f"invalid dispatcher {dispatcher!r} — esperado canônico "
+            f"'deile-worker'/'claude-worker' ou alias"
+        )
+
+    env_var = f"DEILE_PIPELINE_DISPATCH_{stage.upper()}"
+
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        _audit_dispatch_stage_change(
+            stage, dispatcher, result="failed", detail="kubectl não encontrado",
+            namespace=namespace,
+        )
+        return False, "kubectl não encontrado"
+
+    # --- argv: set ou clear (trailing dash). Espelha set_stage_model /
+    # clear_pipeline_dispatch_mode.
+    if dispatcher is None:
+        argv = [kubectl, "-n", namespace, "set", "env",
+                f"deploy/{_DISPATCH_DEPLOYMENT}", f"{env_var}-"]
+        op_detail = f"executando kubectl set env {env_var}-"
+    else:
+        argv = [kubectl, "-n", namespace, "set", "env",
+                f"deploy/{_DISPATCH_DEPLOYMENT}", f"{env_var}={dispatcher}"]
+        op_detail = f"executando kubectl set env {env_var}={dispatcher}"
+
+    _audit_dispatch_stage_change(
+        stage, dispatcher, result="allowed", detail=op_detail,
+        namespace=namespace,
+    )
+
+    try:
+        proc = subprocess.run(
+            argv, capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _audit_dispatch_stage_change(
+            stage, dispatcher, result="failed", detail=f"subprocess: {exc}",
+            namespace=namespace,
+        )
+        return False, f"falha ao executar kubectl: {exc}"
+
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+        _audit_dispatch_stage_change(
+            stage, dispatcher, result="failed",
+            detail=f"rc={proc.returncode} {err}", namespace=namespace,
+        )
+        return False, err
+
+    msg = (proc.stdout or "rollout disparado").strip()
+    _audit_dispatch_stage_change(
+        stage, dispatcher, result="completed", detail=msg, namespace=namespace,
+    )
+    if dispatcher is None:
+        return True, f"{env_var} unset ({msg})"
+    return True, f"{env_var}={dispatcher} ({msg})"
+
+
+# ===== Stage dispatch (worker + model) consolidado — issue #309 fase 2 ======
+#
+# ``StageDispatchProvider`` unifica 3 leituras separadas em uma única view:
+#   1. Worker per-stage: ``DEILE_PIPELINE_DISPATCH_<STAGE>`` (env do
+#      Deployment ``deile-pipeline``), com fallback no global
+#      ``DEILE_PIPELINE_DISPATCH_MODE``; sem isso, default ``deile-worker``.
+#   2. Model per-stage: ``DEILE_PIPELINE_MODEL_<STAGE>`` (env do Deployment
+#      ``deile-worker``), com fallback no global ``DEILE_PIPELINE_MODEL``
+#      (também conhecido como ``DEILE_PREFERRED_MODEL``).
+#   3. Status do ``claude-worker``: Deployment aplicado? pod ready?
+#      email logado (do Secret ``claude-credentials``)?
+#
+# Substitui (a partir da Task 21) ``DispatchModeProvider`` (PR #330) +
+# ``StageModelsProvider`` (#305) — a view ``[d]`` consolidada do painel TUI
+# vai consumir só este provider para evitar 3 fetches separados.
+#
+# Mantém TTL 3s alinhado com sibling providers (``CurrentModelProvider``,
+# ``StageModelsProvider``, ``DispatchModeProvider``) — um único ``[r]``
+# refresha tudo. Lê de DOIS Deployments (``deile-pipeline`` para worker
+# dispatch, ``deile-worker`` para models) + UM Secret (``claude-credentials``
+# para email), totalizando 3 ``kubectl get -o json`` por refresh.
+
+_CLAUDE_WORKER_DEPLOYMENT = "claude-worker"
+_CLAUDE_CREDENTIALS_SECRET = "claude-credentials"
+
+
+@dataclass(frozen=True)
+class StageDispatchEntry:
+    """Snapshot per-stage do dispatcher + model resolvidos pelo runtime.
+
+    - ``stage`` — canonical stage name (one of :data:`PIPELINE_STAGES`).
+    - ``worker`` — qual worker pod receberá o dispatch deste stage:
+      ``deile-worker`` (default) ou ``claude-worker``.
+    - ``model`` — slug do modelo (ex.: ``anthropic:claude-opus-4-7``) ou
+      ``None`` quando nenhum override per-stage nem global está setado.
+    - ``source`` — ``"env"`` quando o WORKER veio de
+      ``DEILE_PIPELINE_DISPATCH_<STAGE>`` (override específico do stage),
+      ``"global"`` quando veio do fallback ``DEILE_PIPELINE_DISPATCH_MODE``,
+      ``"default"`` quando ambos ausentes (cai no built-in ``deile-worker``).
+    """
+
+    stage: str
+    worker: str
+    model: Optional[str]
+    source: str
+
+
+@dataclass(frozen=True)
+class ClaudeWorkerStatus:
+    """Status operacional do Deployment ``claude-worker`` no cluster.
+
+    - ``deployment_applied`` — True quando ``kubectl get deployment claude-worker``
+      retorna manifest válido (i.e., o operador já aplicou o YAML).
+    - ``pod_ready`` — True quando ``status.readyReplicas == status.replicas``
+      e ``replicas > 0`` (pod live e healthy).
+    - ``logged_in_email`` — email extraído de ``credentials.json`` no Secret
+      ``claude-credentials`` (campo ``email`` do JSON base64-decoded). ``None``
+      quando o Secret não existe, está malformado ou sem o campo email.
+    """
+
+    deployment_applied: bool
+    pod_ready: bool
+    logged_in_email: Optional[str]
+
+
+class StageDispatchProvider(_KubectlProviderMixin):
+    """Consolida leitura per-stage de worker + model + status claude-worker.
+
+    A partir da Task 21 (issue #309 fase 2), substitui ``DispatchModeProvider``
+    (PR #330) e ``StageModelsProvider`` (#305) na view unificada ``[d]`` do
+    painel TUI — uma view única lê tudo de um provider só.
+
+    O provider faz três fetches por refresh:
+      * ``kubectl get deployment/deile-pipeline -o json`` — para a chain de
+        worker dispatch (per-stage env + global env).
+      * ``kubectl get deployment/deile-worker -o json`` — para a chain de
+        model overrides per-stage + global.
+      * ``kubectl get secret/claude-credentials -o json`` — para o email
+        logado (best-effort; falha silenciosa não afeta as 5 entradas).
+
+    TTL 3s espelha :class:`StageModelsProvider` e :class:`DispatchModeProvider`
+    para um único ``[r]`` refrescar a view inteira sem disparada de subprocess
+    desnecessária.
+    """
+
+    def __init__(self, ttl_s: float = 3.0, enabled: bool = True,
+                 namespace: str = NS):
+        self._kubectl = kubectl_bin()
+        self._enabled = enabled
+        self._namespace = namespace
+        # Cache da lista de entries — fallback vazio quando provider desabilitado
+        # ou cluster down. Errors são capturados pelo Cache.last_error.
+        self._cache: Cache[List[StageDispatchEntry]] = Cache(
+            ttl_s, self._fetch_entries, fallback=[],
+        )
+        # Cache separado do status claude-worker — TTL idêntico, fallback
+        # neutro (deployment_applied=False) deixa a view mostrar "not applied".
+        self._status_cache: Cache[ClaudeWorkerStatus] = Cache(
+            ttl_s, self._fetch_status,
+            fallback=ClaudeWorkerStatus(
+                deployment_applied=False, pod_ready=False, logged_in_email=None,
+            ),
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get_all_stages(self, force: bool = False) -> List[StageDispatchEntry]:
+        """Returns 5 entries (uma por stage de :data:`PIPELINE_STAGES`).
+
+        ``force=True`` ignora TTL e re-fetcha do cluster. Usado pelo ``[r]``
+        do painel; chamadas regulares (rendering loop) usam o TTL.
+        """
+        return self._cache.get(force)
+
+    def get_claude_worker_status(self, force: bool = False) -> ClaudeWorkerStatus:
+        """Status do Deployment ``claude-worker`` + email do Secret.
+
+        Best-effort: falha de qualquer fetch cai no fallback neutro
+        (``deployment_applied=False``, ``pod_ready=False``, ``email=None``).
+        """
+        return self._status_cache.get(force)
+
+    # Fallback estático — espelha PIPELINE_STAGES + WORKER aliases canônicos do
+    # dispatch_resolver. Usado quando o lazy import de ``deile.orchestration``
+    # falha (ex.: syntax error em qualquer arquivo da cadeia de import por
+    # merge conflict não resolvido). Provider não pode crashar o painel.
+    _STAGES_FALLBACK = ("classify", "refine", "implement", "pr_review", "follow_ups")
+    _DISPATCHER_ALIASES_FALLBACK = {
+        "deile_worker": "deile-worker", "worker": "deile-worker",
+        "deile": "deile-worker", "deile-worker": "deile-worker",
+        "claude": "claude-worker", "claude_code": "claude-worker",
+        "claude-code": "claude-worker", "claude-worker": "claude-worker",
+    }
+
+    def _fetch_entries(self) -> List[StageDispatchEntry]:
+        """Lê env vars dos dois Deployments e monta as 5 entries.
+
+        Lazy import de :data:`PIPELINE_STAGES` + :data:`_DISPATCHER_ALIASES`
+        para não puxar ``deile.orchestration`` no boot do painel (cold-import
+        custa ~200ms). Catch EXCEPTION (não só ImportError): qualquer erro
+        na cadeia de import (incluindo SyntaxError vindo de merge conflict
+        não resolvido em outro módulo) cai no fallback estático — provider
+        NUNCA deve crashar o painel.
+        """
+        # Lazy import com fallback robusto — qualquer Exception (SyntaxError
+        # vindo de merge conflict, ImportError de deps quebradas, etc.)
+        # usa as constantes locais.
+        try:
+            from deile.orchestration.pipeline.dispatch_resolver import (  # noqa: PLC0415
+                _DISPATCHER_ALIASES, PIPELINE_STAGES)
+        except Exception:  # noqa: BLE001 — proteção genérica intencional
+            PIPELINE_STAGES = self._STAGES_FALLBACK
+            _DISPATCHER_ALIASES = self._DISPATCHER_ALIASES_FALLBACK
+
+        # --local-only → cai no fallback vazio do Cache sem chamar kubectl.
+        if not self._enabled:
+            return [
+                StageDispatchEntry(s, _DEFAULT_WORKER, None, "default")
+                for s in PIPELINE_STAGES
+            ]
+
+        def canonicalize(raw: str) -> str:
+            """Worker alias → canônico (``deile-worker`` | ``claude-worker``)."""
+            # Espelha :func:`_canonicalize` do dispatch_resolver, mas tolerante:
+            # valor desconhecido devolve lowercase em vez de raise, pra o
+            # painel mostrar o que está no cluster (visibility > strictness).
+            return _DISPATCHER_ALIASES.get(raw.strip().lower(),
+                                           raw.strip().lower())
+
+        self._resolve_kubectl()
+        if self._kubectl is None:
+            raise RuntimeError("kubectl não encontrado")
+        # Pipeline Deployment carrega o worker dispatch chain.
+        pipeline_data = _capture_json(
+            [self._kubectl, "-n", self._namespace, "get",
+             f"deployment/{_DISPATCH_DEPLOYMENT}", "-o", "json"],
+            timeout=4.0,
+        )
+        if not pipeline_data:
+            # Pipeline absent → tudo default. Não levanta para deixar o
+            # painel continuar a renderizar (cluster pode estar mid-deploy).
+            return [
+                StageDispatchEntry(s, _DEFAULT_WORKER, None, "default")
+                for s in PIPELINE_STAGES
+            ]
+        pipeline_env = StageModelsProvider._extract_env_map(pipeline_data)
+        # Worker Deployment carrega o model chain (usa o mesmo extractor).
+        worker_data = _capture_json(
+            [self._kubectl, "-n", self._namespace, "get",
+             f"deployment/{_STAGE_DEPLOYMENT}", "-o", "json"],
+            timeout=4.0,
+        )
+        worker_env = (StageModelsProvider._extract_env_map(worker_data)
+                      if worker_data else {})
+
+        global_worker_raw = pipeline_env.get(_DISPATCH_ENV_VAR)
+        # Aceita ``DEILE_PIPELINE_MODEL`` como alias canônico de
+        # ``DEILE_PREFERRED_MODEL`` — ambos significam "model global default
+        # do worker"; o painel usa o último como fonte autoritativa (paridade
+        # com ``StageModelsProvider``).
+        global_model = (worker_env.get("DEILE_PIPELINE_MODEL")
+                        or worker_env.get("DEILE_PREFERRED_MODEL") or None)
+
+        result: List[StageDispatchEntry] = []
+        for stage in PIPELINE_STAGES:
+            stage_worker_raw = pipeline_env.get(
+                f"DEILE_PIPELINE_DISPATCH_{stage.upper()}"
+            )
+            stage_model_raw = worker_env.get(
+                f"DEILE_PIPELINE_MODEL_{stage.upper()}"
+            )
+            # Worker chain: per-stage env → global env → default.
+            # Canonicaliza via _DISPATCHER_ALIASES para apresentar nome no
+            # formato canônico do dispatch_resolver (``deile-worker`` |
+            # ``claude-worker``), que é o que a view ``[d]`` consolidada
+            # espera (alinha com :func:`resolve_stage_dispatcher`).
+            if stage_worker_raw and stage_worker_raw.strip():
+                worker = canonicalize(stage_worker_raw)
+                source = "env"
+            elif global_worker_raw and global_worker_raw.strip():
+                worker = canonicalize(global_worker_raw)
+                source = "global"
+            else:
+                worker = _DEFAULT_WORKER
+                source = "default"
+            # Model chain: per-stage env → global env → None.
+            model = ((stage_model_raw or "").strip() or global_model or None)
+            result.append(StageDispatchEntry(stage, worker, model, source))
+        return result
+
+    def _fetch_status(self) -> ClaudeWorkerStatus:
+        """Lê Deployment ``claude-worker`` + Secret ``claude-credentials``.
+
+        Fallback neutro quando provider desabilitado ou cluster down.
+        Email é best-effort — falha do Secret não afeta o restante.
+        """
+        if not self._enabled:
+            return ClaudeWorkerStatus(False, False, None)
+        self._resolve_kubectl()
+        if self._kubectl is None:
+            raise RuntimeError("kubectl não encontrado")
+        deployment = _capture_json(
+            [self._kubectl, "-n", self._namespace, "get",
+             f"deployment/{_CLAUDE_WORKER_DEPLOYMENT}", "-o", "json"],
+            timeout=4.0,
+        )
+        if not deployment:
+            return ClaudeWorkerStatus(False, False, None)
+        status = deployment.get("status", {}) or {}
+        ready_replicas = status.get("readyReplicas", 0) or 0
+        replicas = status.get("replicas", 0) or 0
+        pod_ready = (ready_replicas == replicas) and replicas > 0
+        email = self._read_claude_credentials_email()
+        return ClaudeWorkerStatus(True, pod_ready, email)
+
+    def _read_claude_credentials_email(self) -> Optional[str]:
+        """Best-effort: lê ``credentials.json`` do Secret ``claude-credentials``.
+
+        Retorna ``None`` em qualquer falha (Secret ausente, base64 malformado,
+        JSON inválido, sem campo ``email``). Não levanta para não derrubar o
+        ``_fetch_status`` inteiro por causa do Secret ausente.
+        """
+        if self._kubectl is None:
+            return None
+        secret = _capture_json(
+            [self._kubectl, "-n", self._namespace, "get",
+             f"secret/{_CLAUDE_CREDENTIALS_SECRET}", "-o", "json"],
+            timeout=4.0,
+        )
+        if not secret:
+            return None
+        import base64  # noqa: PLC0415 (lazy — só quando o Secret existe)
+        try:
+            data_b64 = (secret.get("data", {}) or {}).get("credentials.json", "")
+            if not data_b64:
+                return None
+            decoded = base64.b64decode(data_b64)
+            payload = json.loads(decoded)
+            email = payload.get("email")
+            return email if isinstance(email, str) and email else None
+        except (ValueError, json.JSONDecodeError, KeyError, TypeError):
+            return None
+
+
+# Default declarado em :data:`_DISPATCHER_ALIASES` (dispatch_resolver) —
+# espelhado aqui para evitar import circular no fast path do _fetch_entries.
+_DEFAULT_WORKER = "deile-worker"
+
+
 # ===== Notifier (bot audit log) =============================================
 
 class NotifierProvider(_KubectlProviderMixin):
@@ -3341,10 +3966,16 @@ class PanelData:
     models: ModelsProvider
     current_model: CurrentModelProvider
     stage_models: "StageModelsProvider"
-    # Dispatch mode do pipeline (issue #309). Lê
+    # Dispatch mode do pipeline (issue #309 — PR #330, global flip). Lê
     # ``DEILE_PIPELINE_DISPATCH_MODE`` da Deployment ``deile-pipeline`` para
     # mostrar/editar via panel TUI.
     dispatch_mode: "DispatchModeProvider"
+    # Per-stage dispatch + model consolidados (issue #309 fase 2 — PR #336).
+    # Lê DEILE_PIPELINE_DISPATCH_<STAGE> + DEILE_PIPELINE_MODEL_<STAGE> da
+    # Deployment ``deile-pipeline`` + status do ``claude-worker`` Deployment
+    # + email logado do Secret ``claude-credentials``. Consumido pela
+    # ``DispatchMatrixView`` (hotkey [d]). TTL 3s.
+    stage_dispatch: "StageDispatchProvider"
     notifier: NotifierProvider
     local_processes: Optional[LocalProcessesProvider] = None
     local_logs: Optional[LocalLogsProvider] = None
@@ -3424,6 +4055,13 @@ class PanelData:
             # quebrando a sincronia de leitura/escrita.
             dispatch_mode=DispatchModeProvider(enabled=k8s_on,
                                                namespace=context.namespace),
+            # ``StageDispatchProvider`` (issue #309 fase 2 — PR #336)
+            # é consumido pela ``DispatchMatrixView`` ([d]). Namespace
+            # propagado para sincronia read/write (multi-NS PR #315) e
+            # leitura do Deployment claude-worker no MESMO namespace que
+            # o operador está vendo no painel.
+            stage_dispatch=StageDispatchProvider(enabled=k8s_on,
+                                                 namespace=context.namespace),
             notifier=NotifierProvider(namespace=context.namespace,
                                       deploy=context.bot_deploy,
                                       enabled=k8s_on),
@@ -3443,7 +4081,8 @@ class PanelData:
         """Ordem usada por `force_refresh_all` e `errors`."""
         base = (self.pods, self.pipeline, self.workers, self.github,
                 self.costs, self.models, self.current_model,
-                self.stage_models, self.dispatch_mode, self.notifier)
+                self.stage_models, self.dispatch_mode, self.stage_dispatch,
+                self.notifier)
         locals_ = tuple(p for p in (self.local_processes, self.local_logs,
                                     self.local_audit, self.local_instances,
                                     self.local_registry)
@@ -3469,7 +4108,7 @@ class PanelData:
         """
         names = ["pods", "pipeline", "workers", "github", "costs",
                  "models", "current_model", "stage_models",
-                 "dispatch_mode", "notifier"]
+                 "dispatch_mode", "stage_dispatch", "notifier"]
         if self.local_processes is not None:
             names.append("local_processes")
         if self.local_logs is not None:

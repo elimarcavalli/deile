@@ -40,10 +40,17 @@ Subcommands:
 from __future__ import annotations
 
 import os
+import re
 import sys
 import warnings
 from pathlib import Path
 from typing import Callable, List
+
+# ConfigMap montado pelo manifest do claude-worker. O arquivo deve conter
+# uma regex por linha — linhas vazias e iniciadas em ``#`` são ignoradas.
+# Caminho default; override por env var ``DEILE_CLAUDE_ALLOWED_REPOS_FILE``
+# para facilitar testes locais.
+CLAUDE_ALLOWED_REPOS_FILE = "/etc/claude-worker/allowed_repos.regex"
 
 # Keys that should never survive in os.environ once bootstrap_providers()
 # has copied them into each provider's in-memory state. Removing them
@@ -908,6 +915,135 @@ def _install_worker_negative_whitelist() -> None:
         agent_mod.DeileAgent.initialize = _harden
 
 
+def _load_allowed_repo_patterns() -> List[re.Pattern]:
+    """Carrega regexes do ConfigMap ``claude-worker-allowed-repos``.
+
+    Cada linha não-vazia e não-comentário (``#``) é compilada como regex.
+    Sem allowlist, NÃO arrancamos o claude-worker — defense-in-depth
+    contra prompt-injection que tentasse ``git push`` para repositório
+    arbitrário. Por isso falhamos hard (``sys.exit``) em três cenários:
+
+    1. arquivo ausente;
+    2. arquivo só com comentários/linhas em branco (allowlist vazia);
+    3. qualquer linha com regex sintaticamente inválida.
+
+    O caminho do arquivo pode ser sobrescrito via
+    ``DEILE_CLAUDE_ALLOWED_REPOS_FILE`` (usado em testes; default é o
+    mount-point do ConfigMap em produção).
+    """
+    path = Path(
+        os.environ.get(
+            "DEILE_CLAUDE_ALLOWED_REPOS_FILE", CLAUDE_ALLOWED_REPOS_FILE,
+        )
+    )
+    if not path.exists():
+        sys.exit(f"FATAL: claude-worker allowed-repos config missing: {path}")
+    patterns: List[re.Pattern] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        try:
+            patterns.append(re.compile(stripped))
+        except re.error as exc:
+            sys.exit(
+                f"FATAL: invalid regex in {path}: {stripped!r}: {exc}"
+            )
+    if not patterns:
+        sys.exit(
+            f"FATAL: empty allowed-repos config "
+            f"(no non-comment lines): {path}"
+        )
+    return patterns
+
+
+def _install_git_repo_guard(allowed: List[re.Pattern]) -> None:
+    """Sinaliza para ``claude_worker_server`` que a allowlist foi carregada.
+
+    O modelo V1 mantém a verificação efetiva no próprio
+    ``claude_worker_server`` (que recarrega o mesmo arquivo apontado por
+    ``DEILE_CLAUDE_ALLOWED_REPOS_FILE``). Aqui só publicamos um marcador
+    para que ele possa falhar cedo se ``wrapper.py`` não tiver passado
+    pela validação prévia.
+
+    Se quisermos um pre-receive hook em ``~/.gitconfig`` (ex.: gancho que
+    bloqueia ``git fetch``/``push`` de URL fora da lista), o lugar para
+    instalá-lo é aqui — em follow-up dedicado.
+    """
+    os.environ["DEILE_CLAUDE_ALLOWED_REPOS_LOADED"] = "1"
+    # ``len(allowed)`` é exposto apenas para observabilidade nos logs do
+    # claude_worker_server; nenhuma decisão deve depender deste número.
+    os.environ["DEILE_CLAUDE_ALLOWED_REPOS_COUNT"] = str(len(allowed))
+
+
+def _run_claude_worker(passthrough: List[str]) -> int:
+    """claude-worker mode: servidor HTTP que orquestra ``claude -p`` por dispatch.
+
+    Diferenças versus ``_run_worker`` (deile-worker):
+      - **Não** carrega ``*_API_KEY`` próprios — o ``claude`` CLI usa
+        autenticação por assinatura do Claude Code (sem env var), e
+        ``ANTHROPIC_API_KEY`` é explicitamente removido para evitar
+        que o subprocess prefira a chave API a token de assinatura.
+      - Carrega a allowlist regex de repositórios antes de qualquer
+        outra inicialização (fail-fast).
+      - Delega para ``claude_worker_server.main()`` (criado em Task 12);
+        se o módulo ainda não existe, abortamos com mensagem clara.
+    """
+    _harden_runtime_dirs()
+    # Allowlist de repositórios — fail-fast se ausente.
+    patterns = _load_allowed_repo_patterns()
+    _install_git_repo_guard(patterns)
+
+    # Bearer do claude-worker. Montado pelo manifest 50 em
+    # ``/run/secrets/claude-worker/CLAUDE_WORKER_BEARER_TOKEN``. O valor
+    # é sincronizado com ``worker-bearer`` do deile-worker (por
+    # ``_kubectl_sync_bearer_token`` no ``deploy.py k8s claude-login``)
+    # para que o ``DeileWorkerClient`` no pipeline envie o mesmo Bearer
+    # independente do destino. O servidor (``claude_worker_server``) lê
+    # esse arquivo direto via ``_read_auth_token`` — exportamos a env
+    # var apenas como fallback / diagnóstico.
+    bearer = Path("/run/secrets/claude-worker/CLAUDE_WORKER_BEARER_TOKEN")
+    if bearer.is_file():
+        try:
+            token = bearer.read_text(encoding="utf-8").strip()
+            os.environ["DEILE_CLAUDE_WORKER_AUTH_TOKEN"] = token
+        except OSError as exc:
+            print(
+                f"wrapper(claude-worker): cannot read claude-worker bearer: {exc}",
+                file=sys.stderr,
+            )
+            return 78
+    else:
+        print(
+            "wrapper(claude-worker): bearer not mounted at "
+            "/run/secrets/claude-worker/CLAUDE_WORKER_BEARER_TOKEN — "
+            "rode `deploy.py k8s claude-login` para popular o Secret",
+            file=sys.stderr,
+        )
+        return 78
+
+    # GITHUB_TOKEN (e outras) podem estar mounted para que o ``claude`` CLI
+    # possa clonar/comitar — fluxo idêntico aos demais papéis.
+    _load_secret_files(Path("/run/secrets/deile"))
+    _setup_forge_credentials()
+
+    # Política V1: NÃO carregamos provedores LLM nem instalamos whitelist
+    # do agente DEILE in-process. O claude_worker_server gerencia a CLI
+    # claude por subprocess; o sandboxing efetivo é a allowlist de repos
+    # + NetworkPolicy + filesystem read-only fora do ``/home/claude/work``.
+
+    sys.path.insert(0, str(Path("/app")))
+    try:
+        # type: ignore[import-not-found]
+        from claude_worker_server import main as server_main
+    except ImportError as exc:
+        sys.exit(
+            "FATAL: claude_worker_server module not found in /app/ — "
+            f"Task 12 must create this script. ImportError: {exc}"
+        )
+    return server_main(passthrough) if passthrough else server_main()
+
+
 def _run_pipeline(passthrough: List[str]) -> int:
     """deile-pipeline mode: run the autonomous issue → PR → merge loop.
 
@@ -968,7 +1104,10 @@ def _run_pipeline(passthrough: List[str]) -> int:
 
 def main(argv: List[str]) -> int:
     if len(argv) < 2:
-        print("usage: wrapper.py {deile|bot|worker|pipeline} <args ...>", file=sys.stderr)
+        print(
+            "usage: wrapper.py {deile|bot|worker|claude-worker|pipeline} <args ...>",
+            file=sys.stderr,
+        )
         return 64  # EX_USAGE
     role, rest = argv[1], argv[2:]
     if role == "deile":
@@ -977,11 +1116,13 @@ def main(argv: List[str]) -> int:
         return _run_bot(rest)
     if role == "worker":
         return _run_worker(rest)
+    if role == "claude-worker":
+        return _run_claude_worker(rest)
     if role == "pipeline":
         return _run_pipeline(rest)
     print(
         f"wrapper: unknown role {role!r} "
-        "(expected 'deile' | 'bot' | 'worker' | 'pipeline')",
+        "(expected 'deile' | 'bot' | 'worker' | 'claude-worker' | 'pipeline')",
         file=sys.stderr,
     )
     return 64

@@ -198,3 +198,65 @@ spec:
       ports:
         - protocol: TCP
           port: 8766
+---
+# ---- claude-worker: ingress só do deile-pipeline -----------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: claude-worker-ingress-from-pipeline
+  namespace: deile
+spec:
+  podSelector:
+    matchLabels:
+      app: claude-worker
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: deile-pipeline
+      ports:
+        - { protocol: TCP, port: 8767 }
+---
+# ---- pipeline egress to claude-worker ---------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pipeline-egress-to-claude-worker
+  namespace: deile
+spec:
+  podSelector:
+    matchLabels:
+      app: deile-pipeline
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: claude-worker
+      ports:
+        - { protocol: TCP, port: 8767 }
+---
+# ---- claude-worker egress: anthropic API + git forges (whitelisted via wrapper) ----
+# Granularidade de repo é enforced no wrapper.py via ConfigMap allowed-repos —
+# este NetworkPolicy só faz L3/L4 (host:port).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: claude-worker-egress-llm-and-forges
+  namespace: deile
+spec:
+  podSelector:
+    matchLabels:
+      app: claude-worker
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports:
+        - { protocol: UDP, port: 53 }
+    - to: []
+      ports:
+        - { protocol: TCP, port: 443 }

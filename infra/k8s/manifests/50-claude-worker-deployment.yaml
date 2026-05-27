@@ -1,0 +1,175 @@
+# claude-worker — pod paralelo ao deile-worker que executa `claude -p` em
+# worktrees isolados sob o PVC claude-worker-home.
+#
+# Issue #309 fase 2.
+# Spec: docs/superpowers/specs/2026-05-26-claude-worker-design.md
+#
+# Threat model: ver seção 7 da spec. Credentials no PVC mode 0600;
+# NetworkPolicy egress whitelisted via manifest 40 + ConfigMap 47.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: claude-worker
+  namespace: deile
+  labels:
+    app: claude-worker
+    role: deile
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
+  selector:
+    matchLabels:
+      app: claude-worker
+      role: deile
+  template:
+    metadata:
+      labels:
+        app: claude-worker
+        role: deile
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        # OnRootMismatch evita o "chown recursivo" toda vez que o pod sobe
+        # (que tornaria a inicialização lenta em PVC grande). K8s só faz
+        # chown se uid/gid do root do volume divergir do fsGroup.
+        fsGroupChangePolicy: "OnRootMismatch"
+        seccompProfile: { type: RuntimeDefault }
+
+      # InitContainer: copia credentials.json do Secret pro PVC writable.
+      # Sempre overwrite — o operador re-roda `claude-login --switch` quando
+      # quer trocar conta; o refresh do claude CLI in-pod escreve no MESMO
+      # path (sobrevive entre dispatches no mesmo pod) mas é overrided por
+      # claude-login + restart.
+      #
+      # Roda como uid 10001 (PSS restricted-compliant). chown não é
+      # necessário porque ``fsGroup: 10001`` já garante que TUDO no PVC
+      # claude-home pertença ao gid 10001 — o cp herda esse gid e o chmod
+      # 0600 fica aplicável.
+      initContainers:
+        - name: bootstrap-creds
+          image: deile-stack:local
+          imagePullPolicy: Never
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              mkdir -p /home/claude/.claude
+              cp /run/secrets/claude/credentials.json /home/claude/.claude/credentials.json
+              chmod 0600 /home/claude/.claude/credentials.json
+              ls -la /home/claude/.claude/credentials.json
+          volumeMounts:
+            - name: claude-credentials
+              mountPath: /run/secrets/claude
+              readOnly: true
+            - name: claude-home
+              mountPath: /home/claude
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile: { type: RuntimeDefault }
+
+      containers:
+        - name: claude-worker
+          image: deile-stack:local
+          imagePullPolicy: Never
+          workingDir: /home/claude
+          args: ["python3", "/app/wrapper.py", "claude-worker"]
+          env:
+            - { name: HOME, value: /home/claude }
+            - { name: PYTHONUNBUFFERED, value: "1" }
+            - { name: PYTHONDONTWRITEBYTECODE, value: "1" }
+            - { name: DEILE_CLAUDE_WORKER_HOST, value: "0.0.0.0" }
+            - { name: DEILE_CLAUDE_WORKER_PORT, value: "8767" }
+            - { name: DEILE_CLAUDE_WORKER_ROOT, value: "/home/claude/work" }
+            # 7200s = 2h. PRs grandes (10k+ linhas + suite full ~5min)
+            # passam de 30min facilmente. Antes era 1800s — review do #344
+            # foi morta aos 30min com claude no meio do trabalho (postou
+            # "Iniciando review..." mas não completou).
+            - { name: DEILE_CLAUDE_WORKER_TASK_TIMEOUT_S, value: "7200" }
+            - { name: DEILE_CLAUDE_WORKER_LOG_LEVEL, value: "INFO" }
+            - { name: DEILE_CLAUDE_ALLOWED_REPOS_FILE,
+                value: "/etc/claude-worker/allowed_repos.regex" }
+          ports:
+            - { name: claude-api, containerPort: 8767, protocol: TCP }
+          volumeMounts:
+            - { name: claude-worker-bearer, mountPath: /run/secrets/claude-worker, readOnly: true }
+            # GITHUB_TOKEN + GITLAB_TOKEN para que o ``claude -p`` consiga
+            # clonar/comitar/postar review nas forges. SEM isso o claude
+            # diagnostica BLOCKED_no_github_credentials (fase 2 smoke
+            # da PR #336) — repos privados ficam invisíveis ao agente.
+            - { name: deile-secrets, mountPath: /run/secrets/deile, readOnly: true }
+            - { name: claude-home, mountPath: /home/claude }
+            - { name: tmp, mountPath: /tmp }
+            - name: allowed-repos
+              mountPath: /etc/claude-worker
+              readOnly: true
+          readinessProbe:
+            httpGet: { path: /v1/health, port: claude-api }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            failureThreshold: 4
+          livenessProbe:
+            httpGet: { path: /v1/health, port: claude-api }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests: { cpu: "100m", memory: "384Mi" }
+            limits:   { cpu: "2000m", memory: "2Gi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
+
+      volumes:
+        - name: claude-credentials
+          secret:
+            secretName: claude-credentials
+            defaultMode: 0o400
+        - name: claude-worker-bearer
+          secret:
+            secretName: claude-worker-bearer
+            defaultMode: 0o400
+        - name: deile-secrets
+          secret:
+            secretName: deile-secrets
+            defaultMode: 0o400
+        - name: claude-home
+          persistentVolumeClaim:
+            claimName: claude-worker-home
+        - name: tmp
+          emptyDir: { medium: Memory, sizeLimit: "128Mi" }
+        - name: allowed-repos
+          configMap:
+            name: claude-worker-allowed-repos
+            defaultMode: 0o444
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: claude-worker
+  namespace: deile
+  labels:
+    app: claude-worker
+spec:
+  type: ClusterIP
+  selector:
+    app: claude-worker
+  ports:
+    - { name: claude-api, port: 8767, targetPort: claude-api, protocol: TCP }

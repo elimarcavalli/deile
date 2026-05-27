@@ -671,15 +671,21 @@ class TestDispatchModeViewKeyHandling:
 
 
 class TestDashboardHotkey:
-    """O dashboard mapeia ``[d]`` para a dispatch-mode view (issue #309)."""
+    """O dashboard mapeia ``[d]`` para a dispatch-mode-matrix view.
 
-    def test_d_hotkey_navigates_to_dispatch_mode(self):
+    A partir do cutover da issue #309 fase 2 (Task 21), ``[d]`` passou a
+    apontar para a matriz unificada (``DispatchMatrixView``) que absorveu
+    tanto o flip global de despacho da ``DispatchModeView`` (PR #330)
+    quanto o per-stage model override da ``StageModelsView`` (#305).
+    """
+
+    def test_d_hotkey_navigates_to_dispatch_mode_matrix(self):
         from _panel import Action, DashboardView, PanelApp
         dash = DashboardView(data=None)
         app = PanelApp(views={"dashboard": dash}, root="dashboard", data=None)
         result = dash.handle_key("d", app)
         assert result.kind == Action.NAV
-        assert result.target == "dispatch-mode"
+        assert result.target == "dispatch-mode-matrix"
 
     def test_d_hotkey_only_set_in_dashboard_nav(self):
         """O ``[d]`` é hotkey exclusiva do dashboard — não deve colidir com
@@ -691,38 +697,44 @@ class TestDashboardHotkey:
         diferente e cause conflito de propagação (hoje o panel propaga
         global após a view não interceptar — então um ``d`` numa view
         que não tem handler local cai no dashboard handler depois)."""
-        from _panel import (DispatchModeView, ModelSwitcherView, PodPickerView,
-                            StageModelsView)
+        from _panel import (DispatchMatrixView, DispatchModeView,
+                            ModelSwitcherView, PodPickerView, StageModelsView)
 
-        # Cada view abaixo NÃO deve ter um shortcut "d" próprio. O dispatch
-        # view tem `d` listada nas hotkeys da statusline mas não no
-        # handle_key — porque [d] é chamado do dashboard pra abrir essa
-        # view; uma vez na view, a tecla é capturada pelo modal/nav.
+        # Cada view abaixo NÃO deve ter um shortcut "d" próprio. As views
+        # legadas (DispatchModeView, StageModelsView) ainda existem no
+        # módulo (FU cleanup) — mas mesmo elas não devem responder a ``d``.
+        # A view de destino agora é ``dispatch-mode-matrix``; as legadas
+        # ``dispatch-mode`` e ``stage-models`` saíram do registry mas
+        # ainda são checadas aqui para garantir que nenhuma view captura
+        # ``d`` localmente.
+        nav_targets_dispatch = {"dispatch-mode", "dispatch-mode-matrix",
+                                "stage-models"}
         for view_cls in (PodPickerView, ModelSwitcherView, StageModelsView,
-                         DispatchModeView):
+                         DispatchModeView, DispatchMatrixView):
             v = view_cls(data=None)
             result = v.handle_key("d", MagicMock())
-            # Aceita ActionResult() padrão (default-pass) ou refresh — só
-            # rejeita NAV explícito para dispatch-mode.
-            assert getattr(result, "target", None) != "dispatch-mode", (
+            target = getattr(result, "target", None)
+            assert target not in nav_targets_dispatch, (
                 f"{view_cls.__name__}.handle_key('d') deveria não navegar "
-                f"para dispatch-mode (só DashboardView pode), got target="
-                f"{getattr(result, 'target', None)}"
+                f"para nenhuma view de dispatch (só DashboardView pode), "
+                f"got target={target}"
             )
 
 
 # ---------------------------------------------------------------------------
-# build_implementer claude-binary warning (issue #309)
+# claude-binary warning (issue #309 fase 2)
 # ---------------------------------------------------------------------------
 
 
 class TestBuildImplementerClaudeWarning:
-    """Quando ``dispatch_mode=claude`` mas o binary ``claude`` não está
-    no PATH, ``build_implementer`` deve logar warning (sem fail-fast).
+    """Mudança semântica em #309 fase 2:
 
-    Sem fail-fast porque o operador pode estar montando o binary via volume
-    que ``shutil.which`` ainda não enxerga; a falha real surge no primeiro
-    subprocess.
+    * :func:`build_implementer` **sempre retorna** :class:`WorkerImplementer`
+      — não emite mais warning sobre ``claude`` ausente em PATH (não é mais
+      esse caminho que constrói ``ClaudeImplementer``).
+    * :func:`get_local_claude_implementer` é a única factory que constrói
+      ``ClaudeImplementer`` (uso local fora do cluster — CLI) e mantém o
+      warning de PATH-missing.
 
     Patcha o ``logger.warning`` do módulo implementer diretamente — caplog
     fica frágil sob a suite completa (alguns testes prévios reconfiguram o
@@ -731,11 +743,13 @@ class TestBuildImplementerClaudeWarning:
     """
 
     def test_warning_emitted_when_claude_missing(self):
+        """O warning de claude ausente vive em ``get_local_claude_implementer``,
+        não mais em ``build_implementer`` (que sempre retorna WorkerImplementer)."""
         from deile.orchestration.pipeline import implementer as impl_mod
         with patch.object(impl_mod, "shutil") as mock_shutil, \
              patch.object(impl_mod.logger, "warning") as mock_warn:
             mock_shutil.which.return_value = None
-            implementer = impl_mod.build_implementer("claude")
+            implementer = impl_mod.get_local_claude_implementer()
         assert isinstance(implementer, impl_mod.ClaudeImplementer)
         # Pelo menos uma chamada de warning com a mensagem certa.
         assert mock_warn.called
@@ -748,11 +762,12 @@ class TestBuildImplementerClaudeWarning:
                 or "enoent" in msg)
 
     def test_no_warning_when_claude_present(self):
+        """``get_local_claude_implementer`` com ``claude`` no PATH não warna."""
         from deile.orchestration.pipeline import implementer as impl_mod
         with patch.object(impl_mod, "shutil") as mock_shutil, \
              patch.object(impl_mod.logger, "warning") as mock_warn:
             mock_shutil.which.return_value = "/usr/local/bin/claude"
-            implementer = impl_mod.build_implementer("claude")
+            implementer = impl_mod.get_local_claude_implementer()
         assert isinstance(implementer, impl_mod.ClaudeImplementer)
         # Sem warning sobre claude ausente — pode haver outro warning legítimo,
         # mas nenhum com "não encontrado".
@@ -763,30 +778,42 @@ class TestBuildImplementerClaudeWarning:
                 and ("não encontrado" in text or "not found" in text)
             )
 
-    def test_no_warning_when_worker_mode(self):
-        """Modo worker não usa claude — não faz sentido emitir warning,
-        mesmo que o binary esteja ausente."""
+    def test_build_implementer_does_not_warn_about_claude(self):
+        """``build_implementer`` não constrói mais ``ClaudeImplementer`` —
+        portanto não pode mais emitir o warning de PATH-missing, qualquer que
+        seja o ``dispatch_mode``. Substitui o antigo
+        ``test_no_warning_when_worker_mode``."""
+        from deile.orchestration.pipeline import implementer as impl_mod
+        for mode in ("deile_worker", "claude", "claude-worker", "", None):
+            with patch.object(impl_mod, "shutil") as mock_shutil, \
+                 patch.object(impl_mod.logger, "warning") as mock_warn:
+                mock_shutil.which.return_value = None
+                impl = impl_mod.build_implementer(mode)
+            # build_implementer SEMPRE retorna WorkerImplementer agora.
+            assert isinstance(impl, impl_mod.WorkerImplementer), (
+                f"mode={mode!r}: esperado WorkerImplementer, got {type(impl).__name__}"
+            )
+            # E nenhum warning sobre claude ausente.
+            for call in mock_warn.call_args_list:
+                text = (call[0][0] if call[0] else "").lower()
+                assert not (
+                    "claude" in text
+                    and ("não encontrado" in text or "not found" in text)
+                ), f"mode={mode!r} emitiu warning inesperado: {text}"
+
+    def test_empty_dispatch_mode_returns_worker_implementer(self):
+        """Empty/None dispatch_mode → WorkerImplementer (sem warning)."""
         from deile.orchestration.pipeline import implementer as impl_mod
         with patch.object(impl_mod, "shutil") as mock_shutil, \
              patch.object(impl_mod.logger, "warning") as mock_warn:
             mock_shutil.which.return_value = None
-            impl_mod.build_implementer("deile_worker")
-        # Worker mode não tem caminho que chame _warn_if_claude_unavailable.
+            implementer = impl_mod.build_implementer("")
+        assert isinstance(implementer, impl_mod.WorkerImplementer)
+        # Nenhum warning sobre claude ausente — build_implementer não
+        # constrói mais ClaudeImplementer.
         for call in mock_warn.call_args_list:
             text = (call[0][0] if call[0] else "").lower()
             assert not (
                 "claude" in text
                 and ("não encontrado" in text or "not found" in text)
             )
-
-    def test_empty_dispatch_mode_defaults_claude_and_warns_if_missing(self):
-        """Empty/None dispatch_mode legado cai em ClaudeImplementer — mesmo
-        warning aplica."""
-        from deile.orchestration.pipeline import implementer as impl_mod
-        with patch.object(impl_mod, "shutil") as mock_shutil, \
-             patch.object(impl_mod.logger, "warning") as mock_warn:
-            mock_shutil.which.return_value = None
-            implementer = impl_mod.build_implementer("")
-        assert isinstance(implementer, impl_mod.ClaudeImplementer)
-        assert mock_warn.called
-        assert "claude" in mock_warn.call_args[0][0].lower()

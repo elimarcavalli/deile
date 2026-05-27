@@ -12,6 +12,17 @@
 **/*credentials*
 **/*secret*
 **/*token*
+# Exceções: arquivos do código com "secret"/"credential" no nome são CÓDIGO
+# de segurança (módulo secrets_scanner, helpers de credentials), não
+# segredos reais. As regras genéricas acima existem pra barrar dump de
+# .env / .secrets / *credentials.json / etc — não código-fonte.
+!deile/security/secrets_scanner.py
+!deile/security/secrets_scanner_*.py
+!deile/**/credentials_*.py
+!deile/**/_secrets.py
+!deile/tests/**/test_*secret*.py
+!deile/tests/**/test_*credential*.py
+!deile/tests/**/test_*token*.py
 
 # Local state / caches / IDE
 **/.git
@@ -69,9 +80,12 @@ deilebot/conftest.py
 **/Thumbs.db
 **/desktop.ini
 
-# The infra/ subtree is excluded except for the wrapper entrypoint,
-# which the Dockerfile COPYs explicitly. Excluding all of infra/ would
-# break "COPY infra/k8s/wrapper.py" so we exclude everything except
-# that one file.
+# The infra/ subtree is excluded except for the files COPY'd explicitly
+# by the Dockerfile. Excluding all of infra/ would break those COPYs —
+# cada arquivo importado em `COPY infra/k8s/<x>` precisa de exceção `!`
+# aqui ou o build falha com "not found".
 infra/
 !infra/k8s/wrapper.py
+!infra/k8s/claude_worker_server.py
+!infra/k8s/worker_server.py
+!infra/k8s/_worker_resume.py
