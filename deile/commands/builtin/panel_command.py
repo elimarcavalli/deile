@@ -35,9 +35,13 @@ class PanelCommand(DirectCommand):
 
     @wrap_command_errors("panel", message_template="Falha ao executar /panel: {exc}")
     async def execute(self, context: CommandContext) -> CommandResult:
+        from ...security.audit_logger import AuditEventType, SeverityLevel
         emit_audit_event(
-            command_name="panel", context=context,
-            event_summary="user opened live observability panel",
+            event_type=AuditEventType.COMMAND_EXECUTED,
+            severity=SeverityLevel.INFO,
+            resource="/panel",
+            action="execute",
+            details={"args": context.args},
         )
         try:
             from ...ui.panel.observability import client as obs_client
@@ -55,11 +59,19 @@ class PanelCommand(DirectCommand):
             "DEILE_CLAUDE_WORKER_ENDPOINT",
             "http://claude-worker:8767",
         )
+        pipeline_token = os.environ.get(
+            "DEILE_PIPELINE_STATUS_AUTH_TOKEN", "",
+        ).strip() or None
+        claude_worker_token = os.environ.get(
+            "DEILE_CLAUDE_WORKER_AUTH_TOKEN", "",
+        ).strip() or None
 
         try:
-            cli = obs_client.ClusterObservabilityClient(
-                pipeline_status_url=pipeline_endpoint,
+            cli = obs_client.ClusterObservabilityClient.from_endpoints(
+                pipeline_url=pipeline_endpoint,
+                pipeline_token=pipeline_token,
                 claude_worker_url=claude_worker_endpoint,
+                claude_worker_token=claude_worker_token,
             )
         except Exception as exc:  # noqa: BLE001
             return CommandResult.error_result(

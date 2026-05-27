@@ -272,3 +272,19 @@ async def test_force_tick_swallows_callback_exception(status_module):
             "/v1/pipeline/force-tick", headers=_AUTH_HEADERS,
         )
     assert resp.status == 409
+
+
+def test_record_tick_accepts_monitor_publisher_kwargs(status_module):
+    """``record_tick`` must accept the kwargs ``monitor._publish_status_state``
+    actually sends (``duration_seconds``, ``ticks_total``, ``errors_total``)
+    — without this the publish call raises TypeError and the endpoint
+    forever reports zeros (regression of PR #352 first-fix attempt).
+    """
+    state = status_module.PipelineStatusState()
+    # The exact call shape used by ``monitor._publish_status_state``.
+    state.record_tick(duration_seconds=0.42, ticks_total=7, errors_total=2)
+    snap = state.snapshot_status()
+    assert snap["ticks_total"] == 7
+    assert snap["errors_total"] == 2
+    assert snap["last_tick_duration_seconds"] == 0.42
+    assert snap["last_tick_at"] is not None

@@ -66,6 +66,7 @@ class PipelineStatusState:
         self.started_at: float = time.time()
         self.last_tick_at: Optional[float] = None
         self.next_tick_at: Optional[float] = None
+        self.last_tick_duration_seconds: Optional[float] = None
         self.ticks_total: int = 0
         self.errors_total: int = 0
         self.pods_seen: Dict[str, Dict[str, Any]] = {}
@@ -79,13 +80,30 @@ class PipelineStatusState:
     # -- mutator helpers ------------------------------------------------- #
 
     def record_tick(self, *, now: Optional[float] = None,
-                    next_tick_at: Optional[float] = None) -> None:
-        """Mark the end of a tick — bumps the counter and timestamps it."""
+                    next_tick_at: Optional[float] = None,
+                    duration_seconds: Optional[float] = None,
+                    ticks_total: Optional[int] = None,
+                    errors_total: Optional[int] = None) -> None:
+        """Mark the end of a tick — bumps the counter and timestamps it.
+
+        ``ticks_total``/``errors_total`` let the publisher supply the
+        canonical monitor counters in one call (instead of bumping the
+        local counter); when omitted the local counter auto-increments.
+        ``duration_seconds`` is stored verbatim so the panel can show the
+        cost of the most recent tick.
+        """
         with self._lock:
-            self.ticks_total += 1
+            if ticks_total is not None:
+                self.ticks_total = int(ticks_total)
+            else:
+                self.ticks_total += 1
             self.last_tick_at = now if now is not None else time.time()
             if next_tick_at is not None:
                 self.next_tick_at = next_tick_at
+            if duration_seconds is not None:
+                self.last_tick_duration_seconds = float(duration_seconds)
+            if errors_total is not None:
+                self.errors_total = int(errors_total)
 
     def record_error(self) -> None:
         with self._lock:
@@ -148,6 +166,7 @@ class PipelineStatusState:
                 "uptime_seconds": uptime,
                 "last_tick_at": self.last_tick_at,
                 "next_tick_at": self.next_tick_at,
+                "last_tick_duration_seconds": self.last_tick_duration_seconds,
                 "ticks_total": self.ticks_total,
                 "errors_total": self.errors_total,
                 "pods_seen": dict(self.pods_seen),
