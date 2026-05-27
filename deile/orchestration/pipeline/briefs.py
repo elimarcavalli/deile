@@ -155,6 +155,8 @@ DEFINITION OF DONE: existe uma {pr_noun} aberta cuja URL você confirmou via {fo
 _WORKER_REVIEW_BRIEF = """\
 Você é o QUALITY GATE final da {pr_noun} #{number} do repositório {repo}. Revise com RIGOR, corrija e — só se passar no portão — mergeie. Execute de verdade: testes verdes NÃO bastam.
 
+CHECKPOINT OBRIGATÓRIO (vale pra QUALQUER worker — agente DEILE, Claude Code, ou outro): a execução é considerada FALHA se você terminar sem ter postado pelo menos UM comentário visível na {pr_noun} via {comment_pr_cmd}. Não basta analisar — o operador precisa VER a sua revisão no {forge_name}. Faça o comentário inicial (mesmo curto: "Iniciando review...") logo ANTES dos testes, e o comentário final com evidências DEPOIS do veredito.
+
 1. Garanta um clone atualizado de {repo} em ./repo ({clone_cmd} se não existir; senão git fetch origin). Dentro de ./repo: {checkout_pr_cmd}
 2. LEIA O DIFF INTEIRO e entenda a intenção da mudança: git diff {main}...HEAD ; git diff HEAD. Liste os arquivos tocados e leia cada um por completo.
 2b. CONFRONTE A ENTREGA CONTRA O QUE FOI PEDIDO (passo OBRIGATÓRIO): descubra a issue que esta {pr_noun} fecha (procure `Closes #N`/`Fixes #N` no corpo: {view_pr_body_cmd}). Leia a issue E TODOS os comentários dela: {view_issue_cmd_template}. Liste, item a item, TUDO o que foi pedido — no corpo E nos comentários (decisões do stakeholder fazem parte do escopo) — e verifique se a {pr_noun} entrega CADA item. Se faltou qualquer requisito, ou o autor declarou "concluído" sem cumprir, isso É IMPEDIMENTO (veja o veredito).

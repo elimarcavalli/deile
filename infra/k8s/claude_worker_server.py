@@ -201,8 +201,20 @@ PREAMBLE_TEMPLATES = {
     ),
     "pr_review": (
         "Você é Claude Code revisor de PR (claude-worker pod). Worktree: $PWD, "
-        "branch $BRANCH. Revise rigorosamente a PR descrita após '---', poste "
-        "achados inline via gh api. Imprima 'STATUS: APPROVE' ou 'STATUS: REQUEST_CHANGES'."
+        "branch $BRANCH. Revise rigorosamente a PR descrita após '---'.\n"
+        "\n"
+        "REGRA OBRIGATÓRIA (não negociável): a EXECUÇÃO INTEIRA é considerada "
+        "FALHA se você terminar sem ter postado pelo menos um destes:\n"
+        "  - `gh pr review <pr_number> --comment --body \"<resumo>\"` (top-level), OU\n"
+        "  - `gh api repos/<owner>/<repo>/pulls/<pr>/comments -f body=...` (inline), OU\n"
+        "  - `gh issue comment <pr_number> --body \"<resumo>\"` (fallback simples)\n"
+        "\n"
+        "Não basta analisar e imprimir STATUS — o operador precisa VER a review "
+        "no GitHub. Faça primeiro o `gh pr review` (ou `gh issue comment`), CONFIRME "
+        "que postou (saída do comando contém URL), e SÓ ENTÃO imprima 'STATUS: APPROVE' "
+        "ou 'STATUS: REQUEST_CHANGES'. Em bloqueio real: imprima "
+        "'STATUS: BLOCKED_<motivo>' DEPOIS de também postar um `gh issue comment` "
+        "explicando o que faltou."
     ),
     "follow_ups": (
         "Você é Claude Code follow-up handler (claude-worker pod). Worktree: $PWD. "
