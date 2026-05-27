@@ -238,16 +238,22 @@ def test_not_a_dict_recovers(tmp_path: Path):
 
 
 def test_concurrent_writes_no_corruption(tmp_path: Path):
-    """Two writers hammering the same file should not corrupt it."""
+    """Two writers hammering the same file must not corrupt it and
+    every write must survive (no lost updates)."""
     prefs_file = tmp_path / "preferences.json"
     errors = []
 
-    def writer(uid: str, start: int):
-        with patch(
-            "deile.preferences.store._PREFS_FILE", prefs_file
-        ), patch(
-            "deile.preferences.store._PREFS_DIR", tmp_path
-        ):
+    # Patch is applied ONCE on the main thread — ``unittest.mock.patch``
+    # is not thread-safe (each context-manager exit restores whatever it
+    # saved as "original", so two concurrent patches can leave the
+    # module attr pointing back to ``~/.deile``).
+    with patch(
+        "deile.preferences.store._PREFS_FILE", prefs_file
+    ), patch(
+        "deile.preferences.store._PREFS_DIR", tmp_path
+    ):
+
+        def writer(uid: str, start: int):
             s = PreferenceStore()
             for i in range(start, start + 20):
                 try:
@@ -255,25 +261,22 @@ def test_concurrent_writes_no_corruption(tmp_path: Path):
                 except Exception as exc:
                     errors.append(exc)
 
-    t1 = threading.Thread(target=writer, args=("u1", 0))
-    t2 = threading.Thread(target=writer, args=("u1", 500))
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
+        t1 = threading.Thread(target=writer, args=("u1", 0))
+        t2 = threading.Thread(target=writer, args=("u1", 500))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
 
-    assert not errors, f"Concurrent write errors: {errors}"
+        assert not errors, f"Concurrent write errors: {errors}"
 
-    # Verify file is valid JSON
-    with patch(
-        "deile.preferences.store._PREFS_FILE", prefs_file
-    ), patch(
-        "deile.preferences.store._PREFS_DIR", tmp_path
-    ):
+        # Verify file is valid JSON AND no writes were lost.
         s = PreferenceStore()
         all_prefs = s.get_all("u1")
-        assert len(all_prefs) > 0
-        # Validate every value
+        # 20 keys from t1 (0..19) + 20 keys from t2 (500..519) = 40.
+        assert len(all_prefs) == 40, (
+            f"Lost updates: expected 40 keys, got {len(all_prefs)}"
+        )
         for k, v in all_prefs.items():
             assert isinstance(k, str)
             assert isinstance(v, (str, int, float, bool, type(None)))
