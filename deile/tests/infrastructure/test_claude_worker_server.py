@@ -422,10 +422,23 @@ async def test_build_app_raises_when_token_missing_and_not_provided(
     claude_worker_module, monkeypatch,
 ):
     """Sem ``auth_token`` explícito + sem Secret file + sem env var → raise
-    no build_app (server abort no startup pra forçar fix)."""
+    no build_app (server abort no startup pra forçar fix).
+
+    Hermético: stuba ``_read_auth_token`` para forçar o RuntimeError
+    independente do filesystem do host. Sem isso, falha quando rodado
+    dentro de um pod onde o Secret está realmente mountado em
+    ``/run/secrets/claude-worker/CLAUDE_WORKER_BEARER_TOKEN``."""
     monkeypatch.delenv("DEILE_CLAUDE_WORKER_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("DEILE_CLAUDE_WORKER_AUTH_TOKEN_FILE", raising=False)
-    # _read_auth_token vai falhar (nenhum file existe nem env vars setadas).
+
+    def _no_token():
+        raise RuntimeError(
+            "claude-worker auth token not found: expected "
+            "/run/secrets/claude-worker/CLAUDE_WORKER_BEARER_TOKEN "
+            "or DEILE_CLAUDE_WORKER_AUTH_TOKEN env"
+        )
+
+    monkeypatch.setattr(claude_worker_module, "_read_auth_token", _no_token)
     with pytest.raises(RuntimeError, match="auth token not found"):
         claude_worker_module.build_app()
 
