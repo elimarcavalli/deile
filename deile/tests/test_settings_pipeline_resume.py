@@ -1,9 +1,11 @@
 """Tests for the pipeline resume settings (issue #254).
 
-Covers the four ``pipeline_resume_*`` knobs across the three configuration
-surfaces: dataclass defaults, the strict ``apply_overrides`` path, the looser
-layered ``_apply_nested_dict`` path (used by ``~/.deile/settings.json``), and
-the deprecated ``DEILE_PIPELINE_RESUME_*`` env vars.
+Covers the four ``pipeline_resume_*`` knobs across the two current configuration
+surfaces: dataclass defaults, the strict ``apply_overrides`` path, and the
+layered ``_apply_nested_dict`` path (used by ``~/.deile/settings.json``).
+
+Note: the ``DEILE_PIPELINE_RESUME_*`` env vars were removed in issue #309 fase 3
+— they are no longer read and silently ignored if set.
 """
 
 from __future__ import annotations
@@ -79,26 +81,20 @@ class TestLayeredNestedDict:
 
 
 class TestEnvOverrides:
-    def test_env_vars_apply(self, monkeypatch):
+    """DEILE_PIPELINE_RESUME_* env vars are ignored (removed in issue #309 fase 3).
+
+    The canonical path is ``pipeline.resume_*`` in ``~/.deile/settings.json``.
+    """
+
+    def test_env_vars_ignored(self, monkeypatch):
         monkeypatch.setenv("DEILE_PIPELINE_RESUME_ENABLED", "false")
         monkeypatch.setenv("DEILE_PIPELINE_RESUME_INTERVAL", "120")
         monkeypatch.setenv("DEILE_PIPELINE_RESUME_MAX_ATTEMPTS", "3")
         monkeypatch.setenv("DEILE_PIPELINE_RESUME_BUDGET", "900")
         s = Settings()
         _apply_env_overrides(s)
-        assert s.pipeline_resume_enabled is False
-        assert s.pipeline_resume_interval == 120
-        assert s.pipeline_resume_max_attempts == 3
-        assert s.pipeline_resume_budget == 900
-
-    def test_max_attempts_floor_is_one(self, monkeypatch):
-        monkeypatch.setenv("DEILE_PIPELINE_RESUME_MAX_ATTEMPTS", "0")
-        s = Settings()
-        _apply_env_overrides(s)
-        assert s.pipeline_resume_max_attempts == 1
-
-    def test_invalid_int_ignored(self, monkeypatch):
-        monkeypatch.setenv("DEILE_PIPELINE_RESUME_INTERVAL", "not-a-number")
-        s = Settings()
-        _apply_env_overrides(s)
-        assert s.pipeline_resume_interval == 0  # unchanged
+        # defaults preserved — env vars are silently ignored
+        assert s.pipeline_resume_enabled is True
+        assert s.pipeline_resume_interval == 0
+        assert s.pipeline_resume_max_attempts == 10
+        assert s.pipeline_resume_budget == 0
