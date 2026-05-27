@@ -3683,8 +3683,14 @@ class DispatchMatrixView(View):
 
     HOTKEYS = (
         "[↑/↓] linha   [←/→] coluna   [enter] editar   [r] reset   "
-        "[L] switch claude login   [I] install   [U] uninstall   [q] back"
+        "[L] switch claude login   [I] install   [U] uninstall   [q] back   "
+        "[s]caling row: enter digita réplicas (0-10)"
     )
+
+    # Índice de row constante para a linha de scaling (após Global default).
+    # Calculado em runtime como ``len(entries) + 1`` — mantido aqui só como
+    # documentação da convenção.
+    _SCALING_ROW_OFFSET = 1  # offset relativo ao len(entries): global=+0, scaling=+1
 
     # Source of truth do conjunto de stages — espelha
     # ``deile.orchestration.pipeline.dispatch_resolver.PIPELINE_STAGES``.
@@ -3942,6 +3948,20 @@ class DispatchMatrixView(View):
             global_m_txt = f"[reverse]{global_m_txt}[/reverse]"
         tbl.add_row("Global default", global_w_txt, global_m_txt, "env")
 
+        # Linha "Worker Scaling" — edita réplicas de deile-worker / claude-worker
+        # via prompt numérico [enter] (issue #309 fase 3 Task 4).
+        # ``cursor_row == len(entries) + 1`` aponta aqui.
+        scaling_idx = len(entries) + 1
+        highlight_sw = (self.cursor_row == scaling_idx and self.cursor_col == 0)
+        highlight_sm = (self.cursor_row == scaling_idx and self.cursor_col == 1)
+        scale_w_txt = "(réplicas deile-worker)"
+        scale_m_txt = "(réplicas claude-worker)"
+        if highlight_sw:
+            scale_w_txt = f"[reverse]{scale_w_txt}[/reverse]"
+        if highlight_sm:
+            scale_m_txt = f"[reverse]{scale_m_txt}[/reverse]"
+        tbl.add_row("Worker Scaling", scale_w_txt, scale_m_txt, "kubectl")
+
         # --- Compose: header + matrix + (picker?) + (status?) + hotkeys --
         parts: List[RenderableType] = [
             Text(status_text, style=status_style),
@@ -3982,6 +4002,8 @@ class DispatchMatrixView(View):
             title = "TROCAR CONTA DO CLAUDE-WORKER?"
         elif kind == "uninstall_confirm":
             title = "DESINSTALAR CLAUDE-WORKER?"
+        elif kind == "scale_prompt":
+            title = f"RÉPLICAS PARA '{stage}' (0-10)"
         else:  # defensivo
             title = "AÇÃO"
 
@@ -4069,8 +4091,8 @@ class DispatchMatrixView(View):
         if self.mode is not None:
             return self._handle_picker_key(key)
 
-        # Última linha editável é o "Global default" (inclusive).
-        max_row = len(self._stages())  # == len(entries) no fluxo normal
+        # Última linha editável é "Worker Scaling" (len+1; Global default = len).
+        max_row = len(self._stages()) + 1  # +1 para a linha "Worker Scaling"
 
         # --- back / quit --------------------------------------------------
         if key == "q" or key == "ESC":
@@ -4098,8 +4120,13 @@ class DispatchMatrixView(View):
         if key in ("\r", "\n"):
             entries = self._entries()
             n_stages = len(entries)
+            global_idx = n_stages       # "Global default"
+            scaling_idx = n_stages + 1  # "Worker Scaling"
+            if self.cursor_row == scaling_idx:
+                # Linha de scaling → prompt numérico de réplicas (Task 4).
+                return self._open_scaling_prompt()
             # Row na linha "Global default" → picker global.
-            if self.cursor_row >= n_stages:
+            if self.cursor_row == global_idx:
                 if self.cursor_col == 0:
                     return self._open_global_worker_picker()
                 return self._open_global_model_picker()
@@ -4320,6 +4347,77 @@ class DispatchMatrixView(View):
         self.last_ok = None
         return ActionResult.refresh()
 
+    # --- Worker Scaling prompt (issue #309 fase 3 Task 4) ---------------
+
+    def _open_scaling_prompt(self) -> ActionResult:
+        """Abre o modal de edição numérica de réplicas.
+
+        Reusa o slot ``self.mode`` com kind ``"scale_prompt"``. O campo
+        ``stage`` carrega qual coluna está sendo editada:
+        ``"deile-worker"`` (col 0) ou ``"claude-worker"`` (col 1).
+        ``options`` carrega as opções numéricas [0..10] como strings.
+        """
+        deploy_name = ("deile-worker" if self.cursor_col == 0
+                       else "claude-worker")
+        opts = [str(n) for n in range(11)]  # 0 a 10
+        self.mode = ("scale_prompt", deploy_name, opts)
+        self.picker_cursor = 1  # default: 1 réplica
+        self.last_msg = ""
+        self.last_ok = None
+        return ActionResult.refresh()
+
+    def _apply_scaling(self, deploy_name: str, replicas: int) -> ActionResult:
+        """Executa ``kubectl scale deployment/<name> --replicas=N``.
+
+        Roda inline (síncrono) — operação rápida (~100ms kubectl API call).
+        Para install/uninstall (que podem bloquear minutos), usamos thread;
+        scale é fire-and-forget com retorno imediato do API server.
+        """
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        if self.data is None:
+            self.last_msg = (
+                f"[demo] scale {deploy_name} → {replicas} (sem cluster, no-op)"
+            )
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        kubectl = kubectl_bin()
+        if kubectl is None:
+            self.last_msg = "kubectl não encontrado — scale impossível"
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        # Verifica se o deployment existe antes de tentar.
+        check = subprocess.run(
+            [kubectl, "-n", ns, "get", "deployment", deploy_name],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if check.returncode != 0:
+            self.last_msg = (
+                f"deployment/{deploy_name} não encontrado em `{ns}` — "
+                "instale-o primeiro ([I] para claude-worker)"
+            )
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        result = subprocess.run(
+            [kubectl, "-n", ns, "scale",
+             f"deployment/{deploy_name}", f"--replicas={replicas}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True,
+        )
+        if result.returncode == 0:
+            self.last_msg = f"deployment/{deploy_name} → {replicas} réplica(s)"
+            self.last_ok = True
+        else:
+            self.last_msg = (
+                f"scale {deploy_name} falhou: "
+                f"{result.stderr.strip()[:120]}"
+            )
+            self.last_ok = False
+        return ActionResult.refresh()
+
     def _handle_uninstall_confirm(self, key: str) -> ActionResult:
         """Roteia Y/N (+ enter sobre o cursor) no modal de uninstall."""
         if key in ("Y", "y"):
@@ -4491,6 +4589,45 @@ class DispatchMatrixView(View):
                 delta = -1 if key in ("UP", "k") else 1
                 self.picker_cursor = (self.picker_cursor + delta) % n
             return ActionResult.refresh()
+        return ActionResult()
+
+    def _handle_scale_prompt_key(self, key: str) -> ActionResult:
+        """Roteia teclas no modal de escala numérica (0-10 réplicas).
+
+        ↑/↓: navega nas opções numéricas.
+        Enter: aplica kubectl scale.
+        ESC/N: cancela.
+        """
+        if self.mode is None:
+            return ActionResult()
+        _kind, deploy_name, options = self.mode
+
+        if key in ("N", "n", "ESC"):
+            self.mode = None
+            self.picker_cursor = 0
+            self.last_msg = "escala cancelada"
+            self.last_ok = None
+            return ActionResult.refresh()
+
+        if key in ("UP", "k"):
+            n = len(options)
+            self.picker_cursor = (self.picker_cursor - 1) % n if n else 0
+            return ActionResult.refresh()
+
+        if key in ("DOWN", "j"):
+            n = len(options)
+            self.picker_cursor = (self.picker_cursor + 1) % n if n else 0
+            return ActionResult.refresh()
+
+        if key in ("\r", "\n"):
+            try:
+                replicas = int(options[self.picker_cursor])
+            except (IndexError, ValueError):
+                replicas = 1
+            self.mode = None
+            self.picker_cursor = 0
+            return self._apply_scaling(str(deploy_name), replicas)
+
         return ActionResult()
 
     def _perform_install(self, *, force_relogin: bool,
@@ -4704,6 +4841,7 @@ class DispatchMatrixView(View):
           fecha o modal e invalida o cache do provider.
         - install_confirm / switch_login_confirm / uninstall_confirm →
           handlers dedicados (Y/N + enter sobre cursor).
+        - scale_prompt → handler de escala numérica (0-10 réplicas).
         """
         if self.mode is not None and self.mode[0] == "install_confirm":
             return self._handle_install_confirm(key)
@@ -4711,6 +4849,8 @@ class DispatchMatrixView(View):
             return self._handle_switch_login_confirm(key)
         if self.mode is not None and self.mode[0] == "uninstall_confirm":
             return self._handle_uninstall_confirm(key)
+        if self.mode is not None and self.mode[0] == "scale_prompt":
+            return self._handle_scale_prompt_key(key)
         if key == "ESC":
             self.mode = None
             self.picker_cursor = 0
