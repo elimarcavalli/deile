@@ -66,7 +66,7 @@ logging.basicConfig(
 WORK_ROOT = Path(os.environ.get("DEILE_WORKER_ROOT", "/home/deile/work"))
 LISTEN_HOST = os.environ.get("DEILE_WORKER_HOST", "0.0.0.0")
 LISTEN_PORT = int(os.environ.get("DEILE_WORKER_PORT", "8766"))
-TASK_TIMEOUT_S = float(os.environ.get("DEILE_WORKER_TASK_TIMEOUT_S", "600"))
+TASK_TIMEOUT_S = float(os.environ.get("DEILE_WORKER_TASK_TIMEOUT_S", "7200"))
 EDIT_INTERVAL_S = float(os.environ.get("DEILE_WORKER_EDIT_INTERVAL_S", "3"))
 MAX_BRIEF_CHARS = int(os.environ.get("DEILE_WORKER_MAX_BRIEF_CHARS", "4000"))
 MAX_HISTORY_CHARS = int(os.environ.get("DEILE_WORKER_MAX_HISTORY_CHARS", "8000"))

@@ -408,7 +408,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         task_id, stage, claude_model, branch,
     )
 
-    timeout = int(os.environ.get("DEILE_CLAUDE_WORKER_TASK_TIMEOUT_S", "1800"))
+    timeout = int(os.environ.get("DEILE_CLAUDE_WORKER_TASK_TIMEOUT_S", "7200"))
 
     try:
         result = await run_subprocess_with_progress(

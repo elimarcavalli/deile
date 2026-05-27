@@ -66,7 +66,11 @@ spec:
             - { name: DEILE_WORKER_HOST,            value: "0.0.0.0" }
             - { name: DEILE_WORKER_PORT,            value: "8766" }
             - { name: DEILE_WORKER_ROOT,            value: "/home/deile/work" }
-            - { name: DEILE_WORKER_TASK_TIMEOUT_S,  value: "900" }
+            # 7200s = 2h. Alinhado com claude-worker (TASK_TIMEOUT_S=7200)
+            # — em PR grande deile-worker também precisa de tempo (clone +
+            # análise + tests + commits). Antes era 900s (15min) — quebrava
+            # em implement tasks longas.
+            - { name: DEILE_WORKER_TASK_TIMEOUT_S,  value: "7200" }
             - { name: DEILE_WORKER_LOG_LEVEL,       value: "INFO" }
             # Aponta o settings layered pra /etc/deile/ (montado pelo
             # ConfigMap deile-runtime-config / manifest 47). Substitui

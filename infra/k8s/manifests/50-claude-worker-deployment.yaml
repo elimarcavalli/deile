@@ -93,7 +93,11 @@ spec:
             - { name: DEILE_CLAUDE_WORKER_HOST, value: "0.0.0.0" }
             - { name: DEILE_CLAUDE_WORKER_PORT, value: "8767" }
             - { name: DEILE_CLAUDE_WORKER_ROOT, value: "/home/claude/work" }
-            - { name: DEILE_CLAUDE_WORKER_TASK_TIMEOUT_S, value: "1800" }
+            # 7200s = 2h. PRs grandes (10k+ linhas + suite full ~5min)
+            # passam de 30min facilmente. Antes era 1800s — review do #344
+            # foi morta aos 30min com claude no meio do trabalho (postou
+            # "Iniciando review..." mas não completou).
+            - { name: DEILE_CLAUDE_WORKER_TASK_TIMEOUT_S, value: "7200" }
             - { name: DEILE_CLAUDE_WORKER_LOG_LEVEL, value: "INFO" }
             - { name: DEILE_CLAUDE_ALLOWED_REPOS_FILE,
                 value: "/etc/claude-worker/allowed_repos.regex" }
