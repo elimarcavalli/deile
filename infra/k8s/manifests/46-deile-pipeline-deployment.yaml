@@ -141,7 +141,12 @@ spec:
             # otherwise the client times out before the worker finishes — observed
             # on PR #293 review: client 660s vs worker 900s = false WORKER_TIMEOUT
             # while the worker was still running.
-            - { name: DEILE_WORKER_TASK_TIMEOUT_S,   value: "900" }
+            # 1830s: 1800 (claude-worker DEILE_CLAUDE_WORKER_TASK_TIMEOUT_S)
+            # + 30s margem pro server responder/serializar. Antes era 900s
+            # mas claude-worker pode demorar 15-25min em PR review longa
+            # (clone + análise + tests) → client timeout em 900s causava
+            # WORKER_TIMEOUT enquanto claude ainda trabalhava.
+            - { name: DEILE_WORKER_TASK_TIMEOUT_S,   value: "1830" }
           volumeMounts:
             # GITHUB_TOKEN (gh) + DEILE_BOT_AUTH_TOKEN (notifier) + LLM keys
             # (unused here, harmless) — same Secret as worker/shell.

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import logging
 import os
 import re
@@ -41,6 +42,52 @@ from typing import List, Optional
 from aiohttp import web
 
 logger = logging.getLogger("deile.claude_worker_server")
+
+
+# --------------------------------------------------------------------------- #
+# OAuth token extraction — claude CLI no Linux NÃO lê
+# ``~/.claude/credentials.json`` automaticamente (esse caminho é uma
+# convenção macOS — no Linux ele só lê variáveis de ambiente). Extraímos
+# o ``accessToken`` no startup e o exportamos como ``ANTHROPIC_AUTH_TOKEN``
+# antes de spawnar o subprocess do claude.
+# --------------------------------------------------------------------------- #
+
+
+def _load_oauth_token_into_env() -> bool:
+    """Lê ``credentials.json`` (mountado pelo initContainer) e exporta
+    ``ANTHROPIC_AUTH_TOKEN`` na env do processo.
+
+    Returns ``True`` se token foi carregado; ``False`` caso contrário (file
+    ausente, JSON malformado, sem ``claudeAiOauth.accessToken``). O server
+    continua subindo em qualquer caso — a falha real aparece quando o
+    ``claude -p`` rodar e reportar ``Not logged in``.
+    """
+    home = Path(os.environ.get("HOME", "/home/claude"))
+    creds_path = home / ".claude" / "credentials.json"
+    if not creds_path.exists():
+        logger.warning("credentials.json não encontrado em %s", creds_path)
+        return False
+    try:
+        creds = json.loads(creds_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("não foi possível parsear %s: %s", creds_path, exc)
+        return False
+    # macOS Keychain JSON: {"claudeAiOauth": {"accessToken": "..."}}
+    oauth = creds.get("claudeAiOauth") if isinstance(creds, dict) else None
+    token = (oauth or {}).get("accessToken") if isinstance(oauth, dict) else None
+    if not token:
+        # Fallback: tenta "accessToken" no root level (formatos diferentes).
+        token = creds.get("accessToken") if isinstance(creds, dict) else None
+    if not token:
+        logger.warning(
+            "credentials.json não contém claudeAiOauth.accessToken nem "
+            "accessToken root-level — claude CLI vai reportar 'Not logged in'",
+        )
+        return False
+    os.environ["ANTHROPIC_AUTH_TOKEN"] = token
+    logger.info("ANTHROPIC_AUTH_TOKEN carregado de %s (len=%d)",
+                creds_path, len(token))
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -487,6 +534,14 @@ def main(passthrough: Optional[List[str]] = None) -> int:
     except OSError as exc:
         logger.error("could not create work root %s: %s", root, exc)
         return 78
+
+    # Carrega o OAuth token do ``credentials.json`` (montado pelo
+    # initContainer via Secret claude-credentials) e exporta como
+    # ``ANTHROPIC_AUTH_TOKEN``. SEM isso o claude CLI roda como
+    # "Not logged in" porque no Linux ele NÃO lê
+    # ``~/.claude/credentials.json`` automaticamente (esse path é
+    # convenção macOS — Linux só lê env vars).
+    _load_oauth_token_into_env()
 
     logger.info(
         "claude_worker_server listening on %s:%d, work root=%s", host, port, root,
