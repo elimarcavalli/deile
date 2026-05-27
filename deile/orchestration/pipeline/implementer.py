@@ -50,6 +50,7 @@ from deile.orchestration.pipeline.labels import (issue_type_from_labels,
 from deile.orchestration.pipeline.model_resolver import resolve_stage_model
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
     from deile.orchestration.pipeline.github_client import (IssueRef,
                                                             MentionTrigger,
                                                             PrRef)
@@ -91,6 +92,12 @@ class WorkOutcome:
     fingerprint: str = ""
     tentativa: int = 0
     budget_acumulado_s: float = 0.0
+    # Issue #309 fase 3.5: identidade do trabalho retornada pelo worker,
+    # persistida no DispatchLedger pro próximo dispatch poder retomar com
+    # ``--resume``. Vazias quando o worker não retornou (deile-worker antigo
+    # ou erro de transporte antes do response).
+    task_id: str = ""
+    session_id: str = ""
 
 
 # --- Refinement-gate verdict parsers (issue #257) ----------------------------
@@ -386,7 +393,7 @@ def _outcome_from_worker_response(data: object) -> WorkOutcome:
     if not isinstance(data, dict):
         return WorkOutcome(ok=False, text="", error="worker returned non-dict response")
     ok = bool(data.get("ok"))
-    text = str(data.get("summary") or "")
+    text = str(data.get("summary") or data.get("stdout") or "")
     resume_block = data.get("resume")
     fields: dict = {}
     if isinstance(resume_block, dict):
@@ -399,8 +406,16 @@ def _outcome_from_worker_response(data: object) -> WorkOutcome:
             "tentativa": int(resume_block.get("tentativa") or 0),
             "budget_acumulado_s": float(resume_block.get("budget_acumulado_s") or 0.0),
         }
+    # Issue #309 fase 3.5: extrai task_id/session_id pra persistir no
+    # DispatchLedger. claude-worker SEMPRE retorna ambos; deile-worker
+    # retorna task_id; campo session_id ausente vira string vazia.
+    task_id = str(data.get("task_id") or "")
+    session_id = str(data.get("session_id") or "")
     if ok:
-        return WorkOutcome(ok=True, text=text, error="", **fields)
+        return WorkOutcome(
+            ok=True, text=text, error="",
+            task_id=task_id, session_id=session_id, **fields,
+        )
     err = str(data.get("error") or data.get("summary") or "worker reported failure")
     # Issue #309 fase 3 — resiliência auth: o claude-worker server detecta
     # OAuth expirado/inválido no output do ``claude -p`` e devolve
@@ -411,7 +426,10 @@ def _outcome_from_worker_response(data: object) -> WorkOutcome:
     error_code = data.get("error_code")
     if error_code:
         err = f"[{error_code}] {err}"
-    return WorkOutcome(ok=False, text=text, error=err[:500], **fields)
+    return WorkOutcome(
+        ok=False, text=text, error=err[:500],
+        task_id=task_id, session_id=session_id, **fields,
+    )
 
 
 class WorkerImplementer(PipelineImplementer):
@@ -431,6 +449,7 @@ class WorkerImplementer(PipelineImplementer):
         client: Optional[object] = None,
         *,
         endpoint_override: Optional[str] = None,
+        ledger: Optional["DispatchLedger"] = None,
     ) -> None:
         """Constrói o implementer.
 
@@ -442,6 +461,10 @@ class WorkerImplementer(PipelineImplementer):
                 local apontando para localhost. Quando ``None`` (default), o
                 endpoint é resolvido via :func:`resolve_stage_dispatcher` +
                 :func:`get_endpoint_for` a cada chamada.
+            ledger: :class:`DispatchLedger` pra rastrear task_id/session_id
+                entre dispatches (issue #309 fase 3.5 — resume mecânica).
+                Default = singleton em ``~/.deile/pipeline/dispatches.json``.
+                Em testes, injetado com path em tmp_path.
         """
         if client is None:
             from deile.infrastructure.deile_worker_client import \
@@ -449,6 +472,11 @@ class WorkerImplementer(PipelineImplementer):
             client = DeileWorkerClient()
         self._client = client
         self._endpoint_override = endpoint_override
+        if ledger is None:
+            from deile.orchestration.pipeline.dispatch_ledger import \
+                DispatchLedger
+            ledger = DispatchLedger()
+        self._ledger = ledger
 
     def _resolve_endpoint(self, stage: str) -> str:
         """Resolve a URL HTTP do worker pod que recebe o dispatch de *stage*.
@@ -491,6 +519,84 @@ class WorkerImplementer(PipelineImplementer):
             )
         return await self._client.dispatch(payload, wait=wait)
 
+    async def _resolve_resume_meta(
+        self,
+        ledger_key: Optional[str],
+        url: str,
+    ) -> Optional[Dict[str, str]]:
+        """Pra dispatches em resume mode: consulta o DispatchLedger pelo
+        ``ledger_key`` (ex.: ``pr:344``), valida o estado via resume-info do
+        worker, e retorna ``{prev_task_id, resume_session_id}`` quando o
+        resume é viável. None significa "fallback pra fresh dispatch".
+
+        Cenários:
+          - Sem ledger entry → None (primeiro dispatch desse PR).
+          - Worker 404/410 (workdir lost, meta missing) → None + limpa
+            entrada stale.
+          - Worker diz claude_alive=True → None (não disturbar in-flight).
+            Pipeline reaper espera o claude terminar ou matar.
+          - Tudo OK → retorna meta pra resume.
+        """
+        if ledger_key is None:
+            return None
+        record = self._ledger.get(ledger_key)
+        if record is None:
+            return None
+        prev_task_id = record.get("task_id")
+        if not prev_task_id:
+            return None
+        # Consulta o worker pelo estado da sessão.
+        try:
+            info = await self._client.get_resume_info(
+                prev_task_id, endpoint_url=url,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Erro de transporte ou worker — log e fallback pra fresh.
+            # Limpa ledger entry pra não consultar resume-info repetidamente.
+            from deile.infrastructure.deile_worker_client import \
+                WorkerDispatchError
+            if isinstance(exc, WorkerDispatchError) and exc.error_code == "NOT_FOUND":
+                logger.info(
+                    "ledger entry %s aponta task_id=%s sem metadata no worker "
+                    "(404) — limpando e fallback fresh",
+                    ledger_key, prev_task_id,
+                )
+                self._ledger.clear(ledger_key)
+                return None
+            logger.warning(
+                "resume-info lookup falhou pra %s task_id=%s: %s — fallback fresh",
+                ledger_key, prev_task_id, exc,
+            )
+            return None
+        if not isinstance(info, dict):
+            self._ledger.clear(ledger_key)
+            return None
+        if not info.get("workdir_exists", False):
+            logger.info(
+                "ledger entry %s task_id=%s tem workdir perdido — fallback fresh",
+                ledger_key, prev_task_id,
+            )
+            self._ledger.clear(ledger_key)
+            return None
+        if info.get("claude_alive", False):
+            # Claude ainda rodando — não despachar de novo pra não matar a
+            # sessão em curso. O caller (stage handler) detecta None e
+            # mantém em_andamento; próximo tick tenta de novo.
+            logger.info(
+                "ledger entry %s task_id=%s session=%s ainda alive — "
+                "skip dispatch nesse tick",
+                ledger_key, prev_task_id, info.get("session_id"),
+            )
+            return {"_still_alive": True}
+        session_id = info.get("session_id") or record.get("session_id")
+        if not session_id:
+            self._ledger.clear(ledger_key)
+            return None
+        return {
+            "prev_task_id": str(prev_task_id),
+            "resume_session_id": str(session_id),
+        }
+
     async def _dispatch(
         self,
         brief: str,
@@ -500,6 +606,8 @@ class WorkerImplementer(PipelineImplementer):
         resume_block: Optional[dict] = None,
         stage: Optional[str] = None,
         branch: Optional[str] = None,
+        ledger_key: Optional[str] = None,
+        resume: bool = False,
     ) -> WorkOutcome:
         from deile.infrastructure.deile_worker_client import (
             WorkerDispatchError, build_dispatch_payload)
@@ -516,26 +624,47 @@ class WorkerImplementer(PipelineImplementer):
         # then falls back to its own ``DEILE_PREFERRED_MODEL``), or a
         # ``provider:model`` slug to pin THIS turn only.
         preferred_model = resolve_stage_model(stage) if stage else None
+        # Per-stage endpoint routing (issue #309 fase 2). ``stage`` opcional
+        # mantém compat com callers (testes) que ainda não declaram stage.
+        url = self._resolve_endpoint(stage or "implement")
+
+        # Issue #309 fase 3.5 — consulta o ledger pra ver se há dispatch
+        # anterior retomável; passa ``resume_session_id + prev_task_id``
+        # no payload quando o worker confirma viabilidade. Quando o
+        # caller passa ``resume=True`` mas ledger não tem nada (ex.:
+        # primeira chance de resume após restart do pipeline), fallback
+        # automático pra fresh dispatch — sem perder o ciclo.
+        resume_meta: Optional[Dict[str, str]] = None
+        if resume and ledger_key:
+            resume_meta = await self._resolve_resume_meta(ledger_key, url)
+            if resume_meta and resume_meta.get("_still_alive"):
+                # Worker confirmou claude ainda alive — não dispatch.
+                # Devolve outcome "em curso" pra stage handler decidir
+                # (mantém em_andamento, próximo tick re-checa).
+                return WorkOutcome(
+                    ok=False, text="",
+                    error="DISPATCH_SKIPPED_STILL_RUNNING: claude-worker "
+                          "ainda rodando o task anterior; skip nesse tick",
+                )
+
         # ``stage=stage`` propaga o stage canônico pro worker (issue #309
         # fase 2 hotfix): SEM isso o claude_worker_server caia no default
         # ``implement`` para TODOS os dispatches (review/refine/follow_ups
         # eram todos registrados como implement, quebrando o preamble do
         # pr_review e enganando telemetry).
-        payload = build_dispatch_payload(
+        payload_kwargs: Dict[str, Any] = dict(
             brief=brief, channel_id=channel_id, persona=persona, wait=True,
             preferred_model=preferred_model, stage=stage, branch=branch,
         )
+        if resume_meta:
+            payload_kwargs["resume_session_id"] = resume_meta["resume_session_id"]
+            payload_kwargs["prev_task_id"] = resume_meta["prev_task_id"]
+        payload = build_dispatch_payload(**payload_kwargs)
         # The resume context (issue #254) is an additive wire field consumed by
         # the worker; ``build_dispatch_payload`` validates the core fields, so
         # we attach ``resume`` after building to keep that contract untouched.
         if resume_block:
             payload["resume"] = resume_block
-        # Per-stage endpoint routing (issue #309 fase 2). ``stage`` opcional
-        # mantém compat com callers (testes) que ainda não declaram stage —
-        # nesses casos cai no default ``deile-worker:8766`` via stage
-        # ``implement`` (escolha conservadora: o stage mais comum). Quando o
-        # ``endpoint_override`` está set no __init__, ele ganha.
-        url = self._resolve_endpoint(stage or "implement")
         try:
             data = await self._post_dispatch(url, payload, wait=True)
         except WorkerDispatchError as exc:
@@ -543,7 +672,25 @@ class WorkerImplementer(PipelineImplementer):
         except Exception as exc:  # noqa: BLE001 — never crash the tick
             logger.exception("worker dispatch raised")
             return WorkOutcome(ok=False, text="", error=f"{type(exc).__name__}: {exc}"[:500])
-        return _outcome_from_worker_response(data)
+        outcome = _outcome_from_worker_response(data)
+        # Issue #309 fase 3.5 — persistência no DispatchLedger.
+        if ledger_key and outcome.task_id:
+            if outcome.ok:
+                # Trabalho completado com sucesso: limpa entrada (próximo
+                # dispatch desse PR/issue será fresh).
+                self._ledger.clear(ledger_key)
+            else:
+                # Trabalho incompleto (erro, timeout, blocked): grava ou
+                # atualiza pra resume no próximo tick.
+                worker_kind = "claude" if "claude-worker" in url else "deile"
+                self._ledger.record(
+                    ledger_key,
+                    task_id=outcome.task_id,
+                    session_id=outcome.session_id,
+                    stage=stage, branch=branch,
+                    worker_kind=worker_kind,
+                )
+        return outcome
 
     async def implement(
         self, monitor: "PipelineMonitor", issue: "IssueRef", *, resume: bool = False
@@ -562,9 +709,11 @@ class WorkerImplementer(PipelineImplementer):
             monitor.config.repo, monitor.config.main_branch, branch,
             resume=resume, expect_merge=False,
         )
+        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
         return await self._dispatch(
             brief, channel_id=f"pipeline-issue-{issue.number}",
             resume_block=resume_block, stage="implement", branch=branch,
+            ledger_key=DispatchLedger.key_for_issue(issue.number), resume=resume,
         )
 
     # --- Refinement gate (issue #257) -------------------------------------
@@ -634,10 +783,12 @@ class WorkerImplementer(PipelineImplementer):
         # ``reviewer`` persona (instructions in personas/instructions/reviewer.md)
         # so the worker evaluates SOLID/SRP/DRY/KISS/security/idempotency, not
         # just whether the suite is green. implement/mention keep ``developer``.
+        from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
         return await self._dispatch(
             brief, channel_id=f"pipeline-pr-{pr.number}",
             persona="reviewer", resume_block=resume_block, stage="pr_review",
             branch=pr.head_ref or f"pr/{pr.number}",
+            ledger_key=DispatchLedger.key_for_pr(pr.number), resume=resume,
         )
 
     async def mention(
@@ -689,6 +840,8 @@ class WorkerImplementer(PipelineImplementer):
                 )
             else:
                 reviewer_brief = brief_fn(repo, main, number, forge=forge_cfg)
+            from deile.orchestration.pipeline.dispatch_ledger import \
+                DispatchLedger
             return await self._dispatch(
                 reviewer_brief, channel_id=channel_id, persona="reviewer",
                 resume_block=_build_resume_block(
@@ -696,6 +849,11 @@ class WorkerImplementer(PipelineImplementer):
                     pr_url_hint=pr_url_hint,
                 ),
                 stage="pr_review", branch=head,
+                # mentions PR-scoped usam mesma chave que pr_review pra que o
+                # pipeline reaproveite session se houver resume.
+                ledger_key=DispatchLedger.key_for_pr(number)
+                          if ref.target_kind == "pr" else None,
+                resume=resume,
             )
         # Default: comment mention on an issue → do what the comment says.
         brief = _render_worker_mention_brief(

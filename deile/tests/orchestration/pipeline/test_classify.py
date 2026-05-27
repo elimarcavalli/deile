@@ -41,6 +41,12 @@ def _make_monitor(*, unclassified: list | None = None) -> tuple[PipelineMonitor,
         repo="owner/name",
         base_repo_path=Path("/tmp/fake"),
         notify_user_id="42",
+        # Reaper desligado por default em testes (issue #309 fase 3.5):
+        # cada tick chama ``list_open_prs + list_issues_with_label`` no
+        # forge mock, poluindo call_order rastreado por testes legacy
+        # (test_tick_calls_classify_before_review). Tests do reaper
+        # ligam explicitamente.
+        reaper_stale_seconds=0,
     )
     github = MagicMock()
     github.ensure_pipeline_labels = AsyncMock()

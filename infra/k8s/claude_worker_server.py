@@ -33,8 +33,10 @@ import os
 import re
 import secrets
 import shutil
+import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
@@ -313,6 +315,145 @@ _ANTHROPIC_SLUG_RE = re.compile(r"^anthropic:(.+)$")
 
 
 # --------------------------------------------------------------------------- #
+# Session metadata persistence (issue #309 fase 3.5 — resume support)
+# --------------------------------------------------------------------------- #
+#
+# Cada dispatch fixa um session-id UUID4 que é passado ao claude CLI via
+# ``--session-id``. claude grava a conversa em
+# ``~/.claude/projects/-home-claude-work-<task_id>/<session-id>.jsonl`` e
+# aceita retomada via ``-r <session-id>``. Persistimos o session-id + o
+# workdir + status final em ``~/.claude/tasks/<task_id>/session.json``
+# para que o pipeline possa orquestrar resume via novo endpoint
+# ``GET /v1/dispatches/{task_id}/resume-info``.
+#
+# Estrutura do session.json:
+#   {
+#     "task_id": "abc123...",                       # hex 16 (mesmo do dispatch)
+#     "session_id": "uuid4-aaaa-bbbb-cccc",         # passado ao claude
+#     "workdir": "/home/claude/work/abc123...",     # cwd do spawn
+#     "stage": "pr_review",                         # do payload
+#     "branch": "auto/issue-N",                     # do payload (opt)
+#     "model": "claude-sonnet-4-6",                 # do payload (opt)
+#     "started_at": 1716830000,                     # unix ts (created)
+#     "last_completed_at": 1716830420,              # unix ts (last exit)
+#     "last_is_error": false,                       # do JSON output do claude
+#     "last_result_summary": "Review postada...",   # first 300 chars do result
+#     "last_returncode": 0,                         # exit code do claude
+#     "last_duration_seconds": 420.5,               # do SubprocessResult
+#     "last_total_cost_usd": 0.137,                 # do JSON output do claude
+#     "prev_task_id": "xyz...",                     # se este dispatch foi resume
+#     "attempt": 2,                                 # 1 no fresh; +1 por resume
+#   }
+
+
+def _session_meta_dir() -> Path:
+    return Path(os.environ.get("HOME", "/home/claude")) / ".claude" / "tasks"
+
+
+def _session_meta_path(task_id: str) -> Path:
+    return _session_meta_dir() / task_id / "session.json"
+
+
+def _save_session_meta(task_id: str, meta: dict) -> None:
+    """Persiste atomicamente o session.json (write-tmp + replace).
+
+    Best-effort: falha de I/O vira logger.warning, NÃO derruba o dispatch
+    (o cliente já recebeu o resultado). Atomicidade evita meta corrompido
+    se o pod morrer no meio da escrita — pipeline lê estado consistente.
+    """
+    path = _session_meta_path(task_id)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(meta, indent=2, sort_keys=True))
+        os.replace(tmp, path)
+    except OSError as exc:
+        logger.warning("failed to write session meta for task_id=%s: %s",
+                       task_id, exc)
+
+
+def _load_session_meta(task_id: str) -> Optional[dict]:
+    """Carrega session.json. None se ausente, malformado, ou I/O error."""
+    path = _session_meta_path(task_id)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("failed to read session meta for task_id=%s: %s",
+                       task_id, exc)
+        return None
+
+
+def _is_claude_process_alive(session_id: str) -> bool:
+    """True se houver processo ``claude`` com este session-id na cmdline.
+
+    Usado pelo endpoint /v1/dispatches/{task_id}/resume-info para o pipeline
+    decidir entre "ainda rodando, não disturbar" vs "morto, pode reaper".
+
+    Best-effort: ``pgrep`` ausente, timeout, ou erro de I/O → False (assume
+    morto). Falso negativo é OK (pipeline reaper retry); falso positivo
+    seria pior (pipeline acha vivo e nunca retoma).
+    """
+    if not session_id:
+        return False
+    try:
+        result = subprocess.run(
+            ["pgrep", "-fa", "claude"],
+            capture_output=True, text=True, timeout=3,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return False
+    # Match exato do session_id na cmdline — evita false positive de
+    # processos não relacionados (ex: deile-worker chamando claude).
+    return session_id in (result.stdout or "")
+
+
+def _parse_claude_json_output(stdout: str) -> dict:
+    """Extrai campos estruturados do ``--output-format json`` do claude CLI.
+
+    Esperado: stdout é UM JSON object por dispatch (final result). Em caso
+    de claude que CRASHOU antes de imprimir o JSON final (ex: kill -9),
+    stdout pode estar truncado/vazio — retornamos dict default seguro.
+
+    Returns:
+        dict com chaves: ``is_error`` (bool), ``result`` (str),
+        ``session_id`` (str), ``total_cost_usd`` (float),
+        ``duration_ms`` (int), ``num_turns`` (int). Todas opcionais
+        com defaults conservadores (is_error=True quando JSON ausente).
+    """
+    if not stdout or not stdout.strip():
+        return {"is_error": True, "result": "", "session_id": "",
+                "total_cost_usd": 0.0, "duration_ms": 0, "num_turns": 0}
+    # Tentar o stdout inteiro primeiro (caso comum).
+    try:
+        data = json.loads(stdout.strip())
+    except json.JSONDecodeError:
+        # Fallback: pegar a ÚLTIMA linha que é JSON válido (caso o stdout
+        # tenha logs antes do JSON final).
+        data = None
+        for line in reversed(stdout.strip().splitlines()):
+            line = line.strip()
+            if line.startswith("{") and line.endswith("}"):
+                try:
+                    data = json.loads(line)
+                    break
+                except json.JSONDecodeError:
+                    continue
+        if data is None:
+            return {"is_error": True, "result": "", "session_id": "",
+                    "total_cost_usd": 0.0, "duration_ms": 0, "num_turns": 0}
+    return {
+        "is_error": bool(data.get("is_error", False)),
+        "result": str(data.get("result", "") or ""),
+        "session_id": str(data.get("session_id", "") or ""),
+        "total_cost_usd": float(data.get("total_cost_usd", 0) or 0),
+        "duration_ms": int(data.get("duration_ms", 0) or 0),
+        "num_turns": int(data.get("num_turns", 0) or 0),
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Handlers
 # --------------------------------------------------------------------------- #
 
@@ -337,20 +478,21 @@ async def health_handler(request: web.Request) -> web.Response:
 async def dispatch_handler(request: web.Request) -> web.Response:
     """``POST /v1/dispatch`` — executa ``claude -p`` em worktree isolado.
 
-    Fluxo:
+    Modos de execução:
 
-    1. Parse + validação do payload (``brief`` obrigatório; ``preferred_model``,
-       se presente, deve ser ``anthropic:*``).
-    2. Geração de ``task_id`` (``secrets.token_hex(8)``) e criação do
-       diretório de trabalho ``DEILE_CLAUDE_WORKER_ROOT/<task_id>/``.
-    3. Render do preamble do ``stage`` (default ``implement``) + concatenação
-       com o ``brief`` via separador ``---``.
-    4. ``claude -p --permission-mode bypassPermissions [--model <slug>]
-       <full_prompt>`` executado em ``cwd=workspace``.
-    5. Persistência best-effort de ``stdout``/``stderr`` no PVC para
-       consumo de ``/v1/progress/{task_id}`` (Task 14).
-    6. Resposta JSON com ``{ok, stdout(tail 50K), stderr(tail 10K), task_id,
-       duration_seconds, returncode}``.
+    * **Fresh dispatch** (default): cria task_id novo + workspace + session-id
+      UUID4. claude spawnado com ``--session-id <uuid>``. Metadata persistida
+      em ``~/.claude/tasks/<task_id>/session.json`` antes E depois do spawn.
+    * **Resume dispatch**: payload contém ``prev_task_id`` + ``resume_session_id``.
+      Lê metadata do prev_task_id, reutiliza o workdir original (claude
+      precisa do mesmo workspace pra resolver o JSONL da sessão), spawna com
+      ``-r <session_id>`` em vez de ``--session-id``. Mesmo task_id é reutilizado
+      e metadata é UPDATEada (attempt += 1, last_*).
+
+    Sempre usa ``--output-format json``. O resultado JSON é parseado para
+    extrair ``is_error``, ``result``, ``total_cost_usd`` — mais confiável
+    que regex em stdout livre e detecta auth-expired estruturalmente
+    (``is_error: true`` + ``result: 'Not logged in ...'``).
 
     Truncagem de tails: a resposta JSON limita ``stdout`` a 50 KiB e
     ``stderr`` a 10 KiB para não inflar o body — os logs completos ficam no
@@ -372,6 +514,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     stage = payload.get("stage", "implement")
     branch = payload.get("branch")
     model_slug = payload.get("preferred_model")
+    resume_session_id = payload.get("resume_session_id")
+    prev_task_id = payload.get("prev_task_id")
 
     # claude-worker SÓ aceita anthropic:* — outros providers viraram 400.
     claude_model: Optional[str] = None
@@ -387,26 +531,121 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             }, status=400)
         claude_model = match.group(1)
 
-    # Workspace fresh por dispatch — sem leakage cross-task.
-    task_id = secrets.token_hex(8)
     root = Path(os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work"))
-    workspace = root / task_id
-    workspace.mkdir(parents=True, exist_ok=True)
 
-    # Preamble do stage + brief, separados pelo delimitador convencionado.
-    preamble = _render_preamble(stage, branch, task_id)
-    full_prompt = preamble + "\n\n---\n\n" + brief
+    # Resume path: reaproveita workdir + session-id existentes.
+    is_resume = bool(resume_session_id and prev_task_id)
+    if is_resume:
+        # Validação do prev_task_id (path traversal + format).
+        if not _TASK_ID_RE.fullmatch(prev_task_id or ""):
+            return web.json_response({
+                "ok": False,
+                "error": f"invalid prev_task_id format {prev_task_id!r}",
+            }, status=400)
+        prev_meta = _load_session_meta(prev_task_id)
+        if prev_meta is None:
+            return web.json_response({
+                "ok": False,
+                "error_code": "RESUME_META_MISSING",
+                "error": (
+                    f"prev_task_id={prev_task_id!r} não tem session metadata "
+                    f"(provavelmente pod foi recriado e PVC perdeu o arquivo). "
+                    f"Pipeline deve fallback pra dispatch fresh."
+                ),
+            }, status=404)
+        if prev_meta.get("session_id") != resume_session_id:
+            return web.json_response({
+                "ok": False,
+                "error_code": "RESUME_SESSION_MISMATCH",
+                "error": (
+                    f"resume_session_id no payload não bate com session_id "
+                    f"persistido no prev_task_id (corrupção do mini-ledger?)"
+                ),
+            }, status=409)
+        task_id = prev_task_id
+        session_id = resume_session_id
+        workspace = Path(prev_meta.get("workdir") or (root / task_id))
+        if not workspace.is_dir():
+            return web.json_response({
+                "ok": False,
+                "error_code": "RESUME_WORKDIR_LOST",
+                "error": (
+                    f"workdir {workspace!s} sumiu (pod foi recriado em outro "
+                    f"node, ou cleanup manual). Pipeline deve fallback pra "
+                    f"dispatch fresh."
+                ),
+            }, status=410)
+        attempt = int(prev_meta.get("attempt", 1)) + 1
+        logger.info(
+            "resume dispatch task_id=%s session=%s attempt=%d workdir=%s",
+            task_id, session_id, attempt, workspace,
+        )
+    else:
+        # Fresh path: novo task_id + session-id + workspace.
+        task_id = secrets.token_hex(8)
+        session_id = str(uuid.uuid4())
+        workspace = root / task_id
+        workspace.mkdir(parents=True, exist_ok=True)
+        attempt = 1
+        logger.info(
+            "fresh dispatch task_id=%s session=%s stage=%s model=%s branch=%s",
+            task_id, session_id, stage, claude_model, branch,
+        )
+
+    # Preamble: fresh dispatch recebe o template normal; resume recebe um
+    # nudge curto ("você foi interrompido, continue de onde parou — claude
+    # já tem todo o histórico via -r"). Sem repetir o brief original.
+    if is_resume:
+        full_prompt = (
+            f"Sua execução anterior (task_id={task_id}, attempt={attempt-1}) "
+            f"foi interrompida (timeout, kill, pod restart). Você está sendo "
+            f"retomado com `-r {session_id}` — você vê TODA a conversa "
+            f"anterior, incluindo as ações já completadas (tool calls, files "
+            f"editados, comments postados).\n\n"
+            f"REGRA: NÃO refaça trabalho já completado (não re-comente, não "
+            f"re-edite arquivos que já foram salvos com sucesso). Identifique "
+            f"o ponto exato onde parou e continue. Finalize com 'STATUS: "
+            f"SUCCESS' ou 'STATUS: BLOCKED_<motivo>' depois de postar comment "
+            f"final se for review."
+        )
+    else:
+        preamble = _render_preamble(stage, branch, task_id)
+        full_prompt = preamble + "\n\n---\n\n" + brief
+
+    # Persistir metadata ANTES do spawn (pro endpoint /resume-info poder
+    # detectar dispatches in-flight). Atomic via _save_session_meta.
+    meta_pre = {
+        "task_id": task_id,
+        "session_id": session_id,
+        "workdir": str(workspace),
+        "stage": stage,
+        "branch": branch,
+        "model": claude_model,
+        "started_at": int(time.time()),
+        "attempt": attempt,
+        "prev_task_id": prev_task_id if is_resume else None,
+        "last_is_error": None,  # populado pós-spawn
+        "last_result_summary": "",
+        "last_returncode": None,
+        "last_completed_at": None,
+        "last_duration_seconds": None,
+        "last_total_cost_usd": 0.0,
+    }
+    _save_session_meta(task_id, meta_pre)
 
     claude_bin = shutil.which("claude") or "claude"
-    cmd = [claude_bin, "-p", "--permission-mode", "bypassPermissions"]
+    cmd = [
+        claude_bin, "-p",
+        "--permission-mode", "bypassPermissions",
+        "--output-format", "json",
+    ]
+    if is_resume:
+        cmd.extend(["-r", session_id])
+    else:
+        cmd.extend(["--session-id", session_id])
     if claude_model:
         cmd.extend(["--model", claude_model])
     cmd.append(full_prompt)
-
-    logger.info(
-        "dispatch task_id=%s stage=%s model=%s branch=%s",
-        task_id, stage, claude_model, branch,
-    )
 
     timeout = int(os.environ.get("DEILE_CLAUDE_WORKER_TASK_TIMEOUT_S", "7200"))
 
@@ -416,30 +655,64 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         )
     except Exception as exc:
         logger.exception("dispatch failed task_id=%s", task_id)
+        meta_pre["last_is_error"] = True
+        meta_pre["last_result_summary"] = f"{type(exc).__name__}: {exc}"[:300]
+        meta_pre["last_returncode"] = -1
+        meta_pre["last_completed_at"] = int(time.time())
+        _save_session_meta(task_id, meta_pre)
         return web.json_response({
             "ok": False,
             "error": f"{type(exc).__name__}: {exc}",
             "task_id": task_id,
+            "session_id": session_id,
         }, status=500)
 
-    # Detecção de auth expirado (issue #309 fase 3 — estratégia C):
-    # claude CLI imprime "Not logged in", "Invalid authentication credentials"
-    # ou "401" no stdout quando OAuth token expirou ou foi revogado. O
-    # operador (e o pipeline) precisam saber DISSO especificamente — não
-    # genericamente "claude falhou" — pra disparar o ``deploy.py k8s
-    # claude-renew`` (lightweight refresh). Caso afirmativo: error_code
-    # canônico ``WORKER_AUTH_EXPIRED`` no body. Pipeline reconhece e marca
-    # PR como ``~workflow:bloqueada`` com comment claro.
-    auth_expired = _detect_auth_expired(result.stdout, result.stderr)
+    # Parse do JSON output (--output-format json) — fonte estruturada de
+    # verdade pra is_error, result, cost. Resolve Bug A do Opus de forma
+    # estrutural (sem regex frágil no stdout livre).
+    claude_result = _parse_claude_json_output(result.stdout)
+
+    # Detecção de auth expirado: estrutural (is_error=true + result contém
+    # signature de auth) E fallback regex no stdout/stderr crus (pra casos
+    # onde JSON output não veio — ex: timeout antes do final).
+    auth_expired_struct = (
+        claude_result["is_error"]
+        and any(sig in claude_result["result"].lower()
+                for sig in _AUTH_EXPIRED_SIGNATURES)
+    )
+    auth_expired_legacy = _detect_auth_expired(result.stdout, result.stderr)
+    auth_expired = auth_expired_struct or auth_expired_legacy
     error_code = "WORKER_AUTH_EXPIRED" if auth_expired else None
 
+    # Considera "ok" se: rc=0 AND não auth_expired AND JSON output não diz
+    # is_error=true. JSON output sendo a fonte estrutural (claude pode
+    # imprimir rc=0 mesmo em falha de auth — vide investigação Opus).
+    ok = (
+        result.returncode == 0
+        and not auth_expired
+        and not claude_result["is_error"]
+    )
+
+    # Persistir metadata final.
+    meta_pre["last_is_error"] = claude_result["is_error"] or not ok
+    meta_pre["last_result_summary"] = claude_result["result"][:300]
+    meta_pre["last_returncode"] = result.returncode
+    meta_pre["last_completed_at"] = int(time.time())
+    meta_pre["last_duration_seconds"] = result.duration_seconds
+    meta_pre["last_total_cost_usd"] = claude_result["total_cost_usd"]
+    _save_session_meta(task_id, meta_pre)
+
     response = {
-        "ok": result.returncode == 0 and not auth_expired,
+        "ok": ok,
         "stdout": result.stdout[-50_000:],
         "stderr": result.stderr[-10_000:],
         "task_id": task_id,
+        "session_id": session_id,
+        "attempt": attempt,
         "duration_seconds": result.duration_seconds,
         "returncode": result.returncode,
+        "total_cost_usd": claude_result["total_cost_usd"],
+        "num_turns": claude_result["num_turns"],
     }
     if error_code:
         response["error_code"] = error_code
@@ -447,6 +720,9 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             "claude CLI reportou token OAuth expirado/inválido. "
             "Rode `deploy.py k8s claude-renew` no host pra renovar."
         )
+    elif not ok and claude_result["is_error"] and claude_result["result"]:
+        # Falha não-auth reportada pelo claude — propaga o erro pra pipeline.
+        response["error"] = claude_result["result"][:500]
     return web.json_response(response)
 
 
@@ -540,6 +816,59 @@ async def progress_handler(request: web.Request) -> web.Response:
     })
 
 
+async def resume_info_handler(request: web.Request) -> web.Response:
+    """``GET /v1/dispatches/{task_id}/resume-info`` — snapshot do session
+    metadata pra decisão de resume vs fresh dispatch no pipeline.
+
+    Returns:
+        - ``200`` com ``{task_id, session_id, workdir, workdir_exists,
+          stage, branch, started_at, last_completed_at, last_is_error,
+          last_result_summary, attempt, claude_alive}``.
+        - ``404`` se task_id válido mas sem session metadata (task nunca
+          rodou no PVC atual — pode ter sido GCed ou pod foi recriado).
+        - ``400`` se task_id não bate ``[0-9a-f]{16}`` (path traversal guard).
+
+    ``claude_alive`` é heurística (``pgrep -f claude | grep <session_id>``):
+    true = ainda há processo claude rodando com esse session-id na cmdline,
+    false = processo morreu ou nunca existiu. Pipeline usa pra decidir entre
+    "ainda rodando, não disturbar" vs "morto, pode resume". Best-effort:
+    em erro de pgrep retorna false (assume morto — pipeline retry retoma).
+    """
+    task_id = request.match_info["task_id"]
+    if not _TASK_ID_RE.fullmatch(task_id):
+        return web.json_response(
+            {"error": "invalid task_id format (expected hex 16-char)"},
+            status=400,
+        )
+    meta = _load_session_meta(task_id)
+    if meta is None:
+        return web.json_response(
+            {"error": f"task_id {task_id} not found in session metadata"},
+            status=404,
+        )
+    workdir = Path(meta.get("workdir", "") or "")
+    session_id = meta.get("session_id", "") or ""
+    return web.json_response({
+        "task_id": task_id,
+        "session_id": session_id,
+        "workdir": str(workdir),
+        "workdir_exists": workdir.is_dir(),
+        "stage": meta.get("stage"),
+        "branch": meta.get("branch"),
+        "model": meta.get("model"),
+        "started_at": meta.get("started_at"),
+        "last_completed_at": meta.get("last_completed_at"),
+        "last_is_error": meta.get("last_is_error"),
+        "last_result_summary": (meta.get("last_result_summary") or "")[:300],
+        "last_returncode": meta.get("last_returncode"),
+        "last_duration_seconds": meta.get("last_duration_seconds"),
+        "last_total_cost_usd": meta.get("last_total_cost_usd"),
+        "attempt": meta.get("attempt", 1),
+        "prev_task_id": meta.get("prev_task_id"),
+        "claude_alive": _is_claude_process_alive(session_id),
+    })
+
+
 # --------------------------------------------------------------------------- #
 # Wiring
 # --------------------------------------------------------------------------- #
@@ -566,6 +895,9 @@ def build_app(auth_token: Optional[str] = None) -> web.Application:
     app.router.add_get("/v1/health", health_handler)
     app.router.add_post("/v1/dispatch", dispatch_handler)
     app.router.add_get("/v1/progress/{task_id}", progress_handler)
+    app.router.add_get(
+        "/v1/dispatches/{task_id}/resume-info", resume_info_handler,
+    )
     return app
 
 

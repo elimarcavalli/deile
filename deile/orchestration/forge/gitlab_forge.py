@@ -811,6 +811,60 @@ class GitLabForge(ForgeClient):
             "-f", f"add_labels={','.join(labels_list)}",
         )
 
+    async def label_applied_at(
+        self, kind: str, number: int, label: str,
+    ) -> Optional[int]:
+        """GitLab resource_label_events API → ISO timestamp da última
+        ``action='add'`` desse label no ``kind/number``. Endpoint:
+        ``projects/<id>/issues/<n>/resource_label_events`` (ou
+        ``merge_requests`` para PR/MR).
+
+        Retorna None se label nunca aplicada, label sumiu do projeto,
+        ou erro de transporte.
+        """
+        if kind == "issue":
+            endpoint = f"projects/{self._project_ref}/issues/{number}/resource_label_events"
+        elif kind == "pr":
+            endpoint = f"projects/{self._project_ref}/merge_requests/{number}/resource_label_events"
+        else:
+            return None
+        rc, out, err = await self._run("api", "--paginate", endpoint)
+        if rc != 0:
+            logger.debug(
+                "label_applied_at #%d label=%r: glab api failed: %s",
+                number, label, err[:100],
+            )
+            return None
+        try:
+            events = json.loads(out or "[]")
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(events, list):
+            return None
+        # Filtra eventos action=add com label.name batendo, pega mais recente.
+        latest_iso: Optional[str] = None
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("action") != "add":
+                continue
+            lbl = ev.get("label") or {}
+            if not isinstance(lbl, dict) or lbl.get("name") != label:
+                continue
+            created = ev.get("created_at")
+            if not created:
+                continue
+            if latest_iso is None or created > latest_iso:
+                latest_iso = created
+        if latest_iso is None:
+            return None
+        try:
+            from datetime import datetime
+            iso = latest_iso.replace("Z", "+00:00")
+            return int(datetime.fromisoformat(iso).timestamp())
+        except (ValueError, TypeError):
+            return None
+
     async def remove_labels(
         self, kind: str, number: int, labels: Iterable[str],
     ) -> None:

@@ -451,6 +451,46 @@ class ForgeClient(ABC):
     @abstractmethod
     async def ensure_pipeline_labels(self) -> None: ...
 
+    async def label_applied_at(
+        self, kind: str, number: int, label: str,
+    ) -> Optional[int]:
+        """Retorna Unix timestamp (UTC) da ÚLTIMA aplicação de *label* em
+        *kind/number*, ou None se nunca aplicada (ou se o adapter não suporta
+        consulta de events).
+
+        Usado pelo reaper (issue #309 fase 3.5) pra detectar claims órfãos
+        — PRs com ``~review:em_andamento`` há mais de N minutos sem outro
+        sinal de progresso são candidatos a re-claim.
+
+        Default da base é ``return None`` (best-effort, não-suportado);
+        adapters concretos implementam consultando a events API da forge.
+        """
+        return None
+
+    async def has_bot_activity_since(
+        self,
+        kind: str,
+        number: int,
+        bot_login: str,
+        *,
+        since_ts: int,
+    ) -> bool:
+        """True se *bot_login* tem QUALQUER atividade visível em
+        *kind/number* depois de *since_ts*: comment, review formal,
+        merge, push de commit no branch.
+
+        Issue #309 fase 3.5 Bug B fix — proof-of-work check. Pipeline
+        usa pra impedir que ``~review:concluida`` seja aplicada quando o
+        worker retornou ok=True mas SEM produzir trabalho visível (sinal
+        de bug ou desistência silenciosa, conforme R2 da PR #344).
+
+        Default fail-open ``True`` (não-suportado): garante que pipelines
+        rodando contra forge antigo continuem funcionando — guard
+        defensivo, não autorização. Adapters concretos sobrescrevem com
+        consulta efetiva à events API.
+        """
+        return True
+
     # ------------------------------------------------------------------
     # Transitions (shared, non-abstract — every adapter behaves the same)
     # ------------------------------------------------------------------

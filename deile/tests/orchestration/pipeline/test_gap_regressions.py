@@ -68,6 +68,10 @@ def _make_monitor(
         base_repo_path=Path("/tmp/fake"),
         notify_user_id="42",
         use_pid_lock=False,
+        # Reaper desligado em test default — adiciona round-trips ao
+        # forge mock que poluem call_order/error counters legacy.
+        # Tests do reaper ligam explicitamente.
+        reaper_stale_seconds=0,
     )
     github = MagicMock()
     github.ensure_pipeline_labels = AsyncMock()

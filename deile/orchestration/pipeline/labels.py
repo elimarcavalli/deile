@@ -12,6 +12,7 @@ like ``bug``, ``enhancement``, ``intent``).
 
 from __future__ import annotations
 
+import re
 from typing import Iterable, Optional
 
 # Issue workflow ----------------------------------------------------------
@@ -266,3 +267,36 @@ def batch_id_from_label(label: str) -> str:
     if not is_batch_label(label):
         raise ValueError(f"not a batch label: {label!r}")
     return label[len(BATCH_LABEL_PREFIX):]
+
+
+# --- Attempt label (issue #309 fase 3.5 — reaper) -------------------------
+# Reaper incrementa ``~attempt:<N>`` ao re-claim uma PR/issue stuck. Quando
+# ``N >= reaper_max_attempts`` (default 3), bloqueia em vez de liberar.
+ATTEMPT_LABEL_PREFIX = "~attempt:"
+_ATTEMPT_LABEL_RE = re.compile(r"^~attempt:(\d+)$")
+
+
+def is_attempt_label(label: str) -> bool:
+    return bool(_ATTEMPT_LABEL_RE.match(label))
+
+
+def make_attempt_label(n: int) -> str:
+    return f"{ATTEMPT_LABEL_PREFIX}{n}"
+
+
+def parse_attempt_label(label: str) -> int:
+    """Return N from ``~attempt:N``. Raises ValueError se não-attempt."""
+    m = _ATTEMPT_LABEL_RE.match(label)
+    if not m:
+        raise ValueError(f"not an attempt label: {label!r}")
+    return int(m.group(1))
+
+
+def current_attempt_from_labels(labels) -> int:
+    """Maior valor N entre labels ~attempt:N do conjunto (0 se ausentes)."""
+    nums = []
+    for lb in labels or ():
+        m = _ATTEMPT_LABEL_RE.match(lb)
+        if m:
+            nums.append(int(m.group(1)))
+    return max(nums) if nums else 0

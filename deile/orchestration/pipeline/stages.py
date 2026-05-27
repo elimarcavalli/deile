@@ -46,7 +46,11 @@ from deile.orchestration.pipeline.labels import (FOLLOW_UPS_PROCESSED,
                                                  WORKFLOW_REVIEWED,
                                                  WORKFLOW_REVIEWING,
                                                  WORKFLOW_WAITING,
+                                                 current_attempt_from_labels,
+                                                 is_attempt_label,
+                                                 is_batch_label,
                                                  issue_type_from_labels,
+                                                 make_attempt_label,
                                                  refine_workflow_state)
 
 # Mention triggers that describe a STICKY state (they re-appear on every poll
@@ -1544,6 +1548,26 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
                 AUTH_EXPIRED_BLOCK_MSG,
             )
             return
+        # Issue #309 fase 3.5 — Bug A fix: erro NÃO-auth do worker NÃO
+        # deve fluir pro fast-finish legacy abaixo (que marcava
+        # ~review:concluida sem proof-of-work — vide R2/PR #344, 5s).
+        # Libera o batch; reaper retoma no próximo tick (resume real
+        # se sessão claude sobreviveu, fresh dispatch caso contrário).
+        # Skip dispatch-skipped-still-running (já intencional do resumer).
+        if "DISPATCH_SKIPPED_STILL_RUNNING" in (outcome.error or ""):
+            logger.info(
+                "pr_review #%d: dispatch skipped (claude ainda alive) — "
+                "manter em_andamento", target.number,
+            )
+            await monitor.forge.clear_batch_label("pr", target.number)
+            return
+        logger.warning(
+            "pr_review #%d: worker error não-auth (%s); liberando batch pra reaper "
+            "retomar (não marca concluida sem proof-of-work — Bug A fix)",
+            target.number, (outcome.error or "")[:120],
+        )
+        await monitor.forge.clear_batch_label("pr", target.number)
+        return
 
     if blocked:
         await monitor.forge.clear_batch_label("pr", target.number)
@@ -1585,6 +1609,27 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
         logger.info("pr_review #%d incompleto — em_andamento (será retomada)", target.number)
         return
 
+    # Issue #309 fase 3.5 — Bug B fix: proof-of-work check antes de marcar
+    # CONCLUDED no caminho legacy (resume desligado). Sem evidência (comment
+    # do bot, review formal, merge, novo commit) NÃO marca concluida —
+    # libera batch pra reaper retomar (impede review-theatre silencioso
+    # observado no R2 da PR #344 onde labels alternaram em 5s sem qualquer
+    # ação real do worker).
+    bot_login = await _resolve_bot_login(monitor)
+    has_proof = await _assert_review_proof_of_work(
+        monitor.forge, "pr", target.number, bot_login,
+        since_ts=int(time.time() - 7200),  # janela: últimas 2h
+    )
+    if not has_proof:
+        logger.warning(
+            "pr_review #%d: worker reportou ok=True mas SEM proof-of-work "
+            "(zero comments, zero reviews, zero novos commits) — não marcando "
+            "concluida (Bug B fix). Libera batch; reaper retoma.",
+            target.number,
+        )
+        await monitor.forge.clear_batch_label("pr", target.number)
+        return
+
     try:
         await monitor.forge.transition_pr(
             target.number, from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_CONCLUDED
@@ -1596,6 +1641,50 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     await monitor.forge.clear_batch_label("pr", target.number)
     monitor._stats.prs_reviewed += 1
     await monitor.notifier.pr_reviewed(target.number, target.title, target.url, merged=False)
+
+
+async def _resolve_bot_login(monitor: "PipelineMonitor") -> str:
+    """Resolve o login do bot (best-effort). Default 'deile-one'.
+
+    Pra ser usado no proof-of-work check: precisa saber QUAL author é o bot
+    pra distinguir comment seu vs comment humano. Hardcoded em V1 (default
+    do pipeline); pode evoluir pra ler de settings/identity.
+    """
+    return "deile-one"
+
+
+async def _assert_review_proof_of_work(
+    forge,
+    kind: str,
+    number: int,
+    bot_login: str,
+    *,
+    since_ts: int,
+) -> bool:
+    """True se há pelo menos UMA evidência de trabalho real desde ``since_ts``:
+
+    1. Bot postou comment no PR/issue
+    2. Bot postou review formal (APPROVE/REQUEST_CHANGES/COMMENT)
+    3. PR foi merged
+    4. Há commit novo no branch
+
+    Sem suporte do forge (métodos retornam None/raise): assume True (não
+    bloqueia o fluxo legacy onde forge antigo está em uso — fail-open
+    porque é guard defensivo, não autorização).
+    """
+    try:
+        if hasattr(forge, "has_bot_activity_since"):
+            return await forge.has_bot_activity_since(
+                kind, number, bot_login, since_ts=since_ts,
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "proof_of_work check: forge.has_bot_activity_since raised: %s — "
+            "assuming true (fail-open)", exc,
+        )
+        return True
+    # Forge não suporta proof-of-work check — fail-open.
+    return True
 
 
 async def _post_merge_follow_ups(monitor: "PipelineMonitor", target) -> None:
@@ -1753,3 +1842,175 @@ def _render_follow_up_report(
     if not opened and not skipped:
         lines.append("_Nenhum follow-up detectado._")
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Issue #309 fase 3.5 — Reaper de claim órfão
+# --------------------------------------------------------------------------- #
+
+
+async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
+    """Scan ~review:em_andamento e ~workflow:em_implementacao com idade >
+    ``config.reaper_stale_seconds`` sem progresso e libera (próximo tick
+    re-claim via resume). Best-effort: catch + log nas operações de label.
+
+    Mecânica:
+    1. Lista PRs abertas e issues abertas com label terminal-stale.
+    2. Pra cada uma, lê ``label_applied_at`` da label terminal.
+    3. Se idade > threshold:
+       - Lê ``current_attempt`` das labels ~attempt:N (default 0).
+       - Se ``attempt + 1 >= reaper_max_attempts``: marca ~workflow:bloqueada
+         + ~retry:exhausted (não retorna pra fila — humano decide).
+       - Senão: remove ~review:em_andamento (ou ~workflow:em_implementacao),
+         remove batch_label e ownership, adiciona ~attempt:(N+1), recoloca
+         label inicial (~review:pendente ou ~workflow:nova).
+
+    Não toca em PRs sem dispatch do nosso monitor (ownership label) —
+    apenas escopa às próprias.
+    """
+    threshold = monitor.config.reaper_stale_seconds
+    max_attempts = monitor.config.reaper_max_attempts
+    if threshold <= 0:
+        return
+    now_ts = int(time.time())
+    own_label = monitor.identity.ownership_label()
+
+    # PRs com ~review:em_andamento (stuck no review).
+    try:
+        prs = await monitor.forge.list_open_prs()
+    except GhCommandError as exc:
+        await _record_forge_error(monitor, "reaper: list_open_prs failed", exc)
+        return
+    for pr in prs:
+        if REVIEW_IN_PROGRESS not in pr.labels:
+            continue
+        # Só re-claim PRs deste monitor (ownership).
+        if own_label not in pr.labels:
+            continue
+        applied_at = await monitor.forge.label_applied_at(
+            "pr", pr.number, REVIEW_IN_PROGRESS,
+        )
+        if applied_at is None:
+            continue  # forge sem suporte ou label sem timestamp
+        age = now_ts - applied_at
+        if age < threshold:
+            continue
+        await _reap_one(
+            monitor, kind="pr", number=pr.number, labels=pr.labels,
+            from_label=REVIEW_IN_PROGRESS, to_label=REVIEW_PENDING,
+            max_attempts=max_attempts, age_seconds=age,
+            description=f"PR #{pr.number} review stuck há {age // 60}min",
+        )
+
+    # Issues com ~workflow:em_implementacao (stuck no implement).
+    try:
+        impl_issues = await monitor.forge.list_issues_with_label(
+            WORKFLOW_IMPLEMENTING,
+        )
+    except GhCommandError as exc:
+        await _record_forge_error(
+            monitor, "reaper: list_issues_with_label failed", exc,
+        )
+        return
+    for issue in impl_issues:
+        if own_label not in issue.labels:
+            continue
+        applied_at = await monitor.forge.label_applied_at(
+            "issue", issue.number, WORKFLOW_IMPLEMENTING,
+        )
+        if applied_at is None:
+            continue
+        age = now_ts - applied_at
+        if age < threshold:
+            continue
+        await _reap_one(
+            monitor, kind="issue", number=issue.number, labels=issue.labels,
+            from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_REVIEWED,
+            max_attempts=max_attempts, age_seconds=age,
+            description=f"issue #{issue.number} implement stuck há {age // 60}min",
+        )
+
+
+async def _reap_one(
+    monitor: "PipelineMonitor",
+    *,
+    kind: str,
+    number: int,
+    labels,
+    from_label: str,
+    to_label: str,
+    max_attempts: int,
+    age_seconds: int,
+    description: str,
+) -> None:
+    """Reaper helper — libera UM claim órfão.
+
+    Se ``current_attempt + 1 >= max_attempts``: marca bloqueada + retry:exhausted
+    + post comment explicativo. Senão libera: remove from_label, batch, ownership,
+    adiciona ~attempt:(N+1), recoloca to_label (pendente/nova). Falhas em
+    operações individuais NÃO derrubam o tick — best-effort.
+    """
+    current_attempt = current_attempt_from_labels(labels)
+    next_attempt = current_attempt + 1
+    # Coleta labels a remover: a label terminal, batch label, ownership e o
+    # ~attempt:N anterior (se existir — vamos colocar N+1).
+    to_remove = [from_label]
+    batch_labels = [lb for lb in labels if is_batch_label(lb)]
+    to_remove.extend(batch_labels)
+    own_label = monitor.identity.ownership_label()
+    if own_label in labels:
+        to_remove.append(own_label)
+    old_attempts = [lb for lb in labels if is_attempt_label(lb)]
+    to_remove.extend(old_attempts)
+
+    if next_attempt >= max_attempts:
+        # Esgotou: bloqueia em vez de liberar.
+        try:
+            await monitor.forge.remove_labels(kind, number, to_remove)
+        except GhCommandError as exc:
+            logger.warning(
+                "reaper #%d: remove_labels failed: %s", number, exc,
+            )
+        try:
+            await monitor.forge.add_labels(
+                kind, number,
+                [WORKFLOW_BLOCKED, make_attempt_label(next_attempt)],
+            )
+        except GhCommandError as exc:
+            logger.warning(
+                "reaper #%d: add bloqueada failed: %s", number, exc,
+            )
+        msg = (
+            f"⛔ Reaper esgotou retries ({next_attempt}/{max_attempts}) — "
+            f"{description}. Pipeline marca `~workflow:bloqueada` pra "
+            f"intervenção humana. Remova o label pra reabrir o fluxo."
+        )
+        try:
+            if kind == "pr":
+                await monitor.forge.comment_on_pr(number, msg)
+            else:
+                await monitor.forge.comment_on_issue(number, msg)
+        except GhCommandError as exc:
+            logger.warning("reaper #%d: comment failed: %s", number, exc)
+        monitor._stats.issues_blocked += 1
+        logger.warning(
+            "reaper BLOCKED %s #%d after %d attempts (age=%ds)",
+            kind, number, next_attempt, age_seconds,
+        )
+        return
+
+    # Libera: remove labels stale, adiciona ~attempt:(N+1) + label de retorno.
+    try:
+        await monitor.forge.remove_labels(kind, number, to_remove)
+    except GhCommandError as exc:
+        logger.warning("reaper #%d: remove_labels failed: %s", number, exc)
+    try:
+        await monitor.forge.add_labels(
+            kind, number, [to_label, make_attempt_label(next_attempt)],
+        )
+    except GhCommandError as exc:
+        logger.warning("reaper #%d: add_labels failed: %s", number, exc)
+    logger.info(
+        "reaper RELEASED %s #%d to %s (attempt %d/%d, age=%ds)",
+        kind, number, to_label, next_attempt, max_attempts, age_seconds,
+    )

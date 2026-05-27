@@ -49,6 +49,7 @@ _NOWAIT_TIMEOUT_S: float = 30.0
 _DISPATCH_PATH = "/v1/dispatch"
 _PROGRESS_PATH = "/v1/progress/{task_id}"
 _RESULT_PATH = "/v1/result/{task_id}"
+_RESUME_INFO_PATH = "/v1/dispatches/{task_id}/resume-info"
 _POLL_TIMEOUT_S: float = 5.0
 _DEFAULT_ENDPOINT = "http://deile-worker.deile.svc.cluster.local:8766"
 _ENDPOINT_ENV = "DEILE_WORKER_ENDPOINT"
@@ -138,6 +139,17 @@ class DispatchPayload(BaseModel):
     # ``branch``: nome da branch git de trabalho (ex.: ``auto/issue-309``).
     # Útil pro worker resolver o working tree correto em modos future.
     branch: Optional[str] = Field(default=None, max_length=255)
+    # --- Resume context (issue #309 fase 3.5) -------------------------------
+    # ``resume_session_id``: UUID da sessão claude do dispatch anterior. Quando
+    # presente, o claude-worker spawna ``claude -p -r <session_id>`` em vez
+    # de ``--session-id <new_uuid>`` — claude lê o JSONL persistido e retoma a
+    # conversa em vez de começar do zero. Sem esse campo, dispatch é fresh.
+    resume_session_id: Optional[str] = Field(default=None, max_length=64)
+    # ``prev_task_id``: hex 16-char do dispatch anterior. claude-worker valida
+    # contra session.json persistido (workdir, session_id bate) antes de
+    # retomar — devolve 404/410/409 com error_code específico se invalido,
+    # pra o pipeline fallback pra fresh dispatch.
+    prev_task_id: Optional[str] = Field(default=None, max_length=16)
 
     @field_validator("brief")
     @classmethod
@@ -263,6 +275,12 @@ def build_dispatch_payload(
     action_kind: Optional[str] = None,
     issue_number: Optional[int] = None,
     branch: Optional[str] = None,
+    # --- Resume context (issue #309 fase 3.5) -------------------------------
+    # Quando ambos setados, o claude-worker spawna com ``-r <session_id>`` em
+    # vez de ``--session-id <new_uuid>`` — claude retoma a conversa anterior
+    # via JSONL persistido no PVC. Pipeline resolve via DispatchLedger.
+    resume_session_id: Optional[str] = None,
+    prev_task_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Assemble the JSON body POSTed to ``POST /v1/dispatch``.
 
@@ -307,6 +325,10 @@ def build_dispatch_payload(
         payload["issue_number"] = int(issue_number)
     if branch:
         payload["branch"] = str(branch)
+    if resume_session_id:
+        payload["resume_session_id"] = str(resume_session_id)
+    if prev_task_id:
+        payload["prev_task_id"] = str(prev_task_id)
     return payload
 
 
@@ -564,14 +586,47 @@ class DeileWorkerClient:
         """
         return await self._get_json(_RESULT_PATH.format(task_id=task_id))
 
-    async def _get_json(self, path: str) -> Dict[str, Any]:
+    async def get_resume_info(
+        self,
+        task_id: str,
+        *,
+        endpoint_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """``GET /v1/dispatches/{task_id}/resume-info`` (claude-worker).
+
+        Retorna metadata da sessão claude pra o pipeline decidir entre
+        resume vs fresh dispatch. Mesmo error code map de :meth:`get_progress`
+        (NOT_FOUND/WORKER_TIMEOUT/WORKER_UNREACHABLE/etc).
+
+        Args:
+            task_id: hex 16-char do dispatch original (worker valida).
+            endpoint_url: opcional — base URL do worker (default = legacy
+                env var). Necessário pra apontar pra claude-worker:8767
+                quando o pipeline usa per-stage routing.
+        """
+        return await self._get_json(
+            _RESUME_INFO_PATH.format(task_id=task_id),
+            endpoint_url=endpoint_url,
+        )
+
+    async def _get_json(
+        self,
+        path: str,
+        *,
+        endpoint_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Helper compartilhado: GET autenticado + JSON parsing.
 
         Reusa a resolução de endpoint/token de :meth:`dispatch`, mas com
         timeout curto (polling, não dispatch). Erros mapeiam para os mesmos
         :class:`WorkerDispatchError` codes; o caller decide se é fatal.
+
+        ``endpoint_url`` opcional — quando truthy, sobrescreve a resolução
+        legacy via env var. Habilita GET contra claude-worker:8767 em
+        per-stage routing (paridade com :meth:`dispatch`).
         """
-        endpoint = _resolve_endpoint().rstrip("/") + path
+        base = endpoint_url if endpoint_url else _resolve_endpoint()
+        endpoint = base.rstrip("/") + path
         token, httpx = await _resolve_auth_and_httpx()
 
         headers = {

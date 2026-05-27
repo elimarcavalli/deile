@@ -607,6 +607,127 @@ class GitHubForge(ForgeClient):
             args += ["-f", f"labels[]={lb}"]
         await self._run_checked(*args)
 
+    async def has_bot_activity_since(
+        self,
+        kind: str,
+        number: int,
+        bot_login: str,
+        *,
+        since_ts: int,
+    ) -> bool:
+        """True se *bot_login* tem qualquer atividade no PR/issue desde
+        ``since_ts`` Unix: comment, review (pra PR), merge, push de commit.
+
+        Estratégia: query única ``gh api`` por comments + reviews em
+        paralelo (gather), parseia ISO timestamps, qualquer match positivo
+        retorna True. Falha de transporte → True (fail-open).
+        """
+        try:
+            return await self._has_bot_activity_impl(
+                kind, number, bot_login, since_ts,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "has_bot_activity_since #%d failed (fail-open): %s",
+                number, exc,
+            )
+            return True
+
+    async def _has_bot_activity_impl(
+        self, kind: str, number: int, bot_login: str, since_ts: int,
+    ) -> bool:
+        # Comments — issues + PRs compartilham endpoint.
+        rc_c, out_c, _ = await self._run(
+            "api", "--paginate",
+            f"repos/{self.repo}/issues/{number}/comments",
+            "-q", (
+                f'[.[] | select(.user.login=="{bot_login}") | .created_at] | last'
+            ),
+        )
+        if rc_c == 0 and self._iso_after(out_c, since_ts):
+            return True
+        if kind == "pr":
+            # Reviews (formal) — só pra PRs.
+            rc_r, out_r, _ = await self._run(
+                "api", "--paginate",
+                f"repos/{self.repo}/pulls/{number}/reviews",
+                "-q", (
+                    f'[.[] | select(.user.login=="{bot_login}") | .submitted_at] | last'
+                ),
+            )
+            if rc_r == 0 and self._iso_after(out_r, since_ts):
+                return True
+            # Merge status — se merged depois do since_ts, conta como atividade.
+            rc_m, out_m, _ = await self._run(
+                "api", f"repos/{self.repo}/pulls/{number}",
+                "-q", ".merged_at",
+            )
+            if rc_m == 0 and self._iso_after(out_m, since_ts):
+                return True
+            # Novo commit no branch (último commit timestamp).
+            rc_p, out_p, _ = await self._run(
+                "api", f"repos/{self.repo}/pulls/{number}/commits",
+                "-q", "[.[].commit.committer.date] | last",
+            )
+            if rc_p == 0 and self._iso_after(out_p, since_ts):
+                return True
+        return False
+
+    @staticmethod
+    def _iso_after(out: str, since_ts: int) -> bool:
+        """Helper: True se ``out`` é ISO timestamp posterior a ``since_ts``."""
+        ts_str = (out or "").strip().strip('"')
+        if not ts_str or ts_str == "null":
+            return False
+        try:
+            iso = ts_str.replace("Z", "+00:00")
+            return int(datetime.fromisoformat(iso).timestamp()) > since_ts
+        except (ValueError, TypeError):
+            return False
+
+    async def label_applied_at(
+        self, kind: str, number: int, label: str,
+    ) -> Optional[int]:
+        """GitHub events API → ISO timestamp do último ``labeled`` event do
+        ``label`` no ``kind/number``. Suporta paginação automática via
+        ``--paginate``. Retorna None se label nunca aplicada (ou erro).
+
+        Implementação: ``gh api repos/<repo>/issues/<n>/events --paginate
+        -q '...'`` filtra eventos ``event=="labeled"`` com nome batendo,
+        pega o último ``created_at`` (mais recente). ISO timestamp é
+        parseado pra Unix ts via ``datetime.fromisoformat`` (Python 3.11+
+        suporta sufixo ``Z`` nativamente; pra anterior, normalizamos).
+        """
+        rc, out, err = await self._run(
+            "api", "--paginate",
+            f"repos/{self.repo}/issues/{number}/events",
+            "-q", (
+                '[.[] | select(.event=="labeled" and .label.name=='
+                f'"{label}") | .created_at] | last'
+            ),
+        )
+        if rc != 0:
+            logger.debug(
+                "label_applied_at #%d label=%r: gh api failed: %s",
+                number, label, err[:100],
+            )
+            return None
+        ts_str = (out or "").strip().strip('"')
+        if not ts_str or ts_str == "null":
+            return None
+        try:
+            # GitHub usa ISO 8601 com 'Z' (Python 3.11+ aceita nativamente;
+            # 3.9-3.10 requer replace).
+            from datetime import datetime
+            iso = ts_str.replace("Z", "+00:00")
+            return int(datetime.fromisoformat(iso).timestamp())
+        except (ValueError, TypeError) as exc:
+            logger.debug(
+                "label_applied_at #%d label=%r: ts parse failed (%r): %s",
+                number, label, ts_str, exc,
+            )
+            return None
+
     async def remove_labels(
         self, kind: str, number: int, labels: Iterable[str],
     ) -> None:
