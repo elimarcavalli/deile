@@ -384,3 +384,247 @@ def test_selecting_claude_worker_when_absent_triggers_install_flow(
         f"esperado bootstrap chamado ou modal aberto; "
         f"called={bootstrap_called['flag']}, mode={view.mode}"
     )
+
+
+# ============================================================================
+# Bug #2 hotfix: _perform_install NÃO BLOQUEIA o painel TUI
+# ============================================================================
+
+def test_perform_install_runs_in_background_thread_by_default(
+    mock_data_with_claude, monkeypatch,
+):
+    """``_perform_install(force_relogin=True)`` retorna imediatamente sem
+    bloquear o caller; bootstrap roda em thread daemon — fix do freeze
+    relatado no [L]."""
+    import threading
+    import time as _time
+
+    import _claude_install
+    from _panel import DispatchMatrixView
+
+    # bootstrap simulado: dorme 0.5s pra emular subprocess.run blocante.
+    started = threading.Event()
+    finished = threading.Event()
+
+    def slow_bootstrap(**kwargs):
+        started.set()
+        _time.sleep(0.5)
+        finished.set()
+        return _claude_install.ClaudeLoginResult(
+            ok=True, account_email="x@y.com",
+            secret_applied=True, deployment_applied=True, rollout_ready=True,
+        )
+
+    monkeypatch.setattr(
+        _claude_install, "bootstrap_claude_worker", slow_bootstrap,
+    )
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    t0 = _time.monotonic()
+    view._perform_install(force_relogin=True)
+    elapsed = _time.monotonic() - t0
+
+    # Caller retornou em < 100ms (não bloqueou os 500ms do bootstrap).
+    assert elapsed < 0.1, (
+        f"_perform_install bloqueou por {elapsed:.3f}s — esperado retorno "
+        f"imediato (thread daemon)"
+    )
+    # Mensagem otimista visível no painel enquanto thread roda.
+    assert "background" in view.last_msg.lower()
+    assert view._install_in_progress is True
+    # Thread foi de fato iniciada.
+    assert started.wait(timeout=1.0), "bootstrap thread não iniciou em 1s"
+    # E completa OK em até 2s.
+    assert finished.wait(timeout=2.0), "bootstrap thread não completou em 2s"
+    # Após completar, painel atualiza mensagem de sucesso.
+    view._install_thread.join(timeout=2.0)
+    assert view._install_in_progress is False
+    assert view.last_ok is True
+    assert "sucesso" in view.last_msg.lower()
+
+
+def test_perform_install_blocking_mode_runs_inline(
+    mock_data_with_claude, monkeypatch,
+):
+    """Modo ``_blocking=True`` (usado por ``_on_worker_selected``) executa
+    inline — preserva a verificação de cw_status logo depois do install."""
+    import _claude_install
+    from _panel import DispatchMatrixView
+
+    call_count = {"n": 0}
+
+    def fake_bootstrap(**kwargs):
+        call_count["n"] += 1
+        return _claude_install.ClaudeLoginResult(
+            ok=True, account_email="user@blocking.com",
+            secret_applied=True, deployment_applied=True, rollout_ready=True,
+        )
+
+    monkeypatch.setattr(
+        _claude_install, "bootstrap_claude_worker", fake_bootstrap,
+    )
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    view._perform_install(force_relogin=False, _blocking=True)
+
+    # Bootstrap chamado e estado completo já visível ao retornar.
+    assert call_count["n"] == 1
+    assert view._install_in_progress is False
+    assert view.last_ok is True
+
+
+def test_concurrent_install_request_is_ignored(
+    mock_data_with_claude, monkeypatch,
+):
+    """Apertar [I]/[L] enquanto bootstrap em background NÃO spawna nova
+    thread — devolve mensagem informativa."""
+    import threading
+    import time as _time
+
+    import _claude_install
+    from _panel import DispatchMatrixView
+
+    bootstrap_calls = {"n": 0}
+    release = threading.Event()
+
+    def bootstrap_that_waits(**kwargs):
+        bootstrap_calls["n"] += 1
+        release.wait(timeout=2.0)
+        return _claude_install.ClaudeLoginResult(
+            ok=True, account_email="single@call.com",
+            secret_applied=True, deployment_applied=True, rollout_ready=True,
+        )
+
+    monkeypatch.setattr(
+        _claude_install, "bootstrap_claude_worker", bootstrap_that_waits,
+    )
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    view._perform_install(force_relogin=True)  # 1ª chamada — spawna thread
+    _time.sleep(0.05)  # dá tempo da thread iniciar
+    view._perform_install(force_relogin=True)  # 2ª chamada — ignorada
+
+    assert bootstrap_calls["n"] == 1
+    assert "em andamento" in view.last_msg.lower()
+
+    release.set()  # libera a thread pra terminar
+    view._install_thread.join(timeout=2.0)
+
+
+# ============================================================================
+# FU #6: [U] uninstall hotkey
+# ============================================================================
+
+
+def test_u_key_opens_uninstall_modal(mock_data_with_claude):
+    """``[U]`` abre modal de confirmação Y/N — mesmo quando install
+    parcial (deployment_applied=False), pois pode haver orfãos."""
+    from _panel import DispatchMatrixView
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    view.handle_key("U", MagicMock())
+    assert view.mode is not None
+    assert view.mode[0] == "uninstall_confirm"
+
+
+def test_u_key_blocked_when_install_in_progress(mock_data_with_claude):
+    """Spawn de [U] enquanto install em background → mensagem de bloqueio."""
+    from _panel import DispatchMatrixView
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    view._install_in_progress = True
+    view.handle_key("U", MagicMock())
+    assert view.mode is None  # não abriu modal
+    assert "em andamento" in view.last_msg.lower()
+
+
+def test_perform_uninstall_runs_in_background_thread_by_default(
+    mock_data_with_claude, monkeypatch,
+):
+    """``_perform_uninstall`` retorna imediatamente; uninstall roda em
+    daemon thread — mesmo padrão de :meth:`_perform_install`."""
+    import threading
+    import time as _time
+
+    import _claude_install
+    from _panel import DispatchMatrixView
+
+    finished = threading.Event()
+
+    def slow_uninstall(**kwargs):
+        _time.sleep(0.3)
+        finished.set()
+        return _claude_install.ClaudeLoginResult(ok=True)
+
+    monkeypatch.setattr(
+        _claude_install, "uninstall_claude_worker", slow_uninstall,
+    )
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    t0 = _time.monotonic()
+    view._perform_uninstall()
+    elapsed = _time.monotonic() - t0
+
+    assert elapsed < 0.1, (
+        f"_perform_uninstall bloqueou {elapsed:.3f}s — esperado retorno "
+        f"imediato (thread daemon)"
+    )
+    assert "background" in view.last_msg.lower()
+    assert view._install_in_progress is True
+    assert finished.wait(timeout=2.0)
+    view._install_thread.join(timeout=2.0)
+    assert view._install_in_progress is False
+    assert view.last_ok is True
+    assert "desinstalado" in view.last_msg.lower()
+
+
+def test_handle_uninstall_confirm_yes_triggers_perform(
+    mock_data_with_claude, monkeypatch,
+):
+    """``[Y]`` no modal de uninstall chama ``_perform_uninstall``."""
+    import _claude_install
+    from _panel import DispatchMatrixView
+
+    call_count = {"n": 0}
+
+    def fake_uninstall(**kwargs):
+        call_count["n"] += 1
+        return _claude_install.ClaudeLoginResult(ok=True)
+
+    monkeypatch.setattr(
+        _claude_install, "uninstall_claude_worker", fake_uninstall,
+    )
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    view._open_uninstall_modal()
+    view._perform_uninstall = lambda: setattr(view, "_test_called", True)
+    view._handle_uninstall_confirm("Y")
+    assert getattr(view, "_test_called", False) is True
+    assert view.mode is None  # modal fechado
+
+
+def test_handle_uninstall_confirm_no_cancels(mock_data_with_claude):
+    """``[N]`` fecha o modal sem chamar uninstall."""
+    from _panel import DispatchMatrixView
+
+    view = DispatchMatrixView(data=mock_data_with_claude)
+    view._open_uninstall_modal()
+    view._handle_uninstall_confirm("N")
+    assert view.mode is None
+    assert "cancelada" in view.last_msg.lower()
+
+
+# ============================================================================
+# Bug #1 hotfix: deploy.py expõe repo root no sys.path
+# ============================================================================
+
+def test_deploy_py_inserts_repo_root_in_syspath():
+    """``deploy.py`` insere o repo root no ``sys.path`` para que imports
+    ``from deile.<x>`` resolvam quando o script é executado direto
+    (``python3 infra/k8s/deploy.py``). Sem isso, ``set_pipeline_dispatch_stage``
+    quebra com 'No module named deile.orchestration.pipeline.dispatch_resolver'."""
+    deploy_py = Path(__file__).resolve().parents[3] / "infra" / "k8s" / "deploy.py"
+    source = deploy_py.read_text()
+    # O fix usa ``_REPO_ROOT = _INFRA.parent`` + ``sys.path.insert(0, str(_REPO_ROOT))``.
+    assert "_REPO_ROOT" in source
+    assert "sys.path.insert(0, str(_REPO_ROOT))" in source

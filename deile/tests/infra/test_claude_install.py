@@ -57,17 +57,29 @@ def test_bootstrap_returns_error_when_no_credentials_and_not_interactive(
 def test_bootstrap_idempotent_when_credentials_present(
     claude_install_module, tmp_path, monkeypatch,
 ):
-    """Credentials existing + cluster commands mockados -> ok=True idempotent."""
+    """Credentials existing + cluster commands mockados -> ok=True idempotent.
+
+    Patch dos detectores Keychain + auth_status pra não tocar no estado
+    real do host (testes não devem depender da conta logada no claude do
+    operador). ``_read_credentials_from_file`` ainda lê o file fixture.
+    """
     fake_home = tmp_path / ".claude"
     fake_home.mkdir()
     (fake_home / "credentials.json").write_text(
         json.dumps({"email": "user@test.com", "access_token": "fake_token"})
     )
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        claude_install_module, "_check_claude_logged_in", lambda: None,
+    )
+    monkeypatch.setattr(
+        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+    )
 
     # Mock all kubectl subprocess calls to return 0
     with patch.object(claude_install_module, "_kubectl_apply_secret", return_value=True), \
          patch.object(claude_install_module, "_kubectl_apply_manifests", return_value=True), \
+         patch.object(claude_install_module, "_kubectl_sync_bearer_token", return_value=True), \
          patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True):
         result = claude_install_module.bootstrap_claude_worker(
             interactive=False, force_relogin=False, home=tmp_path,
@@ -120,6 +132,7 @@ def test_bootstrap_force_relogin_runs_claude_logout_then_login(
     with patch.object(claude_install_module.subprocess, "run", side_effect=fake_run), \
          patch.object(claude_install_module, "_kubectl_apply_secret", return_value=True), \
          patch.object(claude_install_module, "_kubectl_apply_manifests", return_value=True), \
+         patch.object(claude_install_module, "_kubectl_sync_bearer_token", return_value=True), \
          patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True):
         result = claude_install_module.bootstrap_claude_worker(
             interactive=True, force_relogin=True, home=tmp_path,
@@ -142,6 +155,12 @@ def test_bootstrap_failure_in_secret_apply_returns_error(
     fake_home.mkdir()
     (fake_home / "credentials.json").write_text(json.dumps({"email": "u@x"}))
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        claude_install_module, "_check_claude_logged_in", lambda: None,
+    )
+    monkeypatch.setattr(
+        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+    )
 
     with patch.object(claude_install_module, "_kubectl_apply_secret", return_value=False):
         result = claude_install_module.bootstrap_claude_worker(
@@ -160,9 +179,16 @@ def test_bootstrap_failure_in_rollout_returns_error(
     fake_home.mkdir()
     (fake_home / "credentials.json").write_text(json.dumps({"email": "u@x"}))
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        claude_install_module, "_check_claude_logged_in", lambda: None,
+    )
+    monkeypatch.setattr(
+        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+    )
 
     with patch.object(claude_install_module, "_kubectl_apply_secret", return_value=True), \
          patch.object(claude_install_module, "_kubectl_apply_manifests", return_value=True), \
+         patch.object(claude_install_module, "_kubectl_sync_bearer_token", return_value=True), \
          patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=False):
         result = claude_install_module.bootstrap_claude_worker(
             interactive=False, force_relogin=False, home=tmp_path,
@@ -172,3 +198,59 @@ def test_bootstrap_failure_in_rollout_returns_error(
     assert result.deployment_applied is True  # passou aqui
     assert result.rollout_ready is False
     assert "rollout" in (result.error or "").lower()
+
+
+def test_kubectl_sync_bearer_token_warns_when_worker_bearer_missing(
+    claude_install_module, monkeypatch,
+):
+    """worker-bearer ausente -> WARN + return True (não-fatal; rollout falha
+    depois com mensagem clara)."""
+    def fake_kubectl_get_missing(cmd, *args, **kwargs):
+        ret = MagicMock()
+        ret.returncode = 1
+        ret.stdout = ""
+        ret.stderr = "Error from server (NotFound): secrets 'worker-bearer'"
+        return ret
+
+    with patch.object(claude_install_module.subprocess, "run",
+                      side_effect=fake_kubectl_get_missing):
+        result = claude_install_module._kubectl_sync_bearer_token(
+            namespace="deile",
+        )
+    assert result is True  # não-fatal
+
+
+def test_kubectl_sync_bearer_token_succeeds_when_worker_bearer_present(
+    claude_install_module, monkeypatch,
+):
+    """worker-bearer presente -> kubectl get + base64 decode + apply do
+    claude-worker-bearer com mesmo token."""
+    import base64
+    token_plain = "abc123token"
+    token_b64 = base64.b64encode(token_plain.encode()).decode()
+
+    call_log = []
+
+    def fake_run(cmd, *args, **kwargs):
+        call_log.append(cmd)
+        ret = MagicMock()
+        ret.returncode = 0
+        if "get" in cmd and "secret" in cmd and "worker-bearer" in cmd:
+            ret.stdout = token_b64
+        else:
+            ret.stdout = "fake yaml manifest"
+        ret.stderr = ""
+        return ret
+
+    with patch.object(claude_install_module.subprocess, "run",
+                      side_effect=fake_run):
+        result = claude_install_module._kubectl_sync_bearer_token(
+            namespace="deile",
+        )
+    assert result is True
+    # 3 chamadas: get worker-bearer + create dry-run claude-worker-bearer + apply
+    assert len(call_log) == 3
+    # Token plain entra no --from-literal da segunda chamada (dry-run).
+    dry_run_cmd = call_log[1]
+    assert any(token_plain in arg for arg in dry_run_cmd), \
+        f"token plain não encontrado em {dry_run_cmd}"

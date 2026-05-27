@@ -896,6 +896,31 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         preferred_model = str(preferred_model).strip() or None
     # Resume context — present only on pipeline dispatches (issue #254).
     resume_ctx = _parse_resume_ctx(body)
+    # Pipeline-context fields (issue #309 fase 2). Optional and forge-agnostic;
+    # absent on bot/CLI passthrough dispatches. Logged as a structured
+    # ``dispatch_started`` line below so the panel's ``WorkerProvider`` can
+    # surface "what is this worker doing right now" in Pod Watch without a new
+    # endpoint. Wire validator on the bot-side already rejected malformed
+    # stage/issue values; here we accept whatever survived and coerce
+    # defensively (str-strip and int-coerce) so a malformed payload at most
+    # produces an absent field, never a 5xx.
+    stage = body.get("stage")
+    if stage is not None:
+        stage = str(stage).strip() or None
+    action_kind = body.get("action_kind")
+    if action_kind is not None:
+        action_kind = str(action_kind).strip() or None
+    issue_number_raw = body.get("issue_number")
+    issue_number: Optional[int]
+    try:
+        issue_number = int(issue_number_raw) if issue_number_raw is not None else None
+        if issue_number is not None and issue_number < 1:
+            issue_number = None
+    except (TypeError, ValueError):
+        issue_number = None
+    branch = body.get("branch")
+    if branch is not None:
+        branch = str(branch).strip() or None
 
     task_id = uuid.uuid4().hex[:_TASK_ID_LEN]
     _evict_old_tasks_if_needed()
@@ -905,6 +930,26 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         "started_at": datetime.now(timezone.utc).isoformat(),
         "brief": brief,
     }
+    # Structured one-line dispatch log — single source of truth consumed by
+    # ``infra.k8s._panel_data.WorkerProvider`` to populate the Pod Watch
+    # "current task" header (issue #309 fase 2 follow-up). NEVER include the
+    # ``brief`` (untrusted Discord content) or any secret — only the
+    # already-validated routing metadata. Format is ``key=value`` pairs with
+    # absent fields omitted; ``channel_id`` is included because it doubles as
+    # a fallback target hint for pipeline channels (``pipeline-issue-<N>`` /
+    # ``pipeline-pr-<N>`` / ``pipeline-mention-{issue|pr}-<N>``) when the
+    # caller didn't pass ``issue_number`` explicitly. Format change here MUST
+    # be mirrored in ``_DISPATCH_STARTED_RE`` on the panel side.
+    parts = [f"task={task_id}", f"channel={channel_id}"]
+    if stage:
+        parts.append(f"stage={stage}")
+    if action_kind:
+        parts.append(f"kind={action_kind}")
+    if issue_number is not None:
+        parts.append(f"issue={issue_number}")
+    if branch:
+        parts.append(f"branch={branch}")
+    logger.info("dispatch_started %s", " ".join(parts))
 
     wait_for_result = bool(body.get("wait_for_result", True))
     if wait_for_result:
@@ -916,9 +961,17 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 timeout=TASK_TIMEOUT_S + 30,
             )
             _TASKS[task_id] = result
+            # Terminal marker for the panel — pairs with the
+            # ``dispatch_started`` line emitted above. Carries only the
+            # task_id and an ``ok`` flag (no brief/result echo: pilar 08).
+            logger.info(
+                "dispatch_completed task=%s ok=%s",
+                task_id, bool(result.get("ok")),
+            )
             return web.json_response(result)
         except asyncio.TimeoutError:
             _TASKS[task_id] = {**_TASKS[task_id], "ok": False, "error": "outer timeout"}
+            logger.info("dispatch_completed task=%s ok=False", task_id)
             return web.json_response(_TASKS[task_id], status=504)
     else:
         # Fire-and-forget — caller polls /v1/result/{id}
@@ -930,18 +983,24 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 _TASKS[task_id] = await _run_task(task_id, brief, channel_id, user_message_id, persona,
                                                   attachments, history, resume_ctx=resume_ctx,
                                                   preferred_model=preferred_model)
+                logger.info(
+                    "dispatch_completed task=%s ok=%s",
+                    task_id, bool(_TASKS[task_id].get("ok")),
+                )
             except asyncio.CancelledError:
                 _TASKS[task_id] = {
                     **_TASKS.get(task_id, {"task_id": task_id}),
                     "ok": False,
                     "error": "task cancelled",
                 }
+                logger.info("dispatch_completed task=%s ok=False", task_id)
                 raise
             except Exception as exc:
                 _TASKS[task_id] = {
                     "task_id": task_id, "ok": False,
                     "error": f"{type(exc).__name__}: {exc}",
                 }
+                logger.info("dispatch_completed task=%s ok=False", task_id)
         # B2 (PR #295 review): guarda strong ref para a task em background.
         # asyncio mantém apenas weak refs internamente; sem o set + callback,
         # o GC pode coletar a task antes de ela completar.

@@ -875,6 +875,77 @@ class PipelineProvider(_KubectlProviderMixin):
 # ===== Worker activity ======================================================
 
 @dataclass
+class CurrentTask:
+    """Snapshot da task em execução em um pod worker.
+
+    Populada pelo :class:`WorkerProvider` quando ele encontra uma linha
+    ``dispatch_started`` no log do worker sem um ``dispatch_completed``
+    correspondente — i.e., a última dispatch ainda está rodando. Surface
+    primária: cabeçalho do :class:`PodWatchView` no painel TUI (issue
+    #309 fase 2 follow-up), que mostra ao operador "o que esse worker
+    está fazendo agora" sem precisar interpretar o log bruto.
+
+    Forge-agnóstica: ``issue_number`` é apenas um inteiro (sem ``#``/
+    ``!``); o renderer da UI escolhe o prefixo apropriado. ``channel_id``
+    é mantido como fallback de display — quando o pipeline não envia
+    ``issue_number`` explícito, o parser extrai o número do padrão
+    ``pipeline-(issue|pr|mention-issue|mention-pr)-<N>`` do channel.
+
+    Segurança (pilar 08): nenhum desses campos carrega ``brief``,
+    histórico, credentials ou conteúdo do Discord — todos são metadata
+    de roteamento já validada na fronteira do worker.
+    """
+    task_id: str
+    channel_id: str
+    started_ts: datetime
+    stage: Optional[str] = None
+    action_kind: Optional[str] = None
+    issue_number: Optional[int] = None
+    branch: Optional[str] = None
+
+    @property
+    def target_label(self) -> str:
+        """Rótulo curto pro header (ex.: ``#309``, ``PR#291``, ``mention #257``).
+
+        Convenção alinhada com :func:`_classify_pipeline_line` (mesmo
+        vocabulário usado pelo :class:`PipelineTimelineView`). Quando
+        ``issue_number`` foi enviado explicitamente, usa ele; senão tenta
+        extrair do ``channel_id``. ``channel_id`` é a fonte canônica do
+        pipeline (``pipeline-issue-N`` / ``pipeline-pr-N`` /
+        ``pipeline-mention-{issue|pr}-N``); para dispatches não-pipeline
+        (snowflake do Discord), devolve uma rotulagem genérica curta.
+        """
+        n = self.issue_number
+        kind_hint = ""
+        if self.channel_id:
+            m = _PIPELINE_CHANNEL_RE.match(self.channel_id)
+            if m:
+                kind_hint = m.group(1)  # "issue" | "pr" | "mention-issue" | "mention-pr"
+                if n is None:
+                    try:
+                        n = int(m.group(2))
+                    except (ValueError, TypeError):
+                        n = None
+        if n is not None:
+            # Ordem importa: ``mention-pr`` casa com ``endswith("pr")`` E
+            # com ``startswith("mention-")``. Mention-routing precisa
+            # ganhar para o operador ver explicitamente que veio de uma
+            # mention (não de um dispatch direto da pipeline).
+            if kind_hint.startswith("mention-"):
+                kind_target = "PR" if kind_hint.endswith("pr") else "#"
+                return f"mention {kind_target}{n}"
+            if kind_hint.endswith("pr"):
+                return f"PR#{n}"
+            return f"#{n}"
+        # Fallback (CLI/bot passthrough): mostra o channel_id truncado.
+        return f"channel:{self.channel_id[:16]}"
+
+    @property
+    def elapsed_s(self) -> float:
+        return (datetime.now(_UTC) - self.started_ts).total_seconds()
+
+
+@dataclass
 class WorkerState:
     """Estado deduzido do log de um pod worker."""
     pod_name: str
@@ -883,6 +954,11 @@ class WorkerState:
     last_substantive_ts: Optional[datetime] = None
     last_health_ts: Optional[datetime] = None
     last_substantive_body: str = ""
+    # Task em execução agora (issue #309 fase 2 follow-up). ``None`` quando
+    # o pod está idle ou quando o log não tem nenhum ``dispatch_started``
+    # ativo (ainda não cobre todos os workers em deploy, então ``None`` é
+    # o caminho silencioso de compatibilidade).
+    current_task: Optional[CurrentTask] = None
 
     @property
     def last_activity_s(self) -> Optional[float]:
@@ -897,6 +973,27 @@ class WorkerState:
 _WORKER_HEALTH_RE = re.compile(r"GET /v1/health", re.IGNORECASE)
 _WORKER_DISPATCH_RE = re.compile(r"POST /v1/dispatch", re.IGNORECASE)
 _WORKER_BUSY_WINDOW_S = 90  # se houve POST /v1/dispatch nos últimos 90s, está busy
+
+# Structured dispatch markers emitted by ``infra.k8s.worker_server``
+# (``dispatch_handler``) — single source of truth for the "what is this
+# worker doing right now" header in :class:`PodWatchView`. Format must
+# stay in sync with the ``logger.info`` calls there; key order is
+# flexible (we extract by regex), but key NAMES are the wire contract.
+_DISPATCH_STARTED_RE = re.compile(
+    r"dispatch_started\s+(?P<kv>.+)$", re.IGNORECASE,
+)
+_DISPATCH_COMPLETED_RE = re.compile(
+    r"dispatch_completed\s+task=(?P<task_id>[a-f0-9]+)\b", re.IGNORECASE,
+)
+_KV_RE = re.compile(r"(\w+)=(\S+)")
+# Pipeline channel naming convention (see implementer.py:_dispatch /
+# stages.py mention routing): ``pipeline-(issue|pr|mention-issue|mention-pr)-<N>``.
+# Used by :class:`CurrentTask` to extract the target number when the
+# pipeline didn't pass ``issue_number`` explicitly (backward compat with
+# older pipeline versions or non-pipeline callers).
+_PIPELINE_CHANNEL_RE = re.compile(
+    r"^pipeline-(mention-issue|mention-pr|issue|pr)-(\d+)$"
+)
 
 
 class WorkerProvider(_KubectlProviderMixin):
@@ -955,12 +1052,59 @@ class WorkerProvider(_KubectlProviderMixin):
         # Cap defensivo contra logs muito grandes.
         if len(text) > MAX_LOG_BYTES:
             text = text[-MAX_LOG_BYTES:]
+        # Tracking de "task em execução agora" via pareamento de
+        # ``dispatch_started`` ↔ ``dispatch_completed`` (issue #309 fase 2
+        # follow-up). Mantemos um dict ``task_id -> CurrentTask`` enquanto
+        # parseia o log; o ``current_task`` final é o último started ainda
+        # vivo (mais recente). Logs antigos rotacionam o suficiente pra
+        # que o dict não cresça indefinidamente — TAIL_LINES=200 limita.
+        # Defensive: se um ``dispatch_started`` aparece sem o ``completed``
+        # correspondente (worker reiniciado mid-task, log truncado, etc.),
+        # o pareamento naturalmente reflete a realidade: a task "ficou
+        # presa" como current_task até que o log rotacione, o que casa
+        # com o comportamento observável do pod (busy/last_dispatch_ts
+        # também ficariam congelados num dispatch antigo).
+        live_tasks: Dict[str, CurrentTask] = {}
         for raw in text.splitlines():
             ll = _parse_log_line(raw)
             if ll is None:
                 continue
             if _WORKER_HEALTH_RE.search(ll.body):
                 state.last_health_ts = ll.ts
+                continue
+            # Pareamento started/completed — feito ANTES do dispatch-RE
+            # genérico porque ambos casam com "dispatch" no body.
+            m_done = _DISPATCH_COMPLETED_RE.search(ll.body)
+            if m_done:
+                live_tasks.pop(m_done.group("task_id"), None)
+                # Não é uma "atividade nova" — apenas o término de uma
+                # task já contabilizada via ``dispatch_started``; pular o
+                # restante do bookkeeping evita inflar last_substantive_ts
+                # com o ack final.
+                continue
+            m_start = _DISPATCH_STARTED_RE.search(ll.body)
+            if m_start:
+                kv = dict(_KV_RE.findall(m_start.group("kv")))
+                tid = kv.get("task", "")
+                ch = kv.get("channel", "")
+                if tid and ch:
+                    issue_num: Optional[int]
+                    try:
+                        issue_num = int(kv["issue"]) if "issue" in kv else None
+                    except (ValueError, KeyError):
+                        issue_num = None
+                    live_tasks[tid] = CurrentTask(
+                        task_id=tid, channel_id=ch, started_ts=ll.ts,
+                        stage=kv.get("stage"),
+                        action_kind=kv.get("kind"),
+                        issue_number=issue_num,
+                        branch=kv.get("branch"),
+                    )
+                # ``dispatch_started`` é atividade substantiva — atualiza
+                # last_substantive_ts/body também, para o cálculo de
+                # "última atividade" não regredir.
+                state.last_substantive_ts = ll.ts
+                state.last_substantive_body = ll.body[:100]
                 continue
             if _WORKER_DISPATCH_RE.search(ll.body):
                 # `last_dispatch_ts` é a fonte de verdade do busy-window —
@@ -979,6 +1123,13 @@ class WorkerProvider(_KubectlProviderMixin):
         if state.last_dispatch_ts is not None:
             since = (now - state.last_dispatch_ts).total_seconds()
             state.busy = since < _WORKER_BUSY_WINDOW_S
+        # ``current_task`` = task started mais recente ainda viva (sem
+        # completed). Quando o pod está idle, ``live_tasks`` é {} e
+        # current_task fica None — o renderer mostra "—".
+        if live_tasks:
+            state.current_task = max(
+                live_tasks.values(), key=lambda t: t.started_ts,
+            )
         return state
 
 

@@ -26,6 +26,7 @@ Spec: ``docs/superpowers/specs/2026-05-26-claude-worker-design.md`` §4.4.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
 import os
 import re
@@ -40,6 +41,68 @@ from typing import List, Optional
 from aiohttp import web
 
 logger = logging.getLogger("deile.claude_worker_server")
+
+
+# --------------------------------------------------------------------------- #
+# Bearer auth (defense-in-depth — NetworkPolicy bloqueia ingress fora do
+# deile-pipeline, mas auth no app-layer impede que pod comprometido dentro
+# do allowlist envie dispatch malicioso).
+# --------------------------------------------------------------------------- #
+
+
+def _read_auth_token() -> str:
+    """Lê o Bearer token do Secret K8s ``claude-worker-bearer``.
+
+    Caminhos em ordem (primeiro existente vence):
+    1. ``/run/secrets/claude-worker/CLAUDE_WORKER_BEARER_TOKEN`` (Secret
+       montado como file pelo manifest 50).
+    2. ``DEILE_CLAUDE_WORKER_AUTH_TOKEN_FILE`` env var (override pra dev).
+    3. ``DEILE_CLAUDE_WORKER_AUTH_TOKEN`` env var (testes apenas — nunca
+       loga o valor).
+
+    Raises:
+        RuntimeError: nenhuma source disponível (Secret não populado +
+            env vars vazias) — server abort no startup pra forçar fix.
+    """
+    candidates = [
+        Path("/run/secrets/claude-worker/CLAUDE_WORKER_BEARER_TOKEN"),
+        Path(os.environ.get("DEILE_CLAUDE_WORKER_AUTH_TOKEN_FILE", "")),
+    ]
+    for p in candidates:
+        if p and p.is_file():
+            token = p.read_text(encoding="utf-8").strip()
+            if token:
+                return token
+    env_val = os.environ.get("DEILE_CLAUDE_WORKER_AUTH_TOKEN", "").strip()
+    if env_val:
+        return env_val
+    raise RuntimeError(
+        "claude-worker auth token not found: expected "
+        "/run/secrets/claude-worker/CLAUDE_WORKER_BEARER_TOKEN "
+        "(populated by deploy.py k8s claude-login) or "
+        "DEILE_CLAUDE_WORKER_AUTH_TOKEN env"
+    )
+
+
+@web.middleware
+async def _bearer_auth_mw(request: web.Request, handler):
+    """Bearer auth middleware (paridade com ``worker_server._bearer_auth_mw``).
+
+    Whitelist ``/v1/health`` (readiness probe sem token). Demais paths
+    exigem ``Authorization: Bearer <token>`` comparado em constant-time
+    (``hmac.compare_digest``) para evitar timing-attack na descoberta.
+    """
+    if request.path == "/v1/health":
+        return await handler(request)
+    expected = request.app["auth_token"]
+    got = request.headers.get("Authorization", "")
+    if not got.startswith("Bearer ") or not hmac.compare_digest(
+            got[len("Bearer "):], expected):
+        return web.json_response(
+            {"error": {"code": "UNAUTHORIZED", "message": "bad bearer"}},
+            status=401,
+        )
+    return await handler(request)
 
 
 # --------------------------------------------------------------------------- #
@@ -379,15 +442,24 @@ async def progress_handler(request: web.Request) -> web.Response:
 # --------------------------------------------------------------------------- #
 
 
-def build_app() -> web.Application:
+def build_app(auth_token: Optional[str] = None) -> web.Application:
     """Monta a ``aiohttp.web.Application`` com as três rotas do contrato.
 
-    Espelha o padrão de ``worker_server.build_app`` (deile-worker) — registry
-    centralizado no construtor + handlers como ``async def`` de módulo. A
-    autenticação Bearer será adicionada na Task 13 (junto com o dispatch
-    real), seguindo o mesmo modelo de middleware.
+    Bearer middleware ativo por default (paridade com
+    ``worker_server.build_app``). O ``auth_token`` opcional permite testes
+    in-process passarem o token sem precisar mockar
+    :func:`_read_auth_token`. Em produção (chamado pelo :func:`main`), o
+    token vem de ``/run/secrets/claude-worker/CLAUDE_WORKER_BEARER_TOKEN``.
+
+    ``client_max_size=512 KiB`` limita o body do ``/v1/dispatch`` — briefs
+    de pipeline normalmente cabem em <50 KiB; o teto generoso (10x) ainda
+    barra payloads anômalos que poderiam encher o PVC.
     """
-    app = web.Application()
+    app = web.Application(
+        middlewares=[_bearer_auth_mw],
+        client_max_size=512 * 1024,
+    )
+    app["auth_token"] = auth_token or _read_auth_token()
     app.router.add_get("/v1/health", health_handler)
     app.router.add_post("/v1/dispatch", dispatch_handler)
     app.router.add_get("/v1/progress/{task_id}", progress_handler)

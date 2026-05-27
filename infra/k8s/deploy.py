@@ -38,12 +38,19 @@ from shutil import which
 from typing import Dict, List, Optional
 
 _INFRA = Path(__file__).resolve().parent.parent
+_REPO_ROOT = _INFRA.parent
+# Repo root primeiro: garante que ``from deile.<x>`` resolva mesmo quando o
+# script é chamado direto (``python3 infra/k8s/deploy.py ...``), cenário em
+# que sys.path[0] é ``infra/k8s/`` e o pacote ``deile/`` ficaria invisível.
+# Sem isso o painel quebra ao tentar set_pipeline_dispatch_stage (issue #309
+# fase 2 hotfix — dispatch_resolver indisponível: No module named ...).
+sys.path.insert(0, str(_REPO_ROOT))
 sys.path.insert(0, str(_INFRA))
 import _cli_ui as ui  # noqa: E402
 from _service import LocalService  # noqa: E402
 
 HERE = Path(__file__).resolve().parent          # infra/k8s/
-ROOT = _INFRA.parent                            # raiz do repo deile/
+ROOT = _REPO_ROOT                                # raiz do repo deile/
 MANIFESTS = HERE / "manifests"
 ENV_FILE = ROOT / ".env"
 DEPLOY_STATE = ROOT / ".deile" / "deploy.json"

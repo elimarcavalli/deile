@@ -3683,7 +3683,7 @@ class DispatchMatrixView(View):
 
     HOTKEYS = (
         "[↑/↓] linha   [←/→] coluna   [enter] editar   [r] reset   "
-        "[L] switch claude login   [I] install   [q] back"
+        "[L] switch claude login   [I] install   [U] uninstall   [q] back"
     )
 
     # Source of truth do conjunto de stages — espelha
@@ -3980,6 +3980,8 @@ class DispatchMatrixView(View):
             title = "INSTALAR CLAUDE-WORKER?"
         elif kind == "switch_login_confirm":
             title = "TROCAR CONTA DO CLAUDE-WORKER?"
+        elif kind == "uninstall_confirm":
+            title = "DESINSTALAR CLAUDE-WORKER?"
         else:  # defensivo
             title = "AÇÃO"
 
@@ -4001,7 +4003,8 @@ class DispatchMatrixView(View):
 
         # Modais de confirmação Y/N usam um prompt e atalhos Y/N visíveis;
         # pickers convencionais usam enter/esc.
-        if kind in ("install_confirm", "switch_login_confirm"):
+        if kind in ("install_confirm", "switch_login_confirm",
+                    "uninstall_confirm"):
             # ``stage`` carrega o texto explicativo da operação.
             prompt = Text(str(stage) if stage else "", style="bold")
             hint = Text("[Y] confirma   [N]/[esc] cancela",
@@ -4139,11 +4142,26 @@ class DispatchMatrixView(View):
             if cw_status.deployment_applied:
                 self.last_msg = (
                     "claude-worker já está instalado — use [L] para "
-                    "trocar de conta"
+                    "trocar de conta ou [U] para desinstalar"
                 )
                 self.last_ok = None  # informativo, sem vermelho
                 return ActionResult.refresh()
             return self._open_install_modal()
+        if key in ("U",):
+            # Hotfix #309 fase 2 — uninstall on-the-fly. Útil quando rollout
+            # falha na metade ("did not become ready in time") e operador
+            # quer reinstalar do zero. Idempotente; recursos ausentes não
+            # crasham. Aceita SEMPRE (mesmo sem deployment_applied) porque
+            # install parcial pode deixar Secret/PVC órfãos que precisam
+            # limpeza.
+            if self._install_in_progress:
+                self.last_msg = (
+                    "instalação/login do claude-worker em andamento — "
+                    "aguarde o resultado antes de desinstalar"
+                )
+                self.last_ok = None
+                return ActionResult.refresh()
+            return self._open_uninstall_modal()
 
         return ActionResult()
 
@@ -4278,6 +4296,147 @@ class DispatchMatrixView(View):
         self.last_msg = ""
         self.last_ok = None
         return ActionResult.refresh()
+
+    def _open_uninstall_modal(self) -> ActionResult:
+        """Modal Y/N para desinstalar o claude-worker do cluster.
+
+        Spawnado por ``[U]``. Idempotente — funciona mesmo se install
+        parcial deixou Secret/PVC órfãos. Deleta: Deployment, Service,
+        PVC ``claude-worker-home``, Secrets ``claude-credentials`` +
+        ``claude-worker-bearer``, ConfigMap allowed-repos. NetworkPolicy
+        NÃO é tocada (compartilhada com deile-worker).
+        """
+        prompt = (
+            "Vou deletar do cluster: Deployment + Service "
+            "+ PVC (claude-worker-home) + Secrets (claude-credentials, "
+            "claude-worker-bearer) + ConfigMap (allowed-repos). "
+            "Operação idempotente — recursos ausentes são ignorados. "
+            "NetworkPolicy NÃO é alterada (compartilhada com deile-worker)."
+        )
+        self.mode = ("uninstall_confirm", prompt,
+                     ["Sim, desinstalar agora", "Cancelar"])
+        self.picker_cursor = 0
+        self.last_msg = ""
+        self.last_ok = None
+        return ActionResult.refresh()
+
+    def _handle_uninstall_confirm(self, key: str) -> ActionResult:
+        """Roteia Y/N (+ enter sobre o cursor) no modal de uninstall."""
+        if key in ("Y", "y"):
+            self.mode = None
+            self.picker_cursor = 0
+            self._perform_uninstall()
+            return ActionResult.refresh()
+        if key in ("N", "n", "ESC"):
+            self.mode = None
+            self.picker_cursor = 0
+            self.last_msg = "desinstalação cancelada"
+            self.last_ok = None
+            return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            if self.picker_cursor == 0:
+                return self._handle_uninstall_confirm("Y")
+            return self._handle_uninstall_confirm("N")
+        if key in ("UP", "k", "DOWN", "j"):
+            _, _, options = self.mode  # type: ignore[misc]
+            n = len(options)
+            if n:
+                delta = -1 if key in ("UP", "k") else 1
+                self.picker_cursor = (self.picker_cursor + delta) % n
+            return ActionResult.refresh()
+        return ActionResult()
+
+    def _perform_uninstall(self, *, _blocking: bool = False) -> None:
+        """Spawna :func:`uninstall_claude_worker` em thread daemon.
+
+        Idêntica estratégia de :meth:`_perform_install` — kubectl deletes
+        rodam em background pra não congelar o painel. Idempotente.
+
+        :param _blocking: força inline (testes); default ``False`` (UX
+            do painel nunca bloqueia).
+        """
+        import threading  # noqa: PLC0415
+
+        if self._install_in_progress or (
+                self._install_thread is not None
+                and self._install_thread.is_alive()):
+            self.last_msg = (
+                "operação em andamento — aguarde antes de desinstalar"
+            )
+            self.last_ok = None
+            return
+
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        if (self.data is not None
+                and getattr(self.data, "context", None) is None):
+            ns = getattr(self.data, "namespace", None) or _NS_DEFAULT
+
+        self.last_msg = (
+            "desinstalando claude-worker em background — UI permanece "
+            "responsiva, resultado em alguns segundos…"
+        )
+        self.last_ok = None
+        self._install_in_progress = True
+
+        if _blocking or getattr(self, "_install_blocking", False):
+            self._run_uninstall_blocking(namespace=ns)
+            return
+
+        self._install_thread = threading.Thread(
+            target=self._run_uninstall_blocking,
+            kwargs={"namespace": ns},
+            name="claude-uninstall",
+            daemon=True,
+        )
+        self._install_thread.start()
+
+    def _run_uninstall_blocking(self, *, namespace: str) -> None:
+        """Worker body — kubectl deletes síncronos + publica resultado."""
+        from _claude_install import \
+            uninstall_claude_worker as _direct_uninstall  # noqa: PLC0415
+
+        try:
+            import _claude_install  # noqa: PLC0415
+            uninstall_fn = getattr(
+                _claude_install, "uninstall_claude_worker",
+                _direct_uninstall,
+            )
+        except ImportError:
+            uninstall_fn = _direct_uninstall
+
+        try:
+            result = uninstall_fn(namespace=namespace)
+        except Exception as exc:  # noqa: BLE001
+            self.last_msg = (
+                f"falha em uninstall_claude_worker: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            self.last_ok = False
+            self._install_in_progress = False
+            return
+
+        if getattr(result, "ok", False):
+            self.last_msg = (
+                "claude-worker desinstalado com sucesso — re-instale com [I]"
+            )
+            self.last_ok = True
+        else:
+            self.last_msg = (
+                f"uninstall retornou erro: "
+                f"{getattr(result, 'error', None) or '(sem detalhe)'}"
+            )
+            self.last_ok = False
+
+        if self.data is not None:
+            try:
+                self.data.stage_dispatch._cache.invalidate()  # noqa: SLF001
+                self.data.stage_dispatch._status_cache.invalidate()  # noqa: SLF001
+            except (AttributeError, TypeError):
+                pass
+
+        self._install_in_progress = False
 
     def _handle_install_confirm(self, key: str) -> ActionResult:
         """Roteia Y/N (+ enter sobre o cursor) no modal de install."""
@@ -4543,13 +4702,15 @@ class DispatchMatrixView(View):
         - ↑/↓ → navega na lista de opções.
         - enter → confirma seleção, chama :meth:`_apply_picker_selection`,
           fecha o modal e invalida o cache do provider.
-        - install_confirm / switch_login_confirm → handlers dedicados
-          (Y/N + enter sobre cursor).
+        - install_confirm / switch_login_confirm / uninstall_confirm →
+          handlers dedicados (Y/N + enter sobre cursor).
         """
         if self.mode is not None and self.mode[0] == "install_confirm":
             return self._handle_install_confirm(key)
         if self.mode is not None and self.mode[0] == "switch_login_confirm":
             return self._handle_switch_login_confirm(key)
+        if self.mode is not None and self.mode[0] == "uninstall_confirm":
+            return self._handle_uninstall_confirm(key)
         if key == "ESC":
             self.mode = None
             self.picker_cursor = 0

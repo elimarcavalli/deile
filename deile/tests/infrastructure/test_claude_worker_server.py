@@ -20,6 +20,11 @@ from pathlib import Path
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
+#: Token usado pelos testes — mesmo valor passado para
+#: ``build_app(auth_token="test-token")``. Reutilizado em todos os calls
+#: HTTP autenticados.
+_AUTH_HEADERS = {"Authorization": "Bearer test-token"}
+
 
 @pytest.fixture
 def claude_worker_module():
@@ -51,7 +56,7 @@ async def test_health_returns_200_when_binary_present(
         lambda b: "/usr/local/bin/claude" if b == "claude" else None,
     )
 
-    app = claude_worker_module.build_app()
+    app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/v1/health")
         assert resp.status == 200
@@ -67,7 +72,7 @@ async def test_health_returns_500_when_binary_missing(
     ``PATH`` — o pod é removido do Service pelo readinessProbe."""
     monkeypatch.setattr(claude_worker_module.shutil, "which", lambda b: None)
 
-    app = claude_worker_module.build_app()
+    app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/v1/health")
         assert resp.status == 500
@@ -87,10 +92,11 @@ async def test_progress_returns_404_for_unknown_task(claude_worker_module, monke
     """task_id válido mas progress file não existe → 404."""
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
 
-    app = claude_worker_module.build_app()
+    app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         # 16-char hex valid format mas inexistente
-        resp = await client.get("/v1/progress/0123456789abcdef")
+        resp = await client.get("/v1/progress/0123456789abcdef",
+                                headers=_AUTH_HEADERS)
         assert resp.status == 404
 
 
@@ -99,14 +105,16 @@ async def test_progress_returns_400_for_invalid_task_id(claude_worker_module, mo
     """task_id formato inválido (não-hex 16-char) → 400."""
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
 
-    app = claude_worker_module.build_app()
+    app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
         # Not hex
-        resp = await client.get("/v1/progress/garbage-no-hex")
+        resp = await client.get("/v1/progress/garbage-no-hex",
+                                headers=_AUTH_HEADERS)
         assert resp.status == 400
 
         # Wrong length
-        resp = await client.get("/v1/progress/abc123")
+        resp = await client.get("/v1/progress/abc123",
+                                headers=_AUTH_HEADERS)
         assert resp.status == 400
 
 
@@ -120,9 +128,10 @@ async def test_progress_returns_tails(claude_worker_module, monkeypatch, tmp_pat
 
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
 
-    app = claude_worker_module.build_app()
+    app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/v1/progress/abcdef0123456789")
+        resp = await client.get("/v1/progress/abcdef0123456789",
+                                headers=_AUTH_HEADERS)
         assert resp.status == 200
         body = await resp.json()
         assert "stdout" in body
@@ -142,9 +151,10 @@ async def test_progress_handles_only_stdout_present(claude_worker_module, monkey
 
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
 
-    app = claude_worker_module.build_app()
+    app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/v1/progress/fedcba9876543210")
+        resp = await client.get("/v1/progress/fedcba9876543210",
+                                headers=_AUTH_HEADERS)
         assert resp.status == 200
         body = await resp.json()
         assert body["stdout"] == "partial\n"
@@ -162,9 +172,10 @@ async def test_progress_tail_caps_long_stdout(claude_worker_module, monkeypatch,
 
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
 
-    app = claude_worker_module.build_app()
+    app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/v1/progress/1111222233334444")
+        resp = await client.get("/v1/progress/1111222233334444",
+                                headers=_AUTH_HEADERS)
         assert resp.status == 200
         body = await resp.json()
         assert len(body["stdout"]) == 50_000
@@ -185,9 +196,9 @@ async def test_dispatch_rejects_non_anthropic_model(claude_worker_module, monkey
     """
     monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
 
-    app = claude_worker_module.build_app()
+    app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", json={
+        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
             "brief": "test",
             "channel_id": "x",
             "preferred_model": "openai:gpt-4",
@@ -220,9 +231,9 @@ async def test_dispatch_translates_model_slug(
     monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
 
-    app = claude_worker_module.build_app()
+    app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", json={
+        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
             "brief": "implement #1",
             "channel_id": "auto/issue-1",
             "preferred_model": "anthropic:claude-opus-4-7",
@@ -259,9 +270,9 @@ async def test_dispatch_response_shape(
     monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
 
-    app = claude_worker_module.build_app()
+    app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", json={
+        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
             "brief": "x", "channel_id": "y",
             "preferred_model": "anthropic:claude-sonnet-4-6",
         })
@@ -297,9 +308,9 @@ async def test_dispatch_creates_workspace_dir(
     monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
 
-    app = claude_worker_module.build_app()
+    app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        resp = await client.post("/v1/dispatch", json={
+        resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
             "brief": "x", "channel_id": "y",
             "preferred_model": "anthropic:claude-haiku-4-5",
         })
@@ -330,9 +341,9 @@ async def test_dispatch_passes_brief_with_preamble(
     monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
     monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
 
-    app = claude_worker_module.build_app()
+    app = claude_worker_module.build_app(auth_token="test-token")
     async with TestClient(TestServer(app)) as client:
-        await client.post("/v1/dispatch", json={
+        await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
             "brief": "MARKER_BRIEF_TEXT_42",
             "channel_id": "y",
             "preferred_model": "anthropic:claude-haiku-4-5",
@@ -349,3 +360,87 @@ async def test_dispatch_passes_brief_with_preamble(
     assert "auto/issue-42" in full_prompt
     # Contrato de output presente no preamble.
     assert "STATUS: SUCCESS" in full_prompt
+
+
+# ============================================================================
+# Bug #3 hotfix: Bearer middleware (issue #309 fase 2 hardening)
+# Defense-in-depth: NetworkPolicy bloqueia ingress externo, mas auth no
+# app-layer impede que pod comprometido dentro do allowlist envie dispatch.
+# ============================================================================
+
+
+async def test_health_endpoint_does_not_require_auth(claude_worker_module,
+                                                     monkeypatch):
+    """``/v1/health`` está whitelisted no middleware — readiness probe do
+    Kubernetes não tem token."""
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        # SEM headers de auth.
+        resp = await client.get("/v1/health")
+        assert resp.status == 200
+
+
+async def test_dispatch_rejects_request_without_bearer(claude_worker_module,
+                                                       monkeypatch):
+    """``/v1/dispatch`` sem ``Authorization`` header → 401 UNAUTHORIZED."""
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/v1/dispatch", json={"brief": "x"})
+        assert resp.status == 401
+        body = await resp.json()
+        assert body["error"]["code"] == "UNAUTHORIZED"
+
+
+async def test_dispatch_rejects_request_with_wrong_bearer(claude_worker_module,
+                                                          monkeypatch):
+    """Token incorreto → 401 (constant-time compare via ``hmac.compare_digest``)."""
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+    app = claude_worker_module.build_app(auth_token="real-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/v1/dispatch",
+            headers={"Authorization": "Bearer wrong-token"},
+            json={"brief": "x"},
+        )
+        assert resp.status == 401
+
+
+async def test_progress_rejects_request_without_bearer(claude_worker_module,
+                                                       monkeypatch, tmp_path):
+    """``/v1/progress/{task_id}`` também exige Bearer (stdout/stderr podem
+    conter secrets do brief)."""
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/progress/0123456789abcdef")
+        assert resp.status == 401
+
+
+async def test_build_app_raises_when_token_missing_and_not_provided(
+    claude_worker_module, monkeypatch,
+):
+    """Sem ``auth_token`` explícito + sem Secret file + sem env var → raise
+    no build_app (server abort no startup pra forçar fix)."""
+    monkeypatch.delenv("DEILE_CLAUDE_WORKER_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("DEILE_CLAUDE_WORKER_AUTH_TOKEN_FILE", raising=False)
+    # _read_auth_token vai falhar (nenhum file existe nem env vars setadas).
+    with pytest.raises(RuntimeError, match="auth token not found"):
+        claude_worker_module.build_app()
+
+
+async def test_client_max_size_rejects_oversized_payload(claude_worker_module,
+                                                         monkeypatch):
+    """Body > 512 KiB → 413 Request Entity Too Large (anti-abuse PVC)."""
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+    app = claude_worker_module.build_app(auth_token="test-token")
+    huge_brief = "x" * (600 * 1024)  # 600 KiB > 512 KiB limit
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/v1/dispatch", headers=_AUTH_HEADERS,
+            json={"brief": huge_brief},
+        )
+        # aiohttp 3.x devolve 400 com body "Content-Length X exceeds maximum
+        # payload size Y" (não 413 RFC-canônico). Aceita ambos.
+        assert resp.status in (400, 413), f"esperado 400 ou 413, got {resp.status}"
