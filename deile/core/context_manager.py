@@ -23,6 +23,48 @@ from .deile_md_loader import \
 logger = logging.getLogger(__name__)
 
 
+async def _build_preferences_block(session: Any) -> str:
+    """Issue #341: Render user preferences as a Markdown block for injection.
+
+    Returns an empty string when there are no preferences (zero overhead)
+    or when the PreferenceStore is unavailable / raises.
+    """
+    try:
+        user_id = _resolve_user_id(session)
+        if not user_id:
+            return ""
+        from deile.preferences.store import PreferenceStore
+        store = PreferenceStore()
+        prefs = store.get_all(user_id)
+        if not prefs:
+            return ""
+        lines = ["## 📋 Preferências do Usuário"]
+        for key, value in sorted(prefs.items()):
+            lines.append(f"- `{key}`: {value}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
+def _resolve_user_id(session: Any) -> Optional[str]:
+    """Resolve the user_id from session, falling back to OS identity.
+
+    Precedence:
+    1. ``session.user_id`` (AgentSession — set by CLI/bot adapters)
+    2. ``os.getuid()`` (POSIX only; returns None on Windows)
+    3. ``os.environ.get("USER", "unknown")``
+    """
+    if session is not None:
+        uid = getattr(session, "user_id", None)
+        if uid:
+            return str(uid)
+    try:
+        return str(os.getuid())
+    except AttributeError:
+        pass
+    return os.environ.get("USER", "unknown")
+
+
 def _merge_bot_extra(base: str, session: Any) -> str:
     """Append session.context_data['extra_system_prompt'] (bot mode) to base."""
     if session is None:
@@ -301,6 +343,11 @@ class ContextManager:
                     # Issue #62: Prefixa camadas DEILE.md (Core → User → CWD)
                     base_instruction = await _prepend_deile_md_layers(base_instruction, working_directory)
 
+                    # Issue #341: Inject user preferences (after persona, before skills)
+                    prefs_block = await _build_preferences_block(session)
+                    if prefs_block:
+                        base_instruction += f"\n\n{prefs_block}"
+
                     # Skills layer: aditiva, depois da persona e das regras DEILE.md.
                     skills_block = await self._build_skills_block(
                         parse_result, session, working_directory=working_directory
@@ -342,6 +389,11 @@ class ContextManager:
 
         # Issue #62: Prefixa camadas DEILE.md (Core → User → CWD)
         base_instruction = await _prepend_deile_md_layers(base_instruction, working_directory)
+
+        # Issue #341: Inject user preferences (after DEILE.md layers, before skills)
+        prefs_block = await _build_preferences_block(session)
+        if prefs_block:
+            base_instruction += f"\n\n{prefs_block}"
 
         # Skills layer também no fallback (mesma ordem do caminho com persona).
         skills_block = await self._build_skills_block(
