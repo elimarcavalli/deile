@@ -490,6 +490,7 @@ class WorkerImplementer(PipelineImplementer):
         persona: str = "developer",
         resume_block: Optional[dict] = None,
         stage: Optional[str] = None,
+        branch: Optional[str] = None,
     ) -> WorkOutcome:
         from deile.infrastructure.deile_worker_client import (
             WorkerDispatchError, build_dispatch_payload)
@@ -506,9 +507,14 @@ class WorkerImplementer(PipelineImplementer):
         # then falls back to its own ``DEILE_PREFERRED_MODEL``), or a
         # ``provider:model`` slug to pin THIS turn only.
         preferred_model = resolve_stage_model(stage) if stage else None
+        # ``stage=stage`` propaga o stage canônico pro worker (issue #309
+        # fase 2 hotfix): SEM isso o claude_worker_server caia no default
+        # ``implement`` para TODOS os dispatches (review/refine/follow_ups
+        # eram todos registrados como implement, quebrando o preamble do
+        # pr_review e enganando telemetry).
         payload = build_dispatch_payload(
             brief=brief, channel_id=channel_id, persona=persona, wait=True,
-            preferred_model=preferred_model,
+            preferred_model=preferred_model, stage=stage, branch=branch,
         )
         # The resume context (issue #254) is an additive wire field consumed by
         # the worker; ``build_dispatch_payload`` validates the core fields, so
@@ -549,7 +555,7 @@ class WorkerImplementer(PipelineImplementer):
         )
         return await self._dispatch(
             brief, channel_id=f"pipeline-issue-{issue.number}",
-            resume_block=resume_block, stage="implement",
+            resume_block=resume_block, stage="implement", branch=branch,
         )
 
     # --- Refinement gate (issue #257) -------------------------------------
@@ -622,6 +628,7 @@ class WorkerImplementer(PipelineImplementer):
         return await self._dispatch(
             brief, channel_id=f"pipeline-pr-{pr.number}",
             persona="reviewer", resume_block=resume_block, stage="pr_review",
+            branch=pr.head_ref or f"pr/{pr.number}",
         )
 
     async def mention(
@@ -679,7 +686,7 @@ class WorkerImplementer(PipelineImplementer):
                     repo, main, head, resume=resume, expect_merge=expect_merge,
                     pr_url_hint=pr_url_hint,
                 ),
-                stage="pr_review",
+                stage="pr_review", branch=head,
             )
         # Default: comment mention on an issue → do what the comment says.
         brief = _render_worker_mention_brief(

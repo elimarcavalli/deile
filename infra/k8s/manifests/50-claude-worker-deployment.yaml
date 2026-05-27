@@ -101,6 +101,11 @@ spec:
             - { name: claude-api, containerPort: 8767, protocol: TCP }
           volumeMounts:
             - { name: claude-worker-bearer, mountPath: /run/secrets/claude-worker, readOnly: true }
+            # GITHUB_TOKEN + GITLAB_TOKEN para que o ``claude -p`` consiga
+            # clonar/comitar/postar review nas forges. SEM isso o claude
+            # diagnostica BLOCKED_no_github_credentials (fase 2 smoke
+            # da PR #336) — repos privados ficam invisíveis ao agente.
+            - { name: deile-secrets, mountPath: /run/secrets/deile, readOnly: true }
             - { name: claude-home, mountPath: /home/claude }
             - { name: tmp, mountPath: /tmp }
             - name: allowed-repos
@@ -136,6 +141,10 @@ spec:
         - name: claude-worker-bearer
           secret:
             secretName: claude-worker-bearer
+            defaultMode: 0o400
+        - name: deile-secrets
+          secret:
+            secretName: deile-secrets
             defaultMode: 0o400
         - name: claude-home
           persistentVolumeClaim:
