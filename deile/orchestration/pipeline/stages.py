@@ -1242,6 +1242,17 @@ async def _finalize_implement_outcome(
         # (TIMEOUT, WORKER_UNREACHABLE, etc.) usually point at a non-transient
         # cause — escalate to block instead of burning the full resume ceiling.
         err_kind = _classify_outcome_error(outcome.error or "")
+        # Issue #309 fase 3 (estratégia C — resiliência auth): se o
+        # claude-worker reportou OAuth expirado, BLOQUEAR direto (sem
+        # streak, sem retry) — token só renova via host, retentar é
+        # desperdício. Comment + label deterministicos + ação clara.
+        if err_kind == "WORKER_AUTH_EXPIRED":
+            logger.warning(
+                "implement #%d: claude-worker auth expired — block fast",
+                number,
+            )
+            await _block_issue(monitor, number, AUTH_EXPIRED_BLOCK_MSG)
+            return
         streak = monitor._resume_tracker.record_failure(number, err_kind)
         if streak >= 2 and err_kind in _ESCALATE_ON_REPEAT:
             logger.warning(
@@ -1327,10 +1338,19 @@ _ESCALATE_ON_REPEAT = frozenset({"TIMEOUT", "BAD_REQUEST"})
 
 
 def _classify_outcome_error(error: str) -> str:
-    """Return a short signature for an outcome error message (or '' if empty)."""
+    """Return a short signature for an outcome error message (or '' if empty).
+
+    Adicionado em #309 fase 3 (estratégia C — resiliência auth):
+    ``WORKER_AUTH_EXPIRED`` é o sinal explícito do claude-worker server
+    quando o ``claude -p`` detecta OAuth token expirado/inválido. O
+    monitor trata esse caso BLOQUEANDO a issue/PR com mensagem clara,
+    em vez de retentar (token só renova via host).
+    """
     if not error:
         return ""
     e = error.upper()
+    if "WORKER_AUTH_EXPIRED" in e:
+        return "WORKER_AUTH_EXPIRED"
     if "TIMEOUT" in e:
         return "TIMEOUT"
     if "WORKER_UNREACHABLE" in e or "CONNECTERROR" in e or "REMOTEPROTOCOL" in e:
@@ -1338,6 +1358,23 @@ def _classify_outcome_error(error: str) -> str:
     if "BAD_REQUEST" in e or "VALIDATION" in e:
         return "BAD_REQUEST"
     return "OTHER"
+
+
+#: Texto fixo apresentado ao operador quando o claude-worker reporta
+#: ``WORKER_AUTH_EXPIRED``. Citado como ``comment`` no ``_block``: o
+#: bloqueio é DETERMINÍSTICO (token só renova via host) e a ação está
+#: claramente documentada em 1 comando.
+AUTH_EXPIRED_BLOCK_MSG = (
+    "⛔ claude-worker reportou OAuth token expirado/inválido "
+    "(`WORKER_AUTH_EXPIRED`). Não vou retentar — token só pode ser "
+    "renovado via host.\n\n"
+    "**Como destravar (1 comando):**\n"
+    "```bash\n"
+    "python3 infra/k8s/deploy.py k8s claude-renew\n"
+    "```\n"
+    "Depois remova esta label `~workflow:bloqueada` para o pipeline "
+    "tentar de novo."
+)
 
 
 async def _park_or_keep(
@@ -1493,6 +1530,20 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
             "pr_review #%d failed: %s", target.number,
             (outcome.error or "review failed")[:PIPELINE_MSG_TRUNCATE_CHARS],
         )
+        # Issue #309 fase 3 (estratégia C — auth-expired guard): bloqueia
+        # fast com mensagem clara em vez de cair em retry/escalation
+        # genérico. claude-worker já não pode entregar nada até renovar.
+        if _classify_outcome_error(outcome.error or "") == "WORKER_AUTH_EXPIRED":
+            logger.warning(
+                "pr_review #%d: claude-worker auth expired — block fast",
+                target.number,
+            )
+            await monitor.forge.clear_batch_label("pr", target.number)
+            await _block_pr(
+                monitor, target.number, target.title, target.url,
+                AUTH_EXPIRED_BLOCK_MSG,
+            )
+            return
 
     if blocked:
         await monitor.forge.clear_batch_label("pr", target.number)

@@ -422,14 +422,58 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             "task_id": task_id,
         }, status=500)
 
-    return web.json_response({
-        "ok": result.returncode == 0,
+    # Detecção de auth expirado (issue #309 fase 3 — estratégia C):
+    # claude CLI imprime "Not logged in", "Invalid authentication credentials"
+    # ou "401" no stdout quando OAuth token expirou ou foi revogado. O
+    # operador (e o pipeline) precisam saber DISSO especificamente — não
+    # genericamente "claude falhou" — pra disparar o ``deploy.py k8s
+    # claude-renew`` (lightweight refresh). Caso afirmativo: error_code
+    # canônico ``WORKER_AUTH_EXPIRED`` no body. Pipeline reconhece e marca
+    # PR como ``~workflow:bloqueada`` com comment claro.
+    auth_expired = _detect_auth_expired(result.stdout, result.stderr)
+    error_code = "WORKER_AUTH_EXPIRED" if auth_expired else None
+
+    response = {
+        "ok": result.returncode == 0 and not auth_expired,
         "stdout": result.stdout[-50_000:],
         "stderr": result.stderr[-10_000:],
         "task_id": task_id,
         "duration_seconds": result.duration_seconds,
         "returncode": result.returncode,
-    })
+    }
+    if error_code:
+        response["error_code"] = error_code
+        response["error"] = (
+            "claude CLI reportou token OAuth expirado/inválido. "
+            "Rode `deploy.py k8s claude-renew` no host pra renovar."
+        )
+    return web.json_response(response)
+
+
+#: Sinais textuais (case-insensitive) de auth expirado/inválido produzidos
+#: pelo ``claude`` CLI no stdout/stderr. Mantenha conservador: melhor false
+#: negative (não detecta auth_expired, dispatch falha genérico) que false
+#: positive (marca como auth quando é outro erro — operador confunde).
+_AUTH_EXPIRED_SIGNATURES = (
+    "not logged in",
+    "invalid authentication credentials",
+    "401 unauthorized",
+    "401 invalid authentication",
+    "please run /login",
+    "please run `claude auth login`",
+)
+
+
+def _detect_auth_expired(stdout: str, stderr: str) -> bool:
+    """True se o output indica claramente OAuth token expirado/inválido.
+
+    Conservador: requer match de string específica do claude CLI, não
+    apenas "401" genérico (pode ser HTTP erro de outra source). False
+    se nenhum sinal — outros erros caem em ``ok=False`` genérico (com
+    ``returncode != 0``) e o pipeline trata como falha normal.
+    """
+    combined = (stdout + "\n" + stderr).lower()
+    return any(sig in combined for sig in _AUTH_EXPIRED_SIGNATURES)
 
 
 #: ``secrets.token_hex(8)`` em :func:`dispatch_handler` gera exatamente 16

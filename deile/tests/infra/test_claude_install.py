@@ -419,3 +419,145 @@ def test_bootstrap_falls_back_to_file_when_env_and_keychain_unset(
 
     assert result.ok is True
     assert captured_creds.get("email") == "file@test.com"
+
+
+# ============================================================================
+# renew_claude_worker — estratégia A da issue #309 fase 3 (resiliência auth)
+# ============================================================================
+
+
+def test_renew_fails_when_credentials_absent(claude_install_module, tmp_path,
+                                              monkeypatch):
+    """Sem credentials (Keychain + file + env) -> ok=False com mensagem
+    apontando pra `claude auth login` (não tenta browser autônomo)."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.setattr(
+        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+    )
+
+    result = claude_install_module.renew_claude_worker(home=tmp_path)
+    assert result.ok is False
+    assert "credenciais" in (result.error or "").lower()
+    assert "claude auth login" in (result.error or "")
+
+
+def test_renew_success_path_calls_secret_then_restart(
+    claude_install_module, tmp_path, monkeypatch,
+):
+    """Credentials presentes + kubectl ok → re-apply Secret + rollout
+    restart + wait. NÃO chama _kubectl_apply_manifests (lightweight)."""
+    fake_home = tmp_path / ".claude"
+    fake_home.mkdir()
+    (fake_home / "credentials.json").write_text(
+        '{"claudeAiOauth": {"accessToken": "fake", "email": "u@x"}}'
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.setattr(
+        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+    )
+
+    call_log = []
+
+    def fake_apply_secret(creds, *, namespace):
+        call_log.append(("apply_secret", namespace))
+        return True
+
+    def fake_run(cmd, *args, **kwargs):
+        call_log.append(("kubectl", " ".join(cmd[:5])))
+        ret = MagicMock()
+        ret.returncode = 0
+        ret.stdout = ""
+        ret.stderr = ""
+        return ret
+
+    def fake_wait_rollout(*, namespace, timeout_s=180):
+        call_log.append(("wait_rollout", namespace, timeout_s))
+        return True
+
+    with patch.object(claude_install_module, "_kubectl_apply_secret",
+                      side_effect=fake_apply_secret), \
+         patch.object(claude_install_module.subprocess, "run",
+                      side_effect=fake_run), \
+         patch.object(claude_install_module, "_kubectl_wait_rollout",
+                      side_effect=fake_wait_rollout):
+        result = claude_install_module.renew_claude_worker(
+            namespace="my-ns", home=tmp_path,
+        )
+
+    assert result.ok is True
+    assert result.account_email == "u@x"
+    assert result.secret_applied is True
+    assert result.rollout_ready is True
+    # Ordem esperada: apply_secret → rollout restart → wait_rollout
+    kinds = [c[0] for c in call_log]
+    assert kinds == ["apply_secret", "kubectl", "wait_rollout"]
+    # rollout restart no claude-worker do namespace correto
+    assert "rollout restart deployment/claude-worker" in call_log[1][1]
+    assert call_log[2] == ("wait_rollout", "my-ns", 180)
+
+
+def test_renew_propagates_apply_secret_failure(claude_install_module,
+                                                 tmp_path, monkeypatch):
+    """kubectl apply secret falha -> ok=False, sem rollout (early return)."""
+    fake_home = tmp_path / ".claude"
+    fake_home.mkdir()
+    (fake_home / "credentials.json").write_text(
+        '{"claudeAiOauth": {"accessToken": "x"}}'
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_OAUTH_ACCESS_TOKEN", raising=False)
+    monkeypatch.setattr(
+        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+    )
+
+    rollout_called = []
+
+    def fake_run_rollout(cmd, *args, **kwargs):
+        rollout_called.append(cmd)
+        ret = MagicMock(); ret.returncode = 0; ret.stdout = ""; ret.stderr = ""
+        return ret
+
+    with patch.object(claude_install_module, "_kubectl_apply_secret",
+                      return_value=False), \
+         patch.object(claude_install_module.subprocess, "run",
+                      side_effect=fake_run_rollout):
+        result = claude_install_module.renew_claude_worker(home=tmp_path)
+
+    assert result.ok is False
+    assert "secret" in (result.error or "").lower()
+    # Não deve ter rolled out se Secret falhou.
+    assert rollout_called == []
+
+
+def test_renew_uses_env_var_credentials_when_present(claude_install_module,
+                                                       tmp_path, monkeypatch):
+    """CLAUDE_OAUTH_ACCESS_TOKEN seta -> usa diretamente (sem Keychain/file)."""
+    monkeypatch.setenv("CLAUDE_OAUTH_ACCESS_TOKEN", "sk-from-env-12345")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+    )
+
+    captured = {}
+
+    def fake_apply_secret(creds, *, namespace):
+        captured["creds"] = creds
+        return True
+
+    def fake_run(cmd, *args, **kwargs):
+        ret = MagicMock(); ret.returncode = 0; ret.stdout = ""; ret.stderr = ""
+        return ret
+
+    with patch.object(claude_install_module, "_kubectl_apply_secret",
+                      side_effect=fake_apply_secret), \
+         patch.object(claude_install_module.subprocess, "run",
+                      side_effect=fake_run), \
+         patch.object(claude_install_module, "_kubectl_wait_rollout",
+                      return_value=True):
+        result = claude_install_module.renew_claude_worker(home=tmp_path)
+
+    assert result.ok is True
+    # Token da env var foi propagado ao Secret.
+    assert captured["creds"]["claudeAiOauth"]["accessToken"] == "sk-from-env-12345"

@@ -573,3 +573,43 @@ class TestReviewResume:
         monitor.github.comment_on_pr.assert_called_once()
         monitor.github.add_labels.assert_any_call("pr", 10, [WORKFLOW_BLOCKED])
         notifier.implementation_blocked.assert_called_once()
+
+
+# ============================================================================
+# WORKER_AUTH_EXPIRED — estratégia C da issue #309 fase 3 (resiliência auth)
+# ============================================================================
+
+
+class TestOutcomePreservesErrorCode:
+    """``_outcome_from_worker_response`` propaga o ``error_code`` retornado
+    pelo claude_worker_server prefixando o ``error`` com ``[CODE]``. O
+    monitor usa ``_classify_outcome_error`` pra detectar e tomar ação
+    específica (bloquear PR/issue em auth-expired, etc)."""
+
+    def test_outcome_prefixes_error_with_error_code_when_present(self):
+        response = {
+            "ok": False,
+            "error_code": "WORKER_AUTH_EXPIRED",
+            "error": "claude reportou token expirado",
+            "summary": "",
+        }
+        outcome = _outcome_from_worker_response(response)
+        assert outcome.ok is False
+        assert outcome.error.startswith("[WORKER_AUTH_EXPIRED] ")
+        assert "token expirado" in outcome.error
+
+    def test_outcome_without_error_code_keeps_error_plain(self):
+        """Backward compat: response sem ``error_code`` continua produzindo
+        ``outcome.error`` sem prefixo (não muda comportamento legacy)."""
+        response = {"ok": False, "error": "worker reported failure"}
+        outcome = _outcome_from_worker_response(response)
+        assert outcome.ok is False
+        assert outcome.error == "worker reported failure"
+        assert not outcome.error.startswith("[")
+
+    def test_outcome_ok_response_ignores_error_code(self):
+        """error_code só faz sentido em failure. response ok=True ignora."""
+        response = {"ok": True, "summary": "review concluído"}
+        outcome = _outcome_from_worker_response(response)
+        assert outcome.ok is True
+        assert outcome.error == ""

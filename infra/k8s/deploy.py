@@ -1118,6 +1118,59 @@ def k8s_claude_login(args: dict) -> int:
     return 0
 
 
+def k8s_claude_renew(args: dict) -> int:
+    """k8s claude-renew — refresh lightweight do token OAuth do claude-worker.
+
+    Use quando o claude-worker reportar ``WORKER_AUTH_EXPIRED`` ou quando
+    quiser renovar PROATIVAMENTE antes da expiração (~8h do OAuth Claude).
+
+    Diferenças vs ``claude-login`` (issue #309 fase 3 — resiliência):
+      - **NÃO** abre browser (assume credentials já presentes no host).
+      - **NÃO** re-aplica manifests (Deployment/PVC/ConfigMap intactos).
+      - Só: lê credentials → apply Secret → rollout restart claude-worker.
+      - Latência: ~30-90s (vs 2-3min do bootstrap completo).
+
+    Útil pra:
+      - Operador rodando manualmente quando vir 401 no log
+      - Cron local (launchd a cada 4h) — zero-touch periódico
+      - Pipeline reativo ao detectar ``WORKER_AUTH_EXPIRED`` em dispatch
+    """
+    ns = _ns(args)
+    # Validação leve de extras (rejeitar flags desconhecidas).
+    extras = args.get("extra") or []
+    if extras:
+        ui.warn(f"k8s claude-renew não aceita flags extras: {extras} — ignoradas")
+
+    sys.path.insert(0, str(HERE))
+    try:
+        from _claude_install import renew_claude_worker  # noqa: PLC0415
+    finally:
+        sys.path.pop(0)
+
+    ui.section("k8s claude-renew")
+    ui.info(f"namespace={ns} (lightweight refresh — sem manifests)")
+
+    result = renew_claude_worker(namespace=ns)
+
+    if not result.ok:
+        ui.err(f"claude-renew falhou: {result.error}")
+        if result.account_email:
+            ui.info(f"conta corrente: {result.account_email}")
+        ui.info(f"Secret claude-credentials: {'ok' if result.secret_applied else '—'}")
+        ui.info(f"Rollout ready:             {'ok' if result.rollout_ready else '—'}")
+        ui.info(
+            "tente `deploy.py k8s claude-login` (full bootstrap) se este "
+            "renew falhar repetidamente"
+        )
+        return 1
+
+    ui.ok("claude-worker renovado.")
+    if result.account_email:
+        ui.info(f"logado como: {result.account_email}")
+    ui.info("token novo carregado pelo pod no startup")
+    return 0
+
+
 def _k8s_state_label(ns: Optional[str] = None) -> str:
     """Rótulo curto do estado do k8s para o menu/diagnóstico."""
     ns = ns or NS_DEFAULT
@@ -1597,6 +1650,7 @@ _K8S = {
     "build": k8s_build, "test": k8s_test, "clone": k8s_clone,
     "list": k8s_list, "panel": k8s_panel, "doctor": cmd_doctor,
     "setup": k8s_setup, "claude-login": k8s_claude_login,
+    "claude-renew": k8s_claude_renew,
     "create-namespace": k8s_create_namespace,
     "scale": k8s_scale,
 }
@@ -1624,6 +1678,8 @@ _K8S_ACTIONS = [
     ("clone", "clone <owner/repo> — clona um repo no deile-shell"),
     ("claude-login",
      "instalar claude-worker no cluster (flags: --switch, --no-interactive, --from-env-only)"),
+    ("claude-renew",
+     "renovar OAuth do claude-worker (lightweight: Secret + restart, sem manifests)"),
     ("down", "APAGAR o namespace e TODOS os dados"),
 ]
 _LOCAL_ACTIONS = [

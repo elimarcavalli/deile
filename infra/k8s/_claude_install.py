@@ -633,3 +633,101 @@ def bootstrap_claude_worker(
         deployment_applied=True,
         rollout_ready=True,
     )
+
+
+# --------------------------------------------------------------------------- #
+# renew_claude_worker — lightweight token refresh (sem manifests, sem rollout
+# completo). Endpoint pra resolver expiração frequente do OAuth Claude (~8h)
+# sem ter que rodar o ``bootstrap_claude_worker`` inteiro de novo.
+# Estratégia A (host-side) da issue #309 fase 3 — refresh resiliência.
+# --------------------------------------------------------------------------- #
+
+
+def renew_claude_worker(
+    *,
+    namespace: str = "deile",
+    home: Optional[Path] = None,
+) -> ClaudeLoginResult:
+    """Renova credentials do claude-worker reusando credentials já frescas
+    no host. Lightweight: 3 passos (read → apply Secret → restart pod).
+
+    Cenário típico: token OAuth (8h) expirou; operador (ou cron) roda
+    este comando. NÃO re-aplica manifests, NÃO toca em ConfigMap nem PVC
+    — só atualiza ``claude-credentials`` Secret + ``kubectl rollout
+    restart deployment/claude-worker`` (pod novo carrega token novo no
+    startup via ``_load_oauth_token_into_env``).
+
+    Diferenças vs ``bootstrap_claude_worker``:
+    - NÃO chama ``claude auth login`` (assume credentials já presentes
+      no host — fail-fast se não)
+    - NÃO aplica manifests (ConfigMap/Secrets/Deployment/PVC ficam
+      como estão — só Secret claude-credentials é refrescado)
+    - NÃO sincroniza bearer (já está sincronizado do bootstrap original)
+    - Restart é via rollout restart (graceful) — claude-worker novo pod
+      executa ``_load_oauth_token_into_env`` no startup
+
+    Returns:
+        ClaudeLoginResult com mesmo schema do bootstrap (campo
+        ``rollout_ready`` indica se o pod novo subiu Ready).
+    """
+    home = home or Path(os.environ.get("HOME", str(Path.home())))
+
+    # 1. Read credentials (Keychain → file → env var) — mesma cadeia do
+    # bootstrap mas SEM cair em ``_run_claude_login`` (browser).
+    creds = _read_credentials(home)
+    if creds is None:
+        return ClaudeLoginResult(
+            ok=False,
+            error=(
+                "renew falhou: credenciais não detectadas no host "
+                "(Keychain macOS, ~/.claude/credentials.json e env var "
+                "CLAUDE_OAUTH_ACCESS_TOKEN todos ausentes). Rode "
+                "`claude auth login` no host primeiro, então re-rode "
+                "`deploy.py k8s claude-renew`."
+            ),
+        )
+
+    email = None
+    if isinstance(creds, dict):
+        email = creds.get("email")
+        if not email and isinstance(creds.get("claudeAiOauth"), dict):
+            email = creds["claudeAiOauth"].get("email")
+
+    # 2. Re-apply Secret claude-credentials (overwrite).
+    if not _kubectl_apply_secret(creds, namespace=namespace):
+        return ClaudeLoginResult(
+            ok=False,
+            account_email=email,
+            error="renew falhou: kubectl apply Secret claude-credentials",
+        )
+
+    # 3. Rollout restart claude-worker (pod novo lê Secret refrescado).
+    try:
+        result = subprocess.run(
+            ["kubectl", "rollout", "restart", "deployment/claude-worker",
+             "-n", namespace],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        return ClaudeLoginResult(
+            ok=False, account_email=email, secret_applied=True,
+            error=f"renew falhou: kubectl rollout restart timeout/missing: {exc}",
+        )
+    if result.returncode != 0:
+        return ClaudeLoginResult(
+            ok=False, account_email=email, secret_applied=True,
+            error=f"renew falhou: rollout restart: {result.stderr}",
+        )
+
+    # 4. Wait rollout (mesma timeout do bootstrap pra coerência).
+    if not _kubectl_wait_rollout(namespace=namespace, timeout_s=180):
+        return ClaudeLoginResult(
+            ok=False, account_email=email, secret_applied=True,
+            deployment_applied=True,
+            error="renew falhou: pod novo não ficou Ready em 180s",
+        )
+
+    return ClaudeLoginResult(
+        ok=True, account_email=email,
+        secret_applied=True, deployment_applied=True, rollout_ready=True,
+    )

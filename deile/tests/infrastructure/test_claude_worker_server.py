@@ -444,3 +444,109 @@ async def test_client_max_size_rejects_oversized_payload(claude_worker_module,
         # aiohttp 3.x devolve 400 com body "Content-Length X exceeds maximum
         # payload size Y" (não 413 RFC-canônico). Aceita ambos.
         assert resp.status in (400, 413), f"esperado 400 ou 413, got {resp.status}"
+
+
+# ============================================================================
+# WORKER_AUTH_EXPIRED — estratégia C da issue #309 fase 3 (resiliência auth)
+# ============================================================================
+
+
+def test_detect_auth_expired_recognizes_claude_signatures(claude_worker_module):
+    """``_detect_auth_expired`` detecta os 6 padrões do claude CLI quando
+    token OAuth expirou/foi revogado."""
+    detect = claude_worker_module._detect_auth_expired
+    # Padrões reais do claude CLI no Linux quando ANTHROPIC_AUTH_TOKEN está
+    # ausente, expirado ou inválido.
+    assert detect("Not logged in · Please run /login", "")
+    assert detect("Failed to authenticate. API Error: 401 Invalid authentication credentials", "")
+    assert detect("Please run `claude auth login`", "")
+    assert detect("ERROR: 401 unauthorized", "")
+    # Case-insensitive: claude pode variar capitalização.
+    assert detect("NOT LOGGED IN", "")
+    # Stderr também é considerado (não só stdout).
+    assert detect("", "401 invalid authentication credentials")
+
+
+def test_detect_auth_expired_ignores_other_failures(claude_worker_module):
+    """Falsos positivos zero: erros genéricos (timeout, fs, network) NÃO
+    são auth-expired. Operador não deve confundir.
+
+    Conservador (preferimos false negative a false positive)."""
+    detect = claude_worker_module._detect_auth_expired
+    assert not detect("Timed out after 1800s", "")
+    assert not detect("Permission denied: /home/claude/work", "")
+    assert not detect("git clone failed: repository not found", "")
+    # 401 SEM o contexto auth (HTTP de outra source) não dispara.
+    assert not detect("Some unrelated 401", "")
+    # Empty inputs.
+    assert not detect("", "")
+
+
+async def test_dispatch_returns_auth_expired_when_claude_reports_not_logged_in(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Integração: ``claude -p`` produz "Not logged in" → response inclui
+    ``error_code=WORKER_AUTH_EXPIRED`` + ``ok=False`` + mensagem clara."""
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+
+    # Mock o subprocess pra emular claude reportando token expirado.
+    from infra.k8s import claude_worker_server as mod
+    import types
+
+    async def fake_run_subprocess(args, *, cwd, task_id, timeout):
+        return types.SimpleNamespace(
+            returncode=1,
+            stdout="Not logged in · Please run /login\n",
+            stderr="",
+            duration_seconds=0.5,
+        )
+
+    monkeypatch.setattr(
+        claude_worker_module, "run_subprocess_with_progress", fake_run_subprocess,
+    )
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/v1/dispatch", headers=_AUTH_HEADERS,
+            json={"brief": "review PR #1", "stage": "pr_review"},
+        )
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["ok"] is False
+        assert body.get("error_code") == "WORKER_AUTH_EXPIRED"
+        assert "claude-renew" in body.get("error", "")
+
+
+async def test_dispatch_returns_ok_when_claude_succeeds_normally(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Sanity: dispatch normal NÃO seta ``error_code`` — só quando há
+    detecção real de auth-expired."""
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+
+    import types
+
+    async def fake_run_subprocess(args, *, cwd, task_id, timeout):
+        return types.SimpleNamespace(
+            returncode=0,
+            stdout="Review completed\nSTATUS: APPROVE\n",
+            stderr="",
+            duration_seconds=10.0,
+        )
+
+    monkeypatch.setattr(
+        claude_worker_module, "run_subprocess_with_progress", fake_run_subprocess,
+    )
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/v1/dispatch", headers=_AUTH_HEADERS,
+            json={"brief": "review PR #1", "stage": "pr_review"},
+        )
+        body = await resp.json()
+        assert body["ok"] is True
+        assert "error_code" not in body

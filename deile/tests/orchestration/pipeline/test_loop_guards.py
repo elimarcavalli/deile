@@ -137,6 +137,15 @@ class TestClassifyOutcomeError:
         ) == "BAD_REQUEST"
         assert _classify_outcome_error("validation error") == "BAD_REQUEST"
         assert _classify_outcome_error("nothing interesting") == "OTHER"
+        # Issue #309 fase 3 — WORKER_AUTH_EXPIRED tem precedência sobre
+        # outros padrões (o ``error`` prefixado pelo _outcome_from_worker_response
+        # tem o code primeiro: ``"[WORKER_AUTH_EXPIRED] claude reportou..."``).
+        assert _classify_outcome_error(
+            "[WORKER_AUTH_EXPIRED] claude reportou token expirado"
+        ) == "WORKER_AUTH_EXPIRED"
+        assert _classify_outcome_error(
+            "FOO WORKER_AUTH_EXPIRED BAR"
+        ) == "WORKER_AUTH_EXPIRED"
 
     def test_only_timeout_and_bad_request_escalate(self):
         # Workers blip transitorio (UNREACHABLE) NÃO deve escalar — restart de

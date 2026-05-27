@@ -402,6 +402,15 @@ def _outcome_from_worker_response(data: object) -> WorkOutcome:
     if ok:
         return WorkOutcome(ok=True, text=text, error="", **fields)
     err = str(data.get("error") or data.get("summary") or "worker reported failure")
+    # Issue #309 fase 3 — resiliência auth: o claude-worker server detecta
+    # OAuth expirado/inválido no output do ``claude -p`` e devolve
+    # ``error_code=WORKER_AUTH_EXPIRED`` no body. Prefixar o ``error`` com
+    # o code permite o monitor distinguir essa falha das genéricas e
+    # marcar a PR/issue como ``~workflow:bloqueada`` com comment claro
+    # apontando o operador pra ``deploy.py k8s claude-renew``.
+    error_code = data.get("error_code")
+    if error_code:
+        err = f"[{error_code}] {err}"
     return WorkOutcome(ok=False, text=text, error=err[:500], **fields)
 
 
