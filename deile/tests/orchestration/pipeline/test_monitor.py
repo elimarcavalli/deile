@@ -687,3 +687,43 @@ class TestForgeErrorCounter:
             warnings.simplefilter("always")
             _ = s.gh_errors
         assert any(issubclass(x.category, DeprecationWarning) for x in w)
+
+
+def test_publish_status_state_integrates_with_real_state(monkeypatch):
+    """Regression: ``_publish_status_state`` must succeed against the real
+    ``PipelineStatusState`` API (issue #347).
+
+    The first ``monitor → status server`` wiring landed (PR #352, commit
+    26e139d) with a kwargs mismatch — every publish raised TypeError under
+    the outer ``except Exception``, so ``/v1/pipeline-status`` reported
+    zeros forever.  This test exercises the integration end-to-end and
+    asserts the snapshot reflects what was published.
+    """
+    import importlib.util
+    import sys
+    from pathlib import Path as _Path
+
+    repo_root = _Path(__file__).resolve().parents[4]
+    server_path = repo_root / "infra" / "k8s" / "pipeline_status_server.py"
+    spec = importlib.util.spec_from_file_location(
+        "pipeline_status_server_pub_test", str(server_path),
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["pipeline_status_server_pub_test"] = mod
+    spec.loader.exec_module(mod)
+
+    monitor, _ = _make_monitor()
+    state = mod.PipelineStatusState()
+    monitor._status_state = state
+    # Simulate one tick's worth of stats then publish.
+    monitor._stats.ticks = 4
+    monitor._stats.errors = 1
+    import time as _time
+    monitor._publish_status_state(state, _time.monotonic() - 0.5)
+
+    snap = state.snapshot_status()
+    assert snap["ticks_total"] == 4
+    assert snap["errors_total"] == 1
+    assert snap["last_tick_at"] is not None
+    assert snap["last_tick_duration_seconds"] is not None

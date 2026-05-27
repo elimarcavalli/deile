@@ -200,6 +200,13 @@ RUN chmod 0555 /app/worker_server.py
 COPY --chown=deile:deile infra/k8s/_worker_resume.py /app/_worker_resume.py
 RUN chmod 0555 /app/_worker_resume.py
 
+# Pipeline status server — HTTP introspection endpoints (issue #347 fix). Roda
+# in-process no wrapper.py mode pipeline (asyncio task no mesmo event loop do
+# monitor). Sem este arquivo no /app o `from pipeline_status_server import ...`
+# do wrapper falha na boot do pipeline pod.
+COPY --chown=deile:deile infra/k8s/pipeline_status_server.py /app/pipeline_status_server.py
+RUN chmod 0555 /app/pipeline_status_server.py
+
 WORKDIR /app
 USER deile:deile
 

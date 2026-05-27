@@ -1059,3 +1059,430 @@ def test_is_claude_process_alive_finds_match(claude_worker_module, monkeypatch, 
     monkeypatch.setattr(claude_worker_module, "_PROC_ROOT", str(proc_root))
     assert claude_worker_module._is_claude_process_alive("the-target-session") is True
     assert claude_worker_module._is_claude_process_alive("not-found-session") is False
+
+
+# --------------------------------------------------------------------------- #
+# Observability endpoints (issue #347)
+# --------------------------------------------------------------------------- #
+
+
+import json as _json  # noqa: E402  (used by the section below)
+
+
+def _write_session_meta(home: Path, task_id: str, meta: dict) -> Path:
+    """Helper: write ``~/.claude/tasks/<task_id>/session.json`` for tests."""
+    target = home / ".claude" / "tasks" / task_id / "session.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_json.dumps(meta))
+    return target
+
+
+async def test_sessions_list_returns_summary(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """``GET /v1/sessions`` returns one row per valid session.json file."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _write_session_meta(tmp_path, "0123456789abcdef", {
+        "task_id": "0123456789abcdef",
+        "session_id": "sess-1",
+        "stage": "implement",
+        "branch": "auto/issue-1",
+        "model": "claude-sonnet-4-6",
+        "started_at": 1716830000,
+        "last_completed_at": 1716830420,
+        "last_is_error": False,
+        "last_returncode": 0,
+        "last_total_cost_usd": 0.13,
+        "attempt": 1,
+        "workdir": str(tmp_path / "work" / "0123456789abcdef"),
+    })
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/sessions", headers=_AUTH_HEADERS)
+        assert resp.status == 200
+        body = await resp.json()
+
+    assert isinstance(body["sessions"], list)
+    assert len(body["sessions"]) == 1
+    row = body["sessions"][0]
+    assert row["task_id"] == "0123456789abcdef"
+    assert row["session_id"] == "sess-1"
+    assert row["stage"] == "implement"
+    assert row["last_total_cost_usd"] == 0.13
+    # workdir does not exist => workdir_exists false.
+    assert row["workdir_exists"] is False
+
+
+async def test_sessions_list_filters_orphan_dirs(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Directories without a valid session.json (or with invalid task_id
+    names) must be skipped silently — no 500, no garbage rows."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    base = tmp_path / ".claude" / "tasks"
+    base.mkdir(parents=True)
+    # valid session
+    _write_session_meta(tmp_path, "abcdef0123456789", {
+        "task_id": "abcdef0123456789", "session_id": "sx", "attempt": 1,
+    })
+    # orphan dir without session.json (valid hex name)
+    (base / "fedcba9876543210").mkdir()
+    # invalid name (not hex 16)
+    (base / "not-a-task-id").mkdir()
+    (base / "not-a-task-id" / "session.json").write_text("{}")
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/sessions", headers=_AUTH_HEADERS)
+        body = await resp.json()
+
+    assert len(body["sessions"]) == 1
+    assert body["sessions"][0]["task_id"] == "abcdef0123456789"
+
+
+async def test_session_command_redacts_secrets(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """``GET /v1/sessions/{id}/command`` redacts ``*_API_KEY``/``*_TOKEN``."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-real-secret-value")
+    monkeypatch.setenv("GITHUB_TOKEN", "ghp_secret_42")
+    monkeypatch.setenv("BENIGN_FLAG", "true")
+    _write_session_meta(tmp_path, "deadbeefcafebabe", {
+        "task_id": "deadbeefcafebabe",
+        "session_id": "sx",
+        "command": ["claude", "-p", "--session-id", "sx", "prompt"],
+        "full_prompt": "do thing",
+        "subprocess_pid": 1234,
+    })
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(
+            "/v1/sessions/deadbeefcafebabe/command", headers=_AUTH_HEADERS,
+        )
+        assert resp.status == 200
+        body = await resp.json()
+
+    assert body["cmd"][0] == "claude"
+    assert body["full_prompt"] == "do thing"
+    env = body["env_redacted"]
+    assert env["ANTHROPIC_API_KEY"] == "***"
+    assert env["GITHUB_TOKEN"] == "***"
+    assert env["BENIGN_FLAG"] == "true"
+
+
+async def test_session_command_returns_404_for_unknown_task(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Valid task_id format but no session metadata → 404."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(
+            "/v1/sessions/0000000000000000/command", headers=_AUTH_HEADERS,
+        )
+        assert resp.status == 404
+
+
+async def test_session_command_returns_400_for_invalid_task_id(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Bad task_id format must 400 (path traversal guard)."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(
+            "/v1/sessions/..%2Fetc%2Fpasswd/command", headers=_AUTH_HEADERS,
+        )
+        assert resp.status == 400
+
+
+async def test_session_chat_returns_parsed_turns(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """``GET /v1/sessions/{id}/chat`` returns parsed turns from the JSONL."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    workdir = tmp_path / "work" / "1111111122222222"
+    workdir.mkdir(parents=True)
+    _write_session_meta(tmp_path, "1111111122222222", {
+        "task_id": "1111111122222222",
+        "session_id": "sid-chat",
+        "workdir": str(workdir),
+    })
+    # Build the JSONL where the worker expects it.
+    workspace_hash = "-" + str(workdir).lstrip("/").replace("/", "-")
+    jsonl_dir = tmp_path / ".claude" / "projects" / workspace_hash
+    jsonl_dir.mkdir(parents=True)
+    (jsonl_dir / "sid-chat.jsonl").write_text(
+        '{"type":"user","content":"hi"}\n'
+        '{"type":"assistant","content":"hello"}\n',
+    )
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(
+            "/v1/sessions/1111111122222222/chat", headers=_AUTH_HEADERS,
+        )
+        body = await resp.json()
+
+    assert resp.status == 200
+    assert body["session_id"] == "sid-chat"
+    assert len(body["turns"]) == 2
+    assert body["turns"][0]["role"] == "user"
+    assert body["turns"][1]["role"] == "assistant"
+
+
+async def test_session_chat_supports_tail(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """``?tail=N`` caps the response (latest N turns)."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    workdir = tmp_path / "work" / "2222222233333333"
+    workdir.mkdir(parents=True)
+    _write_session_meta(tmp_path, "2222222233333333", {
+        "task_id": "2222222233333333", "session_id": "sid-tail",
+        "workdir": str(workdir),
+    })
+    workspace_hash = "-" + str(workdir).lstrip("/").replace("/", "-")
+    jsonl_dir = tmp_path / ".claude" / "projects" / workspace_hash
+    jsonl_dir.mkdir(parents=True)
+    rows = [f'{{"type":"user","content":"m{i}"}}' for i in range(10)]
+    (jsonl_dir / "sid-tail.jsonl").write_text("\n".join(rows) + "\n")
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(
+            "/v1/sessions/2222222233333333/chat?tail=3", headers=_AUTH_HEADERS,
+        )
+        body = await resp.json()
+    assert len(body["turns"]) == 3
+    assert body["turns"][0]["content"] == "m7"
+    assert body["turns"][-1]["content"] == "m9"
+
+
+async def test_session_chat_handles_missing_jsonl(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """When the JSONL is absent, response carries ``missing=True`` (200)."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    workdir = tmp_path / "work" / "3333333344444444"
+    workdir.mkdir(parents=True)
+    _write_session_meta(tmp_path, "3333333344444444", {
+        "task_id": "3333333344444444", "session_id": "missing-sid",
+        "workdir": str(workdir),
+    })
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(
+            "/v1/sessions/3333333344444444/chat", headers=_AUTH_HEADERS,
+        )
+        assert resp.status == 200
+        body = await resp.json()
+    assert body["missing"] is True
+    assert body["turns"] == []
+
+
+async def test_session_chat_handles_malformed_jsonl(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """A malformed line is reported in ``skipped_malformed_lines``."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    workdir = tmp_path / "work" / "4444444455555555"
+    workdir.mkdir(parents=True)
+    _write_session_meta(tmp_path, "4444444455555555", {
+        "task_id": "4444444455555555", "session_id": "sid-bad",
+        "workdir": str(workdir),
+    })
+    workspace_hash = "-" + str(workdir).lstrip("/").replace("/", "-")
+    jsonl_dir = tmp_path / ".claude" / "projects" / workspace_hash
+    jsonl_dir.mkdir(parents=True)
+    (jsonl_dir / "sid-bad.jsonl").write_text(
+        '{"type":"user","content":"ok"}\n'
+        "garbage-not-json\n",
+    )
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(
+            "/v1/sessions/4444444455555555/chat", headers=_AUTH_HEADERS,
+        )
+        body = await resp.json()
+    assert len(body["turns"]) == 1
+    assert body["skipped_malformed_lines"] == 1
+
+
+async def test_session_stdout_returns_tails(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """``GET /v1/sessions/{id}/stdout`` returns capped tails for both streams."""
+    root = tmp_path / "work"
+    progress = root / ".progress"
+    progress.mkdir(parents=True)
+    (progress / "5555555566666666.stdout.log").write_text("hello-stdout")
+    (progress / "5555555566666666.stderr.log").write_text("hello-stderr")
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(root))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get(
+            "/v1/sessions/5555555566666666/stdout", headers=_AUTH_HEADERS,
+        )
+        body = await resp.json()
+    assert resp.status == 200
+    assert body["stdout"] == "hello-stdout"
+    assert body["stderr"] == "hello-stderr"
+
+
+async def test_kill_requires_confirm_token(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """``POST /v1/sessions/{id}/kill`` without the right confirm → 400."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    _write_session_meta(tmp_path, "6666666677777777", {
+        "task_id": "6666666677777777", "session_id": "sid-alive",
+    })
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/v1/sessions/6666666677777777/kill", headers=_AUTH_HEADERS,
+            json={"confirm": "wrong"},
+        )
+        assert resp.status == 400
+        body = await resp.json()
+    assert "yes-task-66666666" in body["expected"]
+
+
+async def test_kill_returns_409_when_no_live_process(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Without a live claude subprocess we cannot kill — 409 (not 500)."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        claude_worker_module, "_find_claude_pid", lambda _sid: None,
+    )
+    _write_session_meta(tmp_path, "7777777788888888", {
+        "task_id": "7777777788888888", "session_id": "sid-dead",
+    })
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/v1/sessions/7777777788888888/kill", headers=_AUTH_HEADERS,
+            json={"confirm": "yes-task-77777777"},
+        )
+        assert resp.status == 409
+
+
+async def test_kill_returns_200_when_pid_found(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """When a PID is discoverable, kill issues SIGKILL and reports the PID."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        claude_worker_module, "_find_claude_pid", lambda _sid: 4321,
+    )
+    sent = {}
+
+    def fake_kill(pid, sig):
+        sent["pid"] = pid
+        sent["sig"] = sig
+
+    monkeypatch.setattr(claude_worker_module.os, "kill", fake_kill)
+    _write_session_meta(tmp_path, "8888888899999999", {
+        "task_id": "8888888899999999", "session_id": "sid-target",
+    })
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/v1/sessions/8888888899999999/kill", headers=_AUTH_HEADERS,
+            json={"confirm": "yes-task-88888888"},
+        )
+        body = await resp.json()
+    assert resp.status == 200
+    assert body["killed"] is True
+    assert body["pid"] == 4321
+    assert sent == {"pid": 4321, "sig": 9}
+
+
+async def test_kill_returns_404_for_unknown_task(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Task without session.json → 404."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/v1/sessions/9999999900000000/kill", headers=_AUTH_HEADERS,
+            json={"confirm": "yes-task-99999999"},
+        )
+        assert resp.status == 404
+
+
+async def test_cleanup_removes_workdir_and_jsonl(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """``DELETE /v1/sessions/{id}/cleanup`` removes workdir + jsonl + session."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        claude_worker_module, "_is_claude_process_alive", lambda _sid: False,
+    )
+    workdir = tmp_path / "work" / "aaaa0000aaaa0000"
+    workdir.mkdir(parents=True)
+    (workdir / "trash.txt").write_text("x")
+    workspace_hash = "-" + str(workdir).lstrip("/").replace("/", "-")
+    jsonl_dir = tmp_path / ".claude" / "projects" / workspace_hash
+    jsonl_dir.mkdir(parents=True)
+    (jsonl_dir / "sid-clean.jsonl").write_text("...")
+    _write_session_meta(tmp_path, "aaaa0000aaaa0000", {
+        "task_id": "aaaa0000aaaa0000",
+        "session_id": "sid-clean",
+        "workdir": str(workdir),
+    })
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.delete(
+            "/v1/sessions/aaaa0000aaaa0000/cleanup", headers=_AUTH_HEADERS,
+        )
+        body = await resp.json()
+    assert resp.status == 200
+    assert body["removed"]["workdir"] is True
+    assert body["removed"]["jsonl"] is True
+    assert not workdir.exists()
+
+
+async def test_cleanup_returns_409_when_task_is_alive(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Cleanup MUST refuse to drop a live task — operator must kill first."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        claude_worker_module, "_is_claude_process_alive", lambda _sid: True,
+    )
+    _write_session_meta(tmp_path, "bbbbcccc1111dddd", {
+        "task_id": "bbbbcccc1111dddd", "session_id": "alive",
+    })
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.delete(
+            "/v1/sessions/bbbbcccc1111dddd/cleanup", headers=_AUTH_HEADERS,
+        )
+        assert resp.status == 409
+
+
+async def test_observability_endpoints_require_bearer(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """All new endpoints honor the Bearer auth middleware."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        for path in (
+            "/v1/sessions",
+            "/v1/sessions/0000000000000000/command",
+            "/v1/sessions/0000000000000000/chat",
+            "/v1/sessions/0000000000000000/stdout",
+        ):
+            resp = await client.get(path)
+            assert resp.status == 401, f"{path} did not require bearer"

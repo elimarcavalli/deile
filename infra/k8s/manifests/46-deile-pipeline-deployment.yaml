@@ -147,12 +147,31 @@ spec:
             # — review da PR #344 morreu aos 30min com claude no meio do
             # trabalho (postou "Iniciando review..." mas não completou).
             - { name: DEILE_WORKER_TASK_TIMEOUT_S,   value: "7230" }
+            # Issue #347 — pipeline_status_server (introspection HTTP) sobe
+            # in-process no mesmo event loop do monitor (asyncio task em
+            # runner.py::_start_status_server). Default port 8768; auth via
+            # Bearer token montado em /run/secrets/pipeline-status/.
+            - { name: DEILE_PIPELINE_STATUS_HOST,    value: "0.0.0.0" }
+            - { name: DEILE_PIPELINE_STATUS_PORT,    value: "8768" }
+          ports:
+            - { name: status-api, containerPort: 8768, protocol: TCP }
+          readinessProbe:
+            httpGet: { path: /v1/health, port: status-api }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 4
           volumeMounts:
             # GITHUB_TOKEN (gh) + DEILE_BOT_AUTH_TOKEN (notifier) + LLM keys
             # (unused here, harmless) — same Secret as worker/shell.
             - { name: deile-secrets,  mountPath: /run/secrets/deile,  readOnly: true }
             # Worker bearer — needed to authenticate dispatches to the worker.
             - { name: worker-bearer,  mountPath: /run/secrets/worker, readOnly: true }
+            # Issue #347 — pipeline_status_server Bearer (separado do worker
+            # bearer pra escopo distinto). Best-effort: se Secret ausente, o
+            # status server tenta DEILE_PIPELINE_STATUS_AUTH_TOKEN env e
+            # falha-no-startup com mensagem clara (server desabilitado;
+            # pipeline continua).
+            - { name: status-bearer,  mountPath: /run/secrets/pipeline-status, readOnly: true }
             - { name: home,           mountPath: /home/deile }
             - { name: tmp,            mountPath: /tmp }
             # settings.json layered (issue #111). Apontado pelo env var
@@ -175,9 +194,30 @@ spec:
       volumes:
         - { name: deile-secrets, secret: { secretName: deile-secrets,  defaultMode: 288 } }
         - { name: worker-bearer, secret: { secretName: worker-bearer,  defaultMode: 288 } }
+        # Issue #347 — Secret separado pro pipeline_status_server (criado por
+        # deploy.py k8s up / por hand via kubectl create secret). Se ausente,
+        # initContainer pode opcionalmente gerar um random — V1: server falha
+        # gracefully na boot se Secret vazio (server desabilitado, pipeline
+        # segue normal).
+        - { name: status-bearer, secret: { secretName: pipeline-status-bearer, defaultMode: 288, optional: true } }
         - { name: home,          emptyDir: { sizeLimit: "256Mi" } }
         - { name: tmp,           emptyDir: { medium: Memory, sizeLimit: "64Mi" } }
         - name: runtime-config
           configMap:
             name: deile-runtime-config
             defaultMode: 292   # 0o444 — read-only inside pod
+---
+# Issue #347 — Service ClusterIP pra o pipeline_status_server (porta 8768).
+# Painel TUI consome via DNS interno OU via port-forward em dev.
+apiVersion: v1
+kind: Service
+metadata:
+  name: deile-pipeline-status
+  labels:
+    app: deile-pipeline
+spec:
+  type: ClusterIP
+  selector:
+    app: deile-pipeline
+  ports:
+    - { name: status-api, port: 8768, targetPort: status-api, protocol: TCP }

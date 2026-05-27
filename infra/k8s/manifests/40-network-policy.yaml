@@ -237,6 +237,50 @@ spec:
       ports:
         - { protocol: TCP, port: 8767 }
 ---
+# ---- pipeline-status server: ingress do deile-shell (painel TUI) ----------
+# Issue #347 — Painel TUI roda dentro do deile-shell pod via kubectl exec
+# E pode também rodar fora do cluster via kubectl port-forward (que abre
+# tunnel autenticado direto pro pod, sem passar por NetworkPolicy).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pipeline-status-ingress
+  namespace: deile
+spec:
+  podSelector:
+    matchLabels:
+      app: deile-pipeline
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: deile-shell
+        - podSelector:
+            matchLabels:
+              role: deile  # outros pods do role (debug, etc) também consomem
+      ports:
+        - { protocol: TCP, port: 8768 }
+---
+# ---- deile-shell egress to pipeline-status ---------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: shell-egress-to-pipeline-status
+  namespace: deile
+spec:
+  podSelector:
+    matchLabels:
+      app: deile-shell
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: deile-pipeline
+      ports:
+        - { protocol: TCP, port: 8768 }
+---
 # ---- claude-worker egress: anthropic API + git forges (whitelisted via wrapper) ----
 # Granularidade de repo é enforced no wrapper.py via ConfigMap allowed-repos —
 # este NetworkPolicy só faz L3/L4 (host:port).

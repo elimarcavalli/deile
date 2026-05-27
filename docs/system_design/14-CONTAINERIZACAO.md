@@ -129,12 +129,35 @@ via `dispatch_resolver` (mesmo padrão dos per-stage models da decisão #41).
 | InitContainer | `bootstrap-creds` — copia Secret → PVC writable em `~/.claude/credentials.json` mode `0600` |
 | NetworkPolicy | ingress só do `deile-pipeline`; egress 443 whitelisted + DNS |
 | ConfigMap | `claude-worker-allowed-repos` (regex de URLs git permitidas, enforcement no `wrapper.py`) |
-| Endpoints HTTP | `POST /v1/dispatch`, `GET /v1/health`, `GET /v1/progress/{task_id}` |
+| Endpoints HTTP | `POST /v1/dispatch`, `GET /v1/health`, `GET /v1/progress/{task_id}`, `GET /v1/dispatches/{task_id}/resume-info`, **`GET /v1/sessions`** (Decisão #44), **`GET /v1/sessions/{task_id}/{command,chat,stdout}`**, **`POST /v1/sessions/{task_id}/kill`** (gated por confirm token), **`DELETE /v1/sessions/{task_id}/cleanup`** |
 
 Setup: `python3 infra/k8s/deploy.py k8s claude-login` (idempotente).
 Operação: per-stage routing via `DispatchMatrixView` (`[d]`) no painel TUI.
 
 Detalhe completo: [`docs/superpowers/specs/2026-05-26-claude-worker-design.md`](../superpowers/specs/2026-05-26-claude-worker-design.md).
+
+### 5) deile-pipeline status server (Decisão #44, issue #347)
+
+O pod `deile-pipeline` historicamente não escutava nenhuma porta (só rodava o
+loop de polling). A partir desta decisão sobe um mini servidor HTTP aiohttp
+(módulo novo `infra/k8s/pipeline_status_server.py`) na **porta `:8768`** com
+Bearer auth (mesmo padrão dos demais workers — Secret file em
+`/run/secrets/pipeline-status/PIPELINE_STATUS_BEARER_TOKEN`).
+
+| Endpoint | Resposta |
+|---|---|
+| `GET /v1/health` | `{status: "ok"}` (sem auth — readinessProbe) |
+| `GET /v1/pipeline-status` | tick metrics + uptime + `pods_seen` + `schedule_summary` |
+| `GET /v1/pipeline-status/backlog` | items elegíveis pro próximo tick |
+| `GET /v1/pipeline-status/recent[?limit=N]` | eventos estruturados (chronological) |
+| `GET /v1/pipeline-status/ledger` | snapshot do `DispatchLedger` |
+| `GET /v1/pipeline-status/reaper-preview` | ações planejadas do reaper |
+| `POST /v1/pipeline/force-tick` | força tick imediato (409 se callback não registrado) |
+
+Estado vive num singleton `PipelineStatusState` thread-safe (
+`record_tick`/`record_error`/`record_event` + `set_backlog`/`set_ledger_snapshot`/
+`set_reaper_preview`/`set_pods_seen`/`set_schedule_summary` +
+`set_force_tick_callback`). O monitor publica; o server expõe.
 
 ### Tabela-resumo
 

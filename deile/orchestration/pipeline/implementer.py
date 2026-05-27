@@ -26,6 +26,7 @@ themselves.
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import re
 import shutil
@@ -382,6 +383,64 @@ def _build_resume_block(
     }
 
 
+# --- Issue #347 follow-up: smart review resume helpers -----------------------
+#
+# Reviewer detecta REQUEST_CHANGES / BLOCKED no veredict (subprocess exit
+# pode ser rc=0 mesmo assim — `ok` é run-success, não product-success).
+# Estes helpers permitem o pipeline distinguir entre "review terminou bem
+# (merge/approve)" e "review terminou bloqueando (changes requested)" pra
+# preservar o link de resume no DispatchLedger.
+
+_BLOCKED_VERDICT_RE = re.compile(
+    r"STATUS:\s*(REQUEST_CHANGES|BLOCKED\w*)",
+    re.IGNORECASE,
+)
+
+
+def _review_was_blocked(text: str) -> bool:
+    """True se o veredict do reviewer indica que o operador precisa agir
+    antes do PR seguir (REQUEST_CHANGES ou BLOCKED_*). Subprocess rc=0
+    + STATUS: REQUEST_CHANGES é a combinação típica.
+
+    Conservador: requer match exato pra evitar false positives em prosa
+    do reviewer (ex: "vou avaliar se isso bloqueia"). Sem match → False.
+    """
+    if not text:
+        return False
+    return bool(_BLOCKED_VERDICT_RE.search(text[-8000:]))
+
+
+def _estimate_session_tokens_from_jsonl(jsonl_text: str) -> int:
+    """Soma usage tokens dos turns do JSONL claude. ``jsonl_text`` é o
+    conteúdo bruto do arquivo. Tolerante a malformed lines.
+
+    Usado pelo budget check antes do resume: contexto grande > 500k justifica
+    compact ou fresh fallback (overhead de claude crescer linearmente com
+    o JSONL ressuscitado).
+    """
+    total = 0
+    for line in (jsonl_text or "").splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            d = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        msg = d.get("message") if isinstance(d, dict) else None
+        usage = (msg or {}).get("usage") if isinstance(msg, dict) else None
+        if not isinstance(usage, dict):
+            usage = d.get("usage") if isinstance(d, dict) else None
+        if not isinstance(usage, dict):
+            continue
+        for k in ("input_tokens", "output_tokens",
+                  "cache_read_input_tokens", "cache_creation_input_tokens"):
+            v = usage.get(k)
+            if isinstance(v, (int, float)):
+                total += int(v)
+    return total
+
+
 def _outcome_from_worker_response(data: object) -> WorkOutcome:
     """Map a worker dispatch response dict to a :class:`WorkOutcome`.
 
@@ -595,6 +654,10 @@ class WorkerImplementer(PipelineImplementer):
         return {
             "prev_task_id": str(prev_task_id),
             "resume_session_id": str(session_id),
+            # Issue #347 follow-up: surface campos extras pro nudge sem
+            # uma 2ª chamada HTTP a get_resume_info.
+            "_last_result_summary": str(info.get("last_result_summary") or "")[:1500],
+            "_last_completed_at": str(info.get("last_completed_at") or ""),
         }
 
     async def _dispatch(
@@ -628,14 +691,18 @@ class WorkerImplementer(PipelineImplementer):
         # mantém compat com callers (testes) que ainda não declaram stage.
         url = self._resolve_endpoint(stage or "implement")
 
-        # Issue #309 fase 3.5 — consulta o ledger pra ver se há dispatch
-        # anterior retomável; passa ``resume_session_id + prev_task_id``
-        # no payload quando o worker confirma viabilidade. Quando o
-        # caller passa ``resume=True`` mas ledger não tem nada (ex.:
-        # primeira chance de resume após restart do pipeline), fallback
-        # automático pra fresh dispatch — sem perder o ciclo.
+        # Issue #347 follow-up — RESUME TRANSPARENTE: ledger é consultado
+        # SEMPRE (não só quando caller passa resume=True). Cobre o caso
+        # comum de re-review após operador remover ~workflow:bloqueada:
+        # PR volta pra ~review:pendente (não em_andamento), pipeline o
+        # vê como "fresh" no `_candidate`, mas se o DispatchLedger tem
+        # entry preservada do reviewer anterior (review bloqueada NÃO
+        # limpa o ledger), o resume é tentado transparente.
+        #
+        # Caller hint ``resume=True`` ainda é honrado pra log e métricas,
+        # mas resume real depende SÓ do ledger.
         resume_meta: Optional[Dict[str, str]] = None
-        if resume and ledger_key:
+        if ledger_key:
             resume_meta = await self._resolve_resume_meta(ledger_key, url)
             if resume_meta and resume_meta.get("_still_alive"):
                 # Worker confirmou claude ainda alive — não dispatch.
@@ -647,6 +714,15 @@ class WorkerImplementer(PipelineImplementer):
                           "ainda rodando o task anterior; skip nesse tick",
                 )
 
+        # Brief contextual quando estamos retomando uma review (não-implementa-
+        # ção). O nudge inclui git log delta + comentários novos + checklist
+        # de achados anteriores — economiza ~80% dos tokens vs fresh refazendo.
+        if resume_meta and stage == "pr_review":
+            brief = await self._wrap_review_brief_for_resume(
+                brief=brief, ledger_key=ledger_key, resume_meta=resume_meta,
+                url=url,
+            )
+
         # ``stage=stage`` propaga o stage canônico pro worker (issue #309
         # fase 2 hotfix): SEM isso o claude_worker_server caia no default
         # ``implement`` para TODOS os dispatches (review/refine/follow_ups
@@ -657,6 +733,7 @@ class WorkerImplementer(PipelineImplementer):
             preferred_model=preferred_model, stage=stage, branch=branch,
         )
         if resume_meta:
+            # Apenas os 2 campos públicos vão pro wire (resto é interno: _*).
             payload_kwargs["resume_session_id"] = resume_meta["resume_session_id"]
             payload_kwargs["prev_task_id"] = resume_meta["prev_task_id"]
         payload = build_dispatch_payload(**payload_kwargs)
@@ -673,16 +750,29 @@ class WorkerImplementer(PipelineImplementer):
             logger.exception("worker dispatch raised")
             return WorkOutcome(ok=False, text="", error=f"{type(exc).__name__}: {exc}"[:500])
         outcome = _outcome_from_worker_response(data)
-        # Issue #309 fase 3.5 — persistência no DispatchLedger.
+        # Issue #309 fase 3.5 + issue #347 follow-up — persistência no
+        # DispatchLedger:
+        #
+        # • ok=True E NÃO houve REQUEST_CHANGES/BLOCKED no veredict:
+        #   trabalho concluído (merge, approve, implement bem-sucedido).
+        #   → CLEAR ledger; próximo dispatch desse PR/issue é fresh.
+        #
+        # • ok=True MAS reviewer reportou REQUEST_CHANGES ou BLOCKED_*:
+        #   subprocess rodou ok, mas funcionalmente está bloqueado
+        #   esperando operador agir. → PRESERVE ledger pra próximo
+        #   dispatch poder retomar via --resume com o contexto do reviewer.
+        #
+        # • ok=False (erro, timeout, etc.): grava entrada pra retry com
+        #   resume no próximo tick.
         if ledger_key and outcome.task_id:
-            if outcome.ok:
-                # Trabalho completado com sucesso: limpa entrada (próximo
-                # dispatch desse PR/issue será fresh).
+            worker_kind = "claude" if "claude-worker" in url else "deile"
+            blocked_by_verdict = (
+                stage == "pr_review" and outcome.ok
+                and _review_was_blocked(outcome.text)
+            )
+            if outcome.ok and not blocked_by_verdict:
                 self._ledger.clear(ledger_key)
             else:
-                # Trabalho incompleto (erro, timeout, blocked): grava ou
-                # atualiza pra resume no próximo tick.
-                worker_kind = "claude" if "claude-worker" in url else "deile"
                 self._ledger.record(
                     ledger_key,
                     task_id=outcome.task_id,
@@ -690,7 +780,157 @@ class WorkerImplementer(PipelineImplementer):
                     stage=stage, branch=branch,
                     worker_kind=worker_kind,
                 )
+                if blocked_by_verdict:
+                    logger.info(
+                        "ledger %s: review REQUEST_CHANGES/BLOCKED — "
+                        "preservando entry pra resume da próxima review",
+                        ledger_key,
+                    )
         return outcome
+
+    async def _wrap_review_brief_for_resume(
+        self,
+        *,
+        brief: str,
+        ledger_key: str,
+        resume_meta: Dict[str, str],
+        url: str,
+    ) -> str:
+        """Constrói o nudge contextual rico que substitui o brief original
+        em dispatches de RESUME de pr_review.
+
+        Inclui: prev verdict + git delta entre HEAD anterior e HEAD atual +
+        comentários novos no PR desde a última review + instruções
+        explícitas pra NÃO repetir trabalho.
+
+        ``brief`` original (do _render_worker_review_brief) é DESCARTADO
+        nesse caminho — claude já viu ele na sessão anterior via -r.
+        O nudge é minimalista e direcional.
+
+        Best-effort: erros em qualquer fetch caem pro nudge mínimo (sem
+        delta details). Resume continua funcional.
+        """
+        prev_task_id = resume_meta["prev_task_id"]
+        session_id = resume_meta["resume_session_id"]
+        # Extrai pr_number do ledger_key formato "pr:<N>".
+        pr_number = None
+        if ledger_key and ledger_key.startswith("pr:"):
+            try:
+                pr_number = int(ledger_key.split(":", 1)[1])
+            except (ValueError, IndexError):
+                pass
+
+        # Usa info já obtido pelo _resolve_resume_meta (evita 2ª chamada HTTP).
+        prev_summary = resume_meta.get("_last_result_summary") or ""
+        try:
+            prev_completed_at = int(resume_meta.get("_last_completed_at") or 0)
+        except (ValueError, TypeError):
+            prev_completed_at = 0
+
+        # Coleta delta (git log + git diff + gh comments) — TODOS best-effort,
+        # cada chamada protegida individualmente pra não derrubar o brief.
+        delta_block = ""
+        if pr_number is not None:
+            delta_block = await self._collect_review_delta(pr_number, prev_completed_at)
+
+        nudge_lines = [
+            f"# RESUME DE REVIEW — PR #{pr_number or '?'} (sessão claude --resume {session_id[:8]}…)",
+            "",
+            "Você JÁ revisou esta PR antes. Sua sessão claude foi RETOMADA via `-r`,",
+            "então você tem TODO o contexto preservado: leituras, achados, decisões.",
+            "",
+            "## VEREDICT ANTERIOR (resumo persistido pelo worker)",
+            "",
+            prev_summary or "(sumário anterior indisponível; reconstrua pelo histórico da sessão)",
+            "",
+        ]
+        if delta_block:
+            nudge_lines.append(delta_block)
+        nudge_lines.extend([
+            "## INSTRUÇÕES — siga EXATAMENTE",
+            "",
+            "1. **NÃO releia o repositório inteiro.** Você já leu na sessão anterior.",
+            "   `cat`/`Read` APENAS arquivos tocados pelo delta abaixo.",
+            "2. **NÃO rode a suite completa de testes** (gasta 10+ min). Identifique",
+            "   o subset afetado pelo delta e rode SÓ ele (ex: `pytest deile/tests/<X>/`).",
+            "   Suite full só se o delta toca código central com fan-in alto.",
+            "3. **Para cada item da sua review anterior, marque o status novo:**",
+            "   - ✓ resolvido (correção aplicada e validada)",
+            "   - ✗ ainda aberto (correção não aplicada ou regrediu)",
+            "   - ⚠ parcial (resolveu parte mas introduziu outro problema)",
+            "4. **Avalie comentários novos** (se houver acima) — operador pode ter",
+            "   esclarecido escopo ou pedido ajuste adicional.",
+            "5. **Re-emita seu veredict NOVO** depois de POSTAR comment no PR via",
+            "   `gh pr review` ou `gh issue comment`:",
+            "   - STATUS: APPROVE — todos achados resolvidos + delta limpo → vai mergear",
+            "   - STATUS: REQUEST_CHANGES — ainda há achados abertos OU delta",
+            "     introduziu problema novo (liste explicitamente)",
+            "   - STATUS: BLOCKED_<motivo> — impedimento estrutural que operador não",
+            "     pode corrigir só com push (ex: regressão de teste pré-existente)",
+            "6. **Se for APPROVE**: faça merge via `gh pr merge --squash` (ou --merge",
+            "   se a PR exigir merge-commit). Confirme o merge antes de imprimir",
+            "   STATUS final.",
+            "",
+            "Sem refazer trabalho redundante. O delta é tudo que mudou.",
+        ])
+        return "\n".join(nudge_lines)
+
+    async def _collect_review_delta(
+        self, pr_number: int, prev_completed_at: int,
+    ) -> str:
+        """Constrói o bloco de delta (git log + diff + comments) pro nudge
+        de resume. Best-effort; erros viram bloco vazio.
+
+        Roda LOCAL no pipeline pod via subprocess.run — `gh` está no
+        PATH; `git` está no PATH (clone de pipeline-status existe).
+        """
+        import asyncio as _aio
+        from datetime import datetime as _dt, timezone as _tz
+        lines: List[str] = []
+        # gh comments since prev_completed_at.
+        if prev_completed_at:
+            since_iso = _dt.fromtimestamp(prev_completed_at, _tz.utc).isoformat()
+            try:
+                proc = await _aio.create_subprocess_exec(
+                    "gh", "api",
+                    f"repos/elimarcavalli/deile/issues/{pr_number}/comments",
+                    "--paginate",
+                    "-q",
+                    f'.[] | select(.created_at > "{since_iso}") | '
+                    '"[\\(.created_at[11:19])Z \\(.user.login)] \\(.body[:300])"',
+                    stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.DEVNULL,
+                )
+                out, _ = await _aio.wait_for(proc.communicate(), timeout=10)
+                comments_text = (out or b"").decode("utf-8", "replace").strip()
+                if comments_text:
+                    lines.append("## COMENTÁRIOS NOVOS na PR (desde sua última review)")
+                    lines.append("")
+                    lines.append(comments_text[:2000])
+                    lines.append("")
+            except Exception:  # noqa: BLE001
+                pass
+        # Push delta via gh — listar últimos N commits da PR como contexto.
+        try:
+            proc = await _aio.create_subprocess_exec(
+                "gh", "pr", "view", str(pr_number), "--json", "commits",
+                "-q", '.commits | sort_by(.committedDate) | reverse | .[0:5] | '
+                '.[] | "  \\(.oid[0:8]) \\(.messageHeadline)"',
+                stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.DEVNULL,
+            )
+            out, _ = await _aio.wait_for(proc.communicate(), timeout=10)
+            log_text = (out or b"").decode("utf-8", "replace").strip()
+            if log_text:
+                lines.append("## COMMITS RECENTES na PR (últimos 5)")
+                lines.append("```")
+                lines.append(log_text[:1500])
+                lines.append("```")
+                lines.append("")
+                lines.append("Use `git log --oneline -10 origin/<branch>` no workdir reaproveitado")
+                lines.append("e `git diff <commit_anterior>..HEAD` pra ver o delta REAL.")
+                lines.append("")
+        except Exception:  # noqa: BLE001
+            pass
+        return "\n".join(lines)
 
     async def implement(
         self, monitor: "PipelineMonitor", issue: "IssueRef", *, resume: bool = False
