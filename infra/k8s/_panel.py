@@ -4017,7 +4017,9 @@ class DispatchMatrixView(View):
         self.picker_cursor = max(0, min(self.picker_cursor, len(options) - 1))
         tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False,
                     show_header=False)
-        tbl.add_column(" ", width=2)
+        # max_width=2 (teto, princípio 15) — Rich encolhe se o terminal for
+        # estreito; o marcador ▶/espaço ocupa sempre 1 char, nunca mais.
+        tbl.add_column(" ", max_width=2)
         tbl.add_column("opção", style="bold")
         for i, opt in enumerate(options):
             marker = "▶" if i == self.picker_cursor else " "
