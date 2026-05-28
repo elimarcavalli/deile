@@ -927,14 +927,13 @@ class GitHubForge(ForgeClient):
         issues: List[IssueRef] = []
         prs: List[PrRef] = []
         try:
-            # gh search issues uses advanced_search=true which returns HTTP 404
-            # on non-enterprise accounts. Use the regular /search/issues REST
-            # endpoint with the `mentions:` qualifier (no @ prefix needed).
+            # gh search issues uses advanced_search=true → HTTP 404 on personal
+            # accounts. gh api --field sends a POST body; Search API requires
+            # GET query params. Build the URL directly with urllib.parse.quote.
             login = query.lstrip("@")
+            q = quote(f"mentions:{login} repo:{self.repo} state:open", safe="")
             out = await self._run_checked(
-                "api", "search/issues",
-                "--raw-field", f"q=mentions:{login} repo:{self.repo} state:open",
-                "--field", f"per_page={limit}",
+                "api", f"search/issues?q={q}&per_page={limit}",
                 "--jq", (
                     ".items | map({"
                     "number, title, url: .html_url, labels, body, state,"
