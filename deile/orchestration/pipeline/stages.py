@@ -34,7 +34,9 @@ from deile.orchestration.pipeline.implementer import (parse_critique_verdict,
                                                       parse_decompose_result,
                                                       parse_refine_verdict)
 from deile.orchestration.pipeline.labels import (FOLLOW_UPS_PROCESSED,
-                                                 MENTION_DONE, REFINAR,
+                                                 MENTION_DONE, PRIORITY_0,
+                                                 PRIORITY_1, PRIORITY_2,
+                                                 PRIORITY_3, REFINAR,
                                                  REFINE_WORKFLOW_STATES,
                                                  REVIEW_CONCLUDED,
                                                  REVIEW_IN_PROGRESS,
@@ -422,6 +424,27 @@ async def classify_new_prs(monitor: "PipelineMonitor") -> None:
         monitor._stats.prs_classified += 1
         logger.info("pr_triage: classified PR #%s with %s", pr.number, REVIEW_PENDING)
         await monitor.notifier.pr_auto_classified(pr.number, pr.title, pr.url)
+
+        # Priority inheritance (issue #369): if this PR closes an issue that
+        # carries a ~prioridade:N label, inherit it onto the PR.
+        try:
+            inherited = await monitor.forge.inherit_priority_from_linked_issue(pr.number)
+            if inherited is not None:
+                priority_labels = {
+                    0: PRIORITY_0,
+                    1: PRIORITY_1,
+                    2: PRIORITY_2,
+                    3: PRIORITY_3,
+                }
+                label = priority_labels.get(inherited)
+                if label is not None:
+                    await monitor.forge.add_labels("pr", pr.number, [label])
+                    logger.info(
+                        "pr_triage: inherited %s from linked issue for PR #%d",
+                        label, pr.number,
+                    )
+        except Exception as exc:  # noqa: BLE001 — best-effort; never block triage
+            logger.debug("pr_triage: priority inheritance for PR #%d failed: %s", pr.number, exc)
 
 
 # ----- mention handling: unified trigger polling (issue #253) ----------
