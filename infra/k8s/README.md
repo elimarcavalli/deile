@@ -126,39 +126,31 @@ para o quê é metade da operação:
 > seu User ID via Settings/Advanced → Developer Mode no Discord, e cole
 > aí antes do `k8s up`.
 
-### 1.3.3 Gaps conhecidos no fluxo de configuração (a corrigir)
+### 1.3.3 Gaps conhecidos no fluxo de configuração
 
-Quem clona o repo HOJE e tenta `k8s up` esbarra nesses pontos:
+Gaps resolvidos pelo PR #363 (issue #354):
 
-1. **`DEILE_BOT_DISCORD_TOKEN` hard-fail mesmo sem bot** — não dá pra subir
-   "pipeline only". Workaround: ponha um valor lixo no `.env`, o pod do bot
-   vai crashloop mas o resto sobe.
-2. **`GITLAB_TOKEN` não é propagado pelo `k8s up`** — só `GITHUB_TOKEN`.
-   Pra GitLab puro: rode `up` primeiro, depois patch:
-   ```bash
-   kubectl -n deile patch secret deile-secrets \
-     -p "{\"stringData\":{\"GITLAB_TOKEN\":\"glpat-...\"}}"
-   kubectl -n deile rollout restart deployment/deile-pipeline
-   ```
-   (O `k8s setup` interativo já trata. Só o `up` esqueceu.)
-3. **`PIPELINE_STATUS_BEARER_TOKEN` (issue #347) órfão** — manifest 44 é
-   stub vazio e `k8s up` nem o aplica. O status server do pipeline (`:8768`)
-   sobe sem auth válido e o painel TUI fica vendo erro 401/403. Workaround:
-   ```bash
-   TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
-   kubectl -n deile create secret generic pipeline-status-bearer \
-     --from-literal=PIPELINE_STATUS_BEARER_TOKEN=$TOKEN \
-     --dry-run=client -o yaml | kubectl apply -f -
-   kubectl -n deile rollout restart deployment/deile-pipeline
-   ```
-4. **`claude-worker` (manifests 47-50) NÃO aplicado pelo `k8s up`** — só
-   sobe se você rodar `k8s claude-login` depois. Esperado por design
-   (claude-worker é opt-in), mas precisa estar claro.
+- ~~**`DEILE_BOT_DISCORD_TOKEN` hard-fail mesmo sem bot**~~ — **resolvido**.
+  Use `k8s up --profile pipeline-only` para subir sem bot Discord.
+- ~~**`GITLAB_TOKEN` não é propagado pelo `k8s up`**~~ — **resolvido**.
+  `GITLAB_TOKEN` (e o alias `GL_TOKEN`) agora é propagado para `deile-secrets`.
+  Se só `GITLAB_TOKEN` estiver presente, `k8s up` emite warning sugerindo
+  `DEILE_FORGE_KIND=gitlab`.
+- ~~**`PIPELINE_STATUS_BEARER_TOKEN` (issue #347) órfão**~~ — **resolvido**.
+  `k8s up` agora gera, persiste no `.env` e aplica o Secret `pipeline-status-bearer`
+  com a chave `PIPELINE_STATUS_BEARER_TOKEN`. O painel TUI não verá mais 401/403
+  após deploy em cluster zerado.
+- ~~**Dois `k8s up` consecutivos geram tokens diferentes**~~ — **resolvido**.
+  `DEILE_BOT_AUTH_TOKEN`, `DEILE_WORKER_BEARER_TOKEN` e `PIPELINE_STATUS_BEARER_TOKEN`
+  são persisted no `.env` na primeira execução e reusados nas seguintes.
+
+Gaps ainda abertos:
+
+4. **`claude-worker` (manifests 47-50) NÃO aplicado pelo `k8s up` padrão** — só
+   sobe com o perfil `claude-only` + `k8s claude-login` depois. Esperado por design
+   (claude-worker é opt-in e requer OAuth).
 5. **Manifest 43 (`forge-tokens-secret`) existe mas não é aplicado** —
    `k8s up` põe os tokens em `deile-secrets`, fazendo o 43 dead code.
-
-Trabalho em curso pra eliminar todos esses gaps. Atualizações nesta
-seção quando concluído.
 
 ---
 

@@ -68,6 +68,82 @@ K8S_DEPLOYMENTS = ("deilebot", "deile-worker", "deile-shell", "deile-pipeline")
 _DEILE_NS_LABEL = "app.kubernetes.io/managed-by=deile"
 
 
+class DeploymentProfile:
+    """Describes which Deployments + Secrets belong in a k8s up run.
+
+    Three named profiles:
+
+      pipeline-only  Minimal: deile-pipeline + deile-worker only.
+                     Discord token not required. Suitable for CI-only setups.
+      full           Default: all 4 standard deployments + Discord bot.
+                     Discord token required.
+      claude-only    Pipeline + claude-worker (no Discord bot).
+                     Discord token not required. Requires k8s claude-login
+                     separately to activate OAuth credentials.
+
+    Selectable via ``k8s up --profile <name>`` or the env var
+    ``DEILE_K8S_DEPLOY_PROFILE`` (checked in .env then os.environ).
+    """
+
+    VALID = ("pipeline-only", "full", "claude-only")
+
+    def __init__(self, name: str = "full") -> None:
+        if name not in self.VALID:
+            raise ValueError(
+                f"perfil inválido: {name!r}. Válidos: {', '.join(self.VALID)}"
+            )
+        self.name = name
+
+    @property
+    def deployments(self) -> tuple:
+        if self.name == "pipeline-only":
+            return ("deile-pipeline", "deile-worker")
+        if self.name == "claude-only":
+            return ("deile-pipeline", "deile-worker", "claude-worker")
+        return ("deilebot", "deile-worker", "deile-shell", "deile-pipeline")
+
+    @property
+    def requires_discord(self) -> bool:
+        return self.name == "full"
+
+    @property
+    def includes_bot(self) -> bool:
+        return self.name == "full"
+
+    @property
+    def includes_claude_worker(self) -> bool:
+        return self.name == "claude-only"
+
+    @property
+    def manifests(self) -> tuple:
+        base = (
+            "15-bot-config.yaml",
+            "47-deile-runtime-config.yaml",
+            "41-worker-pvc.yaml",
+            "45-deile-worker-deployment.yaml",
+            "46-deile-pipeline-deployment.yaml",
+        )
+        if self.name == "pipeline-only":
+            return base
+        if self.name == "claude-only":
+            return base + (
+                "48-claude-worker-bearer-secret.yaml",
+                "49-claude-worker-pvc.yaml",
+                "50-claude-worker-deployment.yaml",
+            )
+        # full
+        return (
+            "15-bot-config.yaml",
+            "47-deile-runtime-config.yaml",
+            "19-bot-data-pvc.yaml",
+            "20-bot-deployment.yaml",
+            "35-deile-interactive.yaml",
+            "41-worker-pvc.yaml",
+            "45-deile-worker-deployment.yaml",
+            "46-deile-pipeline-deployment.yaml",
+        )
+
+
 # ===== helpers ===============================================================
 
 def _ns(args: dict) -> str:
@@ -127,6 +203,44 @@ def read_env() -> Dict[str, str]:
         key, _, val = line.partition("=")
         data[key.strip()] = val.strip().strip('"').strip("'")
     return data
+
+
+def _persist_env_key(key: str, value: str) -> None:
+    """Adds or updates ``key=value`` in the .env file.
+
+    Uses an in-place rewrite so existing comments and ordering are preserved.
+    Does nothing when ENV_FILE does not exist.
+    """
+    if not ENV_FILE.is_file():
+        return
+    text = ENV_FILE.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    new_line = f"{key}={value}\n"
+    for idx, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("export "):
+            stripped = stripped[len("export "):]
+        if "=" in stripped and stripped.split("=", 1)[0].strip() == key:
+            lines[idx] = new_line
+            ENV_FILE.write_text("".join(lines), encoding="utf-8")
+            return
+    trail = "" if text.endswith("\n") else "\n"
+    ENV_FILE.write_text(text + trail + new_line, encoding="utf-8")
+
+
+def _ensure_persisted_token(key: str, env: Dict[str, str]) -> str:
+    """Returns ``env[key]`` if non-empty, otherwise generates and persists a new token.
+
+    The generated token is written back to ``ENV_FILE`` and into ``env`` so
+    two consecutive ``k8s up`` calls always use the same token.
+    """
+    val = env.get(key, "").strip()
+    if val:
+        return val
+    val = secrets.token_urlsafe(32)
+    _persist_env_key(key, val)
+    env[key] = val
+    return val
 
 
 def read_deploy_target() -> Optional[str]:
@@ -326,6 +440,63 @@ def _apply_secret(kubectl: str, name: str, kv: Dict[str, str], ns: str = "") -> 
             pass
 
 
+def _assert_bearer_sync(kubectl: str, ns: str) -> None:
+    """Fails hard when worker-bearer and claude-worker-bearer tokens diverge.
+
+    Skips silently if either secret is absent or has an empty token (e.g. stub
+    manifests applied before k8s claude-login has run).
+    """
+    import base64
+    import subprocess as _sp
+
+    def _read_secret_key(secret: str, key: str) -> str:
+        r = _sp.run(
+            [kubectl, "-n", ns, "get", "secret", secret,
+             "-o", f"jsonpath={{.data.{key}}}"],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            return ""
+        try:
+            return base64.b64decode(r.stdout.strip()).decode()
+        except Exception:
+            return ""
+
+    worker_tok = _read_secret_key("worker-bearer", "AUTH_TOKEN")
+    claude_tok = _read_secret_key("claude-worker-bearer", "CLAUDE_WORKER_BEARER_TOKEN")
+    if not worker_tok or not claude_tok:
+        return
+    if worker_tok != claude_tok:
+        raise SystemExit(
+            "ERRO: worker-bearer/AUTH_TOKEN e claude-worker-bearer/CLAUDE_WORKER_BEARER_TOKEN "
+            "estão divergentes. Rode `k8s claude-login` para sincronizar os tokens."
+        )
+
+
+def _k8s_up_resolve_profile(extra: List[str], env: Dict[str, str]) -> DeploymentProfile:
+    """Resolves the deployment profile from CLI flags, .env, or os.environ."""
+    i = 0
+    while i < len(extra):
+        if extra[i] == "--profile" and i + 1 < len(extra):
+            name = extra[i + 1]
+            try:
+                return DeploymentProfile(name)
+            except ValueError as exc:
+                ui.warn(str(exc) + " — usando perfil padrão 'full'.")
+                return DeploymentProfile("full")
+        i += 1
+    env_name = (
+        env.get("DEILE_K8S_DEPLOY_PROFILE", "").strip()
+        or os.environ.get("DEILE_K8S_DEPLOY_PROFILE", "").strip()
+    )
+    if env_name:
+        try:
+            return DeploymentProfile(env_name)
+        except ValueError as exc:
+            ui.warn(str(exc) + " — usando perfil padrão 'full'.")
+    return DeploymentProfile("full")
+
+
 def k8s_up(args: dict) -> int:
     ns = _ns(args)
     if not announce_plan(
@@ -333,7 +504,7 @@ def k8s_up(args: dict) -> int:
         [
             "cria o namespace (se ausente) + etiqueta para DEILE",
             "aplica network policies",
-            "cria/atualiza os Secrets (bot, deile, worker) — nada é impresso",
+            "cria/atualiza os Secrets — nada é impresso",
             "aplica ConfigMap, PVCs, Deployments e Services",
             "aguarda os pods ficarem prontos (até 180s cada)",
         ],
@@ -350,19 +521,42 @@ def k8s_up(args: dict) -> int:
         return 1
 
     env = read_env()
-    discord_token = env.get("DEILE_BOT_DISCORD_TOKEN", "").strip()
-    if not discord_token:
-        ui.err("DEILE_BOT_DISCORD_TOKEN ausente no `.env`.")
-        return 1
+    profile = _k8s_up_resolve_profile(args.get("extra") or [], env)
+    ui.info(f"perfil de deploy: {profile.name}")
+
     llm = {k: env[k] for k in LLM_KEYS if env.get(k, "").strip()}
     if not llm:
         ui.err("nenhuma chave de LLM no `.env` (ANTHROPIC/OPENAI/DEEPSEEK/GOOGLE).")
         return 1
-    bearer = env.get("DEILE_BOT_AUTH_TOKEN", "").strip() or secrets.token_urlsafe(32)
-    worker_token = (
-        env.get("DEILE_WORKER_BEARER_TOKEN", "").strip() or secrets.token_urlsafe(32)
-    )
+
+    discord_token = env.get("DEILE_BOT_DISCORD_TOKEN", "").strip()
+    if profile.requires_discord and not discord_token:
+        ui.err(
+            "DEILE_BOT_DISCORD_TOKEN ausente no `.env` "
+            "(obrigatório para perfil 'full')."
+        )
+        ui.info("Use --profile pipeline-only para deploy sem bot Discord.")
+        return 1
+
+    # Tokens are generated once and persisted back to .env so consecutive
+    # k8s up calls never diverge (issue #354).
+    bearer = _ensure_persisted_token("DEILE_BOT_AUTH_TOKEN", env)
+    worker_token = _ensure_persisted_token("DEILE_WORKER_BEARER_TOKEN", env)
+    pipeline_status_token = _ensure_persisted_token("PIPELINE_STATUS_BEARER_TOKEN", env)
+
     github_token = env.get("GITHUB_TOKEN", "").strip()
+    gitlab_token = (
+        env.get("GITLAB_TOKEN", "").strip()
+        or env.get("GL_TOKEN", "").strip()
+    )
+    if gitlab_token and not github_token:
+        forge_kind = env.get("DEILE_FORGE_KIND", "").strip() or os.environ.get("DEILE_FORGE_KIND", "").strip()
+        if forge_kind != "gitlab":
+            ui.warn(
+                "GITLAB_TOKEN presente mas GITHUB_TOKEN ausente. "
+                "Se este cluster serve um repositório GitLab, defina "
+                "DEILE_FORGE_KIND=gitlab no .env para evitar erros de forge."
+            )
 
     # Cria o namespace (idempotente) e etiqueta para descoberta por `k8s list`.
     # Para o namespace padrão "deile", aplica o manifest completo com PSS labels.
@@ -385,40 +579,58 @@ def k8s_up(args: dict) -> int:
     _run([kubectl, "apply", "-n", ns, "-f", str(MANIFESTS / "40-network-policy.yaml")])
 
     ui.info("criando os Secrets (nada é impresso)")
-    bot_secret = {"DEILE_BOT_DISCORD_TOKEN": discord_token,
-                  "DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN": bearer, **llm}
-    deile_secret = {"DEILE_BOT_AUTH_TOKEN": bearer, **llm}
+    deile_secret: Dict[str, str] = {"DEILE_BOT_AUTH_TOKEN": bearer, **llm}
     if github_token:
         deile_secret["GITHUB_TOKEN"] = github_token
-    for name, kv in (("bot-secrets", bot_secret),
-                     ("deile-secrets", deile_secret),
-                     ("worker-bearer", {"AUTH_TOKEN": worker_token})):
+    if gitlab_token:
+        deile_secret["GITLAB_TOKEN"] = gitlab_token
+
+    secrets_to_apply = [
+        ("deile-secrets", deile_secret),
+        ("worker-bearer", {"AUTH_TOKEN": worker_token}),
+        ("pipeline-status-bearer", {"PIPELINE_STATUS_BEARER_TOKEN": pipeline_status_token}),
+    ]
+    if profile.includes_bot and discord_token:
+        bot_secret: Dict[str, str] = {
+            "DEILE_BOT_DISCORD_TOKEN": discord_token,
+            "DEILE_BOT_CONTROL_PLANE_AUTH_TOKEN": bearer,
+            **llm,
+        }
+        secrets_to_apply.insert(0, ("bot-secrets", bot_secret))
+
+    for name, kv in secrets_to_apply:
         if not _apply_secret(kubectl, name, kv, ns=ns):
             return 1
 
     ui.info("aplicando ConfigMap, PVCs, Deployments e Services")
     # ConfigMaps PRIMEIRO — Pods montam essas chaves; aplicar antes evita
-    # CreateContainerConfigError no primeiro rollout. ``47-deile-runtime-config``
-    # carrega o settings.json layered (issue #111) consumido por pipeline /
-    # worker / shell em ~/.deile/settings.json.
-    for manifest in ("15-bot-config.yaml", "47-deile-runtime-config.yaml",
-                     "19-bot-data-pvc.yaml",
-                     "20-bot-deployment.yaml", "35-deile-interactive.yaml",
-                     "41-worker-pvc.yaml", "45-deile-worker-deployment.yaml",
-                     "46-deile-pipeline-deployment.yaml"):
-        _run([kubectl, "apply", "-n", ns, "-f", str(MANIFESTS / manifest)])
+    # CreateContainerConfigError no primeiro rollout.
+    for manifest in profile.manifests:
+        path = MANIFESTS / manifest
+        if path.is_file():
+            _run([kubectl, "apply", "-n", ns, "-f", str(path)])
 
-    for dep in K8S_DEPLOYMENTS:
+    # claude-worker requires k8s claude-login for OAuth credentials; skip
+    # rollout restart and readiness wait for it here.
+    active_deps = tuple(d for d in profile.deployments if d != "claude-worker")
+
+    for dep in active_deps:
         _run([kubectl, "-n", ns, "rollout", "restart", f"deployment/{dep}"],
              stdout=subprocess.DEVNULL)
 
     ui.info("aguardando os pods ficarem prontos (até 180s cada)")
-    for dep in K8S_DEPLOYMENTS:
+    for dep in active_deps:
         if _run([kubectl, "-n", ns, "rollout", "status",
                  f"deployment/{dep}", "--timeout=180s"]) != 0:
             ui.err(f"{dep} não ficou pronto.")
             _run([kubectl, "-n", ns, "logs", f"deploy/{dep}", "--tail=60"])
             return 1
+    if profile.includes_claude_worker:
+        ui.info(
+            "claude-worker manifests aplicados. "
+            "Rode `k8s claude-login` para ativar as credenciais OAuth."
+        )
+    _assert_bearer_sync(kubectl, ns)
     ui.ok("stack no ar.")
     return 0
 
