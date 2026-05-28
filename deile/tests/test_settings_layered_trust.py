@@ -80,6 +80,7 @@ class TestProjectLayerTrust:
     def test_project_layer_ignored_when_not_allowlisted_and_policy_deny(
         self, monkeypatch, tmp_path
     ):
+        monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         home = tmp_path / "home"
         _write_user_settings(
             home,
@@ -105,6 +106,7 @@ class TestProjectLayerTrust:
         assert any("ignoring project layer" in r.getMessage() for r in records)
 
     def test_project_layer_applied_when_allowlisted(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         home = tmp_path / "home"
         project = tmp_path / "project"
         project.mkdir(parents=True, exist_ok=True)
@@ -131,6 +133,7 @@ class TestProjectLayerTrust:
     def test_default_policy_auto_applies_with_warning(
         self, monkeypatch, tmp_path
     ):
+        monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         home = tmp_path / "home"
         # No explicit trust config => defaults: dirs=[], default='auto'.
         _write_user_settings(home, {"logging": {"level": "INFO"}})
@@ -151,6 +154,7 @@ class TestProjectLayerTrust:
         )
 
     def test_no_warning_when_allowlisted(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         home = tmp_path / "home"
         project = tmp_path / "project"
         project.mkdir(parents=True, exist_ok=True)
@@ -177,6 +181,7 @@ class TestProjectLayerTrust:
         )
 
     def test_no_project_file_no_warning(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         home = tmp_path / "home"
         _write_user_settings(home, {})
         project = tmp_path / "project"
@@ -194,6 +199,7 @@ class TestProjectLayerTrust:
     def test_get_settings_threaded_through_layered_loader(
         self, monkeypatch, tmp_path
     ):
+        monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         """Smoke test that get_settings() uses the new gate."""
         home = tmp_path / "home"
         _write_user_settings(

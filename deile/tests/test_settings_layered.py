@@ -159,6 +159,7 @@ class TestGetSettingsLayered:
         assert s.log_level == LogLevel.DEBUG  # dataclass default
 
     def test_user_layer_applied(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         home = tmp_path / "home"
         (home / ".deile").mkdir(parents=True)
         (home / ".deile" / "settings.json").write_text(
@@ -189,6 +190,7 @@ class TestGetSettingsLayered:
         assert s.streaming_enabled is True            # inherited from user
 
     def test_legacy_fallback_when_no_new_layers(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         legacy = tmp_path / "config"
         legacy.mkdir()
         legacy_file = legacy / "settings.json"
@@ -215,6 +217,7 @@ class TestGetSettingsLayered:
         assert any("legacy" in r.getMessage() for r in records)
 
     def test_new_layers_take_precedence_over_legacy(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         legacy = tmp_path / "config"
         legacy.mkdir()
         (legacy / "settings.json").write_text(
@@ -306,6 +309,7 @@ class TestSettingsFileOverride:
     def test_project_layer_skipped_when_same_file_as_global(
         self, monkeypatch, tmp_path, caplog,
     ):
+        monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         """HOME == cwd → o mesmo JSON é detectado e o project layer é pulado.
 
         Cenário comum em containers (``workingDir: /home/deile`` com
