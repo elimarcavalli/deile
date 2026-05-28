@@ -687,7 +687,14 @@ class ActivityEvent:
 
     @property
     def hhmmss(self) -> str:
-        return self.ts.astimezone().strftime("%H:%M:%S")
+        """Timestamp em UTC explícito com sufixo Z (ex: '16:33:45Z')."""
+        return self.ts.strftime("%H:%M:%SZ")
+
+    @property
+    def hhmmss_local(self) -> str:
+        """Conversão para hora local como linha auxiliar (ex: '13:33 -03')."""
+        local = self.ts.astimezone()
+        return local.strftime("%H:%M %z")
 
 
 _DISPATCH_START_RE = re.compile(r"worker dispatch starting", re.IGNORECASE)

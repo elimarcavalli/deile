@@ -149,6 +149,60 @@ class TestFmtAge:
         assert pd._fmt_age(secs) == expected
 
 
+# ===== ActivityEvent timestamps (issue #348) ================================
+
+class TestActivityEventTimestamps:
+    """`ActivityEvent.hhmmss` retorna UTC explícito com sufixo Z.
+
+    Issue #348: antes retornava `astimezone().strftime('%H:%M:%S')`
+    (hora local ambígua). Agora retorna UTC com `Z`.
+    """
+
+    def test_hhmmss_returns_utc_with_z_suffix(self):
+        """Timestamp UTC deve ter sufixo Z, não hora local."""
+        # 14:00 UTC — em America/Sao_Paulo (-3) seria 11:00 local.
+        ts = datetime(2026, 5, 27, 14, 0, 0, tzinfo=timezone.utc)
+        ev = pd.ActivityEvent(
+            ts=ts, actor="pipeline", action="dispatch",
+            target="", detail="test",
+        )
+        assert ev.hhmmss == "14:00:00Z"
+        # Não deve ser hora local!
+        assert ev.hhmmss != "11:00:00"
+
+    def test_hhmmss_local_conversion(self):
+        """`hhmmss_local` deve retornar hora local com offset."""
+        ts = datetime(2026, 5, 27, 14, 0, 0, tzinfo=timezone.utc)
+        ev = pd.ActivityEvent(
+            ts=ts, actor="pipeline", action="dispatch",
+            target="", detail="test",
+        )
+        local = ev.hhmmss_local
+        # Formato: HH:MM ±ZZZZ (ex: "11:00 -0300")
+        assert " " in local or "+" in local or "-" in local
+        # Deve ter offset (não é UTC puro)
+        assert "Z" not in local
+
+    def test_hhmmss_format_is_consistent_8_chars(self):
+        """`hhmmss` deve ter exatamente 9 caracteres: HH:MM:SSZ."""
+        ts = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
+        ev = pd.ActivityEvent(
+            ts=ts, actor="pipeline", action="dispatch",
+            target="", detail="test",
+        )
+        assert ev.hhmmss == "00:00:00Z"
+        assert len(ev.hhmmss) == 9
+
+    def test_midnight_utc_handled_correctly(self):
+        """00:00 UTC deve ser '00:00:00Z', não voltar dia anterior."""
+        ts = datetime(2026, 5, 27, 0, 0, 0, tzinfo=timezone.utc)
+        ev = pd.ActivityEvent(
+            ts=ts, actor="pipeline", action="dispatch",
+            target="", detail="test",
+        )
+        assert ev.hhmmss == "00:00:00Z"
+
+
 # ===== _parse_k8s_ts / _parse_log_line ======================================
 
 class TestK8sTs:
@@ -789,6 +843,58 @@ class TestSetPreferredModel:
                 "deile-worker", "anthropic:claude-opus-4-7",
             )
         assert ok is True
+
+
+class TestHeadPanelUtcClock:
+    """`_head_panel` exibe clock em UTC explícito (issue #348)."""
+
+    def _build_app(self, data=None):
+        """Helper: constrói PanelApp mínimo para testar _head_panel."""
+        app = MagicMock()
+        app.paused = False
+        app.refresh_mult = 1.0
+        app.current_refresh_s = 1.0
+        app.active_toasts.return_value = []
+        app.memdebug_line.return_value = ""
+        app.data = data
+        return app
+
+    def test_clock_contains_utc_label(self):
+        """O clock do _head_panel deve conter 'UTC' explicitamente."""
+        app = self._build_app()
+        panel_render = panel._head_panel("Dashboard", app)
+        # Renderiza o Panel em texto para inspecionar
+        console = panel.Console(record=True, width=120)
+        console.print(panel_render)
+        text = console.export_text()
+        assert "UTC" in text, f"_head_panel deve exibir 'UTC', mas renderizou:\n{text}"
+
+    def test_local_conversion_line_present(self):
+        """Deve haver uma linha com '↳' indicando conversão local."""
+        app = self._build_app()
+        panel_render = panel._head_panel("Dashboard", app)
+        console = panel.Console(record=True, width=120)
+        console.print(panel_render)
+        text = console.export_text()
+        assert "↳" in text, f"_head_panel deve exibir linha de conversão local '↳', mas renderizou:\n{text}"
+
+    def test_clock_with_data_context(self):
+        """Com `data` presente, o clock UTC + linha local continuam."""
+        data = MagicMock()
+        ctx = MagicMock()
+        ctx.mode_label = "k8s + local"
+        ctx.cluster_label = "test"
+        ctx.namespace = "deile"
+        ctx.repo = "test/repo"
+        data.context = ctx
+        data.context.forge_kind = "github"
+        app = self._build_app(data=data)
+        panel_render = panel._head_panel("Dashboard", app)
+        console = panel.Console(record=True, width=120)
+        console.print(panel_render)
+        text = console.export_text()
+        assert "UTC" in text
+        assert "↳" in text
 
 
 class TestPodRowsAdapter:
