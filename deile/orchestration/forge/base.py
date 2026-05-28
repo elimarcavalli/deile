@@ -632,6 +632,22 @@ class ForgeClient(ABC):
     # Internal — subclasses implement label creation per forge
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Priority inheritance (issue #369)
+    # ------------------------------------------------------------------
+
+    async def inherit_priority_from_linked_issue(self, pr_number: int) -> Optional[int]:
+        """Return the most urgent priority N from issues linked in the PR/MR body.
+
+        Default no-op: returns ``None``. Forges that support this
+        (GitHub) override with a real implementation.
+        """
+        return None
+
+    # ------------------------------------------------------------------
+    # Internal — subclasses implement label creation per forge
+    # ------------------------------------------------------------------
+
     @abstractmethod
     async def _ensure_label(self, name: str, *, color: str, description: str) -> None:
         """Create the label if it does not already exist (idempotent)."""
