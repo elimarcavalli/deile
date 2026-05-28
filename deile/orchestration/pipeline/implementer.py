@@ -731,7 +731,7 @@ class WorkerImplementer(PipelineImplementer):
         # eram todos registrados como implement, quebrando o preamble do
         # pr_review e enganando telemetry).
         payload_kwargs: Dict[str, Any] = dict(
-            brief=brief, channel_id=channel_id, persona=persona, wait=True,
+            brief=brief, channel_id=channel_id, persona=persona, wait=not nowait,
             preferred_model=preferred_model, stage=stage, branch=branch,
         )
         if resume_meta:

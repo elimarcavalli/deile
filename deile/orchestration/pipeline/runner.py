@@ -11,12 +11,13 @@ the heavy implement/review work to the ``deile-worker`` Pod over HTTP. That is
 why this runner does **not** call ``bootstrap_providers`` or construct a
 ``DeileAgent`` — keeping the pipeline Pod lean.
 
-Throughput tradeoff: ``tick()`` runs sequentially in a single loop, and in
-``deile_worker`` mode implement/review delegate to a blocking (``wait=True``)
-worker dispatch. A single long implementation therefore stalls the whole tick
-— PR review, mention handling, every other issue — until it returns. This is
-intentional for now (one worker does one thing at a time); interleaving long
-work as a background task is tracked separately (see issue #254).
+Throughput: implement dispatches are fire-and-forget (``wait_for_result=False``
+in the payload — issue #381 fix); the pipeline reconciles ground truth (GitHub
+labels / PR existence) on the next tick instead of blocking. Review/refine/
+follow_ups dispatches are still synchronous because the stage handler needs the
+structured result. ``tick()`` itself is sequential — a single implement dispatch
+no longer stalls the whole loop, but other stages within the same tick still
+run after it returns (immediately, since the 202 is received in milliseconds).
 """
 
 from __future__ import annotations
@@ -169,12 +170,16 @@ async def run_pipeline_forever() -> int:
         cfg.repo, cfg.dispatch_mode, cfg.poll_interval_seconds,
         monitor.identity.monitor_id,
     )
-    await monitor.start()
-
-    # Sobe o HTTP introspection server in-process (issue #347). Best-effort:
-    # se o módulo não está presente OU bind falha (port em uso), pipeline
-    # continua funcional sem painel.
+    # Sobe o HTTP introspection server ANTES de monitor.start() — o catch-up
+    # pode bloquear por minutos (N ticks × M dispatches) e o readiness probe
+    # (:8768/v1/health) ficaria falhando até o catch-up terminar (issue #381).
+    # O monitor precisa existir (construído acima) mas NÃO precisa estar
+    # started para o server subir — o force-tick callback só precisa de
+    # monitor.tick() que é disponível antes de start(). Best-effort: se o
+    # módulo não está presente OU bind falha, pipeline continua funcional.
     status_server = await _start_status_server(monitor)
+
+    await monitor.start()
 
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
