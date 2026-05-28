@@ -1,0 +1,24 @@
+# PVC isolado para logs rotacionados dos pods DEILE.
+#
+# Montado em /home/deile/logs/<pod-name>/ em cada pod. RWX para que o
+# DaemonSet log-analyzer possa ler os logs de todos os pods no nó.
+#
+# 256Mi cobre ~30 dias de logs (5 MB por pod × 4 pods × 3 backups ≈ 60 MB
+# peak; folga de 4× para picos e logs de debug).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: deile-logs
+  namespace: deile
+  labels:
+    app: deile
+    component: logs
+spec:
+  accessModes: ["ReadWriteMany"]
+  resources:
+    requests:
+      storage: 256Mi
+  # storageClassName left unset → cluster default.
+  # RWX requires a provisioner that supports it (Longhorn, NFS, EFS).
+  # If unavailable, operator can deploy this PVC with a different
+  # storageClass or fallback to emptyDir without persistence.

@@ -115,6 +115,10 @@ spec:
             # survive restarts.
             - name: data
               mountPath: /home/deile/data
+            # PVC de logs rotacionados (issue #371). Montado como overlay
+            # sobre o emptyDir home em /home/deile/logs.
+            - name: logs
+              mountPath: /home/deile/logs
             - name: tmp
               mountPath: /tmp
             # The bot reads ./config/deilebot.yaml relative to cwd
@@ -194,6 +198,11 @@ spec:
         - name: data
           persistentVolumeClaim:
             claimName: deilebot-data
+        # PVC de logs rotacionados (issue #371) — compartilhado entre
+        # todos os pods DEILE no mesmo nó.
+        - name: logs
+          persistentVolumeClaim:
+            claimName: deile-logs
         - name: tmp
           emptyDir:
             medium: Memory

@@ -1604,10 +1604,17 @@ def main(passthrough: Optional[List[str]] = None) -> int:
     """
     del passthrough  # reservado para uso futuro (ver docstring).
 
-    logging.basicConfig(
-        level=os.environ.get("DEILE_CLAUDE_WORKER_LOG_LEVEL", "INFO"),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    # Logging via deile.logging com dual-write (arquivo + stdout).
+    _log_level = os.environ.get("DEILE_CLAUDE_WORKER_LOG_LEVEL", "INFO")
+    os.environ.setdefault("DEILE_LOG_LEVEL", _log_level)
+    try:
+        from deile.logging import init_logging
+        init_logging(pod_name="claude-worker")
+    except ImportError:
+        logging.basicConfig(
+            level=_log_level,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
     host = os.environ.get("DEILE_CLAUDE_WORKER_HOST", "0.0.0.0")
     port = int(os.environ.get("DEILE_CLAUDE_WORKER_PORT", "8767"))
     root = Path(os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work"))

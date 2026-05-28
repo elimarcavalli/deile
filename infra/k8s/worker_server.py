@@ -55,10 +55,19 @@ import _worker_resume as resume
 from aiohttp import web
 
 logger = logging.getLogger("deile.worker_server")
-logging.basicConfig(
-    level=os.environ.get("DEILE_WORKER_LOG_LEVEL", "INFO"),
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
+
+# Logging inicializado via deile.logging com dual-write (arquivo + stdout).
+# O nível de log é controlado por DEILE_WORKER_LOG_LEVEL (default INFO).
+try:
+    from deile.logging import init_logging
+    _log_level = os.environ.get("DEILE_WORKER_LOG_LEVEL", "INFO")
+    os.environ.setdefault("DEILE_LOG_LEVEL", _log_level)
+    init_logging(pod_name="deile-worker")
+except ImportError:
+    logging.basicConfig(
+        level=os.environ.get("DEILE_WORKER_LOG_LEVEL", "INFO"),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
 
 
 # ---- Config ------------------------------------------------------------------
