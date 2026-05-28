@@ -393,10 +393,17 @@ def build_app(
 def main(passthrough: Optional[List[str]] = None) -> int:  # pragma: no cover
     """Entry point used by the deile-pipeline Pod when running standalone."""
     del passthrough
-    logging.basicConfig(
-        level=os.environ.get("DEILE_PIPELINE_STATUS_LOG_LEVEL", "INFO"),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
+    # Logging via deile.log_mgmt com dual-write (arquivo + stdout).
+    _log_level = os.environ.get("DEILE_PIPELINE_STATUS_LOG_LEVEL", "INFO")
+    os.environ.setdefault("DEILE_LOG_LEVEL", _log_level)
+    try:
+        from deile.log_mgmt import init_logging
+        init_logging(pod_name="deile-pipeline-status")
+    except ImportError:
+        logging.basicConfig(
+            level=_log_level,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        )
     host = os.environ.get("DEILE_PIPELINE_STATUS_HOST", "0.0.0.0")
     port = int(os.environ.get("DEILE_PIPELINE_STATUS_PORT", "8768"))
     logger.info("pipeline_status_server listening on %s:%d", host, port)

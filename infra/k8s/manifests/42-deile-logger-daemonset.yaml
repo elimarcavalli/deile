@@ -1,0 +1,111 @@
+# DaemonSet DEILE Logger — um pod por nó que analisa logs de todos os
+# pods DEILE naquele nó.
+#
+# Arquitetura: o log-analyzer lê logs via hostPath /var/log/containers
+# (filtrado por namespace/labels) E via PVC compartilhado deile-logs.
+# Detecta anomalias (error spikes, auth expiry, flooding, crash loops)
+# e opcionalmente dispara workers investigativos.
+#
+# Resources: ~50m CPU / 64Mi RAM por nó — negligenciável em clusters
+# ≤10 nós.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: deile-logger
+  namespace: deile
+  labels:
+    app: deile-logger
+    role: deile
+spec:
+  selector:
+    matchLabels:
+      app: deile-logger
+  template:
+    metadata:
+      labels:
+        app: deile-logger
+        role: deile
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # Tolerations: roda em todos os nós, incluindo aqueles com taints
+      # leves (mas não nos que têm NoSchedule para workloads específicos).
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: log-analyzer
+          image: deile-stack:local
+          imagePullPolicy: Never
+          workingDir: /home/deile
+          command: ["python3", "-m", "deile.log_mgmt.log_analyzer"]
+          env:
+            - { name: HOME, value: /home/deile }
+            - { name: PYTHONUNBUFFERED, value: "1" }
+            - { name: PYTHONDONTWRITEBYTECODE, value: "1" }
+            # Log directory — PVC compartilhado
+            - { name: DEILE_LOG_DIR, value: "/home/deile/logs" }
+            # Scan interval (seconds)
+            - { name: DEILE_LOG_ANALYZER_INTERVAL_S, value: "300" }
+            # Thresholds
+            - { name: DEILE_LOG_ERROR_RATE_THRESHOLD, value: "10" }
+            - { name: DEILE_LOG_FLOOD_THRESHOLD, value: "200" }
+            - { name: DEILE_LOG_PIPELINE_SILENT_TICK_THRESHOLD, value: "30" }
+            # Auto-dispatch: false por padrão (MVP seguro)
+            - { name: DEILE_LOG_AUTO_DISPATCH, value: "false" }
+            # Worker endpoint (para dispatch de investigação)
+            - { name: DEILE_WORKER_ENDPOINT, value: "http://deile-worker:8766" }
+          volumeMounts:
+            # PVC compartilhado de logs (leitura + escrita para truncagem)
+            - { name: logs, mountPath: /home/deile/logs }
+            # Secrets para dispatch (best-effort — o analyzer funciona sem)
+            - name: worker-bearer
+              mountPath: /run/secrets/worker
+              readOnly: true
+            # hostPath para leitura direta de container logs
+            - { name: container-logs, mountPath: /var/log/containers, readOnly: true }
+            # /tmp para possíveis arquivos temporários
+            - { name: tmp, mountPath: /tmp }
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+      volumes:
+        # PVC compartilhado para logs (RWX) — mesmo PVC montado nos pods DEILE
+        - name: logs
+          persistentVolumeClaim:
+            claimName: deile-logs
+        # Token do worker para dispatch (optional: analyzer funciona sem)
+        - name: worker-bearer
+          secret:
+            secretName: worker-bearer
+            defaultMode: 288   # 0o440
+            optional: true
+        # hostPath para leitura de container logs via CRI
+        - name: container-logs
+          hostPath:
+            path: /var/log/containers
+            type: DirectoryOrCreate
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: "32Mi"

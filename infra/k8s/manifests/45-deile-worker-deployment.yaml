@@ -96,6 +96,8 @@ spec:
             # /home/deile itself stays writable as emptyDir for caches/etc;
             # the PVC is mounted only on /home/deile/work.
             - { name: home,           mountPath: /home/deile,   subPath: "" }
+            # PVC de logs rotacionados (issue #371).
+            - { name: logs,           mountPath: /home/deile/logs }
             - { name: tmp,            mountPath: /tmp }
             # bot-config provides the clonable_repos allowlist for the
             # git clone guard installed by the wrapper.
@@ -137,6 +139,8 @@ spec:
         - { name: worker-bearer, secret: { secretName: worker-bearer,  defaultMode: 288 } }
         - { name: work,          persistentVolumeClaim: { claimName: deile-worker-work } }
         - { name: home,          emptyDir: { sizeLimit: "256Mi" } }
+        # PVC de logs rotacionados (issue #371).
+        - { name: logs,          persistentVolumeClaim: { claimName: deile-logs } }
         - { name: tmp,           emptyDir: { medium: Memory, sizeLimit: "64Mi" } }
         - name: bot-config
           configMap:
