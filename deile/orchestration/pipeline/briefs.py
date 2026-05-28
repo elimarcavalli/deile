@@ -42,10 +42,38 @@ _FULL_SUITE_CMD = "python3 -m pytest deile/tests/ -q"
 _PIP_GUARD = "deps já instaladas — NÃO rode `pip install` (filesystem read-only)"
 _BLOCKED_CONTRACT = "BLOQUEADO: <motivo concreto>"
 
+# Estratégia de testes para o IMPLEMENTADOR: análise de impacto, não suíte completa.
+# O revisor (quality gate) é quem roda a suíte inteira — o implementador só precisa
+# garantir que os testes relevantes à sua mudança estejam verdes.
+#
+# Nota: os valores de _PIP_GUARD e _FULL_SUITE_CMD são embutidos diretamente para
+# evitar conflito de placeholder com o str.format() do _render_brief (single-pass).
+_IMPACT_TEST_STRATEGY = (
+    "TESTES — análise de impacto (NÃO rode a suíte completa; isso é tarefa do revisor):\n"
+    "   a) Liste os arquivos que você criou/editou:\n"
+    "        git diff --name-only HEAD\n"
+    "   b) Para CADA arquivo `deile/X/Y/z.py` editado, identifique os testes impactados:\n"
+    "      • Testes diretos (mesmo módulo/subpacote):\n"
+    "          ls deile/tests/X/Y/test_z.py deile/tests/X/Y/test_*.py 2>/dev/null\n"
+    "      • Testes que importam o módulo editado:\n"
+    '          grep -rln "from deile.X.Y" deile/tests/ 2>/dev/null\n'
+    "      • Se tocou `deile/orchestration/pipeline/` → inclua `deile/tests/orchestration/pipeline/`\n"
+    "      • Se tocou `deile/orchestration/forge/` → inclua `deile/tests/orchestration/pipeline/`\n"
+    "      • Se tocou `deile/tools/` → inclua `deile/tests/tools/`\n"
+    "      • Se tocou `deile/core/` ou `deile/config/` → inclua testes de cada subpacote afetado\n"
+    "      • Se tocou `infra/k8s/` (ex: claude_worker_server.py) → inclua `deile/tests/infrastructure/`\n"
+    "   c) Construa a lista completa e rode: `python3 -m pytest <lista_de_testes_impactados> -p no:cov -q`\n"
+    "      " + _PIP_GUARD + ". Itere até verde.\n"
+    "   d) Se a lista impactada for vazia (ex: mudou só um YAML de config ou Markdown):\n"
+    "      rode apenas os testes do módulo mais próximo como sanity-check.\n"
+    "   NUNCA rode `" + _FULL_SUITE_CMD + "` (suíte inteira) — o revisor fará isso no gate de merge."
+)
+
 _BRIEF_CONSTANTS: dict[str, Any] = {
     "full_suite_cmd": _FULL_SUITE_CMD,
     "pip_guard": _PIP_GUARD,
     "blocked_contract": _BLOCKED_CONTRACT,
+    "impact_test_strategy": _IMPACT_TEST_STRATEGY,
 }
 
 
@@ -136,7 +164,7 @@ Passo a passo:
    Se já existir, entre nela e rode: git fetch origin && git checkout {main} && git reset --hard origin/{main}
 2. Dentro de ./repo, crie e dê checkout no branch {branch} a partir de {main}.
 3. ANTES de codar, leia os comentários da issue: {view_issue_cmd} — decisões e esclarecimentos do stakeholder ali FAZEM PARTE do escopo (o corpo pode não conter tudo). Implemente a feature descrita na issue abaixo E o que os comentários decidiram. Crie/edite os arquivos necessários e ADICIONE testes cobrindo todos os casos.
-4. Rode os testes e garanta 100% de aprovação. {pip_guard}. Para iterar rápido durante o desenvolvimento: python3 -m pytest <arquivos_de_teste_novos> -p no:cov -q. MAS, ANTES DE ABRIR A {pr_noun}, rode a SUÍTE COMPLETA — {full_suite_cmd} — e garanta que está 100% verde. Se a sua mudança quebrou um teste FORA dos seus arquivos, conserte-o: uma {pr_noun} com a suíte vermelha NÃO está pronta.
+4. {impact_test_strategy}
 5. Faça commit atômico e `git push -u origin {branch}`.
 6. ABRA A {pr_noun} (passo OBRIGATÓRIO — sem {pr_noun} a tarefa NÃO está concluída):
    {create_pr_cmd}
@@ -199,7 +227,7 @@ Passo a passo:
    b) Veja o diff acumulado em relação a {main}: git diff {main}...HEAD ; e também: git diff HEAD
    c) LEIA TODOS os arquivos não rastreados (untracked) e os modificados — eles contêm o trabalho parcial: git status --porcelain ; depois leia cada arquivo listado.
 4. CONTINUE a implementação de onde parou. Crie/edite o que falta e garanta testes cobrindo todos os casos.
-5. Rode os testes e garanta 100% de aprovação. {pip_guard}. Para iterar rápido: python3 -m pytest <arquivos_de_teste_novos> -p no:cov -q. MAS, ANTES DE ABRIR/CONFIRMAR A {pr_noun}, rode a SUÍTE COMPLETA — {full_suite_cmd} — 100% verde. Se sua mudança quebrou um teste fora dos seus arquivos, conserte-o: {pr_noun} com a suíte vermelha NÃO está pronta.
+5. {impact_test_strategy}
 6. Faça commit normal (SEM force-push) e `git push -u origin {branch}`.
 7. ABRA A {pr_noun} (OBRIGATÓRIO — sem {pr_noun} a tarefa NÃO está concluída):
    {create_pr_cmd}

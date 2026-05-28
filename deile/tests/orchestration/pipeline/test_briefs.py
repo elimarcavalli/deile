@@ -93,6 +93,12 @@ class TestFullSuiteGate:
     """Os briefs-portão (que aprovam/mergeiam) exigem a SUÍTE COMPLETA verde,
     não só os arquivos do diff — uma mudança quebra testes em arquivos que não
     tocou (regressão: PR #275 aprovou com a suíte vermelha por rodar só o subset).
+
+    Política de testes por papel:
+    - REVISOR (review / review_resume / review_only): exige suíte completa antes de mergear.
+    - IMPLEMENTADOR (implement / implement_resume): usa análise de impacto — roda apenas os
+      testes relevantes à mudança. NÃO executa a suíte inteira (tarefa do revisor).
+      O brief ainda menciona `pytest deile/tests/` no contexto "NUNCA rode X".
     """
 
     FULL_SUITE = "pytest deile/tests/"
@@ -114,15 +120,31 @@ class TestFullSuiteGate:
         assert self.FULL_SUITE in out
         assert "REQUEST_CHANGES" in out
 
-    def test_implement_brief_requires_full_suite_before_pr(self):
-        out = _render_worker_implement_brief("o/r", "main", "b", 1, "T", "body")
-        assert self.FULL_SUITE in out
+    def test_implement_brief_uses_impact_analysis_not_full_suite(self):
+        """Implementador usa análise de impacto — não roda a suíte inteira.
 
-    def test_implement_resume_brief_requires_full_suite(self):
+        O brief ainda menciona `pytest deile/tests/` em "NUNCA rode X" (negativo),
+        e contém as palavras-chave da estratégia de impacto.
+        """
+        out = _render_worker_implement_brief("o/r", "main", "b", 1, "T", "body")
+        # Menciona full suite apenas no contexto proibitivo ("NUNCA rode").
+        assert self.FULL_SUITE in out
+        assert "NUNCA rode" in out
+        # Contém a estratégia de análise de impacto.
+        assert "análise de impacto" in out
+        assert "lista_de_testes_impactados" in out
+        # NÃO deve exigir rodar a suíte completa como gate positivo.
+        assert "SUÍTE COMPLETA" not in out
+
+    def test_implement_resume_brief_uses_impact_analysis_not_full_suite(self):
+        """Mesmo que implement, mas para a retomada."""
         out = _render_worker_implement_resume_brief(
             "o/r", "main", "b", 3, "T", "body"
         )
         assert self.FULL_SUITE in out
+        assert "NUNCA rode" in out
+        assert "análise de impacto" in out
+        assert "SUÍTE COMPLETA" not in out
 
 
 class TestResumeBriefs:

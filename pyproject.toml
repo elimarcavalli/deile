@@ -81,6 +81,7 @@ test = [
     "pytest-asyncio>=0.23",
     "pytest-cov>=4",
     "pytest-textual-snapshot>=1.0",
+    "pytest-timeout>=2.3",
 ]
 # Observabilidade enterprise via OpenTelemetry (issue #303 fase 4).
 # DEILE roda em no-op se este extra não está instalado OU se
