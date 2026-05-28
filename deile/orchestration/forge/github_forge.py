@@ -481,6 +481,10 @@ class GitHubForge(ForgeClient):
                 ),
             )
         except ForgeCommandError as exc:
+            # gh api --jq produces no output (and exits 1) when the PR list is
+            # empty; "unexpected end of JSON input" is not a real failure.
+            if "unexpected end of JSON input" in str(exc):
+                return []
             logger.warning("list_prs_with_review_requests failed: %s", exc)
             return []
         items = _parse_gh_jq_output(out, log_label="list_prs_with_review_requests")
@@ -923,12 +927,19 @@ class GitHubForge(ForgeClient):
         issues: List[IssueRef] = []
         prs: List[PrRef] = []
         try:
+            # gh search issues uses advanced_search=true which returns HTTP 404
+            # on non-enterprise accounts. Use the regular /search/issues REST
+            # endpoint directly and reshape the response to match from_gh_json.
             out = await self._run_checked(
-                "search", "issues", query,
-                "--repo", self.repo,
-                "--state", "open",
-                "--limit", str(limit),
-                "--json", _ISSUE_JSON_FIELDS,
+                "api", "search/issues",
+                "--field", f"q={query} repo:{self.repo} state:open",
+                "--field", f"per_page={limit}",
+                "--jq", (
+                    ".items | map({"
+                    "number, title, url: .html_url, labels, body, state,"
+                    " author: {login: .user.login}"
+                    "})"
+                ),
             )
         except ForgeCommandError as exc:
             logger.warning("search_items_mentioning failed: %s", exc)
