@@ -121,6 +121,7 @@ class DeploymentProfile:
             "47-deile-runtime-config.yaml",
             "41-worker-pvc.yaml",
             "45-deile-worker-deployment.yaml",
+            "46b-deile-pipeline-pvc.yaml",
             "46-deile-pipeline-deployment.yaml",
         )
         if self.name == "pipeline-only":
@@ -140,6 +141,7 @@ class DeploymentProfile:
             "35-deile-interactive.yaml",
             "41-worker-pvc.yaml",
             "45-deile-worker-deployment.yaml",
+            "46b-deile-pipeline-pvc.yaml",
             "46-deile-pipeline-deployment.yaml",
         )
 
@@ -1600,6 +1602,7 @@ def do_create_namespace(cfg: CreateNamespaceConfig) -> int:
         "19-bot-data-pvc.yaml",
         "20-bot-deployment.yaml", "35-deile-interactive.yaml",
         "41-worker-pvc.yaml", "45-deile-worker-deployment.yaml",
+        "46b-deile-pipeline-pvc.yaml",
         "46-deile-pipeline-deployment.yaml",
     )
     for manifest in manifests_order:
