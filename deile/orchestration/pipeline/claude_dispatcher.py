@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Mapping, Optional, Sequence
 
-from deile.orchestration.pipeline.constants import (CLAUDE_TIMEOUT_SECONDS,
+from deile.orchestration.pipeline.constants import (claude_timeout_seconds,
                                                     ISSUE_BODY_MAX_CHARS)
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ class ClaudeDispatcher:
         self,
         *,
         claude_path: Optional[str] = None,
-        timeout_seconds: int = CLAUDE_TIMEOUT_SECONDS,
+        timeout_seconds: int = claude_timeout_seconds(),
         prefer_subscription_auth: bool = True,
     ) -> None:
         self._claude = claude_path or shutil.which("claude") or "claude"

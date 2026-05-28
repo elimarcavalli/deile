@@ -12,11 +12,25 @@ from deile.config.settings import get_settings
 
 # ── ClaudeDispatcher ──────────────────────────────────────────────────────
 #: Maximum seconds a ``claude -p`` subprocess may run before it is killed.
-CLAUDE_TIMEOUT_SECONDS: int = get_settings().pipeline_claude_timeout
+def claude_timeout_seconds() -> int:
+    """Live: re-reads settings at every call. Use this, NOT a frozen const.
+
+    **NÃO ARMAZENE LOCALMENTE** — chamar esta função em loop infinito e guardar
+    o resultado numa variável local reintroduziria o freeze que esta função
+    existe para evitar. Chame-a a cada uso.
+    """
+    return get_settings().pipeline_claude_timeout
 
 # ── PipelineMonitor ───────────────────────────────────────────────────────
 #: Default polling cadence for :class:`PipelineMonitor`.
-PIPELINE_POLL_INTERVAL_SECONDS: int = get_settings().pipeline_poll_interval
+def pipeline_poll_interval_seconds() -> int:
+    """Live: re-reads settings at every call. Use this, NOT a frozen const.
+
+    **NÃO ARMAZENE LOCALMENTE** — chamar esta função em loop infinito e guardar
+    o resultado numa variável local reintroduziria o freeze que esta função
+    existe para evitar. Chame-a a cada uso.
+    """
+    return get_settings().pipeline_poll_interval
 #: Seconds ``stop()`` waits for the loop task before cancelling it.
 PIPELINE_STOP_TIMEOUT_SECONDS: int = 5
 

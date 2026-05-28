@@ -25,7 +25,7 @@ from typing import Awaitable, Callable, Optional
 
 from deile.cron.constants import (CRON_DM_PROMPT_MAX_CHARS,
                                   CRON_DM_RESULT_MAX_CHARS,
-                                  CRON_POLL_INTERVAL_SECONDS,
+                                  cron_poll_interval_seconds,
                                   CRON_RESULT_MAX_CHARS,
                                   CRON_STOP_TIMEOUT_SECONDS)
 from deile.cron.store import CronEntry, CronStore
@@ -44,7 +44,7 @@ class CronRunner:
         store: CronStore,
         *,
         fire_callback: Optional[FireCallback] = None,
-        poll_interval_seconds: int = CRON_POLL_INTERVAL_SECONDS,
+        poll_interval_seconds: int = cron_poll_interval_seconds(),
         notify_dm: Optional[Callable[[str, str], Awaitable[dict]]] = None,
     ) -> None:
         self.store = store
