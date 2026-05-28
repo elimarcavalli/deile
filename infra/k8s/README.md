@@ -144,13 +144,11 @@ Gaps resolvidos pelo PR #363 (issue #354):
   `DEILE_BOT_AUTH_TOKEN`, `DEILE_WORKER_BEARER_TOKEN` e `PIPELINE_STATUS_BEARER_TOKEN`
   são persisted no `.env` na primeira execução e reusados nas seguintes.
 
-Gaps ainda abertos:
+Gap ainda aberto:
 
 4. **`claude-worker` (manifests 47-50) NÃO aplicado pelo `k8s up` padrão** — só
    sobe com o perfil `claude-only` + `k8s claude-login` depois. Esperado por design
    (claude-worker é opt-in e requer OAuth).
-5. **Manifest 43 (`forge-tokens-secret`) existe mas não é aplicado** —
-   `k8s up` põe os tokens em `deile-secrets`, fazendo o 43 dead code.
 
 ---
 
@@ -238,6 +236,7 @@ infra/k8s/
 ├── run.sh                        ← orquestrador build/up/test/logs/clone/down
 ├── README.md                     ← este arquivo
 └── manifests/
+    ├── _README.md                              notas operacionais (kubectl patch p/ forge tokens)
     ├── 00-namespace.yaml                       namespace `deile` w/ PSS:restricted
     ├── 15-bot-config.yaml                      ConfigMap: deilebot.yaml com owners + clonable_repos
     ├── 19-bot-data-pvc.yaml                    PVC do SQLite do bot (audit/dlq persistentes)
@@ -248,7 +247,6 @@ infra/k8s/
     ├── 40-network-policy.yaml                  default-deny + selective allow (todos os pods)
     ├── 41-worker-pvc.yaml                      PVC do deile-worker (workdirs por canal)
     ├── 42-worker-bearer-secret.yaml            Bearer token do deile-worker (pipeline → worker)
-    ├── 43-forge-tokens-secret.yaml             GITHUB_TOKEN + GITLAB_TOKEN (forge-agnostic, issue #297)
     ├── 44-pipeline-status-bearer-secret.yaml   Bearer token do pipeline status server (:8768)
     ├── 45-deile-worker-deployment.yaml         deile-worker Deployment + Service (:8766)
     ├── 46-deile-pipeline-deployment.yaml       deile-pipeline Deployment + status Service (:8768)
