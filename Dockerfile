@@ -68,6 +68,7 @@ RUN /venv/bin/pip install \
         pytest-mock==3.15.1 \
         pytest-cov==6.3.0 \
         pytest-xdist==3.8.0 \
+        pytest-timeout==2.4.0 \
     && find /venv -type d -name __pycache__ -exec rm -rf {} +
 
 # Bug: neither pyproject declares `package-data`, so non-Python files
