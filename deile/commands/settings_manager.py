@@ -734,3 +734,96 @@ class SettingsManager:
                 },
             )
         return saved
+
+    def unset_setting(self, key_path: str, scope: str = GLOBAL) -> bool:
+        """Remove *key_path* from *scope*'s settings file.
+
+        The key is deleted from the innermost nested dict it lives in.
+        After deletion, if the parent dict becomes empty it is left in place
+        (pruning empty dicts is deliberately avoided to keep the file stable).
+
+        Refuses keys that look like secrets (same blocklist as
+        :meth:`set_setting`). Goes through the same permission / audit
+        pipeline. Invalidates the singleton after a successful write.
+
+        Args:
+            key_path: Dotted key, e.g. ``"logging.level"``.
+            scope:    ``"global"`` (default) or ``"project"``.
+
+        Returns:
+            ``True`` if the key was removed (or was already absent);
+            ``False`` on I/O error, secret refusal, or permission denial.
+        """
+        from deile.config.settings import reset_settings
+
+        self._validate_scope(scope)
+        parts = self._split_key_path(key_path)
+
+        if _is_secret_key(key_path):
+            logger.error(
+                "unset_setting: refusing to operate on potential secret key %r",
+                key_path,
+            )
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail=key_path,
+                action="delete",
+                result="refused_secret",
+                details={"key_path": key_path, "scope": scope, "reason": "secret_pattern"},
+            )
+            return False
+
+        if not _check_settings_write_permission(scope, key_path):
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail=key_path,
+                action="delete",
+                result="denied",
+                details={"key_path": key_path, "scope": scope, "reason": "permission_denied"},
+            )
+            logger.warning(
+                "unset_setting: permission denied for %r in %s scope", key_path, scope
+            )
+            return False
+
+        if scope == GLOBAL:
+            self._ensure_global_dir()
+        path = self._settings_path(scope)
+
+        with _file_lock:
+            data = self._load(path)
+            node: Any = data
+            for part in parts[:-1]:
+                if not isinstance(node, dict) or part not in node:
+                    # Key already absent — treat as success.
+                    _emit_settings_audit(
+                        scope=scope,
+                        resource_detail=key_path,
+                        action="delete",
+                        result="allowed",
+                        details={"key_path": key_path, "scope": scope, "was_present": False},
+                    )
+                    return True
+                node = node[part]
+            if not isinstance(node, dict) or parts[-1] not in node:
+                _emit_settings_audit(
+                    scope=scope,
+                    resource_detail=key_path,
+                    action="delete",
+                    result="allowed",
+                    details={"key_path": key_path, "scope": scope, "was_present": False},
+                )
+                return True
+            del node[parts[-1]]
+            result = self._save(path, data)
+
+        if result:
+            reset_settings()
+            _emit_settings_audit(
+                scope=scope,
+                resource_detail=key_path,
+                action="delete",
+                result="allowed",
+                details={"key_path": key_path, "scope": scope, "was_present": True},
+            )
+        return result
