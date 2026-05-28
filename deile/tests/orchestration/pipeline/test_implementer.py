@@ -204,13 +204,17 @@ class _FakeClient:
 
 class TestWorkerImplementer:
     async def test_implement_dispatches_brief_and_parses_ok(self):
-        client = _FakeClient({"ok": True, "summary": "Feito.\nhttps://github.com/owner/name/pull/12"})
+        # Issue #373: implement() now dispatches fire-and-forget (nowait=True).
+        # The worker returns 202 + task_id; the response has no summary.
+        client = _FakeClient({"task_id": "abc123", "status": "running"})
         impl = WorkerImplementer(client=client)
         out = await impl.implement(_make_monitor(), _issue(number=242, title="soma", body="impl"))
         assert out.ok is True
-        assert "pull/12" in out.text
+        assert out.task_id == "abc123"
+        # Fire-and-forget: no summary text in response.
+        assert out.text == ""
         assert client.last_payload["channel_id"] == "pipeline-issue-242"
-        assert client.last_wait is True
+        assert client.last_wait is False
         # Implementation runs under the developer persona.
         assert client.last_payload["persona"] == "developer"
         # The brief must name the repo, the issue number and the branch.
@@ -220,10 +224,14 @@ class TestWorkerImplementer:
         assert "auto/issue-242" in brief
 
     async def test_implement_worker_failure_returns_not_ok(self):
-        client = _FakeClient({"ok": False, "summary": "erro: deu ruim", "error": "boom"})
+        # Issue #373: fire-and-forget dispatch — transport errors still
+        # propagate (the _post_dispatch call itself can fail).
+        from deile.infrastructure.deile_worker_client import \
+            WorkerDispatchError
+        client = _FakeClient(WorkerDispatchError("nope", error_code="WORKER_TIMEOUT"))
         out = await WorkerImplementer(client=client).implement(_make_monitor(), _issue())
         assert out.ok is False
-        assert out.error
+        assert "WORKER_TIMEOUT" in out.error
 
     async def test_dispatch_error_is_caught(self):
         from deile.infrastructure.deile_worker_client import \

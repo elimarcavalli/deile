@@ -72,6 +72,7 @@ def _make_monitor(
     github.list_unclassified_prs = AsyncMock(return_value=[])
     github.list_issue_comments_since = AsyncMock(return_value=[])
     github.list_pr_review_comments_since = AsyncMock(return_value=[])
+    github.has_open_pr_for_issue = AsyncMock(return_value=False)
 
     notifier = MagicMock()
     for attr in (
@@ -156,6 +157,10 @@ class TestStage1Review:
 
 class TestStage2Implement:
     async def test_implements_reviewed_with_batch(self):
+        # Issue #373: implement is now fire-and-forget. The dispatch claims
+        # the issue (revisada → em_implementacao) and returns immediately.
+        # Ground truth (PR detection, em_pr transition, notification) is
+        # handled by reconcile_implementing_issues on subsequent ticks.
         rev = IssueRef(
             number=2, title="impl me", url="u",
             labels=(WORKFLOW_REVIEWED, "~batch:abc12345"),
@@ -169,16 +174,15 @@ class TestStage2Implement:
         monitor.config.enable_pr_review = False
         await monitor.tick()
         notifier.implementation_started.assert_called_once()
-        notifier.implementation_finished.assert_called_once()
-        # PR URL extracted from stdout
-        args, kwargs = notifier.implementation_finished.call_args
-        assert args[1] == "https://github.com/owner/name/pull/3"
-        assert monitor.stats.issues_implemented == 1
+        # Fire-and-forget: implementation_finished only fires on reconcile.
+        notifier.implementation_finished.assert_not_called()
+        # issues_implemented is incremented in reconcile, not here.
+        assert monitor.stats.issues_implemented == 0
 
     async def test_claims_before_notifying_and_completes_to_em_pr(self):
-        # The claim (revisada → em_implementacao) MUST happen before the
-        # "started" notification, and a successful PR moves em_implementacao →
-        # em_pr. These two transitions are the lock + the completion marker.
+        # Issue #373: implement is fire-and-forget. The claim (revisada →
+        # em_implementacao) still happens, but the em_pr transition is now
+        # done by reconcile_implementing_issues on a subsequent tick.
         rev = IssueRef(
             number=2, title="impl me", url="u",
             labels=(WORKFLOW_REVIEWED, "~batch:abc12345"),
@@ -191,14 +195,13 @@ class TestStage2Implement:
         monitor.config.enable_pr_review = False
         await monitor.tick()
         calls = monitor.github.transition_issue.call_args_list
-        # First transition is the atomic claim out of the candidate queue.
+        # The only transition is the atomic claim out of the candidate queue.
         assert calls[0].kwargs == {
             "from_label": WORKFLOW_REVIEWED, "to_label": WORKFLOW_IMPLEMENTING
         }
-        # Last transition marks the PR as opened.
-        assert calls[-1].kwargs == {
-            "from_label": WORKFLOW_IMPLEMENTING, "to_label": WORKFLOW_PR
-        }
+        # No em_pr transition — that happens in reconcile on next tick.
+        for call in calls:
+            assert call.kwargs.get("to_label") != WORKFLOW_PR
         notifier.implementation_started.assert_called_once()
 
     async def test_skips_reviewed_without_batch(self):
@@ -229,9 +232,10 @@ class TestStage2Implement:
         monitor.github.transition_issue.assert_not_called()
 
     async def test_no_pr_url_parks_without_retry(self):
-        # ok=True but the agent opened no PR: park in em_implementacao + notify
-        # once. Crucially it does NOT advance to em_pr and does NOT count as an
-        # implemented issue — and is not re-tried (the issue left revisada).
+        # Issue #373: fire-and-forget dispatch — no inline parking.
+        # The issue is claimed (revisada → em_implementacao) and dispatched;
+        # the reconcile stage checks ground truth. Parking happens via the
+        # reaper if the worker never opens a PR.
         rev = IssueRef(
             number=2, title="vague meta issue", url="u",
             labels=(WORKFLOW_REVIEWED, "~batch:abc12345"),
@@ -244,7 +248,8 @@ class TestStage2Implement:
         monitor.config.enable_pr_review = False
         await monitor.tick()
         notifier.implementation_started.assert_called_once()
-        notifier.implementation_parked.assert_called_once()
+        # Fire-and-forget: parking is handled by reconcile/reaper, not inline.
+        notifier.implementation_parked.assert_not_called()
         notifier.implementation_finished.assert_not_called()
         assert monitor.stats.issues_implemented == 0
         # Only the claim transition fired — never the em_pr completion.
@@ -252,6 +257,8 @@ class TestStage2Implement:
             assert call.kwargs.get("to_label") != WORKFLOW_PR
 
     async def test_claude_failure_parks_issue(self):
+        # Issue #373: fire-and-forget dispatch — failure is logged but
+        # parking is handled by reconcile/reaper on subsequent ticks.
         rev = IssueRef(
             number=2, title="t", url="u",
             labels=(WORKFLOW_REVIEWED, "~batch:abc12345"),
@@ -263,9 +270,191 @@ class TestStage2Implement:
         monitor.config.enable_review = False
         monitor.config.enable_pr_review = False
         await monitor.tick()
-        # A real failure parks the issue (one ping) instead of completing it.
-        notifier.implementation_parked.assert_called_once()
+        # The issue was claimed (started), but fire-and-forget means no
+        # immediate parking DM — reconcile/reaper handle it.
+        notifier.implementation_started.assert_called_once()
+        notifier.implementation_parked.assert_not_called()
         notifier.implementation_finished.assert_not_called()
+
+
+class TestReconcileImplementingIssues:
+    """Issue #373: tests for reconcile_implementing_issues stage.
+
+    Verifies that fire-and-forget dispatched issues are reconciled via
+    GitHub ground truth (PR existence) on subsequent ticks."""
+
+    async def test_reconcile_detects_pr_and_transitions_to_em_pr(self):
+        """When has_open_pr_for_issue returns True, the issue must transition
+        to em_pr, stats.issues_implemented must increment, and
+        implementation_finished notification must fire."""
+        impl_issue = IssueRef(
+            number=99, title="working", url="u",
+            labels=(WORKFLOW_IMPLEMENTING, "~by:default"),
+        )
+        monitor, notifier = _make_monitor()
+        # Mock: list_issues_with_label returns our implementing issue.
+        monitor.github.list_issues_with_label = AsyncMock(
+            side_effect=lambda label, **_: {
+                WORKFLOW_IMPLEMENTING: [impl_issue],
+            }.get(label, []),
+        )
+        # Ground truth: PR exists!
+        monitor.github.has_open_pr_for_issue = AsyncMock(return_value=True)
+        # Keep enable_implement=True so reconcile runs. Disable other
+        # stages to reduce noise.
+        monitor.config.enable_classify = False
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        monitor.config.enable_pr_triage = False
+        monitor.config.enable_mention_handling = False
+        monitor.config.reaper_stale_seconds = 0
+        await monitor.tick()
+        # Must transition to em_pr.
+        monitor.github.transition_issue.assert_called_with(
+            99, from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_PR,
+        )
+        # Stats must reflect the completion.
+        assert monitor.stats.issues_implemented == 1
+        # Notification must fire.
+        notifier.implementation_finished.assert_called_once_with(99, None)
+
+    async def test_reconcile_no_pr_stays_in_em_implementacao(self):
+        """When has_open_pr_for_issue returns False, the issue must stay
+        in em_implementacao (no transition, no notification)."""
+        impl_issue = IssueRef(
+            number=99, title="still working", url="u",
+            labels=(WORKFLOW_IMPLEMENTING, "~by:default"),
+        )
+        monitor, notifier = _make_monitor()
+        monitor.github.list_issues_with_label = AsyncMock(
+            side_effect=lambda label, **_: {
+                WORKFLOW_IMPLEMENTING: [impl_issue],
+            }.get(label, []),
+        )
+        # Ground truth: no PR yet.
+        monitor.github.has_open_pr_for_issue = AsyncMock(return_value=False)
+        monitor.config.enable_classify = False
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        monitor.config.enable_pr_triage = False
+        monitor.config.enable_mention_handling = False
+        monitor.config.reaper_stale_seconds = 0
+        await monitor.tick()
+        # No transition should happen.
+        monitor.github.transition_issue.assert_not_called()
+        assert monitor.stats.issues_implemented == 0
+        notifier.implementation_finished.assert_not_called()
+
+    async def test_reconcile_skips_blocked_issues(self):
+        """Issues with ~workflow:bloqueada must be skipped by reconcile."""
+        from deile.orchestration.pipeline.labels import WORKFLOW_BLOCKED
+        impl_issue = IssueRef(
+            number=99, title="blocked", url="u",
+            labels=(WORKFLOW_IMPLEMENTING, WORKFLOW_BLOCKED, "~by:default"),
+        )
+        monitor, notifier = _make_monitor()
+        monitor.github.list_issues_with_label = AsyncMock(
+            side_effect=lambda label, **_: {
+                WORKFLOW_IMPLEMENTING: [impl_issue],
+            }.get(label, []),
+        )
+        monitor.github.has_open_pr_for_issue = AsyncMock(return_value=True)
+        monitor.config.enable_classify = False
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        monitor.config.enable_pr_triage = False
+        monitor.config.enable_mention_handling = False
+        monitor.config.reaper_stale_seconds = 0
+        await monitor.tick()
+        # Blocked issue must NOT be transitioned.
+        monitor.github.transition_issue.assert_not_called()
+        assert monitor.stats.issues_implemented == 0
+
+    async def test_reconcile_skips_already_em_pr(self):
+        """Issues already in ~workflow:em_pr must be skipped."""
+        impl_issue = IssueRef(
+            number=99, title="done", url="u",
+            labels=(WORKFLOW_IMPLEMENTING, WORKFLOW_PR, "~by:default"),
+        )
+        monitor, notifier = _make_monitor()
+        monitor.github.list_issues_with_label = AsyncMock(
+            side_effect=lambda label, **_: {
+                WORKFLOW_IMPLEMENTING: [impl_issue],
+            }.get(label, []),
+        )
+        monitor.github.has_open_pr_for_issue = AsyncMock(return_value=True)
+        monitor.config.enable_classify = False
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        monitor.config.enable_pr_triage = False
+        monitor.config.enable_mention_handling = False
+        monitor.config.reaper_stale_seconds = 0
+        await monitor.tick()
+        # Already em_pr — no transition.
+        monitor.github.transition_issue.assert_not_called()
+        assert monitor.stats.issues_implemented == 0
+
+    async def test_reconcile_skips_non_owned_issues(self):
+        """Issues not owned by this monitor must be skipped.
+
+        Default identity (shard_count=1) owns everything via title hash,
+        so we use a non-default identity to test ownership filtering."""
+        from deile.orchestration.pipeline.identity import MonitorIdentity
+        impl_issue = IssueRef(
+            number=99, title="not mine", url="u",
+            labels=(WORKFLOW_IMPLEMENTING, "~by:other-monitor"),
+        )
+        monitor, notifier = _make_monitor()
+        # Non-default identity: only owns issues with ~by:monitor-a
+        monitor.identity = MonitorIdentity(monitor_id="monitor-a")
+        monitor.github.list_issues_with_label = AsyncMock(
+            side_effect=lambda label, **_: {
+                WORKFLOW_IMPLEMENTING: [impl_issue],
+            }.get(label, []),
+        )
+        monitor.github.has_open_pr_for_issue = AsyncMock(return_value=True)
+        monitor.config.enable_classify = False
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        monitor.config.enable_pr_triage = False
+        monitor.config.enable_mention_handling = False
+        monitor.config.reaper_stale_seconds = 0
+        await monitor.tick()
+        # Not our issue — no transition.
+        monitor.github.transition_issue.assert_not_called()
+
+    async def test_reconcile_runs_before_implement_in_tick(self):
+        """When reconcile completes an issue, the freed slot should be
+        available for new claims in the SAME tick. This test verifies
+        that reconcile runs and can consume in-flight issues before
+        implement claims new ones."""
+        # An issue in em_implementacao with a PR ready to be detected.
+        impl_issue = IssueRef(
+            number=42, title="completed", url="u",
+            labels=(WORKFLOW_IMPLEMENTING, "~by:default"),
+        )
+        monitor, notifier = _make_monitor()
+        monitor.github.list_issues_with_label = AsyncMock(
+            side_effect=lambda label, **_: {
+                WORKFLOW_IMPLEMENTING: [impl_issue],
+                WORKFLOW_REVIEWED: [],
+            }.get(label, []),
+        )
+        monitor.github.has_open_pr_for_issue = AsyncMock(return_value=True)
+        monitor.config.enable_classify = False
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        monitor.config.enable_pr_triage = False
+        monitor.config.enable_mention_handling = False
+        monitor.config.reaper_stale_seconds = 0
+        # enable_implement is True (default) — reconcile runs before it.
+        await monitor.tick()
+        # Reconcile must have transitioned the issue to em_pr.
+        monitor.github.transition_issue.assert_called_with(
+            42, from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_PR,
+        )
+        assert monitor.stats.issues_implemented == 1
+        notifier.implementation_finished.assert_called_once_with(42, None)
 
 
 class TestStage3PrReview:
@@ -785,7 +974,9 @@ class TestTickSummary:
         assert "reviewed=1" in msg, f"expected reviewed=1, got: {msg}"
 
     async def test_tick_summary_reflects_implement_delta(self, caplog):
-        """Implementing one issue must show implemented=1 in the summary."""
+        # Issue #373: fire-and-forget dispatch — issues_implemented is only
+        # incremented by reconcile_implementing_issues on subsequent ticks.
+        # A fresh dispatch increments dispatched but not implemented.
         rev = IssueRef(
             number=2, title="impl me", url="u",
             labels=(WORKFLOW_REVIEWED, "~batch:abc12345"),
@@ -801,7 +992,9 @@ class TestTickSummary:
         records = [r for r in caplog.records if "tick #" in r.message]
         assert len(records) == 1
         msg = records[0].message
-        assert "implemented=1" in msg, f"expected implemented=1, got: {msg}"
+        # Fire-and-forget: implemented counter stays 0 until reconcile.
+        # dispatched counter should show the claim.
+        assert "implemented=0" in msg, f"expected implemented=0, got: {msg}"
 
     async def test_tick_summary_reflects_dispatched_delta(self, caplog):
         """Reviewing a PR must show dispatched=1 in the summary."""

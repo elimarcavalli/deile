@@ -770,6 +770,11 @@ class PipelineMonitor:
         # the same tick; its first resume lands on the next tick.
         if cfg.enable_resume:
             await self._resume_in_progress_issues()
+        # Issue #373: reconcile fire-and-forget implementing issues BEFORE
+        # claiming new ones — completed issues free up capacity for new
+        # dispatches in the same tick.
+        if cfg.enable_implement:
+            await self._reconcile_implementing_issues()
         await _scheduled(cfg.enable_implement, "implement", self._implement_one_reviewed_issue)
         # Decompose CLEAR intents into derived issues (issue #257).
         if cfg.enable_refinement_gate:
@@ -812,6 +817,10 @@ class PipelineMonitor:
 
     async def _resume_in_progress_issues(self) -> None:
         return await stages.resume_in_progress_issues(self)
+
+    async def _reconcile_implementing_issues(self) -> None:
+        """Check ground truth for fire-and-forget implementing issues (issue #373)."""
+        return await stages.reconcile_implementing_issues(self)
 
     async def _review_one_open_pr(self) -> None:
         return await stages.review_one_open_pr(self)
