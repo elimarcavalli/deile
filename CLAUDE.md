@@ -141,6 +141,70 @@ $K -n deile exec -it deploy/deile-shell -- python3 /app/wrapper.py deile   # int
 
 **Only `deile-pipeline` runs the autonomous monitor**; the others never autostart it.
 
+## Variáveis de ambiente — onde mora o quê (mapa completo)
+
+A configuração do DEILE vive em **5 lugares distintos** que coexistem. Saber qual usar para o quê é metade do trabalho de operação.
+
+### Os 5 lugares onde a config mora
+
+| Lugar | Para quê serve | Quando muda |
+|---|---|---|
+| **`.env` (raiz do repo)** | Segredos do operador (tokens API, OAuth) + overrides locais. Lido pelo `deploy.py k8s up` e pelo `python3 deile.py` local. | Cada operador edita o seu — nunca vai pro git (`.dockerignore` + `.gitignore`). |
+| **K8s Secrets** (`bot-secrets`, `deile-secrets`, `worker-bearer`, `claude-worker-bearer`, `pipeline-status-bearer`, `claude-credentials`) | Espelho dos segredos do `.env` dentro do cluster. Montados nos Pods como arquivos em `/run/secrets/<role>/`. | Criados/atualizados por `k8s up` (a maioria) ou `k8s claude-login` (OAuth do claude). |
+| **K8s ConfigMaps** (`bot-config`, `deile-runtime-config`, `claude-worker-allowed-repos`) | Config NÃO-secreta: owners do bot, runtime tunables, allowlist de repos. | Editar o YAML do manifest + `kubectl apply`. |
+| **Manifests env vars** (blocos `env:` em `infra/k8s/manifests/*-deployment.yaml`) | Hardcoded por Pod: portas, paths, autostart flags, whitelists. | PR no repo — só muda quando muda a arquitetura. |
+| **`~/.deile/settings.json` (layered)** | Configs migráveis de runtime — alvo de **muitas** vars marcadas `[DEPRECATED → settings.json]` no `.env.example`. Layers: system/user/project. | Via `/settings set <chave> <valor>` no CLI, ou edição direta do JSON. |
+
+### Categorias das ~95 variáveis (inventário macro)
+
+> **A referência canônica e completa de cada variável (descrição, default, formato) é o [`.env.example`](.env.example)** (435 linhas, agrupado em 11 seções). Esta tabela aqui é só o mapa.
+
+| Categoria | Exemplos | Quem consome | Onde se configura |
+|---|---|---|---|
+| **LLM providers** | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `GOOGLE_API_KEY` | todos os Pods que rodam LLM (pipeline/worker/bot/shell — pelo menos UMA é obrigatória) | `.env` → `bot-secrets` + `deile-secrets` |
+| **Forges** | `GITHUB_TOKEN`, `GITLAB_TOKEN`/`GL_TOKEN`, `DEILE_FORGE_KIND`, `DEILE_FORGE_REPO`, `DEILE_GITHUB_HOST`, `DEILE_GITLAB_HOST` | pipeline + worker + claude-worker (forge agnostic via #297) | `.env` → `deile-secrets` (tokens); manifests/settings.json (hosts/repo) |
+| **Discord bot** | `DEILE_BOT_DISCORD_TOKEN`, `DEILE_BOT_ENDPOINT`, `DEILE_BOT_AUTH_TOKEN`, `DEILE_BOT_DISABLED` | só `deilebot` e quem fala com ele (worker/pipeline para notificar) | `.env` → `bot-secrets` + `deile-secrets` (bearer compartilhado) |
+| **Owners do bot** | (não é env — `owners: ["discord:<snowflake>"]` em YAML) | `deilebot` | ConfigMap `infra/k8s/manifests/15-bot-config.yaml` |
+| **deile-worker** | `DEILE_WORKER_BEARER_TOKEN`, `DEILE_WORKER_ENDPOINT`, `DEILE_WORKER_TASK_TIMEOUT_S` (2h default), `DEILE_WORKER_HOST/PORT`, `DEILE_WORKER_ROOT` | pipeline (dispatch) + worker (servidor) | `.env` (bearer) → Secret `worker-bearer`; resto em manifest 45 |
+| **claude-worker** | `DEILE_CLAUDE_WORKER_AUTH_TOKEN`, `DEILE_CLAUDE_WORKER_ENDPOINT`, `DEILE_CLAUDE_WORKER_TASK_TIMEOUT_S`, `DEILE_CLAUDE_RESUME_TOKEN_BUDGET` (500k) | pipeline (dispatch) + claude-worker (servidor) | Secret `claude-worker-bearer` (populado por `k8s claude-login`); resto em manifest 50 |
+| **claude OAuth** | `CLAUDE_OAUTH_ACCESS_TOKEN`, conteúdo de `~/.claude/credentials.json` | só `claude-worker` | Secret `claude-credentials` (criado por `k8s claude-login`) |
+| **Pipeline (monitor)** | `DEILE_PIPELINE_AUTOSTART`, `DEILE_PIPELINE_POLL_INTERVAL`, `DEILE_PIPELINE_REPO`, `DEILE_PIPELINE_SHARD_INDEX/COUNT` | só `deile-pipeline` | manifest 46 + DEPRECATED → settings.json |
+| **Pipeline resume** | `DEILE_PIPELINE_RESUME_ENABLED/INTERVAL/MAX_ATTEMPTS/BUDGET` (issue #254) | pipeline | DEPRECATED → settings.json (`pipeline.resume_*`) |
+| **Dispatch routing** | `DEILE_PIPELINE_DISPATCH_MODE` (global) + `_CLASSIFY/REFINE/IMPLEMENT/PR_REVIEW/FOLLOW_UPS` (per-stage, issue #309 fase 2) | pipeline | manifest 46 / painel `[d]` |
+| **Models per-stage** | `DEILE_PREFERRED_MODEL` (global) + `DEILE_PIPELINE_MODEL_<STAGE>` (per-stage, issue #305) | pipeline → worker | manifest 46 / painel `[d]` |
+| **Subagents paralelos** | `DEILE_SUBAGENT_RUNNER`, `_MAX_PARALLEL`, `_BUDGET_S`, `_POLL_INTERVAL_S`, `_CAPTURE_BUFFER_MAX_BYTES` (issue #257) | qualquer DEILE invocando `dispatch_parallel_subagents` | DEPRECATED → settings.json |
+| **Loop guard** | `DEILE_LOOP_GUARD_DISABLE/MAX_CALLS/REPEAT_THRESHOLD/WINDOW_SIZE/WINDOW_THRESHOLD/NO_PROGRESS`, `DEILE_MAX_TOOL_ITERATIONS` | core agent | DEPRECATED → settings.json |
+| **Cron** | `DEILE_CRON_DB_PATH`, `DEILE_CRON_POLL_INTERVAL`, `DEILE_CRON_AUTOSTART` | só `deilebot` (cron roda lá) | manifest 20 + DEPRECATED → settings.json |
+| **OpenTelemetry** | `DEILE_OTLP_ENDPOINT/HEADERS/INSECURE/SERVICE_NAME/SAMPLE_RATIO`, `DEILE_OBSERVABILITY_DISABLED` (issue #303 fase 4) | todos os Pods (opcional) | `.env` (vazio = no-op) |
+| **Pipeline status server** | `DEILE_PIPELINE_STATUS_HOST/PORT/AUTH_TOKEN/LOG_LEVEL/ENDPOINT`, `PIPELINE_STATUS_BEARER_TOKEN` (issue #347) | só `deile-pipeline` (server) + painel (cliente) | manifest 46 + Secret `pipeline-status-bearer` |
+| **Wrapper/whitelist** | `DEILE_WRAPPER_TOOL_WHITELIST` (`all`/`messaging`/CSV), `DEILE_DEFAULT_PERSONA` | wrapper.py → todos os Pods | manifests por Pod (`messaging` no Job, `all` no shell) |
+| **K8s namespace** | `DEILE_K8S_NAMESPACE` | só `deploy.py` (default da flag `-n`) | `.env` ou flag CLI |
+| **Runtime state** | `DEILE_RUNTIME_DIR` (default `~/.deile/run/`) | issue #303 fase 1 (state files) | `.env` (raramente) |
+| **Internos/debug** | `DEILE_DEBUG`, `DEILE_LOG_LEVEL`, `DEILE_HARNESS_MODEL`, `DEILE_SMOKE_MODEL`, `DEILE_STREAM_TEST_MODEL` | testes/debug | só ad-hoc |
+
+### Obrigatórias para subir o cluster do zero (HOJE — pré-correções)
+
+**Hard-fail** em `k8s up` se ausentes:
+- `DEILE_BOT_DISCORD_TOKEN` ⚠️ **bug: hard-fail mesmo se você não quer rodar o bot**. Reportado e a corrigir.
+- Pelo menos UMA de `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `DEEPSEEK_API_KEY` / `GOOGLE_API_KEY`.
+
+**Auto-geradas** se ausentes (`secrets.token_urlsafe(32)`):
+- `DEILE_BOT_AUTH_TOKEN`, `DEILE_WORKER_BEARER_TOKEN`.
+
+**Opcionais propagadas se presentes:**
+- `GITHUB_TOKEN`.
+
+### Bugs/gaps conhecidos no fluxo de configuração (a corrigir)
+
+1. **`DEILE_BOT_DISCORD_TOKEN` é obrigatório no `k8s up` mesmo pra setups sem bot** — deveria ser opt-in (`--with-bot` ou detecção automática).
+2. **`GITLAB_TOKEN`/`GL_TOKEN` não é propagado pelo `k8s up`** — só o `GITHUB_TOKEN` vai pro Secret. GitLab puro exige `kubectl patch` manual. (O `k8s setup` interativo já trata, mas o `up` não.)
+3. **`PIPELINE_STATUS_BEARER_TOKEN` (issue #347) nem é gerado nem aplicado pelo `k8s up`** — o manifest 44 (`44-pipeline-status-bearer-secret.yaml`) é stub vazio e não entra na lista do `k8s_up`. Status server fica sem auth válido ao clonar do zero.
+4. **`claude-worker-bearer`, manifests 47–50** não são aplicados pelo `k8s up` — assume-se que `k8s claude-login` cuida. Isso é OK para a OAuth, mas significa que `claude-worker` não sobe sem chamar `claude-login` antes.
+5. **Manifest 43 (`43-forge-tokens-secret.yaml`) existe mas não é aplicado pelo `k8s up`** (que coloca os tokens em `deile-secrets`). Duplicação confusa.
+6. **Spread de configs** entre `.env` + Secrets + ConfigMaps + manifests `env:` + `settings.json` — sem ferramenta unificada de visualização ("onde está config X?").
+
+Investigação detalhada em curso (sub-agents Sonnet auditando bot lifecycle / forge / Secrets / migração settings.json). Plano de correção a ser alinhado via questionário enterprise após sub-agents retornarem.
+
 ## claude-worker — dispatch pra Claude CLI dentro do cluster (issue #309 fase 2)
 
 Além do `deile-worker` (que roda DEILE python via `wrapper.py worker`), o cluster ganha um pod paralelo `claude-worker` (Service `:8767`) que executa `claude -p` em worktrees isolados sob o PVC `claude-worker-home`. O pipeline despacha tasks per-stage:

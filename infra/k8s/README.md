@@ -72,22 +72,93 @@ Anote o **seu** `user_id` (clique direito → Copy User ID, ative
 
 ### 1.3 `.env` no repo
 
-Crie/edite o `.env` da raiz do repo deile:
+Crie/edite o `.env` na raiz do repo (`/Users/elimar.cavalli/dev/github/elimarcavalli/deile/.env`).
+**Use o [`.env.example`](../../.env.example) como referência** — 11 seções, 435 linhas,
+toda variável documentada com formato + default. Mínimo absoluto pra subir hoje:
 
 ```ini
-# Pelo menos UMA chave LLM:
+# 1. Pelo menos UMA chave LLM (obrigatório):
 ANTHROPIC_API_KEY=sk-ant-...
 # OPENAI_API_KEY=sk-...
 # DEEPSEEK_API_KEY=sk-...
 # GOOGLE_API_KEY=AIza...
 
-DEILE_BOT_DISCORD_TOKEN=MTQ5...  # do passo 1.2
-# DEILE_BOT_AUTH_TOKEN não precisa — run.sh gera um a cada `up`
+# 2. Token do bot Discord (obrigatório hoje no `k8s up` — ver gap #1 abaixo):
+DEILE_BOT_DISCORD_TOKEN=MTQ5...
+
+# 3. (Opcional) token GitHub pra clonar repos privados + abrir PRs:
+GITHUB_TOKEN=ghp_...
+
+# 4. (Opcional) token GitLab — issue #297, mas ver gap #2 abaixo:
+GITLAB_TOKEN=glpat-...
+
+# DEILE_BOT_AUTH_TOKEN e DEILE_WORKER_BEARER_TOKEN: auto-gerados pelo `k8s up` se ausentes.
 ```
 
-> `.env` está no `.dockerignore` (`infra/k8s/.dockerignore`) — **não
-> entra na imagem**. Os Secrets do K8s são criados em runtime a partir
-> dele e nunca aparecem em `kubectl get secret -o yaml` por acidente.
+> `.env` está no `.dockerignore` e `.gitignore` — **não entra na imagem
+> nem no git**. Os Secrets do K8s são criados em runtime a partir dele
+> e nunca aparecem em `kubectl get secret -o yaml` por acidente.
+
+### 1.3.1 Build-time vs runtime — onde cada var é lida
+
+| Momento | O que lê | Pode customizar |
+|---|---|---|
+| **`k8s build`** (Dockerfile) | **NADA do `.env`** — build é hermético | Só `--build-arg PYTHON_VERSION=3.11.10` ou `GLAB_VERSION=1.45.0` (raríssimo) |
+| **`k8s up`** (deploy.py) | Lê `.env` → cria 3 Secrets (`bot-secrets`, `deile-secrets`, `worker-bearer`) | Vars listadas em §1.3 acima |
+| **`k8s claude-login`** | Lê `~/.claude/credentials.json` do host (OAuth do Claude Code Pro/Max) | Use `--switch` pra trocar de conta; `--no-interactive` pra CI |
+| **Pods em execução** | Lêem dos Secrets/ConfigMaps montados + env vars hardcoded em cada manifest | `kubectl set env deployment/<name> KEY=VALUE` pra override (já há helpers no painel `[d]`) |
+
+### 1.3.2 Onde cada categoria de config mora (mapa)
+
+Os ~95 nomes do `.env.example` se distribuem em 5 lugares — saber qual usar
+para o quê é metade da operação:
+
+| Lugar | Para quê serve |
+|---|---|
+| **`.env` (raiz do repo)** | Segredos do operador (tokens API, OAuth) + overrides locais |
+| **K8s Secrets** (`bot-secrets`, `deile-secrets`, `worker-bearer`, `claude-worker-bearer`, `pipeline-status-bearer`, `claude-credentials`) | Espelho do `.env` montado nos Pods em `/run/secrets/<role>/` |
+| **K8s ConfigMaps** (`bot-config`, `deile-runtime-config`, `claude-worker-allowed-repos`) | Config NÃO-secreta: owners do bot, runtime tunables, allowlist de repos |
+| **Manifests env vars** (blocos `env:` em `infra/k8s/manifests/*-deployment.yaml`) | Hardcoded por Pod: portas, paths, autostart flags, whitelists |
+| **`~/.deile/settings.json` (layered)** | Configs migráveis de runtime — alvo de muitas vars `[DEPRECATED → settings.json]` no `.env.example` |
+
+> **Owners do bot Discord** vivem em `15-bot-config.yaml` (ConfigMap),
+> NÃO no `.env`. Formato: `owners: ["discord:<seu_snowflake>"]`. Anote
+> seu User ID via Settings/Advanced → Developer Mode no Discord, e cole
+> aí antes do `k8s up`.
+
+### 1.3.3 Gaps conhecidos no fluxo de configuração (a corrigir)
+
+Quem clona o repo HOJE e tenta `k8s up` esbarra nesses pontos:
+
+1. **`DEILE_BOT_DISCORD_TOKEN` hard-fail mesmo sem bot** — não dá pra subir
+   "pipeline only". Workaround: ponha um valor lixo no `.env`, o pod do bot
+   vai crashloop mas o resto sobe.
+2. **`GITLAB_TOKEN` não é propagado pelo `k8s up`** — só `GITHUB_TOKEN`.
+   Pra GitLab puro: rode `up` primeiro, depois patch:
+   ```bash
+   kubectl -n deile patch secret deile-secrets \
+     -p "{\"stringData\":{\"GITLAB_TOKEN\":\"glpat-...\"}}"
+   kubectl -n deile rollout restart deployment/deile-pipeline
+   ```
+   (O `k8s setup` interativo já trata. Só o `up` esqueceu.)
+3. **`PIPELINE_STATUS_BEARER_TOKEN` (issue #347) órfão** — manifest 44 é
+   stub vazio e `k8s up` nem o aplica. O status server do pipeline (`:8768`)
+   sobe sem auth válido e o painel TUI fica vendo erro 401/403. Workaround:
+   ```bash
+   TOKEN=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
+   kubectl -n deile create secret generic pipeline-status-bearer \
+     --from-literal=PIPELINE_STATUS_BEARER_TOKEN=$TOKEN \
+     --dry-run=client -o yaml | kubectl apply -f -
+   kubectl -n deile rollout restart deployment/deile-pipeline
+   ```
+4. **`claude-worker` (manifests 47-50) NÃO aplicado pelo `k8s up`** — só
+   sobe se você rodar `k8s claude-login` depois. Esperado por design
+   (claude-worker é opt-in), mas precisa estar claro.
+5. **Manifest 43 (`forge-tokens-secret`) existe mas não é aplicado** —
+   `k8s up` põe os tokens em `deile-secrets`, fazendo o 43 dead code.
+
+Trabalho em curso pra eliminar todos esses gaps. Atualizações nesta
+seção quando concluído.
 
 ---
 
