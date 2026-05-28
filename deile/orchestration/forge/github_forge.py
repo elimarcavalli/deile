@@ -929,10 +929,11 @@ class GitHubForge(ForgeClient):
         try:
             # gh search issues uses advanced_search=true which returns HTTP 404
             # on non-enterprise accounts. Use the regular /search/issues REST
-            # endpoint directly and reshape the response to match from_gh_json.
+            # endpoint with the `mentions:` qualifier (no @ prefix needed).
+            login = query.lstrip("@")
             out = await self._run_checked(
                 "api", "search/issues",
-                "--raw-field", f"q={query} repo:{self.repo} state:open",
+                "--raw-field", f"q=mentions:{login} repo:{self.repo} state:open",
                 "--field", f"per_page={limit}",
                 "--jq", (
                     ".items | map({"
