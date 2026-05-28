@@ -541,20 +541,22 @@ def _pod_rows(data: Optional[PanelData]) -> List[PodRow]:
 # estilo visual sem duplicar código.
 
 def _head_panel(view_title: str, app: "PanelApp") -> Panel:
-    """Cabeçalho dinâmico: modo (k8s/local/híbrido) + namespace + clock + cadência."""
+    """Cabeçalho dinâmico: modo (k8s/local/híbrido) + namespace + clock UTC + cadência."""
     paused = " ⏸ pausado" if app.paused else ""
     speed = "" if app.refresh_mult == 1.0 else f" ×{app.refresh_mult:g}"
-    clock = time.strftime("%Y-%m-%d %H:%M:%S")
+    utc_now = datetime.now(timezone.utc)
+    clock_utc = utc_now.strftime("%Y-%m-%d %H:%M:%S UTC")
+    local_now = utc_now.astimezone()
+    clock_local = local_now.strftime("%H:%M %z")
     head = Text()
     head.append("DEILE Stack", style="bold cyan")
     head.append("  ·  ")
     head.append(view_title, style="bold")
     head.append("  ·  ")
-    head.append(clock, style="dim")
+    head.append(clock_utc, style="dim")
     head.append(f"  ·  refresh {app.current_refresh_s:.1f}s{speed}{paused}",
                 style="dim yellow" if app.paused else "dim")
-    # Linha 2: contexto efetivo. Usa o RuntimeContext quando há `data`; em
-    # modo demo cai no rótulo fixo histórico.
+    # Linha 2: contexto efetivo + conversão local do clock.
     if app.data is not None:
         ctx = app.data.context
         mode_style = ("bold green" if ctx.mode_label.startswith("k8s + local")
@@ -572,7 +574,9 @@ def _head_panel(view_title: str, app: "PanelApp") -> Panel:
     else:
         sub = Text("mode: demo (mocks)   cluster: —   namespace: —",
                    style="dim yellow")
-    pieces: List[RenderableType] = [head, sub]
+    # Linha 3: conversão local do clock UTC (↳ hh:mm local).
+    local_line = Text(f"↳ {clock_local} local", style="dim")
+    pieces: List[RenderableType] = [head, sub, local_line]
     # Toasts efêmeros (snapshot salvo, etc) aparecem como linha extra
     # discreta no head — não quebram o layout das views.
     toasts = app.active_toasts()
