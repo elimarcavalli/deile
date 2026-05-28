@@ -1,4 +1,4 @@
-"""Tests for deile.logging.log_analyzer — anomaly detection engine."""
+"""Tests for deile.log_mgmt.log_analyzer — anomaly detection engine."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from deile.logging.log_analyzer import (
+from deile.log_mgmt.log_analyzer import (
     Anomaly,
     _detect_auth_expiry,
     _detect_error_spike,
@@ -18,7 +18,7 @@ from deile.logging.log_analyzer import (
     scan_crash_loops,
     scan_logs,
 )
-from deile.logging.log_patterns import Severity
+from deile.log_mgmt.log_patterns import Severity
 
 
 class TestConfig:

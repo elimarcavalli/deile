@@ -56,10 +56,10 @@ from aiohttp import web
 
 logger = logging.getLogger("deile.worker_server")
 
-# Logging inicializado via deile.logging com dual-write (arquivo + stdout).
+# Logging inicializado via deile.log_mgmt com dual-write (arquivo + stdout).
 # O nível de log é controlado por DEILE_WORKER_LOG_LEVEL (default INFO).
 try:
-    from deile.logging import init_logging
+    from deile.log_mgmt import init_logging
     _log_level = os.environ.get("DEILE_WORKER_LOG_LEVEL", "INFO")
     os.environ.setdefault("DEILE_LOG_LEVEL", _log_level)
     init_logging(pod_name="deile-worker")

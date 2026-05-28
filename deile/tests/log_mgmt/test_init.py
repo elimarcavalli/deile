@@ -1,4 +1,4 @@
-"""Tests for deile.logging.init_logging — the main entrypoint."""
+"""Tests for deile.log_mgmt.init_logging — the main entrypoint."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from deile.logging import init_logging
-from deile.logging.log_rotator import CappedRotatingFileHandler
+from deile.log_mgmt import init_logging
+from deile.log_mgmt.log_rotator import CappedRotatingFileHandler
 
 
 class TestInitLogging:

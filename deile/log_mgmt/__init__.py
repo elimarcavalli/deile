@@ -2,7 +2,7 @@
 
 Uso nos entrypoints::
 
-    from deile.logging import init_logging
+    from deile.log_mgmt import init_logging
     init_logging(pod_name="deile-pipeline")
 
 Isto substitui o ``logging.basicConfig(...)`` padrão por um
@@ -16,10 +16,10 @@ import logging
 import sys
 from typing import Optional, TYPE_CHECKING
 
-from deile.logging.log_rotator import create_log_handler, get_pod_name
+from deile.log_mgmt.log_rotator import create_log_handler, get_pod_name
 
 if TYPE_CHECKING:
-    from deile.logging.log_rotator import CappedRotatingFileHandler
+    from deile.log_mgmt.log_rotator import CappedRotatingFileHandler
 
 
 def init_logging(

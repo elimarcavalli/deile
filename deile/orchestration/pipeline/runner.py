@@ -198,7 +198,7 @@ async def run_pipeline_forever() -> int:
 
 
 def main() -> int:
-    from deile.logging import init_logging
+    from deile.log_mgmt import init_logging
     init_logging(pod_name="deile-pipeline")
     return asyncio.run(run_pipeline_forever())
 

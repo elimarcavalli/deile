@@ -1,10 +1,10 @@
-"""Tests for deile.logging.log_patterns — regex pattern catalog."""
+"""Tests for deile.log_mgmt.log_patterns — regex pattern catalog."""
 
 from __future__ import annotations
 
 import pytest
 
-from deile.logging.log_patterns import (
+from deile.log_mgmt.log_patterns import (
     ALL_PATTERNS,
     AUTH_EXPIRED_PATTERNS,
     CRASH_PATTERNS,

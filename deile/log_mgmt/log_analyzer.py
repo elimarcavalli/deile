@@ -6,7 +6,7 @@ silêncio do pipeline.
 
 Uso standalone::
 
-    python3 -m deile.logging.log_analyzer --log-dir /var/log/containers
+    python3 -m deile.log_mgmt.log_analyzer --log-dir /var/log/containers
 
 Ou como entrypoint do DaemonSet::
 
@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from deile.logging.log_patterns import (
+from deile.log_mgmt.log_patterns import (
     AUTH_EXPIRED_PATTERNS,
     Severity,
     match_critical,
@@ -428,7 +428,7 @@ def _dispatch_anomalies(anomalies: List[Anomaly]) -> None:
     Import lazy para evitar dependência circular.
     """
     try:
-        from deile.logging.log_dispatcher import dispatch_anomalies
+        from deile.log_mgmt.log_dispatcher import dispatch_anomalies
         dispatch_anomalies(anomalies)
     except ImportError:
         logger.warning(

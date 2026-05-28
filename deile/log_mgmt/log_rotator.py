@@ -8,7 +8,7 @@ compatibilidade com ferramentas existentes.
 
 Uso típico::
 
-    from deile.logging import init_logging
+    from deile.log_mgmt import init_logging
     init_logging(pod_name="deile-pipeline")
 """
 

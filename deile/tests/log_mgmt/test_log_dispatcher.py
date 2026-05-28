@@ -1,17 +1,17 @@
-"""Tests for deile.logging.log_dispatcher — worker dispatch for anomalies."""
+"""Tests for deile.log_mgmt.log_dispatcher — worker dispatch for anomalies."""
 
 from __future__ import annotations
 
 import pytest
 
-from deile.logging.log_dispatcher import (
+from deile.log_mgmt.log_dispatcher import (
     _build_investigation_brief,
     _get_worker_bearer,
     dispatch_anomalies,
     is_auto_dispatch_enabled,
 )
-from deile.logging.log_analyzer import Anomaly
-from deile.logging.log_patterns import Severity
+from deile.log_mgmt.log_analyzer import Anomaly
+from deile.log_mgmt.log_patterns import Severity
 
 
 class TestBuildInvestigationBrief:

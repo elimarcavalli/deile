@@ -1,4 +1,4 @@
-"""Tests for deile.logging.log_rotator — CappedRotatingFileHandler."""
+"""Tests for deile.log_mgmt.log_rotator — CappedRotatingFileHandler."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from deile.logging.log_rotator import (
+from deile.log_mgmt.log_rotator import (
     CappedRotatingFileHandler,
     _default_log_dir,
     _default_log_file,
@@ -88,7 +88,7 @@ class TestCappedRotatingFileHandler:
     def test_init_logging_via_init_module(self, tmp_log_dir, monkeypatch):
         monkeypatch.setenv("DEILE_LOG_DIR", tmp_log_dir)
         monkeypatch.setenv("DEILE_POD_NAME", "test-init")
-        from deile.logging import init_logging
+        from deile.log_mgmt import init_logging
 
         # Clear root handlers first
         logging.root.handlers.clear()

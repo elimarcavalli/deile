@@ -44,7 +44,7 @@ spec:
           image: deile-stack:local
           imagePullPolicy: Never
           workingDir: /home/deile
-          command: ["python3", "-m", "deile.logging.log_analyzer"]
+          command: ["python3", "-m", "deile.log_mgmt.log_analyzer"]
           env:
             - { name: HOME, value: /home/deile }
             - { name: PYTHONUNBUFFERED, value: "1" }
