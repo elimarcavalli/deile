@@ -34,7 +34,7 @@ from deile.orchestration.pipeline._time_utils import now_utc, parse_iso_utc
 from deile.orchestration.pipeline.actions import ACTIONS_BY_NAME
 from deile.orchestration.pipeline.claude_dispatcher import ClaudeDispatcher
 from deile.orchestration.pipeline.constants import (
-    PIPELINE_POLL_INTERVAL_SECONDS, PIPELINE_STOP_TIMEOUT_SECONDS)
+    pipeline_poll_interval_seconds, PIPELINE_STOP_TIMEOUT_SECONDS)
 # Import path preserved for callers that still type-hint ``GitHubClient`` —
 # resolved through the shim so legacy attribute usage stays compatible.
 from deile.orchestration.pipeline.github_client import \
@@ -69,7 +69,7 @@ __all__ = ["PipelineConfig", "PipelineMonitor", "_extract_pr_url",
 class PipelineConfig:
     repo: str
     base_repo_path: Path
-    poll_interval_seconds: int = PIPELINE_POLL_INTERVAL_SECONDS
+    poll_interval_seconds: int = pipeline_poll_interval_seconds()
     main_branch: str = "main"
     # ``branch_prefix`` is the *legacy* per-instance default. When an
     # ``identity`` is provided to :class:`PipelineMonitor`, the actual prefix

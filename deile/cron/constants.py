@@ -11,7 +11,14 @@ from deile.config.settings import get_settings
 
 # ── CronRunner ────────────────────────────────────────────────────────────
 #: Default polling cadence for :class:`CronRunner`.
-CRON_POLL_INTERVAL_SECONDS: int = get_settings().cron_poll_interval
+def cron_poll_interval_seconds() -> int:
+    """Live: re-reads settings at every call. Use this, NOT a frozen const.
+
+    **NÃO ARMAZENE LOCALMENTE** — chamar esta função em loop infinito e guardar
+    o resultado numa variável local reintroduziria o freeze que esta função
+    existe para evitar. Chame-a a cada uso.
+    """
+    return get_settings().cron_poll_interval
 #: Seconds ``stop()`` waits for the loop task before cancelling it.
 CRON_STOP_TIMEOUT_SECONDS: int = 5
 
