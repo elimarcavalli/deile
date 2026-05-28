@@ -235,6 +235,7 @@ class TestApplyEnvOverrides:
 
 class TestBuildSettings:
     def test_default_values_when_no_files(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         proj = tmp_path / "project"
         proj.mkdir(exist_ok=True)
         monkeypatch.setattr("deile.config.settings.Path.home", lambda: tmp_path / "home")
@@ -249,6 +250,7 @@ class TestBuildSettings:
         reset_settings()
 
     def test_global_json_applied(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         home = tmp_path / "home"
         proj = tmp_path / "project"
         proj.mkdir(parents=True)
@@ -264,6 +266,7 @@ class TestBuildSettings:
         reset_settings()
 
     def test_project_json_overrides_global(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         home = tmp_path / "home"
         proj = tmp_path / "project"
         proj.mkdir(parents=True)
@@ -279,6 +282,7 @@ class TestBuildSettings:
         reset_settings()
 
     def test_env_var_overrides_json(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         """Current (non-deprecated) env vars win over JSON settings.
 
         Uses DEILE_FORGE_REPO (a current knob) to verify the env-override layer
@@ -301,6 +305,7 @@ class TestBuildSettings:
         reset_settings()
 
     def test_deprecated_env_var_does_not_override_json(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         """Deprecated env vars are silently ignored — JSON layer wins (issue #309)."""
         proj = tmp_path / "project"
         proj.mkdir(parents=True)
@@ -319,6 +324,7 @@ class TestBuildSettings:
         reset_settings()
 
     def test_reset_clears_singleton(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("DEILE_SETTINGS_FILE", raising=False)
         monkeypatch.setattr("deile.config.settings.Path.home", lambda: tmp_path / "home")
         monkeypatch.chdir(tmp_path)
         reset_settings()
