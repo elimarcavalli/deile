@@ -72,6 +72,80 @@ _ENDED_BLOQUEADO = "bloqueado"
 
 logger = logging.getLogger(__name__)
 
+# --- Commit classification (issue #351) ------------------------------------
+
+# File extensions considered "code" for the purpose of re-review classification.
+_CODE_EXTENSIONS = frozenset({
+    ".py", ".ts", ".js", ".jsx", ".tsx", ".yaml", ".yml",
+    ".go", ".rs", ".java", ".c", ".cpp", ".h", ".hpp",
+    ".sh", ".bash", ".zsh", ".fish",
+    ".toml", ".cfg", ".ini",
+})
+
+# Extensions / path prefixes considered "docs-only".
+_DOCS_EXTENSIONS = frozenset({".md", ".rst", ".txt", ".adoc"})
+_DOCS_PREFIXES = ("docs/", "documentation/")
+
+# Commit classification results (issue #351).
+CLASS_DOCS_ONLY = "docs-only"
+CLASS_COSMETIC = "cosmético"
+CLASS_CODE = "código"
+
+
+def _classify_new_commits(commits: list[dict]) -> str:
+    """Classify a list of commits into docs-only / cosmético / código.
+
+    Heuristic (Option A — issue #351):
+    - **docs-only**: ALL changed files are in ``docs/**`` or end with
+      ``.md`` / ``.rst`` / ``.txt`` / ``.adoc``.
+    - **cosmético**: NO code files changed AND not docs-only (e.g.
+      ``.gitignore``, ``README.md`` at repo root, CI config changes).
+    - **código**: at least one code file (``.py``, ``.ts``, etc.) changed.
+
+    When commit info is unavailable (empty list, no files), the safe default
+    is ``código`` (full re-review).
+
+    Note: "não-solicitado" classification (comparing diff against issue
+    body) is NOT implemented here — the stakeholder's comment on #351
+    explicitly said it is "adicional" (out of scope for this issue).
+    """
+    if not commits:
+        return CLASS_CODE  # safety default
+
+    all_files: list[str] = []
+    for c in commits:
+        files = c.get("files") or []
+        if isinstance(files, list):
+            all_files.extend(files)
+
+    if not all_files:
+        return CLASS_CODE  # no file info available
+
+    # Check if all files are docs.
+    def _is_docs(f: str) -> bool:
+        f_lower = f.lower()
+        if any(f_lower.endswith(ext) for ext in _DOCS_EXTENSIONS):
+            return True
+        if any(f_lower.startswith(pfx) for pfx in _DOCS_PREFIXES):
+            return True
+        return False
+
+    if all(_is_docs(f) for f in all_files):
+        return CLASS_DOCS_ONLY
+
+    # Check if any code file was touched.
+    has_code = any(
+        any(f.lower().endswith(ext) for ext in _CODE_EXTENSIONS)
+        for f in all_files
+    )
+
+    if has_code:
+        return CLASS_CODE
+
+    # Not docs-only, not code → cosmetic (config changes, etc.).
+    return CLASS_COSMETIC
+
+
 # Legacy regex kept ONLY for tests that import it directly. Production code
 # uses :func:`find_last_pr_url` (forge-aware) — see ``_extract_pr_url``.
 _PR_URL_RE = re.compile(r"https://github\.com/[^\s\"'<>]+/pull/\d+", re.IGNORECASE)
@@ -1444,6 +1518,131 @@ async def _block_issue(monitor: "PipelineMonitor", number: int, reason: str) -> 
 
 # ----- stage 3: review PR ------------------------------------------------
 
+
+async def _handle_review_concluded_invalidation(
+    monitor: "PipelineMonitor", pr,
+) -> None:
+    """Check if a PR with ``~review:concluida`` has new commits since the
+    review was concluded and, if so, invalidate the label based on commit
+    classification (issue #351).
+
+    Heuristic (Option A — paths + diff):
+    - **docs-only**: remove ``~review:concluida``, add ``~review:pendente``,
+      post comment saying only docs fidelity needs checking.
+    - **cosmético**: post comment noting cosmetic changes; keep concluded.
+    - **código**: remove ``~review:concluida``, add ``~review:pendente``,
+      post comment saying full re-review is needed.
+    - No new commits: keep concluded (nothing to do).
+
+    Best-effort: any transport error is logged and the PR stays concluded.
+    """
+    # 1. Get the timestamp of when ~review:concluida was applied.
+    concluded_at = await monitor.forge.label_applied_at(
+        "pr", pr.number, REVIEW_CONCLUDED,
+    )
+    if concluded_at is None:
+        logger.debug(
+            "invalidation #%d: could not determine when %s was applied; skipping",
+            pr.number, REVIEW_CONCLUDED,
+        )
+        return
+
+    # 2. Check for new commits since the label was applied.
+    try:
+        commits = await monitor.forge.get_pr_commits_since(
+            pr.number, concluded_at,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "invalidation #%d: get_pr_commits_since failed: %s",
+            pr.number, exc,
+        )
+        return
+
+    if not commits:
+        logger.debug(
+            "invalidation #%d: no new commits since %s was applied",
+            pr.number, REVIEW_CONCLUDED,
+        )
+        return
+
+    # 3. Classify the new commits.
+    classification = _classify_new_commits(commits)
+    commit_count = len(commits)
+    logger.info(
+        "invalidation #%d: %d new commit(s) since review concluded — %s",
+        pr.number, commit_count, classification,
+    )
+
+    # 4. Act on the classification.
+    if classification == CLASS_COSMETIC:
+        # Cosmetic changes — skip re-review, post comment.
+        comment = (
+            f"🤖 **Novos commits após revisão concluída** "
+            f"(issue #351 — invalidate-on-new-commit)\n\n"
+            f"**Classificação:** 🎨 `cosmético` — {commit_count} commit(s) "
+            f"pós-`{REVIEW_CONCLUDED}` com apenas alterações de "
+            f"configuração/formatação (sem código ou docs).\n\n"
+            f"**Ação:** Nenhuma — revisão mantida como concluída. "
+            f"Não é necessária re-revisão.\n\n"
+            f"---\nBy [DEILE-One](mailto:deile@deile.info)"
+        )
+        try:
+            await monitor.forge.comment_on_pr(pr.number, comment)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("invalidation #%d: comment failed: %s", pr.number, exc)
+        return
+
+    # docs-only or código → invalidate the concluded label.
+    try:
+        await monitor.forge.remove_labels("pr", pr.number, [REVIEW_CONCLUDED])
+    except GhCommandError as exc:
+        logger.warning(
+            "invalidation #%d: could not remove %s: %s",
+            pr.number, REVIEW_CONCLUDED, exc,
+        )
+        return
+    try:
+        await monitor.forge.add_labels("pr", pr.number, [REVIEW_PENDING])
+    except GhCommandError as exc:
+        logger.warning(
+            "invalidation #%d: could not add %s: %s",
+            pr.number, REVIEW_PENDING, exc,
+        )
+        # Best-effort recovery: re-add REVIEW_CONCLUDED so the PR
+        # isn't left label-less.
+        try:
+            await monitor.forge.add_labels("pr", pr.number, [REVIEW_CONCLUDED])
+        except Exception:  # noqa: BLE001
+            pass
+        return
+
+    if classification == CLASS_DOCS_ONLY:
+        action = (
+            f"📝 apenas arquivos de documentação (`docs/` ou `.md`) "
+            f"foram alterados — revisar apenas fidelidade docs↔código"
+        )
+    else:
+        action = (
+            f"💻 pelo menos um arquivo de código foi alterado "
+            f"— revisão completa necessária"
+        )
+
+    comment = (
+        f"🤖 **Novos commits após revisão concluída** "
+        f"(issue #351 — invalidate-on-new-commit)\n\n"
+        f"**Classificação:** `{classification}` — {commit_count} commit(s) "
+        f"pós-`{REVIEW_CONCLUDED}`.\n\n"
+        f"**Ação:** Removido `{REVIEW_CONCLUDED}`, "
+        f"adicionado `{REVIEW_PENDING}`. {action}.\n\n"
+        f"---\nBy [DEILE-One](mailto:deile@deile.info)"
+    )
+    try:
+        await monitor.forge.comment_on_pr(pr.number, comment)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("invalidation #%d: comment failed: %s", pr.number, exc)
+
+
 async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     try:
         prs = await monitor.forge.list_open_prs(limit=50)
@@ -1464,6 +1663,19 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     # excluded. Cadence is honored so resume does not re-fire every tick.
     resume_enabled = monitor.config.enable_resume
     now = _monotonic()
+
+    # --- Pre-processing: invalidate ~review:concluida on PRs with new commits
+    #     (issue #351 — invalidate-on-new-commit). Runs BEFORE candidate
+    #     selection so a freshly invalidated PR can be picked up this tick.
+    for pr in prs:
+        if (
+            REVIEW_CONCLUDED in pr.labels
+            and WORKFLOW_BLOCKED not in pr.labels
+            and not pr.is_draft
+            and pr.batch_id is None
+            and monitor._owns_pr_branch(pr.head_ref, pr_number=pr.number)
+        ):
+            await _handle_review_concluded_invalidation(monitor, pr)
 
     def _candidate(pr) -> bool:
         if pr.is_draft or REVIEW_CONCLUDED in pr.labels or WORKFLOW_BLOCKED in pr.labels:

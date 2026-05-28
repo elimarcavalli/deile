@@ -435,6 +435,17 @@ class ForgeClient(ABC):
         """Merge a PR/MR. Raises :class:`MergeBlocked` if the forge refuses."""
 
     @abstractmethod
+    async def get_pr_commits_since(self, number: int, since_ts: float) -> list[dict]:
+        """Return commits on PR/MR #number pushed after *since_ts* (Unix timestamp).
+
+        Each dict has keys: ``sha`` (str), ``message`` (str),
+        ``date`` (ISO-8601 str), ``files`` (list of filenames).
+        Returns empty list when no commits exist after ``since_ts`` or on
+        transport error (fail-open — the caller should treat empty as
+        "no new commits").
+        """
+
+    @abstractmethod
     async def get_ci_status(self, number: int) -> Literal["passing", "failing", "pending", "none"]:
         """Return a forge-uniform CI status for the PR/MR's latest pipeline."""
 

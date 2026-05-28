@@ -797,6 +797,42 @@ class GitLabForge(ForgeClient):
             return "pending"
         return "none"
 
+    async def get_pr_commits_since(self, number: int, since_ts: float) -> list[dict]:
+        """Return commits on MR #number pushed after *since_ts* (Unix timestamp).
+
+        Uses ``GET /projects/<id>/merge_requests/<iid>/commits``, extracts
+        sha/title/authored_date and filters client-side by timestamp.
+        Returns empty list on any transport or parse failure.
+        """
+        try:
+            commits_raw = await self._api_paginated(
+                f"projects/{self._project_ref}/merge_requests/{number}/commits",
+                params=[],
+                max_pages=3,
+            )
+        except ForgeCommandError as exc:
+            logger.debug("get_pr_commits_since #%d: fetch failed: %s", number, exc)
+            return []
+        result: list[dict] = []
+        for c in commits_raw:
+            if not isinstance(c, dict):
+                continue
+            ts_str = (c.get("authored_date") or c.get("created_at") or "").strip()
+            try:
+                iso = ts_str.replace("Z", "+00:00")
+                ts = int(datetime.fromisoformat(iso).timestamp())
+            except (ValueError, TypeError, OverflowError):
+                continue
+            if ts <= since_ts:
+                continue
+            result.append({
+                "sha": str(c.get("id", c.get("sha", ""))),
+                "message": str(c.get("title", "")),
+                "date": ts_str,
+                "files": [],  # GitLab commits endpoint does not include files by default
+            })
+        return result
+
     # ------------------------------------------------------------------
     # Labels
     # ------------------------------------------------------------------
