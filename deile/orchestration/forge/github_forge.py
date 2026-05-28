@@ -932,7 +932,7 @@ class GitHubForge(ForgeClient):
             # endpoint directly and reshape the response to match from_gh_json.
             out = await self._run_checked(
                 "api", "search/issues",
-                "--field", f"q={query} repo:{self.repo} state:open",
+                "--raw-field", f"q={query} repo:{self.repo} state:open",
                 "--field", f"per_page={limit}",
                 "--jq", (
                     ".items | map({"
