@@ -49,6 +49,9 @@ from deile.orchestration.pipeline.lockfile import release as release_lock
 from deile.orchestration.pipeline.notifier import DiscordNotifier
 from deile.orchestration.pipeline.resume_state import ResumeTracker
 from deile.orchestration.pipeline.scheduler import PendingRun, ScheduleStore
+from deile.orchestration.pipeline.labels import (WORKFLOW_IMPLEMENTING,
+                                                 WORKFLOW_NEW,
+                                                 WORKFLOW_REVIEWED)
 from deile.orchestration.pipeline.stages import (_extract_pr_url,
                                                  _render_follow_up_report)
 from deile.orchestration.pipeline.worktree_manager import WorktreeManager
@@ -587,6 +590,9 @@ class PipelineMonitor:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("reaper failed (non-fatal): %s", exc)
 
+        # Snapshot stats for per-tick delta computation (issue #349).
+        snap = self._stats_snapshot()
+
         # When a schedule file exists with at least one entry, the schedule
         # is authoritative: each tick runs only the actions whose cron
         # window opened since the previous tick. Without a schedule, fall
@@ -618,10 +624,24 @@ class PipelineMonitor:
                 scheduled_actions = {e.action for e in schedule.recurring if e.enabled}
                 await self._dispatch_stages(skip=scheduled_actions)
             self._publish_status_state(_status_state, tick_started)
+            await self._log_tick_summary(tick_started, snap)
             return
 
         await self._dispatch_stages()
         self._publish_status_state(_status_state, tick_started)
+        await self._log_tick_summary(tick_started, snap)
+
+    def _stats_snapshot(self) -> dict:
+        """Return a shallow copy of per-tick-relevant counters for delta
+        computation at end-of-tick (issue #349)."""
+        s = self._stats
+        return {
+            "issues_classified": s.issues_classified,
+            "prs_classified": s.prs_classified,
+            "issues_reviewed": s.issues_reviewed,
+            "issues_implemented": s.issues_implemented,
+            "prs_reviewed": s.prs_reviewed,
+        }
 
     def _publish_status_state(self, state, tick_started: float) -> None:
         """Best-effort: publica métricas + ledger snapshot pro pipeline_status_server.
@@ -650,6 +670,71 @@ class PipelineMonitor:
                     pass
         except Exception as exc:  # noqa: BLE001
             logger.debug("publish_status_state non-fatal: %s", exc)
+
+    async def _log_tick_summary(self, tick_started: float, snap: dict) -> None:
+        """Log a lightweight INFO summary at the end of each tick (issue #349).
+
+        Computes per-tick deltas from a pre-stage :meth:`_stats_snapshot` so the
+        operator can distinguish "idle" from "stuck" even when every stage is a
+        no-op.  Backlog counts are best-effort (forge errors are swallowed).
+        """
+        import time as _time
+        elapsed = _time.monotonic() - tick_started
+        s = self._stats
+
+        classified_n = (
+            (s.issues_classified - snap["issues_classified"])
+            + (s.prs_classified - snap["prs_classified"])
+        )
+        reviewed_n = s.issues_reviewed - snap["issues_reviewed"]
+        implemented_n = s.issues_implemented - snap["issues_implemented"]
+        dispatched_n = s.prs_reviewed - snap["prs_reviewed"]
+
+        # Best-effort backlog: count issues in the active pipeline queue +
+        # open PRs.  `-1` sentinel means "unavailable" (forge error).
+        backlog_issues = -1
+        backlog_prs = -1
+        try:
+            active_labels = (
+                WORKFLOW_NEW, WORKFLOW_REVIEWED, WORKFLOW_IMPLEMENTING,
+            )
+            seen: set[int] = set()
+            for label in active_labels:
+                try:
+                    items = await self.forge.list_issues_with_label(label, limit=200)
+                    for item in items:
+                        seen.add(item.number)
+                except Exception as _inner_exc:  # noqa: BLE001
+                    logger.debug(
+                        "_log_tick_summary: list_issues(%s) failed: %s",
+                        label, _inner_exc,
+                    )
+            backlog_issues = len(seen)
+        except Exception as _outer_exc:  # noqa: BLE001
+            logger.debug(
+                "_log_tick_summary: backlog issues query failed: %s", _outer_exc,
+            )
+        try:
+            prs = await self.forge.list_open_prs(limit=200)
+            backlog_prs = len(prs)
+        except Exception as _exc:  # noqa: BLE001
+            logger.debug("_log_tick_summary: list_open_prs failed: %s", _exc)
+
+        if backlog_issues >= 0 and backlog_prs >= 0:
+            logger.info(
+                "tick #%d done in %.2fs: classified=%d reviewed=%d "
+                "implemented=%d dispatched=%d "
+                "backlog={issues:%d prs:%d}",
+                s.ticks, elapsed, classified_n, reviewed_n,
+                implemented_n, dispatched_n, backlog_issues, backlog_prs,
+            )
+        else:
+            logger.info(
+                "tick #%d done in %.2fs: classified=%d reviewed=%d "
+                "implemented=%d dispatched=%d backlog=unavailable",
+                s.ticks, elapsed, classified_n, reviewed_n,
+                implemented_n, dispatched_n,
+            )
 
     async def _dispatch_stages(self, skip: set[str] | None = None) -> None:
         """Run the per-tick stage sequence.

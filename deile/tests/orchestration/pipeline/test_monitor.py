@@ -727,3 +727,160 @@ def test_publish_status_state_integrates_with_real_state(monkeypatch):
     assert snap["errors_total"] == 1
     assert snap["last_tick_at"] is not None
     assert snap["last_tick_duration_seconds"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Tick-summary INFO log (issue #349)
+# ---------------------------------------------------------------------------
+
+import logging  # noqa: E402
+
+
+class TestTickSummary:
+    """Issue #349: verify the INFO-level tick-summary log fires at the end of
+    every tick with correct per-tick deltas."""
+
+    async def test_idle_tick_logs_summary_with_zeros(self, caplog):
+        """A tick with no work must still emit a summary (all-zero counters)."""
+        monitor, _ = _make_monitor()
+        monitor.config.enable_classify = False
+        with caplog.at_level(logging.INFO, logger="deile.orchestration.pipeline.monitor"):
+            await monitor.tick()
+        records = [r for r in caplog.records if "tick #" in r.message]
+        assert len(records) == 1, f"expected 1 tick-summary record, got {len(records)}"
+        msg = records[0].message
+        assert "tick #1 done in" in msg
+        assert "classified=0 reviewed=0 implemented=0 dispatched=0" in msg
+        assert "backlog=" in msg
+
+    async def test_tick_summary_reflects_classify_delta(self, caplog):
+        """Classifying one issue must show classified=1 in the summary."""
+        new_issue = IssueRef(number=1, title="t", url="u",
+                             labels=("bug",))
+        monitor, _ = _make_monitor()
+        monitor.config.enable_classify = True
+        monitor.config.enable_review = False
+        monitor.config.enable_implement = False
+        monitor.config.enable_pr_review = False
+        monitor.github.list_unclassified_issues = AsyncMock(
+            return_value=[new_issue],
+        )
+        with caplog.at_level(logging.INFO, logger="deile.orchestration.pipeline.monitor"):
+            await monitor.tick()
+        records = [r for r in caplog.records if "tick #" in r.message]
+        assert len(records) == 1
+        msg = records[0].message
+        assert "classified=1" in msg, f"expected classified=1, got: {msg}"
+
+    async def test_tick_summary_reflects_review_delta(self, caplog):
+        """Reviewing one issue must show reviewed=1 in the summary."""
+        new_issue = IssueRef(number=1, title="t", url="u",
+                             labels=(WORKFLOW_NEW,))
+        monitor, _ = _make_monitor(issues_new=[new_issue])
+        with caplog.at_level(logging.INFO, logger="deile.orchestration.pipeline.monitor"):
+            await monitor.tick()
+        records = [r for r in caplog.records if "tick #" in r.message]
+        assert len(records) == 1
+        msg = records[0].message
+        assert "reviewed=1" in msg, f"expected reviewed=1, got: {msg}"
+
+    async def test_tick_summary_reflects_implement_delta(self, caplog):
+        """Implementing one issue must show implemented=1 in the summary."""
+        rev = IssueRef(
+            number=2, title="impl me", url="u",
+            labels=(WORKFLOW_REVIEWED, "~batch:abc12345"),
+        )
+        monitor, _ = _make_monitor(
+            issues_reviewed=[rev],
+            claude_stdout="Done. https://github.com/owner/name/pull/3",
+        )
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        with caplog.at_level(logging.INFO, logger="deile.orchestration.pipeline.monitor"):
+            await monitor.tick()
+        records = [r for r in caplog.records if "tick #" in r.message]
+        assert len(records) == 1
+        msg = records[0].message
+        assert "implemented=1" in msg, f"expected implemented=1, got: {msg}"
+
+    async def test_tick_summary_reflects_dispatched_delta(self, caplog):
+        """Reviewing a PR must show dispatched=1 in the summary."""
+        pr = PrRef(number=10, title="prt", url="https://x/pull/10",
+                   labels=(REVIEW_PENDING,), head_ref="auto/issue-2")
+        monitor, _ = _make_monitor(prs=[pr], claude_stdout="merged.")
+        monitor.config.enable_review = False
+        monitor.config.enable_implement = False
+        with caplog.at_level(logging.INFO, logger="deile.orchestration.pipeline.monitor"):
+            await monitor.tick()
+        records = [r for r in caplog.records if "tick #" in r.message]
+        assert len(records) == 1
+        msg = records[0].message
+        assert "dispatched=1" in msg, f"expected dispatched=1, got: {msg}"
+
+    async def test_tick_summary_backlog_unavailable_on_forge_error(self, caplog):
+        """When forge.list_issues_with_label raises, the summary must show
+        backlog=unavailable instead of crashing the tick."""
+        monitor, _ = _make_monitor()
+        # Disable ALL stages so only the tick-summary log's own forge calls fail.
+        monitor.config.enable_classify = False
+        monitor.config.enable_review = False
+        monitor.config.enable_implement = False
+        monitor.config.enable_pr_review = False
+        monitor.config.enable_pr_triage = False
+        monitor.config.enable_mention_handling = False
+        monitor.config.enable_refinement_gate = False
+        monitor.config.enable_resume = False
+        monitor.config.reaper_stale_seconds = 0
+        # Make the forge's backlog query itself raise.
+        monitor.github.list_issues_with_label = AsyncMock(
+            side_effect=Exception("gh api down"),
+        )
+        monitor.github.list_open_prs = AsyncMock(
+            side_effect=Exception("gh api down"),
+        )
+        with caplog.at_level(logging.INFO, logger="deile.orchestration.pipeline.monitor"):
+            await monitor.tick()
+        records = [r for r in caplog.records if "tick #" in r.message]
+        assert len(records) == 1
+        msg = records[0].message
+        assert "backlog=unavailable" in msg, (
+            f"expected backlog=unavailable when forge fails, got: {msg}"
+        )
+
+    async def test_tick_summary_includes_backlog_counts(self, caplog):
+        """When forge responds, the summary must include backlog issue/PR counts."""
+        monitor, _ = _make_monitor()
+        # Disable all stages so only the tick-summary calls the forge for backlog.
+        monitor.config.enable_classify = False
+        monitor.config.enable_review = False
+        monitor.config.enable_implement = False
+        monitor.config.enable_pr_review = False
+        monitor.config.enable_pr_triage = False
+        monitor.config.enable_mention_handling = False
+        monitor.config.enable_refinement_gate = False
+        monitor.config.enable_resume = False
+        monitor.config.reaper_stale_seconds = 0
+        # Override with a forge that returns known backlog counts.
+        monitor.forge.list_issues_with_label = AsyncMock(
+            side_effect=lambda label, **_: {
+                WORKFLOW_NEW: [IssueRef(number=1, title="a", url="u", labels=(WORKFLOW_NEW,))],
+                WORKFLOW_REVIEWED: [],
+                WORKFLOW_IMPLEMENTING: [
+                    IssueRef(number=2, title="b", url="u", labels=(WORKFLOW_IMPLEMENTING,)),
+                    IssueRef(number=3, title="c", url="u", labels=(WORKFLOW_IMPLEMENTING,)),
+                ],
+            }.get(label, []),
+        )
+        monitor.forge.list_open_prs = AsyncMock(
+            return_value=[
+                PrRef(number=10, title="p", url="u", labels=(), head_ref="x"),
+            ],
+        )
+        with caplog.at_level(logging.INFO, logger="deile.orchestration.pipeline.monitor"):
+            await monitor.tick()
+        records = [r for r in caplog.records if "tick #" in r.message]
+        assert len(records) == 1
+        msg = records[0].message
+        assert "backlog={issues:3 prs:1}" in msg, (
+            f"expected backlog={{issues:3 prs:1}}, got: {msg}"
+        )
