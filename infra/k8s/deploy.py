@@ -440,6 +440,39 @@ def _apply_secret(kubectl: str, name: str, kv: Dict[str, str], ns: str = "") -> 
             pass
 
 
+def _assert_bearer_sync(kubectl: str, ns: str) -> None:
+    """Fails hard when worker-bearer and claude-worker-bearer tokens diverge.
+
+    Skips silently if either secret is absent or has an empty token (e.g. stub
+    manifests applied before k8s claude-login has run).
+    """
+    import base64
+    import subprocess as _sp
+
+    def _read_secret_key(secret: str, key: str) -> str:
+        r = _sp.run(
+            [kubectl, "-n", ns, "get", "secret", secret,
+             "-o", f"jsonpath={{.data.{key}}}"],
+            capture_output=True, text=True,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            return ""
+        try:
+            return base64.b64decode(r.stdout.strip()).decode()
+        except Exception:
+            return ""
+
+    worker_tok = _read_secret_key("worker-bearer", "AUTH_TOKEN")
+    claude_tok = _read_secret_key("claude-worker-bearer", "CLAUDE_WORKER_BEARER_TOKEN")
+    if not worker_tok or not claude_tok:
+        return
+    if worker_tok != claude_tok:
+        raise SystemExit(
+            "ERRO: worker-bearer/AUTH_TOKEN e claude-worker-bearer/CLAUDE_WORKER_BEARER_TOKEN "
+            "estão divergentes. Rode `k8s claude-login` para sincronizar os tokens."
+        )
+
+
 def _k8s_up_resolve_profile(extra: List[str], env: Dict[str, str]) -> DeploymentProfile:
     """Resolves the deployment profile from CLI flags, .env, or os.environ."""
     i = 0
@@ -509,13 +542,21 @@ def k8s_up(args: dict) -> int:
     # k8s up calls never diverge (issue #354).
     bearer = _ensure_persisted_token("DEILE_BOT_AUTH_TOKEN", env)
     worker_token = _ensure_persisted_token("DEILE_WORKER_BEARER_TOKEN", env)
-    pipeline_status_token = _ensure_persisted_token("DEILE_PIPELINE_STATUS_TOKEN", env)
+    pipeline_status_token = _ensure_persisted_token("PIPELINE_STATUS_BEARER_TOKEN", env)
 
     github_token = env.get("GITHUB_TOKEN", "").strip()
     gitlab_token = (
         env.get("GITLAB_TOKEN", "").strip()
         or env.get("GL_TOKEN", "").strip()
     )
+    if gitlab_token and not github_token:
+        forge_kind = env.get("DEILE_FORGE_KIND", "").strip() or os.environ.get("DEILE_FORGE_KIND", "").strip()
+        if forge_kind != "gitlab":
+            ui.warn(
+                "GITLAB_TOKEN presente mas GITHUB_TOKEN ausente. "
+                "Se este cluster serve um repositório GitLab, defina "
+                "DEILE_FORGE_KIND=gitlab no .env para evitar erros de forge."
+            )
 
     # Cria o namespace (idempotente) e etiqueta para descoberta por `k8s list`.
     # Para o namespace padrão "deile", aplica o manifest completo com PSS labels.
@@ -547,7 +588,7 @@ def k8s_up(args: dict) -> int:
     secrets_to_apply = [
         ("deile-secrets", deile_secret),
         ("worker-bearer", {"AUTH_TOKEN": worker_token}),
-        ("pipeline-status-bearer", {"AUTH_TOKEN": pipeline_status_token}),
+        ("pipeline-status-bearer", {"PIPELINE_STATUS_BEARER_TOKEN": pipeline_status_token}),
     ]
     if profile.includes_bot and discord_token:
         bot_secret: Dict[str, str] = {
@@ -589,6 +630,7 @@ def k8s_up(args: dict) -> int:
             "claude-worker manifests aplicados. "
             "Rode `k8s claude-login` para ativar as credenciais OAuth."
         )
+    _assert_bearer_sync(kubectl, ns)
     ui.ok("stack no ar.")
     return 0
 

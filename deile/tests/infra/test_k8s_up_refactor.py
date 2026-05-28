@@ -254,11 +254,12 @@ class TestK8sUpPipelineOnlyProfile:
             "ANTHROPIC_API_KEY=sk-ant-test\n"
             "DEILE_BOT_AUTH_TOKEN=tok-bearer\n"
             "DEILE_WORKER_BEARER_TOKEN=tok-worker\n"
-            "DEILE_PIPELINE_STATUS_TOKEN=tok-ps\n"
+            "PIPELINE_STATUS_BEARER_TOKEN=tok-ps\n"
         )
         monkeypatch.setattr(deploy, "ENV_FILE", env_file)
         monkeypatch.setattr(deploy, "ensure_container_prereqs", lambda _: True)
         monkeypatch.setattr(deploy, "_kubectl", lambda: "/usr/bin/kubectl")
+        monkeypatch.setattr(deploy, "_assert_bearer_sync", lambda *a, **kw: None)
         applied, fake_secret = _make_fake_apply_secret()
         monkeypatch.setattr(deploy, "_apply_secret", fake_secret)
         calls, fake_run = _make_fake_run()
@@ -280,12 +281,13 @@ class TestK8sUpPipelineOnlyProfile:
             "ANTHROPIC_API_KEY=sk-ant-test\n"
             "DEILE_BOT_AUTH_TOKEN=tok-bearer\n"
             "DEILE_WORKER_BEARER_TOKEN=tok-worker\n"
-            "DEILE_PIPELINE_STATUS_TOKEN=tok-ps\n"
+            "PIPELINE_STATUS_BEARER_TOKEN=tok-ps\n"
         )
         monkeypatch.setattr(deploy, "ENV_FILE", env_file)
         monkeypatch.setattr(deploy, "ensure_container_prereqs", lambda _: True)
         monkeypatch.setattr(deploy, "_kubectl", lambda: "/usr/bin/kubectl")
         monkeypatch.setattr(deploy, "_apply_secret", lambda *a, **kw: True)
+        monkeypatch.setattr(deploy, "_assert_bearer_sync", lambda *a, **kw: None)
         applied_manifests = []
 
         def fake_run(cmd, **kw):
@@ -337,12 +339,13 @@ class TestK8sUpFullProfileRequiresDiscord:
             "DEILE_BOT_DISCORD_TOKEN=abc.def.ghi\n"
             "DEILE_BOT_AUTH_TOKEN=tok-bearer\n"
             "DEILE_WORKER_BEARER_TOKEN=tok-worker\n"
-            "DEILE_PIPELINE_STATUS_TOKEN=tok-ps\n"
+            "PIPELINE_STATUS_BEARER_TOKEN=tok-ps\n"
         )
         monkeypatch.setattr(deploy, "ENV_FILE", env_file)
         monkeypatch.setattr(deploy, "ensure_container_prereqs", lambda _: True)
         monkeypatch.setattr(deploy, "_kubectl", lambda: "/usr/bin/kubectl")
         monkeypatch.setattr(deploy, "_apply_secret", lambda *a, **kw: True)
+        monkeypatch.setattr(deploy, "_assert_bearer_sync", lambda *a, **kw: None)
         monkeypatch.setattr(deploy, "_run", lambda *a, **kw: 0)
         for name in deploy.DeploymentProfile("full").manifests:
             (tmp_path / name).write_text("---")
@@ -362,13 +365,15 @@ class TestK8sUpGitLabToken:
         env_file.write_text(
             "ANTHROPIC_API_KEY=sk-ant-test\n"
             "GITLAB_TOKEN=glpat-secret\n"
+            "DEILE_FORGE_KIND=gitlab\n"
             "DEILE_BOT_AUTH_TOKEN=tok\n"
             "DEILE_WORKER_BEARER_TOKEN=tok-w\n"
-            "DEILE_PIPELINE_STATUS_TOKEN=tok-ps\n"
+            "PIPELINE_STATUS_BEARER_TOKEN=tok-ps\n"
         )
         monkeypatch.setattr(deploy, "ENV_FILE", env_file)
         monkeypatch.setattr(deploy, "ensure_container_prereqs", lambda _: True)
         monkeypatch.setattr(deploy, "_kubectl", lambda: "/usr/bin/kubectl")
+        monkeypatch.setattr(deploy, "_assert_bearer_sync", lambda *a, **kw: None)
         applied, fake_secret = _make_fake_apply_secret()
         monkeypatch.setattr(deploy, "_apply_secret", fake_secret)
         monkeypatch.setattr(deploy, "_run", lambda *a, **kw: 0)
@@ -387,13 +392,15 @@ class TestK8sUpGitLabToken:
         env_file.write_text(
             "ANTHROPIC_API_KEY=sk-ant-test\n"
             "GL_TOKEN=glpat-alias\n"
+            "DEILE_FORGE_KIND=gitlab\n"
             "DEILE_BOT_AUTH_TOKEN=tok\n"
             "DEILE_WORKER_BEARER_TOKEN=tok-w\n"
-            "DEILE_PIPELINE_STATUS_TOKEN=tok-ps\n"
+            "PIPELINE_STATUS_BEARER_TOKEN=tok-ps\n"
         )
         monkeypatch.setattr(deploy, "ENV_FILE", env_file)
         monkeypatch.setattr(deploy, "ensure_container_prereqs", lambda _: True)
         monkeypatch.setattr(deploy, "_kubectl", lambda: "/usr/bin/kubectl")
+        monkeypatch.setattr(deploy, "_assert_bearer_sync", lambda *a, **kw: None)
         applied, fake_secret = _make_fake_apply_secret()
         monkeypatch.setattr(deploy, "_apply_secret", fake_secret)
         monkeypatch.setattr(deploy, "_run", lambda *a, **kw: 0)
@@ -415,11 +422,12 @@ class TestK8sUpPipelineStatusBearer:
             "ANTHROPIC_API_KEY=sk-ant-test\n"
             "DEILE_BOT_AUTH_TOKEN=tok\n"
             "DEILE_WORKER_BEARER_TOKEN=tok-w\n"
-            "DEILE_PIPELINE_STATUS_TOKEN=tok-ps\n"
+            "PIPELINE_STATUS_BEARER_TOKEN=tok-ps\n"
         )
         monkeypatch.setattr(deploy, "ENV_FILE", env_file)
         monkeypatch.setattr(deploy, "ensure_container_prereqs", lambda _: True)
         monkeypatch.setattr(deploy, "_kubectl", lambda: "/usr/bin/kubectl")
+        monkeypatch.setattr(deploy, "_assert_bearer_sync", lambda *a, **kw: None)
         applied, fake_secret = _make_fake_apply_secret()
         monkeypatch.setattr(deploy, "_apply_secret", fake_secret)
         monkeypatch.setattr(deploy, "_run", lambda *a, **kw: 0)
@@ -433,17 +441,24 @@ class TestK8sUpPipelineStatusBearer:
         secret_names = [name for name, _ in applied]
         assert "pipeline-status-bearer" in secret_names
 
-    def test_pipeline_status_bearer_has_auth_token_key(self, tmp_path, monkeypatch):
+    def test_pipeline_status_bearer_has_correct_key(self, tmp_path, monkeypatch):
+        """pipeline-status-bearer must use PIPELINE_STATUS_BEARER_TOKEN as key.
+
+        pipeline_status_server reads /run/secrets/pipeline-status/PIPELINE_STATUS_BEARER_TOKEN
+        (see infra/k8s/pipeline_status_server.py:245). Using AUTH_TOKEN would leave
+        the server without a valid token and cause 401/403 errors (issue #354 comment).
+        """
         env_file = tmp_path / ".env"
         env_file.write_text(
             "ANTHROPIC_API_KEY=sk-ant-test\n"
             "DEILE_BOT_AUTH_TOKEN=tok\n"
             "DEILE_WORKER_BEARER_TOKEN=tok-w\n"
-            "DEILE_PIPELINE_STATUS_TOKEN=my-status-tok\n"
+            "PIPELINE_STATUS_BEARER_TOKEN=my-status-tok\n"
         )
         monkeypatch.setattr(deploy, "ENV_FILE", env_file)
         monkeypatch.setattr(deploy, "ensure_container_prereqs", lambda _: True)
         monkeypatch.setattr(deploy, "_kubectl", lambda: "/usr/bin/kubectl")
+        monkeypatch.setattr(deploy, "_assert_bearer_sync", lambda *a, **kw: None)
         applied, fake_secret = _make_fake_apply_secret()
         monkeypatch.setattr(deploy, "_apply_secret", fake_secret)
         monkeypatch.setattr(deploy, "_run", lambda *a, **kw: 0)
@@ -455,7 +470,8 @@ class TestK8sUpPipelineStatusBearer:
             "k8s_namespace": None, "extra": ["--profile", "pipeline-only"],
         })
         ps_secret = next(kv for name, kv in applied if name == "pipeline-status-bearer")
-        assert ps_secret.get("AUTH_TOKEN") == "my-status-tok"
+        assert "AUTH_TOKEN" not in ps_secret, "Key must be PIPELINE_STATUS_BEARER_TOKEN, not AUTH_TOKEN"
+        assert ps_secret.get("PIPELINE_STATUS_BEARER_TOKEN") == "my-status-tok"
 
 
 class TestK8sUpTokenPersistence:
@@ -467,6 +483,7 @@ class TestK8sUpTokenPersistence:
         monkeypatch.setattr(deploy, "ensure_container_prereqs", lambda _: True)
         monkeypatch.setattr(deploy, "_kubectl", lambda: "/usr/bin/kubectl")
         monkeypatch.setattr(deploy, "_apply_secret", lambda *a, **kw: True)
+        monkeypatch.setattr(deploy, "_assert_bearer_sync", lambda *a, **kw: None)
         monkeypatch.setattr(deploy, "_run", lambda *a, **kw: 0)
         monkeypatch.setattr(deploy, "MANIFESTS", tmp_path)
         monkeypatch.setattr(deploy, "announce_plan", lambda *a, **kw: True)
@@ -478,7 +495,7 @@ class TestK8sUpTokenPersistence:
         content = env_file.read_text()
         assert "DEILE_BOT_AUTH_TOKEN=" in content
         assert "DEILE_WORKER_BEARER_TOKEN=" in content
-        assert "DEILE_PIPELINE_STATUS_TOKEN=" in content
+        assert "PIPELINE_STATUS_BEARER_TOKEN=" in content
 
     def test_consecutive_up_uses_same_tokens(self, tmp_path, monkeypatch):
         """Two consecutive k8s up runs must produce the same tokens."""
@@ -487,6 +504,7 @@ class TestK8sUpTokenPersistence:
         monkeypatch.setattr(deploy, "ENV_FILE", env_file)
         monkeypatch.setattr(deploy, "ensure_container_prereqs", lambda _: True)
         monkeypatch.setattr(deploy, "_kubectl", lambda: "/usr/bin/kubectl")
+        monkeypatch.setattr(deploy, "_assert_bearer_sync", lambda *a, **kw: None)
         applied_runs = []
 
         def capturing_secret(kubectl, name, kv, ns=""):
@@ -515,3 +533,114 @@ class TestK8sUpTokenPersistence:
             if name == "worker-bearer"
         )
         assert run1_worker == run2_worker
+
+
+# ============================================================================
+# _assert_bearer_sync
+# ============================================================================
+
+class TestAssertBearerSync:
+    def test_noop_when_kubectl_returns_empty(self, monkeypatch):
+        import subprocess as _sp
+        def fake_run(cmd, **kw):
+            class R:
+                returncode = 1
+                stdout = ""
+            return R()
+        monkeypatch.setattr(_sp, "run", fake_run)
+        deploy._assert_bearer_sync("/fake/kubectl", "deile")
+
+    def test_noop_when_tokens_match(self, monkeypatch):
+        import subprocess as _sp
+        import base64
+        tok = base64.b64encode(b"same-token").decode()
+
+        def fake_run(cmd, **kw):
+            class R:
+                returncode = 0
+                stdout = tok
+            return R()
+        monkeypatch.setattr(_sp, "run", fake_run)
+        deploy._assert_bearer_sync("/fake/kubectl", "deile")
+
+    def test_raises_when_tokens_diverge(self, monkeypatch):
+        import subprocess as _sp
+        import base64
+
+        def fake_run(cmd, **kw):
+            # cmd = [kubectl, "-n", ns, "get", "secret", secret_name, "-o", ...]
+            secret = cmd[5]
+            val = b"token-A" if secret == "worker-bearer" else b"token-B"
+            class R:
+                returncode = 0
+                stdout = base64.b64encode(val).decode()
+            return R()
+        monkeypatch.setattr(_sp, "run", fake_run)
+        with pytest.raises(SystemExit, match="divergentes"):
+            deploy._assert_bearer_sync("/fake/kubectl", "deile")
+
+
+# ============================================================================
+# DEILE_FORGE_KIND warning
+# ============================================================================
+
+class TestK8sUpForgeKindWarning:
+    def test_warns_when_only_gitlab_token_and_no_forge_kind(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "ANTHROPIC_API_KEY=sk-ant-test\n"
+            "GITLAB_TOKEN=glpat-secret\n"
+            "DEILE_BOT_AUTH_TOKEN=tok\n"
+            "DEILE_WORKER_BEARER_TOKEN=tok-w\n"
+            "PIPELINE_STATUS_BEARER_TOKEN=tok-ps\n"
+        )
+        monkeypatch.setattr(deploy, "ENV_FILE", env_file)
+        monkeypatch.setattr(deploy, "ensure_container_prereqs", lambda _: True)
+        monkeypatch.setattr(deploy, "_kubectl", lambda: "/usr/bin/kubectl")
+        monkeypatch.setattr(deploy, "_apply_secret", lambda *a, **kw: True)
+        monkeypatch.setattr(deploy, "_assert_bearer_sync", lambda *a, **kw: None)
+        monkeypatch.setattr(deploy, "_run", lambda *a, **kw: 0)
+        monkeypatch.setattr(deploy, "MANIFESTS", tmp_path)
+        monkeypatch.setattr(deploy, "announce_plan", lambda *a, **kw: True)
+        monkeypatch.delenv("DEILE_FORGE_KIND", raising=False)
+
+        warnings = []
+        original_warn = deploy.ui.warn
+        monkeypatch.setattr(deploy.ui, "warn", lambda msg: warnings.append(msg))
+
+        deploy.k8s_up({
+            "yes": True, "dry_run": False,
+            "k8s_namespace": None, "extra": ["--profile", "pipeline-only"],
+        })
+        assert any("DEILE_FORGE_KIND" in w for w in warnings), (
+            "Expected warning about DEILE_FORGE_KIND when only GITLAB_TOKEN is present"
+        )
+
+    def test_no_warn_when_forge_kind_gitlab_set(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        env_file.write_text(
+            "ANTHROPIC_API_KEY=sk-ant-test\n"
+            "GITLAB_TOKEN=glpat-secret\n"
+            "DEILE_FORGE_KIND=gitlab\n"
+            "DEILE_BOT_AUTH_TOKEN=tok\n"
+            "DEILE_WORKER_BEARER_TOKEN=tok-w\n"
+            "PIPELINE_STATUS_BEARER_TOKEN=tok-ps\n"
+        )
+        monkeypatch.setattr(deploy, "ENV_FILE", env_file)
+        monkeypatch.setattr(deploy, "ensure_container_prereqs", lambda _: True)
+        monkeypatch.setattr(deploy, "_kubectl", lambda: "/usr/bin/kubectl")
+        monkeypatch.setattr(deploy, "_apply_secret", lambda *a, **kw: True)
+        monkeypatch.setattr(deploy, "_assert_bearer_sync", lambda *a, **kw: None)
+        monkeypatch.setattr(deploy, "_run", lambda *a, **kw: 0)
+        monkeypatch.setattr(deploy, "MANIFESTS", tmp_path)
+        monkeypatch.setattr(deploy, "announce_plan", lambda *a, **kw: True)
+        monkeypatch.delenv("DEILE_FORGE_KIND", raising=False)
+
+        warnings = []
+        monkeypatch.setattr(deploy.ui, "warn", lambda msg: warnings.append(msg))
+
+        deploy.k8s_up({
+            "yes": True, "dry_run": False,
+            "k8s_namespace": None, "extra": ["--profile", "pipeline-only"],
+        })
+        assert not any("DEILE_FORGE_KIND" in w for w in warnings)
