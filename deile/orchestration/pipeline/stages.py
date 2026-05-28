@@ -1052,6 +1052,34 @@ async def _block_refinement(monitor: "PipelineMonitor", issue, reason: str) -> N
     await _block(monitor, "issue", number, short, comment=comment)
 
 
+async def _ensure_ownership_label(monitor: "PipelineMonitor", issues) -> None:
+    """Issue #375: auto-add ownership label to reviewed issues that this monitor
+    owns (via ``_this_monitor_owns``) but that lack both ``~batch:`` and the
+    ``~by:*`` label. Without this, issues manually promoted to
+    ``~workflow:revisada`` (by removing ``~workflow:bloqueada`` outside the
+    classification flow) are silently ignored."""
+    ownership_label = monitor.identity.ownership_label()
+    for issue in issues:
+        if (
+            WORKFLOW_BLOCKED not in issue.labels
+            and issue.batch_id is None
+            and ownership_label not in issue.labels
+            and monitor._this_monitor_owns(issue)
+        ):
+            logger.warning(
+                "issue #%d revisada sem ownership (~by:*) nem batch — "
+                "adicionando %s (issue #375)",
+                issue.number, ownership_label,
+            )
+            try:
+                await monitor.forge.add_labels("issue", issue.number, [ownership_label])
+            except GhCommandError as exc:
+                logger.warning(
+                    "could not add ownership label %s to #%d: %s",
+                    ownership_label, issue.number, exc,
+                )
+
+
 async def decompose_one_reviewed_intent(monitor: "PipelineMonitor") -> None:
     """Stage 2 (intent path, issue #257): an architect decomposes a CLEAR intent
     into independent derived issues, then the intent stays OPEN as a decomposed
@@ -1066,6 +1094,9 @@ async def decompose_one_reviewed_intent(monitor: "PipelineMonitor") -> None:
             notifier_label="decompose/list",
         )
         return
+    # Issue #375: auto-add ownership label to orphan reviewed issues before
+    # candidate filtering (so manually-unblocked issues are not silently ignored).
+    await _ensure_ownership_label(monitor, issues)
     ownership_label = monitor.identity.ownership_label()
     target = next(
         (i for i in sort_by_priority(issues)
@@ -1242,6 +1273,9 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
             monitor.config.max_parallel, in_flight,
         )
         return
+    # Issue #375: auto-add ownership label to orphan reviewed issues before
+    # candidate filtering (so manually-unblocked issues are not silently ignored).
+    await _ensure_ownership_label(monitor, issues)
     # Accept issues without ~batch: when the ownership label proves this monitor did the
     # review (e.g. operator manually promoted to ~workflow:revisada or batch label removed).
     ownership_label = monitor.identity.ownership_label()
