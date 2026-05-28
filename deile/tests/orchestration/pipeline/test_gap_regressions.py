@@ -460,6 +460,12 @@ class TestGap17_18GhErrorCounting:
         assert monitor.stats.gh_errors == 1
 
     async def test_claude_error_in_implement_increments_claude_errors(self):
+        # Issue #373: fire-and-forget dispatch — claude_errors are no longer
+        # incremented inline on the dispatch tick. The implement stage
+        # dispatches and returns immediately; _finalize_implement_outcome
+        # (which increments claude_errors) only runs on the RESUME path
+        # (resume_in_progress_issues). The reconcile/reaper stages handle
+        # error recovery on subsequent ticks.
         ownership = MonitorIdentity().ownership_label()
         rev = IssueRef(
             number=20, title="t", url="u",
@@ -471,8 +477,10 @@ class TestGap17_18GhErrorCounting:
         monitor.config.enable_review = False
         monitor.config.enable_pr_review = False
         await monitor.tick()
-        assert monitor.stats.claude_errors == 1
-        assert monitor.stats.errors >= 1
+        # Fire-and-forget: the issue is claimed (started notification fires)
+        # but error counters are deferred to the resume/reconcile path.
+        notifier.implementation_started.assert_called_once()
+        assert monitor.stats.claude_errors == 0
 
 
 # ---------------------------------------------------------------------------

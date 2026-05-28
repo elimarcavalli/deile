@@ -72,6 +72,7 @@ def _make_monitor(
     github.list_unclassified_prs = AsyncMock(return_value=[])
     github.list_issue_comments_since = AsyncMock(return_value=[])
     github.list_pr_review_comments_since = AsyncMock(return_value=[])
+    github.has_open_pr_for_issue = AsyncMock(return_value=False)
 
     notifier = MagicMock()
     for attr in (
@@ -274,6 +275,186 @@ class TestStage2Implement:
         notifier.implementation_started.assert_called_once()
         notifier.implementation_parked.assert_not_called()
         notifier.implementation_finished.assert_not_called()
+
+
+class TestReconcileImplementingIssues:
+    """Issue #373: tests for reconcile_implementing_issues stage.
+
+    Verifies that fire-and-forget dispatched issues are reconciled via
+    GitHub ground truth (PR existence) on subsequent ticks."""
+
+    async def test_reconcile_detects_pr_and_transitions_to_em_pr(self):
+        """When has_open_pr_for_issue returns True, the issue must transition
+        to em_pr, stats.issues_implemented must increment, and
+        implementation_finished notification must fire."""
+        impl_issue = IssueRef(
+            number=99, title="working", url="u",
+            labels=(WORKFLOW_IMPLEMENTING, "~by:default"),
+        )
+        monitor, notifier = _make_monitor()
+        # Mock: list_issues_with_label returns our implementing issue.
+        monitor.github.list_issues_with_label = AsyncMock(
+            side_effect=lambda label, **_: {
+                WORKFLOW_IMPLEMENTING: [impl_issue],
+            }.get(label, []),
+        )
+        # Ground truth: PR exists!
+        monitor.github.has_open_pr_for_issue = AsyncMock(return_value=True)
+        # Keep enable_implement=True so reconcile runs. Disable other
+        # stages to reduce noise.
+        monitor.config.enable_classify = False
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        monitor.config.enable_pr_triage = False
+        monitor.config.enable_mention_handling = False
+        monitor.config.reaper_stale_seconds = 0
+        await monitor.tick()
+        # Must transition to em_pr.
+        monitor.github.transition_issue.assert_called_with(
+            99, from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_PR,
+        )
+        # Stats must reflect the completion.
+        assert monitor.stats.issues_implemented == 1
+        # Notification must fire.
+        notifier.implementation_finished.assert_called_once_with(99, None)
+
+    async def test_reconcile_no_pr_stays_in_em_implementacao(self):
+        """When has_open_pr_for_issue returns False, the issue must stay
+        in em_implementacao (no transition, no notification)."""
+        impl_issue = IssueRef(
+            number=99, title="still working", url="u",
+            labels=(WORKFLOW_IMPLEMENTING, "~by:default"),
+        )
+        monitor, notifier = _make_monitor()
+        monitor.github.list_issues_with_label = AsyncMock(
+            side_effect=lambda label, **_: {
+                WORKFLOW_IMPLEMENTING: [impl_issue],
+            }.get(label, []),
+        )
+        # Ground truth: no PR yet.
+        monitor.github.has_open_pr_for_issue = AsyncMock(return_value=False)
+        monitor.config.enable_classify = False
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        monitor.config.enable_pr_triage = False
+        monitor.config.enable_mention_handling = False
+        monitor.config.reaper_stale_seconds = 0
+        await monitor.tick()
+        # No transition should happen.
+        monitor.github.transition_issue.assert_not_called()
+        assert monitor.stats.issues_implemented == 0
+        notifier.implementation_finished.assert_not_called()
+
+    async def test_reconcile_skips_blocked_issues(self):
+        """Issues with ~workflow:bloqueada must be skipped by reconcile."""
+        from deile.orchestration.pipeline.labels import WORKFLOW_BLOCKED
+        impl_issue = IssueRef(
+            number=99, title="blocked", url="u",
+            labels=(WORKFLOW_IMPLEMENTING, WORKFLOW_BLOCKED, "~by:default"),
+        )
+        monitor, notifier = _make_monitor()
+        monitor.github.list_issues_with_label = AsyncMock(
+            side_effect=lambda label, **_: {
+                WORKFLOW_IMPLEMENTING: [impl_issue],
+            }.get(label, []),
+        )
+        monitor.github.has_open_pr_for_issue = AsyncMock(return_value=True)
+        monitor.config.enable_classify = False
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        monitor.config.enable_pr_triage = False
+        monitor.config.enable_mention_handling = False
+        monitor.config.reaper_stale_seconds = 0
+        await monitor.tick()
+        # Blocked issue must NOT be transitioned.
+        monitor.github.transition_issue.assert_not_called()
+        assert monitor.stats.issues_implemented == 0
+
+    async def test_reconcile_skips_already_em_pr(self):
+        """Issues already in ~workflow:em_pr must be skipped."""
+        impl_issue = IssueRef(
+            number=99, title="done", url="u",
+            labels=(WORKFLOW_IMPLEMENTING, WORKFLOW_PR, "~by:default"),
+        )
+        monitor, notifier = _make_monitor()
+        monitor.github.list_issues_with_label = AsyncMock(
+            side_effect=lambda label, **_: {
+                WORKFLOW_IMPLEMENTING: [impl_issue],
+            }.get(label, []),
+        )
+        monitor.github.has_open_pr_for_issue = AsyncMock(return_value=True)
+        monitor.config.enable_classify = False
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        monitor.config.enable_pr_triage = False
+        monitor.config.enable_mention_handling = False
+        monitor.config.reaper_stale_seconds = 0
+        await monitor.tick()
+        # Already em_pr — no transition.
+        monitor.github.transition_issue.assert_not_called()
+        assert monitor.stats.issues_implemented == 0
+
+    async def test_reconcile_skips_non_owned_issues(self):
+        """Issues not owned by this monitor must be skipped.
+
+        Default identity (shard_count=1) owns everything via title hash,
+        so we use a non-default identity to test ownership filtering."""
+        from deile.orchestration.pipeline.identity import MonitorIdentity
+        impl_issue = IssueRef(
+            number=99, title="not mine", url="u",
+            labels=(WORKFLOW_IMPLEMENTING, "~by:other-monitor"),
+        )
+        monitor, notifier = _make_monitor()
+        # Non-default identity: only owns issues with ~by:monitor-a
+        monitor.identity = MonitorIdentity(monitor_id="monitor-a")
+        monitor.github.list_issues_with_label = AsyncMock(
+            side_effect=lambda label, **_: {
+                WORKFLOW_IMPLEMENTING: [impl_issue],
+            }.get(label, []),
+        )
+        monitor.github.has_open_pr_for_issue = AsyncMock(return_value=True)
+        monitor.config.enable_classify = False
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        monitor.config.enable_pr_triage = False
+        monitor.config.enable_mention_handling = False
+        monitor.config.reaper_stale_seconds = 0
+        await monitor.tick()
+        # Not our issue — no transition.
+        monitor.github.transition_issue.assert_not_called()
+
+    async def test_reconcile_runs_before_implement_in_tick(self):
+        """When reconcile completes an issue, the freed slot should be
+        available for new claims in the SAME tick. This test verifies
+        that reconcile runs and can consume in-flight issues before
+        implement claims new ones."""
+        # An issue in em_implementacao with a PR ready to be detected.
+        impl_issue = IssueRef(
+            number=42, title="completed", url="u",
+            labels=(WORKFLOW_IMPLEMENTING, "~by:default"),
+        )
+        monitor, notifier = _make_monitor()
+        monitor.github.list_issues_with_label = AsyncMock(
+            side_effect=lambda label, **_: {
+                WORKFLOW_IMPLEMENTING: [impl_issue],
+                WORKFLOW_REVIEWED: [],
+            }.get(label, []),
+        )
+        monitor.github.has_open_pr_for_issue = AsyncMock(return_value=True)
+        monitor.config.enable_classify = False
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        monitor.config.enable_pr_triage = False
+        monitor.config.enable_mention_handling = False
+        monitor.config.reaper_stale_seconds = 0
+        # enable_implement is True (default) — reconcile runs before it.
+        await monitor.tick()
+        # Reconcile must have transitioned the issue to em_pr.
+        monitor.github.transition_issue.assert_called_with(
+            42, from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_PR,
+        )
+        assert monitor.stats.issues_implemented == 1
+        notifier.implementation_finished.assert_called_once_with(42, None)
 
 
 class TestStage3PrReview:
