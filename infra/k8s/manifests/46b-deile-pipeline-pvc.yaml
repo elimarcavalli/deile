@@ -1,0 +1,31 @@
+# PVC for the pipeline DispatchLedger — makes dispatches.json survive
+# Deployment rollouts/restarts (issue #350).
+#
+# Currently /home/deile is an emptyDir (lost on pod restart). This PVC is
+# mounted at /home/deile/.deile/pipeline/ — a subpath that overlays the
+# emptyDir parent — so the ledger file survives while the repo clone at
+# the root of /home/deile continues using emptyDir (no conflict between
+# initContainer bootstrap-repo and the PVC).
+#
+# 1Gi is generous: the ledger JSON file is ~4KiB even with hundreds of
+# dispatches. Single-writer (pipeline runs 1 replica, Recreate strategy).
+#
+# Usage:
+#   kubectl apply -f infra/k8s/manifests/46b-deile-pipeline-pvc.yaml
+#   kubectl rollout restart deployment/deile-pipeline -n deile
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: deile-pipeline-ledger
+  namespace: deile
+  labels:
+    app: deile-pipeline
+    role: deile
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  # storageClassName omitted → cluster default (local-path on k3s/Rancher Desktop).
+  # Override explicitly if your cluster has multiple storage classes.

@@ -174,6 +174,10 @@ spec:
             - { name: status-bearer,  mountPath: /run/secrets/pipeline-status, readOnly: true }
             - { name: home,           mountPath: /home/deile }
             - { name: tmp,            mountPath: /tmp }
+            # Issue #350 — PVC para o DispatchLedger sobreviver a rollouts.
+            # Montado em subpath de /home/deile: o emptyDir "home" cobre a
+            # raiz (repo clone) e o PVC overlay cobre .deile/pipeline/ (ledger).
+            - { name: pipeline-ledger, mountPath: /home/deile/.deile/pipeline }
             # settings.json layered (issue #111). Apontado pelo env var
             # DEILE_SETTINGS_FILE para evitar collision com ~/.deile/ writable.
             - name: runtime-config
@@ -202,6 +206,10 @@ spec:
         - { name: status-bearer, secret: { secretName: pipeline-status-bearer, defaultMode: 288, optional: true } }
         - { name: home,          emptyDir: { sizeLimit: "256Mi" } }
         - { name: tmp,           emptyDir: { medium: Memory, sizeLimit: "64Mi" } }
+        # Issue #350 — PVC de 1Gi pra persistir o DispatchLedger entre
+        # restarts/rollouts. O path ~/.deile/pipeline/dispatches.json
+        # resolve naturalmente pra este mount sem alterar dispatch_ledger.py.
+        - { name: pipeline-ledger, persistentVolumeClaim: { claimName: deile-pipeline-ledger } }
         - name: runtime-config
           configMap:
             name: deile-runtime-config
