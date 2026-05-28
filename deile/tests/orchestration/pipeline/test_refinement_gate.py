@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from unittest.mock import AsyncMock, MagicMock
 
+from deile.orchestration.forge import GhCommandError
 from deile.orchestration.pipeline.github_client import IssueRef
 from deile.orchestration.pipeline.implementer import WorkerImplementer
 from deile.orchestration.pipeline.labels import (REFINAR,
@@ -309,3 +310,100 @@ class TestBriefSizeClamp:
         await monitor._review_one_new_issue()
         assert client.payloads, "critique must have dispatched"
         assert len(client.payloads[0]["brief"]) <= 8000
+
+
+# ===========================================================================
+# SHARED REVIEWED SNAPSHOT (PR #380 follow-up — non-blocking review suggestion)
+# ===========================================================================
+
+def _reviewed_list_calls(github: MagicMock) -> int:
+    """Count list_issues_with_label calls targeting ~workflow:revisada."""
+    n = 0
+    for call in github.list_issues_with_label.await_args_list:
+        label = call.args[0] if call.args else call.kwargs.get("label")
+        if label == WORKFLOW_REVIEWED:
+            n += 1
+    return n
+
+
+class TestSharedReviewedSnapshot:
+    """The implement + decompose stages share a single ~workflow:revisada fetch
+    per tick (and a single ownership-ensure pass) instead of each issuing their
+    own. Behavior is preserved via two views: implement filters the PRE-ensure
+    snapshot (orphan code adopted next tick); decompose filters the POST-ensure
+    snapshot (orphan intent decomposed same tick)."""
+
+    async def test_reviewed_listed_once_per_dispatch(self):
+        # A mix of intent + code so both stages have work to consider.
+        reviewed = [
+            _issue(80, "intent", "~batch:abc12345"),
+            _issue(81, "feature", "~batch:abc12345"),
+        ]
+        monitor, _, _ = _make_monitor(
+            label_map={WORKFLOW_REVIEWED: reviewed},
+            worker_responses=[_resp("DECOMPOSTO: #91"), _resp("https://github.com/owner/name/pull/191")],
+        )
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        await monitor._dispatch_stages()
+        # Was 2 (implement + decompose each fetched independently); now 1 shared.
+        assert _reviewed_list_calls(monitor.github) == 1
+
+    async def test_orphan_intent_decomposed_same_tick(self):
+        # No ~batch:, no ~by: — manually promoted to revisada. The default
+        # monitor owns everything (shard 1), so it must adopt + decompose it.
+        orphan = _issue(82, "intent")  # no batch, no ownership
+        monitor, _, _ = _make_monitor(
+            label_map={WORKFLOW_REVIEWED: [orphan]},
+            worker_responses=[_resp("DECOMPOSTO: #92 #93")],
+        )
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        await monitor._dispatch_stages()
+        ownership = monitor.identity.ownership_label()
+        assert ownership in _added(monitor.github, 82)  # adopted
+        # Decomposed in the SAME tick (decompose filters the post-ensure view).
+        assert (82, WORKFLOW_REVIEWED, WORKFLOW_DECOMPOSED) in _transitions(monitor.github)
+
+    async def test_orphan_code_adopted_but_not_implemented_same_tick(self):
+        # The implement path filters the PRE-ensure snapshot, so an orphan code
+        # issue is labeled now but only claimed on the NEXT tick (preserving the
+        # 1-tick latency the original two-fetch flow had).
+        orphan = _issue(83, "feature")  # no batch, no ownership
+        monitor, _, client = _make_monitor(
+            label_map={WORKFLOW_REVIEWED: [orphan]},
+        )
+        monitor.config.enable_review = False
+        monitor.config.enable_pr_review = False
+        await monitor._dispatch_stages()
+        ownership = monitor.identity.ownership_label()
+        assert ownership in _added(monitor.github, 83)  # adopted (label added)
+        # NOT claimed for implementation this tick.
+        claims = [t for t in _transitions(monitor.github)
+                  if t == (83, WORKFLOW_REVIEWED, WORKFLOW_IMPLEMENTING)]
+        assert claims == []
+        assert client.payloads == []
+
+    async def test_ensure_ownership_label_returns_view_without_mutating_input(self):
+        from deile.orchestration.pipeline.stages import _ensure_ownership_label
+        orphan = _issue(84, "feature")            # gets adopted
+        batched = _issue(85, "feature", "~batch:abc12345")  # no-op
+        monitor, _, _ = _make_monitor()
+        inp = [orphan, batched]
+        out = await _ensure_ownership_label(monitor, inp)
+        ownership = monitor.identity.ownership_label()
+        # Input list untouched (pre-ensure view stays clean for implement).
+        assert ownership not in inp[0].labels
+        # Returned view reflects the added label for the orphan only.
+        assert ownership in out[0].labels
+        assert out[1] is batched  # batched issue reused as-is (no replace)
+
+    async def test_forge_error_returns_none_pair(self):
+        monitor, _, _ = _make_monitor()
+        monitor.github.list_issues_with_label = AsyncMock(
+            side_effect=GhCommandError(("gh", "issue", "list"), 1, "", "boom")
+        )
+        from deile.orchestration.pipeline.stages import \
+            fetch_reviewed_and_ensure_ownership
+        pre, post = await fetch_reviewed_and_ensure_ownership(monitor)
+        assert pre is None and post is None

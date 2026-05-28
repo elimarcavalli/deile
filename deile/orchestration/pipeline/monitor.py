@@ -775,10 +775,32 @@ class PipelineMonitor:
         # dispatches in the same tick.
         if cfg.enable_implement:
             await self._reconcile_implementing_issues()
-        await _scheduled(cfg.enable_implement, "implement", self._implement_one_reviewed_issue)
+        # PR #380 follow-up (non-blocking review suggestion): fetch the
+        # ``~workflow:revisada`` snapshot ONCE and ensure ownership ONCE, then
+        # share it with both the implement and decompose stages — halving the
+        # per-tick reviewed-list forge calls (each stage used to fetch + ensure
+        # independently). The two stages target disjoint issue types (implement
+        # → non-intent, decompose → intent), so a shared snapshot is safe.
+        #
+        # Two views preserve the exact prior pickup timing: implement gets the
+        # PRE-ensure snapshot (it always filtered its own un-ensured fetch, so an
+        # orphan code issue is adopted next tick); decompose gets the POST-ensure
+        # snapshot (it used to re-fetch a fresh one carrying the label, so an
+        # orphan intent is decomposed the same tick). On a forge error both are
+        # None and each stage falls back to its own self-contained fetch.
+        # ``implement`` only consumes the shared snapshot in legacy (non-schedule)
+        # mode; when run via the scheduler it is invoked by name with no args and
+        # fetches its own (unchanged).
+        reviewed_pre = reviewed_post = None
+        if (cfg.enable_implement and "implement" not in skip) or cfg.enable_refinement_gate:
+            reviewed_pre, reviewed_post = await stages.fetch_reviewed_and_ensure_ownership(self)
+        await _scheduled(
+            cfg.enable_implement, "implement",
+            lambda: self._implement_one_reviewed_issue(reviewed_pre),
+        )
         # Decompose CLEAR intents into derived issues (issue #257).
         if cfg.enable_refinement_gate:
-            await self._decompose_one_reviewed_intent()
+            await self._decompose_one_reviewed_intent(reviewed_post)
         await _scheduled(cfg.enable_pr_review, "pr_review", self._review_one_open_pr)
         if cfg.enable_pr_triage:
             await self._classify_new_prs()
@@ -809,11 +831,11 @@ class PipelineMonitor:
     async def _refine_one_issue(self) -> None:
         return await stages.refine_one_issue(self)
 
-    async def _decompose_one_reviewed_intent(self) -> None:
-        return await stages.decompose_one_reviewed_intent(self)
+    async def _decompose_one_reviewed_intent(self, issues=None) -> None:
+        return await stages.decompose_one_reviewed_intent(self, issues)
 
-    async def _implement_one_reviewed_issue(self) -> None:
-        return await stages.implement_one_reviewed_issue(self)
+    async def _implement_one_reviewed_issue(self, issues=None) -> None:
+        return await stages.implement_one_reviewed_issue(self, issues)
 
     async def _resume_in_progress_issues(self) -> None:
         return await stages.resume_in_progress_issues(self)

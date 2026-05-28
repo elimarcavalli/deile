@@ -22,9 +22,10 @@ import logging
 import re
 import time
 import warnings
-from typing import TYPE_CHECKING, Optional
+from dataclasses import replace
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
-from deile.orchestration.forge import (CommentRef, GhCommandError,
+from deile.orchestration.forge import (CommentRef, GhCommandError, IssueRef,
                                        MentionTrigger, declared_hosts,
                                        find_last_pr_url)
 from deile.orchestration.pipeline._time_utils import now_utc
@@ -1052,13 +1053,32 @@ async def _block_refinement(monitor: "PipelineMonitor", issue, reason: str) -> N
     await _block(monitor, "issue", number, short, comment=comment)
 
 
-async def _ensure_ownership_label(monitor: "PipelineMonitor", issues) -> None:
+async def _ensure_ownership_label(
+    monitor: "PipelineMonitor", issues: List["IssueRef"]
+) -> List["IssueRef"]:
     """Issue #375: auto-add ownership label to reviewed issues that this monitor
     owns (via ``_this_monitor_owns``) but that lack both ``~batch:`` and the
     ``~by:*`` label. Without this, issues manually promoted to
     ``~workflow:revisada`` (by removing ``~workflow:bloqueada`` outside the
-    classification flow) are silently ignored."""
+    classification flow) are silently ignored.
+
+    Returns a **new** snapshot list with the freshly-added ownership label
+    reflected in memory for any issue it fixes (``IssueRef`` is frozen, so a new
+    one is built via :func:`dataclasses.replace`). The input list is left
+    untouched, so the caller keeps both views:
+
+    - the **pre-ensure** input — what ``implement_one_reviewed_issue`` filters
+      on (it always filtered its own un-ensured fetch, so an orphan code issue
+      is adopted on the *next* tick), and
+    - the **post-ensure** return — what ``decompose_one_reviewed_intent``
+      filters on (it used to re-fetch a fresh snapshot that already carried the
+      label, so an orphan intent is decomposed the *same* tick).
+
+    Keeping both views lets the tick fetch the reviewed snapshot **once** (PR
+    #380 follow-up) while preserving the exact per-stage pickup timing that the
+    two independent fetches produced before."""
     ownership_label = monitor.identity.ownership_label()
+    updated: List["IssueRef"] = []
     for issue in issues:
         if (
             WORKFLOW_BLOCKED not in issue.labels
@@ -1073,30 +1093,97 @@ async def _ensure_ownership_label(monitor: "PipelineMonitor", issues) -> None:
             )
             try:
                 await monitor.forge.add_labels("issue", issue.number, [ownership_label])
+                issue = replace(issue, labels=(*issue.labels, ownership_label))
             except GhCommandError as exc:
                 logger.warning(
                     "could not add ownership label %s to #%d: %s",
                     ownership_label, issue.number, exc,
                 )
+        updated.append(issue)
+    return updated
 
 
-async def decompose_one_reviewed_intent(monitor: "PipelineMonitor") -> None:
-    """Stage 2 (intent path, issue #257): an architect decomposes a CLEAR intent
-    into independent derived issues, then the intent stays OPEN as a decomposed
-    epic (``~workflow:decomposta``)."""
-    if not monitor.config.enable_refinement_gate:
-        return
+async def fetch_reviewed_and_ensure_ownership(
+    monitor: "PipelineMonitor", *, notifier_label: str = "reviewed/list"
+) -> "Tuple[Optional[List[IssueRef]], Optional[List[IssueRef]]]":
+    """PR #380 follow-up (non-blocking review suggestion): fetch the
+    ``~workflow:revisada`` snapshot **once** per tick and ensure ownership
+    **once**, so the implement and decompose stages share a single forge list
+    call instead of each issuing their own (they target disjoint issue types —
+    non-intent vs intent — so a shared snapshot is safe).
+
+    Returns ``(pre, post)``:
+
+    - ``pre`` — the raw snapshot, before any ownership label was reflected
+      in memory. ``implement_one_reviewed_issue`` filters on this, reproducing
+      its prior behavior (it always filtered its own un-ensured fetch, so an
+      orphan code issue is adopted on the *next* tick).
+    - ``post`` — the ownership-ensured snapshot. ``decompose_one_reviewed_intent``
+      filters on this, reproducing its prior behavior (it re-fetched a fresh
+      snapshot that already carried the label, so an orphan intent is
+      decomposed the *same* tick).
+
+    Both are ``None`` on a forge error; each stage then falls back to its own
+    self-contained fetch (see :func:`_resolve_reviewed_snapshot`)."""
     try:
         issues = await monitor.forge.list_issues_with_label(WORKFLOW_REVIEWED, limit=50)
     except GhCommandError as exc:
         await _record_forge_error(
-            monitor, "could not list reviewed intents (forge error)", exc,
-            notifier_label="decompose/list",
+            monitor, "could not list reviewed issues (forge error)", exc,
+            notifier_label=notifier_label,
         )
+        return None, None
+    ensured = await _ensure_ownership_label(monitor, issues)
+    return issues, ensured
+
+
+async def _resolve_reviewed_snapshot(
+    monitor: "PipelineMonitor",
+    issues: Optional[List["IssueRef"]],
+    *,
+    notifier_label: str,
+) -> Optional[List["IssueRef"]]:
+    """Return the reviewed-issue snapshot a stage should operate on.
+
+    When ``issues`` is provided, the tick already fetched it (and ensured
+    ownership in a single shared pass) — use it as-is. When ``None`` (direct
+    invocation, tests, or fallback after a centralized fetch error), fetch the
+    snapshot and run the ownership side-effect inline, then return the **raw**
+    (pre-ensure) view — matching the prior per-stage direct-call behavior, where
+    ``_ensure_ownership_label`` updated the forge but the stage filtered its own
+    un-mutated fetch."""
+    if issues is not None:
+        return issues
+    try:
+        raw = await monitor.forge.list_issues_with_label(WORKFLOW_REVIEWED, limit=50)
+    except GhCommandError as exc:
+        await _record_forge_error(
+            monitor, "could not list reviewed issues (forge error)", exc,
+            notifier_label=notifier_label,
+        )
+        return None
+    # GitHub side-effect + audit log; the returned ensured view is discarded so
+    # the stage keeps filtering on the raw snapshot (next-tick adoption).
+    await _ensure_ownership_label(monitor, raw)
+    return raw
+
+
+async def decompose_one_reviewed_intent(
+    monitor: "PipelineMonitor", issues: Optional[List["IssueRef"]] = None
+) -> None:
+    """Stage 2 (intent path, issue #257): an architect decomposes a CLEAR intent
+    into independent derived issues, then the intent stays OPEN as a decomposed
+    epic (``~workflow:decomposta``).
+
+    ``issues`` is the shared reviewed snapshot when called from the tick (PR #380
+    follow-up); ``None`` means fetch + ensure ownership inline (direct/legacy)."""
+    if not monitor.config.enable_refinement_gate:
         return
-    # Issue #375: auto-add ownership label to orphan reviewed issues before
-    # candidate filtering (so manually-unblocked issues are not silently ignored).
-    await _ensure_ownership_label(monitor, issues)
+    issues = await _resolve_reviewed_snapshot(
+        monitor, issues, notifier_label="decompose/list"
+    )
+    if issues is None:
+        return
     ownership_label = monitor.identity.ownership_label()
     target = next(
         (i for i in sort_by_priority(issues)
@@ -1243,7 +1330,9 @@ async def reconcile_implementing_issues(monitor: "PipelineMonitor") -> None:
         await monitor.notifier.implementation_finished(issue.number, None)
 
 
-async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
+async def implement_one_reviewed_issue(
+    monitor: "PipelineMonitor", issues: Optional[List["IssueRef"]] = None
+) -> None:
     """Stage 2 (code path). Claim up to ``max_parallel`` reviewed feature/bug/
     refactor issues and dispatch their implementations via fire-and-forget
     (issue #373). Dispatches are non-blocking: the worker returns 202 + task_id
@@ -1253,14 +1342,14 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
     The number of NEW dispatches is capped by ``max_parallel`` minus the number
     of issues already in ``~workflow:em_implementacao`` (in-flight), so that N
     workers can process N issues in parallel without blocking the tick loop.
+
+    ``issues`` is the shared reviewed snapshot when called from the tick (PR #380
+    follow-up); ``None`` means fetch + ensure ownership inline (direct/legacy).
     """
-    try:
-        issues = await monitor.forge.list_issues_with_label(WORKFLOW_REVIEWED, limit=50)
-    except GhCommandError as exc:
-        await _record_forge_error(
-            monitor, "could not list reviewed issues (forge error)", exc,
-            notifier_label="implement/list",
-        )
+    issues = await _resolve_reviewed_snapshot(
+        monitor, issues, notifier_label="implement/list"
+    )
+    if issues is None:
         return
     # Count in-flight issues (issue #373): issues already in em_implementacao
     # that this monitor owns and that are not blocked / already with a PR.
@@ -1273,9 +1362,6 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
             monitor.config.max_parallel, in_flight,
         )
         return
-    # Issue #375: auto-add ownership label to orphan reviewed issues before
-    # candidate filtering (so manually-unblocked issues are not silently ignored).
-    await _ensure_ownership_label(monitor, issues)
     # Accept issues without ~batch: when the ownership label proves this monitor did the
     # review (e.g. operator manually promoted to ~workflow:revisada or batch label removed).
     ownership_label = monitor.identity.ownership_label()
