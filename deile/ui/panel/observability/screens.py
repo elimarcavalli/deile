@@ -293,7 +293,7 @@ class LiveSessionScreen:
             else:
                 preview = _truncate(turn.get("content") or turn.get("summary") or "", 70)
             table.add_row(
-                _fmt_ts(turn.get("ts") if isinstance(turn.get("ts"), (int, float)) else None) or "",
+                _fmt_ts(turn.get("ts") if isinstance(turn.get("ts"), (int, float)) else None),
                 f"{marker} {role or '?'}",
                 preview,
             )

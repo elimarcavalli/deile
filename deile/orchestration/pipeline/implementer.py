@@ -48,6 +48,7 @@ from deile.orchestration.pipeline.dispatch_resolver import (
 from deile.orchestration.pipeline.labels import (issue_type_from_labels,
                                                  persona_for_type,
                                                  template_for_type)
+from deile.orchestration.pipeline.constants import resolve_forge_repo
 from deile.orchestration.pipeline.model_resolver import resolve_stage_model
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -931,7 +932,7 @@ class WorkerImplementer(PipelineImplementer):
             try:
                 proc = await _aio.create_subprocess_exec(
                     "gh", "api",
-                    f"repos/elimarcavalli/deile/issues/{pr_number}/comments",
+                    f"repos/{resolve_forge_repo()}/issues/{pr_number}/comments",
                     "--paginate",
                     "-q",
                     f'.[] | select(.created_at > "{since_iso}") | '
