@@ -134,20 +134,13 @@ def _coerce_value(key_path: str, raw: str) -> Any:
     return raw
 
 
-def _determine_origin(mgr: Any, key_path: str) -> str:
-    """Return the layer name ('env', 'project', 'user', 'default') that wins."""
-    from deile.config.settings import _JSON_ONLY_FIELD_MAP, _OVERRIDE_HANDLERS
+def _json_layer_origin(mgr: Any, key_path: str) -> str:
+    """Return the JSON layer ('project', 'user', 'default') that wins.
 
-    field_name = None
-    if key_path in _OVERRIDE_HANDLERS:
-        field_name = _OVERRIDE_HANDLERS[key_path][0]
-    elif key_path in _JSON_ONLY_FIELD_MAP:
-        field_name = _JSON_ONLY_FIELD_MAP[key_path]
-
-    env_var = _env_var_for_key(key_path)
-    if env_var and os.environ.get(env_var):
-        return "env"
-
+    This mirrors the resolution order used by :meth:`SettingsManager.get_setting`
+    (deep-merge: project overrides user). Env vars are NOT considered here —
+    use :func:`_resolve_effective` for the full picture including env overrides.
+    """
     proj_data = mgr.get_layer("project")
     proj_found, _ = _resolve_dotted_in_dict(proj_data, key_path)
     if proj_found:
@@ -159,6 +152,48 @@ def _determine_origin(mgr: Any, key_path: str) -> str:
         return "user"
 
     return "default"
+
+
+def _resolve_effective(mgr: Any, key_path: str) -> tuple[Any, str]:
+    """Return (effective_value, origin_layer) for *key_path*.
+
+    Resolution order (matches :class:`~deile.config.settings.Settings`):
+    1. Env var override (if set) → origin ``"env"``
+    2. Project JSON layer        → origin ``"project"``
+    3. User/global JSON layer    → origin ``"user"``
+    4. Dataclass default         → origin ``"default"``
+    5. Not set                   → origin ``"not set"``
+
+    The value for ``"env"`` origin is the raw env-var string (coerced via
+    the same converter used by the Settings dataclass). For JSON layers
+    the value comes from :meth:`SettingsManager.get_setting`.
+    """
+    from deile.config.settings import _OVERRIDE_HANDLERS
+
+    # 1. Env var override
+    env_var = _env_var_for_key(key_path)
+    if env_var:
+        raw = os.environ.get(env_var)
+        if raw is not None and raw != "":
+            # Coerce through the same converter used by Settings
+            if key_path in _OVERRIDE_HANDLERS:
+                _field_name, converter = _OVERRIDE_HANDLERS[key_path]
+                try:
+                    return converter(raw), "env"
+                except (ValueError, TypeError):
+                    pass
+            return raw, "env"
+
+    # 2-4. JSON layers + dataclass default
+    effective = mgr.get_setting(key_path)
+    if effective is not None:
+        return effective, _json_layer_origin(mgr, key_path)
+
+    default = _default_value(key_path)
+    if default is not None:
+        return default, "default"
+
+    return None, "not set"
 
 
 def _check_project_trust(mgr: Any) -> Optional[str]:
@@ -289,17 +324,7 @@ class SettingsCommand(DirectCommand):
             return CommandResult.error_result("Usage: /settings get <key>")
 
         mgr = SettingsManager()
-
-        effective = mgr.get_setting(key)
-        if effective is None:
-            default = _default_value(key)
-            if default is not None:
-                effective = default
-                origin = "default"
-            else:
-                origin = "not set"
-        else:
-            origin = _determine_origin(mgr, key)
+        effective, origin = _resolve_effective(mgr, key)
 
         table = Table(show_header=False, box=None, padding=(0, 1))
         table.add_column("Field", style="cyan")
@@ -328,14 +353,10 @@ class SettingsCommand(DirectCommand):
         table.add_column("Origin", style="dim")
 
         for key in all_keys:
-            effective = mgr.get_setting(key)
-            if effective is None:
-                default = _default_value(key)
-                value_str = _truncate(default) if default is not None else "(not set)"
-                origin = "default" if default is not None else "—"
-            else:
-                value_str = _truncate(effective)
-                origin = _determine_origin(mgr, key)
+            effective, origin = _resolve_effective(mgr, key)
+            value_str = _truncate(effective) if effective is not None else "(not set)"
+            if effective is None and origin == "not set":
+                origin = "—"
             table.add_row(key, value_str, origin)
 
         return CommandResult.success_result(table, "rich")
@@ -391,14 +412,23 @@ class SettingsCommand(DirectCommand):
         proj_found, proj_val = _resolve_dotted_in_dict(project_data, key)
 
         env_var = _env_var_for_key(key)
-        env_val = os.environ.get(env_var) if env_var else None
+        env_val_raw = os.environ.get(env_var) if env_var else None
+        # Coerce env value to match the resolved effective value
+        env_val: Any = None
+        env_has_value = False
+        if env_val_raw is not None and env_val_raw != "":
+            from deile.config.settings import _OVERRIDE_HANDLERS
+            env_has_value = True
+            if key in _OVERRIDE_HANDLERS:
+                _field_name, converter = _OVERRIDE_HANDLERS[key]
+                try:
+                    env_val = converter(env_val_raw)
+                except (ValueError, TypeError):
+                    env_val = env_val_raw
+            else:
+                env_val = env_val_raw
 
-        effective = mgr.get_setting(key)
-        if effective is None and default_val is not None:
-            effective = default_val
-        origin = _determine_origin(mgr, key)
-        if effective is None:
-            origin = "not set"
+        effective, origin = _resolve_effective(mgr, key)
 
         table = Table(title=f"Settings layers for: {key}", show_lines=True)
         table.add_column("Layer", style="cyan")
@@ -427,13 +457,22 @@ class SettingsCommand(DirectCommand):
             str(project_path),
             _wins("project"),
         )
-        env_display = env_var if env_var else "(no env var for this key)"
-        table.add_row(
-            "env",
-            _truncate(env_val) if env_val else "— (not set)",
-            env_display,
-            _wins("env"),
-        )
+        if env_has_value:
+            env_display = env_var if env_var else "(no env var for this key)"
+            table.add_row(
+                "env",
+                _truncate(env_val),
+                env_display,
+                _wins("env"),
+            )
+        else:
+            env_display = env_var if env_var else "(no env var for this key)"
+            table.add_row(
+                "env",
+                "— (not set)",
+                env_display,
+                _wins("env"),
+            )
 
         summary = (
             f"\nEffective value: [bold]{_truncate(effective) if effective is not None else '(not set)'}[/bold]"
