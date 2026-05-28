@@ -197,16 +197,16 @@ class TestStageIntegration:
         monitor2.config.enable_pr_review = False
         await monitor2.tick()
 
+        # Issue #373: fire-and-forget dispatch — implementation_finished
+        # fires on reconcile, not here. Only the claim transition occurs.
         notifier2.implementation_started.assert_called_once()
-        notifier2.implementation_finished.assert_called_once()
-        args, _ = notifier2.implementation_finished.call_args
-        assert args[1] == _PR_URL
-        assert monitor2.stats.issues_implemented == 1
+        notifier2.implementation_finished.assert_not_called()
+        assert monitor2.stats.issues_implemented == 0
 
-        # Transitions: revisada → em_implementacao (atomic claim) → em_pr (PR opened)
+        # Only the claim transition: revisada → em_implementacao.
+        # em_pr transition happens in reconcile on subsequent tick.
         assert github2.transition_issue.call_args_list == [
             call(10, from_label=WORKFLOW_REVIEWED, to_label=WORKFLOW_IMPLEMENTING),
-            call(10, from_label=WORKFLOW_IMPLEMENTING, to_label=WORKFLOW_PR),
         ]
 
         # -- Tick 3: stage 3 only -----------------------------------------
@@ -305,8 +305,10 @@ class TestStageIntegration:
 
         await monitor.tick()
 
+        # Issue #373: fire-and-forget dispatch — implementation_finished
+        # fires on reconcile, not here.
         notifier.implementation_started.assert_called_once()
-        notifier.implementation_finished.assert_called_once()
+        notifier.implementation_finished.assert_not_called()
 
     async def test_stage3_does_not_pick_peer_branch(self):
         """Stage 3 on monitor 'a' skips PRs from monitor 'b'."""

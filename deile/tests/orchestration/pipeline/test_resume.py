@@ -237,7 +237,14 @@ def _in_progress(number=2, *, blocked=False):
 
 
 class TestFreshImplementGroundTruth:
+    # Issue #373: fresh implements are now fire-and-forget (nowait=True).
+    # The ground-truth handling (concluido / bloqueado / incompleto) is
+    # done by reconcile_implementing_issues on subsequent ticks, NOT inline.
+    # These tests verify the fire-and-forget dispatch behavior.
+
     async def test_concluido_moves_to_em_pr(self):
+        # Issue #373: fire-and-forget dispatch. The worker response is NOT
+        # parsed for structured outcome; reconcile handles PR detection.
         monitor, notifier, _ = _make_monitor(
             issues_reviewed=[_reviewed()],
             worker_responses=[_worker_response(
@@ -247,14 +254,19 @@ class TestFreshImplementGroundTruth:
         )
         await monitor.tick()
         notifier.implementation_started.assert_called_once()
-        notifier.implementation_finished.assert_called_once()
-        assert monitor.stats.issues_implemented == 1
-        calls = monitor.github.transition_issue.call_args_list
-        assert calls[-1].kwargs == {
-            "from_label": WORKFLOW_IMPLEMENTING, "to_label": WORKFLOW_PR
-        }
+        # Fire-and-forget: implementation_finished fires on reconcile, not here.
+        notifier.implementation_finished.assert_not_called()
+        assert monitor.stats.issues_implemented == 0
+        # Only the claim transition (revisada → em_implementacao).
+        # em_pr transition happens in reconcile.
+        for call in monitor.github.transition_issue.call_args_list:
+            assert call.kwargs.get("to_label") != WORKFLOW_PR
 
     async def test_bloqueado_triggers_block_flow(self):
+        # Issue #373: fire-and-forget dispatch — block flow is NOT triggered
+        # inline. The worker's bloqueado verdict would be surfaced by the
+        # resume path (which still blocks and parses structured outcome) or
+        # by reconcile via reaper on stale issues.
         monitor, notifier, _ = _make_monitor(
             issues_reviewed=[_reviewed()],
             worker_responses=[_worker_response(
@@ -263,16 +275,20 @@ class TestFreshImplementGroundTruth:
             )],
         )
         await monitor.tick()
-        # Block flow: comment + label + DM.
-        monitor.github.comment_on_issue.assert_called_once()
-        monitor.github.add_labels.assert_any_call("issue", 2, [WORKFLOW_BLOCKED])
-        notifier.implementation_blocked.assert_called_once()
-        assert monitor.stats.issues_blocked == 1
-        # Never advanced to em_pr.
+        # Fire-and-forget: block flow not triggered inline.
+        # The issue is claimed and dispatched; reconcile/reaper will handle it.
+        notifier.implementation_started.assert_called_once()
+        notifier.implementation_blocked.assert_not_called()
+        assert monitor.stats.issues_blocked == 0
+        # Only the claim transition — no em_pr.
         for call in monitor.github.transition_issue.call_args_list:
             assert call.kwargs.get("to_label") != WORKFLOW_PR
 
     async def test_incompleto_parks_quietly_when_resume_enabled(self):
+        # Issue #373: fire-and-forget dispatch — the worker response is not
+        # parsed for structured outcome. The fingerprint is NOT absorbed
+        # because _finalize_implement_outcome is not called.
+        # The reconcile stage handles ground truth on subsequent ticks.
         monitor, notifier, _ = _make_monitor(
             issues_reviewed=[_reviewed()],
             worker_responses=[_worker_response(
@@ -280,16 +296,18 @@ class TestFreshImplementGroundTruth:
             )],
         )
         await monitor.tick()
-        # No "parked" DM (resume sweep will retry) and no block.
+        # Fire-and-forget: no parking, no block, no finished.
         notifier.implementation_parked.assert_not_called()
         notifier.implementation_blocked.assert_not_called()
         notifier.implementation_finished.assert_not_called()
-        # Fingerprint absorbed into the tracker for the guard.
-        assert monitor._resume_tracker.get(2).last_fingerprint == "f1"
+        # Fingerprint NOT absorbed — the fire-and-forget path skips
+        # _finalize_implement_outcome which does the absorption.
+        assert monitor._resume_tracker.get(2).last_fingerprint == ""
 
     async def test_incompleto_parks_with_dm_when_resume_disabled(self):
-        # Legacy behaviour (#253 fix): with resume disabled, an incomplete
-        # implementation parks in em_implementacao AND DMs once (no auto-retry).
+        # Issue #373: fire-and-forget dispatch — parking is handled by
+        # reconcile/reaper, not inline. Even with resume disabled,
+        # implementation_parked is NOT called on the dispatch tick.
         monitor, notifier, _ = _make_monitor(
             issues_reviewed=[_reviewed()],
             enable_resume=False,
@@ -298,7 +316,9 @@ class TestFreshImplementGroundTruth:
             )],
         )
         await monitor.tick()
-        notifier.implementation_parked.assert_called_once()
+        # Fire-and-forget: no parking notification on dispatch tick.
+        notifier.implementation_started.assert_called_once()
+        notifier.implementation_parked.assert_not_called()
         notifier.implementation_finished.assert_not_called()
         notifier.implementation_blocked.assert_not_called()
         assert monitor.stats.issues_implemented == 0
@@ -466,7 +486,13 @@ class TestResumeSweep:
 # ===========================================================================
 
 class TestBlockFlowSideEffects:
+    # Issue #373: fire-and-forget dispatch — block flow is NOT triggered
+    # inline on fresh dispatches. The bloqueado verdict is only surfaced
+    # by the resume path (resume_in_progress_issues, which still blocks).
+
     async def test_block_comments_the_real_reason(self):
+        # Issue #373: fire-and-forget — block flow not triggered inline.
+        # The issue is claimed and dispatched; bloqueado verdict is ignored.
         monitor, notifier, _ = _make_monitor(
             issues_reviewed=[_reviewed()],
             worker_responses=[_worker_response(
@@ -474,19 +500,22 @@ class TestBlockFlowSideEffects:
             )],
         )
         await monitor.tick()
-        args, _ = monitor.github.comment_on_issue.call_args
-        assert args[0] == 2
-        assert "revisão humana de segurança" in args[1]
-        assert WORKFLOW_BLOCKED in args[1]
+        # Fire-and-forget: no comment, no block.
+        notifier.implementation_started.assert_called_once()
+        notifier.implementation_blocked.assert_not_called()
+        monitor.github.comment_on_issue.assert_not_called()
 
     async def test_block_keeps_em_implementacao_label(self):
-        # The issue must keep em_implementacao (we only ADD bloqueada, never
-        # remove em_implementacao) so it never falls back into the queue.
+        # Issue #373: fire-and-forget dispatch — the issue is claimed and
+        # stays in em_implementacao. No block flow triggered inline.
         monitor, notifier, _ = _make_monitor(
             issues_reviewed=[_reviewed()],
             worker_responses=[_worker_response(ended="bloqueado", motivo_bloqueio="x")],
         )
         await monitor.tick()
+        # The claim transition placed it in em_implementacao.
+        # No block label added (reconcile handles it on subsequent ticks).
+        notifier.implementation_started.assert_called_once()
         # No transition removed em_implementacao.
         for call in monitor.github.transition_issue.call_args_list:
             assert call.kwargs.get("from_label") != WORKFLOW_IMPLEMENTING or \

@@ -1111,15 +1111,117 @@ async def decompose_one_reviewed_intent(monitor: "PipelineMonitor") -> None:
 
 # ----- stage 2: implement ------------------------------------------------
 
+
+async def _count_in_flight_issues(monitor: "PipelineMonitor") -> int:
+    """Count issues in ``~workflow:em_implementacao`` owned by this monitor.
+
+    These are issues that have been dispatched (fire-and-forget via issue #373)
+    but whose outcome is not yet known. Subtracted from ``max_parallel`` to
+    avoid over-dispatching beyond available worker capacity.
+
+    Issues that are blocked (``~workflow:bloqueada``) or already transitioned
+    to ``~workflow:em_pr`` are NOT counted — they do not consume a worker slot.
+    """
+    try:
+        issues = await monitor.forge.list_issues_with_label(
+            WORKFLOW_IMPLEMENTING, limit=50,
+        )
+    except GhCommandError as exc:
+        await _record_forge_error(
+            monitor, "could not list in-flight issues (forge error)", exc,
+        )
+        return 0
+    ownership_label = monitor.identity.ownership_label()
+    count = 0
+    for i in issues:
+        if WORKFLOW_BLOCKED in i.labels or WORKFLOW_PR in i.labels:
+            continue
+        if monitor._this_monitor_owns(i) or ownership_label in i.labels:
+            count += 1
+    return count
+
+
+async def reconcile_implementing_issues(monitor: "PipelineMonitor") -> None:
+    """Check ground truth for issues in ``~workflow:em_implementacao`` (issue #373).
+
+    Since the implement stage now dispatches fire-and-forget, the pipeline no
+    longer gets an immediate result from the worker. This function checks GitHub
+    ground truth on each tick:
+
+    - If a PR exists for the issue → the worker finished! Transition to
+      ``~workflow:em_pr`` and notify.
+    - If no PR yet → leave the issue in ``em_implementacao`` (worker still
+      running or not yet pushed).
+
+    This runs BEFORE ``implement_one_reviewed_issue`` in the tick loop so that
+    newly-completed issues free up capacity for new dispatches in the same tick.
+    """
+    try:
+        issues = await monitor.forge.list_issues_with_label(
+            WORKFLOW_IMPLEMENTING, limit=50,
+        )
+    except GhCommandError as exc:
+        await _record_forge_error(
+            monitor, "could not list implementing issues for reconcile", exc,
+        )
+        return
+    ownership_label = monitor.identity.ownership_label()
+    for issue in sort_by_priority(issues):
+        # Only reconcile issues this monitor owns.
+        if WORKFLOW_BLOCKED in issue.labels:
+            continue
+        if WORKFLOW_PR in issue.labels:
+            continue
+        if not (monitor._this_monitor_owns(issue) or ownership_label in issue.labels):
+            continue
+        # Check ground truth: did the worker open a PR?
+        try:
+            has_pr = await monitor.forge.has_open_pr_for_issue(issue.number)
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "reconcile #%d: has_open_pr_for_issue failed: %s",
+                issue.number, exc,
+            )
+            continue
+        if not has_pr:
+            # Worker still running or hasn't pushed yet. Leave in em_implementacao.
+            continue
+        # Worker finished! Transition to em_pr.
+        logger.info(
+            "reconcile #%d: PR detected via ground truth → transitioning to %s",
+            issue.number, WORKFLOW_PR,
+        )
+        try:
+            await monitor.forge.transition_issue(
+                issue.number,
+                from_label=WORKFLOW_IMPLEMENTING,
+                to_label=WORKFLOW_PR,
+            )
+        except GhCommandError as exc:
+            await _record_forge_error(
+                monitor,
+                f"could not transition reconciled issue #{issue.number} to em_pr",
+                exc,
+            )
+            continue
+        monitor._resume_tracker.clear(issue.number)
+        monitor._stats.issues_implemented += 1
+        # Notify without PR URL — the forge's ``get_pr`` takes a PR number,
+        # not an issue number. The notification will say "sem PR" if pr_url
+        # is None, which is acceptable for the reconcile path.
+        await monitor.notifier.implementation_finished(issue.number, None)
+
+
 async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
     """Stage 2 (code path). Claim up to ``max_parallel`` reviewed feature/bug/
-    refactor issues and dispatch their implementations CONCURRENTLY (issue #257):
-    ``asyncio.gather`` of independent worker dispatches that the k8s Service
-    spreads across the worker replicas. Each opens its own branch + PR, so the
-    only contention surfaces at merge time. ``intent`` issues are excluded — they
-    go to :func:`decompose_one_reviewed_intent`. The tick blocks for the duration
-    of the SLOWEST dispatch in the batch (not the sum). Per-issue finalization
-    reuses :func:`_finalize_implement_outcome` unchanged.
+    refactor issues and dispatch their implementations via fire-and-forget
+    (issue #373). Dispatches are non-blocking: the worker returns 202 + task_id
+    immediately and processes the task in the background. ``reconcile_implementing_issues``
+    checks ground truth (PR existence via GitHub) on subsequent ticks.
+
+    The number of NEW dispatches is capped by ``max_parallel`` minus the number
+    of issues already in ``~workflow:em_implementacao`` (in-flight), so that N
+    workers can process N issues in parallel without blocking the tick loop.
     """
     try:
         issues = await monitor.forge.list_issues_with_label(WORKFLOW_REVIEWED, limit=50)
@@ -1127,6 +1229,17 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
         await _record_forge_error(
             monitor, "could not list reviewed issues (forge error)", exc,
             notifier_label="implement/list",
+        )
+        return
+    # Count in-flight issues (issue #373): issues already in em_implementacao
+    # that this monitor owns and that are not blocked / already with a PR.
+    # These represent workers currently busy — subtract from max_parallel.
+    in_flight = await _count_in_flight_issues(monitor)
+    available_slots = max(0, max(1, monitor.config.max_parallel) - in_flight)
+    if available_slots <= 0:
+        logger.debug(
+            "implement: all %d slots busy (%d in-flight); skipping new claims",
+            monitor.config.max_parallel, in_flight,
         )
         return
     # Accept issues without ~batch: when the ownership label proves this monitor did the
@@ -1146,9 +1259,8 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
     ]
     # Sort by priority so the most urgent issues are implemented first.
     candidates = sort_by_priority(candidates)
-    # Cap concurrency at ``max_parallel`` (>=1). Each claimed issue leaves the
-    # revisada set on its transition, so later ticks won't re-pick it.
-    batch = candidates[: max(1, monitor.config.max_parallel)]
+    # Cap concurrency at available slots (max_parallel minus in-flight).
+    batch = candidates[:available_slots]
     if not batch:
         return
 
@@ -1200,51 +1312,28 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
     if not claimed:
         return
 
-    # Dispatch all claimed implementations concurrently; the worker Service load-
-    # balances them across replicas. ``return_exceptions`` so one failure does not
-    # cancel its siblings — each is finalized independently from ground truth.
-    # Wrap em ``wait_for`` com cap generoso (3h) — defesa contra HTTP-hang
-    # silencioso onde nem o worker timeout (10min) nem o TCP keepalive
-    # disparam: o gather inteiro travaria, segurando o stop_event do monitor.
-    # Pilar 03 §1 — toda I/O externa precisa de teto explícito de tempo.
-    #
-    # LIMITAÇÃO conhecida (PR #297 review iter 2): quando o cap dispara, o
-    # ``await`` é cancelado client-side mas o worker continua processando
-    # server-side até completar — não há endpoint DELETE /v1/tasks/<id> hoje.
-    # Risco residual: worker pode abrir PR DEPOIS que o monitor já marcou
-    # a issue como falha. Mitigação operacional: o finalizador checa
-    # ground-truth (PR existe / branch tem commits) ANTES de declarar
-    # resultado, então o próximo tick reconcilia a issue (não é silenciosa-
-    # mente perdida — pior caso é re-tentativa duplicada, capturada pela
-    # idempotência de label ``~workflow:em_pr``).
-    _DISPATCH_HARD_CAP_S = 3 * 60 * 60
-    try:
-        outcomes = await asyncio.wait_for(
-            asyncio.gather(
-                *[monitor.implementer.implement(monitor, t, resume=False) for t in claimed],
-                return_exceptions=True,
-            ),
-            timeout=_DISPATCH_HARD_CAP_S,
-        )
-    except asyncio.TimeoutError:
-        logger.error(
-            "implement gather() excedeu o cap de %ds com %d targets; abortando o "
-            "batch client-side (worker pode continuar — sem cancel explícito; "
-            "próximo tick reconcilia via ground-truth)",
-            _DISPATCH_HARD_CAP_S, len(claimed),
-        )
-        outcomes = [
-            asyncio.TimeoutError(f"dispatch hard cap exceeded ({_DISPATCH_HARD_CAP_S}s)")
-            for _ in claimed
-        ]
+    # Issue #373: fire-and-forget dispatch — each ``implement()`` call returns
+    # immediately with a 202 + task_id. The worker processes the task in the
+    # background; ``reconcile_implementing_issues`` checks ground truth (PR
+    # existence via GitHub) on subsequent ticks. No more 3h hard cap needed
+    # because the dispatch itself is non-blocking.
+    outcomes = await asyncio.gather(
+        *[monitor.implementer.implement(monitor, t, resume=False) for t in claimed],
+        return_exceptions=True,
+    )
     for target, outcome in zip(claimed, outcomes):
         if isinstance(outcome, BaseException):
-            logger.exception("implement dispatch for #%d raised", target.number, exc_info=outcome)
-            from deile.orchestration.pipeline.implementer import WorkOutcome
-            outcome = WorkOutcome(
-                ok=False, text="", error=f"{type(outcome).__name__}: {outcome}"[:500]
+            logger.exception(
+                "implement #%d: fire-and-forget dispatch raised",
+                target.number, exc_info=outcome,
             )
-        await _finalize_implement_outcome(monitor, target.number, outcome, resume=False)
+        else:
+            task_id = getattr(outcome, "task_id", "") or ""
+            logger.info(
+                "implement #%d: dispatched fire-and-forget (task_id=%s, "
+                "reconcile on next tick)",
+                target.number, task_id,
+            )
 
 
 # ----- stage 2b: resume parked, continuable implementations (issue #254) -----

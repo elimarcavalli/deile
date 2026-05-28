@@ -671,6 +671,7 @@ class WorkerImplementer(PipelineImplementer):
         branch: Optional[str] = None,
         ledger_key: Optional[str] = None,
         resume: bool = False,
+        nowait: bool = False,
     ) -> WorkOutcome:
         from deile.infrastructure.deile_worker_client import (
             WorkerDispatchError, build_dispatch_payload)
@@ -742,8 +743,15 @@ class WorkerImplementer(PipelineImplementer):
         # we attach ``resume`` after building to keep that contract untouched.
         if resume_block:
             payload["resume"] = resume_block
+        # Issue #373: ``nowait`` dispatches the task fire-and-forget — the
+        # worker returns 202 + task_id immediately and processes the task
+        # in the background. The pipeline does NOT block on the result;
+        # instead it reconciles ground truth (GitHub labels / PR existence)
+        # on the next tick. Used by the implement stage so that N workers
+        # can process N issues in parallel.
+        wait = not nowait
         try:
-            data = await self._post_dispatch(url, payload, wait=True)
+            data = await self._post_dispatch(url, payload, wait=wait)
         except WorkerDispatchError as exc:
             # Defense-in-depth contra triple-dispatch (fix 2026-05-27).
             # Worker recusa com 409 quando há claude vivo na mesma sessão
@@ -766,6 +774,19 @@ class WorkerImplementer(PipelineImplementer):
         except Exception as exc:  # noqa: BLE001 — never crash the tick
             logger.exception("worker dispatch raised")
             return WorkOutcome(ok=False, text="", error=f"{type(exc).__name__}: {exc}"[:500])
+        # Issue #373: fire-and-forget path — worker returned 202 + task_id.
+        # The task is running in the background; the pipeline reconciles
+        # ground truth on the next tick via ``reconcile_implementing_issues``.
+        if nowait:
+            task_id = data.get("task_id", "") if isinstance(data, dict) else ""
+            logger.info(
+                "worker fire-and-forget accepted: task_id=%s stage=%s",
+                task_id, stage,
+            )
+            return WorkOutcome(
+                ok=True, text="", task_id=task_id,
+                ended="",  # Not yet known — reconcile via ground truth
+            )
         outcome = _outcome_from_worker_response(data)
         # Issue #309 fase 3.5 + issue #347 follow-up — persistência no
         # DispatchLedger:
@@ -967,10 +988,15 @@ class WorkerImplementer(PipelineImplementer):
             resume=resume, expect_merge=False,
         )
         from deile.orchestration.pipeline.dispatch_ledger import DispatchLedger
+        # Issue #373: fire-and-forget for FRESH dispatches — the pipeline no
+        # longer blocks waiting for the worker to finish. Resume dispatches
+        # still block because the stage handler needs the structured result
+        # (ended, fingerprint, tentativa) to decide concluido/incompleto/bloqueado.
         return await self._dispatch(
             brief, channel_id=f"pipeline-issue-{issue.number}",
             resume_block=resume_block, stage="implement", branch=branch,
             ledger_key=DispatchLedger.key_for_issue(issue.number), resume=resume,
+            nowait=not resume,
         )
 
     # --- Refinement gate (issue #257) -------------------------------------
