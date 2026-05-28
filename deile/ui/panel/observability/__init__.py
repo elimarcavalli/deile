@@ -12,11 +12,14 @@ Public entrypoints:
 * :class:`ClaudeJsonlParser` — incremental parser for
   ``~/.claude/projects/<workspace-hash>/<session-uuid>.jsonl`` produced by
   the Claude CLI.
-* :class:`ClusterObservabilityClient` — thin HTTP client that fan-outs to
-  the pipeline status server and the claude-worker session endpoints.
-* :class:`ClusterStatusScreen`, :class:`LiveSessionScreen`,
-  :class:`HistoryScreen` — Rich-based renderers consumed by the panel main
-  loop.
+
+For the HTTP client and screen renderers, see the sibling modules:
+
+* :mod:`deile.ui.panel.observability.client` —
+  :class:`ClusterObservabilityClient` (thin HTTP client).
+* :mod:`deile.ui.panel.observability.screens` —
+  :class:`ClusterStatusScreen`, :class:`LiveSessionScreen`,
+  :class:`HistoryScreen` (Rich-based renderers).
 """
 
 from deile.ui.panel.observability.jsonl_parser import (  # noqa: F401

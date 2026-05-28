@@ -1175,10 +1175,9 @@ async def resume_info_handler(request: web.Request) -> web.Response:
 # --------------------------------------------------------------------------- #
 
 
-#: Environment variable names whose VALUE must never leave the cluster.  We
-#: redact them in :func:`sessions_command_handler` so the operator can see
-#: *which* knobs were active without exposing the secret string itself.
-_REDACTED_ENV_PATTERNS = (
+#: Environment variable name patterns that SHOULD be redacted even when the
+#: value itself doesn't match a known secret pattern (defense-in-depth).
+_REDACTED_KEY_PATTERNS = (
     re.compile(r".*_API_KEY$", re.IGNORECASE),
     re.compile(r".*_TOKEN$", re.IGNORECASE),
     re.compile(r".*_SECRET$", re.IGNORECASE),
@@ -1189,18 +1188,37 @@ _REDACTED_ENV_PATTERNS = (
 
 
 def _redact_env(env: dict) -> dict:
-    """Return a copy of ``env`` with sensitive values replaced by ``***``.
+    """Return a copy of ``env`` with sensitive values redacted.
 
-    Match by *key* against :data:`_REDACTED_ENV_PATTERNS` (any pattern hit
-    redacts the value).  Non-string values are coerced to ``str`` for the
-    comparison but the resulting dict still uses strings only — JSON-safe.
+    Two-layer defense:
+
+    1. **Key-based** — any env-var whose *name* matches
+       :data:`_REDACTED_KEY_PATTERNS` (``*_API_KEY``, ``*_TOKEN``, etc.)
+       is redacted unconditionally.
+    2. **Value-based** — uses
+       :class:`deile.security.secrets_scanner.SecretsScanner.redact_text`
+       as the single source of truth for detecting secret patterns in the
+       value itself (e.g. GitHub tokens, AWS keys, private keys).
+
+    A key hit OR a value hit replaces the entry with ``***``.
+    Non-string values are coerced to ``str``.
     """
+    from deile.security.secrets_scanner import SecretsScanner
+
+    scanner = SecretsScanner()
     out = {}
     for key, value in env.items():
         if not isinstance(key, str):
             continue
-        redacted = any(pat.search(key) for pat in _REDACTED_ENV_PATTERNS)
-        out[key] = "***" if redacted else (value if isinstance(value, str) else str(value))
+        str_value = value if isinstance(value, str) else str(value)
+        # Layer 1: key-name match
+        key_sensitive = any(pat.search(key) for pat in _REDACTED_KEY_PATTERNS)
+        if key_sensitive:
+            out[key] = "***"
+            continue
+        # Layer 2: value-content scan via SecretsScanner
+        redacted_value, _matches = scanner.redact_text(str_value)
+        out[key] = "***" if redacted_value != str_value else str_value
     return out
 
 
