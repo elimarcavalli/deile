@@ -15,6 +15,33 @@ from __future__ import annotations
 import re
 from typing import Iterable, Optional
 
+# Priority labels ---------------------------------------------------------
+# ``~prioridade:N`` — N is an integer ≥ 0, 0 = maximum urgency.
+# Applied manually by the stakeholder on GitHub to influence pipeline ordering.
+PRIORITY_LABEL_PREFIX = "~prioridade:"
+PRIORITY_0 = "~prioridade:0"
+PRIORITY_1 = "~prioridade:1"
+PRIORITY_2 = "~prioridade:2"
+PRIORITY_3 = "~prioridade:3"
+PRIORITY_LABELS = (PRIORITY_0, PRIORITY_1, PRIORITY_2, PRIORITY_3)
+
+_PRIORITY_LABEL_RE = re.compile(r"^~prioridade:(\d+)$")
+
+
+def parse_priority_from_labels(labels: Iterable[str]) -> Optional[int]:
+    """Return the priority N from the first ``~prioridade:N`` label found.
+
+    Lower N = more urgent (0 = maximum). Returns ``None`` when no priority
+    label is present — the caller should treat this as "minimum priority"
+    and place the item after all prioritized ones.
+    """
+    for lb in labels:
+        m = _PRIORITY_LABEL_RE.match(lb)
+        if m:
+            return int(m.group(1))
+    return None
+
+
 # Issue workflow ----------------------------------------------------------
 # Only the states actually transitioned by the pipeline live here.
 # Stage 0 sets ``WORKFLOW_NEW``, Stage 1 transitions to ``WORKFLOW_REVIEWING``
@@ -216,6 +243,10 @@ _COLOR_BLUE_PR = "0052cc"          # PR opened (terminal pipeline state pre-merg
 _COLOR_BLUE_DECOMPOSED = "1d76db"  # intent decomposed (epic open)
 _COLOR_RED_BLOCKED = "b60205"      # hard block, excluded from auto-resume
 _COLOR_LIGHT_BLUE_DONE = "c5def5"  # mention already processed (sticky marker)
+_COLOR_RED_HOT = "b60205"            # priority 0 — critical / maximum urgency
+_COLOR_ORANGE_HIGH = "d93f0b"        # priority 1 — high
+_COLOR_YELLOW_MEDIUM = "fbca04"      # priority 2 — medium
+_COLOR_GREEN_LOW = "0e8a16"          # priority 3 — low
 
 LABEL_COLORS = {
     WORKFLOW_NEW: _COLOR_GREEN_PROGRESS,
@@ -233,6 +264,10 @@ LABEL_COLORS = {
     REVIEW_CONCLUDED: _COLOR_GREEN_PROGRESS,
     MENTION_DONE: _COLOR_LIGHT_BLUE_DONE,
     REFINAR: _COLOR_LAVENDER_REFINE,
+    PRIORITY_0: _COLOR_RED_HOT,
+    PRIORITY_1: _COLOR_ORANGE_HIGH,
+    PRIORITY_2: _COLOR_YELLOW_MEDIUM,
+    PRIORITY_3: _COLOR_GREEN_LOW,
 }
 
 LABEL_DESCRIPTIONS = {
@@ -251,6 +286,10 @@ LABEL_DESCRIPTIONS = {
     REVIEW_CONCLUDED: "Pipeline: PR revisada/mergeada",
     MENTION_DONE: "Pipeline: menção/atribuição já processada — humano remove para reprocessar",
     REFINAR: "Pipeline: escopo vago — precisa de refinamento antes de avançar (humano pode aplicar à mão)",
+    PRIORITY_0: "Pipeline: prioridade crítica — processar antes de tudo (0 = máxima urgência)",
+    PRIORITY_1: "Pipeline: prioridade alta",
+    PRIORITY_2: "Pipeline: prioridade média",
+    PRIORITY_3: "Pipeline: prioridade baixa",
 }
 
 

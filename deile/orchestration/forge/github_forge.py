@@ -34,6 +34,8 @@ from deile.orchestration.pipeline._time_utils import format_iso_utc
 from deile.orchestration.pipeline.labels import (LABEL_COLORS,
                                                  LABEL_DESCRIPTIONS,
                                                  MENTION_LABELS, REFINE_LABELS,
+                                                 PRIORITY_LABEL_PREFIX,
+                                                 PRIORITY_LABELS,
                                                  REVIEW_LABELS,
                                                  WORKFLOW_LABELS)
 
@@ -809,8 +811,49 @@ class GitHubForge(ForgeClient):
 
         await asyncio.gather(*[
             _create_one(label)
-            for label in (*WORKFLOW_LABELS, *REVIEW_LABELS, *MENTION_LABELS, *REFINE_LABELS)
+            for label in (*WORKFLOW_LABELS, *REVIEW_LABELS, *MENTION_LABELS, *REFINE_LABELS, *PRIORITY_LABELS)
         ])
+
+    # ------------------------------------------------------------------
+    # Priority inheritance (issue #369)
+    # ------------------------------------------------------------------
+
+    async def inherit_priority_from_linked_issue(self, pr_number: int) -> Optional[int]:
+        """Return the most urgent priority N from issues linked in the PR body.
+
+        Parses the PR body for ``Closes #N``, ``Fixes #N``, ``Resolves #N``
+        references, fetches each linked issue's labels, and returns the
+        smallest N (most urgent) among ``~prioridade:N`` labels found.
+
+        Returns ``None`` when:
+        - no linked issues are found in the PR body
+        - none of the linked issues carry a ``~prioridade:N`` label
+        - any transport error occurs (fail-open: ``None`` is safe)
+        """
+        body = await self.get_pr_body(pr_number)
+        if not body:
+            return None
+        # Match GitHub-flavoured closing keywords: Closes, Fixes, Resolves
+        # (case-insensitive, with optional colon).
+        linked = re.findall(
+            r"\b(?:clos\w*|fix\w*|resolv\w*)\s*:?\s*#(\d+)\b",
+            body, re.IGNORECASE,
+        )
+        if not linked:
+            return None
+        # Deduplicate linked issue numbers.
+        unique_numbers = set(int(n) for n in linked)
+        best: Optional[int] = None
+        from deile.orchestration.pipeline.labels import parse_priority_from_labels
+        for n in unique_numbers:
+            try:
+                issue = await self.get_issue(n)
+            except ForgeCommandError:
+                continue
+            p = parse_priority_from_labels(issue.labels)
+            if p is not None and (best is None or p < best):
+                best = p
+        return best
 
     # ------------------------------------------------------------------
     # Comments / search

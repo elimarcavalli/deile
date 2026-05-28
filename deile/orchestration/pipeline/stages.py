@@ -51,6 +51,7 @@ from deile.orchestration.pipeline.labels import (FOLLOW_UPS_PROCESSED,
                                                  is_batch_label,
                                                  issue_type_from_labels,
                                                  make_attempt_label,
+                                                 parse_priority_from_labels,
                                                  refine_workflow_state)
 
 # Mention triggers that describe a STICKY state (they re-appear on every poll
@@ -71,6 +72,30 @@ _ENDED_INCOMPLETO = "incompleto"
 _ENDED_BLOQUEADO = "bloqueado"
 
 logger = logging.getLogger(__name__)
+
+# --- Priority sorting (issue #369) ----------------------------------------
+
+
+def sort_by_priority(candidates):
+    """Sort *candidates* (IssueRef or PrRef) by priority — lower N = more urgent.
+
+    Items with a ``~prioridade:N`` label are ordered by N (0 first, 3 last).
+    Items without any priority label are placed after all prioritized items.
+    Tiebreaker: lower issue/PR number wins (deterministic).
+
+    The function is pure (no I/O) — it works client-side on the list already
+    returned by the forge. More sophisticated tiebreakers (merge-base distance,
+    commit count, diff size) are deferred to a future iteration.
+    """
+    def _key(c):
+        p = parse_priority_from_labels(getattr(c, "labels", ()))
+        # Priority group: 0 for items with a priority label (ordered by N),
+        # 1 for items without (placed last).
+        if p is not None:
+            return (0, p, getattr(c, "number", 0))
+        return (1, 0, getattr(c, "number", 0))
+    return sorted(candidates, key=_key)
+
 
 # --- Commit classification (issue #351) ------------------------------------
 
@@ -292,7 +317,7 @@ async def classify_new_issues(monitor: "PipelineMonitor") -> None:
         logger.error("could not list unclassified issues: %s", exc)
         return
 
-    for issue in issues:
+    for issue in sort_by_priority(issues):
         # Defense-in-depth: never touch an issue that already has a pipeline label.
         if any(lb.startswith("~") for lb in issue.labels):
             continue
@@ -741,8 +766,9 @@ async def review_one_new_issue(monitor: "PipelineMonitor") -> None:
         )
         return
     # Shard filter: only consider issues whose hash falls in our shard.
+    # Sort by priority so the most urgent issue is reviewed first.
     target = next(
-        (i for i in issues if i.batch_id is None and monitor.identity.owns(i.title)),
+        (i for i in sort_by_priority(issues) if i.batch_id is None and monitor.identity.owns(i.title)),
         None,
     )
     if target is None:
@@ -894,7 +920,7 @@ async def refine_one_issue(monitor: "PipelineMonitor") -> None:
     _excluded = (WORKFLOW_WAITING, WORKFLOW_BLOCKED, WORKFLOW_IMPLEMENTING,
                  WORKFLOW_PR, WORKFLOW_DECOMPOSED)
     target = next(
-        (i for i in issues
+        (i for i in sort_by_priority(issues)
          if not any(lb in i.labels for lb in _excluded)
          and monitor.identity.owns(i.title)),
         None,
@@ -1019,7 +1045,7 @@ async def decompose_one_reviewed_intent(monitor: "PipelineMonitor") -> None:
         return
     ownership_label = monitor.identity.ownership_label()
     target = next(
-        (i for i in issues
+        (i for i in sort_by_priority(issues)
          if issue_type_from_labels(i.labels) == TYPE_INTENT
          and WORKFLOW_DECOMPOSED not in i.labels
          and WORKFLOW_BLOCKED not in i.labels
@@ -1095,6 +1121,8 @@ async def implement_one_reviewed_issue(monitor: "PipelineMonitor") -> None:
         and monitor._this_monitor_owns(i)
         and (i.batch_id is not None or ownership_label in i.labels)
     ]
+    # Sort by priority so the most urgent issues are implemented first.
+    candidates = sort_by_priority(candidates)
     # Cap concurrency at ``max_parallel`` (>=1). Each claimed issue leaves the
     # revisada set on its transition, so later ticks won't re-pick it.
     batch = candidates[: max(1, monitor.config.max_parallel)]
@@ -1224,9 +1252,10 @@ async def resume_in_progress_issues(monitor: "PipelineMonitor") -> None:
         )
         return
     now = _monotonic()
+    # Sort by priority so the most urgent parked issue is resumed first.
     target = next(
         (
-            i for i in issues
+            i for i in sort_by_priority(issues)
             if WORKFLOW_BLOCKED not in i.labels
             and WORKFLOW_PR not in i.labels
             and monitor._this_monitor_owns(i)
@@ -1695,7 +1724,8 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
         # Fresh: unclaimed PR awaiting first review.
         return pr.batch_id is None
 
-    target = next((pr for pr in prs if _candidate(pr)), None)
+    # Sort by priority so the most urgent PR is reviewed first.
+    target = next((pr for pr in sort_by_priority(prs) if _candidate(pr)), None)
     if target is None:
         return
     is_resume = REVIEW_IN_PROGRESS in target.labels
@@ -2093,7 +2123,7 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
     except GhCommandError as exc:
         await _record_forge_error(monitor, "reaper: list_open_prs failed", exc)
         return
-    for pr in prs:
+    for pr in sort_by_priority(prs):
         if REVIEW_IN_PROGRESS not in pr.labels:
             continue
         # Só re-claim PRs deste monitor (ownership).
@@ -2124,7 +2154,7 @@ async def reap_orphan_claims(monitor: "PipelineMonitor") -> None:
             monitor, "reaper: list_issues_with_label failed", exc,
         )
         return
-    for issue in impl_issues:
+    for issue in sort_by_priority(impl_issues):
         if own_label not in issue.labels:
             continue
         applied_at = await monitor.forge.label_applied_at(
