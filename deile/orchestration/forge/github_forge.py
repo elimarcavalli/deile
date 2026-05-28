@@ -560,6 +560,44 @@ class GitHubForge(ForgeClient):
             rc, out, err,
         )
 
+    async def get_pr_commits_since(self, number: int, since_ts: float) -> list[dict]:
+        """Return commits on PR #number pushed after *since_ts* (Unix timestamp).
+
+        Uses ``gh api repos/<r>/pulls/<n>/commits`` with a jq filter that
+        extracts sha, message, date and per-file filenames. Filters
+        client-side by timestamp. Returns empty list on any transport or
+        parse failure (fail-open — callers treat "no commits" as "nothing
+        new").
+        """
+        rc, out, _ = await self._run(
+            "api",
+            f"repos/{self.repo}/pulls/{number}/commits",
+            "-q",
+            (
+                '[.[] | {sha: .sha, message: .commit.message, '
+                'date: .commit.committer.date, '
+                'files: [.files[]?.filename]}]'
+            ),
+        )
+        if rc != 0 or not out.strip():
+            return []
+        try:
+            all_commits = json.loads(out)
+        except json.JSONDecodeError:
+            logger.debug("get_pr_commits_since #%d: JSON parse failed", number)
+            return []
+        result: list[dict] = []
+        for c in all_commits:
+            ts_str = (c.get("date") or "").strip()
+            try:
+                iso = ts_str.replace("Z", "+00:00")
+                ts = int(datetime.fromisoformat(iso).timestamp())
+                if ts > since_ts:
+                    result.append(c)
+            except (ValueError, TypeError, OverflowError):
+                continue
+        return result
+
     async def get_ci_status(
         self, number: int,
     ) -> Literal["passing", "failing", "pending", "none"]:
