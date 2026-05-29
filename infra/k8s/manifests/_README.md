@@ -6,6 +6,30 @@
 
 ---
 
+## Política: Secrets de Bearer não têm manifest stub (issue #356)
+
+Os Secrets de bearer token (`worker-bearer`, `claude-worker-bearer`,
+`pipeline-status-bearer`) são criados **programaticamente** pelo `deploy.py`
+— nunca via `kubectl apply -f <manifest stub>`. O motivo é evitar a race
+condition em que o pod sobe com Secret vazio antes que o token real seja
+populado.
+
+| Secret | Criado por | Quando |
+|--------|-----------|--------|
+| `worker-bearer` | `deploy.py k8s up` | bootstrap inicial |
+| `claude-worker-bearer` | `deploy.py k8s claude-login` → `_kubectl_sync_bearer_token()` | **antes** do Deployment 50 ser aplicado |
+| `pipeline-status-bearer` | `deploy.py k8s up` | bootstrap inicial |
+
+Para recriar `claude-worker-bearer` manualmente (sem `claude-login`):
+
+```bash
+kubectl create secret generic claude-worker-bearer \
+  --from-literal=CLAUDE_WORKER_BEARER_TOKEN=<token> \
+  -n deile --dry-run=client -o yaml | kubectl apply -f -
+```
+
+---
+
 ## Forge tokens (`GITLAB_TOKEN` no `deile-secrets`)
 
 > ⚠️ **Obsoleto a partir de #354** — o `k8s up` agora propaga `GITLAB_TOKEN`

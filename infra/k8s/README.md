@@ -252,7 +252,6 @@ infra/k8s/
     ├── 46-deile-pipeline-deployment.yaml       deile-pipeline Deployment + status Service (:8768)
     ├── 47-claude-worker-allowed-repos.yaml     ConfigMap: repos que o claude-worker pode clonar
     ├── 47-deile-runtime-config.yaml            ConfigMap com env vars de runtime do pipeline
-    ├── 48-claude-worker-bearer-secret.yaml     Bearer token do claude-worker (pipeline → claude)
     ├── 49-claude-worker-pvc.yaml               PVC do claude-worker (worktrees + credentials)
     ├── 50-claude-worker-deployment.yaml        claude-worker Deployment + Service (:8767)
     └── 99-deile-debug.yaml                     probe Pod (manual; off-path)
@@ -262,6 +261,11 @@ infra/k8s/
 > manifest — é criado pelo verbo `k8s claude-login` a partir do
 > `~/.claude/credentials.json` do host. Esse arquivo nunca entra no
 > repo nem na imagem.
+>
+> O Secret `claude-worker-bearer` também **não** está em manifest — é criado
+> programaticamente por `_kubectl_sync_bearer_token()` (via
+> `kubectl create secret --dry-run | apply`) **antes** que o Deployment 50
+> seja aplicado, eliminando a race condition descrita na issue #356.
 
 ### 3.1 Workflow
 

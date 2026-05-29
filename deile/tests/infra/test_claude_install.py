@@ -257,6 +257,122 @@ def test_kubectl_sync_bearer_token_succeeds_when_worker_bearer_present(
 
 
 # ---------------------------------------------------------------------------
+# Testes da correção de race condition (issue #356)
+# ---------------------------------------------------------------------------
+
+
+def test_kubectl_apply_manifests_does_not_include_manifest_48(
+    claude_install_module,
+):
+    """Manifest 48 (bearer Secret stub) não deve estar na lista de manifests.
+
+    A Opção A do issue #356 elimina a race condition removendo o stub vazio
+    da lista: o Secret é criado com token real por _kubectl_sync_bearer_token
+    ANTES de _kubectl_apply_manifests ser chamado.
+    """
+    manifests_called = []
+
+    def fake_run(cmd, *args, **kwargs):
+        manifests_called.extend(cmd)
+        ret = MagicMock()
+        ret.returncode = 0
+        ret.stdout = ""
+        ret.stderr = ""
+        return ret
+
+    with patch.object(claude_install_module.subprocess, "run", side_effect=fake_run):
+        claude_install_module._kubectl_apply_manifests(namespace="deile")
+
+    cmd_str = " ".join(manifests_called)
+    assert "48-claude-worker-bearer-secret" not in cmd_str, (
+        "Manifest 48 não deve ser aplicado por _kubectl_apply_manifests — "
+        "o Secret é criado por _kubectl_sync_bearer_token antes (issue #356)"
+    )
+
+
+def test_bootstrap_syncs_bearer_before_applying_manifests(
+    claude_install_module, tmp_path, monkeypatch,
+):
+    """_kubectl_sync_bearer_token deve ser chamado ANTES de _kubectl_apply_manifests.
+
+    Garante que a race condition do issue #356 está resolvida: o Secret
+    claude-worker-bearer já contém o token real quando o Deployment 50 é aplicado.
+    """
+    fake_home = tmp_path / ".claude"
+    fake_home.mkdir()
+    (fake_home / "credentials.json").write_text(
+        json.dumps({"email": "u@x", "access_token": "t"})
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        claude_install_module, "_check_claude_logged_in", lambda: None,
+    )
+    monkeypatch.setattr(
+        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+    )
+
+    call_order = []
+
+    def fake_sync_bearer(*, namespace):
+        call_order.append("sync_bearer")
+        return True
+
+    def fake_apply_manifests(*, namespace):
+        call_order.append("apply_manifests")
+        return True
+
+    with patch.object(claude_install_module, "_kubectl_apply_secret", return_value=True), \
+         patch.object(claude_install_module, "_kubectl_sync_bearer_token",
+                      side_effect=fake_sync_bearer), \
+         patch.object(claude_install_module, "_kubectl_apply_manifests",
+                      side_effect=fake_apply_manifests), \
+         patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True):
+        result = claude_install_module.bootstrap_claude_worker(
+            interactive=False, force_relogin=False, home=tmp_path,
+        )
+
+    assert result.ok is True
+    assert call_order.index("sync_bearer") < call_order.index("apply_manifests"), (
+        f"sync_bearer deve preceder apply_manifests; ordem: {call_order}"
+    )
+
+
+def test_bootstrap_bearer_sync_failure_before_manifests_returns_error(
+    claude_install_module, tmp_path, monkeypatch,
+):
+    """Se _kubectl_sync_bearer_token falhar, bootstrap deve retornar erro
+    SEM ter chamado _kubectl_apply_manifests (evita aplicar Deployment
+    com Secret vazio — issue #356)."""
+    fake_home = tmp_path / ".claude"
+    fake_home.mkdir()
+    (fake_home / "credentials.json").write_text(json.dumps({"email": "u@x"}))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        claude_install_module, "_check_claude_logged_in", lambda: None,
+    )
+    monkeypatch.setattr(
+        claude_install_module, "_read_credentials_from_keychain", lambda: None,
+    )
+
+    manifests_called = []
+
+    with patch.object(claude_install_module, "_kubectl_apply_secret", return_value=True), \
+         patch.object(claude_install_module, "_kubectl_sync_bearer_token", return_value=False), \
+         patch.object(claude_install_module, "_kubectl_apply_manifests",
+                      side_effect=lambda **kw: manifests_called.append(True) or True), \
+         patch.object(claude_install_module, "_kubectl_wait_rollout", return_value=True):
+        result = claude_install_module.bootstrap_claude_worker(
+            interactive=False, force_relogin=False, home=tmp_path,
+        )
+
+    assert result.ok is False
+    assert manifests_called == [], (
+        "_kubectl_apply_manifests não deve ser chamado se sync_bearer falhou "
+        "(evita Deployment com Secret vazio — issue #356)"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Testes de CLAUDE_OAUTH_ACCESS_TOKEN env var (#309 fase 3)
 # ---------------------------------------------------------------------------
 
