@@ -48,7 +48,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from functools import cached_property
 from pathlib import Path
-from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar
+from typing import Any, Callable, Dict, Generic, List, Optional, Set, Tuple, TypeVar
 
 T = TypeVar("T")
 
@@ -592,6 +592,72 @@ def _fmt_age(seconds: Optional[float]) -> str:
     return f"{s // 86400}d"
 
 
+# ===== Resource / metrics helpers ==========================================
+
+_MEM_SUFFIXES: Dict[str, int] = {
+    "Ki": 1024,
+    "Mi": 1024 ** 2,
+    "Gi": 1024 ** 3,
+    "Ti": 1024 ** 4,
+    "K":  1000,
+    "M":  1000 ** 2,
+    "G":  1000 ** 3,
+}
+
+
+def _parse_cpu(s: str) -> Optional[int]:
+    """'230m' → 230 (millicores); '2' → 2000."""
+    if not s:
+        return None
+    if s.endswith("m"):
+        try:
+            return int(s[:-1])
+        except ValueError:
+            return None
+    try:
+        return int(float(s) * 1000)
+    except ValueError:
+        return None
+
+
+def _parse_mem(s: str) -> Optional[int]:
+    """'412Mi' → bytes.  Supports Ki/Mi/Gi/Ti and K/M/G."""
+    if not s:
+        return None
+    for suffix, mult in _MEM_SUFFIXES.items():
+        if s.endswith(suffix):
+            try:
+                return int(s[: -len(suffix)]) * mult
+            except ValueError:
+                return None
+    try:
+        return int(s)
+    except ValueError:
+        return None
+
+
+def _fmt_mem_display(b: Optional[int]) -> str:
+    if not isinstance(b, int):
+        return "?"
+    if b >= 1024 ** 3:
+        return f"{b / 1024 ** 3:.1f}Gi"
+    if b >= 1024 ** 2:
+        return f"{b // 1024 ** 2}Mi"
+    if b >= 1024:
+        return f"{b // 1024}Ki"
+    return f"{b}B"
+
+
+def _fmt_cpu_display(mc: Optional[int]) -> str:
+    return "?" if not isinstance(mc, int) else f"{mc}m"
+
+
+def _pct(used: Optional[int], limit: Optional[int]) -> Optional[float]:
+    if not isinstance(used, int) or not isinstance(limit, int) or limit == 0:
+        return None
+    return used / limit * 100
+
+
 # ===== Pods provider ========================================================
 
 @dataclass
@@ -604,6 +670,15 @@ class PodInfo:
     age_s: float
     started_at: Optional[datetime]
     node: str = ""
+    # OOM history (populated from containerStatuses[].lastState.terminated)
+    oom_killed_count: int = 0
+    last_oom_at: Optional[datetime] = None
+    # Resource limits from spec.containers[].resources.limits (aggregated)
+    cpu_limit_millicores: Optional[int] = None
+    mem_limit_bytes: Optional[int] = None
+    # Live usage from kubectl top pod (injected by PodMetricsProvider)
+    cpu_millicores: Optional[int] = None
+    mem_bytes: Optional[int] = None
 
 
 _ROLE_BY_APP = {
@@ -658,6 +733,36 @@ class PodsProvider(_KubectlProviderMixin):
             restarts = sum(cs.get("restartCount", 0) for cs in container_statuses)
             started_at = _parse_k8s_ts(status.get("startTime"))
             age_s = (now - started_at).total_seconds() if started_at else 0.0
+
+            # OOM history: aggregate across all containers.
+            oom_count = 0
+            last_oom: Optional[datetime] = None
+            for cs in container_statuses:
+                for state_block in (
+                    cs.get("lastState", {}).get("terminated", {}),
+                    cs.get("state", {}).get("terminated", {}),
+                ):
+                    if state_block.get("reason") == "OOMKilled":
+                        oom_count += 1
+                        fin = _parse_k8s_ts(state_block.get("finishedAt"))
+                        if fin is not None and (
+                            last_oom is None or fin > last_oom
+                        ):
+                            last_oom = fin
+
+            # Resource limits: aggregate across all containers.
+            containers = item.get("spec", {}).get("containers", []) or []
+            cpu_limit_total = 0
+            mem_limit_total = 0
+            for c in containers:
+                lims = c.get("resources", {}).get("limits", {})
+                cpu_val = _parse_cpu(lims.get("cpu", ""))
+                mem_val = _parse_mem(lims.get("memory", ""))
+                if cpu_val is not None:
+                    cpu_limit_total += cpu_val
+                if mem_val is not None:
+                    mem_limit_total += mem_val
+
             rows.append(PodInfo(
                 name=meta.get("name", "?"),
                 role=role,
@@ -667,6 +772,10 @@ class PodsProvider(_KubectlProviderMixin):
                 age_s=age_s,
                 started_at=started_at,
                 node=item.get("spec", {}).get("nodeName", ""),
+                oom_killed_count=oom_count,
+                last_oom_at=last_oom,
+                cpu_limit_millicores=cpu_limit_total if cpu_limit_total else None,
+                mem_limit_bytes=mem_limit_total if mem_limit_total else None,
             ))
         # Ordem estável: pipeline > worker > bot > shell > outros, por nome.
         order = {"pipeline": 0, "worker": 1, "bot": 2, "shell": 3, "other": 4}
@@ -4364,6 +4473,144 @@ class LocalRegistryProvider:
                                 instances=len(raw_entries))
 
 
+# ===== Pod metrics provider (kubectl top pod) ================================
+
+class PodMetricsProvider(_KubectlProviderMixin):
+    """Live CPU/memory usage per pod via `kubectl top pod`.
+
+    TTL 5s — metrics-server scrape interval is 15s; no benefit from more
+    frequent polling. Returns Dict[pod_name, (cpu_m, mem_b)]. Fails
+    gracefully when metrics-server is absent (callers show dim '?').
+    """
+
+    def __init__(self, ttl_s: float = 5.0, namespace: str = NS,
+                 enabled: bool = True):
+        self._kubectl = kubectl_bin()
+        self._namespace = namespace
+        self._enabled = enabled
+        self._cache: Cache[Dict[str, tuple]] = Cache(
+            ttl_s, self._fetch, fallback={},
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> Dict[str, tuple]:
+        return self._cache.get(force)
+
+    def _fetch(self) -> Dict[str, tuple]:
+        self._check_enabled()
+        self._resolve_kubectl()
+        if self._kubectl is None:
+            raise RuntimeError("kubectl não encontrado")
+        out = _capture_text(
+            [self._kubectl, "-n", self._namespace, "top", "pod", "--no-headers"],
+            timeout=8.0,
+        )
+        if out is None:
+            raise RuntimeError("kubectl top pod falhou (metrics-server ausente?)")
+        return self._parse_top_output(out)
+
+    @staticmethod
+    def _parse_top_output(text: str) -> Dict[str, tuple]:
+        result: Dict[str, tuple] = {}
+        for line in text.splitlines():
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            name, cpu_s, mem_s = parts[0], parts[1], parts[2]
+            result[name] = (_parse_cpu(cpu_s), _parse_mem(mem_s))
+        return result
+
+
+# ===== Endpoint probe provider (kubectl get endpoints) =======================
+
+@dataclass
+class EndpointInfo:
+    """Ready/not-ready pod names per Service in the namespace."""
+    ready: Dict[str, set]       # service_name -> set of ready pod names
+    not_ready: Dict[str, set]   # service_name -> set of not-ready pod names
+
+    def service_for_pod(self, pod_name: str) -> Optional[str]:
+        """Service name if pod appears in any endpoint subset, else None."""
+        for svc, pods in self.ready.items():
+            if pod_name in pods:
+                return svc
+        for svc, pods in self.not_ready.items():
+            if pod_name in pods:
+                return svc
+        return None
+
+    def is_ready(self, service: str, pod_name: str) -> bool:
+        return pod_name in self.ready.get(service, set())
+
+    @staticmethod
+    def empty() -> "EndpointInfo":
+        return EndpointInfo(ready={}, not_ready={})
+
+
+class EndpointProbeProvider(_KubectlProviderMixin):
+    """Single `kubectl get endpoints -o json` -> EndpointInfo (TTL 3s).
+
+    Builds ready/not-ready pod-name sets per Service. Pods that don't
+    appear in any endpoint (e.g. deile-pipeline) return None from
+    service_for_pod — the view omits the ENDPOINT line for them.
+    """
+
+    def __init__(self, ttl_s: float = 3.0, namespace: str = NS,
+                 enabled: bool = True):
+        self._kubectl = kubectl_bin()
+        self._namespace = namespace
+        self._enabled = enabled
+        self._cache: Cache[EndpointInfo] = Cache(
+            ttl_s, self._fetch, fallback=EndpointInfo.empty(),
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> EndpointInfo:
+        return self._cache.get(force)
+
+    def _fetch(self) -> EndpointInfo:
+        self._check_enabled()
+        self._resolve_kubectl()
+        if self._kubectl is None:
+            raise RuntimeError("kubectl não encontrado")
+        data = _capture_json(
+            [self._kubectl, "-n", self._namespace, "get", "endpoints", "-o", "json"],
+            timeout=5.0,
+        )
+        if data is None:
+            raise RuntimeError("kubectl get endpoints falhou")
+        return self._parse_endpoints(data)
+
+    @staticmethod
+    def _parse_endpoints(data: Any) -> EndpointInfo:
+        ready: Dict[str, set] = {}
+        not_ready: Dict[str, set] = {}
+        for item in data.get("items", []):
+            svc = item.get("metadata", {}).get("name", "")
+            if not svc:
+                continue
+            for subset in (item.get("subsets") or []):
+                for addr in (subset.get("addresses") or []):
+                    ref = addr.get("targetRef", {})
+                    if ref.get("kind") == "Pod":
+                        pod = ref.get("name", "")
+                        if pod:
+                            ready.setdefault(svc, set()).add(pod)
+                for addr in (subset.get("notReadyAddresses") or []):
+                    ref = addr.get("targetRef", {})
+                    if ref.get("kind") == "Pod":
+                        pod = ref.get("name", "")
+                        if pod:
+                            not_ready.setdefault(svc, set()).add(pod)
+        return EndpointInfo(ready=ready, not_ready=not_ready)
+
+
 # ===== Aggregate hub ========================================================
 
 @dataclass
@@ -4394,6 +4641,9 @@ class PanelData:
     # ``DispatchMatrixView`` (hotkey [d]). TTL 3s.
     stage_dispatch: "StageDispatchProvider"
     notifier: NotifierProvider
+    # PodWatch RESOURCES header (issue #394).
+    pod_metrics: PodMetricsProvider
+    endpoints: EndpointProbeProvider
     local_processes: Optional[LocalProcessesProvider] = None
     local_logs: Optional[LocalLogsProvider] = None
     local_audit: Optional[LocalAuditProvider] = None
@@ -4482,6 +4732,10 @@ class PanelData:
             notifier=NotifierProvider(namespace=context.namespace,
                                       deploy=context.bot_deploy,
                                       enabled=k8s_on),
+            pod_metrics=PodMetricsProvider(namespace=context.namespace,
+                                           enabled=k8s_on),
+            endpoints=EndpointProbeProvider(namespace=context.namespace,
+                                            enabled=k8s_on),
             local_processes=local_procs,
             local_logs=local_logs,
             local_audit=local_audit,
@@ -4499,7 +4753,7 @@ class PanelData:
         base = (self.pods, self.pipeline, self.workers, self.github,
                 self.costs, self.models, self.current_model,
                 self.stage_models, self.dispatch_mode, self.stage_dispatch,
-                self.notifier)
+                self.notifier, self.pod_metrics, self.endpoints)
         locals_ = tuple(p for p in (self.local_processes, self.local_logs,
                                     self.local_audit, self.local_instances,
                                     self.local_registry)
@@ -4525,7 +4779,8 @@ class PanelData:
         """
         names = ["pods", "pipeline", "workers", "github", "costs",
                  "models", "current_model", "stage_models",
-                 "dispatch_mode", "stage_dispatch", "notifier"]
+                 "dispatch_mode", "stage_dispatch", "notifier",
+                 "pod_metrics", "endpoints"]
         if self.local_processes is not None:
             names.append("local_processes")
         if self.local_logs is not None:
@@ -4542,8 +4797,10 @@ class PanelData:
             if not err:
                 continue
             # "k8s desabilitado" e "kubectl não encontrado" são esperados —
-            # não viram alerta.
-            if "k8s desabilitado" in err or "kubectl não encontrado" in err:
+            # não viram alerta. "kubectl top pod falhou" indica metrics-server
+            # ausente — também esperado em clusters sem metrics-server.
+            if ("k8s desabilitado" in err or "kubectl não encontrado" in err
+                    or "kubectl top pod falhou" in err):
                 continue
             out.append((name, err))
         return out
