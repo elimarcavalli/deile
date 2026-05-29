@@ -155,11 +155,23 @@ async def _start_status_server(monitor) -> "tuple|None":
     return (runner, site)
 
 
+def _warn_if_no_forge_token() -> None:
+    """Emit a WARNING if neither GITHUB_TOKEN nor GITLAB_TOKEN is present."""
+    has_github = bool(os.environ.get("GITHUB_TOKEN"))
+    has_gitlab = bool(os.environ.get("GITLAB_TOKEN") or os.environ.get("GL_TOKEN"))
+    if not has_github and not has_gitlab:
+        logger.warning(
+            "no forge token found — set GITHUB_TOKEN or GITLAB_TOKEN "
+            "before starting the pipeline, otherwise forge API calls will fail"
+        )
+
+
 async def run_pipeline_forever() -> int:
     """Build the monitor from settings, start it, and block until SIGTERM/SIGINT."""
     from deile.orchestration.pipeline.monitor import (
         PipelineMonitor, build_default_pipeline_config)
 
+    _warn_if_no_forge_token()
     cfg = build_default_pipeline_config()
     # review_callback stays None on purpose: the optional issue-body summary
     # would require a local LLM agent. The pipeline still flows
