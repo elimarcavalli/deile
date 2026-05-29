@@ -138,10 +138,10 @@ spec:
         - { name: deile-secrets, secret: { secretName: deile-secrets,  defaultMode: 288 } }
         - { name: worker-bearer, secret: { secretName: worker-bearer,  defaultMode: 288 } }
         - { name: work,          persistentVolumeClaim: { claimName: deile-worker-work } }
-        - { name: home,          emptyDir: { sizeLimit: "256Mi" } }
+        - { name: home,          emptyDir: { sizeLimit: "512Mi" } }
         # PVC de logs rotacionados (issue #371).
         - { name: logs,          persistentVolumeClaim: { claimName: deile-logs } }
-        - { name: tmp,           emptyDir: { medium: Memory, sizeLimit: "64Mi" } }
+        - { name: tmp,           emptyDir: { sizeLimit: "1Gi" } }
         - name: bot-config
           configMap:
             name: bot-config

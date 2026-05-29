@@ -154,7 +154,7 @@ spec:
           persistentVolumeClaim:
             claimName: claude-worker-home
         - name: tmp
-          emptyDir: { medium: Memory, sizeLimit: "128Mi" }
+          emptyDir: { sizeLimit: "5Gi" }
         - name: allowed-repos
           configMap:
             name: claude-worker-allowed-repos

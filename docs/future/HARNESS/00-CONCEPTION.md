@@ -11,54 +11,146 @@
 
 ---
 
-## §1. O que é um "harness DEILE" — definição operacional
+## §1. O que é um "harness DEILE" — definição operacional COMPLETA
 
 **Harness é o cluster inteiro**, não um pod. Cada `namespace` K8s é uma
-**identidade de desenvolvimento** (um "dev autônomo") com:
+**identidade de desenvolvimento** ("um dev autônomo"). Multi-namespace já
+funciona: `deile` (main GH), `deile-gl` (pilot GitLab). Cada namespace tem
+pipeline, workers, bot, shell e PVCs **independentes**, isolados por
+NetworkPolicy default-deny.
 
-- um repositório (ou conjunto) e uma conta de forge (GitHub OU GitLab)
-- um agregado de canais de entrada (Discord bot, webhooks, polling de
-  issues/PRs/menções, schedules cron)
-- um pool de workers que **executam** trabalho (`deile-worker`,
-  `claude-worker`, futuro `opendeile-worker`, etc.)
-- um **monitor singleton** (`deile-pipeline`) que orquestra
-- estado persistente (PVCs, ledger, settings, OAuth)
+### §1.1 — Topologia atual por namespace (5 pods + 4 PVCs + 6 Secrets)
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│  NAMESPACE = UMA IDENTIDADE  (ex: "deile" = você no projeto deile)   │
-│                                                                       │
-│  ┌─────────────┐   ┌─────────────────────────┐   ┌────────────────┐  │
-│  │  Discord    │──▶│  deilebot (control      │──▶│  Worker pool   │  │
-│  │  bot (DM,   │   │  plane: SQLite, cron,   │   │  ───────────   │  │
-│  │  canais,    │◀──│  Discord I/O)           │◀──│  deile-worker  │  │
-│  │  mentions)  │   └────────┬────────────────┘   │  claude-worker │  │
-│  └─────────────┘            │ HTTP /v1/dispatch  │  (futuro: gpt-,│  │
-│                             ▼                    │   gemini-...)  │  │
-│                  ┌─────────────────────┐         └────────┬───────┘  │
-│  ┌────────────┐  │  deile-pipeline     │                  │           │
-│  │ GitHub /   │◀▶│  (singleton monitor)│──────────────────┘           │
-│  │ GitLab     │  │  forge polling,     │                              │
-│  │ events     │──▶│  label state machine│                              │
-│  └────────────┘  │  dispatch decisions │                              │
-│                  └────────┬────────────┘                              │
-│                           │                                           │
-│                           ▼                                           │
-│              ┌────────────────────────┐                               │
-│              │  PVCs + ledger + OAuth │                               │
-│              │  (estado persistente)  │                               │
-│              └────────────────────────┘                               │
-└──────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│ NAMESPACE = UMA IDENTIDADE                                                │
+│                                                                            │
+│ ┌─────────────────────────────────────────────────────────────────────┐  │
+│ │ CANAIS DE ENTRADA                                                    │  │
+│ │  • Discord (DM, channels, mentions, voice* not yet)                  │  │
+│ │  • Forge events (issues/PRs/comments/assignments/reviews)            │  │
+│ │  • Cron schedules (cron.db SQLite no PVC bot-data)                   │  │
+│ │  • Outros adapters (Telegram/WA/Meta = stubs no momento)             │  │
+│ └──────────────┬──────────────────────────┬────────────────────────────┘  │
+│                │                          │                                │
+│                ▼                          ▼                                │
+│ ┌───────────────────────────┐ ┌──────────────────────────────────────┐   │
+│ │ deilebot  (Deployment)    │ │ deile-pipeline (Deployment singleton)│   │
+│ │ • Discord I/O bridge :8765│ │ • Forge polling 60s                  │   │
+│ │ • Owners config           │ │ • Label state machine                │   │
+│ │ • SQLite cron + history   │ │ • Mention router (4 sources)         │   │
+│ │ • PVC bot-data            │ │ • Refinement gate (5 voltas)         │   │
+│ │ • Strategy: Recreate      │ │ • Implement (asyncio.gather)          │   │
+│ │                           │ │ • Resume protocol (#254)             │   │
+│ │ POST /v1/outbound/discord/│ │ • Dispatch ledger SQLite             │   │
+│ │     dm.send               │ │ • Priority sort (~prioridade:N)      │   │
+│ │     channel.post          │ │ • PR triage + review + merge gates   │   │
+│ │     channel.react         │ │ • PVC pipeline-ledger                │   │
+│ │ + cron daemon             │ │ • Status server :8768                │   │
+│ └───────────────────────────┘ └──────┬───────────────────────────────┘   │
+│                                       │ POST /v1/dispatch                  │
+│                                       │ (per-stage routing)                │
+│                       ┌───────────────┴────────────────┐                   │
+│                       ▼                                ▼                   │
+│            ┌─────────────────────┐         ┌─────────────────────┐        │
+│            │ deile-worker:8766   │         │ claude-worker:8767  │        │
+│            │ replicas=2          │         │ replicas=1 (limite  │        │
+│            │ Strategy: Rolling   │         │ atual; meta: scale) │        │
+│            │ • DEILE Python in   │         │ Strategy: Rolling   │        │
+│            │   process           │         │ • claude -p subproc │        │
+│            │ • Tools FULL (bash, │         │ • Worktree per task │        │
+│            │   git, pytest, fs)  │         │ • OAuth in-pod      │        │
+│            │ • workdir/channel   │         │ • workdir/task_id   │        │
+│            │ • PVC RWO 5Gi       │         │ • PVC RWO 1Gi       │        │
+│            │ • TASK_TIMEOUT 2h   │         │ • TASK_TIMEOUT 2h   │        │
+│            └─────────────────────┘         └─────────────────────┘        │
+│                                                                            │
+│ ┌─────────────────────────────────────────────────────────────────────┐  │
+│ │ deile-shell (Deployment, kubectl exec only)                          │  │
+│ │ • Sandbox interativo com toolset cheio                               │  │
+│ │ • emptyDir 1Gi (volátil; pode virar PVC opt-in)                      │  │
+│ └─────────────────────────────────────────────────────────────────────┘  │
+│                                                                            │
+│ PVCs por NS: bot-data, deile-worker-work, claude-worker-home,             │
+│              pipeline-ledger, deile-logs                                   │
+│ Secrets por NS: bot-secrets, deile-secrets, worker-bearer,                │
+│                 claude-worker-bearer, pipeline-status-bearer,             │
+│                 claude-credentials (OAuth)                                 │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
-Múltiplos namespaces coexistem (`deile` = pessoal/main; `deile-gl` = pilot
-GitLab; `deile-staging`, `deile-empresa-X`). Cada um é **isolado** por
-NetworkPolicy default-deny. O `deploy.py` foi feito para subir N
-namespaces independentes na mesma VM.
+### §1.2 — Capabilities operacionais do pipeline (a verdade verificada)
 
-**Você acertou:** o harness é o cluster + os namespaces. **Correção menor:**
-o `deile-pipeline` por namespace é **singleton** (Recreate strategy,
-shard-counting via `MonitorIdentity` quando se quer paralelismo cross-tick).
+| Capability | Estado | Onde está | Notas |
+|---|---|---|---|
+| **Label state machine completa** | ✅ pronto | `pipeline/labels.py`, `stages.py` | `~workflow:{nova→em_revisao→revisada→em_implementacao→em_pr}`, `~review:{pendente→em_andamento→concluida}` |
+| **Refinement gate (issue #257)** | ✅ pronto | `stages.py:778+` | Crítica de escopo por tipo: `intent→analyst`, `feature/refactor→architect`, `bug→debugger`. VAGO→`refinar` + `em_refinamento`/`em_arquitetura`. Até 5 voltas. Pausa em `~workflow:aguardando_stakeholder` se opção precisa decisão humana |
+| **Intent decomposition** | ✅ pronto | `stages.py` | Issue `intent` aprovada é decomposta em N derivadas (architect abre as filhas) → marca `~workflow:decomposta` |
+| **Parallel implementation** | ✅ pronto | `monitor.py:147,204`, `stages.py:1247+` | `max_parallel=2` (config); `asyncio.gather` cap-respeitando; subtrai `~workflow:em_implementacao` in-flight |
+| **Resume same-worker (issue #254)** | ✅ pronto | `_worker_resume.py`, `implementer.py:582+` | Fingerprint substantivo (exclui meta), `.deile-progress.md` journal, attempt counter, budget acumulado. 3 tentativas → bloqueia |
+| **Resume cross-worker** | ❌ ausente | — | Ver §2. PVCs isolados; só git push/pull transporta estado |
+| **Mention/assignment router (issue #253/#261)** | ✅ pronto | `stages.py:452+` | 4 sources: comments (cursor), assignee, requested_reviewer, body-search. Roteamento: issue+assignee → injeta `~workflow:nova`; PR+assignee → `work_merge`; PR+reviewer-só → `review_only` (não mergeia); comment → atende. Sticky via `~mention:processado` |
+| **Per-stage dispatcher routing (issue #309 fase 2)** | ✅ pronto | `dispatch_resolver.py` | `DEILE_PIPELINE_DISPATCH_<STAGE>` por stage; global `DEILE_PIPELINE_DISPATCH_MODE`; default `deile-worker` |
+| **Per-stage model routing (issue #305)** | ✅ pronto | `model_resolver.py` | `DEILE_PIPELINE_MODEL_<STAGE>` por stage; UI no painel (`[d]` matrix view) |
+| **Priority labels (issue #366/#370)** | ✅ pronto | `labels.py:19+`, sort em backlog | `~prioridade:N` (N≥0, 0=urgência máxima). PRs herdam de linked issue |
+| **Multi-forge (GitHub + GitLab, issue #297)** | ✅ pronto | `forge/{github,gitlab}_forge.py`, `ForgeRouter` | Camada `ForgeClient` ABC. GH via `gh`, GL via `glab`. Detecção auto por host/path/env |
+| **Multi-namespace** | ✅ pronto | `deploy.py -n`, manifests sem NS hardcoded | `deile` (main), `deile-gl` (pilot). Painel TUI tem NS-select |
+| **Quality-gate de merge (PR #276)** | ✅ pronto | `briefs.py` | Gate exige suíte completa verde (`pytest deile/tests/`) + confronta entrega vs pedido (issue body + comentários) |
+| **Reaper de stuck PRs** | ✅ pronto | `stages.py`, `notifier.py` | Solta batch `~batch:<sha8>` quando PR `~review:em_andamento` excede TTL; retry até teto |
+| **DispatchLedger persistente** | ✅ pronto | `dispatch_ledger.py` SQLite | Mapeia `issue:N`/`pr:N` → `prev_task_id` para resume claude-worker. PVC sobrevive a restart |
+| **Hash sharding monitor (decisão #18)** | ✅ pronto | `identity.py` `MonitorIdentity` | `~batch:<sha8>` só reivindicado se `shard_count>1` (single monitor não gera churn) |
+| **Fire-and-forget dispatch (PR #374)** | ✅ pronto | `implementer.py`, worker `wait=False` | Pipeline despacha sem bloquear o tick; status reconciliado no próximo tick via ledger + resume-info |
+| **Status server :8768 (issue #347)** | ✅ pronto | `infra/k8s/pipeline_status_server.py` | Endpoints: status, backlog, recent, ledger, reaper-preview, force-tick. Bearer auth |
+| **Painel TUI universal (issue #347/#305/#330)** | ✅ pronto | `infra/k8s/_panel.py` (~5200 linhas, 13 views) | DispatchMatrixView, ClusterStatus, LiveSession, PodWatch (com hotkey `[t]` resize tmp), Issues/PRs, Costs, etc |
+| **Skills hot-reload (PR #296)** | ✅ pronto | `deile/skills/` + `watchdog` | 5 dirs de scan, auto-injeção via triggers, function-call `invoke_skill`, slash `/<name>` |
+| **OpenTelemetry (decisão #39)** | 🟡 instalado | `deile/observability/` | Tracer + metrics CNCF. No-op se sem `DEILE_OTLP_ENDPOINT` |
+| **Memória 4 camadas (decisão #6)** | ✅ pronto | `deile/memory/` | working/episodic/semantic/procedural. SQLite per-session |
+| **Sub-agentes paralelos em sessão CLI (decisão #34)** | ✅ pronto | `dispatch_parallel_subagents` | Sub-DEILEs concorrentes via asyncio.gather + semaphore; painel Rich multipanel |
+| **Streaming-first (decisão #15)** | ✅ pronto | `process_input_stream` | Default da CLI |
+| **Pipeline-status logging (PR #372)** | ✅ pronto | tick summary INFO | `tick #N done in Ts: classified=X reviewed=Y implemented=Z dispatched=W backlog={issues:I prs:P}` |
+| **Personas plugáveis (decisão #12)** | ✅ pronto | `deile/personas/` MD + YAML | Editar Markdown muda comportamento sem código |
+| **Invalidate review on new commit (issue #368)** | ✅ pronto | mention/review handlers | `~review:concluida` é invalidada se há novos commits após a review |
+| **Auto-add ~by:default (issue #375/PR #380)** | ✅ pronto | `stages.py` | Orphan issues reviewed sem owner ganham `~by:default` automaticamente |
+| **Cleanup tools (issue #361)** | ✅ pronto | deploy.py + docs | Manifest 43 deletado, DEILE_BOT_DISABLED documentado |
+
+### §1.3 — Ciclo de vida típico de uma issue (exemplo `intent`)
+
+```
+1. Humano abre issue [INTENT] X                    →  ~workflow:nova
+2. Pipeline classify (deile-worker, deepseek)      →  ~workflow:em_revisao
+3. Critique (analyst persona, claude opus)         →  VAGO → ~workflow:em_refinamento + refinar
+4. Refinement loop (até 5 voltas)                  →  body reescrito, título ajustado
+5. CLARO + intent type                             →  ~workflow:revisada
+6. Architect decompose                             →  ~workflow:decomposta
+                                                      (N issues filhas: ~workflow:nova)
+   ↓ (cada filha segue):
+7. classify → em_revisao → critique → revisada     (paralelo se max_parallel>0)
+8. Pipeline claim ~batch:<sha8> + ~by:default      →  ~workflow:em_implementacao
+9. Worker (deile OU claude conforme stage routing) →  branch auto/issue-N, commits
+10. Worker open PR                                  →  ~workflow:em_pr
+11. PR triage detects auto/issue-N                  →  ~review:pendente
+12. Pipeline pr_review → reviewer persona (claude)  →  ~review:em_andamento
+13. Iterações até suíte verde + checklist OK        →  ~review:concluida
+14. Merge automático (gh api PUT /merge)            →  PR fechado, branch deletado
+15. Issue auto-closed via "Closes #N" commit       →  state machine drena pra fim
+```
+
+Cenários de **bloqueio** ao longo do ciclo:
+- Refinement: 5 voltas sem clareza ou opção crítica → `~workflow:aguardando_stakeholder` (humano comenta opção)
+- Implement: 3 attempts sem PR → `~workflow:bloqueada` (humano remove label pra retomar)
+- Review: 3 attempts sem merge → solta `~batch`, pode rotacionar tentativas
+
+### §1.4 — O pipeline NÃO faz (atualmente)
+
+| Não faz | Por quê |
+|---|---|
+| Auto-scale workers conforme carga | Replicas estáticas; futuro: HPA + `SandboxWarmPool` |
+| Roteia entre workers por task affinity | Service round-robin "burra" — qualquer pod pega |
+| Persistir estado mid-execução do claude/agent | DispatchLedger é só fronteira pipeline↔worker; mid-call não é durable |
+| MCP externalizado | Tools são in-process Python; futuros agentes externos não reusam |
+| Multi-cluster federation | Single-cluster, single-VM hoje |
+| Compartilha workspace cross-worker | PVCs isolados; cross-worker = re-clone (ver §2) |
+| Lock distribuído de claude OAuth refresh | Hoje claude-worker é replicas=1 forçado; multi-replica requer flock (ver §13) |
 
 ---
 
@@ -696,3 +788,223 @@ Para avançar, você precisa decidir:
 Se quiser, **abro issues no GitHub** para P1 e P2' (ou só P1 primeiro)
 com escopo claro e critérios de aceite — e o pipeline pega no próximo
 tick.
+
+---
+
+## §13. Alteração MÍNIMA para claude-workers em paralelo (resposta direta)
+
+> Pergunta: **qual é a alteração mínima necessária para que N
+> claude-workers trabalhem em paralelo em atividades diferentes e NUNCA
+> ao mesmo tempo na mesma?**
+
+### §13.1 — Por que hoje está travado em `replicas: 1`
+
+Três barreiras técnicas escondem-se em `claude_worker_server.py`:
+
+1. **OAuth refresh race.** `credentials.json` está num PVC RWO 1Gi. Dois
+   pods detectam expiração quase ao mesmo tempo, ambos disparam refresh,
+   o segundo write sobrescreve o primeiro → corrupção → ambos quebram.
+
+2. **Resume liveness fan-in furado.** O pipeline pergunta `claude_alive?`
+   no Service `claude-worker:8767`. Round-robin → cai num pod arbitrário.
+   Esse pod inspeciona seu `/proc` local; se o claude está rodando em
+   OUTRO pod, ele responde "morreu" → pipeline dispara resume → 2 claudes
+   na mesma session_id → JSONL corrompido.
+
+3. **Worktree race em resume.** Se task_id A está no workdir
+   `/home/claude/work/abc.../` e o pipeline pede resume, qualquer pod
+   monta o mesmo PVC e tenta `git operations` simultaneamente.
+
+### §13.2 — A alteração mínima (≈80 linhas Python, zero infra nova)
+
+**Princípio: lock por task_id no PVC compartilhado.** Cada task tem
+um `.lease.json` em seu workdir; quem segura o lease é quem trabalha;
+liveness é checada pelo lease (não pelo `/proc`).
+
+#### Componente 1 — OAuth file-lock (10 linhas)
+
+`claude_worker_server.py::_load_oauth_token_into_env` (existente) +
+novo helper `_refresh_oauth_with_lock`:
+
+```python
+import fcntl
+
+def _refresh_oauth_with_lock(creds_path: Path) -> None:
+    with open(creds_path, "r+") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)            # exclusive
+        try:
+            creds = json.load(fh)
+            if _is_expiring_soon(creds):
+                creds = _do_refresh(creds)        # chama Anthropic
+                fh.seek(0); fh.truncate()
+                json.dump(creds, fh)
+                fh.flush(); os.fsync(fh.fileno())
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+```
+
+Chamado antes de cada spawn `claude -p` (não no startup do pod — para
+ser sensível a refresh feito por outro pod entre dispatches).
+
+#### Componente 2 — Lease por task_id (~50 linhas)
+
+`claude_worker_server.py::dispatch_handler`:
+
+```python
+LEASE_TTL_S = 30                    # lease expira se heartbeat parar
+HEARTBEAT_INTERVAL_S = 5
+
+async def _acquire_lease(workspace: Path) -> Optional[dict]:
+    lease_path = workspace / ".lease.json"
+    pod_id = os.environ.get("HOSTNAME", "unknown")
+    now = time.time()
+
+    if lease_path.exists():
+        try:
+            current = json.loads(lease_path.read_text())
+            heartbeat_age = now - float(current.get("heartbeat_at", 0))
+            if heartbeat_age < LEASE_TTL_S:
+                return None            # outro pod ATIVO
+        except (json.JSONDecodeError, ValueError):
+            pass                       # corrupto → trata como morto
+
+    # write atomic via rename
+    tmp = workspace / f".lease.tmp.{pod_id}"
+    lease = {
+        "pod": pod_id, "pid": os.getpid(),
+        "started_at": now, "heartbeat_at": now,
+    }
+    tmp.write_text(json.dumps(lease))
+    tmp.rename(lease_path)             # atomic POSIX
+
+    # confirmação: relê — outro pod pode ter ganhado a corrida
+    confirmed = json.loads(lease_path.read_text())
+    if confirmed.get("pod") != pod_id:
+        return None
+    return lease
+
+async def _heartbeat_loop(lease_path: Path, stop_event):
+    while not stop_event.is_set():
+        await asyncio.sleep(HEARTBEAT_INTERVAL_S)
+        try:
+            lease = json.loads(lease_path.read_text())
+            lease["heartbeat_at"] = time.time()
+            lease_path.write_text(json.dumps(lease))
+        except Exception:
+            pass                       # best-effort
+
+async def _release_lease(lease_path: Path):
+    try: lease_path.unlink()
+    except FileNotFoundError: pass
+```
+
+#### Componente 3 — `_is_claude_process_alive` consulta lease (5 linhas)
+
+Substitui a inspeção de `/proc` local:
+
+```python
+def _is_claude_process_alive(session_id: str) -> bool:
+    meta = _load_session_meta_by_session(session_id)
+    if not meta: return False
+    lease_path = Path(meta["workdir"]) / ".lease.json"
+    if not lease_path.exists(): return False
+    try:
+        lease = json.loads(lease_path.read_text())
+        age = time.time() - float(lease.get("heartbeat_at", 0))
+        return age < LEASE_TTL_S
+    except Exception:
+        return False
+```
+
+Resultado: **qualquer pod responde corretamente** se a sessão está viva,
+porque o lease vive no PVC compartilhado.
+
+#### Componente 4 — Integração no dispatch (~15 linhas)
+
+```python
+# dentro de dispatch_handler, ANTES de spawn `claude -p`:
+lease = await _acquire_lease(workspace)
+if lease is None:
+    return web.json_response({
+        "ok": False, "error_code": "TASK_ALREADY_RUNNING",
+        "error": "outra réplica do claude-worker já está executando "
+                 f"task_id={task_id}; pipeline deve retry no próximo tick",
+    }, status=409)
+
+stop_event = asyncio.Event()
+hb_task = asyncio.create_task(_heartbeat_loop(
+    workspace / ".lease.json", stop_event))
+try:
+    result = await run_subprocess_with_progress(...)
+finally:
+    stop_event.set()
+    hb_task.cancel()
+    await _release_lease(workspace / ".lease.json")
+```
+
+#### Componente 5 — Pipeline tolera 409 como "skip-and-retry" (~5 linhas)
+
+`implementer.py` quando worker retorna `TASK_ALREADY_RUNNING`:
+
+```python
+# Mesmo tratamento que o atual {"_still_alive": True}
+return {"_still_alive": True}
+```
+
+### §13.3 — Por que isso satisfaz tuas 3 garantias
+
+| Garantia | Como o design entrega |
+|---|---|
+| **Multi-replica funciona** | Service round-robin distribui dispatches; cada task cai em algum pod; o lease impede colisão |
+| **NUNCA dois pods na mesma atividade** | Lease é exclusivo via atomic write+confirm-read. TTL de heartbeat protege contra pod morto sem release |
+| **OAuth único compartilhado** | `flock` previne refresh concorrente; arquivo único no PVC; todos os pods leem a versão fresca em cada dispatch |
+| **Atividades diferentes em paralelo** | task_id A no pod 1, task_id B no pod 2 — leases separados, workdirs separados, zero contenção |
+| **Retomada cross-pod (mesma activity)** | Se pod 1 morre, lease expira em 30s; próximo dispatch da mesma task cai em qualquer pod (round-robin), adquire lease, faz resume via `prev_task_id` (mecanismo já existe) |
+
+### §13.4 — Diff resumido para a PR
+
+```
+infra/k8s/claude_worker_server.py
+  + ~80 linhas: _acquire_lease, _release_lease, _heartbeat_loop,
+                _refresh_oauth_with_lock, integração no dispatch_handler
+  + 5 linhas:   _is_claude_process_alive consulta lease em vez de /proc
+
+infra/k8s/manifests/50-claude-worker-deployment.yaml
+  - replicas: 1
+  + replicas: 2   (ou via kubectl scale dinâmico — escolha do operador)
+
+deile/orchestration/pipeline/implementer.py
+  + ~5 linhas: trata TASK_ALREADY_RUNNING como _still_alive (já existe handler)
+
+deile/tests/infra/test_claude_worker_lease.py  (novo)
+  ~150 linhas: testes concorrentes do lease (acquire/release/TTL/heartbeat)
+```
+
+### §13.5 — Limitações honestas
+
+- **Funciona em single-node k3s** (PVC RWO local-path permite multi-mount
+  no mesmo nó). Em multi-node K8s real, precisaria RWX (NFS) ou
+  StatefulSet com per-pod PVC + Service headless + routing por hash.
+- **Lease TTL de 30s = janela de 30s onde pod morto bloqueia retry.**
+  Aceitável; o pipeline já tem reaper rotativo que tolera atrasos.
+- **Não resolve a P2'** (workspace compartilhado entre claude-worker e
+  deile-worker). Esta proposta é APENAS para claude-worker N réplicas,
+  não cross-worker. Mas é o degrau zero que destrava o resto.
+
+### §13.6 — Esforço e ordem de execução
+
+- **Esforço**: 1-2 dias de código + 1 dia de testes concorrentes.
+- **Risco**: 🟢 baixo — adições puras, nada removido. Se algo der errado
+  e voltar a `replicas: 1`, o lease vira no-op (sempre disponível).
+- **Quando**: depois do PR atual (manifests tmpfs) ser mergeado. Esta é
+  a próxima evolução natural; abre caminho pra P1 e P2'.
+
+---
+
+## §14. Resumo das ações pedidas nesta iteração
+
+| O que pediu | Status |
+|---|---|
+| `/tmp` do claude-worker = 5Gi (em vez de 2Gi) | ✅ aplicado em `50-claude-worker-deployment.yaml` |
+| Detalhar a §1 com a verdade do pipeline atual | ✅ §1 reescrita com 4 sub-seções, tabela de 28 capabilities verificadas, ciclo de vida típico, e lista do que NÃO faz |
+| Alteração MÍNIMA para multi-claude paralelo | ✅ §13 nova, ≈80 linhas Python, sem infra nova, com diff e justificativa |

@@ -1474,7 +1474,8 @@ class PodWatchView(View):
     refresh_s = 1.0
 
     HOTKEYS = ("[f] follow on/off   [h] mostrar/esconder health   "
-               "[c] clear log   [.] abrir log   [esc] volta   [q] sai")
+               "[c] clear log   [.] abrir log   [t] resize /tmp   "
+               "[esc] volta   [q] sai")
 
     # Quantas linhas do buffer dumpamos no tempfile quando o usuário pede
     # "abrir log" num pod k8s. Suficiente pra contexto, sem inflar o disco.
@@ -1482,6 +1483,26 @@ class PodWatchView(View):
 
     # Janela (s) em que a mensagem de status fica visível no header do log.
     _STATUS_TTL_S = 6.0
+
+    # Presets de sizeLimit para /tmp (acionados pelas teclas 1-5 quando em
+    # modo `[t]` resize). Cobrem desde shell ocioso (256Mi) até worker
+    # rodando suíte completa do pytest com worktrees paralelas (5Gi).
+    _TMP_PRESETS = (
+        ("1", "256Mi"),
+        ("2", "512Mi"),
+        ("3", "1Gi"),
+        ("4", "2Gi"),
+        ("5", "5Gi"),
+    )
+
+    # Mapeia role do pod → Deployment alvo do kubectl patch. Roles locais
+    # não têm Deployment (são processos no host) → resize não se aplica.
+    _ROLE_TO_DEPLOYMENT = {
+        "pipeline": "deile-pipeline",
+        "worker":   "deile-worker",
+        "bot":      "deilebot",
+        "shell":    "deile-shell",
+    }
 
     def __init__(self, data: Optional[PanelData] = None):
         self.data = data
@@ -1494,6 +1515,9 @@ class PodWatchView(View):
         # Feedback transitório (auto-limpa após _STATUS_TTL_S no render).
         self._status_msg: Optional[str] = None
         self._status_until: float = 0.0
+        # Modo "aguardando preset de /tmp" — quando True, próxima tecla 1-5
+        # aplica o preset correspondente; qualquer outra cancela.
+        self._awaiting_tmp_preset: bool = False
 
     def on_mount(self, app: "PanelApp") -> None:
         # PodWatchView é singleton no registry — re-mount com pod diferente
@@ -1694,6 +1718,10 @@ class PodWatchView(View):
         return layout
 
     def handle_key(self, key: str, app: "PanelApp") -> ActionResult:
+        # Resolve preset de /tmp PRIMEIRO — outras teclas ficam mortas até o
+        # operador escolher ou cancelar (mesmo padrão do PodPickerView).
+        if self._awaiting_tmp_preset:
+            return self._handle_tmp_preset_key(key)
         if key == "f":
             self.following = not self.following
             if self.following and self.streamer is None:
@@ -1711,7 +1739,55 @@ class PodWatchView(View):
         if key == ".":
             self._open_log_in_editor()
             return ActionResult.refresh()
+        if key == "t":
+            # Entra em modo "aguardando preset". Render mostra a hint no header.
+            if _is_local_role(self.pod_role):
+                self._set_status(
+                    "resize /tmp não se aplica a processo local "
+                    "(sem Deployment K8s)"
+                )
+                return ActionResult.refresh()
+            if self._ROLE_TO_DEPLOYMENT.get(self.pod_role) is None:
+                self._set_status(
+                    f"role {self.pod_role!r} não tem Deployment associado"
+                )
+                return ActionResult.refresh()
+            self._awaiting_tmp_preset = True
+            self._set_status(
+                "/tmp resize: [1]256Mi [2]512Mi [3]1Gi [4]2Gi [5]5Gi "
+                "[esc/qualquer outra] cancela"
+            )
+            return ActionResult.refresh()
         return ActionResult()
+
+    def _handle_tmp_preset_key(self, key: str) -> ActionResult:
+        """Aplica o preset selecionado ou cancela.
+
+        Tecla 1-5 → kubectl patch + rollout (sem confirmação extra: o usuário
+        já optou pelo modo apertando [t]; cancela é default-deny).
+        Qualquer outra tecla cancela silenciosamente.
+        """
+        self._awaiting_tmp_preset = False
+        preset_map = dict(self._TMP_PRESETS)
+        size = preset_map.get(key)
+        if size is None:
+            self._set_status("resize /tmp cancelado")
+            return ActionResult.refresh()
+        deployment = self._ROLE_TO_DEPLOYMENT.get(self.pod_role)
+        if deployment is None:
+            self._set_status(
+                f"role {self.pod_role!r} não tem Deployment associado"
+            )
+            return ActionResult.refresh()
+        # Multi-NS: usa o namespace do contexto (não o default global).
+        ns = (self.data.context.namespace
+              if self.data is not None and self.data.context is not None
+              else _NS_DEFAULT)
+        from _panel_data import set_pod_tmp_size  # noqa: PLC0415
+        ok, msg = set_pod_tmp_size(deployment, size, namespace=ns)
+        head = "OK" if ok else "FAIL"
+        self._set_status(f"/tmp={size} {head}: {msg[:100]}")
+        return ActionResult.refresh()
 
     def _set_status(self, msg: str) -> None:
         self._status_msg = msg

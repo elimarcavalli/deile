@@ -322,6 +322,99 @@ class TestHandleKeyDot:
         assert "[.] abrir log" in panel.PodWatchView.HOTKEYS
 
 
+class TestPodWatchTmpResize:
+    """Hotkey [t] → presets → kubectl patch via set_pod_tmp_size."""
+
+    def _view(self, role: str = "worker") -> "panel.PodWatchView":
+        view = panel.PodWatchView(data=MagicMock())
+        view.pod_role = role
+        view.pod_name = "deile-worker-abc"
+        view.data.context.namespace = "deile"
+        return view
+
+    def test_hotkeys_footer_mentions_t(self):
+        """Regressão: ninguém remova [t] do footer sem ajustar a help."""
+        assert "[t] resize /tmp" in panel.PodWatchView.HOTKEYS
+
+    def test_t_key_enters_preset_mode_for_k8s_pod(self):
+        view = self._view("worker")
+        result = view.handle_key("t", MagicMock())
+        assert result.kind == panel.Action.REFRESH
+        assert view._awaiting_tmp_preset is True
+        assert view._status_msg is not None
+        assert "/tmp resize" in view._status_msg
+
+    def test_t_key_rejected_for_local_role(self):
+        view = self._view("local-pipeline")
+        view.handle_key("t", MagicMock())
+        assert view._awaiting_tmp_preset is False
+        assert view._status_msg is not None
+        assert "processo local" in view._status_msg
+
+    def test_t_key_rejected_for_unmapped_role(self):
+        view = self._view("unknown-role")
+        view.handle_key("t", MagicMock())
+        assert view._awaiting_tmp_preset is False
+        assert view._status_msg is not None
+        assert "Deployment associado" in view._status_msg
+
+    def test_preset_key_calls_set_pod_tmp_size(self):
+        view = self._view("worker")
+        view.handle_key("t", MagicMock())  # entra no modo
+        assert view._awaiting_tmp_preset is True
+        with patch.object(pd, "set_pod_tmp_size",
+                          return_value=(True, "deployment patched")) as setter:
+            view.handle_key("4", MagicMock())  # preset 4 = 2Gi
+        assert view._awaiting_tmp_preset is False
+        setter.assert_called_once_with("deile-worker", "2Gi", namespace="deile")
+        assert "OK" in view._status_msg
+
+    def test_preset_uses_role_to_deployment_mapping(self):
+        for role, dep in (
+            ("pipeline", "deile-pipeline"),
+            ("worker",   "deile-worker"),
+            ("bot",      "deilebot"),
+            ("shell",    "deile-shell"),
+        ):
+            view = self._view(role)
+            view.handle_key("t", MagicMock())
+            with patch.object(pd, "set_pod_tmp_size",
+                              return_value=(True, "ok")) as setter:
+                view.handle_key("3", MagicMock())  # 1Gi
+            assert setter.call_args.args[0] == dep
+
+    def test_non_preset_key_cancels_silently(self):
+        view = self._view("worker")
+        view.handle_key("t", MagicMock())
+        with patch.object(pd, "set_pod_tmp_size") as setter:
+            view.handle_key("z", MagicMock())  # tecla não-mapeada
+        setter.assert_not_called()
+        assert view._awaiting_tmp_preset is False
+        assert "cancelado" in view._status_msg
+
+    def test_other_hotkeys_blocked_while_awaiting_preset(self):
+        """Modo preset deve consumir a próxima tecla — `f` (follow) não pode
+        disparar enquanto o modal estiver ativo."""
+        view = self._view("worker")
+        view.handle_key("t", MagicMock())
+        following_before = view.following
+        with patch.object(pd, "set_pod_tmp_size") as setter:
+            view.handle_key("f", MagicMock())  # `f` no modo preset = cancela
+        setter.assert_not_called()
+        assert view._awaiting_tmp_preset is False
+        # following NÃO foi togglado (a tecla virou cancel do modo).
+        assert view.following == following_before
+
+    def test_setter_failure_surfaces_in_status(self):
+        view = self._view("worker")
+        view.handle_key("t", MagicMock())
+        with patch.object(pd, "set_pod_tmp_size",
+                          return_value=(False, "kubectl error: boom")):
+            view.handle_key("3", MagicMock())
+        assert "FAIL" in view._status_msg
+        assert "boom" in view._status_msg
+
+
 # ---------------------------------------------------------------------------
 # Memdebug (--memdebug) — off por default, opcional via flag
 # ---------------------------------------------------------------------------

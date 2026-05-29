@@ -61,7 +61,13 @@ SETUP_ENV = _INFRA / "setup_environment.py"
 NS_DEFAULT = os.environ.get("DEILE_K8S_NAMESPACE", "deile")
 IMAGE = "deile-stack:local"
 LLM_KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GOOGLE_API_KEY")
-K8S_DEPLOYMENTS = ("deilebot", "deile-worker", "deile-shell", "deile-pipeline")
+K8S_DEPLOYMENTS = ("deilebot", "deile-worker", "deile-shell", "deile-pipeline",
+                   # issue #309 fase 2 — claude-worker (Service :8767, OAuth
+                   # in-pod). O `_rollout_restart_all` checa `kubectl get
+                   # deployment <X>` antes do rollout, então se o claude-worker
+                   # não existe (perfil core/full sem claude-login) o restart
+                   # é pulado silenciosamente — sem regressão pra quem não usa.
+                   "claude-worker")
 
 # Label aplicada a todos os namespaces gerenciados pelo DEILE para que
 # `k8s list` possa enumerá-los sem ambiguidade.

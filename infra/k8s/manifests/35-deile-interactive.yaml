@@ -108,4 +108,4 @@ spec:
         # - name: home
         #   persistentVolumeClaim:
         #     claimName: deile-shell-home
-        - { name: tmp,  emptyDir: { medium: Memory, sizeLimit: "64Mi" } }
+        - { name: tmp,  emptyDir: { sizeLimit: "1Gi" } }

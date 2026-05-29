@@ -72,6 +72,11 @@ _ALLOWED_DEPLOYMENTS = frozenset({"deile-worker", "deile-pipeline"})
 # só a troca de modelo (worker + pipeline). Aqui incluímos também bot/shell.
 _ALLOWED_DEPLOYMENTS_FULL = frozenset({
     "deile-pipeline", "deile-worker", "deilebot", "deile-shell",
+    # issue #309 fase 2 — claude-worker entrou no stack como pod paralelo
+    # (Service :8767, executa ``claude -p``). Faltava no whitelist e
+    # qualquer ação de painel contra ele era rejeitada com "fora da
+    # whitelist". Cobre delete pod, rollout restart, tmp resize.
+    "claude-worker",
 })
 # Pod name: snowflake-ish letras-minúsculas + dígitos + hífen (validação
 # leve para argv); até 253 chars (limite DNS-1123). Validado antes de
@@ -1683,6 +1688,102 @@ def set_preferred_model(deployment: str, slug: str,
     msg = (proc.stdout or "rollout disparado").strip()
     _audit_security_policy_change(
         deployment, slug, result="completed", detail=msg,
+        namespace=namespace,
+    )
+    return True, msg
+
+
+# ===== Tmp emptyDir resize (interativo via PodWatchView, hotkey [t]) =========
+#
+# Painel deixa o operador subir/baixar o ``sizeLimit`` do volume ``tmp``
+# (emptyDir) do Deployment do pod sem editar YAML. Usa ``kubectl patch
+# --type=strategic`` com merge-key ``name``: o K8s atualiza só a entry do
+# volume "tmp", preservando os demais volumes. Como o patch substitui o
+# objeto ``emptyDir`` inteiro, ``medium: Memory`` (se presente) é REMOVIDO
+# — o /tmp passa a usar o disco do nó. Disparar dispara rollout automático
+# (RollingUpdate ou Recreate, conforme strategy do Deployment).
+
+_TMP_SIZE_RE = re.compile(r"^[1-9][0-9]{0,5}(Ki|Mi|Gi|Ti|Pi|Ei)$")
+
+
+def set_pod_tmp_size(
+    deployment: str, size: str, *, timeout: float = 15.0,
+    namespace: str = NS,
+) -> tuple:
+    """Aplica novo ``sizeLimit`` no volume ``tmp`` (emptyDir) do Deployment.
+
+    Strategic merge patch com merge-key ``name=tmp``: apenas o emptyDir do
+    volume "tmp" é reescrito. ``medium: Memory`` é REMOVIDO (volume passa
+    a usar disco do nó). Retorna ``(ok, msg)``.
+
+    ``size`` deve casar ``_TMP_SIZE_RE`` (Ki/Mi/Gi/Ti/Pi/Ei, 1-6 dígitos).
+    Validação antes de chegar em argv impede injeção em ``-p``. Audit
+    emite ``AuditEvent(SECURITY_POLICY_CHANGED)`` (mesmo canal de
+    ``set_preferred_model`` — operação privilegiada que muda a spec).
+    """
+    safe_dep = deployment if isinstance(deployment, str) else repr(deployment)
+    safe_size = size if isinstance(size, str) else repr(size)
+    if deployment not in _ALLOWED_DEPLOYMENTS_FULL:
+        _audit_security_policy_change(
+            safe_dep, safe_size,
+            result="denied", detail="deployment fora da whitelist (tmp resize)",
+            namespace=namespace,
+        )
+        allowed = ", ".join(sorted(_ALLOWED_DEPLOYMENTS_FULL))
+        return False, (
+            f"deployment '{deployment}' não permitido — "
+            f"esperado um de: {allowed}"
+        )
+    if not isinstance(size, str) or not _TMP_SIZE_RE.match(size):
+        _audit_security_policy_change(
+            deployment, safe_size,
+            result="denied", detail="size inválido (esperado: NNN[KMGTPE]i)",
+            namespace=namespace,
+        )
+        return False, "size inválido — formato esperado: 256Mi, 1Gi, 2Gi etc"
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        _audit_security_policy_change(
+            deployment, size, result="failed", detail="kubectl não encontrado",
+            namespace=namespace,
+        )
+        return False, "kubectl não encontrado"
+    # Strategic merge: volumes list usa merge-key "name", então o K8s
+    # encontra a entry "tmp" e substitui o emptyDir inteiro (sem afetar
+    # outros volumes). Sem `medium` → disco do nó (não RAM).
+    patch = json.dumps({
+        "spec": {"template": {"spec": {"volumes": [
+            {"name": "tmp", "emptyDir": {"sizeLimit": size}}
+        ]}}}
+    })
+    _audit_security_policy_change(
+        deployment, size,
+        result="allowed", detail=f"executando kubectl patch (tmp={size})",
+        namespace=namespace,
+    )
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", namespace, "patch", f"deploy/{deployment}",
+             "--type=strategic", "-p", patch],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _audit_security_policy_change(
+            deployment, size, result="failed", detail=f"subprocess: {exc}",
+            namespace=namespace,
+        )
+        return False, f"falha ao executar kubectl: {exc}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl patch falhou").strip()
+        _audit_security_policy_change(
+            deployment, size, result="failed",
+            detail=f"rc={proc.returncode} {err}",
+            namespace=namespace,
+        )
+        return False, err
+    msg = (proc.stdout or "patch aplicado — rollout disparado").strip()
+    _audit_security_policy_change(
+        deployment, size, result="completed", detail=msg,
         namespace=namespace,
     )
     return True, msg

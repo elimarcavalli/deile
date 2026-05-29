@@ -205,7 +205,7 @@ spec:
         # segue normal).
         - { name: status-bearer, secret: { secretName: pipeline-status-bearer, defaultMode: 288, optional: true } }
         - { name: home,          emptyDir: { sizeLimit: "256Mi" } }
-        - { name: tmp,           emptyDir: { medium: Memory, sizeLimit: "64Mi" } }
+        - { name: tmp,           emptyDir: { sizeLimit: "256Mi" } }
         # Issue #350 — PVC de 1Gi pra persistir o DispatchLedger entre
         # restarts/rollouts. O path ~/.deile/pipeline/dispatches.json
         # resolve naturalmente pra este mount sem alterar dispatch_ledger.py.

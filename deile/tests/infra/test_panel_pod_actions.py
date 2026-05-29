@@ -121,8 +121,10 @@ class TestRolloutRestart:
         with patch.object(pd, "rollout_restart_deployment",
                           side_effect=_fake_one):
             results = pd.rollout_restart_all()
-        # 4 entries esperadas — uma falha não para o loop.
-        assert len(results) == 4
+        # Uma falha não para o loop — todos os deployments do whitelist
+        # aparecem no resultado (issue tmpfs resize adicionou claude-worker
+        # ao whitelist, então o número não é fixo em 4).
+        assert len(results) == len(pd._ALLOWED_DEPLOYMENTS_FULL)
         oks = {dep: ok for dep, ok, _ in results}
         assert oks["deile-worker"] is False
         assert all(ok for dep, ok in oks.items() if dep != "deile-worker")

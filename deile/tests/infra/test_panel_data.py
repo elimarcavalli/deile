@@ -1220,6 +1220,81 @@ class TestPanelDataFromContext:
         assert captured and captured[0][:3] == ["/bin/kubectl", "-n", "my-namespace"]
 
 
+class TestSetPodTmpSize:
+    """Resize do volume ``tmp`` (emptyDir) — issue tmpfs full do claude-worker."""
+
+    def test_happy_path_passes_strategic_patch(self, monkeypatch):
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: "/bin/kubectl")
+        captured: List[List[str]] = []
+        def _fake_run(cmd, **kw):
+            captured.append(cmd)
+            return MagicMock(returncode=0, stdout="patched\n", stderr="")
+        with patch("subprocess.run", side_effect=_fake_run):
+            ok, msg = pd.set_pod_tmp_size("claude-worker", "2Gi",
+                                          namespace="deile")
+        assert ok is True
+        assert "patched" in msg
+        argv = captured[0]
+        assert argv[:3] == ["/bin/kubectl", "-n", "deile"]
+        assert "patch" in argv and "deploy/claude-worker" in argv
+        assert "--type=strategic" in argv
+        # O patch é o último argv (após `-p`) — JSON com tmp/sizeLimit.
+        patch_idx = argv.index("-p") + 1
+        body = json.loads(argv[patch_idx])
+        vols = body["spec"]["template"]["spec"]["volumes"]
+        assert vols == [{"name": "tmp", "emptyDir": {"sizeLimit": "2Gi"}}]
+
+    def test_rejects_deployment_not_in_whitelist(self, monkeypatch):
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: "/bin/kubectl")
+        with patch("subprocess.run") as run_mock:
+            ok, msg = pd.set_pod_tmp_size("evil-deploy", "1Gi")
+        assert ok is False
+        assert "não permitido" in msg
+        run_mock.assert_not_called()
+
+    @pytest.mark.parametrize("bad", [
+        "1Gigabyte",   # sufixo errado
+        "100",         # sem sufixo
+        "2Gi ",        # whitespace
+        "1Gi; rm -rf", # injeção
+        "",            # vazio
+        "0Gi",         # começa com 0 (regex exige 1-9)
+    ])
+    def test_rejects_invalid_size(self, monkeypatch, bad):
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: "/bin/kubectl")
+        with patch("subprocess.run") as run_mock:
+            ok, msg = pd.set_pod_tmp_size("claude-worker", bad)
+        assert ok is False
+        assert "inválido" in msg or "formato" in msg
+        run_mock.assert_not_called()
+
+    def test_kubectl_failure_surfaces_stderr(self, monkeypatch):
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: "/bin/kubectl")
+        with patch("subprocess.run", return_value=MagicMock(
+            returncode=1, stdout="", stderr="boom\n",
+        )):
+            ok, msg = pd.set_pod_tmp_size("deile-worker", "1Gi")
+        assert ok is False
+        assert "boom" in msg
+
+    def test_no_kubectl_returns_friendly_error(self, monkeypatch):
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: None)
+        ok, msg = pd.set_pod_tmp_size("deile-pipeline", "256Mi")
+        assert ok is False
+        assert "kubectl não encontrado" in msg
+
+    def test_accepts_all_four_stack_deployments(self, monkeypatch):
+        """Whitelist deve cobrir os 4 deployments do stack."""
+        monkeypatch.setattr(pd, "kubectl_bin", lambda: "/bin/kubectl")
+        with patch("subprocess.run", return_value=MagicMock(
+            returncode=0, stdout="ok", stderr="",
+        )):
+            for dep in ("claude-worker", "deile-worker",
+                        "deile-pipeline", "deilebot", "deile-shell"):
+                ok, _ = pd.set_pod_tmp_size(dep, "1Gi")
+                assert ok is True, f"{dep} deveria estar na whitelist"
+
+
 class TestDeployFlags:
     """Parser de flags do `deploy.py k8s panel` (universal mode)."""
 
