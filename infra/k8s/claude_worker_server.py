@@ -405,8 +405,21 @@ def _lease_is_stale(lease_path: Path) -> bool:
 
 
 def _workdir_has_session(workdir: Path) -> bool:
-    """True se o workdir tem pelo menos um arquivo JSONL de sessão do claude."""
-    return any(workdir.rglob("*.jsonl"))
+    """True se existe um JSONL de sessão claude para este workdir.
+
+    Claude armazena sessões em ``~/.claude/projects/-home-claude-work-<task_id>/``,
+    não dentro do próprio workdir.
+    """
+    task_id = workdir.name
+    home = Path(os.environ.get("HOME", "/home/claude"))
+    workspace_hash = "-home-claude-work-" + task_id
+    project_dir = home / ".claude" / "projects" / workspace_hash
+    if not project_dir.is_dir():
+        return False
+    try:
+        return any(project_dir.glob("*.jsonl"))
+    except OSError:
+        return False
 
 
 def _dir_bytes(path: Path) -> int:
@@ -2556,10 +2569,6 @@ def main(passthrough: Optional[List[str]] = None) -> int:
     logger.info(
         "claude_worker_server listening on %s:%d, work root=%s", host, port, root,
     )
-    # Startup housekeeping: remove leases stale + workdirs abandonados antes
-    # de aceitar conexões (issue #408). Síncrono e conservador — falhas
-    # individuais são logadas sem abortar o boot.
-    startup_cleanup(root=root)
     app = build_app()
     web.run_app(app, host=host, port=port, print=lambda *_: None)
     return 0

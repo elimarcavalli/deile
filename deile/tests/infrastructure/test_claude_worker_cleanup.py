@@ -61,8 +61,19 @@ def _write_lease(workdir: Path, heartbeat_at: float, pid: int = 999999999) -> No
     )
 
 
-def _write_session(workdir: Path) -> None:
-    (workdir / "session.jsonl").write_text(
+def _write_session(workdir: Path, home: Path | None = None) -> None:
+    """Escreve um JSONL de sessão no local real onde claude armazena sessões.
+
+    Claude armazena em ``HOME/.claude/projects/-home-claude-work-<task_id>/``,
+    não no workdir em si.
+    """
+    if home is None:
+        home = workdir.parent.parent  # tmp_path (acima de "work/")
+    task_id = workdir.name
+    workspace_hash = "-home-claude-work-" + task_id
+    project_dir = home / ".claude" / "projects" / workspace_hash
+    project_dir.mkdir(parents=True, exist_ok=True)
+    (project_dir / "session.jsonl").write_text(
         '{"type": "text", "text": "hello"}\n', encoding="utf-8",
     )
 
@@ -103,14 +114,16 @@ def test_lease_is_not_stale_when_pid_still_alive(cws, work_root):
 # _workdir_has_session
 # ---------------------------------------------------------------------------
 
-def test_workdir_has_session_with_jsonl(cws, work_root):
+def test_workdir_has_session_with_jsonl(cws, work_root, monkeypatch):
     wd = _make_workdir(work_root)
-    _write_session(wd)
+    monkeypatch.setenv("HOME", str(work_root.parent))
+    _write_session(wd, home=work_root.parent)
     assert cws._workdir_has_session(wd) is True
 
 
-def test_workdir_has_no_session_empty(cws, work_root):
+def test_workdir_has_no_session_empty(cws, work_root, monkeypatch):
     wd = _make_workdir(work_root)
+    monkeypatch.setenv("HOME", str(work_root.parent))
     assert cws._workdir_has_session(wd) is False
 
 
@@ -126,10 +139,11 @@ def test_startup_cleanup_root_missing(cws, tmp_path):
     assert result["errors"]  # deve ter pelo menos um erro
 
 
-def test_startup_cleanup_removes_stale_lease_only(cws, work_root):
+def test_startup_cleanup_removes_stale_lease_only(cws, work_root, monkeypatch):
     """Lease stale → remove o .lease.json mas MANTÉM o workdir (tem sessão)."""
+    monkeypatch.setenv("HOME", str(work_root.parent))
     wd = _make_workdir(work_root)
-    _write_session(wd)
+    _write_session(wd, home=work_root.parent)
     expired = time.time() - 3600
     _write_lease(wd, expired, pid=999999999)
     # Garante que mtime é recente (não cai no critério de old workdir)
@@ -171,8 +185,9 @@ def test_startup_cleanup_removes_workdir_without_session(cws, work_root):
 
 def test_startup_cleanup_removes_old_workdir(cws, work_root, monkeypatch):
     """Workdir com sessão mas mtime muito antigo → removido."""
+    monkeypatch.setenv("HOME", str(work_root.parent))
     wd = _make_workdir(work_root)
-    _write_session(wd)
+    _write_session(wd, home=work_root.parent)
     # Força mtime para 30 dias atrás
     old_mtime = time.time() - (30 * 86400)
     import os
@@ -184,10 +199,11 @@ def test_startup_cleanup_removes_old_workdir(cws, work_root, monkeypatch):
     assert not wd.exists()
 
 
-def test_startup_cleanup_keeps_recent_workdir_with_session(cws, work_root):
+def test_startup_cleanup_keeps_recent_workdir_with_session(cws, work_root, monkeypatch):
     """Workdir recente com sessão → intocado."""
+    monkeypatch.setenv("HOME", str(work_root.parent))
     wd = _make_workdir(work_root)
-    _write_session(wd)
+    _write_session(wd, home=work_root.parent)
     import os
     os.utime(wd, (time.time(), time.time()))
 
@@ -210,11 +226,13 @@ def test_startup_cleanup_ignores_non_hex_dirs(cws, work_root):
     assert (work_root / "not-a-task-id").exists()
 
 
-def test_startup_cleanup_counts_multiple_workdirs(cws, work_root):
+def test_startup_cleanup_counts_multiple_workdirs(cws, work_root, monkeypatch):
     """Múltiplos workdirs: um a remover, um a manter."""
+    monkeypatch.setenv("HOME", str(work_root.parent))
+
     # Workdir a manter: recente com sessão
     wd_keep = _make_workdir(work_root, "aabb00112233aabb")
-    _write_session(wd_keep)
+    _write_session(wd_keep, home=work_root.parent)
     import os
     os.utime(wd_keep, (time.time(), time.time()))
 
