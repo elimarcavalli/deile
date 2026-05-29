@@ -41,17 +41,20 @@ def _clear_env(monkeypatch):
 def _isolate(monkeypatch):
     """Each test starts with a fresh Settings singleton and clean env.
 
-    Also resets logging.disable() — some tests in the suite call it without
-    restoring, which silences WARNING records and breaks caplog assertions
-    (known suite-wide issue, documented in test_file_context_truncation.py).
+    Also re-enables propagation on the 'deile' logger. deile/storage/logs.py
+    sets propagate=False at initialization to prevent leaking into the root
+    logger in production, but caplog captures via root — so without this the
+    caplog assertions for dispatch_resolver WARNINGs silently fail whenever
+    the logs module has been initialized by a previous test in the suite.
     """
     _clear_env(monkeypatch)
     reset_settings()
-    _saved_disable = logging.root.manager.disable
-    logging.disable(logging.NOTSET)
+    _deile_logger = logging.getLogger("deile")
+    _saved_propagate = _deile_logger.propagate
+    _deile_logger.propagate = True
     yield
     reset_settings()
-    logging.disable(_saved_disable)
+    _deile_logger.propagate = _saved_propagate
 
 
 # ---------------------------------------------------------------------------
