@@ -222,6 +222,13 @@ class MentionTrigger:
     pr: Optional["PrRef"] = None
     comment: Optional["CommentRef"] = None
 
+    # Quem acionou este trigger. Para ``comment`` é o autor real do comentário
+    # (``comment.author``); para ``assignee``/``reviewer`` é o próprio handle do
+    # DEILE (auto-atribuído pelo collector); para ``body`` pode ser o autor do
+    # search result quando conhecido, senão ``None``. Usado para drop de
+    # gatilhos auto-acionados (ex: comment cujo autor é o próprio DEILE).
+    trigger_author: Optional[str] = None
+
     @property
     def target_number(self) -> int:
         if self.issue is not None:

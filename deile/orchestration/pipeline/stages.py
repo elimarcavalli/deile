@@ -521,10 +521,30 @@ async def _collect_mention_triggers(
         pr_comments = []
     all_comments: list[CommentRef] = list(issue_comments) + list(pr_comments)
     for ref in all_comments:
+        # ANTI-ECO: drop comments where DEILE auto-mencionou. Sem isso, qualquer
+        # comentário que o próprio DEILE postou citando seu handle viraria
+        # trigger e dispararia trabalho redundante na próxima volta do loop.
+        # A identidade do agente vem do .user.login do comentário, não do texto.
+        if ref.author == gh_login:
+            continue
         if handle in ref.body.lower():
-            triggers.append(MentionTrigger(trigger_type="comment", comment=ref))
+            triggers.append(
+                MentionTrigger(
+                    trigger_type="comment",
+                    comment=ref,
+                    trigger_author=ref.author,
+                )
+            )
 
     # ---- 2-4. Sticky triggers (assignee / reviewer / body) --------------
+    #
+    # Antes da refactor "PR é o quadro", os sticky triggers eram gateados por
+    # ``~mention:processado`` para impedir re-disparo cross-tick. Isso é
+    # incompatível com o princípio de descoberta-por-estado: o worker abre a
+    # PR e decide pelo estado real (HEAD vs último review, threads abertas,
+    # comentários sem resposta) — se nada precisa ser feito, o brief unificado
+    # comenta curto e sai. Já o trigger ``body`` continua gateado porque o
+    # corpo é estático: sem o marker ele re-disparia infinitamente.
     async def _poll(label: str, coro) -> list:
         try:
             return list(await coro)
@@ -533,14 +553,23 @@ async def _collect_mention_triggers(
             return []
 
     for issue in await _poll("assigned issues", monitor.forge.list_issues_assigned_to(gh_login)):
-        if MENTION_DONE not in issue.labels:
-            triggers.append(MentionTrigger(trigger_type="assignee", issue=issue))
+        triggers.append(
+            MentionTrigger(
+                trigger_type="assignee", issue=issue, trigger_author=gh_login,
+            )
+        )
     for pr in await _poll("assigned PRs", monitor.forge.list_prs_assigned_to(gh_login)):
-        if MENTION_DONE not in pr.labels:
-            triggers.append(MentionTrigger(trigger_type="assignee", pr=pr))
+        triggers.append(
+            MentionTrigger(
+                trigger_type="assignee", pr=pr, trigger_author=gh_login,
+            )
+        )
     for pr in await _poll("review requests", monitor.forge.list_prs_with_review_requests(gh_login)):
-        if MENTION_DONE not in pr.labels:
-            triggers.append(MentionTrigger(trigger_type="reviewer", pr=pr))
+        triggers.append(
+            MentionTrigger(
+                trigger_type="reviewer", pr=pr, trigger_author=gh_login,
+            )
+        )
 
     try:
         body_issues, body_prs = await monitor.forge.search_items_mentioning(handle)
