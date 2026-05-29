@@ -4064,7 +4064,8 @@ class DispatchMatrixView(View):
         "[enter] editar   [r] reset   "
         "[L] switch claude login   [I] install   [U] uninstall   [q] back   "
         "[s]caling row: enter digita réplicas (0-10)   "
-        "colunas: 0=Worker 1=Model 2=Timeout 3=Retries 4=Cost cap (USD/run)"
+        "colunas: 0=Worker 1=Model 2=Timeout 3=Retries 4=Cost cap (USD/run)   "
+        "retries=0 EXIGE confirmação: digite '0!' (fail-fast, sem retry)"
     )
 
     # Índice de row constante para a linha de scaling (após Global default).
@@ -4376,11 +4377,14 @@ class DispatchMatrixView(View):
         tbl.add_row("Worker Scaling", scale_w_txt, scale_m_txt,
                     "", "", "—", "kubectl")
 
-        # --- Compose: header + matrix + (picker?) + (status?) + hotkeys --
+        # --- Compose: header + (banner?) + matrix + (picker?) + (status?) + hotkeys --
         parts: List[RenderableType] = [
             Text(status_text, style=status_style),
-            tbl,
         ]
+        banner = self._render_overrides_banner(entries)
+        if banner is not None:
+            parts.append(banner)
+        parts.append(tbl)
         if self.mode is not None:
             parts.append(self._render_picker())
         if self.last_msg:
@@ -4393,6 +4397,64 @@ class DispatchMatrixView(View):
             ))
         parts.append(Text(self.HOTKEYS, style="dim"))
         return Group(*parts)
+
+    def _render_overrides_banner(self, entries: List) -> Optional[RenderableType]:
+        """Banner C — lista overrides ativos por stage com destaque.
+
+        Lê a mesma snapshot já carregada em ``entries`` (sem novo round-trip
+        kubectl). Mostra um Panel acima da matriz quando existir pelo menos
+        um override per-stage (worker, model, timeout_s, max_retries,
+        cost_cap_usd). ``retries=0`` recebe destaque vermelho — é o caso
+        que historicamente bloqueou o pipeline silenciosamente
+        (issue ghost env ``DEILE_PIPELINE_RETRIES_IMPLEMENT=0``).
+
+        Retorna ``None`` quando não há overrides — mantém UX limpa.
+        """
+        lines: List[Text] = []
+        for entry in entries:
+            stage = getattr(entry, "stage", None)
+            if not stage:
+                continue
+            bits: List[Text] = []
+            # worker override é só relevante quando source == "env"
+            # (per-stage); "global"/"default" não conta como override
+            # do stage.
+            source = getattr(entry, "source", None)
+            worker = getattr(entry, "worker", None)
+            if source == "env" and worker:
+                bits.append(Text(f"worker={worker}", style="yellow"))
+            model = getattr(entry, "model", None)
+            if model:
+                bits.append(Text(f"model={model}", style="cyan"))
+            timeout_s = getattr(entry, "timeout_s", None)
+            if timeout_s is not None:
+                bits.append(Text(f"timeout={timeout_s}s", style="yellow"))
+            max_retries = getattr(entry, "max_retries", None)
+            if max_retries is not None:
+                style = "bold red reverse" if max_retries == 0 else "yellow"
+                label = (f"retries=0 ⚠ FAIL-FAST" if max_retries == 0
+                         else f"retries={max_retries}")
+                bits.append(Text(label, style=style))
+            cap = getattr(entry, "cost_cap_usd", None)
+            if cap:
+                bits.append(Text(f"cap=${cap}", style="yellow"))
+            if not bits:
+                continue
+            line = Text(f"  {stage}: ", style="bold")
+            for i, bit in enumerate(bits):
+                if i:
+                    line.append("  ")
+                line.append_text(bit)
+            lines.append(line)
+        if not lines:
+            return None
+        return Panel(
+            Group(*lines),
+            title="[bold]OVERRIDES ATIVOS (per-stage)[/bold]",
+            title_align="left",
+            border_style="yellow",
+            padding=(0, 1),
+        )
 
     def _render_picker(self) -> RenderableType:
         """Renderiza o Panel do picker corrente (worker / model / global /
@@ -5161,6 +5223,18 @@ class DispatchMatrixView(View):
             self.mode = (kind, stage, [new_buf])
             return ActionResult.refresh()
 
+        # '!' = force flag para retries=0 (semantic zero confirmado).
+        # Sem efeito para timeout (timeout=0 sempre inválido). Idempotente:
+        # repetir '!' não duplica no buffer — evita ``"0!!"`` que parsaria
+        # como inteiro inválido e renderia mensagem confusa. Feedback do
+        # review na PR #407.
+        if key == "!" and kind == "retries":
+            if buf.endswith("!"):
+                return ActionResult()
+            new_buf = buf + "!"
+            self.mode = (kind, stage, [new_buf])
+            return ActionResult.refresh()
+
         if key in ("\r", "\n"):
             ns = (self.data.context.namespace
                   if self.data is not None and getattr(self.data, "context", None)
@@ -5171,11 +5245,17 @@ class DispatchMatrixView(View):
                 self.last_msg = f"[demo] {kind}={buf!r} para '{stage}' (sem cluster, no-op)"
                 self.last_ok = False
                 return ActionResult.refresh()
+            # Force flag para retries=0: buf == "0!" → allow_zero=True.
+            force_zero = False
+            raw_buf = buf.strip()
+            if kind == "retries" and raw_buf.endswith("!"):
+                force_zero = True
+                raw_buf = raw_buf[:-1].strip()
             # Empty input = clear override.
             value: Optional[int] = None
-            if buf.strip():
+            if raw_buf:
                 try:
-                    value = int(buf.strip())
+                    value = int(raw_buf)
                 except ValueError:
                     self.last_msg = f"valor inválido {buf!r} — esperado inteiro"
                     self.last_ok = False
@@ -5191,7 +5271,9 @@ class DispatchMatrixView(View):
                     self.last_msg = "retries deve ser >= 0"
                     self.last_ok = False
                     return ActionResult.refresh()
-                ok, msg = pd_set_stage_retries(stage, value, namespace=ns)
+                ok, msg = pd_set_stage_retries(
+                    stage, value, allow_zero=force_zero, namespace=ns,
+                )
             self.last_ok = ok
             self.last_msg = msg
             # Invalida cache para render mostrar o novo valor.
