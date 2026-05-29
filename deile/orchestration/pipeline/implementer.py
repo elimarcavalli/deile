@@ -662,6 +662,107 @@ class WorkerImplementer(PipelineImplementer):
             "_last_completed_at": str(info.get("last_completed_at") or ""),
         }
 
+    async def _try_auto_renew_oauth_and_retry(
+        self,
+        *,
+        outcome: "WorkOutcome",
+        url: str,
+        payload: Dict[str, Any],
+        wait: bool,
+        stage: Optional[str],
+    ) -> "WorkOutcome":
+        """Intercepta ``WORKER_AUTH_EXPIRED`` e tenta refresh + 1 retry.
+
+        Caminho normal (Nível 3 — OAuth auto-renew):
+
+        1. Detecta o code ``[WORKER_AUTH_EXPIRED]`` no ``outcome.error``.
+        2. Invoca :func:`try_refresh_claude_credentials` (lê o token in-pod
+           via ``kubectl exec``, atualiza o Secret ``claude-credentials``).
+        3. Se o refresh teve sucesso, dispara um **único** retry do mesmo
+           payload. O claude-worker recarrega o ``ANTHROPIC_AUTH_TOKEN`` no
+           próximo dispatch via ``_refresh_oauth_with_lock``.
+        4. Se o refresh falhou (``refresh_token`` expirou, etc.) OU o retry
+           voltou auth-expired de novo, devolve o ``outcome`` original
+           (prefixado por ``[WORKER_AUTH_EXPIRED]`` — o stage handler bloqueia).
+
+        O método NUNCA aumenta a janela de tentativas do resume tracker —
+        é um retry transparente, invisível ao streak counter. Quando dá certo,
+        o pipeline observa apenas o resultado do segundo dispatch (como se
+        nada tivesse acontecido); quando não dá, o block determinístico
+        continua imediato.
+
+        Returns:
+            Outcome resultante (do retry quando aplicável; do original caso
+            contrário). Garantido ser sempre uma instância válida.
+        """
+        if outcome.ok or not outcome.error:
+            return outcome
+        # Detecção precisa: o prefixo ``[WORKER_AUTH_EXPIRED]`` é produzido
+        # por ``_outcome_from_worker_response`` quando o worker setou
+        # ``error_code=WORKER_AUTH_EXPIRED`` no body.
+        if "[WORKER_AUTH_EXPIRED]" not in (outcome.error or ""):
+            return outcome
+
+        try:
+            from deile.orchestration.pipeline._claude_creds_refresh import (  # noqa: PLC0415
+                try_refresh_claude_credentials,
+            )
+        except ImportError as exc:
+            logger.warning(
+                "auto-renew indisponível (módulo ausente): %s — bloqueio normal",
+                exc,
+            )
+            return outcome
+
+        logger.info(
+            "WORKER_AUTH_EXPIRED detectado em stage=%s — tentando auto-renew "
+            "do OAuth antes de propagar o bloqueio",
+            stage,
+        )
+        refresh = await try_refresh_claude_credentials(min_expiry_window_s=0.0)
+        if not refresh.ok:
+            logger.warning(
+                "auto-renew FALHOU (%s) — propagando WORKER_AUTH_EXPIRED "
+                "pro stage handler. Humano precisa rodar `claude-login --switch`.",
+                refresh.error or refresh.message or "sem detalhe",
+            )
+            # Anota o erro original com a tentativa de refresh pra audit.
+            return WorkOutcome(
+                ok=False, text=outcome.text,
+                error=(outcome.error + f" | auto-renew falhou: {refresh.error or refresh.message}")[:500],
+                task_id=outcome.task_id, session_id=outcome.session_id,
+            )
+
+        logger.info(
+            "auto-renew OK (%s) — retentando dispatch UMA vez", refresh.message,
+        )
+        try:
+            data = await self._post_dispatch(url, payload, wait=wait)
+        except Exception as exc:  # noqa: BLE001 — never crash the tick
+            logger.warning(
+                "retry após auto-renew falhou no transporte: %s — propagando "
+                "outcome original", exc,
+            )
+            return outcome
+        retry_outcome = _outcome_from_worker_response(data)
+        # Caso degenerado: refresh "funcionou" mas o segundo dispatch também
+        # diz auth-expired (ex: o token no Secret veio velho, kubectl exec
+        # bateu na replica errada, etc.) — não loop, retorna o original.
+        if (
+            not retry_outcome.ok
+            and "[WORKER_AUTH_EXPIRED]" in (retry_outcome.error or "")
+        ):
+            logger.warning(
+                "retry após auto-renew TAMBÉM retornou WORKER_AUTH_EXPIRED — "
+                "estado inconsistente; propagando bloqueio para o humano",
+            )
+            return retry_outcome
+        logger.info(
+            "auto-renew + retry SUCESSO — outcome do retry assumido (ok=%s)",
+            retry_outcome.ok,
+        )
+        return retry_outcome
+
     async def _dispatch(
         self,
         brief: str,
@@ -863,6 +964,18 @@ class WorkerImplementer(PipelineImplementer):
                 ended="",  # Not yet known — reconcile via ground truth
             )
         outcome = _outcome_from_worker_response(data)
+
+        # OAuth auto-renew (Nível 3): se o worker reportou WORKER_AUTH_EXPIRED,
+        # tente uma renovação automática + retry UMA vez antes de propagar o
+        # erro pro stage handler (que bloqueia a issue). Em sucesso do refresh
+        # o segundo dispatch tipicamente passa porque o claude-worker recarrega
+        # o ANTHROPIC_AUTH_TOKEN a cada dispatch (via _refresh_oauth_with_lock).
+        outcome = await self._try_auto_renew_oauth_and_retry(
+            outcome=outcome,
+            url=url, payload=payload, wait=wait,
+            stage=stage,
+        )
+
         # Issue #309 fase 3.5 + issue #347 follow-up — persistência no
         # DispatchLedger:
         #

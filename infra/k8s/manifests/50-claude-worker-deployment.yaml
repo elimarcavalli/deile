@@ -46,16 +46,25 @@ spec:
         fsGroupChangePolicy: "OnRootMismatch"
         seccompProfile: { type: RuntimeDefault }
 
-      # InitContainer: copia credentials.json do Secret pro PVC writable.
-      # Sempre overwrite — o operador re-roda `claude-login --switch` quando
-      # quer trocar conta; o refresh do claude CLI in-pod escreve no MESMO
-      # path (sobrevive entre dispatches no mesmo pod) mas é overrided por
-      # claude-login + restart.
+      # InitContainer idempotente — preserva token refrescado in-pod entre
+      # restarts. Antes (pré-PR OAuth auto-renew) esta etapa SEMPRE copiava
+      # o credentials.json do Secret pro PVC, sobrescrevendo qualquer token
+      # mais recente que o ``claude -p`` havia obtido via refresh in-pod
+      # (a cada restart o pod voltava com o token velho — eventualmente
+      # expirado se ``claude-login`` não tivesse rodado nas últimas 8h).
       #
-      # Roda como uid 10001 (PSS restricted-compliant). chown não é
-      # necessário porque ``fsGroup: 10001`` já garante que TUDO no PVC
-      # claude-home pertença ao gid 10001 — o cp herda esse gid e o chmod
-      # 0600 fica aplicável.
+      # Comportamento novo: compara ``expiresAt`` do Secret vs PVC. Copia
+      # apenas quando (a) PVC não tem credentials ainda OU (b) o Secret tem
+      # um token MAIS RECENTE (operador acabou de rodar ``claude-login``).
+      # Em todos os outros casos preserva o token do PVC, que é tipicamente
+      # o resultado do refresh in-pod feito pelo próprio claude CLI.
+      #
+      # Mecanismo de força: ``claude-login --switch`` (troca de conta) precisa
+      # vencer essa proteção — ele deleta o credentials.json do PVC ANTES do
+      # rollout (via Job dedicado em ``_claude_install._force_clear_pvc_creds``).
+      # Após o delete, o init detecta arquivo ausente e copia normalmente.
+      #
+      # Roda como uid 10001 (PSS restricted-compliant); fsGroup garante perms.
       initContainers:
         - name: bootstrap-creds
           image: deile-stack:local
@@ -65,9 +74,25 @@ spec:
             - |
               set -eu
               mkdir -p /home/claude/.claude
-              cp /run/secrets/claude/credentials.json /home/claude/.claude/credentials.json
-              chmod 0600 /home/claude/.claude/credentials.json
-              ls -la /home/claude/.claude/credentials.json
+              CREDS_PVC=/home/claude/.claude/credentials.json
+              CREDS_SECRET=/run/secrets/claude/credentials.json
+              PY_READ_EXP='import json,sys;d=json.load(open(sys.argv[1]));o=d.get("claudeAiOauth") or {};print(int(o.get("expiresAt") or d.get("expiresAt") or 0))'
+              if [ ! -f "$CREDS_PVC" ]; then
+                echo "bootstrap-creds: PVC sem credentials.json - copiando do Secret"
+                cp "$CREDS_SECRET" "$CREDS_PVC"
+                chmod 0600 "$CREDS_PVC"
+              else
+                PVC_EXP=$(python3 -c "$PY_READ_EXP" "$CREDS_PVC" 2>/dev/null || echo 0)
+                SECRET_EXP=$(python3 -c "$PY_READ_EXP" "$CREDS_SECRET" 2>/dev/null || echo 0)
+                if [ "${SECRET_EXP:-0}" -gt "${PVC_EXP:-0}" ]; then
+                  echo "bootstrap-creds: Secret mais recente (Secret=$SECRET_EXP > PVC=$PVC_EXP) - copiando"
+                  cp "$CREDS_SECRET" "$CREDS_PVC"
+                  chmod 0600 "$CREDS_PVC"
+                else
+                  echo "bootstrap-creds: PVC preservado (PVC=$PVC_EXP >= Secret=$SECRET_EXP)"
+                fi
+              fi
+              ls -la "$CREDS_PVC"
           volumeMounts:
             - name: claude-credentials
               mountPath: /run/secrets/claude
