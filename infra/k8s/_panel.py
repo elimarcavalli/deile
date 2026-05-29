@@ -1579,10 +1579,11 @@ class PodWatchView(View):
     # Mapeia role do pod → Deployment alvo do kubectl patch. Roles locais
     # não têm Deployment (são processos no host) → resize não se aplica.
     _ROLE_TO_DEPLOYMENT = {
-        "pipeline": "deile-pipeline",
-        "worker":   "deile-worker",
-        "bot":      "deilebot",
-        "shell":    "deile-shell",
+        "pipeline":     "deile-pipeline",
+        "worker":       "deile-worker",
+        "bot":          "deilebot",
+        "shell":        "deile-shell",
+        "claude-worker": "claude-worker",
     }
 
     # Roles com Service associado (issue #394): usados para decidir se a
@@ -1823,7 +1824,76 @@ class PodWatchView(View):
                     (" | ", "dim"),
                     (finished_z, "dim"),
                 ))
+        # claude-worker specific sections (issue #395)
+        if pod.role == "claude-worker":
+            lines.extend(self._claude_worker_header_lines())
         return Group(*lines)
+
+    def _claude_worker_header_lines(self) -> list:
+        """LEASE / DISK / QUOTA lines for claude-worker pod header (issue #395)."""
+        import time as _time
+        lines = []
+        if self.data is None or self.data.claude_worker_info is None:
+            lines.append(Text.assemble(
+                ("LEASE: ", "bold yellow"), ("— (provider unavailable)", "dim"),
+            ))
+            return lines
+
+        status = self.data.claude_worker_info.get()
+
+        # LEASE line
+        lease = status.lease
+        if lease:
+            hb_age = _time.time() - float(lease.get("heartbeat_at") or 0)
+            alive_label = "(alive)" if hb_age < 35 else "(stale)"
+            alive_style = "green" if hb_age < 35 else "red"
+            lines.append(Text.assemble(
+                ("LEASE: ", "bold yellow"),
+                ("task=", "dim"), (str(lease.get("task_id", "?")), "bold"),
+                ("   heartbeat=", "dim"),
+                (_fmt_age(hb_age) + " ago", "bold"),
+                ("   ", ""),
+                (alive_label, alive_style),
+                ("   claudes_running=", "dim"),
+                (str(status.claude_processes), "bold"),
+            ))
+        else:
+            lines.append(Text.assemble(
+                ("LEASE: ", "bold yellow"),
+                ("— (idle)", "dim"),
+                ("   claudes_running=", "dim"),
+                (str(status.claude_processes), "bold"),
+            ))
+
+        # DISK line
+        disk = status.disk
+        if disk:
+            used = int(disk.get("used_bytes") or 0)
+            total = int(disk.get("total_bytes") or 1)
+            pct = int(used * 100 / total) if total else 0
+            used_mi = used // (1024 * 1024)
+            total_gi = total / (1024 ** 3)
+            disk_style = "red bold" if pct >= 80 else "bold"
+            lines.append(Text.assemble(
+                ("DISK: ", "bold cyan"),
+                ("PVC claude-home ", "dim"),
+                (f"{used_mi}Mi/{total_gi:.0f}Gi used ({pct}%)", disk_style),
+            ))
+
+        # QUOTA line — omitted when never captured
+        quota = status.anthropic_quota
+        if quota:
+            tokens = int(quota.get("tokens_remaining") or 0)
+            captured_at = float(quota.get("captured_at") or 0)
+            age_s = _time.time() - captured_at
+            lines.append(Text.assemble(
+                ("QUOTA: ", "bold magenta"),
+                ("anthropic tokens left ~", "dim"),
+                (f" {tokens:,}", "bold"),
+                (f"  (cached {_fmt_age(age_s)} ago, best-effort)", "dim"),
+            ))
+
+        return lines
 
     def _local_header_body(self) -> RenderableType:
         """Cabeçalho do drill-in para processo local (não k8s)."""
@@ -1893,17 +1963,17 @@ class PodWatchView(View):
 
     def render(self, app: "PanelApp") -> RenderableType:
         layout = Layout()
-        # ``size=9`` acomoda até 6 linhas de header + bordas do Panel + título
-        # ([1] name/role/status + [2] uptime/restarts/ready/node +
-        # [3] RESOURCES + [4] ENDPOINT (conditional) +
-        # [5] worker/last activity + [6] current task).
-        # Pods sem worker ou sem ENDPOINT mostram menos linhas.
+        # size=9 acomoda 6 linhas de header + bordas + título para k8s pods
+        # (name/role/status + uptime + RESOURCES + ENDPOINT + worker/activity
+        # + current task). claude-worker adiciona LEASE/DISK/QUOTA (até 3
+        # linhas extra) → size=12. Outros pods mantêm 9.
+        info_size = 12 if self.pod_role == "claude-worker" else 9
         layout.split_column(
             Layout(_head_panel(self.title, app), name="head", size=4),
             Layout(Panel(self._header_body(),
                          title="[bold]POD[/bold]", title_align="left",
                          border_style="cyan"),
-                   name="info", size=9),
+                   name="info", size=info_size),
             Layout(self._log_panel(), name="log"),
             Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
         )
@@ -4002,7 +4072,8 @@ class DispatchMatrixView(View):
         "[s]caling row: enter digita réplicas (0-10)   "
         "[c] cleanup on-demand (preview + confirm)   "
         "[p] editar max_parallel (parallelism do pipeline)   "
-        "colunas: 0=Worker 1=Model 2=Timeout 3=Retries 4=Cost cap (USD/run)"
+        "colunas: 0=Worker 1=Model 2=Timeout 3=Retries 4=Cost cap (USD/run)   "
+        "retries=0 EXIGE confirmação: digite '0!' (fail-fast, sem retry)"
     )
 
     # Índice de row constante para a linha de scaling (após Global default).
@@ -4331,11 +4402,14 @@ class DispatchMatrixView(View):
             mp_txt = f"[reverse]{mp_txt}[/reverse]"
         tbl.add_row("Max Parallel", mp_txt, mp_desc, "", "", "—", "env")
 
-        # --- Compose: header + matrix + (picker?) + (status?) + hotkeys --
+        # --- Compose: header + (banner?) + matrix + (picker?) + (status?) + hotkeys --
         parts: List[RenderableType] = [
             Text(status_text, style=status_style),
-            tbl,
         ]
+        banner = self._render_overrides_banner(entries)
+        if banner is not None:
+            parts.append(banner)
+        parts.append(tbl)
         if self.mode is not None:
             parts.append(self._render_picker())
         if self.last_msg:
@@ -4348,6 +4422,64 @@ class DispatchMatrixView(View):
             ))
         parts.append(Text(self.HOTKEYS, style="dim"))
         return Group(*parts)
+
+    def _render_overrides_banner(self, entries: List) -> Optional[RenderableType]:
+        """Banner C — lista overrides ativos por stage com destaque.
+
+        Lê a mesma snapshot já carregada em ``entries`` (sem novo round-trip
+        kubectl). Mostra um Panel acima da matriz quando existir pelo menos
+        um override per-stage (worker, model, timeout_s, max_retries,
+        cost_cap_usd). ``retries=0`` recebe destaque vermelho — é o caso
+        que historicamente bloqueou o pipeline silenciosamente
+        (issue ghost env ``DEILE_PIPELINE_RETRIES_IMPLEMENT=0``).
+
+        Retorna ``None`` quando não há overrides — mantém UX limpa.
+        """
+        lines: List[Text] = []
+        for entry in entries:
+            stage = getattr(entry, "stage", None)
+            if not stage:
+                continue
+            bits: List[Text] = []
+            # worker override é só relevante quando source == "env"
+            # (per-stage); "global"/"default" não conta como override
+            # do stage.
+            source = getattr(entry, "source", None)
+            worker = getattr(entry, "worker", None)
+            if source == "env" and worker:
+                bits.append(Text(f"worker={worker}", style="yellow"))
+            model = getattr(entry, "model", None)
+            if model:
+                bits.append(Text(f"model={model}", style="cyan"))
+            timeout_s = getattr(entry, "timeout_s", None)
+            if timeout_s is not None:
+                bits.append(Text(f"timeout={timeout_s}s", style="yellow"))
+            max_retries = getattr(entry, "max_retries", None)
+            if max_retries is not None:
+                style = "bold red reverse" if max_retries == 0 else "yellow"
+                label = (f"retries=0 ⚠ FAIL-FAST" if max_retries == 0
+                         else f"retries={max_retries}")
+                bits.append(Text(label, style=style))
+            cap = getattr(entry, "cost_cap_usd", None)
+            if cap:
+                bits.append(Text(f"cap=${cap}", style="yellow"))
+            if not bits:
+                continue
+            line = Text(f"  {stage}: ", style="bold")
+            for i, bit in enumerate(bits):
+                if i:
+                    line.append("  ")
+                line.append_text(bit)
+            lines.append(line)
+        if not lines:
+            return None
+        return Panel(
+            Group(*lines),
+            title="[bold]OVERRIDES ATIVOS (per-stage)[/bold]",
+            title_align="left",
+            border_style="yellow",
+            padding=(0, 1),
+        )
 
     def _render_picker(self) -> RenderableType:
         """Renderiza o Panel do picker corrente (worker / model / global /
@@ -5156,6 +5288,18 @@ class DispatchMatrixView(View):
             self.mode = (kind, stage, [new_buf])
             return ActionResult.refresh()
 
+        # '!' = force flag para retries=0 (semantic zero confirmado).
+        # Sem efeito para timeout (timeout=0 sempre inválido). Idempotente:
+        # repetir '!' não duplica no buffer — evita ``"0!!"`` que parsaria
+        # como inteiro inválido e renderia mensagem confusa. Feedback do
+        # review na PR #407.
+        if key == "!" and kind == "retries":
+            if buf.endswith("!"):
+                return ActionResult()
+            new_buf = buf + "!"
+            self.mode = (kind, stage, [new_buf])
+            return ActionResult.refresh()
+
         if key in ("\r", "\n"):
             ns = (self.data.context.namespace
                   if self.data is not None and getattr(self.data, "context", None)
@@ -5166,11 +5310,17 @@ class DispatchMatrixView(View):
                 self.last_msg = f"[demo] {kind}={buf!r} para '{stage}' (sem cluster, no-op)"
                 self.last_ok = False
                 return ActionResult.refresh()
+            # Force flag para retries=0: buf == "0!" → allow_zero=True.
+            force_zero = False
+            raw_buf = buf.strip()
+            if kind == "retries" and raw_buf.endswith("!"):
+                force_zero = True
+                raw_buf = raw_buf[:-1].strip()
             # Empty input = clear override.
             value: Optional[int] = None
-            if buf.strip():
+            if raw_buf:
                 try:
-                    value = int(buf.strip())
+                    value = int(raw_buf)
                 except ValueError:
                     self.last_msg = f"valor inválido {buf!r} — esperado inteiro"
                     self.last_ok = False
@@ -5186,7 +5336,9 @@ class DispatchMatrixView(View):
                     self.last_msg = "retries deve ser >= 0"
                     self.last_ok = False
                     return ActionResult.refresh()
-                ok, msg = pd_set_stage_retries(stage, value, namespace=ns)
+                ok, msg = pd_set_stage_retries(
+                    stage, value, allow_zero=force_zero, namespace=ns,
+                )
             self.last_ok = ok
             self.last_msg = msg
             # Invalida cache para render mostrar o novo valor.

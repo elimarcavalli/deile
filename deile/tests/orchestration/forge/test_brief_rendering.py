@@ -7,9 +7,7 @@ import pytest
 from deile.orchestration.pipeline.briefs import (
     _render_worker_critique_brief, _render_worker_decompose_brief,
     _render_worker_implement_brief, _render_worker_implement_resume_brief,
-    _render_worker_pr_address_brief, _render_worker_refine_brief,
-    _render_worker_review_brief, _render_worker_review_only_brief,
-    _render_worker_review_resume_brief)
+    _render_worker_pr_unified_brief, _render_worker_refine_brief)
 
 
 @pytest.fixture
@@ -52,16 +50,18 @@ def test_implement_brief_without_forge_defaults_to_github(args):
     assert "gh pr create" in out
 
 
-def test_review_brief_gitlab_merge_uses_glab(gitlab_config):
-    out = _render_worker_review_brief(
-        "group/project", "main", 7, forge=gitlab_config,
+def test_pr_unified_brief_gitlab_merge_uses_glab(gitlab_config):
+    out = _render_worker_pr_unified_brief(
+        "group/project", "main", 7, gh_login="deile-one", forge=gitlab_config,
     )
     assert "glab api -X PUT" in out
     assert "merge_requests/7/merge" in out
 
 
-def test_review_brief_github_merge_uses_gh(github_config):
-    out = _render_worker_review_brief("owner/repo", "main", 7, forge=github_config)
+def test_pr_unified_brief_github_merge_uses_gh(github_config):
+    out = _render_worker_pr_unified_brief(
+        "owner/repo", "main", 7, gh_login="deile-one", forge=github_config,
+    )
     assert "gh api -X PUT repos/owner/repo/pulls/7/merge" in out
 
 
@@ -70,8 +70,11 @@ def test_implement_resume_brief_includes_progress_block(args, github_config):
     assert "deile-progress.md" in out  # the journal note is embedded
 
 
-def test_review_resume_brief_includes_progress_block(gitlab_config):
-    out = _render_worker_review_resume_brief("g/p", "main", 5, forge=gitlab_config)
+def test_pr_unified_brief_reads_progress_md(gitlab_config):
+    # O brief unificado cobre resume lendo ``.deile-progress.md`` no PASSO 0.
+    out = _render_worker_pr_unified_brief(
+        "g/p", "main", 5, gh_login="deile-one", forge=gitlab_config,
+    )
     assert "deile-progress.md" in out
     assert "glab" in out
 
@@ -102,16 +105,24 @@ def test_decompose_brief_uses_glab_create_for_gitlab(gitlab_config):
     assert "glab issue create" in out
 
 
-def test_review_only_brief_review_post_per_forge(github_config, gitlab_config):
-    gh_brief = _render_worker_review_only_brief("o/r", "main", 1, forge=github_config)
-    gl_brief = _render_worker_review_only_brief("g/p", "main", 1, forge=gitlab_config)
+def test_pr_unified_brief_review_post_per_forge(github_config, gitlab_config):
+    gh_brief = _render_worker_pr_unified_brief(
+        "o/r", "main", 1, gh_login="deile-one", forge=github_config,
+    )
+    gl_brief = _render_worker_pr_unified_brief(
+        "g/p", "main", 1, gh_login="deile-one", forge=gitlab_config,
+    )
     assert "gh api -X POST repos/" in gh_brief
     assert "glab mr approve" in gl_brief or "glab mr revoke" in gl_brief
 
 
-def test_pr_address_brief_uses_correct_cli(github_config, gitlab_config):
-    gh = _render_worker_pr_address_brief("o/r", "main", 5, forge=github_config)
-    gl = _render_worker_pr_address_brief("g/p", "main", 5, forge=gitlab_config)
+def test_pr_unified_brief_uses_correct_cli_comment(github_config, gitlab_config):
+    gh = _render_worker_pr_unified_brief(
+        "o/r", "main", 5, gh_login="deile-one", forge=github_config,
+    )
+    gl = _render_worker_pr_unified_brief(
+        "g/p", "main", 5, gh_login="deile-one", forge=gitlab_config,
+    )
     assert "gh pr comment 5" in gh
     assert "glab mr note 5" in gl
 

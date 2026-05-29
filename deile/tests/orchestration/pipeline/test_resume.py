@@ -186,16 +186,26 @@ class TestResumeBriefs:
         assert client.payloads[0]["resume"]["mode"] == "fresh"
 
     async def test_resume_review_brief_has_no_reset(self):
+        # Após o refactor "PR é o quadro" o brief unificado de PR substitui o
+        # brief de review_resume. Resume é coberto pelo PASSO 0 que instrui
+        # ler ``.deile-progress.md`` (não há mais um cabeçalho "RETOMADA"
+        # distinto — o mesmo brief atende fresh e resume).
         client = _FakeWorkerClient([_worker_response(ended="incompleto")])
         impl = WorkerImplementer(client=client)
         monitor = MagicMock()
-        monitor.config = MagicMock(repo="owner/name", main_branch="main")
+        monitor.config = MagicMock(
+            repo="owner/name", main_branch="main", mention_handle="@deile-one",
+        )
         pr = MagicMock(number=7, title="t", head_ref="auto/issue-1",
                        url="https://github.com/owner/name/pull/7")
         await impl.review(monitor, pr, resume=True)
         brief = client.payloads[0]["brief"]
+        # O brief unificado nunca emite ``git reset --hard`` (não fala em fresh
+        # nem aqui nem no caminho não-resume — o worker trabalha em cima do
+        # PVC já checked-out).
         assert "reset --hard origin/" not in brief
-        assert "RETOMADA" in brief
+        # Resume é gratuito: o PASSO 0 lê ``.deile-progress.md`` se existir.
+        assert ".deile-progress.md" in brief
         assert client.payloads[0]["resume"]["expect_merge"] is True
 
 

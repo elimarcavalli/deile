@@ -1,10 +1,14 @@
-# PVC isolado para logs rotacionados dos pods DEILE.
+# PVCs de logs rotacionados para os pods DEILE (issue #404).
 #
-# Montado em /home/deile/logs/<pod-name>/ em cada pod. RWX para que o
-# DaemonSet log-analyzer possa ler os logs de todos os pods no nó.
+# Dois PVCs separados — um por deployment — porque local-path (k3s default)
+# só suporta ReadWriteOnce. Cada pod grava em /home/deile/logs/<pod-name>/
+# via CappedRotatingFileHandler (issue #371, deile/log_mgmt/log_rotator.py).
 #
-# 256Mi cobre ~30 dias de logs (5 MB por pod × 4 pods × 3 backups ≈ 60 MB
-# peak; folga de 4× para picos e logs de debug).
+# 256Mi cobre ~30 dias de logs por pod (5 MB × 3 backups ≈ 15 MB peak;
+# folga de 16× para picos e logs de debug).
+#
+# deile-worker tem 2 réplicas; no k3s single-node ambas ficam no mesmo nó
+# e podem montar o mesmo PVC ReadWriteOnce (RWO é restrição de nó, não de pod).
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -13,12 +17,25 @@ metadata:
   labels:
     app: deile
     component: logs
+    workload: deile-worker
 spec:
-  accessModes: ["ReadWriteMany"]
+  accessModes: ["ReadWriteOnce"]
   resources:
     requests:
       storage: 256Mi
-  # storageClassName left unset → cluster default.
-  # RWX requires a provisioner that supports it (Longhorn, NFS, EFS).
-  # If unavailable, operator can deploy this PVC with a different
-  # storageClass or fallback to emptyDir without persistence.
+  # storageClassName: default (local-path no k3s) — suporta RWO.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: deile-logs-pipeline
+  namespace: deile
+  labels:
+    app: deile
+    component: logs
+    workload: deile-pipeline
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 256Mi

@@ -11,9 +11,7 @@ from deile.orchestration.pipeline.briefs import (
     _classify_mention_action, _render_claude_mention_prompt,
     _render_trigger_details, _render_worker_implement_brief,
     _render_worker_implement_resume_brief, _render_worker_mention_brief,
-    _render_worker_pr_address_brief, _render_worker_review_brief,
-    _render_worker_review_only_brief, _render_worker_review_resume_brief,
-    _summarize_trigger_types)
+    _render_worker_pr_unified_brief, _summarize_trigger_types)
 from deile.orchestration.pipeline.constants import ISSUE_BODY_MAX_CHARS
 from deile.orchestration.pipeline.github_client import (CommentRef, IssueRef,
                                                         MentionTrigger, PrRef)
@@ -72,30 +70,57 @@ class TestWorkerImplementBrief:
         assert "x" * (ISSUE_BODY_MAX_CHARS + 1) not in out
 
 
-class TestSimpleReviewBriefs:
-    def test_review_brief(self):
-        out = _render_worker_review_brief("o/r", "main", 11)
+class TestUnifiedPrBrief:
+    """Após o refactor "PR é o quadro", os 3 briefs antigos
+    (review / review_only / address) foram substituídos por um único
+    ``_render_worker_pr_unified_brief`` que descobre o que fazer pelo estado
+    real da PR. Os asserts cobrem placeholders renderizados, o ramo "autor
+    é HUMANO → NÃO mergeio", o ramo "sou assignee + review APPROVED → MERGEAR"
+    e a leitura de ``.deile-progress.md`` no PASSO 0."""
+
+    def test_renders_all_placeholders(self):
+        import re
+        out = _render_worker_pr_unified_brief(
+            "o/r", "main", 11, gh_login="deile-one",
+        )
         assert "#11" in out and "o/r" in out
-        assert "{" not in out and "}" not in out
+        assert "deile-one" in out
+        # O brief contém ``{...}`` literais (filtros jq); checamos especificamente
+        # se sobrou algum placeholder snake_case não-renderizado.
+        unrendered = re.findall(r"\{[a-z_]+\}", out)
+        assert unrendered == [], f"placeholders não renderizados: {unrendered}"
 
-    def test_review_only_brief_forbids_merge(self):
-        out = _render_worker_review_only_brief("o/r", "main", 11)
-        assert "#11" in out
-        assert "NÃO mergeie" in out
+    def test_brief_states_human_author_no_push(self):
+        out = _render_worker_pr_unified_brief(
+            "o/r", "main", 11, gh_login="deile-one",
+        )
+        # O ramo "autor é HUMANO" no PASSO 1 da work-list.
+        assert "autor é HUMANO" in out
+        assert "NUNCA dou push" in out
 
-    def test_pr_address_brief_forbids_merge(self):
-        out = _render_worker_pr_address_brief("o/r", "main", 12)
-        assert "#12" in out
-        assert "NÃO mergeie" in out
+    def test_brief_states_self_author_merge_path(self):
+        out = _render_worker_pr_unified_brief(
+            "o/r", "main", 11, gh_login="deile-one",
+        )
+        # Ramo "sou assignee + review APPROVED + threads ok + CI verde → MERGEAR".
+        assert "MERGEAR" in out
+        assert "APPROVED" in out
+
+    def test_brief_reads_progress_md_at_step_0(self):
+        out = _render_worker_pr_unified_brief(
+            "o/r", "main", 11, gh_login="deile-one",
+        )
+        assert ".deile-progress.md" in out
+        assert "PASSO 0" in out
 
 
 class TestFullSuiteGate:
-    """Os briefs-portão (que aprovam/mergeiam) exigem a SUÍTE COMPLETA verde,
-    não só os arquivos do diff — uma mudança quebra testes em arquivos que não
-    tocou (regressão: PR #275 aprovou com a suíte vermelha por rodar só o subset).
+    """O brief unificado exige a SUÍTE COMPLETA verde antes de mergear ou
+    aprovar — não basta rodar os arquivos do diff (uma mudança quebra
+    testes em arquivos que ela não tocou).
 
     Política de testes por papel:
-    - REVISOR (review / review_resume / review_only): exige suíte completa antes de mergear.
+    - PR unificado (brief único): exige suíte completa antes de mergear/aprovar.
     - IMPLEMENTADOR (implement / implement_resume): usa análise de impacto — roda apenas os
       testes relevantes à mudança. NÃO executa a suíte inteira (tarefa do revisor).
       O brief ainda menciona `pytest deile/tests/` no contexto "NUNCA rode X".
@@ -103,22 +128,12 @@ class TestFullSuiteGate:
 
     FULL_SUITE = "pytest deile/tests/"
 
-    def test_review_brief_requires_full_suite(self):
-        out = _render_worker_review_brief("o/r", "main", 11)
+    def test_unified_pr_brief_requires_full_suite(self):
+        out = _render_worker_pr_unified_brief(
+            "o/r", "main", 11, gh_login="deile-one",
+        )
         assert self.FULL_SUITE in out
         assert "SUÍTE COMPLETA" in out
-
-    def test_review_resume_brief_requires_full_suite(self):
-        out = _render_worker_review_resume_brief("o/r", "main", 4)
-        assert self.FULL_SUITE in out
-        assert "SUÍTE COMPLETA" in out
-
-    def test_review_only_brief_runs_full_suite_before_approve(self):
-        out = _render_worker_review_only_brief("o/r", "main", 11)
-        # review_only ANTES não rodava teste nenhum — agora roda a suíte completa
-        # e só aprova se verde.
-        assert self.FULL_SUITE in out
-        assert "REQUEST_CHANGES" in out
 
     def test_implement_brief_uses_impact_analysis_not_full_suite(self):
         """Implementador usa análise de impacto — não roda a suíte inteira.
@@ -153,12 +168,6 @@ class TestResumeBriefs:
             "o/r", "main", "b", 3, "T", "body"
         )
         assert "#3" in out
-        assert ".deile-progress.md" in out
-        assert "{" not in out and "}" not in out
-
-    def test_review_resume_injects_progress_block(self):
-        out = _render_worker_review_resume_brief("o/r", "main", 4)
-        assert "#4" in out
         assert ".deile-progress.md" in out
         assert "{" not in out and "}" not in out
 

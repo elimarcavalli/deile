@@ -25,7 +25,8 @@ from deile.orchestration.pipeline.implementer import (ClaudeImplementer,
 def _make_monitor(*, claude_stdout="", claude_rc=0, worktree_raises=False):
     monitor = MagicMock()
     monitor.config = SimpleNamespace(
-        repo="owner/name", main_branch="main", base_repo_path=Path("/tmp/fake")
+        repo="owner/name", main_branch="main", base_repo_path=Path("/tmp/fake"),
+        mention_handle="@deile-one",
     )
     monitor.branch_for_issue = lambda n: f"auto/issue-{n}"
     if worktree_raises:
@@ -250,10 +251,12 @@ class TestWorkerImplementer:
         # The review/merge stage is the final quality gate: it runs under the
         # dedicated ``reviewer`` persona, not ``developer``.
         assert client.last_payload["persona"] == "reviewer"
-        # And the brief must demand a real quality review, not just green tests.
+        # Após o refactor "PR é o quadro" o brief unificado substitui o brief
+        # de QUALITY GATE. Asserts agora cobrem o princípio do brief: descoberta
+        # de estado real + checkpoint obrigatório de comentário visível.
         brief = client.last_payload["brief"]
-        assert "QUALITY GATE" in brief
-        assert "SOLID" in brief
+        assert "PASSO 0" in brief
+        assert "estado real" in brief.lower() or "ESTADO REAL" in brief
 
     async def test_review_resume_uses_reviewer_persona(self):
         client = _FakeClient({"ok": True, "summary": "https://github.com/owner/name/pull/7 MERGED"})

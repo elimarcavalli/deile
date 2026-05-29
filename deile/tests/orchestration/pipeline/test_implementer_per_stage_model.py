@@ -56,6 +56,7 @@ def _make_monitor():
     monitor = SimpleNamespace()
     monitor.config = SimpleNamespace(
         repo="owner/name", main_branch="main", base_repo_path=Path("/tmp/x"),
+        mention_handle="@deile-one",
     )
     monitor.branch_for_issue = lambda n: f"auto/issue-{n}"
     # Forge layer (PR #297) — implementer lê ``monitor.forge.config`` para
@@ -150,7 +151,10 @@ class TestStageModelPropagation:
         )
         assert client.last_payload["preferred_model"] == "deepseek:deepseek-v3-small"
 
-    async def test_mention_work_merge_on_pr_uses_pr_review_stage(self, monkeypatch):
+    async def test_mention_pr_unified_uses_pr_review_stage(self, monkeypatch):
+        """Após o refactor "PR é o quadro", todo trigger sobre PR resolve para
+        ``pr_unified`` (substitui ``work_merge``/``review_only``/``address``)
+        e mapeia para o stage ``pr_review``."""
         monkeypatch.setenv("DEILE_PIPELINE_MODEL_PR_REVIEW",
                            "anthropic:claude-opus-4-7")
         reset_settings()
@@ -158,7 +162,7 @@ class TestStageModelPropagation:
         trigger = _mention_trigger_pr_assignee(number=7)
         await WorkerImplementer(client=client).mention(
             _make_monitor(), trigger,
-            trigger_types=["assignee"], all_triggers=[trigger], mode="work_merge",
+            trigger_types=["assignee"], all_triggers=[trigger], mode="pr_unified",
         )
         assert client.last_payload["preferred_model"] == "anthropic:claude-opus-4-7"
 

@@ -38,9 +38,7 @@ from deile.orchestration.pipeline.briefs import (
     _render_claude_mention_prompt, _render_worker_critique_brief,
     _render_worker_decompose_brief, _render_worker_implement_brief,
     _render_worker_implement_resume_brief, _render_worker_mention_brief,
-    _render_worker_pr_address_brief, _render_worker_refine_brief,
-    _render_worker_review_brief, _render_worker_review_only_brief,
-    _render_worker_review_resume_brief)
+    _render_worker_pr_unified_brief, _render_worker_refine_brief)
 from deile.orchestration.pipeline.claude_dispatcher import (
     render_implement_prompt, render_review_prompt)
 from deile.orchestration.pipeline.dispatch_resolver import (
@@ -662,6 +660,107 @@ class WorkerImplementer(PipelineImplementer):
             "_last_completed_at": str(info.get("last_completed_at") or ""),
         }
 
+    async def _try_auto_renew_oauth_and_retry(
+        self,
+        *,
+        outcome: "WorkOutcome",
+        url: str,
+        payload: Dict[str, Any],
+        wait: bool,
+        stage: Optional[str],
+    ) -> "WorkOutcome":
+        """Intercepta ``WORKER_AUTH_EXPIRED`` e tenta refresh + 1 retry.
+
+        Caminho normal (Nível 3 — OAuth auto-renew):
+
+        1. Detecta o code ``[WORKER_AUTH_EXPIRED]`` no ``outcome.error``.
+        2. Invoca :func:`try_refresh_claude_credentials` (lê o token in-pod
+           via ``kubectl exec``, atualiza o Secret ``claude-credentials``).
+        3. Se o refresh teve sucesso, dispara um **único** retry do mesmo
+           payload. O claude-worker recarrega o ``ANTHROPIC_AUTH_TOKEN`` no
+           próximo dispatch via ``_refresh_oauth_with_lock``.
+        4. Se o refresh falhou (``refresh_token`` expirou, etc.) OU o retry
+           voltou auth-expired de novo, devolve o ``outcome`` original
+           (prefixado por ``[WORKER_AUTH_EXPIRED]`` — o stage handler bloqueia).
+
+        O método NUNCA aumenta a janela de tentativas do resume tracker —
+        é um retry transparente, invisível ao streak counter. Quando dá certo,
+        o pipeline observa apenas o resultado do segundo dispatch (como se
+        nada tivesse acontecido); quando não dá, o block determinístico
+        continua imediato.
+
+        Returns:
+            Outcome resultante (do retry quando aplicável; do original caso
+            contrário). Garantido ser sempre uma instância válida.
+        """
+        if outcome.ok or not outcome.error:
+            return outcome
+        # Detecção precisa: o prefixo ``[WORKER_AUTH_EXPIRED]`` é produzido
+        # por ``_outcome_from_worker_response`` quando o worker setou
+        # ``error_code=WORKER_AUTH_EXPIRED`` no body.
+        if "[WORKER_AUTH_EXPIRED]" not in (outcome.error or ""):
+            return outcome
+
+        try:
+            from deile.orchestration.pipeline._claude_creds_refresh import (  # noqa: PLC0415
+                try_refresh_claude_credentials,
+            )
+        except ImportError as exc:
+            logger.warning(
+                "auto-renew indisponível (módulo ausente): %s — bloqueio normal",
+                exc,
+            )
+            return outcome
+
+        logger.info(
+            "WORKER_AUTH_EXPIRED detectado em stage=%s — tentando auto-renew "
+            "do OAuth antes de propagar o bloqueio",
+            stage,
+        )
+        refresh = await try_refresh_claude_credentials(min_expiry_window_s=0.0)
+        if not refresh.ok:
+            logger.warning(
+                "auto-renew FALHOU (%s) — propagando WORKER_AUTH_EXPIRED "
+                "pro stage handler. Humano precisa rodar `claude-login --switch`.",
+                refresh.error or refresh.message or "sem detalhe",
+            )
+            # Anota o erro original com a tentativa de refresh pra audit.
+            return WorkOutcome(
+                ok=False, text=outcome.text,
+                error=(outcome.error + f" | auto-renew falhou: {refresh.error or refresh.message}")[:500],
+                task_id=outcome.task_id, session_id=outcome.session_id,
+            )
+
+        logger.info(
+            "auto-renew OK (%s) — retentando dispatch UMA vez", refresh.message,
+        )
+        try:
+            data = await self._post_dispatch(url, payload, wait=wait)
+        except Exception as exc:  # noqa: BLE001 — never crash the tick
+            logger.warning(
+                "retry após auto-renew falhou no transporte: %s — propagando "
+                "outcome original", exc,
+            )
+            return outcome
+        retry_outcome = _outcome_from_worker_response(data)
+        # Caso degenerado: refresh "funcionou" mas o segundo dispatch também
+        # diz auth-expired (ex: o token no Secret veio velho, kubectl exec
+        # bateu na replica errada, etc.) — não loop, retorna o original.
+        if (
+            not retry_outcome.ok
+            and "[WORKER_AUTH_EXPIRED]" in (retry_outcome.error or "")
+        ):
+            logger.warning(
+                "retry após auto-renew TAMBÉM retornou WORKER_AUTH_EXPIRED — "
+                "estado inconsistente; propagando bloqueio para o humano",
+            )
+            return retry_outcome
+        logger.info(
+            "auto-renew + retry SUCESSO — outcome do retry assumido (ok=%s)",
+            retry_outcome.ok,
+        )
+        return retry_outcome
+
     async def _dispatch(
         self,
         brief: str,
@@ -863,6 +962,18 @@ class WorkerImplementer(PipelineImplementer):
                 ended="",  # Not yet known — reconcile via ground truth
             )
         outcome = _outcome_from_worker_response(data)
+
+        # OAuth auto-renew (Nível 3): se o worker reportou WORKER_AUTH_EXPIRED,
+        # tente uma renovação automática + retry UMA vez antes de propagar o
+        # erro pro stage handler (que bloqueia a issue). Em sucesso do refresh
+        # o segundo dispatch tipicamente passa porque o claude-worker recarrega
+        # o ANTHROPIC_AUTH_TOKEN a cada dispatch (via _refresh_oauth_with_lock).
+        outcome = await self._try_auto_renew_oauth_and_retry(
+            outcome=outcome,
+            url=url, payload=payload, wait=wait,
+            stage=stage,
+        )
+
         # Issue #309 fase 3.5 + issue #347 follow-up — persistência no
         # DispatchLedger:
         #
@@ -916,7 +1027,7 @@ class WorkerImplementer(PipelineImplementer):
         comentários novos no PR desde a última review + instruções
         explícitas pra NÃO repetir trabalho.
 
-        ``brief`` original (do _render_worker_review_brief) é DESCARTADO
+        ``brief`` original (do _render_worker_pr_unified_brief) é DESCARTADO
         nesse caminho — claude já viu ele na sessão anterior via -r.
         O nudge é minimalista e direcional.
 
@@ -1124,13 +1235,14 @@ class WorkerImplementer(PipelineImplementer):
         self, monitor: "PipelineMonitor", pr: "PrRef", *, resume: bool = False
     ) -> WorkOutcome:
         forge_cfg = monitor.forge.config
-        render = (
-            _render_worker_review_resume_brief if resume
-            else _render_worker_review_brief
-        )
-        brief = render(
+        # Refactor "PR é o quadro": revisão de PR também usa o brief unificado.
+        # O worker descobre o estado real (HEAD vs último review, threads
+        # abertas) e age conforme — inclusive sabe lidar com resume lendo
+        # ``.deile-progress.md`` no passo 0 do brief.
+        gh_login = monitor.config.mention_handle.lstrip("@")
+        brief = _render_worker_pr_unified_brief(
             monitor.config.repo, monitor.config.main_branch, pr.number,
-            forge=forge_cfg,
+            gh_login=gh_login, forge=forge_cfg,
         )
         resume_block = _build_resume_block(
             monitor.config.repo, monitor.config.main_branch,
@@ -1159,18 +1271,17 @@ class WorkerImplementer(PipelineImplementer):
         mode: str = "comment",
         resume: bool = False,
     ) -> WorkOutcome:
-        """Dispatch a mention/assignment by ROLE (issue #253 follow-up).
+        """Dispatch a mention/assignment para o brief unificado de PR ou para o
+        brief de mention-em-issue (refactor "PR é o quadro").
 
-        ``mode`` (decided by the stage router) selects the brief + persona:
+        Apenas dois modes existem agora:
 
-        - ``review_only`` — requested reviewer: review + assign author back, NO
-          fix/merge (reviewer persona).
-        - ``work_merge`` — assignee on a PR: quality-gate review + resolve
-          threads + fix + MERGE (reviewer persona, resume-aware).
-        - ``address`` — comment/body mention on a PR: do what was asked +
-          resolve threads + push, NO merge (reviewer persona).
-        - ``comment`` — comment mention on an issue: do what the comment says
-          (developer persona, context-rich brief). Default.
+        - ``pr_unified`` — qualquer trigger sobre uma PR (assignee, reviewer,
+          comment, body). O worker descobre o estado real e age conforme. Não
+          recebe parâmetro ``expect_merge`` — o brief decide se mergeia (apenas
+          quando autor sou eu E review APPROVED E threads ok E CI verde).
+        - ``comment`` — comment mention sobre uma issue. Mantém o brief
+          context-rich tradicional sob a persona ``developer``.
         """
         repo = monitor.config.repo
         main = monitor.config.main_branch
@@ -1182,35 +1293,31 @@ class WorkerImplementer(PipelineImplementer):
         head = (pr_ref.head_ref if pr_ref else "") or f"pr/{number}"
         pr_url_hint = pr_ref.url if pr_ref else ""
 
-        # PR-scoped reviewer modes dispatched under the ``reviewer`` persona
-        # with a resume block. ``work_merge`` is the only mode that merges and
-        # the only one resume-aware (uses the review-resume brief on retry).
         # ForgeConfig do monitor — usado nos briefs forge-aware (issue #297).
         forge_cfg = monitor.forge.config
-        # Stage for per-stage model override (issue #305): PR-scoped modes are
-        # review work (``pr_review`` stage); issue-scoped comments are
-        # follow-up work (``follow_ups`` stage). See PIPELINE_STAGES.
-        if mode in _MENTION_REVIEWER_MODES:
-            brief_fn, expect_merge = _MENTION_REVIEWER_MODES[mode]
-            if mode == "work_merge" and resume:
-                reviewer_brief = _render_worker_review_resume_brief(
-                    repo, main, number, forge=forge_cfg,
-                )
-            else:
-                reviewer_brief = brief_fn(repo, main, number, forge=forge_cfg)
+
+        # PR scope: brief unificado, persona reviewer, stage pr_review. O worker
+        # decide o que fazer (revisar / responder / mergear / no-op) a partir
+        # do estado real — o trigger só apontou QUAL PR olhar. ``expect_merge``
+        # = True porque o brief PODE mergear (quando todas as pré-condições
+        # naturais estiverem cumpridas).
+        if ref.target_kind == "pr":
+            gh_login = monitor.config.mention_handle.lstrip("@")
+            unified_brief = _render_worker_pr_unified_brief(
+                repo, main, number, gh_login=gh_login, forge=forge_cfg,
+            )
             from deile.orchestration.pipeline.dispatch_ledger import \
                 DispatchLedger
             return await self._dispatch(
-                reviewer_brief, channel_id=channel_id, persona="reviewer",
+                unified_brief, channel_id=channel_id, persona="reviewer",
                 resume_block=_build_resume_block(
-                    repo, main, head, resume=resume, expect_merge=expect_merge,
+                    repo, main, head, resume=resume, expect_merge=True,
                     pr_url_hint=pr_url_hint,
                 ),
                 stage="pr_review", branch=head,
                 # mentions PR-scoped usam mesma chave que pr_review pra que o
                 # pipeline reaproveite session se houver resume.
-                ledger_key=DispatchLedger.key_for_pr(number)
-                          if ref.target_kind == "pr" else None,
+                ledger_key=DispatchLedger.key_for_pr(number),
                 resume=resume,
             )
         # Default: comment mention on an issue → do what the comment says.
@@ -1221,20 +1328,6 @@ class WorkerImplementer(PipelineImplementer):
             brief, channel_id=channel_id, persona="developer",
             stage="follow_ups",
         )
-
-
-# ---------------------------------------------------------------------------
-# Mention mode dispatch table
-# ---------------------------------------------------------------------------
-# (brief_renderer, expect_merge) for each PR-scoped reviewer mode used in
-# ``WorkerImplementer.mention``. ``work_merge`` is the only one that merges
-# *and* the only resume-aware mode (the resume brief is selected inline since
-# only that mode has a resume variant).
-_MENTION_REVIEWER_MODES = {
-    "review_only": (_render_worker_review_only_brief, False),
-    "work_merge":  (_render_worker_review_brief,      True),
-    "address":     (_render_worker_pr_address_brief,  False),
-}
 
 
 # ---------------------------------------------------------------------------

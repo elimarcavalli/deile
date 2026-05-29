@@ -31,6 +31,7 @@ def _make_monitor():
         repo="elimarcavalli/deile",
         main_branch="main",
         base_repo_path=Path("/tmp/fake"),
+        mention_handle="@deile-one",
     )
     monitor.branch_for_issue = lambda n: f"auto/issue-{n}"
     from deile.orchestration.forge.base import ForgeConfig, ForgeKind

@@ -3150,6 +3150,7 @@ def set_stage_timeout(
 
 def set_stage_retries(
     stage: str, max_retries: Optional[int], *,
+    allow_zero: bool = False,
     namespace: str = NS, timeout: float = 15.0,
 ) -> tuple:
     """Pin ``DEILE_PIPELINE_RETRIES_<STAGE>=<max_retries>`` em ``deile-pipeline``.
@@ -3157,6 +3158,13 @@ def set_stage_retries(
     Args:
         stage: canonical stage name (one of PIPELINE_STAGES).
         max_retries: non-negative int or None (clear the override).
+            **Zero requer ``allow_zero=True`` explícito** — historicamente
+            alguém confundiu zero com "default" e bloqueou o pipeline no
+            primeiro fail. Zero é semanticamente "fail-fast, sem retry":
+            pode ser desejável mas exige confirmação.
+        allow_zero: quando ``True``, aceita ``max_retries=0`` como
+            valor legítimo. Default ``False`` (rejeita zero com mensagem
+            clara). Não afeta ``None`` (clear) nem inteiros positivos.
         namespace: K8s namespace.
         timeout: subprocess timeout for kubectl.
 
@@ -3172,6 +3180,18 @@ def set_stage_retries(
 
     if max_retries is not None and max_retries < 0:
         return False, f"max_retries deve ser >= 0, got {max_retries}"
+
+    if max_retries == 0 and not allow_zero:
+        _audit_timeout_retries_change(
+            stage, "max_retries", 0, result="denied",
+            detail="zero rejeitado sem allow_zero — fail-fast precisa de confirmação",
+            namespace=namespace,
+        )
+        return False, (
+            "max_retries=0 = fail-fast (primeira falha bloqueia o stage). "
+            "Para confirmar, digite '0!' no painel (force). "
+            "Para usar o default, deixe vazio."
+        )
 
     env_var = f"DEILE_PIPELINE_RETRIES_{stage.upper()}"
     kubectl = kubectl_bin()
@@ -4816,6 +4836,101 @@ class EndpointProbeProvider(_KubectlProviderMixin):
         return EndpointInfo(ready=ready, not_ready=not_ready)
 
 
+# ===== ClaudeWorker pod-status provider (issue #395) ========================
+
+
+@dataclass
+class ClaudeWorkerPodStatus:
+    """Snapshot returned by ``GET /v1/pod-status`` on a claude-worker pod.
+
+    All fields are Optional; fallback values are used when the pod is
+    unreachable so the panel can still render gracefully.
+    """
+
+    lease: Optional[dict] = None           # {task_id, heartbeat_at, pid} or None
+    disk: Optional[dict] = None            # {used_bytes, total_bytes, mount}
+    claude_processes: int = 0
+    anthropic_quota: Optional[dict] = None # {tokens_remaining, captured_at} or None
+    ts: float = 0.0
+
+
+class ClaudeWorkerInfoProvider:
+    """Fetches ``/v1/pod-status`` from the claude-worker Service.
+
+    Bearer token read from the mounted Secret path
+    ``/run/secrets/claude-worker/CLAUDE_WORKER_BEARER_TOKEN`` or
+    ``DEILE_CLAUDE_WORKER_AUTH_TOKEN`` env var (same resolution order as the
+    server's :func:`_read_auth_token`).  Falls back gracefully: if the pod
+    is down, ``last_error`` is set but the panel never hangs.
+
+    TTL: 3s.  Timeout: 2s per request.
+    """
+
+    _SECRET_PATH = Path("/run/secrets/claude-worker/CLAUDE_WORKER_BEARER_TOKEN")
+    _TOKEN_FILE_ENV = "DEILE_CLAUDE_WORKER_AUTH_TOKEN_FILE"
+    _TOKEN_ENV = "DEILE_CLAUDE_WORKER_AUTH_TOKEN"
+
+    def __init__(
+        self,
+        endpoint: str = "",
+        ttl_s: float = 3.0,
+        timeout_s: float = 2.0,
+        enabled: bool = True,
+    ) -> None:
+        self._endpoint = endpoint or os.environ.get(
+            "DEILE_CLAUDE_WORKER_ENDPOINT", "http://claude-worker:8767"
+        )
+        self._timeout_s = timeout_s
+        self._enabled = enabled
+        self._cache: Cache[ClaudeWorkerPodStatus] = Cache(
+            ttl_s, self._fetch, fallback=ClaudeWorkerPodStatus(),
+        )
+
+    @property
+    def last_error(self) -> Optional[str]:
+        return self._cache.last_error
+
+    def get(self, force: bool = False) -> ClaudeWorkerPodStatus:
+        return self._cache.get(force)
+
+    def _bearer_token(self) -> Optional[str]:
+        """Resolve bearer token with same priority as the server."""
+        for p in (
+            self._SECRET_PATH,
+            Path(os.environ.get(self._TOKEN_FILE_ENV, "")),
+        ):
+            if p and p.is_file():
+                token = p.read_text(encoding="utf-8").strip()
+                if token:
+                    return token
+        return os.environ.get(self._TOKEN_ENV, "").strip() or None
+
+    def _fetch(self) -> ClaudeWorkerPodStatus:
+        if not self._enabled:
+            raise RuntimeError("ClaudeWorkerInfoProvider disabled")
+        token = self._bearer_token()
+        if not token:
+            raise RuntimeError("claude-worker bearer token not configured")
+        url = f"{self._endpoint.rstrip('/')}/v1/pod-status"
+        try:
+            import urllib.request as _urllib_req
+            req = _urllib_req.Request(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            with _urllib_req.urlopen(req, timeout=self._timeout_s) as resp:
+                body = json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            raise RuntimeError(f"pod-status fetch failed: {exc}") from exc
+        return ClaudeWorkerPodStatus(
+            lease=body.get("lease"),
+            disk=body.get("disk"),
+            claude_processes=int(body.get("claude_processes") or 0),
+            anthropic_quota=body.get("anthropic_quota"),
+            ts=float(body.get("ts") or 0.0),
+        )
+
+
 # ===== Aggregate hub ========================================================
 
 @dataclass
@@ -4864,6 +4979,9 @@ class PanelData:
     # WorkerProvider for the ``claude-worker`` deployment (issue #396).
     # ``None`` when the pod is not deployed (panel still renders without error).
     claude_workers: Optional[WorkerProvider] = None
+    # Pod-status provider for claude-worker (issue #395). Instanciado
+    # apenas quando k8s está disponível — accessa /v1/pod-status via HTTP.
+    claude_worker_info: Optional["ClaudeWorkerInfoProvider"] = None
 
     @classmethod
     def from_context(cls, context: RuntimeContext) -> "PanelData":
@@ -4956,6 +5074,11 @@ class PanelData:
                 enabled=k8s_on,
                 costs=CostsProvider(db_path=context.usage_db),
             ),
+            # ClaudeWorkerInfoProvider only when k8s is available — it talks
+            # to the claude-worker pod HTTP service.
+            claude_worker_info=(
+                ClaudeWorkerInfoProvider(enabled=True) if k8s_on else None
+            ),
         )
 
     @classmethod
@@ -4971,7 +5094,8 @@ class PanelData:
                 self.notifier, self.pod_metrics, self.endpoints)
         optionals = tuple(p for p in (self.local_processes, self.local_logs,
                                       self.local_audit, self.local_instances,
-                                      self.local_registry, self.claude_workers)
+                                      self.local_registry, self.claude_workers,
+                                      self.claude_worker_info)
                           if p is not None)
         return base + optionals
 
@@ -5006,6 +5130,8 @@ class PanelData:
             names.append("local_instances")
         if self.local_registry is not None:
             names.append("local_registry")
+        if self.claude_worker_info is not None:
+            names.append("claude_worker_info")
         out: List[tuple] = []
         for name, p in zip(names, self._all_providers()):
             err = p.last_error

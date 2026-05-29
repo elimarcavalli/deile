@@ -521,10 +521,30 @@ async def _collect_mention_triggers(
         pr_comments = []
     all_comments: list[CommentRef] = list(issue_comments) + list(pr_comments)
     for ref in all_comments:
+        # ANTI-ECO: drop comments where DEILE auto-mencionou. Sem isso, qualquer
+        # comentário que o próprio DEILE postou citando seu handle viraria
+        # trigger e dispararia trabalho redundante na próxima volta do loop.
+        # A identidade do agente vem do .user.login do comentário, não do texto.
+        if ref.author == gh_login:
+            continue
         if handle in ref.body.lower():
-            triggers.append(MentionTrigger(trigger_type="comment", comment=ref))
+            triggers.append(
+                MentionTrigger(
+                    trigger_type="comment",
+                    comment=ref,
+                    trigger_author=ref.author,
+                )
+            )
 
     # ---- 2-4. Sticky triggers (assignee / reviewer / body) --------------
+    #
+    # Antes da refactor "PR é o quadro", os sticky triggers eram gateados por
+    # ``~mention:processado`` para impedir re-disparo cross-tick. Isso é
+    # incompatível com o princípio de descoberta-por-estado: o worker abre a
+    # PR e decide pelo estado real (HEAD vs último review, threads abertas,
+    # comentários sem resposta) — se nada precisa ser feito, o brief unificado
+    # comenta curto e sai. Já o trigger ``body`` continua gateado porque o
+    # corpo é estático: sem o marker ele re-disparia infinitamente.
     async def _poll(label: str, coro) -> list:
         try:
             return list(await coro)
@@ -533,14 +553,23 @@ async def _collect_mention_triggers(
             return []
 
     for issue in await _poll("assigned issues", monitor.forge.list_issues_assigned_to(gh_login)):
-        if MENTION_DONE not in issue.labels:
-            triggers.append(MentionTrigger(trigger_type="assignee", issue=issue))
+        triggers.append(
+            MentionTrigger(
+                trigger_type="assignee", issue=issue, trigger_author=gh_login,
+            )
+        )
     for pr in await _poll("assigned PRs", monitor.forge.list_prs_assigned_to(gh_login)):
-        if MENTION_DONE not in pr.labels:
-            triggers.append(MentionTrigger(trigger_type="assignee", pr=pr))
+        triggers.append(
+            MentionTrigger(
+                trigger_type="assignee", pr=pr, trigger_author=gh_login,
+            )
+        )
     for pr in await _poll("review requests", monitor.forge.list_prs_with_review_requests(gh_login)):
-        if MENTION_DONE not in pr.labels:
-            triggers.append(MentionTrigger(trigger_type="reviewer", pr=pr))
+        triggers.append(
+            MentionTrigger(
+                trigger_type="reviewer", pr=pr, trigger_author=gh_login,
+            )
+        )
 
     try:
         body_issues, body_prs = await monitor.forge.search_items_mentioning(handle)
@@ -614,12 +643,14 @@ async def _dispatch_mention_group(
             return
 
     # Decide the dispatch mode from the role.
-    if kind == "pr" and "assignee" in has:
-        mode = "work_merge"
-    elif kind == "pr" and "reviewer" in has:
-        mode = "review_only"
-    elif kind == "pr":
-        mode = "address"
+    #
+    # "PR é o quadro": qualquer trigger sobre uma PR resolve para o brief
+    # unificado ``pr_unified`` — o worker abre a PR, descobre o estado real
+    # (papel, HEAD vs último review, threads abertas, comentários dirigidos
+    # a mim sem resposta) e monta a work-list a partir DAÍ. O trigger só
+    # informou QUAL PR olhar; o que fazer é deduzido do estado.
+    if kind == "pr":
+        mode = "pr_unified"
     else:
         mode = "comment"  # comment mention on an issue
 
@@ -668,48 +699,15 @@ async def _dispatch_mention_group(
 
     monitor._stats.mentions_processed += 1
     if sticky:
-        # ``review_only`` is deliberately NOT marked ~mention:processado: once
-        # DEILE submits the review, GitHub removes it from requested_reviewers
-        # (natural idempotency for the reviewer trigger), and leaving the marker
-        # OFF lets the *assignee* trigger — the author DEILE just assigned back —
-        # fire on the next tick, so a DEILE-authored PR self-completes
-        # (assignee → work_merge → merge) without a human removing a label
-        # (Decisão #32). Other sticky modes still get the marker.
-        if mode != "review_only":
-            await _mark_mention_done(monitor, kind, number)
-        elif kind == "pr":
-            # Silent-failure guard (regression #277): a "successful" outcome
-            # whose review never reached GitHub leaves the reviewer trigger
-            # armed → re-fires every tick → token storm. If our login is STILL
-            # requested as reviewer, the worker did NOT post a review — break
-            # the loop ourselves.
-            try:
-                still_requested = await monitor.forge.pr_reviewer_still_requested(
-                    number, gh_login,
-                )
-            except Exception as exc:  # noqa: BLE001 — guard is best-effort
-                logger.warning(
-                    "post-review verification failed for pr#%d: %s — skipping guard",
-                    number, exc,
-                )
-                still_requested = False
-            if still_requested:
-                logger.warning(
-                    "review_only pr#%d: worker reported ok but no review posted "
-                    "(reviewer still requested); applying %s to break the loop",
-                    number, MENTION_DONE,
-                )
-                try:
-                    await monitor.forge.comment_on_pr(
-                        number,
-                        f"⚠️ DEILE não conseguiu postar a review (worker terminou "
-                        f"sem registrar review apesar de retornar ok). Aplicando "
-                        f"`{MENTION_DONE}` para cortar o loop de re-disparo. "
-                        f"Remova esse label para tentar de novo.",
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("could not comment on pr#%d: %s", number, exc)
-                await _mark_mention_done(monitor, kind, number)
+        # Após a refactor "PR é o quadro", todo dispatch sticky de sucesso é
+        # marcado com ``~mention:processado``. O brief unificado já comenta o
+        # que fez (mesmo que tenha sido apenas "HEAD igual, sem novidade"),
+        # então o marker apenas evita re-dispatch redundante no próximo tick;
+        # mudanças reais de estado (HEAD novo, threads novas, novos
+        # assignees) voltam a entrar pelo trigger natural (uma nova PR review,
+        # uma nova atribuição) — quem decide o quê fazer é o estado, não o
+        # marker.
+        await _mark_mention_done(monitor, kind, number)
         monitor._resume_tracker.clear(number)
     author = next((t.comment.author for t in group if t.comment is not None), "")
     await monitor.notifier.mention_processed(

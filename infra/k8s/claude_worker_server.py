@@ -17,6 +17,7 @@ Diferenças de papel vs. o ``deile-worker``:
 Endpoints:
 
 * ``GET  /v1/health``              — readiness/liveness probe (Task 12)
+* ``GET  /v1/pod-status``          — pod introspection: lease/disk/GC/quota (issue #395)
 * ``POST /v1/dispatch``            — receive brief + spawn ``claude -p`` (Task 13)
 * ``GET  /v1/progress/{task_id}``  — mid-flight snapshot via PVC tail (Task 14)
 
@@ -36,6 +37,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -199,6 +201,57 @@ _LEASE_TTL_S: int = int(os.environ.get("DEILE_CLAUDE_LEASE_TTL_S", "30"))
 
 #: Intervalo de atualização do heartbeat em segundos.
 _LEASE_HEARTBEAT_S: int = int(os.environ.get("DEILE_CLAUDE_LEASE_HEARTBEAT_S", "5"))
+
+
+# --------------------------------------------------------------------------- #
+# Anthropic quota cache — thread-safe singleton (issue #395)
+#
+# Populated best-effort when dispatch output contains rate-limit header
+# patterns.  Never makes additional API calls — returns None when nothing
+# has been captured yet.
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class _QuotaSnapshot:
+    tokens_remaining: int
+    captured_at: float
+
+
+_quota_lock: threading.Lock = threading.Lock()
+_quota_snapshot: Optional[_QuotaSnapshot] = None
+
+#: Regex pattern matching anthropic rate-limit header in subprocess output.
+_QUOTA_RE = re.compile(
+    r"(?:anthropic-ratelimit-tokens-remaining|x-ratelimit-remaining-tokens)"
+    r"[:\s]+(\d+)",
+    re.IGNORECASE,
+)
+
+
+def _update_quota_cache(tokens_remaining: int) -> None:
+    global _quota_snapshot  # noqa: PLW0603
+    with _quota_lock:
+        _quota_snapshot = _QuotaSnapshot(
+            tokens_remaining=tokens_remaining,
+            captured_at=time.time(),
+        )
+
+
+def _get_quota_snapshot() -> Optional[_QuotaSnapshot]:
+    with _quota_lock:
+        return _quota_snapshot
+
+
+def _try_capture_quota_from_output(stdout: str, stderr: str) -> None:
+    """Best-effort scan of subprocess output for rate-limit token counts."""
+    for text in (stderr, stdout):
+        m = _QUOTA_RE.search(text)
+        if m:
+            try:
+                _update_quota_cache(int(m.group(1)))
+                return
+            except ValueError:
+                pass
 
 
 def _validate_task_id_for_path(task_id: str) -> bool:
@@ -1187,6 +1240,78 @@ def _parse_claude_json_output(stdout: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Pod-status helpers (issue #395)
+# --------------------------------------------------------------------------- #
+
+
+def _find_active_lease(root: Path) -> Optional[dict]:
+    """Return the most recent alive lease found under *root*/<task_id>/.lease.json.
+
+    Security: exposes only task_id, heartbeat_at, pid — never the full
+    lease payload (no pod name, no prompts, nothing injectable).
+    """
+    now = time.time()
+    best: Optional[dict] = None
+    best_hb: float = 0.0
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        return None
+    for child in children:
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        if not _TASK_ID_RE.fullmatch(child.name):
+            continue
+        lease_path = child / ".lease.json"
+        if not lease_path.exists():
+            continue
+        try:
+            data = json.loads(lease_path.read_text(encoding="utf-8"))
+            hb = float(data.get("heartbeat_at", 0))
+            if (now - hb) < _LEASE_TTL_S and hb > best_hb:
+                best_hb = hb
+                best = {
+                    "task_id": child.name,
+                    "heartbeat_at": hb,
+                    "pid": data.get("pid"),
+                }
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+    return best
+
+
+def _count_claude_processes() -> int:
+    """Count running claude processes via psutil (preferred) or pgrep fallback."""
+    try:
+        import psutil  # optional dep; absent outside cluster
+        count = 0
+        for proc in psutil.process_iter(["name", "cmdline"]):
+            try:
+                name = proc.info.get("name") or ""
+                cmdline = proc.info.get("cmdline") or []
+                if name.startswith("claude") or (
+                    cmdline and str(cmdline[0]).endswith("/claude")
+                ):
+                    count += 1
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return count
+    except ImportError:
+        pass
+    # Fallback via pgrep (POSIX).
+    try:
+        result = subprocess.run(
+            ["pgrep", "-fc", "^claude"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode in (0, 1):  # 1 = no processes found
+            return int(result.stdout.strip() or "0")
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # Handlers
 # --------------------------------------------------------------------------- #
 
@@ -1206,6 +1331,56 @@ async def health_handler(request: web.Request) -> web.Response:
             status=500,
         )
     return web.json_response({"status": "ok", "claude_binary": claude_bin})
+
+
+async def pod_status_handler(request: web.Request) -> web.Response:
+    """``GET /v1/pod-status`` — introspection of this pod's own runtime state.
+
+    Returns a snapshot of:
+    - ``lease``:           active lease (task_id, heartbeat_at, pid) or null when idle.
+    - ``disk``:            PVC usage via shutil.disk_usage (no subprocess).
+    - ``claude_processes``: count of running claude processes.
+    - ``anthropic_quota``: last captured rate-limit tokens-remaining + timestamp,
+                           or null if never observed.
+    - ``ts``:              unix timestamp of this response.
+
+    Security: ``lease`` exposes ONLY task_id, heartbeat_at, and pid — no
+    prompt content, no credentials, nothing that could serve as an injection
+    vector.  Bearer auth required (same middleware as all other endpoints).
+    """
+    root = Path(os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work"))
+    disk_mount = os.environ.get("DEILE_CLAUDE_HOME", "/home/claude")
+
+    lease_info = await asyncio.to_thread(_find_active_lease, root)
+
+    try:
+        du = await asyncio.to_thread(shutil.disk_usage, disk_mount)
+        disk_info: dict = {
+            "used_bytes": du.used,
+            "total_bytes": du.total,
+            "mount": disk_mount,
+        }
+    except OSError as exc:
+        logger.warning("disk_usage(%s) failed: %s", disk_mount, exc)
+        disk_info = {"used_bytes": 0, "total_bytes": 0, "mount": disk_mount}
+
+    claude_procs = await asyncio.to_thread(_count_claude_processes)
+
+    quota_snap = _get_quota_snapshot()
+    quota_info: Optional[dict] = None
+    if quota_snap is not None:
+        quota_info = {
+            "tokens_remaining": quota_snap.tokens_remaining,
+            "captured_at": quota_snap.captured_at,
+        }
+
+    return web.json_response({
+        "lease": lease_info,
+        "disk": disk_info,
+        "claude_processes": claude_procs,
+        "anthropic_quota": quota_info,
+        "ts": time.time(),
+    })
 
 
 async def dispatch_handler(request: web.Request) -> web.Response:
@@ -1557,6 +1732,10 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     # verdade pra is_error, result, cost. Resolve Bug A do Opus de forma
     # estrutural (sem regex frágil no stdout livre).
     claude_result = _parse_claude_json_output(result.stdout)
+
+    # Best-effort quota capture (issue #395): scan stderr for rate-limit
+    # header values printed by claude CLI.  O(1) em memória — nunca bloqueia.
+    _try_capture_quota_from_output(result.stdout, result.stderr)
 
     # Detecção de auth expirado: estrutural (is_error=true + result contém
     # signature de auth) E fallback regex no stdout/stderr crus (pra casos
@@ -2504,6 +2683,7 @@ def build_app(auth_token: Optional[str] = None) -> web.Application:
     )
     app["auth_token"] = auth_token or _read_auth_token()
     app.router.add_get("/v1/health", health_handler)
+    app.router.add_get("/v1/pod-status", pod_status_handler)
     app.router.add_post("/v1/dispatch", dispatch_handler)
     app.router.add_get("/v1/progress/{task_id}", progress_handler)
     app.router.add_get(
