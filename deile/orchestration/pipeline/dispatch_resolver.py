@@ -61,6 +61,17 @@ _DISPATCHER_ALIASES: dict[str, str] = {
 
 _DEFAULT_DISPATCHER = "deile-worker"
 
+#: Built-in timeout defaults (seconds) when no per-stage or global override is set.
+#: claude-worker runs ``claude -p`` subprocesses that take longer; deile-worker
+#: is in-process and faster. Mirrors ``pipeline_claude_timeout`` (1800) and
+#: the new ``pipeline_deile_timeout`` (900) defaults in Settings.
+BUILT_IN_TIMEOUT_S_CLAUDE: int = 1800
+BUILT_IN_TIMEOUT_S_DEILE: int = 900
+
+#: Built-in max retries default — formerly hard-coded in the monitor loop.
+#: Extracted here (issue #391) so it can be overridden per-stage or globally.
+BUILT_IN_MAX_RETRIES: int = 3
+
 # Default endpoints. Env vars sobrescrevem (útil pra dev local fora do cluster).
 _ENDPOINT_DEFAULTS = {
     "deile-worker": "http://deile-worker:8766",
@@ -177,6 +188,103 @@ def resolve_stage_dispatcher(stage: str) -> str:
     # 5. Hardcoded safety net (only reached if settings.pipeline_dispatch_mode
     #    is empty or an unrecognized alias — extremely unlikely in practice).
     return _DEFAULT_DISPATCHER
+
+
+def resolve_stage_timeout_s(stage: str) -> int:
+    """Returns per-stage dispatch timeout in seconds, falling back to global default.
+
+    Fallback chain (high → low priority):
+
+    1. ``DEILE_PIPELINE_TIMEOUT_S_<STAGE>`` env var — fail-fast on invalid.
+    2. ``pipeline.timeouts_s.<stage>`` in settings.json — warn + skip on invalid.
+    3. Global settings: ``pipeline_claude_timeout`` (claude-worker) or
+       ``pipeline_deile_timeout`` (deile-worker), when set.
+    4. Built-in: :data:`BUILT_IN_TIMEOUT_S_CLAUDE` / :data:`BUILT_IN_TIMEOUT_S_DEILE`.
+
+    Raises:
+        ValueError: stage not in :data:`PIPELINE_STAGES` (programming bug).
+        ValueError: env var contains a non-positive integer (fail-fast).
+    """
+    if stage not in PIPELINE_STAGES:
+        raise ValueError(
+            f"unknown stage {stage!r}; expected one of {PIPELINE_STAGES}"
+        )
+
+    # 1. Per-stage env var (fail-fast)
+    raw_env = os.environ.get(f"DEILE_PIPELINE_TIMEOUT_S_{stage.upper()}")
+    if raw_env and raw_env.strip():
+        try:
+            v = int(raw_env.strip())
+            if v <= 0:
+                raise ValueError(f"timeout must be > 0, got {v}")
+            return v
+        except ValueError:
+            raise
+
+    # 2. Per-stage settings (graceful)
+    from deile.config.settings import get_settings  # lazy: avoids import cycle
+    settings = get_settings()
+    settings_val = getattr(settings, f"pipeline_timeout_s_{stage}", None)
+    if settings_val is not None and settings_val > 0:
+        return settings_val
+
+    # 3. Global settings fallback — dispatcher-aware (claude vs deile)
+    dispatcher = resolve_stage_dispatcher(stage)
+    if dispatcher == "claude-worker":
+        global_val = settings.pipeline_claude_timeout
+        if global_val is not None and global_val > 0:
+            return global_val
+        return BUILT_IN_TIMEOUT_S_CLAUDE
+    else:
+        global_val = settings.pipeline_deile_timeout
+        if global_val is not None and global_val > 0:
+            return global_val
+        return BUILT_IN_TIMEOUT_S_DEILE
+
+
+def resolve_stage_max_retries(stage: str) -> int:
+    """Returns per-stage max retries, falling back to global default.
+
+    Fallback chain (high → low priority):
+
+    1. ``DEILE_PIPELINE_RETRIES_<STAGE>`` env var — fail-fast on invalid.
+    2. ``pipeline.retries.<stage>`` in settings.json — warn + skip on invalid.
+    3. ``pipeline.default_max_retries`` in settings.json (global default).
+    4. Built-in: :data:`BUILT_IN_MAX_RETRIES` (3).
+
+    Raises:
+        ValueError: stage not in :data:`PIPELINE_STAGES` (programming bug).
+        ValueError: env var contains a negative integer (fail-fast).
+    """
+    if stage not in PIPELINE_STAGES:
+        raise ValueError(
+            f"unknown stage {stage!r}; expected one of {PIPELINE_STAGES}"
+        )
+
+    # 1. Per-stage env var (fail-fast)
+    raw_env = os.environ.get(f"DEILE_PIPELINE_RETRIES_{stage.upper()}")
+    if raw_env is not None and raw_env.strip():
+        try:
+            v = int(raw_env.strip())
+            if v < 0:
+                raise ValueError(f"retries must be >= 0, got {v}")
+            return v
+        except ValueError:
+            raise
+
+    # 2. Per-stage settings (graceful)
+    from deile.config.settings import get_settings  # lazy: avoids import cycle
+    settings = get_settings()
+    settings_val = getattr(settings, f"pipeline_retries_{stage}", None)
+    if settings_val is not None:
+        return settings_val
+
+    # 3. Global settings default
+    if settings.pipeline_default_max_retries is not None:
+        return settings.pipeline_default_max_retries
+
+    # 4. Built-in
+    return BUILT_IN_MAX_RETRIES
 
 
 def get_endpoint_for(dispatcher: str) -> str:

@@ -30,6 +30,7 @@ from deile.orchestration.forge import (CommentRef, GhCommandError,
 from deile.orchestration.pipeline._time_utils import now_utc
 from deile.orchestration.pipeline.constants import PIPELINE_MSG_TRUNCATE_CHARS
 from deile.orchestration.pipeline.follow_up_detector import detect_follow_ups
+from deile.orchestration.pipeline.dispatch_resolver import resolve_stage_max_retries
 from deile.orchestration.pipeline.implementer import (parse_critique_verdict,
                                                       parse_decompose_result,
                                                       parse_refine_verdict)
@@ -1416,11 +1417,13 @@ async def resume_in_progress_issues(monitor: "PipelineMonitor") -> None:
 
     state = monitor._resume_tracker.get(target.number)
     # Attempt ceiling — block before spending another dispatch.
-    if state.attempt >= monitor.config.resume_max_attempts:
+    # Per-stage max_retries (issue #391) takes priority over global resume_max_attempts.
+    _impl_max_attempts = resolve_stage_max_retries("implement")
+    if state.attempt >= _impl_max_attempts:
         await _block_issue(
             monitor, target.number,
             f"teto de tentativas atingido ({state.attempt}/"
-            f"{monitor.config.resume_max_attempts}) sem concluir",
+            f"{_impl_max_attempts}) sem concluir",
         )
         return
     # Budget ceiling (0 = disabled).
@@ -1883,13 +1886,14 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
     await monitor.forge.add_labels("pr", target.number, [monitor.identity.ownership_label()])
     if is_resume:
         state = monitor._resume_tracker.get(target.number)
-        # Attempt ceiling for review/merge — same block flow as implement.
-        if state.attempt >= monitor.config.resume_max_attempts:
+        # Attempt ceiling for review/merge — per-stage max_retries (issue #391).
+        _review_max_attempts = resolve_stage_max_retries("pr_review")
+        if state.attempt >= _review_max_attempts:
             await monitor.forge.clear_batch_label("pr", target.number)
             await _block_pr(
                 monitor, target.number, target.title, target.url,
                 f"teto de tentativas atingido ({state.attempt}/"
-                f"{monitor.config.resume_max_attempts}) sem mergear",
+                f"{_review_max_attempts}) sem mergear",
             )
             return
         await monitor.notifier.implementation_resumed(target.number, state.attempt + 1)

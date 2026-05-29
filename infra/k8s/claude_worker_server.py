@@ -1076,6 +1076,17 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     model_slug = payload.get("preferred_model")
     resume_session_id = payload.get("resume_session_id")
     prev_task_id = payload.get("prev_task_id")
+    # Per-stage timeout override (issue #391). When set, overrides
+    # DEILE_CLAUDE_WORKER_TASK_TIMEOUT_S for this dispatch only.
+    dispatch_timeout_s: Optional[int] = None
+    _raw_timeout = payload.get("timeout_s")
+    if _raw_timeout is not None:
+        try:
+            _v = int(_raw_timeout)
+            if _v > 0:
+                dispatch_timeout_s = _v
+        except (TypeError, ValueError):
+            pass
 
     # claude-worker SÓ aceita anthropic:* — outros providers viraram 400.
     claude_model: Optional[str] = None
@@ -1303,7 +1314,9 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         cmd.extend(["--model", claude_model])
     cmd.append(full_prompt)
 
-    timeout = int(os.environ.get("DEILE_CLAUDE_WORKER_TASK_TIMEOUT_S", "7200"))
+    timeout = dispatch_timeout_s if dispatch_timeout_s is not None else int(
+        os.environ.get("DEILE_CLAUDE_WORKER_TASK_TIMEOUT_S", "7200")
+    )
 
     # Persist the command+prompt BEFORE the spawn so the observability panel
     # (issue #347) can show what's being executed even while it's running.

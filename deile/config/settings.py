@@ -82,6 +82,48 @@ def _mb_to_bytes(value: Any) -> int:
     return int(value) * 1024 * 1024
 
 
+def _to_optional_positive_int(value: Any) -> Optional[int]:
+    """Coerce to a positive int (> 0), or None if absent/empty.
+
+    Used for per-stage timeout_s overrides: None = no override (fall
+    through to global/built-in); 0 or negative = rejected.
+    Empty string is treated as absent (returns None) for env-var ergonomics.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise TypeError("expected int, got bool")
+    if isinstance(value, str) and not value.strip():
+        return None
+    iv = int(value)
+    if iv <= 0:
+        raise ValueError(f"value must be > 0, got {iv}")
+    return iv
+
+
+# Alias kept for internal compatibility (issue #391 spec used this name).
+_to_optional_pos_int = _to_optional_positive_int
+
+
+def _to_optional_nonneg_int(value: Any) -> Optional[int]:
+    """Coerce to a non-negative int (>= 0), or None if absent/empty.
+
+    Used for per-stage retries overrides: None = no override; negative = rejected.
+    0 is valid (means no retries).
+    Empty string is treated as absent (returns None) for env-var ergonomics.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise TypeError("expected int, got bool")
+    if isinstance(value, str) and not value.strip():
+        return None
+    iv = int(value)
+    if iv < 0:
+        raise ValueError(f"value must be >= 0, got {iv}")
+    return iv
+
+
 def _to_nonneg_int(value: Any) -> int:
     """Coerce to a non-negative int (rejects negatives and bools).
 
@@ -237,6 +279,21 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     "pipeline.dispatchers.implement":  ("pipeline_dispatcher_implement",  _to_optional_dispatcher),
     "pipeline.dispatchers.pr_review":  ("pipeline_dispatcher_pr_review",  _to_optional_dispatcher),
     "pipeline.dispatchers.follow_ups": ("pipeline_dispatcher_follow_ups", _to_optional_dispatcher),
+    # Per-stage timeout override (issue #391) — seconds. None = no override.
+    "pipeline.timeouts_s.classify":   ("pipeline_timeout_s_classify",   _to_optional_pos_int),
+    "pipeline.timeouts_s.refine":     ("pipeline_timeout_s_refine",     _to_optional_pos_int),
+    "pipeline.timeouts_s.implement":  ("pipeline_timeout_s_implement",  _to_optional_pos_int),
+    "pipeline.timeouts_s.pr_review":  ("pipeline_timeout_s_pr_review",  _to_optional_pos_int),
+    "pipeline.timeouts_s.follow_ups": ("pipeline_timeout_s_follow_ups", _to_optional_pos_int),
+    # Per-stage max retries override (issue #391) — 0 = no retry. None = no override.
+    "pipeline.retries.classify":   ("pipeline_retries_classify",   _to_optional_nonneg_int),
+    "pipeline.retries.refine":     ("pipeline_retries_refine",     _to_optional_nonneg_int),
+    "pipeline.retries.implement":  ("pipeline_retries_implement",  _to_optional_nonneg_int),
+    "pipeline.retries.pr_review":  ("pipeline_retries_pr_review",  _to_optional_nonneg_int),
+    "pipeline.retries.follow_ups": ("pipeline_retries_follow_ups", _to_optional_nonneg_int),
+    # Global defaults for timeout and retries (issue #391).
+    "pipeline.default_timeout_s_deile":  ("pipeline_deile_timeout",       _to_optional_pos_int),
+    "pipeline.default_max_retries":      ("pipeline_default_max_retries",  _to_optional_nonneg_int),
     # Sub-DEILEs paralelos (issue #257)
     "subagent.runner": ("subagent_runner", lambda v: str(v).strip().lower()),
     "subagent.max_parallel": ("subagent_max_parallel", _to_pos_int),
@@ -452,6 +509,37 @@ class Settings:
     pipeline_dispatcher_implement: Optional[str] = None
     pipeline_dispatcher_pr_review: Optional[str] = None
     pipeline_dispatcher_follow_ups: Optional[str] = None
+
+    # Pipeline per-stage timeout override (issue #391) — CLI persistence layer.
+    # Tempo máximo de execução do dispatch (segundos) por etapa. None = sem
+    # override (cai para global deile/claude timeout ou built-in). Cluster path
+    # usa ``DEILE_PIPELINE_TIMEOUT_S_<STAGE>`` env no Deployment deile-pipeline.
+    pipeline_timeout_s_classify: Optional[int] = None
+    pipeline_timeout_s_refine: Optional[int] = None
+    pipeline_timeout_s_implement: Optional[int] = None
+    pipeline_timeout_s_pr_review: Optional[int] = None
+    pipeline_timeout_s_follow_ups: Optional[int] = None
+
+    # Pipeline per-stage max retries override (issue #391) — CLI persistence layer.
+    # Número máximo de tentativas antes de escalar para ~workflow:bloqueada.
+    # None = sem override (cai para pipeline_default_max_retries ou built-in 3).
+    # 0 = sem retry (falha imediata). Cluster path usa
+    # ``DEILE_PIPELINE_RETRIES_<STAGE>`` env no Deployment deile-pipeline.
+    pipeline_retries_classify: Optional[int] = None
+    pipeline_retries_refine: Optional[int] = None
+    pipeline_retries_implement: Optional[int] = None
+    pipeline_retries_pr_review: Optional[int] = None
+    pipeline_retries_follow_ups: Optional[int] = None
+
+    # Global default for deile-worker timeout (issue #391). Mirrors
+    # ``pipeline_claude_timeout`` (1800s) for the deile-worker path (built-in
+    # 900s). None collapses to the built-in (dispatch_resolver handles it).
+    pipeline_deile_timeout: Optional[int] = None
+
+    # Global default max retries across all stages (issue #391) — extracted
+    # from the formerly hard-coded value of 3. None collapses to built-in 3.
+    pipeline_default_max_retries: Optional[int] = None
+
 
     # Sub-DEILEs paralelos em sessão CLI (issue #257)
     # `subagent_runner`        — "local" (default; in-process via asyncio.gather de
@@ -1059,6 +1147,22 @@ _ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any]], ...] = (
     ("DEILE_PIPELINE_DISPATCH_IMPLEMENT",    "pipeline_dispatcher_implement",  _to_optional_dispatcher),
     ("DEILE_PIPELINE_DISPATCH_PR_REVIEW",    "pipeline_dispatcher_pr_review",  _to_optional_dispatcher),
     ("DEILE_PIPELINE_DISPATCH_FOLLOW_UPS",   "pipeline_dispatcher_follow_ups", _to_optional_dispatcher),
+    # Per-stage timeout override (issue #391) — cluster path. Set via the panel
+    # TUI on deploy/deile-pipeline. Paridade com pipeline.timeouts_s.<stage>.
+    ("DEILE_PIPELINE_TIMEOUT_S_CLASSIFY",    "pipeline_timeout_s_classify",    _to_optional_pos_int),
+    ("DEILE_PIPELINE_TIMEOUT_S_REFINE",      "pipeline_timeout_s_refine",      _to_optional_pos_int),
+    ("DEILE_PIPELINE_TIMEOUT_S_IMPLEMENT",   "pipeline_timeout_s_implement",   _to_optional_pos_int),
+    ("DEILE_PIPELINE_TIMEOUT_S_PR_REVIEW",   "pipeline_timeout_s_pr_review",   _to_optional_pos_int),
+    ("DEILE_PIPELINE_TIMEOUT_S_FOLLOW_UPS",  "pipeline_timeout_s_follow_ups",  _to_optional_pos_int),
+    # Per-stage max retries override (issue #391) — cluster path.
+    ("DEILE_PIPELINE_RETRIES_CLASSIFY",      "pipeline_retries_classify",      _to_optional_nonneg_int),
+    ("DEILE_PIPELINE_RETRIES_REFINE",        "pipeline_retries_refine",        _to_optional_nonneg_int),
+    ("DEILE_PIPELINE_RETRIES_IMPLEMENT",     "pipeline_retries_implement",     _to_optional_nonneg_int),
+    ("DEILE_PIPELINE_RETRIES_PR_REVIEW",     "pipeline_retries_pr_review",     _to_optional_nonneg_int),
+    ("DEILE_PIPELINE_RETRIES_FOLLOW_UPS",    "pipeline_retries_follow_ups",    _to_optional_nonneg_int),
+    # Global timeout/retries defaults (issue #391).
+    ("DEILE_PIPELINE_DEILE_TIMEOUT",         "pipeline_deile_timeout",         _to_optional_pos_int),
+    ("DEILE_PIPELINE_DEFAULT_MAX_RETRIES",   "pipeline_default_max_retries",   _to_optional_nonneg_int),
 )
 
 

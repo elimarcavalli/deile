@@ -2857,6 +2857,151 @@ def set_pipeline_dispatch_stage(
     return True, f"{env_var}={dispatcher} ({msg})"
 
 
+# ===== Stage timeout / retries override — issue #391 =========================
+#
+# ``set_stage_timeout`` / ``set_stage_retries`` (e variantes clear) espelham
+# exatamente o padrão de ``set_pipeline_dispatch_stage``:
+#   * validam o stage contra PIPELINE_STAGES
+#   * usam ``kubectl set env deploy/deile-pipeline`` para persistir
+#   * emitem audit event ``SECURITY_POLICY_CHANGED``
+#   * retornam ``(ok, msg)`` para o painel exibir ``last_msg``
+
+
+def _audit_timeout_retries_change(
+    stage: str, kind: str, value: Optional[int], *,
+    result: str, detail: str, namespace: str,
+) -> None:
+    """Audit log wrapper for timeout/retries changes (espelha _audit_dispatch_stage_change)."""
+    try:
+        from deile.storage.audit_logger import AuditLogger, AuditEvent, AuditEventType, SeverityLevel  # noqa: PLC0415
+        from datetime import datetime  # noqa: PLC0415
+        AuditLogger.get_instance().log(AuditEvent(
+            timestamp=datetime.now(),
+            event_type=AuditEventType.SECURITY_POLICY_CHANGED,
+            severity=SeverityLevel.INFO,
+            operation=f"set_stage_{kind}",
+            user="panel",
+            details={
+                "stage": stage, "kind": kind, "value": value,
+                "result": result, "detail": detail, "namespace": namespace,
+            },
+        ))
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def set_stage_timeout(
+    stage: str, timeout_s: Optional[int], *,
+    namespace: str = NS, timeout: float = 15.0,
+) -> tuple:
+    """Pin ``DEILE_PIPELINE_TIMEOUT_S_<STAGE>=<timeout_s>`` em ``deile-pipeline``.
+
+    Args:
+        stage: canonical stage name (one of PIPELINE_STAGES).
+        timeout_s: positive int (seconds) or None (clear the override).
+        namespace: K8s namespace.
+        timeout: subprocess timeout for kubectl.
+
+    Returns ``(ok, msg)``.
+    """
+    try:
+        from deile.orchestration.pipeline.dispatch_resolver import PIPELINE_STAGES  # noqa: PLC0415
+    except ImportError as exc:
+        return False, f"dispatch_resolver indisponível: {exc}"
+
+    if stage not in PIPELINE_STAGES:
+        return False, f"invalid stage {stage!r} — esperado um de: {', '.join(PIPELINE_STAGES)}"
+
+    if timeout_s is not None and timeout_s <= 0:
+        return False, f"timeout_s deve ser > 0, got {timeout_s}"
+
+    env_var = f"DEILE_PIPELINE_TIMEOUT_S_{stage.upper()}"
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return False, "kubectl não encontrado"
+
+    if timeout_s is None:
+        argv = [kubectl, "-n", namespace, "set", "env",
+                f"deploy/{_DISPATCH_DEPLOYMENT}", f"{env_var}-"]
+    else:
+        argv = [kubectl, "-n", namespace, "set", "env",
+                f"deploy/{_DISPATCH_DEPLOYMENT}", f"{env_var}={timeout_s}"]
+
+    _audit_timeout_retries_change(
+        stage, "timeout_s", timeout_s, result="allowed",
+        detail=f"kubectl set env {env_var}={timeout_s}", namespace=namespace,
+    )
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"falha ao executar kubectl: {exc}"
+
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+        return False, err
+
+    msg = (proc.stdout or "rollout disparado").strip()
+    if timeout_s is None:
+        return True, f"{env_var} unset ({msg})"
+    return True, f"{env_var}={timeout_s} ({msg})"
+
+
+def set_stage_retries(
+    stage: str, max_retries: Optional[int], *,
+    namespace: str = NS, timeout: float = 15.0,
+) -> tuple:
+    """Pin ``DEILE_PIPELINE_RETRIES_<STAGE>=<max_retries>`` em ``deile-pipeline``.
+
+    Args:
+        stage: canonical stage name (one of PIPELINE_STAGES).
+        max_retries: non-negative int or None (clear the override).
+        namespace: K8s namespace.
+        timeout: subprocess timeout for kubectl.
+
+    Returns ``(ok, msg)``.
+    """
+    try:
+        from deile.orchestration.pipeline.dispatch_resolver import PIPELINE_STAGES  # noqa: PLC0415
+    except ImportError as exc:
+        return False, f"dispatch_resolver indisponível: {exc}"
+
+    if stage not in PIPELINE_STAGES:
+        return False, f"invalid stage {stage!r} — esperado um de: {', '.join(PIPELINE_STAGES)}"
+
+    if max_retries is not None and max_retries < 0:
+        return False, f"max_retries deve ser >= 0, got {max_retries}"
+
+    env_var = f"DEILE_PIPELINE_RETRIES_{stage.upper()}"
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return False, "kubectl não encontrado"
+
+    if max_retries is None:
+        argv = [kubectl, "-n", namespace, "set", "env",
+                f"deploy/{_DISPATCH_DEPLOYMENT}", f"{env_var}-"]
+    else:
+        argv = [kubectl, "-n", namespace, "set", "env",
+                f"deploy/{_DISPATCH_DEPLOYMENT}", f"{env_var}={max_retries}"]
+
+    _audit_timeout_retries_change(
+        stage, "max_retries", max_retries, result="allowed",
+        detail=f"kubectl set env {env_var}={max_retries}", namespace=namespace,
+    )
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"falha ao executar kubectl: {exc}"
+
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+        return False, err
+
+    msg = (proc.stdout or "rollout disparado").strip()
+    if max_retries is None:
+        return True, f"{env_var} unset ({msg})"
+    return True, f"{env_var}={max_retries} ({msg})"
+
+
 # ===== Stage dispatch (worker + model) consolidado — issue #309 fase 2 ======
 #
 # ``StageDispatchProvider`` unifica 3 leituras separadas em uma única view:
@@ -2885,7 +3030,7 @@ _CLAUDE_CREDENTIALS_SECRET = "claude-credentials"
 
 @dataclass(frozen=True)
 class StageDispatchEntry:
-    """Snapshot per-stage do dispatcher + model resolvidos pelo runtime.
+    """Snapshot per-stage do dispatcher + model + tuning resolvidos pelo runtime.
 
     - ``stage`` — canonical stage name (one of :data:`PIPELINE_STAGES`).
     - ``worker`` — qual worker pod receberá o dispatch deste stage:
@@ -2896,12 +3041,18 @@ class StageDispatchEntry:
       ``DEILE_PIPELINE_DISPATCH_<STAGE>`` (override específico do stage),
       ``"global"`` quando veio do fallback ``DEILE_PIPELINE_DISPATCH_MODE``,
       ``"default"`` quando ambos ausentes (cai no built-in ``deile-worker``).
+    - ``timeout_s`` — override de timeout em segundos para este stage, ou
+      ``None`` quando nenhum override per-stage está setado (cai no global).
+    - ``max_retries`` — override de max retries para este stage, ou
+      ``None`` quando nenhum override per-stage está setado (cai no global).
     """
 
     stage: str
     worker: str
     model: Optional[str]
     source: str
+    timeout_s: Optional[int] = None
+    max_retries: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -3086,7 +3237,30 @@ class StageDispatchProvider(_KubectlProviderMixin):
                 source = "default"
             # Model chain: per-stage env → global env → None.
             model = ((stage_model_raw or "").strip() or global_model or None)
-            result.append(StageDispatchEntry(stage, worker, model, source))
+            # Timeout / retries overrides (issue #391) — read from pipeline
+            # Deployment env vars. None = no override, cai no resolver chain.
+            timeout_s: Optional[int] = None
+            timeout_raw = pipeline_env.get(f"DEILE_PIPELINE_TIMEOUT_S_{stage.upper()}")
+            if timeout_raw and timeout_raw.strip():
+                try:
+                    v = int(timeout_raw.strip())
+                    if v > 0:
+                        timeout_s = v
+                except (ValueError, TypeError):
+                    pass
+            max_retries: Optional[int] = None
+            retries_raw = pipeline_env.get(f"DEILE_PIPELINE_RETRIES_{stage.upper()}")
+            if retries_raw is not None and retries_raw.strip():
+                try:
+                    v = int(retries_raw.strip())
+                    if v >= 0:
+                        max_retries = v
+                except (ValueError, TypeError):
+                    pass
+            result.append(StageDispatchEntry(
+                stage, worker, model, source,
+                timeout_s=timeout_s, max_retries=max_retries,
+            ))
         return result
 
     def _fetch_status(self) -> ClaudeWorkerStatus:
