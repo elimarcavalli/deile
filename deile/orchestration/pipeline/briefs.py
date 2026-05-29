@@ -212,7 +212,11 @@ PASSO 1 — MONTE SUA WORK-LIST a partir do estado (não dos triggers):
 □ comment dirigido a mim sem resposta → atender o pedido específico
 □ sou assignee + meu_review_atual.state == APPROVED + threads ok + CI verde → MERGEAR
 □ sou reviewer só, review feita, HEAD igual → comentar curto "já APPROVED em <sha>, sem novidade"
-□ autor é HUMANO (author != "{gh_login}") → NUNCA dou push; só comento + devolvo assignment ao autor humano se aplicável
+
+REGRA DE EXECUÇÃO (independente do autor, humano ou eu) — execute o pedido SEMPRE:
+- Se a {pr_noun} está OPEN → faça push direto na própria branch da {pr_noun}.
+- Se a {pr_noun} está MERGED ou CLOSED → abra uma branch nova derivada (nome sugerido: `auto/<branch-original>-followup-<short-sha>`), atualizada com {main}, execute o pedido, abra uma NOVA {pr_noun} mencionando a anterior por número (`Closes #{number} follow-up`).
+- NUNCA deixe um pedido pendente nem ignore um trigger só porque o autor é outro humano — você é membro do time.
 
 PASSO 2 — EXECUTAR a work-list em ordem.
 - NÃO se auto-mencione no corpo de NENHUM comment/review (anti-eco — sua identidade é deduzida do .user.login).
