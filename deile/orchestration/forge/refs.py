@@ -191,6 +191,14 @@ class CommentRef:
     The shape is identical across forges; the only distinguishing field is
     ``kind`` (``"issue"`` vs ``"pr_review"``) which the mention router uses
     to decide where the comment lives.
+
+    ``is_pr_comment`` (Decisão #46) — True quando o comment está em uma PR/MR,
+    mesmo que ``kind="issue"``. Isso acontece quando o usuário posta um
+    comentário regular (conversation comment) numa PR: o GitHub retorna esse
+    comentário via ``/issues/comments`` (PRs são issues no nível de API),
+    mas o ``html_url`` aponta para ``/pull/N``. Sem este flag, comments em PR
+    seriam roteados como se fossem em issues e cairiam no brief legacy
+    ``_WORKER_MENTION_BRIEF`` em vez do brief unified ``pr_unified``.
     """
 
     comment_id: int
@@ -199,6 +207,7 @@ class CommentRef:
     issue_url: str  # API URL of the parent issue or PR/MR
     author: str
     kind: str  # "issue" | "pr_review"
+    is_pr_comment: bool = False
 
 
 @dataclass(frozen=True)
@@ -257,7 +266,13 @@ class MentionTrigger:
         if self.issue is not None:
             return "issue"
         if self.comment is not None:
-            return "pr" if self.comment.kind == "pr_review" else "issue"
+            # Decisão #46: ``kind="pr_review"`` cobre apenas review/inline
+            # comments. Comments regulares em PR vêm via ``/issues/comments``
+            # com ``kind="issue"``, então precisamos do flag ``is_pr_comment``
+            # para roteá-los para ``pr_unified`` em vez do brief legacy.
+            if self.comment.kind == "pr_review" or self.comment.is_pr_comment:
+                return "pr"
+            return "issue"
         return "unknown"
 
     @property
