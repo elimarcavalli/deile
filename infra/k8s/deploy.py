@@ -126,6 +126,8 @@ class DeploymentProfile:
             "15-bot-config.yaml",
             "47-deile-runtime-config.yaml",
             "41-worker-pvc.yaml",
+            # issue #404 — logs PVCs must precede the Deployments that mount them.
+            "42b-deile-logs-pvc.yaml",
             "45-deile-worker-deployment.yaml",
             "46b-deile-pipeline-pvc.yaml",
             "46-deile-pipeline-deployment.yaml",
@@ -146,6 +148,8 @@ class DeploymentProfile:
             "20-bot-deployment.yaml",
             "35-deile-interactive.yaml",
             "41-worker-pvc.yaml",
+            # issue #404 — logs PVCs must precede the Deployments that mount them.
+            "42b-deile-logs-pvc.yaml",
             "45-deile-worker-deployment.yaml",
             "46b-deile-pipeline-pvc.yaml",
             "46-deile-pipeline-deployment.yaml",
@@ -1607,7 +1611,10 @@ def do_create_namespace(cfg: CreateNamespaceConfig) -> int:
         "15-bot-config.yaml", "47-deile-runtime-config.yaml",
         "19-bot-data-pvc.yaml",
         "20-bot-deployment.yaml", "35-deile-interactive.yaml",
-        "41-worker-pvc.yaml", "45-deile-worker-deployment.yaml",
+        "41-worker-pvc.yaml",
+        # issue #404 — logs PVCs must precede the Deployments that mount them.
+        "42b-deile-logs-pvc.yaml",
+        "45-deile-worker-deployment.yaml",
         "46b-deile-pipeline-pvc.yaml",
         "46-deile-pipeline-deployment.yaml",
     )

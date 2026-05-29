@@ -188,6 +188,8 @@ spec:
             # Montado em subpath de /home/deile: o emptyDir "home" cobre a
             # raiz (repo clone) e o PVC overlay cobre .deile/pipeline/ (ledger).
             - { name: pipeline-ledger, mountPath: /home/deile/.deile/pipeline }
+            # PVC de logs rotacionados (issue #404 / log_mgmt/log_rotator.py).
+            - { name: logs,           mountPath: /home/deile/logs }
             # settings.json layered (issue #111). Apontado pelo env var
             # DEILE_SETTINGS_FILE para evitar collision com ~/.deile/ writable.
             - name: runtime-config
@@ -220,6 +222,8 @@ spec:
         # restarts/rollouts. O path ~/.deile/pipeline/dispatches.json
         # resolve naturalmente pra este mount sem alterar dispatch_ledger.py.
         - { name: pipeline-ledger, persistentVolumeClaim: { claimName: deile-pipeline-ledger } }
+        # PVC de logs rotacionados (issue #404).
+        - { name: logs,            persistentVolumeClaim: { claimName: deile-logs-pipeline } }
         - name: runtime-config
           configMap:
             name: deile-runtime-config
