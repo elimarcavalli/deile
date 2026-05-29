@@ -34,7 +34,8 @@ class _FakeClient:
 def _make_monitor():
     monitor = MagicMock()
     monitor.config = SimpleNamespace(
-        repo="owner/repo", main_branch="main", base_repo_path=Path("/tmp/fake")
+        repo="owner/repo", main_branch="main", base_repo_path=Path("/tmp/fake"),
+        mention_handle="@deile-one",
     )
     monitor.branch_for_issue = lambda n: f"auto/issue-{n}"
     return monitor

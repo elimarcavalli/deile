@@ -350,15 +350,20 @@ class TestProcessMentionsCrossTickDedup:
     sticky dispatch. Comments stay governed by the timestamp cursor and ignore
     the label."""
 
-    async def test_assignee_issue_already_processed_is_skipped(self):
+    async def test_assignee_issue_with_mention_done_still_routes(self):
+        """Após o refactor "PR é o quadro", ``~mention:processado`` em uma
+        issue assignee NÃO bloqueia mais — o gate cross-tick do collector foi
+        removido pra issues sticky. Issue assignee continua sendo INJETADA no
+        pipeline via ``~workflow:nova`` (não passa pelo implementer.mention).
+        """
         monitor, github, notifier = _make_monitor()
         github.list_issues_assigned_to = AsyncMock(
             return_value=[_issue_ref(42, labels=(MENTION_DONE,))]
         )
         await monitor._process_mentions()
-        notifier.mention_processed.assert_not_called()
-        assert monitor.stats.mentions_processed == 0
-        github.add_labels.assert_not_called()
+        # Continua sendo roteada — o marker antigo deixa de filtrar.
+        assert monitor.stats.mentions_processed == 1
+        github.add_labels.assert_any_call("issue", 42, [WORKFLOW_NEW])
 
     async def test_assignee_issue_routes_into_pipeline(self):
         """Assignee on an issue is INJECTED into the pipeline (~workflow:nova),
@@ -388,14 +393,21 @@ class TestProcessMentionsCrossTickDedup:
         assert monitor.stats.mentions_processed == 1
         github.add_labels.assert_called_once_with("pr", 77, [MENTION_DONE])
 
-    async def test_reviewer_already_processed_is_skipped(self):
+    async def test_reviewer_with_mention_done_still_dispatches(self):
+        """Após o refactor "PR é o quadro", o marker ``~mention:processado``
+        em uma PR reviewer NÃO bloqueia o re-dispatch. O brief unificado
+        agora descobre o estado real (se review está APPROVED em HEAD igual,
+        ele comenta curto "sem novidade" e o pipeline re-marca pra cortar
+        churn natural). Mudanças reais de estado (HEAD novo) voltam a
+        entrar pelo trigger natural."""
         monitor, github, notifier = _make_monitor()
         github.list_prs_with_review_requests = AsyncMock(
             return_value=[_pr_ref(88, labels=(MENTION_DONE,))]
         )
         await monitor._process_mentions()
-        assert monitor.stats.mentions_processed == 0
-        github.add_labels.assert_not_called()
+        assert monitor.stats.mentions_processed == 1
+        # PR sticky-success agora SEMPRE marca (não há mais exceção pra reviewer).
+        github.add_labels.assert_called_once_with("pr", 88, [MENTION_DONE])
 
     async def test_body_mention_already_processed_is_skipped(self):
         monitor, github, notifier = _make_monitor()
@@ -446,11 +458,13 @@ class TestProcessMentionsCrossTickDedup:
         notifier.mention_processed.assert_called_once()
 
 
-# ----- Role → dispatch mode routing (issue #253 follow-up) -------------------
+# ----- Role → dispatch mode routing (refactor "PR é o quadro") ---------------
 
 class TestProcessMentionsModeRouting:
-    """The router selects the worker dispatch mode by ROLE for PR triggers:
-    reviewer→review_only (no merge), assignee→work_merge, comment/body→address."""
+    """Após o refactor "PR é o quadro", qualquer trigger sobre uma PR resolve
+    para o mode unificado ``pr_unified`` — quem decide o que fazer é o brief
+    unificado, olhando o estado real da PR. Os 3 modes antigos
+    (``work_merge`` / ``review_only`` / ``address``) deixaram de existir."""
 
     def _spy_monitor(self, **kw):
         monitor, github, notifier = _make_monitor(**kw)
@@ -460,31 +474,31 @@ class TestProcessMentionsModeRouting:
         )
         return monitor, github, notifier
 
-    async def test_pr_reviewer_uses_review_only(self):
+    async def test_pr_reviewer_uses_pr_unified(self):
         monitor, github, notifier = self._spy_monitor()
         github.list_prs_with_review_requests = AsyncMock(return_value=[_pr_ref(88)])
         await monitor._process_mentions()
-        assert monitor.implementer.mention.call_args.kwargs["mode"] == "review_only"
+        assert monitor.implementer.mention.call_args.kwargs["mode"] == "pr_unified"
 
-    async def test_pr_assignee_uses_work_merge(self):
+    async def test_pr_assignee_uses_pr_unified(self):
         monitor, github, notifier = self._spy_monitor()
         github.list_prs_assigned_to = AsyncMock(return_value=[_pr_ref(77)])
         await monitor._process_mentions()
-        assert monitor.implementer.mention.call_args.kwargs["mode"] == "work_merge"
+        assert monitor.implementer.mention.call_args.kwargs["mode"] == "pr_unified"
 
-    async def test_pr_comment_uses_address(self):
+    async def test_pr_comment_uses_pr_unified(self):
         pr_comment = _comment(9, "@deile-one tweak X", kind="pr_review")
         monitor, github, notifier = self._spy_monitor(pr_comments=[pr_comment])
         await monitor._process_mentions()
-        assert monitor.implementer.mention.call_args.kwargs["mode"] == "address"
+        assert monitor.implementer.mention.call_args.kwargs["mode"] == "pr_unified"
 
-    async def test_pr_assignee_plus_reviewer_prefers_work_merge(self):
-        """Assignee dominates: an owner who can merge outranks a review request."""
+    async def test_pr_assignee_plus_reviewer_same_mode(self):
+        """Qualquer combinação de triggers PR → o mesmo mode unificado."""
         monitor, github, notifier = self._spy_monitor()
         github.list_prs_assigned_to = AsyncMock(return_value=[_pr_ref(77)])
         github.list_prs_with_review_requests = AsyncMock(return_value=[_pr_ref(77)])
         await monitor._process_mentions()
-        assert monitor.implementer.mention.call_args.kwargs["mode"] == "work_merge"
+        assert monitor.implementer.mention.call_args.kwargs["mode"] == "pr_unified"
 
     async def test_issue_assignee_does_not_dispatch(self):
         """Issue assignee ROUTES (no implementer.mention call) — pipeline takes over."""
@@ -494,24 +508,24 @@ class TestProcessMentionsModeRouting:
         monitor.implementer.mention.assert_not_called()
         github.add_labels.assert_any_call("issue", 42, [WORKFLOW_NEW])
 
-    async def test_review_only_does_not_mark_processed(self):
-        """review_only must NOT apply ~mention:processado: GitHub removes the
-        requested-reviewer once the review is submitted, and leaving the marker
-        OFF lets the assignee trigger (author assigned back) fire next tick so a
-        DEILE-authored PR self-completes (Decisão #32)."""
+    async def test_pr_reviewer_marks_mention_done(self):
+        """Após o refactor "PR é o quadro", todo sticky-success em PR aplica
+        ``~mention:processado`` — não há mais exceção pra reviewer-only.
+        Mudanças reais de estado (HEAD novo) voltam a entrar pelo trigger
+        natural; o marker apenas evita re-dispatch redundante."""
         monitor, github, notifier = self._spy_monitor()
         github.list_prs_with_review_requests = AsyncMock(return_value=[_pr_ref(88)])
         await monitor._process_mentions()
-        assert monitor.implementer.mention.call_args.kwargs["mode"] == "review_only"
+        assert monitor.implementer.mention.call_args.kwargs["mode"] == "pr_unified"
         assert monitor.stats.mentions_processed == 1
-        github.add_labels.assert_not_called()  # no ~mention:processado on review_only
+        github.add_labels.assert_called_once_with("pr", 88, [MENTION_DONE])
 
-    async def test_work_merge_marks_processed(self):
-        """Contrast with review_only: assignee (work_merge) DOES mark processed."""
+    async def test_pr_assignee_marks_mention_done(self):
+        """Assignee em PR também marca ``~mention:processado`` em sticky-success."""
         monitor, github, notifier = self._spy_monitor()
         github.list_prs_assigned_to = AsyncMock(return_value=[_pr_ref(77)])
         await monitor._process_mentions()
-        assert monitor.implementer.mention.call_args.kwargs["mode"] == "work_merge"
+        assert monitor.implementer.mention.call_args.kwargs["mode"] == "pr_unified"
         github.add_labels.assert_called_once_with("pr", 77, [MENTION_DONE])
 
 

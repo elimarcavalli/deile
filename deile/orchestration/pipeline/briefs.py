@@ -14,6 +14,7 @@ right forge. When a caller does not pass an explicit :class:`ForgeConfig`
 default GitHub configuration on ``github.com`` so the rendered text matches
 the legacy byte-exact GH output.
 """
+# Brief unificado pr_unified — refactor #45 / PR #411
 
 from __future__ import annotations
 
@@ -180,32 +181,58 @@ DEFINITION OF DONE: existe uma {pr_noun} aberta cuja URL você confirmou via {fo
 {body}
 """
 
-_WORKER_REVIEW_BRIEF = """\
-Você é o QUALITY GATE final da {pr_noun} #{number} do repositório {repo}. Revise com RIGOR, corrija e — só se passar no portão — mergeie. Execute de verdade: testes verdes NÃO bastam.
+# --- Unified PR brief (refactor "PR é o quadro") ------------------------------
+# Substitui ``_WORKER_REVIEW_BRIEF``, ``_WORKER_REVIEW_ONLY_BRIEF`` e
+# ``_WORKER_PR_ADDRESS_BRIEF``. O princípio inegociável: a PR é o quadro; o
+# trigger só diz QUAL PR olhar. O worker abre a PR, descobre o estado real e
+# monta a work-list a partir DELE — não do trigger que o acordou. Resume é
+# coberto pelo PASSO 0 lendo ``.deile-progress.md``; merge só acontece quando
+# o autor sou eu E meu review atual está APPROVED E threads ok E suíte verde.
+_WORKER_PR_BRIEF = """\
+Você é membro do time de desenvolvimento do {repo}. Foi acordado por algum trigger na {pr_noun} #{number}. NÃO IMPORTA qual trigger — abra a {pr_noun} e descubra o que precisa ser feito a partir do ESTADO REAL dela.
 
-CHECKPOINT OBRIGATÓRIO (vale pra QUALQUER worker — agente DEILE, Claude Code, ou outro): a execução é considerada FALHA se você terminar sem ter postado pelo menos UM comentário visível na {pr_noun} via {comment_pr_cmd}. Não basta analisar — o operador precisa VER a sua revisão no {forge_name}. Faça o comentário inicial (mesmo curto: "Iniciando review...") logo ANTES dos testes, e o comentário final com evidências DEPOIS do veredito.
+CHECKPOINT OBRIGATÓRIO (vale pra QUALQUER worker): a execução é FALHA se você terminar sem ter postado pelo menos UM comentário visível na {pr_noun} via {comment_pr_cmd}.
 
-1. Garanta um clone atualizado de {repo} em ./repo ({clone_cmd} se não existir; senão git fetch origin). Dentro de ./repo: {checkout_pr_cmd}
-2. LEIA O DIFF INTEIRO e entenda a intenção da mudança: git diff {main}...HEAD ; git diff HEAD. Liste os arquivos tocados e leia cada um por completo.
-2b. CONFRONTE A ENTREGA CONTRA O QUE FOI PEDIDO (passo OBRIGATÓRIO): descubra a issue que esta {pr_noun} fecha (procure `Closes #N`/`Fixes #N` no corpo: {view_pr_body_cmd}). Leia a issue E TODOS os comentários dela: {view_issue_cmd_template}. Liste, item a item, TUDO o que foi pedido — no corpo E nos comentários (decisões do stakeholder fazem parte do escopo) — e verifique se a {pr_noun} entrega CADA item. Se faltou qualquer requisito, ou o autor declarou "concluído" sem cumprir, isso É IMPEDIMENTO (veja o veredito).
-3. AVALIE contra o checklist do revisor e anote cada achado (arquivo:linha + problema):
-   - Corretude e IDEMPOTÊNCIA: a lógica re-executa sem efeito duplicado? Algo em loop/por tick/agendado re-dispara a cada execução sem claim/dedup/cursor? (storms de processamento duplicado são a classe de bug nº 1 deste projeto)
-   - SOLID / SRP / DRY / KISS: responsabilidade única; sem duplicação real nem abstração prematura.
-   - Arquitetura hexagonal: núcleo sem SDK externo; componentes via registry; Tool retorna ToolResult; I/O async.
-   - SEGURANÇA: input sanitizado antes de shell/SQL/fs; sem segredo em log; sem injeção (nada de f-string em filtro jq/shell/SQL — use --arg/binding).
-   - Error handling: sem bare except; exceções tipadas (DEILEError); CancelledError re-raised; nenhum awaitable sem await.
-   - Testes cobrem casos de BORDA e a regressão que a {pr_noun} alega corrigir.
-   - Packaging/deploy: arquivo novo importado em runtime está no COPY do Dockerfile E no allowlist do .dockerignore?
-4. CORRIJA os achados com commits normais (SEM force-push) e dê push. Adicione os testes que faltarem.
-5. GATE DE TESTES. Para iterar nas correções: python3 -m pytest <arquivos> -p no:cov -q ({pip_guard}). MAS o VEREDITO exige a SUÍTE COMPLETA: rode {full_suite_cmd} (a suíte inteira, que inclui o gate de cobertura — é o portão real de CI) e ela DEVE estar 100% verde. Suíte vermelha — MESMO num arquivo que a {pr_noun} não tocou, se a mudança a quebrou — é IMPEDIMENTO: NÃO mergeie. Cole a saída REAL da suíte completa na evidência.
-5b. THREADS/NOTAS de review pendentes: liste os comentários de review ({list_pr_comments_cmd}). Para CADA thread/nota, JULGUE criticamente se o que foi pedido está realmente correto — NÃO obedeça cegamente. Se procede, RESOLVA (faça a mudança + responda a thread citando o commit). Se NÃO procede, responda a thread com uma JUSTIFICATIVA concreta de por que não fazer. Não deixe thread pendente sem ação ou justificativa.
-6. DOCUMENTE as evidências como comentário na {pr_noun} ({comment_pr_cmd}): o que revisou, os achados, as correções, como tratou cada thread, e a saída REAL dos testes.
-7. VEREDITO:
-   - A entrega cumpre TUDO o que a issue + comentários pediram (passo 2b) E o checklist passou E a SUÍTE COMPLETA está 100% verde (passo 5) → MERGEIE. Você é o autor da {pr_noun}; NÃO use comandos de auto-aprovação (o {forge_name} recusa auto-aprovação). Mergeie via REST: {merge_cmd} (fallback: {merge_fallback_cmd}). Confirme: {check_merged_cmd} (deve ser true/merged).
-   - A entrega NÃO cumpre tudo o que foi pedido (faltou requisito do corpo ou de um comentário; o autor disse "concluído" sem terminar) → IMPEDIMENTO: NÃO mergeie. Testes verdes NÃO suprem requisito faltante. Comente o que falta vs. o pedido e escreva `BLOQUEADO: <o que falta>` — devolve ao autor.
-   - Impedimento REAL que você não pode resolver com segurança (decisão de produto pendente, falta credencial/segredo, mudança quebraria contrato sem migração) → NÃO mergeie; comente o motivo na {pr_noun} e escreva numa linha começando com `{blocked_contract}`.
-8. Na ÚLTIMA LINHA: a URL da {pr_noun} seguida de MERGED (ex.: {pr_url_pattern} MERGED) se mergeou; OU a linha `{blocked_contract}`. NUNCA escreva MERGED sem ter mergeado de fato; NUNCA invente resultado.
+PASSO 0 — DESCOBERTA DE ESTADO (não pule):
+1. Clone se preciso ({clone_cmd}), faça checkout: {checkout_pr_cmd}.
+2. Se existir `.deile-progress.md` no SEU diretório de trabalho (um nível acima de ./repo), LEIA-O — é a sua TODO da tentativa anterior. Continue de onde parou.
+3. Leia o ESTADO da {pr_noun} via REST:
+   gh api repos/{repo}/pulls/{number} --jq '{{author:.user.login, assignees:[.assignees[].login], requested_reviewers:[.requested_reviewers[].login], head_sha:.head.sha, mergeable:.mergeable}}'
+   gh api repos/{repo}/pulls/{number}/reviews --jq '[.[] | select(.user.login == "{gh_login}")] | sort_by(.submitted_at) | last'
+   gh api repos/{repo}/issues/{number}/comments --jq '.[] | {{author:.user.login, body, created_at}}'
+4. Calcule:
+   - meu_papel = {{{{autor: author == "{gh_login}", assignee: "{gh_login}" in assignees, reviewer: "{gh_login}" in requested_reviewers}}}}
+   - meu_review_atual = último review meu cujo commit_id == head_sha (None se nenhum)
+   - threads_abertas = threads de review sem resposta sua nem resolvidas
+   - comments_dirigidos_a_mim_sem_resposta = comments contendo "@{gh_login}" (humano OU auto) cuja última reply do thread NÃO é minha (tem que ter consciência dos dois — seu próprio comment auto-mencionado conta se ainda não foi atendido)
+
+PASSO 1 — MONTE SUA WORK-LIST a partir do estado (não dos triggers):
+□ HEAD mudou desde meu_review_atual E sou reviewer/assignee → revisar
+□ thread aberta dirigida a mim → responder/resolver
+□ comment dirigido a mim sem resposta → atender o pedido específico
+□ sou assignee + meu_review_atual.state == APPROVED + threads ok + CI verde → MERGEAR
+□ sou reviewer só, review feita, HEAD igual → comentar curto "já APPROVED em <sha>, sem novidade"
+□ autor é HUMANO (author != "{gh_login}") → NUNCA dou push; só comento + devolvo assignment ao autor humano se aplicável
+
+PASSO 2 — EXECUTAR a work-list em ordem.
+- NÃO se auto-mencione no corpo de NENHUM comment/review (anti-eco — sua identidade é deduzida do .user.login).
+- Para review: use {review_post_cmd} com APPROVE ou REQUEST_CHANGES.
+- Para merge: {merge_cmd} (fallback: {merge_fallback_cmd}). Confirme: {check_merged_cmd}.
+- Para comment: {comment_pr_cmd}.
+- Gate de testes: se for revisar ou mergear, rode a SUÍTE COMPLETA: {full_suite_cmd} ({pip_guard}). Suíte vermelha por culpa da sua mudança = bloqueante. Suíte vermelha por testes pré-existentes que sua mudança NÃO TOCOU = você documenta no comment e segue.
+- Confronte entrega contra pedido (passo 2b clássico): leia issue que a {pr_noun} fecha (Closes #N), liste itens, valide entrega.
+
+PASSO 3 — ESCREVA O PROGRESSO:
+- Se a work-list ESVAZIOU: marque `~mention:processado` automaticamente (o pipeline faz isso pós-success). Você só precisa garantir os steps acima.
+- Se a work-list NÃO esvaziou (estourou tempo/orçamento ou impedimento): grave `.deile-progress.md` no seu diretório de trabalho (NÃO commite, NÃO dentro de ./repo) com: o que fez, o que falta, o que tá bloqueando. Próximo tick reusa.
+
+PASSO 4 — VEREDITO. Na ÚLTIMA LINHA escreva:
+- URL da {pr_noun} seguida de MERGED se mergeou (ex.: {pr_url_pattern} MERGED).
+- URL da {pr_noun} sozinha se ciclou ok sem mergear.
+- `{blocked_contract}` se impedimento real.
+NUNCA escreva MERGED sem ter mergeado de fato; NUNCA invente resultado.
 """
+
 
 # --- Resume briefs (issue #254) -----------------------------------------------
 # The fundamental difference from the fresh briefs: NO ``git reset --hard``. The
@@ -240,23 +267,6 @@ DEFINITION OF DONE: existe uma {pr_noun} aberta cuja URL você confirmou via {fo
 
 === Issue #{number}: {title} ===
 {body}
-"""
-
-_WORKER_REVIEW_RESUME_BRIEF = """\
-RETOMADA do QUALITY GATE da {pr_noun} #{number} do repositório {repo} — uma tentativa anterior já começou. NÃO descarte o trabalho parcial. Testes verdes NÃO bastam.
-
-1. Use o clone existente em ./repo (NÃO rode `git reset --hard`, NÃO apague untracked). Garanta o checkout da {pr_noun}: {checkout_pr_cmd}
-2. RECONSTRUA O CONTEXTO: leia o journal da tentativa anterior e o diff/untracked atuais:
-{progress_block}
-   git diff {main}...HEAD ; git status --porcelain (leia cada arquivo modificado/untracked listado).
-3. AVALIE com RIGOR contra o checklist do revisor (corretude/IDEMPOTÊNCIA — re-dispara a cada tick sem claim/dedup?; SOLID/SRP/DRY/KISS; arquitetura hexagonal; SEGURANÇA — injeção em jq/shell/SQL, segredo em log; error handling tipado; testes de borda + a regressão alegada; packaging — arquivo novo no COPY do Dockerfile e no allowlist do .dockerignore). Anote cada achado (arquivo:linha + problema).
-3b. CONFRONTE a entrega contra o PEDIDO: descubra a issue (Closes #N no corpo da {pr_noun}), leia-a com TODOS os comentários ({view_issue_cmd_template}) e verifique item a item se a {pr_noun} entrega tudo (corpo + decisões do stakeholder). Faltou requisito ou "concluído" sem cumprir → IMPEDIMENTO, NÃO mergeie (testes verdes não suprem), `BLOQUEADO: <o que falta>`.
-4. CORRIJA os achados com commits normais (SEM force-push) e dê push. Adicione os testes que faltarem.
-5. GATE DE TESTES. Iterar nas correções: python3 -m pytest <arquivos> -p no:cov -q ({pip_guard}). MAS o VEREDITO exige a SUÍTE COMPLETA verde: {full_suite_cmd} DEVE estar 100% verde. Suíte vermelha — mesmo fora dos arquivos da {pr_noun}, se a mudança a quebrou — é IMPEDIMENTO: NÃO mergeie.
-6. DOCUMENTE as evidências como comentário na {pr_noun} ({comment_pr_cmd}), colando a saída REAL da suíte completa.
-7. VEREDITO — só mergeie se o checklist passou E a SUÍTE COMPLETA está 100% verde: {merge_cmd} (fallback: {merge_fallback_cmd}). Confirme: {check_merged_cmd} (deve ser true/merged).
-8. ANTES DE PARAR, atualize `.deile-progress.md` no diretório de trabalho (fora de ./repo, sem commitar): o que revisou, achados, correções e o que falta.
-9. Se um impedimento real impedir o merge com qualidade, escreva `{blocked_contract}`. Caso contrário, na ÚLTIMA LINHA escreva a URL da {pr_noun} seguida de MERGED. NUNCA escreva MERGED sem ter mergeado de fato; NUNCA invente resultado.
 """
 
 _WORKER_MENTION_BRIEF = """\
@@ -480,19 +490,33 @@ def _render_worker_implement_brief(
     return _render_brief(_WORKER_IMPLEMENT_BRIEF, params=params)
 
 
-def _render_worker_review_brief(
-    repo: str, main: str, number: int, *, forge: Optional[ForgeConfig] = None,
+def _render_worker_pr_unified_brief(
+    repo: str,
+    main: str,
+    number: int,
+    *,
+    gh_login: str,
+    forge: Optional[ForgeConfig] = None,
 ) -> str:
-    # Review brief does not know the branch — but the placeholders that
-    # reference it only appear in the implement template; for review we use
-    # ``pr/<n>`` as a deterministic stand-in (matches the legacy template
-    # which used the same shape).
+    """Renderiza o brief unificado de PR (refactor "PR é o quadro").
+
+    Substitui ``_render_worker_review_brief``, ``_render_worker_review_only_brief``,
+    ``_render_worker_pr_address_brief`` e ``_render_worker_review_resume_brief``.
+    O worker monta a work-list a partir do estado real da PR (papel, HEAD vs
+    último review, threads abertas, comments dirigidos a mim sem resposta) —
+    NÃO do trigger. Resume é gratuito: o passo 0 instrui ler
+    ``.deile-progress.md``.
+
+    ``gh_login`` é o handle do agente (ex: ``deile-one``) sem o ``@`` — usado
+    para o worker comparar com ``.user.login`` em reviews/assignees/reviewers
+    e detectar comments dirigidos a si próprio.
+    """
     branch_for_render = f"pr/{number}"
     params = _build_brief_params(
         repo=repo, main=main, branch=branch_for_render, number=number, forge=forge,
+        extras={"gh_login": gh_login},
     )
-    _inject_view_issue_template(params, number)
-    return _render_brief(_WORKER_REVIEW_BRIEF, params=params)
+    return _render_brief(_WORKER_PR_BRIEF, params=params)
 
 
 # The journal lives in the worker's per-channel PVC workspace (one level above
@@ -527,18 +551,6 @@ def _render_worker_implement_resume_brief(
         },
     )
     return _render_brief(_WORKER_IMPLEMENT_RESUME_BRIEF, params=params)
-
-
-def _render_worker_review_resume_brief(
-    repo: str, main: str, number: int, *, forge: Optional[ForgeConfig] = None,
-) -> str:
-    branch_for_render = f"pr/{number}"
-    params = _build_brief_params(
-        repo=repo, main=main, branch=branch_for_render, number=number, forge=forge,
-        extras={"progress_block": _PROGRESS_BLOCK},
-    )
-    _inject_view_issue_template(params, number)
-    return _render_brief(_WORKER_REVIEW_RESUME_BRIEF, params=params)
 
 
 # --- Refinement gate briefs (issue #257) --------------------------------------
@@ -709,68 +721,6 @@ def _render_worker_decompose_brief(
         create_issue_cmd=cmds["create_issue_cmd"],
         comment_issue_cmd=cmds["comment_issue_cmd"],
     )
-
-
-# --- Reviewer-only brief (issue #253 follow-up) -------------------------------
-# When DEILE is requested ONLY as a reviewer (not assignee/owner), the operator
-# policy is: REVIEW and hand the PR back to its author — never fix, never merge.
-# DEILE submits a review via REST and sets the PR author as assignee (even when
-# the author is DEILE itself). GitHub removes a requested reviewer from the
-# "requested" set once they submit a review, so this is naturally idempotent.
-_WORKER_REVIEW_ONLY_BRIEF = """\
-Você foi solicitado APENAS como REVISOR da {pr_noun} #{number} do repositório {repo}. Seu papel é SÓ revisar e DEVOLVER ao autor — NÃO corrija o código, NÃO faça commits, NÃO mergeie. Execute de verdade.
-
-1. Garanta um clone atualizado de {repo} em ./repo ({clone_cmd} se não existir; senão git fetch origin). Dentro de ./repo: {checkout_pr_cmd}.
-2. LEIA O DIFF INTEIRO e entenda a intenção: git diff {main}...HEAD. Leia cada arquivo tocado.
-3. AVALIE com RIGOR contra o checklist do revisor (corretude/IDEMPOTÊNCIA — re-dispara a cada tick sem claim/dedup?; SOLID/SRP/DRY/KISS; arquitetura hexagonal; SEGURANÇA — injeção em jq/shell/SQL, segredo em log; error handling tipado; testes de borda; packaging — arquivo novo no COPY do Dockerfile e no allowlist). Anote cada achado com arquivo:linha.
-3b. CONFRONTE A ENTREGA CONTRA O PEDIDO: descubra a issue (Closes #N no corpo: {view_pr_body_cmd}), leia-a com TODOS os comentários ({view_issue_cmd_template}) e verifique item a item se a {pr_noun} entrega tudo (corpo + decisões do stakeholder). Faltou requisito, ou autor disse "concluído" sem cumprir → é bloqueante.
-3c. GATE DE TESTES — rode a SUÍTE COMPLETA: {full_suite_cmd} ({pip_guard}; é o portão real de CI, inclui cobertura). NÃO basta rodar os arquivos do diff — uma mudança quebra testes em arquivos que ela não tocou. Suíte vermelha = bloqueante. Cole a saída REAL no corpo da review.
-4. POSTE a review com o VEREDITO explícito: {review_post_cmd}
-   Escolha o VEREDITO:
-   - **APPROVE** — SÓ se NÃO houver nada bloqueante (checklist limpo, entrega cumpre o pedido do passo 3b, E a SUÍTE COMPLETA do passo 3c está 100% verde). EXCEÇÃO: se VOCÊ for o autor da {pr_noun} ({view_pr_author_cmd} == você), o {forge_name} recusa self-approve — nesse caso use `COMMENT` (o assignee-autor finalizará o merge no próximo tick).
-   - **REQUEST_CHANGES** — se houver QUALQUER problema bloqueante: achado do checklist, requisito faltando (3b), OU suíte vermelha (3c). Testes verdes do subset NÃO suprem a suíte completa vermelha.
-   Você ainda NÃO mergeia — quem mergeia é o autor/assignee (Decisão #32).
-5. DEVOLVA ao autor: descubra o autor (AUTOR=$({view_pr_author_cmd})) e marque-o como ASSIGNEE: {assign_user_cmd}. (Mesmo que o autor seja você — é o sinal de "bola de volta pro autor".)
-6. NÃO mergeie, NÃO faça commits de correção. Seu trabalho termina ao postar a review e devolver ao autor.
-7. Na ÚLTIMA LINHA escreva a URL da {pr_noun} ({pr_url_pattern}). Se algo REAL impediu a review, escreva `{blocked_contract}`. NUNCA invente um resultado.
-"""
-
-
-# --- Address-PR brief: comment/body mention on a PR (no merge) ----------------
-# A @mention in a PR comment or body asks DEILE to DO what was requested on that
-# PR. It may fix code, but it must NOT merge (only the assignee finalizes a PR).
-# It also resolves any pending review threads with critical judgement.
-_WORKER_PR_ADDRESS_BRIEF = """\
-Você foi MENCIONADO na {pr_noun} #{number} do repositório {repo} (em comentário ou no corpo). Atenda ao que foi pedido — execute de verdade. NÃO mergeie (o merge é do autor/assignee).
-
-1. Garanta um clone atualizado de {repo} em ./repo; dentro dela: {checkout_pr_cmd}.
-2. Leia o contexto do que foi pedido (o comentário/corpo que te mencionou) e o diff atual (git diff {main}...HEAD).
-3. THREADS/NOTAS pendentes ({list_pr_comments_cmd}): para CADA uma, JULGUE criticamente se o que foi pedido está realmente correto. Se procede, FAÇA a mudança e responda a thread citando o commit. Se NÃO procede, responda com JUSTIFICATIVA concreta. Não deixe thread sem ação ou justificativa.
-4. Se a tarefa envolve código, edite, rode os testes (NÃO rode pip install — deps já instaladas; python3 -m pytest <arquivos> -p no:cov -q), faça commit normal (SEM force-push) e push.
-5. COMENTE o resultado na {pr_noun} ({comment_pr_cmd}): o que fez, como tratou cada thread, e a saída real dos testes.
-6. NÃO mergeie. Na ÚLTIMA LINHA escreva a URL da {pr_noun}. Se um impedimento real surgir, escreva `{blocked_contract}`. NUNCA invente resultado.
-"""
-
-
-def _render_worker_review_only_brief(
-    repo: str, main: str, number: int, *, forge: Optional[ForgeConfig] = None,
-) -> str:
-    branch_for_render = f"pr/{number}"
-    params = _build_brief_params(
-        repo=repo, main=main, branch=branch_for_render, number=number, forge=forge,
-    )
-    _inject_view_issue_template(params, number)
-    return _render_brief(_WORKER_REVIEW_ONLY_BRIEF, params=params)
-
-
-def _render_worker_pr_address_brief(
-    repo: str, main: str, number: int, *, forge: Optional[ForgeConfig] = None,
-) -> str:
-    branch_for_render = f"pr/{number}"
-    params = _build_brief_params(
-        repo=repo, main=main, branch=branch_for_render, number=number, forge=forge,
-    )
-    return _render_brief(_WORKER_PR_ADDRESS_BRIEF, params=params)
 
 
 # ---------------------------------------------------------------------------
