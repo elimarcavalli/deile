@@ -1573,10 +1573,11 @@ class PodWatchView(View):
     # Mapeia role do pod → Deployment alvo do kubectl patch. Roles locais
     # não têm Deployment (são processos no host) → resize não se aplica.
     _ROLE_TO_DEPLOYMENT = {
-        "pipeline": "deile-pipeline",
-        "worker":   "deile-worker",
-        "bot":      "deilebot",
-        "shell":    "deile-shell",
+        "pipeline":     "deile-pipeline",
+        "worker":       "deile-worker",
+        "bot":          "deilebot",
+        "shell":        "deile-shell",
+        "claude-worker": "claude-worker",
     }
 
     # Roles com Service associado (issue #394): usados para decidir se a
@@ -1817,7 +1818,76 @@ class PodWatchView(View):
                     (" | ", "dim"),
                     (finished_z, "dim"),
                 ))
+        # claude-worker specific sections (issue #395)
+        if pod.role == "claude-worker":
+            lines.extend(self._claude_worker_header_lines())
         return Group(*lines)
+
+    def _claude_worker_header_lines(self) -> list:
+        """LEASE / DISK / QUOTA lines for claude-worker pod header (issue #395)."""
+        import time as _time
+        lines = []
+        if self.data is None or self.data.claude_worker_info is None:
+            lines.append(Text.assemble(
+                ("LEASE: ", "bold yellow"), ("— (provider unavailable)", "dim"),
+            ))
+            return lines
+
+        status = self.data.claude_worker_info.get()
+
+        # LEASE line
+        lease = status.lease
+        if lease:
+            hb_age = _time.time() - float(lease.get("heartbeat_at") or 0)
+            alive_label = "(alive)" if hb_age < 35 else "(stale)"
+            alive_style = "green" if hb_age < 35 else "red"
+            lines.append(Text.assemble(
+                ("LEASE: ", "bold yellow"),
+                ("task=", "dim"), (str(lease.get("task_id", "?")), "bold"),
+                ("   heartbeat=", "dim"),
+                (_fmt_age(hb_age) + " ago", "bold"),
+                ("   ", ""),
+                (alive_label, alive_style),
+                ("   claudes_running=", "dim"),
+                (str(status.claude_processes), "bold"),
+            ))
+        else:
+            lines.append(Text.assemble(
+                ("LEASE: ", "bold yellow"),
+                ("— (idle)", "dim"),
+                ("   claudes_running=", "dim"),
+                (str(status.claude_processes), "bold"),
+            ))
+
+        # DISK line
+        disk = status.disk
+        if disk:
+            used = int(disk.get("used_bytes") or 0)
+            total = int(disk.get("total_bytes") or 1)
+            pct = int(used * 100 / total) if total else 0
+            used_mi = used // (1024 * 1024)
+            total_gi = total / (1024 ** 3)
+            disk_style = "red bold" if pct >= 80 else "bold"
+            lines.append(Text.assemble(
+                ("DISK: ", "bold cyan"),
+                ("PVC claude-home ", "dim"),
+                (f"{used_mi}Mi/{total_gi:.0f}Gi used ({pct}%)", disk_style),
+            ))
+
+        # QUOTA line — omitted when never captured
+        quota = status.anthropic_quota
+        if quota:
+            tokens = int(quota.get("tokens_remaining") or 0)
+            captured_at = float(quota.get("captured_at") or 0)
+            age_s = _time.time() - captured_at
+            lines.append(Text.assemble(
+                ("QUOTA: ", "bold magenta"),
+                ("anthropic tokens left ~", "dim"),
+                (f" {tokens:,}", "bold"),
+                (f"  (cached {_fmt_age(age_s)} ago, best-effort)", "dim"),
+            ))
+
+        return lines
 
     def _local_header_body(self) -> RenderableType:
         """Cabeçalho do drill-in para processo local (não k8s)."""
@@ -1887,17 +1957,17 @@ class PodWatchView(View):
 
     def render(self, app: "PanelApp") -> RenderableType:
         layout = Layout()
-        # ``size=9`` acomoda até 6 linhas de header + bordas do Panel + título
-        # ([1] name/role/status + [2] uptime/restarts/ready/node +
-        # [3] RESOURCES + [4] ENDPOINT (conditional) +
-        # [5] worker/last activity + [6] current task).
-        # Pods sem worker ou sem ENDPOINT mostram menos linhas.
+        # size=9 acomoda 6 linhas de header + bordas + título para k8s pods
+        # (name/role/status + uptime + RESOURCES + ENDPOINT + worker/activity
+        # + current task). claude-worker adiciona LEASE/DISK/QUOTA (até 3
+        # linhas extra) → size=12. Outros pods mantêm 9.
+        info_size = 12 if self.pod_role == "claude-worker" else 9
         layout.split_column(
             Layout(_head_panel(self.title, app), name="head", size=4),
             Layout(Panel(self._header_body(),
                          title="[bold]POD[/bold]", title_align="left",
                          border_style="cyan"),
-                   name="info", size=9),
+                   name="info", size=info_size),
             Layout(self._log_panel(), name="log"),
             Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
         )

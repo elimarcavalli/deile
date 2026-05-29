@@ -1546,3 +1546,222 @@ async def test_observability_endpoints_require_bearer(
         ):
             resp = await client.get(path)
             assert resp.status == 401, f"{path} did not require bearer"
+
+
+# --------------------------------------------------------------------------- #
+# Issue #395 — /v1/pod-status
+# --------------------------------------------------------------------------- #
+
+
+async def test_pod_status_endpoint_returns_lease_when_active(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Active lease.json with recent heartbeat → lease dict is returned."""
+    import time as _time
+
+    # Create a fake workspace with a live lease.
+    task_id = "aabbccdd11223344"
+    workspace = tmp_path / task_id
+    workspace.mkdir()
+    now = _time.time()
+    lease_data = {
+        "pod": "claude-worker-0",
+        "pid": 42,
+        "task_id": task_id,
+        "extra_secret": "should-not-appear",
+        "started_at": now - 10,
+        "heartbeat_at": now - 2,
+    }
+    (workspace / ".lease.json").write_text(
+        __import__("json").dumps(lease_data), encoding="utf-8"
+    )
+
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setenv("DEILE_CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setattr(claude_worker_module, "_count_claude_processes", lambda: 1)
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/pod-status", headers=_AUTH_HEADERS)
+        assert resp.status == 200
+        body = await resp.json()
+    assert body["lease"] is not None
+    assert body["lease"]["task_id"] == task_id
+    assert body["lease"]["pid"] == 42
+    assert "heartbeat_at" in body["lease"]
+    assert body["claude_processes"] == 1
+    assert "disk" in body
+    assert "ts" in body
+
+
+async def test_pod_status_endpoint_returns_null_lease_when_idle(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """No lease.json in workspace → lease is null (pod is idle)."""
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setenv("DEILE_CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setattr(claude_worker_module, "_count_claude_processes", lambda: 0)
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/pod-status", headers=_AUTH_HEADERS)
+        assert resp.status == 200
+        body = await resp.json()
+    assert body["lease"] is None
+    assert body["claude_processes"] == 0
+
+
+async def test_pod_status_endpoint_returns_null_lease_when_heartbeat_stale(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Lease with expired heartbeat (> TTL) → treated as dead, returns null."""
+    import time as _time
+
+    task_id = "deadbeef00112233"
+    workspace = tmp_path / task_id
+    workspace.mkdir()
+    ttl = claude_worker_module._LEASE_TTL_S
+    stale_data = {
+        "pod": "old-pod",
+        "pid": 99,
+        "heartbeat_at": _time.time() - ttl - 60,  # well past TTL
+    }
+    (workspace / ".lease.json").write_text(
+        __import__("json").dumps(stale_data), encoding="utf-8"
+    )
+
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setenv("DEILE_CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setattr(claude_worker_module, "_count_claude_processes", lambda: 0)
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/pod-status", headers=_AUTH_HEADERS)
+        assert resp.status == 200
+        body = await resp.json()
+    assert body["lease"] is None, "stale lease should be treated as idle"
+
+
+async def test_pod_status_endpoint_redacts_lease_payload(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Only task_id, heartbeat_at, pid are exposed — no extra fields leak."""
+    import time as _time
+
+    task_id = "1122334455667788"
+    workspace = tmp_path / task_id
+    workspace.mkdir()
+    now = _time.time()
+    lease_data = {
+        "pod": "claude-worker-0",
+        "pid": 77,
+        "started_at": now - 5,
+        "heartbeat_at": now - 1,
+        "secret_prompt": "DO NOT LEAK",
+        "credentials": "also-secret",
+    }
+    (workspace / ".lease.json").write_text(
+        __import__("json").dumps(lease_data), encoding="utf-8"
+    )
+
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setenv("DEILE_CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setattr(claude_worker_module, "_count_claude_processes", lambda: 1)
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/pod-status", headers=_AUTH_HEADERS)
+        assert resp.status == 200
+        body = await resp.json()
+    lease = body["lease"]
+    assert lease is not None
+    allowed_keys = {"task_id", "heartbeat_at", "pid"}
+    assert set(lease.keys()) <= allowed_keys, (
+        f"Lease exposed extra fields: {set(lease.keys()) - allowed_keys}"
+    )
+    assert "secret_prompt" not in lease
+    assert "credentials" not in lease
+    assert "pod" not in lease
+    assert "started_at" not in lease
+
+
+async def test_pod_status_endpoint_requires_bearer(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """/v1/pod-status requires Bearer auth — no anonymous access."""
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setenv("DEILE_CLAUDE_HOME", str(tmp_path))
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/pod-status")  # no auth header
+        assert resp.status == 401
+
+
+async def test_pod_status_endpoint_returns_disk_usage_via_shutil(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """disk field is populated from shutil.disk_usage — no subprocess."""
+    import collections
+
+    DiskUsage = collections.namedtuple("DiskUsage", ["total", "used", "free"])
+    fake_du = DiskUsage(total=10 * 1024 ** 3, used=3 * 1024 ** 3, free=7 * 1024 ** 3)
+
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setenv("DEILE_CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setattr(claude_worker_module.shutil, "disk_usage", lambda path: fake_du)
+    monkeypatch.setattr(claude_worker_module, "_count_claude_processes", lambda: 0)
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/pod-status", headers=_AUTH_HEADERS)
+        assert resp.status == 200
+        body = await resp.json()
+
+    disk = body["disk"]
+    assert disk is not None
+    assert disk["used_bytes"] == 3 * 1024 ** 3
+    assert disk["total_bytes"] == 10 * 1024 ** 3
+    assert "mount" in disk
+
+
+async def test_pod_status_endpoint_counts_claude_processes_via_psutil(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """claude_processes reflects the value returned by _count_claude_processes."""
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setenv("DEILE_CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setattr(claude_worker_module, "_count_claude_processes", lambda: 3)
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/pod-status", headers=_AUTH_HEADERS)
+        assert resp.status == 200
+        body = await resp.json()
+
+    assert body["claude_processes"] == 3
+
+
+def test_anthropic_quota_capture_middleware_stores_latest_header(
+    claude_worker_module,
+):
+    """_try_capture_quota_from_output stores rate-limit token count from dispatch output."""
+    assert claude_worker_module._get_quota_snapshot() is None
+
+    claude_worker_module._try_capture_quota_from_output(
+        stdout="",
+        stderr="anthropic-ratelimit-tokens-remaining: 87654",
+    )
+
+    snap = claude_worker_module._get_quota_snapshot()
+    assert snap is not None
+    assert snap.tokens_remaining == 87654
+    assert snap.captured_at > 0
+
+    # Second call with x-ratelimit variant overwrites with newer value.
+    claude_worker_module._try_capture_quota_from_output(
+        stdout="x-ratelimit-remaining-tokens: 50000",
+        stderr="",
+    )
+    snap2 = claude_worker_module._get_quota_snapshot()
+    assert snap2.tokens_remaining == 50000
