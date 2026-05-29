@@ -2232,3 +2232,72 @@ class TestSetPipelineDispatchStage:
         assert ok is True
         argv = mock_run.call_args[0][0]
         assert "custom-ns" in argv
+
+
+# ===== ClaudeWorkerInfoProvider (issue #395) ================================
+
+
+class TestClaudeWorkerInfoProvider:
+    """ClaudeWorkerInfoProvider — bearer-auth HTTP fetch + graceful fallback."""
+
+    def test_consumes_endpoint_with_bearer(self, monkeypatch, tmp_path):
+        """Provider fetches /v1/pod-status with Bearer token and maps the response."""
+        import io
+        import json as _json
+        import urllib.request as _urllib_req
+
+        token_file = tmp_path / "bearer.token"
+        token_file.write_text("super-secret", encoding="utf-8")
+
+        fake_body = {
+            "lease": {"task_id": "abc123", "heartbeat_at": 1000.0, "pid": 42},
+            "disk": {"used_bytes": 1024, "total_bytes": 2048, "mount": "/home/claude"},
+            "claude_processes": 2,
+            "anthropic_quota": None,
+            "ts": 1700000000.0,
+        }
+
+        class _FakeResp:
+            def read(self):
+                return _json.dumps(fake_body).encode()
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        monkeypatch.setenv(pd.ClaudeWorkerInfoProvider._TOKEN_FILE_ENV, str(token_file))
+        monkeypatch.setattr(_urllib_req, "urlopen", lambda req, timeout: _FakeResp())
+
+        provider = pd.ClaudeWorkerInfoProvider(
+            endpoint="http://claude-worker:8767", enabled=True,
+        )
+        status = provider._fetch()
+
+        assert status.lease == fake_body["lease"]
+        assert status.disk == fake_body["disk"]
+        assert status.claude_processes == 2
+        assert status.ts == 1700000000.0
+
+    def test_fallback_when_pod_unreachable(self, monkeypatch, tmp_path):
+        """get() returns empty ClaudeWorkerPodStatus and sets last_error when pod is down."""
+        import urllib.error
+        import urllib.request as _urllib_req
+
+        token_file = tmp_path / "bearer.token"
+        token_file.write_text("super-secret", encoding="utf-8")
+
+        def _raise_conn_err(req, timeout):
+            raise urllib.error.URLError("Connection refused")
+
+        monkeypatch.setenv(pd.ClaudeWorkerInfoProvider._TOKEN_FILE_ENV, str(token_file))
+        monkeypatch.setattr(_urllib_req, "urlopen", _raise_conn_err)
+
+        provider = pd.ClaudeWorkerInfoProvider(
+            endpoint="http://claude-worker:8767", enabled=True,
+        )
+        result = provider.get()
+
+        assert result.lease is None
+        assert result.claude_processes == 0
+        assert provider.last_error is not None
+        assert "RuntimeError" in provider.last_error

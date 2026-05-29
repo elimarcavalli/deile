@@ -760,3 +760,59 @@ class TestPodWatchViewRenderSize:
         assert "#309" in out
         # Updated: header now shows WORK: instead of "current task:"
         assert "WORK:" in out
+
+
+# ===== PodWatchView — claude-worker header sections (issue #395) ============
+
+
+class TestPodWatchViewClaudeWorkerHeader:
+    """_header_body injects LEASE lines ONLY for pod.role == 'claude-worker'."""
+
+    def _make_pod(self, name: str, role: str) -> MagicMock:
+        pod = MagicMock()
+        pod.name = name
+        pod.role = role
+        pod.status = "Running"
+        pod.age_s = 60.0
+        pod.restarts = 0
+        pod.ready = True
+        pod.node = "node-1"
+        return pod
+
+    def _render(self, view: "panel.PodWatchView") -> str:
+        console = Console(record=True, width=200, force_terminal=False,
+                          color_system=None)
+        console.print(view._header_body())
+        return console.export_text()
+
+    def test_claude_worker_role_shows_lease_section(self):
+        """LEASE section appears in header when pod.role == 'claude-worker'."""
+        view = panel.PodWatchView(data=MagicMock())
+        view.pod_role = "claude-worker"
+        view.pod_name = "claude-worker-0"
+
+        pod = self._make_pod("claude-worker-0", "claude-worker")
+        view.data.pods.get.return_value = [pod]
+
+        mock_status = pd.ClaudeWorkerPodStatus(
+            lease=None, disk=None, claude_processes=0, anthropic_quota=None,
+        )
+        mock_provider = MagicMock()
+        mock_provider.get.return_value = mock_status
+        view.data.claude_worker_info = mock_provider
+
+        out = self._render(view)
+        assert "LEASE:" in out, "LEASE section must appear for claude-worker role"
+
+    def test_non_claude_worker_role_has_no_lease_section(self):
+        """LEASE section must NOT appear for deile-worker or other roles."""
+        view = panel.PodWatchView(data=MagicMock())
+        view.pod_role = "worker"
+        view.pod_name = "deile-worker-abc"
+
+        pod = self._make_pod("deile-worker-abc", "worker")
+        view.data.pods.get.return_value = [pod]
+        view.data.workers.get.return_value = {}
+
+        out = self._render(view)
+        assert "LEASE:" not in out, "LEASE must not appear for non-claude-worker roles"

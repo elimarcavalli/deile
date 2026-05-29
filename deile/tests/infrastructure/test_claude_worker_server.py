@@ -1696,3 +1696,72 @@ async def test_pod_status_endpoint_requires_bearer(
     async with TestClient(TestServer(app)) as client:
         resp = await client.get("/v1/pod-status")  # no auth header
         assert resp.status == 401
+
+
+async def test_pod_status_endpoint_returns_disk_usage_via_shutil(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """disk field is populated from shutil.disk_usage — no subprocess."""
+    import collections
+
+    DiskUsage = collections.namedtuple("DiskUsage", ["total", "used", "free"])
+    fake_du = DiskUsage(total=10 * 1024 ** 3, used=3 * 1024 ** 3, free=7 * 1024 ** 3)
+
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setenv("DEILE_CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setattr(claude_worker_module.shutil, "disk_usage", lambda path: fake_du)
+    monkeypatch.setattr(claude_worker_module, "_count_claude_processes", lambda: 0)
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/pod-status", headers=_AUTH_HEADERS)
+        assert resp.status == 200
+        body = await resp.json()
+
+    disk = body["disk"]
+    assert disk is not None
+    assert disk["used_bytes"] == 3 * 1024 ** 3
+    assert disk["total_bytes"] == 10 * 1024 ** 3
+    assert "mount" in disk
+
+
+async def test_pod_status_endpoint_counts_claude_processes_via_psutil(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """claude_processes reflects the value returned by _count_claude_processes."""
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setenv("DEILE_CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setattr(claude_worker_module, "_count_claude_processes", lambda: 3)
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/pod-status", headers=_AUTH_HEADERS)
+        assert resp.status == 200
+        body = await resp.json()
+
+    assert body["claude_processes"] == 3
+
+
+def test_anthropic_quota_capture_middleware_stores_latest_header(
+    claude_worker_module,
+):
+    """_try_capture_quota_from_output stores rate-limit token count from dispatch output."""
+    assert claude_worker_module._get_quota_snapshot() is None
+
+    claude_worker_module._try_capture_quota_from_output(
+        stdout="",
+        stderr="anthropic-ratelimit-tokens-remaining: 87654",
+    )
+
+    snap = claude_worker_module._get_quota_snapshot()
+    assert snap is not None
+    assert snap.tokens_remaining == 87654
+    assert snap.captured_at > 0
+
+    # Second call with x-ratelimit variant overwrites with newer value.
+    claude_worker_module._try_capture_quota_from_output(
+        stdout="x-ratelimit-remaining-tokens: 50000",
+        stderr="",
+    )
+    snap2 = claude_worker_module._get_quota_snapshot()
+    assert snap2.tokens_remaining == 50000
