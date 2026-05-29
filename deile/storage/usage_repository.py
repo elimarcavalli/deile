@@ -7,6 +7,7 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -188,6 +189,63 @@ class UsageRepository:
             for r in rows
         ]
 
+    def records_for_stage_model(
+        self,
+        stage: str,
+        model_id: str,
+        limit: int = 10,
+    ) -> List[UsageRecord]:
+        """Return the most recent *limit* records for a stage + model pair.
+
+        Stage is matched by ``session_id`` prefix ``pipeline-<stage>-``
+        (the canonical format produced by ``WorkerImplementer`` when building
+        the channel_id: ``pipeline-issue-<N>`` or ``pipeline-pr-<N>`` after
+        the stage prefix).  A looser match ``pipeline-`` + stage is used so
+        both ``pipeline-issue-`` and ``pipeline-pr-`` are captured.
+
+        Returns records ordered by descending timestamp (newest first).
+        """
+        # Match session_ids that encode the stage name.  WorkerImplementer uses
+        # "pipeline-issue-<N>" / "pipeline-pr-<N>" so we search for rows whose
+        # session_id contains the stage name AND model_id matches.
+        # The LIKE pattern is intentionally broad because the stage is not
+        # stored as a separate column — this is a best-effort heuristic.
+        stage_pattern = f"%{stage}%"
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM usage_records
+                WHERE (session_id LIKE ? OR session_id LIKE ?)
+                  AND model_id = ?
+                ORDER BY timestamp DESC
+                LIMIT ?
+                """,
+                (
+                    f"pipeline-{stage}-%",
+                    stage_pattern,
+                    model_id,
+                    limit,
+                ),
+            ).fetchall()
+        return [
+            UsageRecord(
+                provider_id=r["provider_id"],
+                model_id=r["model_id"],
+                tier=r["tier"],
+                session_id=r["session_id"],
+                prompt_tokens=r["prompt_tokens"],
+                completion_tokens=r["completion_tokens"],
+                cached_tokens=r["cached_tokens"],
+                total_tokens=r["total_tokens"],
+                cost_usd=r["cost_usd"],
+                latency_ms=r["latency_ms"],
+                success=bool(r["success"]),
+                error_type=r["error_type"],
+                timestamp=r["timestamp"],
+            )
+            for r in rows
+        ]
+
 
 # ---------------------------------------------------------------------------
 # BudgetGuard
@@ -333,6 +391,103 @@ class BudgetGuard:
             "per_provider_monthly_usd": dict(self._monthly),
             "alert_threshold_pct": int(self._alert_threshold * 100),
         }
+
+
+# ---------------------------------------------------------------------------
+# Stage-level cost cap (issue #392)
+# ---------------------------------------------------------------------------
+
+
+class StageCostCapExceeded(Exception):
+    """Raised when the estimated cost of a stage run exceeds the configured cap.
+
+    Attributes:
+        stage: canonical stage name (classify/refine/implement/pr_review/follow_ups).
+        estimated_usd: estimated cost in USD as Decimal.
+        cap_usd: configured cap in USD as Decimal.
+    """
+
+    def __init__(self, stage: str, estimated_usd: Decimal, cap_usd: Decimal) -> None:
+        super().__init__(
+            f"stage '{stage}' estimated cost ${estimated_usd} exceeds cap ${cap_usd}"
+        )
+        self.stage = stage
+        self.estimated_usd = estimated_usd
+        self.cap_usd = cap_usd
+
+
+class StageBudgetGuard:
+    """Per-stage pre-dispatch cost guard (issue #392).
+
+    Checks whether the estimated cost of a single stage run would exceed the
+    per-stage cost cap resolved by ``resolve_stage_cost_cap_usd``. When the
+    cap is exceeded, raises ``StageCostCapExceeded`` so the caller can
+    escalate the issue to ``~workflow:bloqueada`` before posting the dispatch.
+
+    ``None`` cap means "no enforcement" — the check passes silently.
+    ``Decimal(0)`` estimate (unknown pricing) also passes silently.
+    """
+
+    def __init__(self, estimator: "StageCostEstimator") -> None:  # noqa: F821
+        self._estimator = estimator
+
+    def check_stage_run(
+        self,
+        stage: str,
+        model_slug: str,
+        payload_size_tokens: int = 0,
+    ) -> None:
+        """Raise StageCostCapExceeded if estimated cost > resolved cap.
+
+        Args:
+            stage: canonical stage name.
+            model_slug: provider:model slug for the dispatch.
+            payload_size_tokens: token count hint for the payload (0 = use history).
+
+        Raises:
+            StageCostCapExceeded: when estimated cost exceeds the cap.
+        """
+        # Lazy import to avoid import cycle and to allow resolve_stage_cost_cap_usd
+        # to be imported after the module is fully initialized.
+        from deile.orchestration.pipeline.dispatch_resolver import (  # noqa: PLC0415
+            resolve_stage_cost_cap_usd,
+        )
+
+        cap = resolve_stage_cost_cap_usd(stage)
+        if cap is None:
+            return  # No cap configured — pass through.
+
+        estimated = self._estimator.estimate_run_cost(
+            stage=stage,
+            model_slug=model_slug,
+            payload_size_tokens=payload_size_tokens,
+        )
+
+        if estimated == Decimal(0):
+            # Cannot estimate (pricing unknown) — pass through silently.
+            logger.debug(
+                "StageBudgetGuard: estimate=0 for stage=%s model=%s "
+                "(pricing unknown) — skipping cap check",
+                stage, model_slug,
+            )
+            return
+
+        if estimated > cap:
+            logger.warning(
+                "StageBudgetGuard: stage=%s model=%s estimated=$%s > cap=$%s "
+                "— raising StageCostCapExceeded",
+                stage, model_slug, estimated, cap,
+            )
+            raise StageCostCapExceeded(
+                stage=stage,
+                estimated_usd=estimated,
+                cap_usd=cap,
+            )
+
+        logger.debug(
+            "StageBudgetGuard: stage=%s model=%s estimated=$%s <= cap=$%s — OK",
+            stage, model_slug, estimated, cap,
+        )
 
 
 # ---------------------------------------------------------------------------

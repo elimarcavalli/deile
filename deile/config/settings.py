@@ -16,6 +16,7 @@ import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -220,6 +221,34 @@ def _to_optional_dispatcher(value: Any) -> Optional[str]:
     return stripped
 
 
+def _to_optional_positive_decimal(value: Any) -> Optional[Decimal]:
+    """Strict converter for per-stage cost cap entries (issue #392).
+
+    ``None`` and empty/whitespace string collapse to ``None`` (no cap).
+    Non-strings, strings that don't parse as decimal, or non-positive values
+    raise — ``apply_overrides`` catches and keeps the previous (default) value.
+    Strict by design: a malformed cap would silently allow unlimited spend.
+    """
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        if value <= 0:
+            raise ValueError(f"cost cap must be positive, got {value}")
+        return value
+    if not isinstance(value, (str, int, float)):
+        raise TypeError(f"expected str/numeric, got {type(value).__name__}")
+    stripped = str(value).strip()
+    if not stripped:
+        return None
+    try:
+        d = Decimal(stripped)
+    except InvalidOperation:
+        raise ValueError(f"invalid decimal {stripped!r} for cost cap")
+    if d <= 0:
+        raise ValueError(f"cost cap must be positive, got {d}")
+    return d
+
+
 # Map of nested JSON paths in ``.deile/settings.json`` to ``Settings`` flat
 # fields, with a converter for each. Unknown keys are silently ignored —
 # that's how future-compatible forward-compat works.
@@ -294,6 +323,12 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     # Global defaults for timeout and retries (issue #391).
     "pipeline.default_timeout_s_deile":  ("pipeline_deile_timeout",       _to_optional_pos_int),
     "pipeline.default_max_retries":      ("pipeline_default_max_retries",  _to_optional_nonneg_int),
+    # Per-stage cost cap (issue #392) — per-run USD ceiling; None = no cap.
+    "pipeline.cost_caps_usd.classify":   ("pipeline_cost_cap_usd_classify",   _to_optional_positive_decimal),
+    "pipeline.cost_caps_usd.refine":     ("pipeline_cost_cap_usd_refine",     _to_optional_positive_decimal),
+    "pipeline.cost_caps_usd.implement":  ("pipeline_cost_cap_usd_implement",  _to_optional_positive_decimal),
+    "pipeline.cost_caps_usd.pr_review":  ("pipeline_cost_cap_usd_pr_review",  _to_optional_positive_decimal),
+    "pipeline.cost_caps_usd.follow_ups": ("pipeline_cost_cap_usd_follow_ups", _to_optional_positive_decimal),
     # Sub-DEILEs paralelos (issue #257)
     "subagent.runner": ("subagent_runner", lambda v: str(v).strip().lower()),
     "subagent.max_parallel": ("subagent_max_parallel", _to_pos_int),
@@ -540,6 +575,15 @@ class Settings:
     # from the formerly hard-coded value of 3. None collapses to built-in 3.
     pipeline_default_max_retries: Optional[int] = None
 
+    # Per-stage cost cap (issue #392) — per-run USD ceiling.
+    # None = no cap (current behavior). Positive Decimal = hard stop.
+    # Persisted under ``pipeline.cost_caps_usd.<stage>`` in settings.json.
+    # Cluster path: DEILE_PIPELINE_COST_CAP_USD_<STAGE> env in deile-pipeline.
+    pipeline_cost_cap_usd_classify: Optional[Decimal] = None
+    pipeline_cost_cap_usd_refine: Optional[Decimal] = None
+    pipeline_cost_cap_usd_implement: Optional[Decimal] = None
+    pipeline_cost_cap_usd_pr_review: Optional[Decimal] = None
+    pipeline_cost_cap_usd_follow_ups: Optional[Decimal] = None
 
     # Sub-DEILEs paralelos em sessão CLI (issue #257)
     # `subagent_runner`        — "local" (default; in-process via asyncio.gather de

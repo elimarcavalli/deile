@@ -76,6 +76,10 @@ from _panel_data import set_preferred_model as pd_set_preferred_model
 from _panel_data import set_stage_model as pd_set_stage_model
 from _panel_data import set_stage_timeout as pd_set_stage_timeout
 from _panel_data import set_stage_retries as pd_set_stage_retries
+from _panel_data import \
+    set_stage_cost_cap_usd as pd_set_stage_cost_cap_usd
+from _panel_data import \
+    reset_stage_cost_cap_usd as pd_reset_stage_cost_cap_usd
 from rich import box
 from rich.align import Align
 from rich.console import Console, Group, RenderableType
@@ -3780,7 +3784,7 @@ class DispatchMatrixView(View):
         "[enter] editar   [r] reset   "
         "[L] switch claude login   [I] install   [U] uninstall   [q] back   "
         "[s]caling row: enter digita réplicas (0-10)   "
-        "colunas: 0=Worker 1=Model 2=Timeout 3=Retries"
+        "colunas: 0=Worker 1=Model 2=Timeout 3=Retries 4=Cost cap (USD/run)"
     )
 
     # Índice de row constante para a linha de scaling (após Global default).
@@ -3821,7 +3825,7 @@ class DispatchMatrixView(View):
         # cursor_row ∈ [0, N] — N inclusive corresponde à linha "Global
         # default" no fim da matriz.
         self.cursor_row: int = 0
-        # cursor_col ∈ {0, 1, 2, 3} — 0=Worker, 1=Model, 2=Timeout(s), 3=Retries.
+        # cursor_col ∈ {0, 1, 2, 3, 4} — 0=Worker, 1=Model, 2=Timeout(s), 3=Retries, 4=Cost cap (USD/run).
         # As colunas Stage e Source não são editáveis.
         self.cursor_col: int = 0
         # --- Picker modal state (Task 19). ``None`` = browsing.
@@ -3895,7 +3899,8 @@ class DispatchMatrixView(View):
         if self.data is None:
             from _panel_data import StageDispatchEntry  # noqa: PLC0415
             return [
-                StageDispatchEntry(s, "deile-worker", None, "default")
+                StageDispatchEntry(s, "deile-worker", None, "default",
+                                   cost_cap_usd=None)
                 for s in self._stages()
             ]
         return self.data.stage_dispatch.get_all_stages()
@@ -4018,6 +4023,7 @@ class DispatchMatrixView(View):
         tbl.add_column("Model")
         tbl.add_column("Timeout (s)")
         tbl.add_column("Max retries")
+        tbl.add_column("Cost cap (USD/run)")
         tbl.add_column("Source", style="dim")
 
         for i, entry in enumerate(entries):
@@ -4025,6 +4031,7 @@ class DispatchMatrixView(View):
             highlight_m = (i == self.cursor_row and self.cursor_col == 1)
             highlight_t = (i == self.cursor_row and self.cursor_col == 2)
             highlight_r = (i == self.cursor_row and self.cursor_col == 3)
+            highlight_c = (i == self.cursor_row and self.cursor_col == 4)
 
             worker_cell = (f"[reverse]{entry.worker}[/reverse]"
                            if highlight_w else entry.worker)
@@ -4037,11 +4044,15 @@ class DispatchMatrixView(View):
             retries_txt = str(entry.max_retries) if entry.max_retries is not None else "(default)"
             retries_cell = (f"[reverse]{retries_txt}[/reverse]"
                             if highlight_r else retries_txt)
+            cap_raw = getattr(entry, "cost_cap_usd", None)
+            cap_txt = (f"${cap_raw}" if cap_raw else "(no cap)")
+            cost_cap_cell = (f"[reverse]{cap_txt}[/reverse]"
+                             if highlight_c else cap_txt)
             tbl.add_row(entry.stage, worker_cell, model_cell,
-                        timeout_cell, retries_cell, entry.source)
+                        timeout_cell, retries_cell, cost_cap_cell, entry.source)
 
         # Separador visual entre stages e a linha "Global default".
-        tbl.add_row("─" * 12, "─" * 14, "─" * 28, "─" * 10, "─" * 11, "─" * 8,
+        tbl.add_row("─" * 12, "─" * 14, "─" * 28, "─" * 10, "─" * 11, "─" * 12, "─" * 8,
                     style="dim")
 
         # Linha "Global default" — ``cursor_row == len(entries)`` aponta
@@ -4068,7 +4079,7 @@ class DispatchMatrixView(View):
         if highlight_gr:
             global_r_txt = f"[reverse]{global_r_txt}[/reverse]"
         tbl.add_row("Global default", global_w_txt, global_m_txt,
-                    global_t_txt, global_r_txt, "env")
+                    global_t_txt, global_r_txt, "—", "env")
 
         # Linha "Worker Scaling" — edita réplicas de deile-worker / claude-worker
         # via prompt numérico [enter] (issue #309 fase 3 Task 4).
@@ -4083,7 +4094,7 @@ class DispatchMatrixView(View):
         if highlight_sm:
             scale_m_txt = f"[reverse]{scale_m_txt}[/reverse]"
         tbl.add_row("Worker Scaling", scale_w_txt, scale_m_txt,
-                    "", "", "kubectl")
+                    "", "", "—", "kubectl")
 
         # --- Compose: header + matrix + (picker?) + (status?) + hotkeys --
         parts: List[RenderableType] = [
@@ -4117,6 +4128,8 @@ class DispatchMatrixView(View):
             title = f"TIMEOUT (s) PARA STAGE '{stage}' (enter vazio = clear)"
         elif kind == "retries":
             title = f"MAX RETRIES PARA STAGE '{stage}' (enter vazio = clear)"
+        elif kind == "cost_cap_usd":
+            title = f"COST CAP (USD/RUN) PARA STAGE '{stage}'"
         elif kind == "global_worker":
             title = "ESCOLHA DISPATCH MODE GLOBAL (DEILE_PIPELINE_DISPATCH_MODE)"
         elif kind == "global_model":
@@ -4253,7 +4266,8 @@ class DispatchMatrixView(View):
             self.cursor_col = max(0, self.cursor_col - 1)
             return ActionResult.refresh()
         if key in ("RIGHT", "l"):
-            self.cursor_col = min(3, self.cursor_col + 1)
+            # 5 editable columns: 0=Worker, 1=Model, 2=Timeout, 3=Retries, 4=Cost cap (issues #391/#392)
+            self.cursor_col = min(4, self.cursor_col + 1)
             return ActionResult.refresh()
 
         # --- [enter]: abre picker contextual ------------------------------
@@ -4291,8 +4305,11 @@ class DispatchMatrixView(View):
                 return self._open_model_picker(entry)
             elif self.cursor_col == 2:
                 return self._open_timeout_prompt(entry)
-            else:
+            elif self.cursor_col == 3:
                 return self._open_retries_prompt(entry)
+            else:
+                # col 4 = Cost cap (issue #392)
+                return self._open_cost_cap_picker(entry)
 
         # --- [r] reset da célula corrente -------------------------------
         if key == "r":
@@ -4409,6 +4426,24 @@ class DispatchMatrixView(View):
         self.picker_cursor = 0
         return ActionResult.refresh()
 
+    def _open_cost_cap_picker(self, entry) -> ActionResult:
+        """Abre picker de cost cap (USD/run) para um stage (col 4, issue #392).
+
+        Oferece presets comuns + "(no cap)" para limpar o override.
+        O operador pode também digitar um valor decimal positivo via entrada
+        livre (``cost_cap_usd`` kind aceita qualquer decimal positivo).
+        """
+        current = getattr(entry, "cost_cap_usd", None)
+        # Common preset values + current (if set and not a preset) + "(no cap)".
+        presets = ["(no cap)", "1.00", "2.00", "5.00", "10.00", "20.00", "50.00"]
+        if current and current not in presets:
+            opts = ["(no cap)", current, *presets[1:]]
+        else:
+            opts = presets
+        self.mode = ("cost_cap_usd", entry.stage, opts)
+        self.picker_cursor = 0
+        return ActionResult.refresh()
+
     # --- [r] reset cell --------------------------------------------------
 
     def _reset_current_cell(self) -> ActionResult:
@@ -4445,8 +4480,11 @@ class DispatchMatrixView(View):
                 ok, msg = pd_clear_stage_model(stage)
             elif self.cursor_col == 2:
                 ok, msg = pd_set_stage_timeout(stage, None, namespace=ns)
-            else:
+            elif self.cursor_col == 3:
                 ok, msg = pd_set_stage_retries(stage, None, namespace=ns)
+            else:
+                # col 4 = Cost cap reset (issue #392)
+                ok, msg = pd_reset_stage_cost_cap_usd(stage, namespace=ns)
         else:  # Global default row
             if self.cursor_col == 0:
                 ok, msg = pd_clear_pipeline_dispatch_mode(namespace=ns)
@@ -5201,6 +5239,17 @@ class DispatchMatrixView(View):
                 ok, msg = pd_set_pipeline_dispatch_mode(
                     mode_for_global, namespace=ns,
                 )
+            self.last_ok = ok
+            self.last_msg = msg
+            return
+
+        # --- per-stage cost cap (issue #392) ----------------------------
+        if kind == "cost_cap_usd":
+            if selected == "(no cap)":
+                ok, msg = pd_reset_stage_cost_cap_usd(stage, namespace=ns)
+            else:
+                ok, msg = pd_set_stage_cost_cap_usd(stage, selected,
+                                                    namespace=ns)
             self.last_ok = ok
             self.last_msg = msg
             return
