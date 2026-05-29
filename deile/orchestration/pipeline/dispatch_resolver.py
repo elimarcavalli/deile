@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import os
+from decimal import Decimal, InvalidOperation
 from typing import FrozenSet, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -285,6 +286,91 @@ def resolve_stage_max_retries(stage: str) -> int:
 
     # 4. Built-in
     return BUILT_IN_MAX_RETRIES
+
+
+def resolve_stage_cost_cap_usd(stage: str) -> Optional[Decimal]:
+    """Return per-stage cost cap in USD, or None if no cap configured.
+
+    Fallback chain (5 levels — mirrors resolve_stage_dispatcher):
+
+    1. ``DEILE_PIPELINE_COST_CAP_USD_<STAGE>`` env var — decimal string, e.g.
+       ``"5.00"``.  Invalid value → ValueError fail-fast.
+    2. ``pipeline.cost_caps_usd.<stage>`` in settings.json — graceful warn +
+       skip on invalid.
+    3. ``DEILE_PIPELINE_COST_CAP_USD`` env var (global fallback for all stages).
+       Invalid → ValueError fail-fast.
+    4. ``pipeline.cost_cap_usd`` in settings.json (global).  Graceful warn.
+    5. ``None`` — no cap (current behavior, unlimited).
+
+    Args:
+        stage: canonical stage name.
+
+    Returns:
+        Positive Decimal in USD, or None when no cap is configured.
+
+    Raises:
+        ValueError: stage is not in PIPELINE_STAGES (programming bug).
+        ValueError: an env var contains a non-positive or non-parseable value.
+    """
+    if stage not in PIPELINE_STAGES:
+        raise ValueError(
+            f"unknown stage {stage!r}; expected one of {PIPELINE_STAGES}"
+        )
+
+    def _parse_cap(raw: Optional[str], context: str, *, strict: bool) -> Optional[Decimal]:
+        if not raw or not raw.strip():
+            return None
+        stripped = raw.strip()
+        try:
+            d = Decimal(stripped)
+        except InvalidOperation as exc:
+            msg = f"invalid decimal {stripped!r} for cost cap ({context})"
+            if strict:
+                raise ValueError(msg) from exc
+            logger.warning("dispatch_resolver: %s — ignoring", msg)
+            return None
+        if d <= 0:
+            msg = f"cost cap must be positive, got {d} ({context})"
+            if strict:
+                raise ValueError(msg)
+            logger.warning("dispatch_resolver: %s — ignoring", msg)
+            return None
+        return d
+
+    # 1. Per-stage env var (fail-fast on invalid).
+    stage_env = os.environ.get(f"DEILE_PIPELINE_COST_CAP_USD_{stage.upper()}")
+    cap = _parse_cap(stage_env, f"DEILE_PIPELINE_COST_CAP_USD_{stage.upper()}", strict=True)
+    if cap is not None:
+        return cap
+
+    # 2. Settings per-stage (graceful).
+    from deile.config.settings import get_settings  # noqa: PLC0415 — lazy import
+    settings = get_settings()
+    settings_val = getattr(settings, f"pipeline_cost_cap_usd_{stage}", None)
+    if settings_val is not None:
+        if isinstance(settings_val, Decimal) and settings_val > 0:
+            return settings_val
+        # Non-Decimal or non-positive — log and fall through.
+        logger.warning(
+            "dispatch_resolver: invalid cost cap %r in settings.json "
+            "(pipeline.cost_caps_usd.%s) — ignoring",
+            settings_val, stage,
+        )
+
+    # 3. Global env var fallback (fail-fast on invalid).
+    global_env = os.environ.get("DEILE_PIPELINE_COST_CAP_USD")
+    cap = _parse_cap(global_env, "DEILE_PIPELINE_COST_CAP_USD", strict=True)
+    if cap is not None:
+        return cap
+
+    # 4. Global settings (graceful).
+    global_settings = getattr(settings, "pipeline_cost_cap_usd", None)
+    if global_settings is not None:
+        if isinstance(global_settings, Decimal) and global_settings > 0:
+            return global_settings
+
+    # 5. No cap.
+    return None
 
 
 def get_endpoint_for(dispatcher: str) -> str:

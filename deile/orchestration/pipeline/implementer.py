@@ -749,6 +749,59 @@ class WorkerImplementer(PipelineImplementer):
         # we attach ``resume`` after building to keep that contract untouched.
         if resume_block:
             payload["resume"] = resume_block
+        # Issue #392: per-stage cost cap check before POST.
+        # Estimate run cost from UsageRepository history + model pricing;
+        # raise StageCostCapExceeded when over the cap. None cap = pass-through.
+        if stage:
+            try:
+                from deile.orchestration.pipeline.cost_estimator import (  # noqa: PLC0415
+                    StageCostEstimator,
+                )
+                from deile.storage.usage_repository import (  # noqa: PLC0415
+                    StageBudgetGuard, StageCostCapExceeded,
+                    get_usage_repository,
+                )
+                _estimator = StageCostEstimator(
+                    usage_repo=get_usage_repository(),
+                )
+                _guard = StageBudgetGuard(_estimator)
+                # Estimate payload tokens from the brief length as a rough proxy
+                # (1 token ≈ 4 chars is a conservative heuristic).
+                _payload_tokens = max(0, len(brief) // 4)
+                _model_for_guard = preferred_model or ""
+                _guard.check_stage_run(
+                    stage=stage,
+                    model_slug=_model_for_guard,
+                    payload_size_tokens=_payload_tokens,
+                )
+            except StageCostCapExceeded as _exc:
+                # Escalate: block the dispatch and return a blocked WorkOutcome.
+                # The stage handler will see ok=False + motivo_bloqueio prefix
+                # and move the issue to ~workflow:bloqueada.
+                logger.warning(
+                    "cost-cap-exceeded: stage=%s model=%s "
+                    "estimated=$%s > cap=$%s — blocking dispatch",
+                    _exc.stage, preferred_model,
+                    _exc.estimated_usd, _exc.cap_usd,
+                )
+                return WorkOutcome(
+                    ok=False,
+                    text="",
+                    error=(
+                        f"cost-cap-exceeded: estimated USD {_exc.estimated_usd} "
+                        f"> cap USD {_exc.cap_usd} for stage {_exc.stage}"
+                    ),
+                    motivo_bloqueio=(
+                        f"cost-cap-exceeded: estimated USD {_exc.estimated_usd} "
+                        f"> cap USD {_exc.cap_usd}"
+                    ),
+                )
+            except Exception as _cap_exc:  # noqa: BLE001 — guard never crashes dispatch
+                logger.debug(
+                    "cost cap check for stage=%s failed (non-fatal): %s",
+                    stage, _cap_exc,
+                )
+
         # Issue #373: ``nowait`` dispatches the task fire-and-forget — the
         # worker returns 202 + task_id immediately and processes the task
         # in the background. The pipeline does NOT block on the result;

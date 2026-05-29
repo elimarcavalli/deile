@@ -3002,6 +3002,121 @@ def set_stage_retries(
     return True, f"{env_var}={max_retries} ({msg})"
 
 
+# ===== Per-stage cost cap — issue #392 ======================================
+#
+# ``set_stage_cost_cap_usd`` / ``reset_stage_cost_cap_usd`` espelham
+# :func:`set_pipeline_dispatch_stage`: escrevem / removem a env var
+# ``DEILE_PIPELINE_COST_CAP_USD_<STAGE>`` no Deployment ``deile-pipeline``
+# via ``kubectl set env``.  O resolver (:func:`resolve_stage_cost_cap_usd`
+# em ``dispatch_resolver.py``) usa a env var como nível 1 da fallback chain.
+#
+# Deployment alvo: ``deile-pipeline`` (mesmo que as envs de dispatch e cost
+# cap são lidas pelo pipeline, não pelo worker).
+
+_COST_CAP_DEPLOYMENT = "deile-pipeline"
+
+# Regex para valor decimal positivo de USD cost cap. Aceita "5", "5.00",
+# ".50" — rejeita negativo, vazio, letras.
+_COST_CAP_RE = re.compile(r"^\d*\.?\d+$")
+
+
+def set_stage_cost_cap_usd(
+    stage: str, usd: str, *, namespace: str = NS, timeout: float = 15.0,
+) -> tuple:
+    """Pin ``DEILE_PIPELINE_COST_CAP_USD_<STAGE>=<usd>`` em ``deile-pipeline``.
+
+    Args:
+        stage: canonical stage name (classify/refine/implement/pr_review/follow_ups).
+        usd: positive decimal string, e.g. ``"5.00"``.
+        namespace: K8s namespace.
+        timeout: kubectl timeout.
+
+    Returns:
+        ``(ok: bool, msg: str)``.
+    """
+    try:
+        from deile.orchestration.pipeline.dispatch_resolver import (  # noqa: PLC0415
+            PIPELINE_STAGES)
+    except ImportError as exc:
+        return False, f"dispatch_resolver indisponível: {exc}"
+
+    if stage not in PIPELINE_STAGES:
+        allowed = ", ".join(PIPELINE_STAGES)
+        return False, f"stage inválido {stage!r} — esperado um de: {allowed}"
+
+    if not isinstance(usd, str) or not _COST_CAP_RE.match(usd.strip()):
+        return False, (
+            f"valor inválido {usd!r} — esperado decimal positivo (ex: '5.00')"
+        )
+    usd = usd.strip()
+
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return False, "kubectl não encontrado"
+
+    env_var = f"DEILE_PIPELINE_COST_CAP_USD_{stage.upper()}"
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", namespace, "set", "env",
+             f"deploy/{_COST_CAP_DEPLOYMENT}", f"{env_var}={usd}"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"falha ao executar kubectl: {exc}"
+
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+        return False, err
+
+    msg = (proc.stdout or "rollout disparado").strip()
+    return True, f"{env_var}=${usd} ({msg})"
+
+
+def reset_stage_cost_cap_usd(
+    stage: str, *, namespace: str = NS, timeout: float = 15.0,
+) -> tuple:
+    """Remove ``DEILE_PIPELINE_COST_CAP_USD_<STAGE>`` de ``deile-pipeline``.
+
+    Args:
+        stage: canonical stage name.
+        namespace: K8s namespace.
+        timeout: kubectl timeout.
+
+    Returns:
+        ``(ok: bool, msg: str)``.
+    """
+    try:
+        from deile.orchestration.pipeline.dispatch_resolver import (  # noqa: PLC0415
+            PIPELINE_STAGES)
+    except ImportError as exc:
+        return False, f"dispatch_resolver indisponível: {exc}"
+
+    if stage not in PIPELINE_STAGES:
+        allowed = ", ".join(PIPELINE_STAGES)
+        return False, f"stage inválido {stage!r} — esperado um de: {allowed}"
+
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return False, "kubectl não encontrado"
+
+    env_var = f"DEILE_PIPELINE_COST_CAP_USD_{stage.upper()}"
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", namespace, "set", "env",
+             f"deploy/{_COST_CAP_DEPLOYMENT}", f"{env_var}-"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"falha ao executar kubectl: {exc}"
+
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+        return False, err
+
+    msg = (proc.stdout or "rollout disparado").strip()
+    return True, f"{env_var} unset ({msg})"
+
+
 # ===== Stage dispatch (worker + model) consolidado — issue #309 fase 2 ======
 #
 # ``StageDispatchProvider`` unifica 3 leituras separadas em uma única view:
@@ -3045,6 +3160,9 @@ class StageDispatchEntry:
       ``None`` quando nenhum override per-stage está setado (cai no global).
     - ``max_retries`` — override de max retries para este stage, ou
       ``None`` quando nenhum override per-stage está setado (cai no global).
+    - ``cost_cap_usd`` — per-run USD ceiling from
+      ``DEILE_PIPELINE_COST_CAP_USD_<STAGE>`` env, or ``None`` if not set
+      (issue #392).
     """
 
     stage: str
@@ -3053,6 +3171,7 @@ class StageDispatchEntry:
     source: str
     timeout_s: Optional[int] = None
     max_retries: Optional[int] = None
+    cost_cap_usd: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -3167,7 +3286,8 @@ class StageDispatchProvider(_KubectlProviderMixin):
         # --local-only → cai no fallback vazio do Cache sem chamar kubectl.
         if not self._enabled:
             return [
-                StageDispatchEntry(s, _DEFAULT_WORKER, None, "default")
+                StageDispatchEntry(s, _DEFAULT_WORKER, None, "default",
+                                   cost_cap_usd=None)
                 for s in PIPELINE_STAGES
             ]
 
@@ -3192,7 +3312,8 @@ class StageDispatchProvider(_KubectlProviderMixin):
             # Pipeline absent → tudo default. Não levanta para deixar o
             # painel continuar a renderizar (cluster pode estar mid-deploy).
             return [
-                StageDispatchEntry(s, _DEFAULT_WORKER, None, "default")
+                StageDispatchEntry(s, _DEFAULT_WORKER, None, "default",
+                                   cost_cap_usd=None)
                 for s in PIPELINE_STAGES
             ]
         pipeline_env = StageModelsProvider._extract_env_map(pipeline_data)
@@ -3257,9 +3378,15 @@ class StageDispatchProvider(_KubectlProviderMixin):
                         max_retries = v
                 except (ValueError, TypeError):
                     pass
+            # Cost cap chain: per-stage env from pipeline Deployment (issue #392).
+            cost_cap_raw = pipeline_env.get(
+                f"DEILE_PIPELINE_COST_CAP_USD_{stage.upper()}"
+            )
+            cost_cap_usd = (cost_cap_raw or "").strip() or None
             result.append(StageDispatchEntry(
                 stage, worker, model, source,
                 timeout_s=timeout_s, max_retries=max_retries,
+                cost_cap_usd=cost_cap_usd,
             ))
         return result
 
