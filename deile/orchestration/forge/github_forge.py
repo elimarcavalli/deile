@@ -943,13 +943,31 @@ class GitHubForge(ForgeClient):
         result: List[CommentRef] = []
         for item in data:
             try:
+                html_url = str(item.get("html_url", ""))
+                # Decisão #46: detectar PR comments retornados pelo endpoint
+                # ``/issues/comments`` — PRs SÃO issues no nível de API, então
+                # comments regulares em PR vêm aqui com ``kind="issue"`` mas
+                # com ``html_url`` apontando para ``/pull/N``. Sem este flag,
+                # o router cairia no brief legacy de issue-mention quando
+                # deveria usar ``pr_unified``.
+                #
+                # Para o endpoint ``pulls/comments`` (kind="pr_review"),
+                # ``is_pr_comment`` é redundante mas mantemos True para
+                # consistência: qualquer comment em PR pode ser identificado
+                # apenas via este flag, sem inspecionar ``kind``.
+                is_pr_comment = (
+                    kind == "pr_review"
+                    or "/pull/" in html_url
+                    or "/pulls/" in html_url
+                )
                 result.append(CommentRef(
                     comment_id=int(item["id"]),
                     body=str(item.get("body") or ""),
-                    html_url=str(item.get("html_url", "")),
+                    html_url=html_url,
                     issue_url=str(item.get(url_field, "")),
                     author=str((item.get("user") or {}).get("login", "")),
                     kind=kind,
+                    is_pr_comment=is_pr_comment,
                 ))
             except (KeyError, TypeError, ValueError) as exc:
                 logger.warning("skipping malformed %s comment payload: %s", kind, exc)

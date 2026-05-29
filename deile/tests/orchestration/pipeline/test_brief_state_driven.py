@@ -29,14 +29,36 @@ class TestBriefShortCircuitsWhenHeadCovered:
         assert "sem novidade" in out
 
 
-class TestBriefDoesNotPushWhenPrAuthorIsHuman:
-    """O ramo "autor é HUMANO" do PASSO 1 protege contra DEILE dar push em
-    PR alheia. Mesmo se o trigger acordou ele, o brief o trava."""
+class TestBriefAlwaysExecutesRequest:
+    """Decisão #46: o brief NÃO segura o trabalho por autoria humana. Ele
+    instrui o worker a executar o pedido sempre, com duas trilhas: push na
+    própria branch quando a PR está open, ou nova branch derivada + nova PR
+    quando a PR está merged/closed. Garante que pedidos legítimos do humano
+    nunca caem no chão."""
 
-    def test_brief_states_human_author_no_push(self):
+    def test_brief_executes_request_independently_of_author(self):
         out = _render()
-        assert "autor é HUMANO" in out
-        assert "NUNCA dou push" in out
+        assert "execute o pedido SEMPRE" in out
+
+    def test_brief_pushes_when_pr_is_open(self):
+        out = _render()
+        assert "está OPEN" in out
+        assert "push direto na própria branch" in out
+
+    def test_brief_opens_followup_branch_when_pr_is_merged(self):
+        out = _render()
+        assert "MERGED" in out
+        assert "branch nova derivada" in out
+        assert "followup" in out
+        assert "NOVA" in out and "mencionando a anterior" in out
+
+    def test_brief_does_not_contain_old_human_author_clause(self):
+        """Regressão: a cláusula "autor é HUMANO → NUNCA dou push" foi
+        removida na Decisão #46. Sua reintrodução acidental faria DEILE
+        voltar a ignorar pedidos legítimos."""
+        out = _render()
+        assert "NUNCA dou push" not in out
+        assert "autor é HUMANO" not in out
 
 
 class TestBriefExecutesFullWorkListWhenAuthorIsSelf:

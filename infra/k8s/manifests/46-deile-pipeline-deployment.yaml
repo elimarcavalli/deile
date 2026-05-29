@@ -31,7 +31,16 @@ spec:
         app: deile-pipeline
         role: deile
     spec:
-      automountServiceAccountToken: false
+      # Decisão #46 — auto-renew do OAuth do claude-worker direto do
+      # pipeline pod. Sem isso, o pipeline reportava ``WORKER_AUTH_EXPIRED``
+      # e ficava preso até o humano rodar ``deploy.py k8s claude-renew``.
+      # Reusa a SA ``claude-creds-renewer`` (manifest 51) que já tem RBAC
+      # mínimo: pods/exec no claude-worker + get/patch do Secret
+      # ``claude-credentials``. Sem isso, o subprocess ``kubectl exec``
+      # falha com 403 (forbidden) e o refresh degrada para o caminho
+      # determinístico de bloqueio.
+      serviceAccountName: claude-creds-renewer
+      automountServiceAccountToken: true
       enableServiceLinks: false
       securityContext:
         runAsNonRoot: true

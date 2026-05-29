@@ -783,6 +783,51 @@ class WorkerImplementer(PipelineImplementer):
         # instructions. Guarantees the payload never hard-fails on size.
         if len(brief) > 7950:
             brief = brief[:7950] + "\n…(brief truncado por tamanho)"
+        # Decisão #46 — defesa contra HTTP 413 (Request Entity Too Large):
+        # mesmo com o cap do brief acima, ``resume_block`` é serializado JSON
+        # separadamente e pode crescer (ex: ``pr_url_hint`` longo, futuros
+        # campos). Limitamos cada campo string a 50 KiB e o JSON serializado
+        # total a 100 KiB. Acima disso, truncamos com sentinela explícita
+        # (o worker lê ``.deile-progress.md`` no PASSO 0 para o contexto
+        # completo). Sem isso o pipeline rejeita silenciosamente um payload
+        # válido só porque crescesse além do ``client_max_size`` (512 KiB)
+        # do worker.
+        _RESUME_FIELD_CAP = 50 * 1024  # 50 KiB por campo string
+        _RESUME_BLOCK_CAP = 100 * 1024  # 100 KiB JSON total
+        if isinstance(resume_block, dict):
+            truncated = False
+            for _k, _v in list(resume_block.items()):
+                if isinstance(_v, str) and len(_v) > _RESUME_FIELD_CAP:
+                    resume_block[_k] = (
+                        _v[:_RESUME_FIELD_CAP]
+                        + " … [TRUNCATED — read .deile-progress.md for full]"
+                    )
+                    truncated = True
+            try:
+                _serialized = json.dumps(resume_block)
+            except (TypeError, ValueError):
+                _serialized = ""
+            if len(_serialized) > _RESUME_BLOCK_CAP:
+                truncated = True
+                # Mantém apenas as chaves canônicas indispensáveis pro worker;
+                # detalhes ficam no .deile-progress.md (PASSO 0 do brief).
+                resume_block = {
+                    "mode": resume_block.get("mode", "fresh"),
+                    "repo": resume_block.get("repo", ""),
+                    "branch": resume_block.get("branch", ""),
+                    "main_branch": resume_block.get("main_branch", ""),
+                    "expect_merge": resume_block.get("expect_merge", False),
+                    "pr_url_hint": str(resume_block.get("pr_url_hint", ""))[:512],
+                    "_truncated": (
+                        "resume_block excedeu cap de 100 KiB; veja "
+                        ".deile-progress.md para detalhes completos"
+                    ),
+                }
+            if truncated:
+                logger.warning(
+                    "resume_block truncado por cap de tamanho — "
+                    "channel_id=%s stage=%s", channel_id, stage,
+                )
         # Per-stage model override (issue #305). ``stage`` is the canonical
         # pipeline-stage name (see :data:`PIPELINE_STAGES`); when set, the
         # resolver returns ``None`` if no override is configured (the worker
@@ -793,18 +838,19 @@ class WorkerImplementer(PipelineImplementer):
         # mantém compat com callers (testes) que ainda não declaram stage.
         url = self._resolve_endpoint(stage or "implement")
 
-        # Issue #347 follow-up — RESUME TRANSPARENTE: ledger é consultado
-        # SEMPRE (não só quando caller passa resume=True). Cobre o caso
-        # comum de re-review após operador remover ~workflow:bloqueada:
-        # PR volta pra ~review:pendente (não em_andamento), pipeline o
-        # vê como "fresh" no `_candidate`, mas se o DispatchLedger tem
-        # entry preservada do reviewer anterior (review bloqueada NÃO
-        # limpa o ledger), o resume é tentado transparente.
+        # RESUME SOB DEMANDA (Decisão #46): fresh dispatch é o default.
+        # Resume só é tentado quando o caller passa ``resume=True`` E o
+        # ledger tem entry preservada. O brief unificado já lê
+        # ``.deile-progress.md`` no PASSO 0 e descobre o estado real da
+        # PR/issue, então fresh-com-contexto-natural funciona perfeitamente
+        # na maioria dos casos. Esse comportamento evita o crescimento
+        # ilimitado do JSONL da sessão claude (visto 11M tokens em produção
+        # antes deste fix).
         #
-        # Caller hint ``resume=True`` ainda é honrado pra log e métricas,
-        # mas resume real depende SÓ do ledger.
+        # Mesmo em ``resume=True``, ainda checamos o ledger; se a entry
+        # estiver ausente ou stale, caímos para fresh — não há regressão.
         resume_meta: Optional[Dict[str, str]] = None
-        if ledger_key:
+        if resume and ledger_key:
             resume_meta = await self._resolve_resume_meta(ledger_key, url)
             if resume_meta and resume_meta.get("_still_alive"):
                 # Worker confirmou claude ainda alive — não dispatch.

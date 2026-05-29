@@ -90,13 +90,20 @@ class TestUnifiedPrBrief:
         unrendered = re.findall(r"\{[a-z_]+\}", out)
         assert unrendered == [], f"placeholders não renderizados: {unrendered}"
 
-    def test_brief_states_human_author_no_push(self):
+    def test_brief_always_executes_request(self):
         out = _render_worker_pr_unified_brief(
             "o/r", "main", 11, gh_login="deile-one",
         )
-        # O ramo "autor é HUMANO" no PASSO 1 da work-list.
-        assert "autor é HUMANO" in out
-        assert "NUNCA dou push" in out
+        # Decisão #46: a regra antiga "autor é HUMANO → NUNCA dou push" foi
+        # substituída pela regra "execute o pedido SEMPRE", com duas trilhas:
+        # push direto se PR open; nova branch + nova PR se PR merged.
+        assert "execute o pedido SEMPRE" in out
+        assert "está OPEN" in out
+        assert "push direto na própria branch" in out
+        assert "branch nova derivada" in out
+        # Regressão: a antiga cláusula precisa permanecer ausente.
+        assert "NUNCA dou push" not in out
+        assert "autor é HUMANO" not in out
 
     def test_brief_states_self_author_merge_path(self):
         out = _render_worker_pr_unified_brief(

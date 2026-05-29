@@ -1129,6 +1129,7 @@ class GitLabForge(ForgeClient):
                             issue_url=str(mr.get("web_url") or ""),
                             author=str(((note.get("author") or {}).get("username")) or ""),
                             kind="pr_review",
+                            is_pr_comment=True,
                         ))
                     except (KeyError, TypeError, ValueError) as exc:
                         logger.warning("skipping malformed GitLab MR note: %s", exc)
@@ -1158,6 +1159,17 @@ class GitLabForge(ForgeClient):
             )
         else:
             target_web = ""
+        # Decisão #46: ``is_pr_comment`` é True quando o noteable é um MR,
+        # independente do ``kind``. GitLab tem ``noteable_type`` no evento
+        # quando disponível; caímos no URL como fonte secundária.
+        noteable_type = str(
+            note.get("noteable_type") or event.get("noteable_type") or ""
+        ).lower()
+        is_pr_comment = (
+            kind == "pr_review"
+            or noteable_type == "mergerequest"
+            or "/-/merge_requests/" in target_web
+        )
         return CommentRef(
             comment_id=int(note.get("id") or event.get("target_id") or 0),
             body=str(note.get("body") or ""),
@@ -1165,6 +1177,7 @@ class GitLabForge(ForgeClient):
             issue_url=target_web,
             author=str(author.get("username") or author.get("name") or ""),
             kind=kind,
+            is_pr_comment=is_pr_comment,
         )
 
     async def search_items_mentioning(
