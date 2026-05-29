@@ -1,8 +1,10 @@
-"""Comando /version — exibe versão, build, métricas e ambiente do DEILE (issue #173).
+"""Comando /version — exibe versão, build, métricas e ambiente do DEILE (issues #173, #412).
 
 Mapeia para:
   • o comando slash ``/version`` no modo interativo, e
   • a flag CLI ``--version`` (gerada automaticamente via metadado cli_flag).
+
+A versão exibida é lida exclusivamente de ``deile.__version__`` — sem hardcoded duplo.
 """
 
 from __future__ import annotations
