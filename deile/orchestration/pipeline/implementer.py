@@ -44,7 +44,8 @@ from deile.orchestration.pipeline.briefs import (
 from deile.orchestration.pipeline.claude_dispatcher import (
     render_implement_prompt, render_review_prompt)
 from deile.orchestration.pipeline.dispatch_resolver import (
-    get_endpoint_for, resolve_stage_dispatcher)
+    get_endpoint_for, resolve_stage_dispatcher, resolve_stage_max_retries,
+    resolve_stage_timeout_s)
 from deile.orchestration.pipeline.labels import (issue_type_from_labels,
                                                  persona_for_type,
                                                  template_for_type)
@@ -730,9 +731,13 @@ class WorkerImplementer(PipelineImplementer):
         # ``implement`` para TODOS os dispatches (review/refine/follow_ups
         # eram todos registrados como implement, quebrando o preamble do
         # pr_review e enganando telemetry).
+        # ``timeout_s`` / ``max_retries`` são resolvidos per-stage (issue #391)
+        # para dar ao operator controle granular sem editar manifests.
         payload_kwargs: Dict[str, Any] = dict(
             brief=brief, channel_id=channel_id, persona=persona, wait=not nowait,
             preferred_model=preferred_model, stage=stage, branch=branch,
+            timeout_s=resolve_stage_timeout_s(stage),
+            max_retries=resolve_stage_max_retries(stage),
         )
         if resume_meta:
             # Apenas os 2 campos públicos vão pro wire (resto é interno: _*).
