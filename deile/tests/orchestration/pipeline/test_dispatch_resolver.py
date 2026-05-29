@@ -158,6 +158,13 @@ def test_timeout_invalid_stage_raises(monkeypatch):
 def test_timeout_default_for_claude_stages(monkeypatch):
     """Sem override, stages claude (implement/pr_review) retornam 1800."""
     _clear_timeout_env(monkeypatch)
+    # Dispatcher env vars must be set for implement/pr_review → claude-worker
+    # (default global dispatcher is deile-worker).
+    for stage in PIPELINE_STAGES:
+        monkeypatch.delenv(f"DEILE_PIPELINE_DISPATCH_{stage.upper()}", raising=False)
+    monkeypatch.delenv("DEILE_PIPELINE_DISPATCH_MODE", raising=False)
+    monkeypatch.setenv("DEILE_PIPELINE_DISPATCH_IMPLEMENT", "claude-worker")
+    monkeypatch.setenv("DEILE_PIPELINE_DISPATCH_PR_REVIEW", "claude-worker")
     from deile.config.settings import reset_settings
     reset_settings()
     assert resolve_stage_timeout_s("implement") == 1800
@@ -185,23 +192,24 @@ def test_timeout_env_var_per_stage(monkeypatch):
     assert resolve_stage_timeout_s("classify") == 900
 
 
-def test_timeout_env_var_invalid_ignored(monkeypatch):
-    """Valor inválido em env → fallback ao default (sem crash)."""
+def test_timeout_env_var_invalid_raises(monkeypatch):
+    """Valor inválido em env → ValueError (fail-fast)."""
     _clear_timeout_env(monkeypatch)
     monkeypatch.setenv("DEILE_PIPELINE_TIMEOUT_S_IMPLEMENT", "not_a_number")
     from deile.config.settings import reset_settings
     reset_settings()
-    # Falls back to built-in default for implement (claude stage = 1800)
-    assert resolve_stage_timeout_s("implement") == 1800
+    with pytest.raises(ValueError):
+        resolve_stage_timeout_s("implement")
 
 
-def test_timeout_env_var_zero_ignored(monkeypatch):
-    """Valor 0 (não-positivo) em env → fallback ao default."""
+def test_timeout_env_var_zero_raises(monkeypatch):
+    """Valor 0 (não-positivo) em env → ValueError (fail-fast, timeout deve ser > 0)."""
     _clear_timeout_env(monkeypatch)
     monkeypatch.setenv("DEILE_PIPELINE_TIMEOUT_S_CLASSIFY", "0")
     from deile.config.settings import reset_settings
     reset_settings()
-    assert resolve_stage_timeout_s("classify") == 900
+    with pytest.raises(ValueError):
+        resolve_stage_timeout_s("classify")
 
 
 def test_timeout_settings_per_stage(monkeypatch):
@@ -260,13 +268,14 @@ def test_retries_env_zero_allowed(monkeypatch):
     assert resolve_stage_max_retries("implement") == 0
 
 
-def test_retries_env_invalid_ignored(monkeypatch):
-    """Valor inválido em env → fallback ao default 3."""
+def test_retries_env_invalid_raises(monkeypatch):
+    """Valor inválido em env → ValueError (fail-fast)."""
     _clear_retries_env(monkeypatch)
     monkeypatch.setenv("DEILE_PIPELINE_RETRIES_CLASSIFY", "not_a_number")
     from deile.config.settings import reset_settings
     reset_settings()
-    assert resolve_stage_max_retries("classify") == 3
+    with pytest.raises(ValueError):
+        resolve_stage_max_retries("classify")
 
 
 def test_retries_settings_per_stage(monkeypatch):

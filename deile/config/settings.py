@@ -82,32 +82,42 @@ def _mb_to_bytes(value: Any) -> int:
     return int(value) * 1024 * 1024
 
 
-def _to_optional_pos_int(value: Any) -> Optional[int]:
-    """Coerce to a positive int (> 0), or None if absent.
+def _to_optional_positive_int(value: Any) -> Optional[int]:
+    """Coerce to a positive int (> 0), or None if absent/empty.
 
     Used for per-stage timeout_s overrides: None = no override (fall
     through to global/built-in); 0 or negative = rejected.
+    Empty string is treated as absent (returns None) for env-var ergonomics.
     """
     if value is None:
         return None
     if isinstance(value, bool):
         raise TypeError("expected int, got bool")
+    if isinstance(value, str) and not value.strip():
+        return None
     iv = int(value)
     if iv <= 0:
         raise ValueError(f"value must be > 0, got {iv}")
     return iv
 
 
+# Alias kept for internal compatibility (issue #391 spec used this name).
+_to_optional_pos_int = _to_optional_positive_int
+
+
 def _to_optional_nonneg_int(value: Any) -> Optional[int]:
-    """Coerce to a non-negative int (>= 0), or None if absent.
+    """Coerce to a non-negative int (>= 0), or None if absent/empty.
 
     Used for per-stage retries overrides: None = no override; negative = rejected.
     0 is valid (means no retries).
+    Empty string is treated as absent (returns None) for env-var ergonomics.
     """
     if value is None:
         return None
     if isinstance(value, bool):
         raise TypeError("expected int, got bool")
+    if isinstance(value, str) and not value.strip():
+        return None
     iv = int(value)
     if iv < 0:
         raise ValueError(f"value must be >= 0, got {iv}")

@@ -537,6 +537,7 @@ async def _run_task(
     *,
     resume_ctx: Optional[Dict[str, Any]] = None,
     preferred_model: Optional[str] = None,
+    task_timeout_s: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Body of a single dispatch — only one runs at a time (lock).
 
@@ -725,17 +726,20 @@ async def _run_task(
                         await maybe_edit(phase="▶️  modelo respondendo...")
                     final_text = "".join(response_text_chunks)
 
-                await asyncio.wait_for(_consume_stream(), timeout=TASK_TIMEOUT_S)
+                _eff_timeout = task_timeout_s if task_timeout_s is not None else TASK_TIMEOUT_S
+                await asyncio.wait_for(_consume_stream(), timeout=_eff_timeout)
             else:
+                _eff_timeout = task_timeout_s if task_timeout_s is not None else TASK_TIMEOUT_S
                 resp = await asyncio.wait_for(
                     agent.process_input(prompt, **kwargs),
-                    timeout=TASK_TIMEOUT_S,
+                    timeout=_eff_timeout,
                 )
                 final_text = str(getattr(resp, "content", "") or "")
 
             ok = True
         except asyncio.TimeoutError:
-            error_repr = f"timeout após {TASK_TIMEOUT_S}s"
+            _eff_timeout_for_msg = task_timeout_s if task_timeout_s is not None else TASK_TIMEOUT_S
+            error_repr = f"timeout após {_eff_timeout_for_msg}s"
             final_text = error_repr
             loop_ended = resume.LOOP_TIMEOUT
         except Exception as exc:
@@ -930,6 +934,17 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     branch = body.get("branch")
     if branch is not None:
         branch = str(branch).strip() or None
+    # Per-stage timeout override (issue #391). When set, overrides TASK_TIMEOUT_S
+    # for this dispatch only. Absent on bot/CLI passthrough dispatches.
+    dispatch_timeout_s: Optional[float] = None
+    _raw_timeout = body.get("timeout_s")
+    if _raw_timeout is not None:
+        try:
+            _v = int(_raw_timeout)
+            if _v > 0:
+                dispatch_timeout_s = float(_v)
+        except (TypeError, ValueError):
+            pass
 
     task_id = uuid.uuid4().hex[:_TASK_ID_LEN]
     _evict_old_tasks_if_needed()
@@ -961,13 +976,15 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     logger.info("dispatch_started %s", " ".join(parts))
 
     wait_for_result = bool(body.get("wait_for_result", True))
+    _outer_timeout = (dispatch_timeout_s + 30) if dispatch_timeout_s is not None else (TASK_TIMEOUT_S + 30)
     if wait_for_result:
         try:
             result = await asyncio.wait_for(
                 _run_task(task_id, brief, channel_id, user_message_id, persona,
                           attachments, history, resume_ctx=resume_ctx,
-                          preferred_model=preferred_model),
-                timeout=TASK_TIMEOUT_S + 30,
+                          preferred_model=preferred_model,
+                          task_timeout_s=dispatch_timeout_s),
+                timeout=_outer_timeout,
             )
             _TASKS[task_id] = result
             # Terminal marker for the panel — pairs with the
@@ -991,7 +1008,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             try:
                 _TASKS[task_id] = await _run_task(task_id, brief, channel_id, user_message_id, persona,
                                                   attachments, history, resume_ctx=resume_ctx,
-                                                  preferred_model=preferred_model)
+                                                  preferred_model=preferred_model,
+                                                  task_timeout_s=dispatch_timeout_s)
                 logger.info(
                     "dispatch_completed task=%s ok=%s",
                     task_id, bool(_TASKS[task_id].get("ok")),

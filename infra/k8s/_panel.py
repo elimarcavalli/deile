@@ -4114,9 +4114,9 @@ class DispatchMatrixView(View):
         elif kind == "model":
             title = f"ESCOLHA MODEL PARA STAGE '{stage}'"
         elif kind == "timeout":
-            title = f"TIMEOUT (s) PARA STAGE '{stage}' (0 = usar default)"
+            title = f"TIMEOUT (s) PARA STAGE '{stage}' (enter vazio = clear)"
         elif kind == "retries":
-            title = f"MAX RETRIES PARA STAGE '{stage}'"
+            title = f"MAX RETRIES PARA STAGE '{stage}' (enter vazio = clear)"
         elif kind == "global_worker":
             title = "ESCOLHA DISPATCH MODE GLOBAL (DEILE_PIPELINE_DISPATCH_MODE)"
         elif kind == "global_model":
@@ -4131,10 +4131,6 @@ class DispatchMatrixView(View):
             title = "DESINSTALAR CLAUDE-WORKER?"
         elif kind == "scale_prompt":
             title = f"RÉPLICAS PARA '{stage}' (0-10)"
-        elif kind == "timeout":
-            title = f"TIMEOUT (s) PARA STAGE '{stage}' (enter vazio = clear)"
-        elif kind == "retries":
-            title = f"MAX RETRIES PARA STAGE '{stage}' (enter vazio = clear)"
         else:  # defensivo
             title = "AÇÃO"
 
