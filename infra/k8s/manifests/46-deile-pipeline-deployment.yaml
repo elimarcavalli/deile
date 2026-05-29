@@ -96,7 +96,17 @@ spec:
               echo "bootstrap-repo OK"
           env:
             - { name: DEILE_PIPELINE_REPO,  value: "elimarcavalli/deile" }
-            - { name: DEILE_FORGE_KIND,     value: "github" }
+            # Issue #355 — lê do mesmo ConfigMap que o main container para
+            # que operadores GitLab configurem forge.kind=gitlab em um lugar
+            # só. optional: true preserva o comportamento legado: se a chave
+            # estiver ausente, a variável fica vazia e o script usa
+            # ${DEILE_FORGE_KIND:-github} como fallback.
+            - name: DEILE_FORGE_KIND
+              valueFrom:
+                configMapKeyRef:
+                  name: deile-runtime-config
+                  key: forge.kind
+                  optional: true
           volumeMounts:
             - { name: deile-secrets, mountPath: /run/secrets/deile, readOnly: true }
             - { name: home,          mountPath: /home/deile }
