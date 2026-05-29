@@ -973,6 +973,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         parts.append(f"issue={issue_number}")
     if branch:
         parts.append(f"branch={branch}")
+    if preferred_model:
+        parts.append(f"model={preferred_model}")
     logger.info("dispatch_started %s", " ".join(parts))
 
     wait_for_result = bool(body.get("wait_for_result", True))
