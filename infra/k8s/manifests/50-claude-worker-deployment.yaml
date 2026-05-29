@@ -6,6 +6,10 @@
 #
 # Threat model: ver seção 7 da spec. Credentials no PVC mode 0600;
 # NetworkPolicy egress whitelisted via manifest 40 + ConfigMap 47.
+#
+# Secret claude-worker-bearer: criado programaticamente por
+# _kubectl_sync_bearer_token() (deploy.py k8s claude-login) ANTES
+# desta manifest ser aplicada — elimina race condition do issue #356.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
