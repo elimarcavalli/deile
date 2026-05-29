@@ -333,6 +333,15 @@ class PipelineMonitor:
         # reported by the worker. Instance state (like ``_mention_cursor``),
         # not agent memory — see ``resume_state.py``.
         self._resume_tracker = ResumeTracker()
+        # Decisão #46 — backoff exponencial para ``WORKER_AUTH_EXPIRED``.
+        # Tracking por target (``pr:N`` / ``issue:N``): contador de falhas
+        # consecutivas e timestamp (monotonic) até quando o target está
+        # pausado. Mantido como dict simples no monitor (estado de processo,
+        # não agent memory) — qualquer restart do pipeline reseta o backoff,
+        # que é exatamente o comportamento desejado (operador deve ter
+        # arrumado o OAuth se reiniciou o pipeline).
+        self._auth_failures_by_target: dict[str, int] = {}
+        self._paused_until_ts: dict[str, float] = {}
         # Schedule store — when present, schedule entries drive when each
         # action fires (instead of the fixed poll interval). On startup the
         # monitor first drains any catch-up queue (entries whose run time

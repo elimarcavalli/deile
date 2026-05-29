@@ -1385,6 +1385,16 @@ async def implement_one_reviewed_issue(
 
     claimed = []
     for target in batch:
+        # Decisão #46 — backoff exponencial de auth: pula targets dentro
+        # da janela de pausa para evitar queimar tentativas durante surtos
+        # curtos de ``WORKER_AUTH_EXPIRED``. O target será reavaliado no
+        # próximo tick depois que a janela expirar.
+        if is_target_auth_paused(monitor, "issue", target.number):
+            logger.debug(
+                "implement #%d: pausado por backoff de auth — skip este tick",
+                target.number,
+            )
+            continue
         # Dedup guard (issue #257), gate-only: if an OPEN PR already implements
         # this issue — belt-and-suspenders behind the mention/gate integration —
         # do NOT open a second PR. Park it in em_pr so it leaves the queue (the
@@ -1587,11 +1597,26 @@ async def _finalize_implement_outcome(
         # streak, sem retry) — token só renova via host, retentar é
         # desperdício. Comment + label deterministicos + ação clara.
         if err_kind == "WORKER_AUTH_EXPIRED":
-            logger.warning(
-                "implement #%d: claude-worker auth expired — block fast",
-                number,
+            # Decisão #46 — backoff exponencial antes de bloquear. Curtos
+            # surtos de OAuth expirado (típicos durante refresh in-pod) não
+            # devem queimar a issue em ``~workflow:bloqueada`` se o
+            # próximo tick puder ter sucesso.
+            count, pause_s = record_auth_failure_and_maybe_pause(
+                monitor, "issue", number,
             )
-            await _block_issue(monitor, number, AUTH_EXPIRED_BLOCK_MSG)
+            if pause_s > 0:
+                logger.warning(
+                    "implement #%d: WORKER_AUTH_EXPIRED #%d — pausando por %.0fs",
+                    number, count, pause_s,
+                )
+                return  # target permanece em ~workflow:em_implementacao
+            logger.warning(
+                "implement #%d: WORKER_AUTH_EXPIRED #%d (abaixo do threshold) — "
+                "manter parked; reaper retoma no próximo tick",
+                number, count,
+            )
+            await _park_or_keep(monitor, number, "WORKER_AUTH_EXPIRED transitório",
+                                resume=resume)
             return
         streak = monitor._resume_tracker.record_failure(number, err_kind)
         if streak >= 2 and err_kind in _ESCALATE_ON_REPEAT:
@@ -1623,6 +1648,8 @@ async def _finalize_implement_outcome(
                 monitor, f"could not transition issue #{number} to em_pr", exc,
             )
         monitor._resume_tracker.clear(number)
+        # Decisão #46 — sucesso real: reseta contadores de backoff de auth.
+        reset_auth_failures(monitor, "issue", number)
         monitor._stats.issues_implemented += 1
         await monitor.notifier.implementation_finished(number, pr_url)
         return
@@ -1698,6 +1725,81 @@ def _classify_outcome_error(error: str) -> str:
     if "BAD_REQUEST" in e or "VALIDATION" in e:
         return "BAD_REQUEST"
     return "OTHER"
+
+
+#: Decisão #46 — limiar de backoff exponencial para ``WORKER_AUTH_EXPIRED``.
+#: Antes de bloquear deterministicamente, aplicamos um backoff exponencial
+#: por-target (issue/PR específico). Após este número de falhas consecutivas,
+#: o target é pausado por ``min(2 ** count * 60, _AUTH_BACKOFF_MAX_S)``
+#: segundos antes da próxima tentativa. A primeira tentativa após o pause
+#: que tiver sucesso reseta o contador. Sem isso, um surto curto de OAuth
+#: expirado (típico durante refresh) bloqueava issues que poderiam ter
+#: continuado naturalmente alguns minutos depois.
+_AUTH_BACKOFF_THRESHOLD: int = 3
+_AUTH_BACKOFF_BASE_S: float = 60.0
+_AUTH_BACKOFF_MAX_S: float = 1800.0  # 30 min — cap superior
+
+
+def _auth_target_key(kind: str, number: int) -> str:
+    """Identidade canônica do target para o backoff: ``pr:N`` ou ``issue:N``."""
+    return f"{kind}:{number}"
+
+
+def is_target_auth_paused(
+    monitor: "PipelineMonitor", kind: str, number: int,
+) -> bool:
+    """True se o target ainda está dentro de uma janela de pausa por auth.
+
+    Consultado pelos stage handlers ANTES de despachar; se True, o caller
+    devolve sem trabalho (target será reavaliado no próximo tick).
+    """
+    key = _auth_target_key(kind, number)
+    paused_until = monitor._paused_until_ts.get(key, 0.0)
+    if paused_until <= 0:
+        return False
+    if _monotonic() >= paused_until:
+        # Janela expirada — libera o target sem zerar o contador
+        # (próxima falha pode ainda escalar; sucesso reseta tudo).
+        monitor._paused_until_ts.pop(key, None)
+        return False
+    return True
+
+
+def record_auth_failure_and_maybe_pause(
+    monitor: "PipelineMonitor", kind: str, number: int,
+) -> tuple[int, float]:
+    """Incrementa o contador de falhas auth do target e, se necessário,
+    agenda uma pausa.
+
+    Returns:
+        ``(count, paused_for_s)``. ``paused_for_s`` é ``0.0`` quando ainda
+        abaixo do limiar; senão, é a duração do pause aplicado (em segundos).
+    """
+    key = _auth_target_key(kind, number)
+    count = monitor._auth_failures_by_target.get(key, 0) + 1
+    monitor._auth_failures_by_target[key] = count
+    if count < _AUTH_BACKOFF_THRESHOLD:
+        return count, 0.0
+    backoff_s = min(_AUTH_BACKOFF_BASE_S * (2 ** count), _AUTH_BACKOFF_MAX_S)
+    monitor._paused_until_ts[key] = _monotonic() + backoff_s
+    logger.warning(
+        "auth backoff: target=%s count=%d pause_for=%.0fs",
+        key, count, backoff_s,
+    )
+    return count, backoff_s
+
+
+def reset_auth_failures(
+    monitor: "PipelineMonitor", kind: str, number: int,
+) -> None:
+    """Reseta o contador e o timestamp de pausa para o target dado.
+
+    Chamado pelo stage handler quando um dispatch retorna ok=True
+    (sucesso real), encerrando o ciclo de backoff para aquele target.
+    """
+    key = _auth_target_key(kind, number)
+    monitor._auth_failures_by_target.pop(key, None)
+    monitor._paused_until_ts.pop(key, None)
 
 
 #: Texto fixo apresentado ao operador quando o claude-worker reporta
@@ -1958,7 +2060,14 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
         return pr.batch_id is None
 
     # Sort by priority so the most urgent PR is reviewed first.
-    target = next((pr for pr in sort_by_priority(prs) if _candidate(pr)), None)
+    # Decisão #46 — skip PRs em janela de pausa por backoff de auth.
+    target = next(
+        (
+            pr for pr in sort_by_priority(prs)
+            if _candidate(pr) and not is_target_auth_paused(monitor, "pr", pr.number)
+        ),
+        None,
+    )
     if target is None:
         return
     is_resume = REVIEW_IN_PROGRESS in target.labels
@@ -2014,15 +2123,19 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
         # fast com mensagem clara em vez de cair em retry/escalation
         # genérico. claude-worker já não pode entregar nada até renovar.
         if _classify_outcome_error(outcome.error or "") == "WORKER_AUTH_EXPIRED":
+            # Decisão #46 — backoff exponencial: surto curto de OAuth
+            # expirado não deve bloquear deterministicamente em #1. Apenas
+            # após o threshold paramos por uma janela; o reaper retoma
+            # automaticamente quando a pausa expira.
+            count, pause_s = record_auth_failure_and_maybe_pause(
+                monitor, "pr", target.number,
+            )
             logger.warning(
-                "pr_review #%d: claude-worker auth expired — block fast",
-                target.number,
+                "pr_review #%d: WORKER_AUTH_EXPIRED #%d (pause=%.0fs) — "
+                "liberando batch; reaper retoma após pausa",
+                target.number, count, pause_s,
             )
             await monitor.forge.clear_batch_label("pr", target.number)
-            await _block_pr(
-                monitor, target.number, target.title, target.url,
-                AUTH_EXPIRED_BLOCK_MSG,
-            )
             return
         # Issue #309 fase 3.5 — Bug A fix: erro NÃO-auth do worker NÃO
         # deve fluir pro fast-finish legacy abaixo (que marcava
@@ -2064,6 +2177,8 @@ async def review_one_open_pr(monitor: "PipelineMonitor") -> None:
             )
         await monitor.forge.clear_batch_label("pr", target.number)
         monitor._resume_tracker.clear(target.number)
+        # Decisão #46 — sucesso real: reseta contadores de backoff de auth.
+        reset_auth_failures(monitor, "pr", target.number)
         monitor._stats.prs_reviewed += 1
         await monitor.notifier.pr_reviewed(target.number, target.title, target.url, merged=True)
         await _post_merge_follow_ups(monitor, target)
