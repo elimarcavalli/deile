@@ -148,6 +148,26 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && gh --version \
     && glab --version
 
+# kubectl (Decisão #46). O pipeline pod usa kubectl para refrescar OAuth do
+# claude-worker in-pod (chama ``kubectl exec`` em ``_claude_creds_refresh``).
+# Antes este pod era construído sem kubectl, então o refresh automático
+# falhava silenciosamente com FileNotFoundError e o pipeline tinha que ser
+# resgatado pelo humano via ``deploy.py k8s claude-renew``.
+#
+# Versão alinhada com k3s/Rancher Desktop server-side (~v1.31). Layer
+# separada para não invalidar gh/glab quando bumpamos kubectl.
+ARG KUBECTL_VERSION=v1.31.4
+RUN ARCH="$(dpkg --print-architecture)" \
+    && case "$ARCH" in \
+        amd64) KUBECTL_ARCH=amd64 ;; \
+        arm64) KUBECTL_ARCH=arm64 ;; \
+        *) echo "unsupported arch for kubectl: $ARCH" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL -o /usr/local/bin/kubectl \
+        "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${KUBECTL_ARCH}/kubectl" \
+    && chmod 0555 /usr/local/bin/kubectl \
+    && kubectl version --client --output=yaml | head -5
+
 # -----------------------------------------------------------------------------
 # claude CLI (issue #309 fase 2)
 #
