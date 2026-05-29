@@ -1324,6 +1324,18 @@ class WorkerProvider(_KubectlProviderMixin):
 # ===== GitHub provider ======================================================
 
 @dataclass
+class ReviewerState:
+    login: str
+    state: str  # "approved" | "changes_requested" | "pending"
+
+
+@dataclass
+class LinkRef:
+    kind: str   # "closes" | "refs"
+    number: int
+
+
+@dataclass
 class GitHubIssue:
     number: int
     title: str
@@ -1338,6 +1350,13 @@ class GitHubIssue:
     review: str = ""     # ex: 'pendente'
     blocked: bool = False
     refining: bool = False
+    # Campos enriquecidos (work-item monitor — issue #397)
+    author: str = ""
+    ci_status: str = "none"       # "passing"|"failing"|"pending"|"none"
+    mergeability: str = "unknown" # "clean"|"conflict"|"draft"|"blocked"|"unknown"
+    requested_reviewers: List[ReviewerState] = field(default_factory=list)
+    comments_count: int = 0
+    linked_items: List[LinkRef] = field(default_factory=list)
 
 
 @dataclass
@@ -1365,6 +1384,32 @@ class GitHubSnapshot:
 _WORKFLOW_PREFIX = "~workflow:"
 _REVIEW_PREFIX = "~review:"
 _BLOCKED_LABEL = "~workflow:bloqueada"
+
+# Regex para parsepar Closes/Fixes/Refs #N e !N (MR refs) no body de issues/PRs/MRs.
+_LINKED_ITEM_RE = re.compile(
+    r"\b(?P<kw>clos(?:e[sd]?|ing)|fix(?:e[sd]|ing)?|resolv(?:e[sd]?|ing)|ref(?:erence(?:d|s)?)?s?)"
+    r"\s+(?:(?P<mr>![0-9]+)|#(?P<issue>[0-9]+))",
+    re.IGNORECASE,
+)
+
+
+def _parse_linked_items(body: str) -> "List[LinkRef]":
+    """Extrai LinkRefs do body de um work-item (Closes/Fixes/Refs #N, !N)."""
+    if not body:
+        return []
+    results: List[LinkRef] = []
+    for m in _LINKED_ITEM_RE.finditer(body):
+        kw = m.group("kw").lower()
+        closing = kw.startswith(("clos", "fix", "resolv"))
+        raw = m.group("mr") or m.group("issue") or ""
+        try:
+            results.append(LinkRef(
+                kind="closes" if closing else "refs",
+                number=int(raw.lstrip("!")),
+            ))
+        except ValueError:
+            pass
+    return results
 
 
 def _derive_workflow(labels: List[str]) -> str:
@@ -1447,6 +1492,28 @@ class GitHubProvider:
         )
         if data is None:
             raise RuntimeError("gh api issues falhou")
+
+        # Busca paralela no endpoint /pulls para obter campos PR-específicos:
+        # draft, requested_reviewers, mergeable_state. Best-effort — falha
+        # silenciosa para não degradar o painel inteiro.
+        pr_details: Dict[int, Dict[str, Any]] = {}
+        try:
+            pulls_data = _capture_json(
+                [self._gh, "api", "--paginate",
+                 f"/repos/{self._repo}/pulls?state=open&per_page={self.PER_PAGE}"],
+                timeout=15.0,
+            )
+            if isinstance(pulls_data, list):
+                for chunk in pulls_data:
+                    chunk_list = chunk if isinstance(chunk, list) else [chunk]
+                    for pr in chunk_list:
+                        if isinstance(pr, dict):
+                            n = int(pr.get("number", 0) or 0)
+                            if n:
+                                pr_details[n] = pr
+        except Exception:  # noqa: BLE001
+            pass
+
         snap = GitHubSnapshot()
         items: List[Dict[str, Any]] = []
         if isinstance(data, list):
@@ -1459,10 +1526,52 @@ class GitHubProvider:
             labels = [lbl.get("name", "") for lbl in it.get("labels", []) or []]
             assignees = [a.get("login", "")
                          for a in it.get("assignees", []) or []]
+            number = int(it.get("number", 0) or 0)
+            is_pr = "pull_request" in it
+            author = (it.get("user") or {}).get("login", "")
+            comments_count = int(it.get("comments", 0) or 0)
+            body = it.get("body") or ""
+            linked_items = _parse_linked_items(body)
+
+            # Enriquecimento específico de PRs via endpoint /pulls
+            ci_status = "none"
+            mergeability = "unknown"
+            reviewers: List[ReviewerState] = []
+            if is_pr and number in pr_details:
+                pd = pr_details[number]
+                draft = bool(pd.get("draft", False))
+                mergeable_state = str(pd.get("mergeable_state") or "unknown").lower()
+                mergeable = pd.get("mergeable")  # bool | None
+
+                if draft:
+                    mergeability = "draft"
+                elif mergeable_state == "clean":
+                    mergeability = "clean"
+                elif mergeable_state in ("dirty", "has_hooks"):
+                    mergeability = "conflict"
+                elif mergeable_state == "blocked":
+                    mergeability = "blocked"
+                elif mergeable is False:
+                    mergeability = "conflict"
+
+                # CI via mergeable_state (aproximação sem chamada extra)
+                if mergeable_state == "clean":
+                    ci_status = "passing"
+                elif mergeable_state == "unstable":
+                    ci_status = "failing"
+                elif mergeable_state in ("blocked", "behind"):
+                    ci_status = "pending"
+
+                # Reviewers com review pendente (requested)
+                for rv in (pd.get("requested_reviewers") or []):
+                    login = (rv or {}).get("login", "")
+                    if login:
+                        reviewers.append(ReviewerState(login=login, state="pending"))
+
             obj = GitHubIssue(
-                number=int(it.get("number", 0)),
+                number=number,
                 title=it.get("title", ""),
-                is_pr=("pull_request" in it),
+                is_pr=is_pr,
                 state=it.get("state", "open"),
                 labels=labels,
                 assignees=assignees,
@@ -1472,6 +1581,12 @@ class GitHubProvider:
                 review=_derive_review(labels),
                 blocked=_BLOCKED_LABEL in labels,
                 refining=any(lbl == "refinar" for lbl in labels),
+                author=author,
+                ci_status=ci_status,
+                mergeability=mergeability,
+                requested_reviewers=reviewers,
+                comments_count=comments_count,
+                linked_items=linked_items,
             )
             if obj.is_pr:
                 snap.prs.append(obj)
@@ -1514,6 +1629,8 @@ class GitHubProvider:
             assignees = [a.get("username", "")
                          for a in it.get("assignees", []) or []]
             iid = int(it.get("iid") or it.get("number") or 0)
+            author = (it.get("author") or {}).get("username", "")
+            body = it.get("description") or ""
             snap.issues.append(GitHubIssue(
                 number=iid, title=it.get("title", ""), is_pr=False,
                 state="open", labels=list(labels), assignees=assignees,
@@ -1523,6 +1640,9 @@ class GitHubProvider:
                 review=_derive_review(list(labels)),
                 blocked=_BLOCKED_LABEL in labels,
                 refining=any(lbl == "refinar" for lbl in labels),
+                author=author,
+                comments_count=int(it.get("user_notes_count", 0) or 0),
+                linked_items=_parse_linked_items(body),
             ))
         for it in _list("merge_requests"):
             labels = it.get("labels") or []
@@ -1531,6 +1651,28 @@ class GitHubProvider:
             assignees = [a.get("username", "")
                          for a in it.get("assignees", []) or []]
             iid = int(it.get("iid") or it.get("number") or 0)
+            author = (it.get("author") or {}).get("username", "")
+            body = it.get("description") or ""
+            # Mergeability via GL fields: work_in_progress, has_conflicts, merge_status
+            draft = bool(it.get("work_in_progress", False))
+            has_conflicts = bool(it.get("has_conflicts", False))
+            merge_status = str(it.get("merge_status") or "").lower()
+            if draft:
+                mergeability = "draft"
+            elif has_conflicts or merge_status == "cannot_be_merged":
+                mergeability = "conflict"
+            elif merge_status in ("can_be_merged", "mergeable"):
+                mergeability = "clean"
+            elif merge_status == "checking":
+                mergeability = "unknown"
+            else:
+                mergeability = "unknown"
+            # Reviewers pendentes (GL: campo reviewers)
+            gl_reviewers = [
+                ReviewerState(login=r.get("username", ""), state="pending")
+                for r in (it.get("reviewers") or [])
+                if r.get("username")
+            ]
             snap.prs.append(GitHubIssue(
                 number=iid, title=it.get("title", ""), is_pr=True,
                 state="open", labels=list(labels), assignees=assignees,
@@ -1540,6 +1682,11 @@ class GitHubProvider:
                 review=_derive_review(list(labels)),
                 blocked=_BLOCKED_LABEL in labels,
                 refining=any(lbl == "refinar" for lbl in labels),
+                author=author,
+                mergeability=mergeability,
+                requested_reviewers=gl_reviewers,
+                comments_count=int(it.get("user_notes_count", 0) or 0),
+                linked_items=_parse_linked_items(body),
             ))
         snap.issues.sort(key=lambda x: x.number, reverse=True)
         snap.prs.sort(key=lambda x: x.number, reverse=True)

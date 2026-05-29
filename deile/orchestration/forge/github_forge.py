@@ -28,7 +28,8 @@ from urllib.parse import quote
 
 from deile.orchestration.forge.base import (ForgeClient, ForgeCommandError,
                                             ForgeConfig, ForgeKind,
-                                            MergeBlocked, discover_cli)
+                                            MergeBlocked, WorkItemDetails,
+                                            discover_cli)
 from deile.orchestration.forge.refs import CommentRef, IssueRef, PrRef
 from deile.orchestration.pipeline._time_utils import format_iso_utc
 from deile.orchestration.pipeline.labels import (LABEL_COLORS,
@@ -689,6 +690,121 @@ class GitHubForge(ForgeClient):
         if "pass" in buckets:
             return "passing"
         return "none"
+
+    async def get_work_item_details(
+        self, kind: Literal["issue", "pr"], number: int,
+    ) -> WorkItemDetails:
+        """Fetch a rich snapshot for a single GitHub issue or PR.
+
+        Makes 1–2 REST calls:
+        - ``gh api repos/<r>/issues/<n>`` (both kinds — issue metadata + body)
+        - ``gh pr checks`` (PR only — CI checks summary)
+        """
+        import re as _re
+
+        _LINKED_RE = _re.compile(
+            r"\b(?:clos(?:e[sd]?|ing)|fix(?:e[sd]|ing)?|resolv(?:e[sd]?|ing)|ref(?:erence(?:d|s)?)?s?)"
+            r"\s+(?:![0-9]+|#(?P<issue>[0-9]+))",
+            _re.IGNORECASE,
+        )
+
+        def _links(body: str) -> list:
+            return [
+                ("closes" if m.group(0).lower()[0] in "cfr" else "refs",
+                 int(m.group("issue") or "0"))
+                for m in _LINKED_RE.finditer(body or "")
+                if m.group("issue")
+            ]
+
+        # ------ Item detail ------
+        rc_i, out_i, _ = await self._run(
+            "api", f"repos/{self.repo}/issues/{number}",
+        )
+        item: dict = {}
+        if rc_i == 0:
+            try:
+                item = json.loads(out_i)
+            except json.JSONDecodeError:
+                pass
+        if not isinstance(item, dict):
+            item = {}
+
+        author = (item.get("user") or {}).get("login", "")
+        comments_count = int(item.get("comments", 0) or 0)
+        body = item.get("body") or ""
+        linked = _links(body)
+
+        # PR-specific enrichment
+        ci_status: Literal["passing", "failing", "pending", "none"] = "none"
+        ci_summary: Tuple[int, int] = (0, 0)
+        mergeability: Literal["clean", "conflict", "draft", "blocked", "unknown"] = "unknown"
+        reviewers: List[Tuple[str, str]] = []
+
+        if kind == "pr":
+            # PR detail for draft/mergeable/reviewers
+            rc_p, out_p, _ = await self._run(
+                "api", f"repos/{self.repo}/pulls/{number}",
+            )
+            pr_payload: dict = {}
+            if rc_p == 0:
+                try:
+                    pr_payload = json.loads(out_p)
+                except json.JSONDecodeError:
+                    pass
+            if isinstance(pr_payload, dict):
+                draft = bool(pr_payload.get("draft", False))
+                ms = str(pr_payload.get("mergeable_state") or "unknown").lower()
+                mgbl = pr_payload.get("mergeable")
+                if draft:
+                    mergeability = "draft"
+                elif ms == "clean":
+                    mergeability = "clean"
+                elif ms in ("dirty", "has_hooks"):
+                    mergeability = "conflict"
+                elif ms == "blocked":
+                    mergeability = "blocked"
+                elif mgbl is False:
+                    mergeability = "conflict"
+                for rv in (pr_payload.get("requested_reviewers") or []):
+                    login = (rv or {}).get("login", "")
+                    if login:
+                        reviewers.append((login, "pending"))
+
+            # CI checks summary
+            rc_c, out_c, _ = await self._run(
+                "pr", "checks", str(number), "--repo", self.repo,
+                "--json", "bucket,state,conclusion",
+            )
+            checks: list = []
+            if rc_c == 0:
+                try:
+                    checks = json.loads(out_c) or []
+                except json.JSONDecodeError:
+                    pass
+            if isinstance(checks, list) and checks:
+                total = len(checks)
+                passed = sum(1 for c in checks
+                             if str((c or {}).get("bucket") or "").lower() == "pass")
+                ci_summary = (passed, total)
+                buckets = {str((c or {}).get("bucket") or "").lower() for c in checks}
+                if "fail" in buckets:
+                    ci_status = "failing"
+                elif "pending" in buckets:
+                    ci_status = "pending"
+                elif "pass" in buckets:
+                    ci_status = "passing"
+
+        return WorkItemDetails(
+            number=number,
+            kind=kind,
+            author=author,
+            ci_status=ci_status,
+            ci_checks_summary=ci_summary,
+            mergeability=mergeability,
+            requested_reviewers=reviewers,
+            comments_count=comments_count,
+            linked_items=linked,
+        )
 
     # ------------------------------------------------------------------
     # Labels

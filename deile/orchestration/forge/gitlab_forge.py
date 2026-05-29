@@ -38,7 +38,7 @@ from deile.orchestration.forge.base import (ForgeClient, ForgeCommandError,
                                             ForgeConfig, ForgeKind,
                                             MergeBlocked,
                                             MergeBlockedByPipeline,
-                                            discover_cli)
+                                            WorkItemDetails, discover_cli)
 from deile.orchestration.forge.refs import CommentRef, IssueRef, PrRef
 from deile.orchestration.pipeline._time_utils import format_iso_utc
 from deile.orchestration.pipeline.labels import (LABEL_COLORS,
@@ -882,6 +882,94 @@ class GitLabForge(ForgeClient):
                 "files": [],  # GitLab commits endpoint does not include files by default
             })
         return result
+
+    async def get_work_item_details(
+        self, kind: Literal["issue", "pr"], number: int,
+    ) -> WorkItemDetails:
+        """Fetch a rich snapshot for a single GitLab issue or MR.
+
+        One REST call for the item; CI is derived from the MR's
+        ``head_pipeline`` field (already present in the MR payload, no extra
+        round-trip required for the summary case).
+        """
+        import re as _re
+
+        _LINKED_RE = _re.compile(
+            r"\b(?:clos(?:e[sd]?|ing)|fix(?:e[sd]|ing)?|resolv(?:e[sd]?|ing)|ref(?:erence(?:d|s)?)?s?)"
+            r"\s+(?:![0-9]+|#(?P<issue>[0-9]+))",
+            _re.IGNORECASE,
+        )
+
+        def _links(body: str) -> list:
+            return [
+                ("closes" if m.group(0).lower()[0] in "cfr" else "refs",
+                 int(m.group("issue") or "0"))
+                for m in _LINKED_RE.finditer(body or "")
+                if m.group("issue")
+            ]
+
+        endpoint_kind = "merge_requests" if kind == "pr" else "issues"
+        try:
+            payload = await self._api_get_json(
+                f"projects/{self._project_ref}/{endpoint_kind}/{number}",
+            )
+        except ForgeCommandError as exc:
+            logger.warning("get_work_item_details %s #%d failed: %s", kind, number, exc)
+            return WorkItemDetails(number=number, kind=kind)
+        if not isinstance(payload, dict):
+            return WorkItemDetails(number=number, kind=kind)
+
+        author = (payload.get("author") or {}).get("username", "")
+        comments_count = int(payload.get("user_notes_count", 0) or 0)
+        body = payload.get("description") or ""
+        linked = _links(body)
+
+        ci_status: Literal["passing", "failing", "pending", "none"] = "none"
+        ci_summary: Tuple[int, int] = (0, 0)
+        mergeability: Literal["clean", "conflict", "draft", "blocked", "unknown"] = "unknown"
+        reviewers: List[Tuple[str, str]] = []
+
+        if kind == "pr":
+            draft = bool(payload.get("work_in_progress", False))
+            has_conflicts = bool(payload.get("has_conflicts", False))
+            ms = str(payload.get("merge_status") or "").lower()
+            if draft:
+                mergeability = "draft"
+            elif has_conflicts or ms == "cannot_be_merged":
+                mergeability = "conflict"
+            elif ms in ("can_be_merged", "mergeable"):
+                mergeability = "clean"
+            else:
+                mergeability = "unknown"
+
+            for rv in (payload.get("reviewers") or []):
+                login = (rv or {}).get("username", "")
+                if login:
+                    reviewers.append((login, "pending"))
+
+            # CI from head_pipeline (no extra REST hop)
+            pipeline = payload.get("head_pipeline") or {}
+            if isinstance(pipeline, dict) and pipeline:
+                status = str(pipeline.get("status") or "").lower()
+                if status in ("success", "passed"):
+                    ci_status = "passing"
+                elif status in ("failed", "canceled"):
+                    ci_status = "failing"
+                elif status in ("pending", "running", "preparing",
+                                "waiting_for_resource", "manual", "scheduled"):
+                    ci_status = "pending"
+
+        return WorkItemDetails(
+            number=number,
+            kind=kind,
+            author=author,
+            ci_status=ci_status,
+            ci_checks_summary=ci_summary,
+            mergeability=mergeability,
+            requested_reviewers=reviewers,
+            comments_count=comments_count,
+            linked_items=linked,
+        )
 
     # ------------------------------------------------------------------
     # Labels

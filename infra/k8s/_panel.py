@@ -2176,10 +2176,10 @@ def _percentile(values: List[float], p: float) -> Optional[float]:
 
 
 class IssuesPRsView(View):
-    """Tabela de issues e PRs com labels cruzadas + filtros."""
+    """Monitor de work-items forge-agnóstico (issues, PRs GitHub e MRs GitLab)."""
 
     name = "issues-prs"
-    title = "Issues & PRs"
+    title = "Work-Items (WI)"
     refresh_s = 1.0
 
     def __init__(self, data: Optional[PanelData] = None):
@@ -2253,7 +2253,30 @@ class IssuesPRsView(View):
         issues, prs = self._rows()
         return list(issues) + list(prs)
 
-    def _build_table(self, items, label: str) -> Panel:
+    @staticmethod
+    def _ci_chip(ci_status: str) -> Text:
+        _CI_STYLES = {
+            "passing": ("✓CI", "bold green"),
+            "failing": ("✗CI", "bold red"),
+            "pending": ("~CI", "bold yellow"),
+            "none": ("—", "dim"),
+        }
+        label, style = _CI_STYLES.get(ci_status, ("—", "dim"))
+        return Text(label, style=style)
+
+    @staticmethod
+    def _merge_chip(mergeability: str) -> Text:
+        _MERGE_STYLES = {
+            "clean":    ("✓MG", "bold green"),
+            "conflict": ("✗MG", "bold red"),
+            "draft":    ("DRFT", "dim yellow"),
+            "blocked":  ("BLKD", "bold red"),
+            "unknown":  ("?", "dim"),
+        }
+        label, style = _MERGE_STYLES.get(mergeability, ("?", "dim"))
+        return Text(label, style=style)
+
+    def _build_table(self, items, label: str, *, show_wi_cols: bool = False) -> Panel:
         if not items:
             return Panel(Text(f"· nada em {label}", style="dim"),
                          title=f"[bold]{label.upper()}[/bold]",
@@ -2267,6 +2290,10 @@ class IssuesPRsView(View):
         tbl.add_column("#", max_width=6)
         tbl.add_column("workflow", max_width=22)
         tbl.add_column("review", max_width=14)
+        if show_wi_cols:
+            tbl.add_column("ci", max_width=5)
+            tbl.add_column("merge", max_width=5)
+            tbl.add_column("reviewers", max_width=20)
         tbl.add_column("updated", max_width=10)
         tbl.add_column("assignees", max_width=18)
         tbl.add_column("title")
@@ -2278,15 +2305,25 @@ class IssuesPRsView(View):
             wf_style = "bold red" if it.blocked else "cyan"
             age_s = ((now - it.updated_at).total_seconds()
                      if it.updated_at else None)
-            tbl.add_row(
+            row: list = [
                 Text(marker, style="bold cyan"),
                 str(it.number),
                 Text(it.workflow or "—", style=wf_style),
                 Text(it.review or "—", style="magenta" if it.review else "dim"),
+            ]
+            if show_wi_cols:
+                rvs = ", ".join(r.login for r in it.requested_reviewers) or "—"
+                row += [
+                    self._ci_chip(it.ci_status),
+                    self._merge_chip(it.mergeability),
+                    Text(rvs[:20], style="cyan" if it.requested_reviewers else "dim"),
+                ]
+            row += [
                 _fmt_age(age_s),
                 ", ".join(it.assignees) or "—",
                 Text(it.title[:60], style="dim"),
-            )
+            ]
+            tbl.add_row(*row)
         return Panel(tbl, title=f"[bold]{label.upper()}[/bold]",
                      title_align="left", border_style="cyan")
 
@@ -2296,14 +2333,14 @@ class IssuesPRsView(View):
         if flat:
             self.cursor = max(0, min(self.cursor, len(flat) - 1))
         filter_label = {
-            "all": "todos", "i": "só issues", "p": "só PRs",
-            "b": "só bloqueadas", "m": f"minhas (@{self.my_login})",
+            "all": "todos", "i": "só issues", "p": "só PRs/MRs",
+            "b": "só bloqueadas", "m": f"meus (@{self.my_login})",
         }[self.filter]
         filter_panel = Panel(
             Text.assemble(
                 ("filtro: ", "dim"), (filter_label, "bold yellow"),
                 ("    issues: ", "dim"), (str(len(issues)), "bold"),
-                ("    PRs: ", "dim"), (str(len(prs)), "bold"),
+                ("    PRs/MRs: ", "dim"), (str(len(prs)), "bold"),
             ),
             border_style="dim",
         )
@@ -2313,7 +2350,8 @@ class IssuesPRsView(View):
             Layout(_head_panel(self.title, app), name="head", size=4),
             Layout(filter_panel, name="filter", size=3),
             Layout(self._build_table(issues, "Issues"), name="issues"),
-            Layout(self._build_table(prs, "PRs"), name="prs"),
+            Layout(self._build_table(prs, "PRs / MRs", show_wi_cols=True),
+                   name="prs"),
             Layout(_footer_panel(self.HOTKEYS, last_act), name="footer",
                    size=4 if last_act else 3),
         )
