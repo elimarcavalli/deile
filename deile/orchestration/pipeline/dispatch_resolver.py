@@ -2,18 +2,34 @@
 worker (qual pod recebe o POST /v1/dispatch) ao invés de modelo.
 
 Cada stage do pipeline (``classify``, ``refine``, ``implement``, ``pr_review``,
-``follow_ups``) pode ter seu dispatcher overriden via env var; sem override,
-cai pro global ``DEILE_PIPELINE_DISPATCH_MODE``; sem isso, default built-in
-é ``deile-worker``.
+``follow_ups``) pode ter seu dispatcher overriden via env var ou
+``~/.deile/settings.json``; sem override, cai pro global
+``DEILE_PIPELINE_DISPATCH_MODE`` / ``pipeline.dispatch_mode``; sem isso,
+default built-in é ``deile-worker``.
 
 A escolha entre os dois é independente da escolha do modelo (issue #309
 correção do user: worker ≠ modelo). ``claude-worker`` só aceita modelos
 ``anthropic:*``; ``deile-worker`` aceita qualquer modelo.
+
+Precedência de ``resolve_stage_dispatcher`` (alta → baixa):
+
+1. ``DEILE_PIPELINE_DISPATCH_<STAGE>`` env var — vence tudo (retrocompat +
+   override emergencial de cluster). Valor inválido → ValueError fail-fast.
+2. ``pipeline.dispatchers.<stage>`` no settings.json layered. Valor inválido
+   → warning + fallback (erro de usuário, não de operador).
+3. ``DEILE_PIPELINE_DISPATCH_MODE`` env var (global). Valor inválido →
+   ValueError fail-fast.
+4. ``pipeline.dispatch_mode`` no settings.json layered. Valor inválido →
+   warning + fallback.
+5. Built-in default: ``deile-worker``.
 """
 from __future__ import annotations
 
+import logging
 import os
 from typing import FrozenSet, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 #: Ordem operacional (igual model_resolver). Sufixo usado como JSON key.
 PIPELINE_STAGES: Tuple[str, ...] = (
@@ -85,13 +101,37 @@ def _canonicalize(value: Optional[str]) -> Optional[str]:
     return canonical
 
 
+def _canonicalize_settings(value: Optional[str], context: str) -> Optional[str]:
+    """Like ``_canonicalize`` but logs a warning instead of raising on invalid.
+
+    Used for settings.json values: a user typo should fall through to the next
+    precedence level rather than crashing the pipeline with a ValueError.
+    """
+    if not value or not value.strip():
+        return None
+    try:
+        return _canonicalize(value)
+    except ValueError:
+        logger.warning(
+            "dispatch_resolver: invalid dispatcher %r in settings.json (%s); "
+            "ignoring — expected one of %s",
+            value,
+            context,
+            sorted(VALID_DISPATCHERS),
+        )
+        return None
+
+
 def resolve_stage_dispatcher(stage: str) -> str:
     """Resolve qual dispatcher (worker pod) recebe o dispatch de *stage*.
 
     Fallback chain (top → bottom):
-      1. ``DEILE_PIPELINE_DISPATCH_<STAGE>`` env var
-      2. ``DEILE_PIPELINE_DISPATCH_MODE`` env var (global default)
-      3. Built-in default: ``deile-worker``
+
+    1. ``DEILE_PIPELINE_DISPATCH_<STAGE>`` env var — fail-fast on invalid.
+    2. ``pipeline.dispatchers.<stage>`` in settings.json — warn + skip on invalid.
+    3. ``DEILE_PIPELINE_DISPATCH_MODE`` env var — fail-fast on invalid.
+    4. ``pipeline.dispatch_mode`` in settings.json — warn + skip on invalid.
+    5. Built-in default: ``deile-worker``.
 
     Raises:
         ValueError: stage não está em :data:`PIPELINE_STAGES` (programming bug,
@@ -104,16 +144,38 @@ def resolve_stage_dispatcher(stage: str) -> str:
             f"unknown stage {stage!r}; expected one of {PIPELINE_STAGES}"
         )
 
+    # 1. Env var per-stage (fail-fast: ops config errors must surface loud)
     stage_env = os.environ.get(f"DEILE_PIPELINE_DISPATCH_{stage.upper()}")
     resolved = _canonicalize(stage_env)
     if resolved:
         return resolved
 
+    # 2. Settings per-stage (graceful: user config errors fall through with warning)
+    from deile.config.settings import get_settings  # lazy: avoids import cycle
+    settings = get_settings()
+    settings_per_stage = getattr(settings, f"pipeline_dispatcher_{stage}", None)
+    resolved = _canonicalize_settings(
+        settings_per_stage, f"pipeline.dispatchers.{stage}"
+    )
+    if resolved:
+        return resolved
+
+    # 3. Env var global (fail-fast)
     global_env = os.environ.get("DEILE_PIPELINE_DISPATCH_MODE")
     resolved = _canonicalize(global_env)
     if resolved:
         return resolved
 
+    # 4. Settings global (graceful); default "deile_worker" canonicalizes to
+    #    "deile-worker", so this step also covers the built-in default (step 5).
+    resolved = _canonicalize_settings(
+        settings.pipeline_dispatch_mode, "pipeline.dispatch_mode"
+    )
+    if resolved:
+        return resolved
+
+    # 5. Hardcoded safety net (only reached if settings.pipeline_dispatch_mode
+    #    is empty or an unrecognized alias — extremely unlikely in practice).
     return _DEFAULT_DISPATCHER
 
 
