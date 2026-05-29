@@ -28,7 +28,7 @@ import re
 import shutil
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import (Any, Callable, Iterable, List, Literal, Optional, Sequence,
@@ -157,6 +157,33 @@ class MergeBlockedByPipeline(MergeBlocked):
     diagnostic ("CI pipeline is <status>; wait green or relax the rule"
     instead of the generic merge_status reason).
     """
+
+
+# ---------------------------------------------------------------------------
+# Work-item rich detail (issue #397)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class WorkItemDetails:
+    """Snapshot rico de um único work-item (issue, PR ou MR).
+
+    Retornado por :meth:`ForgeClient.get_work_item_details`. Campos com
+    valor semântico de "desconhecido" usam defaults explícitos para que
+    chamadores não precisem de ``Optional``-unwrap em todo lugar.
+    """
+
+    number: int
+    kind: Literal["issue", "pr"]
+    author: str = ""
+    ci_status: Literal["passing", "failing", "pending", "none"] = "none"
+    ci_checks_summary: Tuple[int, int] = (0, 0)  # (passed, total)
+    mergeability: Literal["clean", "conflict", "draft", "blocked", "unknown"] = "unknown"
+    # (login, state) onde state é "approved"|"changes_requested"|"pending"
+    requested_reviewers: List[Tuple[str, str]] = field(default_factory=list)
+    comments_count: int = 0
+    # (kind, number) onde kind é "closes"|"refs"
+    linked_items: List[Tuple[str, int]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -448,6 +475,20 @@ class ForgeClient(ABC):
     @abstractmethod
     async def get_ci_status(self, number: int) -> Literal["passing", "failing", "pending", "none"]:
         """Return a forge-uniform CI status for the PR/MR's latest pipeline."""
+
+    @abstractmethod
+    async def get_work_item_details(
+        self, kind: Literal["issue", "pr"], number: int,
+    ) -> WorkItemDetails:
+        """Return a rich :class:`WorkItemDetails` snapshot for a single work-item.
+
+        Implementations should call the minimal set of forge REST endpoints
+        required to populate the struct: one detail call for the item itself,
+        one for CI checks (if kind=="pr"), and regex parsing of the body for
+        linked items. Implementations must be fail-soft on individual sub-calls
+        — a transient CI-check error should not prevent the caller from
+        receiving the rest of the fields.
+        """
 
     # ------------------------------------------------------------------
     # Labels
@@ -861,6 +902,7 @@ __all__ = [
     "ForgeKind",
     "ForgeConfig",
     "ForgeClient",
+    "WorkItemDetails",
     "ForgeError",
     "ForgeConfigError",
     "ForgeDetectionError",

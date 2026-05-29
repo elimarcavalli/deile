@@ -40,7 +40,7 @@ from deile.orchestration.forge.base import (ForgeClient, ForgeCliNotFound,
                                             ForgeDetectionError, ForgeError,
                                             ForgeKind, MergeBlocked,
                                             MergeBlockedByPipeline,
-                                            discover_cli)
+                                            WorkItemDetails, discover_cli)
 from deile.orchestration.forge.detection import (build_forge_config,
                                                  declared_hosts,
                                                  detect_forge_kind)
@@ -185,6 +185,7 @@ __all__ = [
     "ForgeConfig",
     "ForgeKind",
     "ForgeUrl",
+    "WorkItemDetails",
     # Concrete adapters
     "GitHubForge",
     "GitLabForge",
