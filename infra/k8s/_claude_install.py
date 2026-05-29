@@ -351,8 +351,14 @@ def _kubectl_sync_bearer_token(*, namespace: str) -> bool:
 
 
 def _kubectl_apply_manifests(*, namespace: str) -> bool:
-    """Apply manifests 47 (allowed-repos ConfigMap), 48 (bearer Secret),
-    49 (PVC), 50 (Deployment+Service), 40 (NetworkPolicy update).
+    """Apply manifests 47 (allowed-repos ConfigMap), 49 (PVC),
+    50 (Deployment+Service), 40 (NetworkPolicy update).
+
+    Manifest 48 (claude-worker-bearer Secret) é excluído desta lista
+    intencionalmente — ``_kubectl_sync_bearer_token`` o cria com o token
+    real via ``kubectl create secret --dry-run | apply`` ANTES desta função
+    ser chamada, eliminando a janela de race condition em que o Deployment
+    subiria com o Secret vazio (issue #356).
 
     Sequencial e idempotente (``kubectl apply -f`` é declarativo). Sem
     rollback automático em caso de falha intermediária — apply parcial
@@ -365,7 +371,6 @@ def _kubectl_apply_manifests(*, namespace: str) -> bool:
     manifests_dir = Path(__file__).parent / "manifests"
     files = [
         manifests_dir / "47-claude-worker-allowed-repos.yaml",
-        manifests_dir / "48-claude-worker-bearer-secret.yaml",
         manifests_dir / "49-claude-worker-pvc.yaml",
         manifests_dir / "50-claude-worker-deployment.yaml",
         manifests_dir / "40-network-policy.yaml",
@@ -506,8 +511,11 @@ def bootstrap_claude_worker(
        Se sem creds + interactive=False → fail fast.
     3. Read credentials.json, extract email (opcional).
     4. Apply Secret claude-credentials via kubectl.
-    5. Apply manifests 47/48/49/50 + 40 (NetworkPolicy).
-    6. Wait rollout status (180s default).
+    5. Popular Secret claude-worker-bearer com token real (ANTES dos manifests
+       — elimina race condition do issue #356).
+    6. Apply manifests 47/49/50 + 40 (NetworkPolicy). Manifest 48 excluído —
+       o Secret já existe com token real após etapa 5.
+    7. Wait rollout status (180s default).
 
     :param inherit_stdio: ``True`` (default — uso via CLI direto pelo
         ``deploy.py k8s claude-login``) deixa stdout/stderr do ``claude
@@ -594,7 +602,21 @@ def bootstrap_claude_worker(
             error="failed to apply claude-credentials Secret",
         )
 
-    # 3. Manifests (cria stub do claude-worker-bearer entre outros)
+    # 3. Popula o Secret claude-worker-bearer com o token real ANTES de
+    # aplicar o Deployment (manifest 50). Isso elimina a janela de race
+    # condition em que o pod subiria com o Secret vazio e entraria em
+    # CrashLoopBackOff (issue #356, Opção A).
+    if not _kubectl_sync_bearer_token(namespace=namespace):
+        return ClaudeLoginResult(
+            ok=False,
+            account_email=email,
+            secret_applied=True,
+            error="failed to sync claude-worker-bearer token",
+        )
+
+    # 4. Manifests: ConfigMap 47, PVC 49, Deployment+Service 50, NetworkPolicy 40.
+    # O manifest 48 (claude-worker-bearer stub) foi removido desta lista —
+    # o Secret já existe com o token real após o passo anterior (issue #356).
     if not _kubectl_apply_manifests(namespace=namespace):
         return ClaudeLoginResult(
             ok=False,
@@ -603,20 +625,7 @@ def bootstrap_claude_worker(
             error="failed to apply claude-worker manifests",
         )
 
-    # 3b. Sincroniza claude-worker-bearer com o token do worker-bearer
-    # (não-fatal — só warn se worker-bearer não existir; rollout vai
-    # detectar). Faz AQUI (após apply do stub vazio do manifest 48) pra
-    # garantir overwrite com o token real.
-    if not _kubectl_sync_bearer_token(namespace=namespace):
-        return ClaudeLoginResult(
-            ok=False,
-            account_email=email,
-            secret_applied=True,
-            deployment_applied=True,
-            error="failed to sync claude-worker-bearer token",
-        )
-
-    # 4. Wait rollout
+    # 5. Wait rollout
     if not _kubectl_wait_rollout(namespace=namespace):
         return ClaudeLoginResult(
             ok=False,
