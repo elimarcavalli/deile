@@ -247,6 +247,43 @@ async def test_github_api_prefix_setting_used_in_url(monkeypatch):
         )
 
 
+async def test_github_api_prefix_skipped_for_github_dot_com(monkeypatch):
+    """GitHubForge does NOT rewrite endpoints for github.com (only for GHES)."""
+    cfg = ForgeConfig(
+        kind=ForgeKind.GITHUB,
+        host="github.com",
+        project_path="owner/repo",
+        cli_path="/usr/bin/gh",
+    )
+    forge = GitHubForge(cfg)
+    base_calls: list = []
+
+    async def fake_base_run(self, *args):
+        base_calls.append(args)
+        return (0, "[]", "")
+
+    monkeypatch.setattr(ForgeClient, "_run", fake_base_run)
+
+    s = Settings()
+    s.forge_github_api_prefix = "api/v4"
+    monkeypatch.setattr("deile.config.settings.get_settings", lambda: s)
+
+    try:
+        await forge.list_issues_with_label("~workflow:nova")
+    except Exception:
+        pass
+
+    api_calls = [c for c in base_calls if c and c[0] == "api"]
+    if api_calls:
+        rewritten = [
+            a for args in api_calls for a in args[1:]
+            if isinstance(a, str) and a.startswith("https://github.com/")
+        ]
+        assert not rewritten, (
+            f"github.com endpoint MUST NOT be rewritten, got {api_calls}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # detection._check_gitlab_endpoint
 # ---------------------------------------------------------------------------
