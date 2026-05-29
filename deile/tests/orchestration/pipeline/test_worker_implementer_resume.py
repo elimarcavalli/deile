@@ -228,17 +228,23 @@ async def test_resume_fallback_fresh_when_resume_info_404(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_resume_transparent_even_when_caller_passes_resume_false(tmp_path):
-    """Issue #347 follow-up: resume é AUTO-DETECTADO via ledger, mesmo
-    quando caller passa resume=False. Cobre o caso comum de re-review
-    após operador remover ~workflow:bloqueada (PR volta pra pendente,
-    pipeline trata como 'fresh' mas ledger tem entry preservada → resume).
+async def test_dispatch_is_fresh_when_caller_passes_resume_false(tmp_path):
+    """Decisão #46 — Resume sob demanda: fresh dispatch é o default.
+    Quando o caller passa resume=False, NÃO consultamos o ledger e o
+    dispatch é fresh (sem ``resume_session_id``/``prev_task_id``), mesmo
+    se há entry no ledger. O brief unified já lê ``.deile-progress.md``
+    no PASSO 0, então o agente recupera contexto natural sem depender
+    de JSONL da sessão claude.
+
+    Substitui o teste antigo (auto-detect transparente) — esse era
+    exatamente o comportamento que causava o crescimento ilimitado de
+    JSONL em produção (visto 11M tokens antes do fix).
     """
     ledger = DispatchLedger(path=tmp_path / "l.json")
     ledger.record("pr:100", task_id="prevTask", session_id="sess-X")
 
     client = _fake_client(
-        dispatch_response={"ok": True, "summary": "ok", "task_id": "prevTask", "session_id": "sess-X"},
+        dispatch_response={"ok": True, "summary": "ok", "task_id": "freshTask", "session_id": "sess-NEW"},
         resume_info_response={
             "task_id": "prevTask", "session_id": "sess-X",
             "workdir": "/tmp/wd", "workdir_exists": True,
@@ -251,15 +257,15 @@ async def test_resume_transparent_even_when_caller_passes_resume_false(tmp_path)
                               ledger=ledger)
     await impl._dispatch(
         "fresh review brief", channel_id="pipeline-pr-100",
-        stage="pr_review", ledger_key="pr:100", resume=False,  # ← False, mas resume acontece
+        stage="pr_review", ledger_key="pr:100", resume=False,
     )
-    # get_resume_info FOI chamado (auto-detect).
-    client.get_resume_info.assert_awaited()
-    # Payload tem resume_session_id (resume real).
+    # get_resume_info NÃO foi chamado (fresh por default).
+    client.get_resume_info.assert_not_awaited()
+    # Payload NÃO tem campos de resume.
     payload = client.dispatch.await_args.kwargs.get("payload") or \
               client.dispatch.await_args.args[0]
-    assert payload.get("resume_session_id") == "sess-X"
-    assert payload.get("prev_task_id") == "prevTask"
+    assert "resume_session_id" not in payload
+    assert "prev_task_id" not in payload
 
 
 @pytest.mark.asyncio
@@ -391,9 +397,13 @@ async def test_dispatch_clears_ledger_on_normal_approve(tmp_path):
 
 @pytest.mark.asyncio
 async def test_resume_brief_for_pr_review_uses_rich_nudge(tmp_path):
-    """Quando há resume_meta + stage='pr_review', _dispatch chama
+    """Quando o caller pede resume=True E há ledger entry, _dispatch chama
     _wrap_review_brief_for_resume e o brief enviado é o nudge rico
-    (não o brief original do caller)."""
+    (não o brief original do caller).
+
+    Decisão #46: resume agora exige opt-in explícito do caller — antes
+    era transparente via ledger; hoje só com ``resume=True``.
+    """
     ledger = DispatchLedger(path=tmp_path / "l.json")
     ledger.record("pr:300", task_id="prevT", session_id="prevS")
 
@@ -413,7 +423,7 @@ async def test_resume_brief_for_pr_review_uses_rich_nudge(tmp_path):
     await impl._dispatch(
         brief="ORIGINAL BRIEF SHOULD NOT BE USED",
         channel_id="pipeline-pr-300", stage="pr_review",
-        ledger_key="pr:300", resume=False,
+        ledger_key="pr:300", resume=True,
     )
     payload = client.dispatch.await_args.kwargs.get("payload") or \
               client.dispatch.await_args.args[0]
