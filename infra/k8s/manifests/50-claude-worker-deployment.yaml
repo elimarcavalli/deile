@@ -101,6 +101,12 @@ spec:
             - { name: DEILE_CLAUDE_WORKER_LOG_LEVEL, value: "INFO" }
             - { name: DEILE_CLAUDE_ALLOWED_REPOS_FILE,
                 value: "/etc/claude-worker/allowed_repos.regex" }
+            # Lease TTL e heartbeat — controlam o mecanismo de exclusão mútua
+            # entre réplicas paralelas do claude-worker (issue #309 multi-claude).
+            # TTL: janela de detecção de pod morto; heartbeat: frequência de
+            # atualização do lease. Ajustar conforme carga da workload.
+            - { name: DEILE_CLAUDE_LEASE_TTL_S, value: "30" }
+            - { name: DEILE_CLAUDE_LEASE_HEARTBEAT_S, value: "5" }
           ports:
             - { name: claude-api, containerPort: 8767, protocol: TCP }
           volumeMounts:

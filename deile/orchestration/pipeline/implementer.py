@@ -771,6 +771,22 @@ class WorkerImplementer(PipelineImplementer):
                     error="DISPATCH_SKIPPED_CONCURRENT: claude-worker já tem "
                           "sessão ativa pro mesmo task; skip nesse tick",
                 )
+            # Mecanismo 2 (lease): worker recusa com 409 + TASK_ALREADY_RUNNING
+            # quando outra réplica detém o lease do workspace desta task.
+            # Comportamento idêntico ao CONCURRENT_DISPATCH_BLOCKED: pipeline
+            # aguarda o próximo tick, NÃO incrementa tentativas, NÃO limpa
+            # o ledger — a task está em andamento em outro pod.
+            if exc.error_code == "TASK_ALREADY_RUNNING":
+                logger.info(
+                    "dispatch skipped — workspace com lease ativo em outra "
+                    "réplica (TASK_ALREADY_RUNNING); aguarda próximo tick. "
+                    "ledger_key=%s", ledger_key,
+                )
+                return WorkOutcome(
+                    ok=False, text="",
+                    error="DISPATCH_SKIPPED_LEASE: workspace desta task está "
+                          "com lease ativo em outro pod; skip nesse tick",
+                )
             return WorkOutcome(ok=False, text="", error=f"{exc.error_code}: {exc}"[:500])
         except Exception as exc:  # noqa: BLE001 — never crash the tick
             logger.exception("worker dispatch raised")

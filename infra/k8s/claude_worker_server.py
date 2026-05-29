@@ -26,6 +26,7 @@ Spec: ``docs/superpowers/specs/2026-05-26-claude-worker-design.md`` §4.4.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import hmac
 import json
 import logging
@@ -44,6 +45,277 @@ from typing import List, Optional
 from aiohttp import web
 
 logger = logging.getLogger("deile.claude_worker_server")
+
+#: ``secrets.token_hex(8)`` gera exatamente 16 chars hex; qualquer outra
+#: forma é rejeitada para não permitir path traversal pela URL nem leitura
+#: de arquivos arbitrários no PVC. Definida aqui (antes de qualquer uso)
+#: porque os mecanismos de lease (seção abaixo) referenciam este padrão.
+_TASK_ID_RE = re.compile(r"[0-9a-f]{16}")
+
+
+# --------------------------------------------------------------------------- #
+# Mecanismo 1 — OAuth file-lock cross-pod
+#
+# Quando o claude-worker tem N réplicas, todas elas montam o mesmo PVC
+# (``claude-worker-home``) com o mesmo ``credentials.json``. Sem lock, dois
+# pods que detectam expiração simultânea disparam refresh concorrente e o
+# segundo write corrompe o token recém-gravado pelo primeiro. O flock garante
+# serialização: apenas um pod escreve de cada vez; os demais aguardam e então
+# leem o token já atualizado.
+# --------------------------------------------------------------------------- #
+
+
+def _creds_path() -> Path:
+    """Caminho canônico do credentials.json (montado pelo initContainer)."""
+    home = Path(os.environ.get("HOME", "/home/claude"))
+    return home / ".claude" / "credentials.json"
+
+
+def _is_expiring_soon(creds: dict, window_s: int = 300) -> bool:
+    """True se o ``accessToken`` expira nos próximos *window_s* segundos.
+
+    O campo ``expiresAt`` segue o formato do Claude Code: inteiro de
+    milissegundos de epoch (ms). Ausente ou inválido → assume que NÃO
+    expira em breve (fail-open: não dispara refresh desnecessário).
+    """
+    oauth = creds.get("claudeAiOauth") if isinstance(creds, dict) else None
+    expires_at_ms = (oauth or {}).get("expiresAt") if isinstance(oauth, dict) else None
+    if expires_at_ms is None:
+        expires_at_ms = creds.get("expiresAt") if isinstance(creds, dict) else None
+    if not isinstance(expires_at_ms, (int, float)):
+        return False
+    expires_at_s = float(expires_at_ms) / 1000.0
+    return (expires_at_s - time.time()) < window_s
+
+
+# mtime do credentials.json na última leitura bem-sucedida — permite
+# detectar quando outro pod escreveu um token novo sem ter que relê-lo
+# incondicionalmente a cada dispatch.
+_creds_last_mtime: float = 0.0
+
+
+def _refresh_oauth_with_lock(creds_path: Optional[Path] = None) -> bool:
+    """Lê ``credentials.json`` sob lock exclusivo e atualiza ``ANTHROPIC_AUTH_TOKEN``.
+
+    Sequência:
+    1. Abre o arquivo em modo ``r+`` (leitura+escrita, não trunca).
+    2. Adquire ``LOCK_EX`` (bloqueia até o lock ser obtido — outros pods
+       que chegarem aqui ficam em espera).
+    3. Relê o conteúdo (pode ter mudado desde o open, pois outro pod pode
+       ter acabado de escrever).
+    4. Verifica ``expiresAt``; se expirando em <5 min, loga aviso (refresh
+       real via ``claude`` CLI não é tentado — o ``claude -p`` subprocess
+       faz o refresh in-place quando necessário). O lock garante que apenas
+       um pod detecta/age sobre a expiração de cada vez.
+    5. Exporta o token mais fresco como ``ANTHROPIC_AUTH_TOKEN``.
+    6. Libera o lock ao sair do ``with`` (``LOCK_UN`` automático no close).
+
+    Best-effort: erros de I/O ou parse viram ``logger.warning`` e a função
+    retorna ``False`` — o dispatch continua com o token anterior (se havia
+    um carregado no startup), que pode ser válido ainda.
+
+    Returns:
+        ``True`` se ``ANTHROPIC_AUTH_TOKEN`` foi (re)carregado com sucesso.
+    """
+    global _creds_last_mtime  # noqa: PLW0603
+    if creds_path is None:
+        creds_path = _creds_path()
+    if not creds_path.exists():
+        logger.debug("credentials.json não encontrado em %s — skip refresh", creds_path)
+        return False
+    try:
+        current_mtime = creds_path.stat().st_mtime
+    except OSError as exc:
+        logger.warning("stat(%s) falhou: %s", creds_path, exc)
+        return False
+    # Evita releitura desnecessária quando mtime não mudou (arquivo idêntico
+    # ao último load). O flock é obtido mesmo assim para serializar quaisquer
+    # concurrent refreshes que possam estar em voo.
+    try:
+        with open(creds_path, "r+", encoding="utf-8") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                fh.seek(0)
+                raw = fh.read()
+            finally:
+                # Liberação explícita antes do close para minimizar a janela
+                # de lock ao usar o token (não precisamos do lock durante o
+                # os.environ write — é local ao processo).
+                fcntl.flock(fh, fcntl.LOCK_UN)
+    except OSError as exc:
+        logger.warning("flock/read em %s falhou: %s", creds_path, exc)
+        return False
+
+    try:
+        creds = json.loads(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        logger.warning("credentials.json malformado em %s: %s", creds_path, exc)
+        return False
+
+    if _is_expiring_soon(creds):
+        logger.warning(
+            "ANTHROPIC_AUTH_TOKEN está expirando em breve em %s — "
+            "rode `deploy.py k8s claude-renew` para renovar",
+            creds_path,
+        )
+
+    # Extrai token — mesma lógica de _load_oauth_token_into_env.
+    oauth = creds.get("claudeAiOauth") if isinstance(creds, dict) else None
+    token = (oauth or {}).get("accessToken") if isinstance(oauth, dict) else None
+    if not token:
+        token = creds.get("accessToken") if isinstance(creds, dict) else None
+    if not token:
+        logger.warning(
+            "credentials.json não contém accessToken em %s — "
+            "claude CLI vai reportar 'Not logged in'",
+            creds_path,
+        )
+        return False
+
+    os.environ["ANTHROPIC_AUTH_TOKEN"] = token
+    _creds_last_mtime = current_mtime
+    logger.debug(
+        "ANTHROPIC_AUTH_TOKEN (re)carregado de %s (len=%d, mtime=%.0f)",
+        creds_path, len(token), current_mtime,
+    )
+    return True
+
+
+# --------------------------------------------------------------------------- #
+# Mecanismo 2 — Lease por task_id (filesystem-based, atomic)
+#
+# Cada task possui um arquivo ``.lease.json`` dentro do seu workspace
+# (``<root>/<task_id>/.lease.json``). O lease identifica qual pod/pid está
+# trabalhando e quando foi o último heartbeat. A aquisição é atômica via
+# write-tmp + rename (POSIX garantia de atomicidade). O heartbeat é atualizado
+# periodicamente por uma asyncio.Task; quando ela para (pod morreu, processo
+# travou), o arquivo fica desatualizado e o próximo pod que tentar adquirir
+# trata o workspace como disponível após o TTL expirar.
+# --------------------------------------------------------------------------- #
+
+#: TTL em segundos — lease considera-se morto se ``heartbeat_at`` for
+#: mais antigo que este valor. Configurável via env para ajuste operacional.
+_LEASE_TTL_S: int = int(os.environ.get("DEILE_CLAUDE_LEASE_TTL_S", "30"))
+
+#: Intervalo de atualização do heartbeat em segundos.
+_LEASE_HEARTBEAT_S: int = int(os.environ.get("DEILE_CLAUDE_LEASE_HEARTBEAT_S", "5"))
+
+
+def _validate_task_id_for_path(task_id: str) -> bool:
+    """Defesa contra path traversal: task_id deve ser hex 16-char."""
+    return bool(_TASK_ID_RE.fullmatch(task_id)) if task_id else False
+
+
+async def _acquire_lease(workspace: Path) -> Optional[dict]:
+    """Tenta adquirir o lease do workspace.
+
+    Algoritmo:
+    1. Se ``.lease.json`` existir e ``heartbeat_at`` for recente (< TTL),
+       outro pod está ativo → retorna None.
+    2. JSON inválido / ausente / heartbeat expirado → considera morto,
+       adquire sobrescrevendo.
+    3. Write atomic: escreve em ``.lease.tmp.<pod>`` e faz rename pra
+       ``.lease.json``. POSIX garante que o rename é atômico.
+    4. Re-lê o arquivo para confirmar que nosso pod ganhou a corrida
+       (se outro pod fez rename simultaneamente, o arquivo conterá o pod
+       dele, e retornamos None).
+
+    Returns:
+        dict com o conteúdo do lease quando adquirido; None quando falhou.
+    """
+    lease_path = workspace / ".lease.json"
+    pod_id = os.environ.get("HOSTNAME", f"local-{os.getpid()}")
+    now = time.time()
+
+    # Passo 1: verifica lease existente (I/O bloqueante → thread).
+    def _check_existing() -> bool:
+        """True se lease existente está dentro do TTL (ativo por outro pod)."""
+        if not lease_path.exists():
+            return False
+        try:
+            current = json.loads(lease_path.read_text(encoding="utf-8"))
+            heartbeat_age = now - float(current.get("heartbeat_at", 0))
+            return heartbeat_age < _LEASE_TTL_S
+        except (OSError, json.JSONDecodeError, ValueError):
+            return False  # corrupto → trata como morto
+
+    if await asyncio.to_thread(_check_existing):
+        return None  # workspace em uso por outro pod ativo
+
+    # Passo 2: escreve candidato atômico.
+    lease = {
+        "pod": pod_id,
+        "pid": os.getpid(),
+        "started_at": now,
+        "heartbeat_at": now,
+    }
+
+    def _write_and_confirm() -> Optional[dict]:
+        tmp = workspace / f".lease.tmp.{pod_id}"
+        try:
+            tmp.write_text(json.dumps(lease), encoding="utf-8")
+            tmp.rename(lease_path)
+            # Passo 3: re-lê para confirmar vitória na corrida.
+            confirmed = json.loads(lease_path.read_text(encoding="utf-8"))
+            if confirmed.get("pod") != pod_id:
+                # Outro pod ganhou a corrida atomicamente — não somos o dono.
+                return None
+            return confirmed
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("lease write/confirm falhou para %s: %s", workspace, exc)
+            # Cleanup do tmp se sobrou (best-effort).
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+
+    return await asyncio.to_thread(_write_and_confirm)
+
+
+async def _release_lease(lease_path: Path) -> None:
+    """Remove o arquivo de lease. Idempotente: FileNotFoundError é ignorado."""
+    def _unlink() -> None:
+        try:
+            lease_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.warning("falha ao remover lease %s: %s", lease_path, exc)
+
+    await asyncio.to_thread(_unlink)
+
+
+async def _heartbeat_loop(lease_path: Path, stop_event: asyncio.Event) -> None:
+    """Atualiza ``heartbeat_at`` no lease a cada ``_LEASE_HEARTBEAT_S`` segundos.
+
+    Best-effort: erros de I/O são logados e ignorados — o heartbeat pode
+    deixar de ser atualizado sem derrubar o dispatch. Se o pod perder acesso
+    ao PVC (improvável em k3s single-node), o pipeline detectará o TTL
+    expirado e tentará adquirir o lease no próximo tick.
+
+    A task é cancelada (ou ``stop_event`` é setado) quando o dispatch terminar.
+    """
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=float(_LEASE_HEARTBEAT_S))
+        except asyncio.TimeoutError:
+            pass
+        if stop_event.is_set():
+            break
+        def _update() -> None:
+            try:
+                content = json.loads(lease_path.read_text(encoding="utf-8"))
+                content["heartbeat_at"] = time.time()
+                # Write atômico para não corromper o lease se o processo
+                # for interrompido no meio da escrita.
+                tmp = lease_path.with_suffix(".json.hb_tmp")
+                tmp.write_text(json.dumps(content), encoding="utf-8")
+                tmp.rename(lease_path)
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning("heartbeat update falhou em %s: %s", lease_path, exc)
+
+        await asyncio.to_thread(_update)
 
 
 # --------------------------------------------------------------------------- #
@@ -439,32 +711,98 @@ def _is_session_jsonl_recently_active(
 
 
 def _is_claude_process_alive(session_id: str) -> bool:
-    """True se houver processo com este session-id na cmdline OU
-    se o JSONL da sessão foi appendado recentemente.
+    """True se o session_id ainda está em execução ativa.
 
-    Usado pelo endpoint /v1/dispatches/{task_id}/resume-info para o pipeline
-    decidir entre "ainda rodando, não disturbar" vs "morto, pode reaper".
+    Liveness via três sinais em ordem de prioridade:
 
-    Dois sinais combinados (OR), pra ser **multi-replica safe**:
-      1. ``/proc/<pid>/cmdline`` no pod local — barato, definitivo quando
-         positivo, mas só vê o /proc deste pod.
-      2. mtime do JSONL da sessão na PVC compartilhada — captura claude
-         rodando em **outra réplica** do claude-worker (caso o Service
-         distribua o request pra pod diferente daquele onde claude girou).
+    1. **Lease** (mecanismo 3, prioritário): lê ``workdir/.lease.json``
+       via reverse-lookup do session_id. Se o heartbeat estiver fresco
+       (< TTL), a task está ativa em alguma réplica — resposta definitiva
+       cross-pod sem depender de ``/proc`` local.
+    2. **``/proc`` local** (fallback rápido): cobre dispatches pré-lease
+       (pods rodando versão anterior) e contextos de teste/dev fora do
+       cluster onde o PVC não existe.
+    3. **JSONL mtime** (fallback conservador): para dispatches pré-lease
+       que não estão mais no ``/proc`` mas cujo JSONL foi appendado
+       recentemente (sinal de vida cross-replica legado).
 
-    Falso negativo é OK (pipeline reaper retry); falso positivo é pior
-    (pipeline acha vivo e nunca retoma) — daí o threshold de 60s do
-    fallback JSONL ser conservador.
-
-    BUG HISTÓRICO (corrigido aqui — 2026-05-27): com claude-worker em
-    3 réplicas e Service round-robin, ``_find_claude_pid`` retornava
-    None quando o request caía em pod diferente daquele onde claude
-    rodava → pipeline disparava RESUME pensando que estava morto →
-    triple-dispatch de Opus 4.7 paralelos na mesma issue.
+    O uso do lease como sinal primário resolve o bug histórico de
+    triple-dispatch que ocorria quando o Service round-robin direcionava
+    o request ``/resume-info`` para um pod diferente daquele onde claude
+    girava — esse pod não via o processo no seu ``/proc`` local e respondia
+    ``claude_alive=False``, levando o pipeline a disparar resume redundante.
     """
+    # Sinal 1: lease no PVC compartilhado (cross-pod definitivo).
+    lease_alive = _is_alive_via_lease(session_id)
+    if lease_alive is not None:
+        return lease_alive
+
+    # Sinal 2: /proc local (para dispatches pré-lease ou fora do cluster).
     if _find_claude_pid(session_id) is not None:
         return True
+
+    # Sinal 3: JSONL mtime (fallback legado cross-replica).
     return _is_session_jsonl_recently_active(session_id)
+
+
+def _is_alive_via_lease(session_id: str) -> Optional[bool]:
+    """Verifica liveness consultando o lease do workspace da sessão.
+
+    Faz reverse-lookup de ``session_id`` → ``task_id`` → ``workdir`` via
+    session metadata, depois lê ``workdir/.lease.json``.
+
+    Returns:
+        ``True``  — lease existe e heartbeat está dentro do TTL.
+        ``False`` — lease existe mas expirou (task morta ou TTL passou).
+        ``None``  — lease não existe (task pré-lease ou workdir perdido).
+                    O caller deve checar sinais alternativos.
+    """
+    if not session_id:
+        return None
+    # Reverse-lookup: varre ~/.claude/tasks/ buscando session_id.
+    task_id = _find_task_id_for_session(session_id)
+    if not task_id:
+        return None
+    meta = _load_session_meta(task_id)
+    if not meta:
+        return None
+    workdir_str = meta.get("workdir")
+    if not workdir_str:
+        return None
+    lease_path = Path(workdir_str) / ".lease.json"
+    if not lease_path.exists():
+        return None
+    try:
+        lease = json.loads(lease_path.read_text(encoding="utf-8"))
+        age = time.time() - float(lease.get("heartbeat_at", 0))
+        return age < _LEASE_TTL_S
+    except (OSError, json.JSONDecodeError, ValueError):
+        # Lease corrompido → trata como morto, sinaliza para o caller
+        # cair nos sinais alternativos.
+        return None
+
+
+def _find_task_id_for_session(session_id: str) -> Optional[str]:
+    """Localiza o task_id pelo session_id fazendo scan do diretório de meta.
+
+    O scan é O(n) em número de tasks no PVC; na prática cada pod tem poucas
+    dezenas de tasks (a maioria é cleanup via /cleanup endpoint), então o custo
+    é aceitável. Cache local não é implementado (risco de stale data).
+    """
+    base = _session_meta_dir()
+    if not base.is_dir():
+        return None
+    try:
+        children = list(base.iterdir())
+    except OSError:
+        return None
+    for child in children:
+        if not child.is_dir() or not _TASK_ID_RE.fullmatch(child.name):
+            continue
+        meta = _load_session_meta(child.name)
+        if meta and meta.get("session_id") == session_id:
+            return child.name
+    return None
 
 
 def _find_claude_pid(session_id: str) -> Optional[int]:
@@ -901,6 +1239,35 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         preamble = _render_preamble(stage, branch, task_id)
         full_prompt = preamble + "\n\n---\n\n" + brief
 
+    # Mecanismo 2 — Lease: garante que NUNCA dois pods trabalhem no mesmo
+    # workspace simultaneamente. Adquirido ANTES do spawn; liberado no finally.
+    lease = await _acquire_lease(workspace)
+    if lease is None:
+        logger.warning(
+            "dispatch RECUSADO — lease ativo em %s (outro pod está trabalhando "
+            "nesta task). task_id=%s stage=%s",
+            workspace, task_id, stage,
+        )
+        return web.json_response({
+            "ok": False,
+            "error_code": "TASK_ALREADY_RUNNING",
+            "error": (
+                f"outra réplica do claude-worker já está executando "
+                f"task_id={task_id}; pipeline deve retry no próximo tick"
+            ),
+            "task_id": task_id,
+        }, status=409)
+
+    stop_hb = asyncio.Event()
+    hb_task = asyncio.create_task(
+        _heartbeat_loop(workspace / ".lease.json", stop_hb),
+        name=f"lease-hb-{task_id}",
+    )
+
+    # Mecanismo 1 — OAuth: reload do token antes do spawn, serializado pelo
+    # flock — garante que todos os pods leiam o token mais recente sem race.
+    _refresh_oauth_with_lock()
+
     # Persistir metadata ANTES do spawn (pro endpoint /resume-info poder
     # detectar dispatches in-flight). Atomic via _save_session_meta.
     meta_pre = {
@@ -944,6 +1311,15 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     meta_pre["full_prompt"] = full_prompt
     _save_session_meta(task_id, meta_pre)
 
+    async def _cleanup_lease() -> None:
+        """Para o heartbeat e libera o lease. Idempotente."""
+        stop_hb.set()
+        try:
+            await hb_task
+        except Exception:
+            pass
+        await _release_lease(workspace / ".lease.json")
+
     try:
         result = await run_subprocess_with_progress(
             cmd, cwd=workspace, task_id=task_id, timeout=timeout,
@@ -955,6 +1331,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         meta_pre["last_returncode"] = -1
         meta_pre["last_completed_at"] = int(time.time())
         _save_session_meta(task_id, meta_pre)
+        await _cleanup_lease()
         return web.json_response({
             "ok": False,
             "error": f"{type(exc).__name__}: {exc}",
@@ -1018,6 +1395,10 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     elif not ok and claude_result["is_error"] and claude_result["result"]:
         # Falha não-auth reportada pelo claude — propaga o erro pra pipeline.
         response["error"] = claude_result["result"][:500]
+
+    # Libera heartbeat + lease antes de responder (lease liberado apenas aqui
+    # no caminho feliz; o caminho de exceção já liberou no handler acima).
+    await _cleanup_lease()
     return web.json_response(response)
 
 
@@ -1045,12 +1426,6 @@ def _detect_auth_expired(stdout: str, stderr: str) -> bool:
     """
     combined = (stdout + "\n" + stderr).lower()
     return any(sig in combined for sig in _AUTH_EXPIRED_SIGNATURES)
-
-
-#: ``secrets.token_hex(8)`` em :func:`dispatch_handler` gera exatamente 16
-#: chars hex; qualquer outra forma é rejeitada para não permitir path traversal
-#: pela URL nem leitura de arquivos arbitrários no PVC.
-_TASK_ID_RE = re.compile(r"[0-9a-f]{16}")
 
 
 async def progress_handler(request: web.Request) -> web.Response:
