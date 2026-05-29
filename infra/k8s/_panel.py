@@ -82,6 +82,12 @@ from _panel_data import \
     set_stage_cost_cap_usd as pd_set_stage_cost_cap_usd
 from _panel_data import \
     reset_stage_cost_cap_usd as pd_reset_stage_cost_cap_usd
+from _panel_data import \
+    set_pipeline_max_parallel as pd_set_pipeline_max_parallel
+from _panel_data import \
+    get_pipeline_max_parallel as pd_get_pipeline_max_parallel
+from _panel_data import \
+    get_claude_worker_replicas as pd_get_claude_worker_replicas
 from rich import box
 from rich.align import Align
 from rich.console import Console, Group, RenderableType
@@ -3994,6 +4000,7 @@ class DispatchMatrixView(View):
         "[enter] editar   [r] reset   "
         "[L] switch claude login   [I] install   [U] uninstall   [q] back   "
         "[s]caling row: enter digita réplicas (0-10)   "
+        "[c] cleanup PVC (preview + confirm)   "
         "colunas: 0=Worker 1=Model 2=Timeout 3=Retries 4=Cost cap (USD/run)"
     )
 
@@ -4306,6 +4313,20 @@ class DispatchMatrixView(View):
         tbl.add_row("Worker Scaling", scale_w_txt, scale_m_txt,
                     "", "", "—", "kubectl")
 
+        # Linha "Pipeline Parallelism" — ajusta max_parallel (issue #408).
+        # ``cursor_row == len(entries) + 2`` aponta aqui.
+        parallel_idx = len(entries) + 2
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        current_mp = pd_get_pipeline_max_parallel(namespace=ns)
+        mp_txt = str(current_mp) if current_mp is not None else "(default=2)"
+        highlight_mp = (self.cursor_row == parallel_idx and self.cursor_col == 0)
+        if highlight_mp:
+            mp_txt = f"[reverse]{mp_txt}[/reverse]"
+        tbl.add_row("Pipeline Parallelism", mp_txt, "", "", "", "—",
+                    "env" if current_mp is not None else "default")
+
         # --- Compose: header + matrix + (picker?) + (status?) + hotkeys --
         parts: List[RenderableType] = [
             Text(status_text, style=status_style),
@@ -4354,6 +4375,12 @@ class DispatchMatrixView(View):
             title = "DESINSTALAR CLAUDE-WORKER?"
         elif kind == "scale_prompt":
             title = f"RÉPLICAS PARA '{stage}' (0-10)"
+        elif kind == "max_parallel_prompt":
+            title = "MAX_PARALLEL (>= 1; 'auto' = réplicas claude-worker)"
+        elif kind == "cleanup_preview":
+            title = "CLEANUP PVC — PREVIEW (workdirs/leases a remover)"
+        elif kind == "cleanup_confirm":
+            title = "CONFIRMAR CLEANUP PVC?"
         else:  # defensivo
             title = "AÇÃO"
 
@@ -4385,16 +4412,31 @@ class DispatchMatrixView(View):
             hint = Text("[Y] confirma   [N]/[esc] cancela",
                         style="dim cyan")
             body: RenderableType = Group(prompt, Text(""), tbl, hint)
-        elif kind in ("timeout", "retries"):
+        elif kind in ("timeout", "retries", "max_parallel_prompt"):
             # Entrada numérica livre — ``options[0]`` é o buffer atual.
             buf = options[0] if options else ""
             input_line = Text(f"› {buf}_", style="bold cyan")
-            unit_hint = " (segundos, > 0)" if kind == "timeout" else " (>= 0)"
+            if kind == "timeout":
+                unit_hint = " (segundos, > 0)"
+            elif kind == "retries":
+                unit_hint = " (>= 0)"
+            else:  # max_parallel_prompt
+                unit_hint = " (>= 1; ou deixe 'auto' para usar réplicas claude-worker)"
             hint_line = Text(
                 f"[0-9] digita   [backspace] apaga   [enter] confirma   [esc] cancela{unit_hint}",
                 style="dim cyan",
             )
             body = Group(input_line, Text(""), hint_line)
+        elif kind in ("cleanup_preview", "cleanup_confirm"):
+            # ``stage`` carrega o texto explicativo (summary do scan).
+            prompt = Text(str(stage) if stage else "", style="bold")
+            if kind == "cleanup_preview":
+                hint = Text("[y] confirmar limpeza   [n]/[esc] cancelar",
+                            style="dim cyan")
+            else:
+                hint = Text("[Y] confirma → executa cleanup   [N]/[esc] cancela",
+                            style="dim cyan")
+            body = Group(prompt, Text(""), hint)
         else:
             body = Group(
                 tbl,
@@ -4454,8 +4496,8 @@ class DispatchMatrixView(View):
         if self.mode is not None:
             return self._handle_picker_key(key)
 
-        # Última linha editável é "Worker Scaling" (len+1; Global default = len).
-        max_row = len(self._stages()) + 1  # +1 para a linha "Worker Scaling"
+        # Última linha editável é "Pipeline Parallelism" (len+2).
+        max_row = len(self._stages()) + 2  # +2 para Global default + Worker Scaling + Parallelism
 
         # --- back / quit --------------------------------------------------
         if key == "q" or key == "ESC":
@@ -4486,6 +4528,9 @@ class DispatchMatrixView(View):
             n_stages = len(entries)
             global_idx = n_stages       # "Global default"
             scaling_idx = n_stages + 1  # "Worker Scaling"
+            parallel_idx = n_stages + 2  # "Pipeline Parallelism"
+            if self.cursor_row == parallel_idx:
+                return self._open_max_parallel_prompt()
             if self.cursor_row == scaling_idx:
                 # Linha de scaling → prompt numérico de réplicas (Task 4).
                 # Cols 2/3 (timeout/retries) não se aplicam à scaling row.
@@ -4574,6 +4619,10 @@ class DispatchMatrixView(View):
                 self.last_ok = None
                 return ActionResult.refresh()
             return self._open_uninstall_modal()
+
+        if key in ("c",):
+            # Issue #408 — on-demand cleanup preview do PVC claude-worker.
+            return self._open_cleanup_preview_modal()
 
         return ActionResult()
 
@@ -4695,7 +4744,11 @@ class DispatchMatrixView(View):
             else:
                 # col 4 = Cost cap reset (issue #392)
                 ok, msg = pd_reset_stage_cost_cap_usd(stage, namespace=ns)
-        else:  # Global default row
+        elif self.cursor_row == n_stages + 2:  # Pipeline Parallelism row (issue #408)
+            ok, msg = pd_set_pipeline_max_parallel(None, namespace=ns)
+        elif self.cursor_row == n_stages + 1:  # Worker Scaling row — no reset
+            ok, msg = (None, "scaling row não tem reset — ajuste manualmente")
+        else:  # Global default row (n_stages)
             if self.cursor_col == 0:
                 ok, msg = pd_clear_pipeline_dispatch_mode(namespace=ns)
             else:
@@ -5116,6 +5169,12 @@ class DispatchMatrixView(View):
                     self.last_ok = False
                     return ActionResult.refresh()
                 ok, msg = pd_set_stage_timeout(stage, value, namespace=ns)
+            elif kind == "max_parallel_prompt":
+                if value is not None and value < 1:
+                    self.last_msg = "max_parallel deve ser >= 1"
+                    self.last_ok = False
+                    return ActionResult.refresh()
+                ok, msg = pd_set_pipeline_max_parallel(value, namespace=ns)
             else:  # retries
                 if value is not None and value < 0:
                     self.last_msg = "retries deve ser >= 0"
@@ -5134,6 +5193,182 @@ class DispatchMatrixView(View):
             return ActionResult.refresh()
 
         return ActionResult()
+
+    def _open_max_parallel_prompt(self) -> ActionResult:
+        """Abre o modal de edição numérica de max_parallel (issue #408)."""
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        current = pd_get_pipeline_max_parallel(namespace=ns)
+        initial_buf = str(current) if current is not None else ""
+        self.mode = ("max_parallel_prompt", None, [initial_buf])
+        self.picker_cursor = 0
+        self.last_msg = ""
+        self.last_ok = None
+        return ActionResult.refresh()
+
+    def _open_cleanup_preview_modal(self) -> ActionResult:
+        """Abre o modal de preview do cleanup (issue #408).
+
+        Roda ``kubectl exec deployment/claude-worker -- python3 /app/claude_worker_server.py --cleanup-preview``
+        de forma síncrona (rápido — só lê disco, não deleta).
+        """
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        if self.data is None:
+            self.mode = (
+                "cleanup_preview",
+                "[demo] sem cluster — preview indisponível",
+                ["(demo)"],
+            )
+            self.picker_cursor = 0
+            return ActionResult.refresh()
+
+        kubectl = kubectl_bin()
+        if kubectl is None:
+            self.last_msg = "kubectl não encontrado — cleanup indisponível"
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        # Verifica se o deployment existe.
+        check = subprocess.run(
+            [kubectl, "-n", ns, "get", "deployment/claude-worker"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if check.returncode != 0:
+            self.last_msg = (
+                "deployment/claude-worker não encontrado — "
+                "instale-o primeiro ([I])"
+            )
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        # kubectl exec para obter preview em JSON.
+        py_cmd = (
+            "import sys, json, os; sys.path.insert(0, '/app'); "
+            "from claude_worker_server import _cleanup_scan; "
+            "from pathlib import Path; "
+            "root = Path(os.environ.get('DEILE_CLAUDE_WORKER_ROOT', '/home/claude/work')); "
+            "r = _cleanup_scan(root); print(json.dumps(r))"
+        )
+        try:
+            result = subprocess.run(
+                [kubectl, "-n", ns, "exec",
+                 "deployment/claude-worker", "--",
+                 "python3", "-c", py_cmd],
+                capture_output=True, text=True, timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            self.last_msg = "timeout ao obter preview do cleanup (>30s)"
+            self.last_ok = False
+            return ActionResult.refresh()
+        except OSError as exc:
+            self.last_msg = f"kubectl exec falhou: {exc}"
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        if result.returncode != 0:
+            self.last_msg = (
+                f"cleanup preview falhou (rc={result.returncode}): "
+                f"{(result.stderr or result.stdout or '').strip()[:120]}"
+            )
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        # Parse JSON preview.
+        try:
+            scan = json.loads(result.stdout.strip())
+        except (json.JSONDecodeError, ValueError):
+            self.last_msg = "saída do preview não é JSON válido"
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        n_leases = len(scan.get("dead_leases", []))
+        n_old = len(scan.get("old_workdirs", []))
+        n_empty = len(scan.get("empty_workdirs", []))
+        n_active = len(scan.get("active_workdirs", []))
+        total_mb = scan.get("total_candidate_bytes", 0) / 1_048_576
+        summary = (
+            f"Leases mortos: {n_leases}\n"
+            f"Workdirs antigos: {n_old}\n"
+            f"Workdirs sem JSONL: {n_empty}\n"
+            f"Workdirs ativos (skip): {n_active}\n"
+            f"Estimativa de espaço: {total_mb:.1f} MiB\n\n"
+            f"Confirmar limpeza? [y] executa   [n]/[ESC] cancela"
+        )
+        self.mode = ("cleanup_preview", summary, ["confirm"])
+        self.picker_cursor = 0
+        self.last_msg = ""
+        self.last_ok = None
+        return ActionResult.refresh()
+
+    def _handle_cleanup_confirm_key(self, key: str) -> ActionResult:
+        """Roteia Y/N no modal de preview/confirm do cleanup (issue #408)."""
+        if key in ("y", "Y", "\r", "\n"):
+            self.mode = None
+            self.picker_cursor = 0
+            return self._apply_cleanup()
+        if key in ("n", "N", "ESC"):
+            self.mode = None
+            self.picker_cursor = 0
+            self.last_msg = "cleanup cancelado"
+            self.last_ok = None
+            return ActionResult.refresh()
+        return ActionResult()
+
+    def _apply_cleanup(self) -> ActionResult:
+        """Executa o cleanup via kubectl exec no pod claude-worker (issue #408)."""
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        if self.data is None:
+            self.last_msg = "[demo] cleanup não executado (sem cluster)"
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        kubectl = kubectl_bin()
+        if kubectl is None:
+            self.last_msg = "kubectl não encontrado — cleanup impossível"
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        py_cmd = (
+            "import sys, json, os; sys.path.insert(0, '/app'); "
+            "from claude_worker_server import _do_cleanup; "
+            "from pathlib import Path; "
+            "root = Path(os.environ.get('DEILE_CLAUDE_WORKER_ROOT', '/home/claude/work')); "
+            "r = _do_cleanup(root); "
+            "print(f\"removidos {len(r.get('removed_leases',[]))} leases + "
+            "{len(r.get('removed_workdirs',[]))} workdirs, "
+            "{r.get('freed_bytes',0)/1048576:.1f} MiB liberados\")"
+        )
+        try:
+            result = subprocess.run(
+                [kubectl, "-n", ns, "exec",
+                 "deployment/claude-worker", "--",
+                 "python3", "-c", py_cmd],
+                capture_output=True, text=True, timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            self.last_msg = "timeout no cleanup (>120s)"
+            self.last_ok = False
+            return ActionResult.refresh()
+        except OSError as exc:
+            self.last_msg = f"kubectl exec falhou: {exc}"
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        if result.returncode == 0:
+            self.last_msg = result.stdout.strip() or "cleanup concluído"
+            self.last_ok = True
+        else:
+            self.last_msg = (
+                f"cleanup falhou (rc={result.returncode}): "
+                f"{(result.stderr or result.stdout or '').strip()[:160]}"
+            )
+            self.last_ok = False
+        return ActionResult.refresh()
 
     def _perform_install(self, *, force_relogin: bool,
                          _blocking: bool = False) -> None:
@@ -5356,8 +5591,12 @@ class DispatchMatrixView(View):
             return self._handle_uninstall_confirm(key)
         if self.mode is not None and self.mode[0] == "scale_prompt":
             return self._handle_scale_prompt_key(key)
-        if self.mode is not None and self.mode[0] in ("timeout", "retries"):
+        if self.mode is not None and self.mode[0] in ("timeout", "retries",
+                                                        "max_parallel_prompt"):
             return self._handle_numeric_prompt_key(key)
+        if self.mode is not None and self.mode[0] in ("cleanup_preview",
+                                                       "cleanup_confirm"):
+            return self._handle_cleanup_confirm_key(key)
         if key == "ESC":
             self.mode = None
             self.picker_cursor = 0
