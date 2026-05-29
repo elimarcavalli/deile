@@ -710,7 +710,7 @@ class GitHubForge(ForgeClient):
 
         def _links(body: str) -> list:
             return [
-                ("closes" if m.group(0).lower()[0] in "cfr" else "refs",
+                ("closes" if m.group(0).lower().startswith(("clos", "fix", "resolv")) else "refs",
                  int(m.group("issue") or "0"))
                 for m in _LINKED_RE.finditer(body or "")
                 if m.group("issue")

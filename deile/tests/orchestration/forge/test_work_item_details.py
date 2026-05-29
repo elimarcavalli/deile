@@ -195,6 +195,22 @@ async def test_gh_get_work_item_details_issue(fake_gh):
     assert len(calls) == 1
 
 
+async def test_gh_links_refs_not_classified_as_closes(fake_gh):
+    """refs/references must produce kind='refs', not 'closes' (r is in 'cfr' — old bug)."""
+    forge, responses, _ = fake_gh
+    responses.append((0, json.dumps({
+        "number": 11,
+        "user": {"login": "alice"},
+        "comments": 0,
+        "body": "Refs #7\nReferences #8",
+    }), ""))
+    wd = await forge.get_work_item_details("issue", 11)
+
+    assert len(wd.linked_items) == 2
+    assert all(kind == "refs" for kind, _ in wd.linked_items)
+    assert {n for _, n in wd.linked_items} == {7, 8}
+
+
 async def test_gh_get_work_item_details_pr_clean(fake_gh):
     forge, responses, calls = fake_gh
     # Issue detail
