@@ -19,7 +19,11 @@ metadata:
     app: claude-worker
     role: deile
 spec:
-  replicas: 1
+  # Default 3 réplicas para acompanhar o paralelismo do pipeline
+  # (DEILE_PIPELINE_MAX_PARALLEL=5, com deile-worker em 2 = ~5 concorrentes
+  # totais). Operador escala via painel TUI / `deploy.py k8s scale`; este é
+  # o ponto de partida quando o cluster sobe limpo.
+  replicas: 3
   strategy:
     type: RollingUpdate
     rollingUpdate: { maxSurge: 1, maxUnavailable: 0 }
