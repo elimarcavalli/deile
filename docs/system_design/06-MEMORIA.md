@@ -102,6 +102,31 @@
 
 > Working memory é mantida em RAM (sem subdiretório).
 
+## Quinta camada: Preferências do Usuário (`~/.deile/preferences.json`)
+
+> Entregue pela issue #340 (storage + tools) e #341 (injeção no system prompt). A instrução de auto-save por diretiva forte foi adicionada pela issue #423.
+
+A camada de preferências é **ortogonal** às quatro camadas de memória acima: ela não passa pelo `MemoryManager` e não usa SQLite. É um arquivo JSON simples gerenciado pelo `PreferenceStore` em `deile/preferences/store.py`.
+
+| Aspecto | Detalhe |
+|---|---|
+| Arquivo | `~/.deile/preferences.json` |
+| Escopo | Por usuário (identificado por `user_id`) |
+| Persistência | Permanente — sobrevive entre sessões e reinicializações |
+| API | `remember_preference(key, value)`, `forget_preference(key)`, `list_preferences([prefix])` |
+| Injeção | Bloco **Preferências do Usuário** adicionado ao system prompt por `_build_preferences_block` (ver `deile/core/context_manager.py`) |
+| Auto-save | Ativado por diretivas fortes do usuário ("SEMPRE …", "NUNCA …") conforme REGRA #15 em `deile/personas/instructions/core/DEILE.md` |
+
+**Nomenclatura canônica de keys** (namespace por ponto, snake_case):
+
+| Namespace | Exemplos |
+|---|---|
+| `response.*` | `response.language`, `response.verbosity`, `response.format` |
+| `tools.*` | `tools.prefer.<tool>`, `tools.avoid.<tool>` |
+| `subagents.*` | `subagents.mode`, `subagents.parallelism` |
+
+---
+
 ## Regras inegociáveis ao integrar com memória
 
 | Regra | Detalhe |
