@@ -365,6 +365,166 @@ def _load_oauth_token_into_env() -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# Startup cleanup (issue #408) — varre o PVC de trabalho, remove leases
+# stale e workdirs abandonados antes do server aceitar conexões.
+# --------------------------------------------------------------------------- #
+
+#: Retenção padrão em dias — workdirs sem atividade mais antigos que isso
+#: são removidos. Configurável via env para ambientes com retenção maior.
+_CLEANUP_RETENTION_DAYS: int = int(
+    os.environ.get("DEILE_CLAUDE_CLEANUP_RETENTION_DAYS", "7")
+)
+
+
+def _pid_alive(pid: int) -> bool:
+    """True se o PID ainda está vivo neste sistema (POSIX)."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _lease_is_stale(lease_path: Path) -> bool:
+    """True se o lease expirou E o PID proprietário não está mais vivo.
+
+    Conservador: se não conseguir ler o lease, assume que NÃO é stale
+    (fail-safe — evita apagar workdirs em uso quando o FS está lento).
+    """
+    try:
+        data = json.loads(lease_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    heartbeat_at = data.get("heartbeat_at", 0)
+    if (time.time() - float(heartbeat_at)) < _LEASE_TTL_S:
+        return False  # heartbeat recente → ativo
+    pid = data.get("pid")
+    if pid and _pid_alive(int(pid)):
+        return False  # TTL expirado mas PID ainda vivo → conservador
+    return True
+
+
+def _workdir_has_session(workdir: Path) -> bool:
+    """True se o workdir tem pelo menos um arquivo JSONL de sessão do claude."""
+    return any(workdir.rglob("*.jsonl"))
+
+
+def _dir_bytes(path: Path) -> int:
+    """Soma recursiva dos tamanhos dos arquivos em *path*."""
+    total = 0
+    try:
+        for f in path.rglob("*"):
+            if f.is_file():
+                try:
+                    total += f.stat().st_size
+                except OSError:
+                    pass
+    except OSError:
+        pass
+    return total
+
+
+def startup_cleanup(root: Optional[Path] = None) -> dict:
+    """Remove leases stale e workdirs abandonados do PVC de trabalho.
+
+    Chamada de forma síncrona durante o boot (antes de :func:`web.run_app`),
+    idempotente e conservadora: nunca remove workdirs com lease ativo ou
+    modificados recentemente.
+
+    Returns:
+        dict com campos ``leases_removed``, ``workdirs_removed``,
+        ``bytes_freed`` e ``errors`` para o audit log.
+    """
+    if root is None:
+        root = Path(os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work"))
+    retention_cutoff = time.time() - (_CLEANUP_RETENTION_DAYS * 86400)
+
+    leases_removed: int = 0
+    workdirs_removed: int = 0
+    bytes_freed: int = 0
+    errors: list = []
+
+    if not root.is_dir():
+        return {
+            "leases_removed": 0,
+            "workdirs_removed": 0,
+            "bytes_freed": 0,
+            "errors": ["work root not found"],
+        }
+
+    try:
+        candidates = [
+            d for d in root.iterdir()
+            if d.is_dir() and _TASK_ID_RE.fullmatch(d.name)
+        ]
+    except OSError as exc:
+        return {
+            "leases_removed": 0,
+            "workdirs_removed": 0,
+            "bytes_freed": 0,
+            "errors": [f"cannot list work root: {exc}"],
+        }
+
+    for workdir in candidates:
+        lease_path = workdir / ".lease.json"
+
+        # Lease vivo → workdir em uso, pula completamente.
+        if lease_path.exists() and not _lease_is_stale(lease_path):
+            continue
+
+        # Lease stale → remove só o arquivo de lease (workdir pode ter dados úteis).
+        if lease_path.exists() and _lease_is_stale(lease_path):
+            try:
+                lease_path.unlink()
+                leases_removed += 1
+                logger.info("startup_cleanup: lease stale removido: %s", lease_path)
+            except OSError as exc:
+                errors.append(f"lease unlink {lease_path}: {exc}")
+
+        # Critério de remoção do workdir inteiro:
+        # 1. Sem sessão JSONL (claude nunca rodou — workdir órfão de alocação).
+        # 2. last_modified anterior ao cutoff de retenção.
+        try:
+            last_mod = workdir.stat().st_mtime
+        except OSError as exc:
+            errors.append(f"stat {workdir}: {exc}")
+            continue
+
+        remove_reason: Optional[str] = None
+        if not _workdir_has_session(workdir):
+            remove_reason = "no session JSONL"
+        elif last_mod < retention_cutoff:
+            remove_reason = f"older than {_CLEANUP_RETENTION_DAYS}d"
+
+        if remove_reason:
+            size = _dir_bytes(workdir)
+            try:
+                shutil.rmtree(workdir)
+                workdirs_removed += 1
+                bytes_freed += size
+                logger.info(
+                    "startup_cleanup: workdir removido (%s): %s (%d bytes)",
+                    remove_reason, workdir, size,
+                )
+            except OSError as exc:
+                errors.append(f"rmtree {workdir}: {exc}")
+
+    logger.info(
+        "startup_cleanup concluído: leases=%d workdirs=%d freed=%d bytes errors=%d",
+        leases_removed, workdirs_removed, bytes_freed, len(errors),
+    )
+    for err in errors:
+        logger.warning("startup_cleanup error: %s", err)
+
+    return {
+        "leases_removed": leases_removed,
+        "workdirs_removed": workdirs_removed,
+        "bytes_freed": bytes_freed,
+        "errors": errors,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Bearer auth (defense-in-depth — NetworkPolicy bloqueia ingress fora do
 # deile-pipeline, mas auth no app-layer impede que pod comprometido dentro
 # do allowlist envie dispatch malicioso).
@@ -2072,6 +2232,10 @@ def main(passthrough: Optional[List[str]] = None) -> int:
     logger.info(
         "claude_worker_server listening on %s:%d, work root=%s", host, port, root,
     )
+    # Startup housekeeping: remove leases stale + workdirs abandonados antes
+    # de aceitar conexões (issue #408). Síncrono e conservador — falhas
+    # individuais são logadas sem abortar o boot.
+    startup_cleanup(root=root)
     app = build_app()
     web.run_app(app, host=host, port=port, print=lambda *_: None)
     return 0

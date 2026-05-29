@@ -3994,6 +3994,8 @@ class DispatchMatrixView(View):
         "[enter] editar   [r] reset   "
         "[L] switch claude login   [I] install   [U] uninstall   [q] back   "
         "[s]caling row: enter digita réplicas (0-10)   "
+        "[c] cleanup on-demand (preview + confirm)   "
+        "[p] editar max_parallel (parallelism do pipeline)   "
         "colunas: 0=Worker 1=Model 2=Timeout 3=Retries 4=Cost cap (USD/run)"
     )
 
@@ -4068,6 +4070,9 @@ class DispatchMatrixView(View):
         # publicar resultado em ``last_msg``/``last_ok`` quando termina.
         self._install_thread: Optional["threading.Thread"] = None
         self._install_in_progress: bool = False
+        # Cleanup on-demand state (issue #408):
+        # mode == ("cleanup_confirm", preview_text, []) → aguarda Y/N.
+        # mode == ("max_parallel_prompt", None, [buf]) → input numérico/auto.
 
     # --- View lifecycle / key interception ------------------------------
 
@@ -4306,6 +4311,20 @@ class DispatchMatrixView(View):
         tbl.add_row("Worker Scaling", scale_w_txt, scale_m_txt,
                     "", "", "—", "kubectl")
 
+        # Linha "Max Parallel" — edita DEILE_PIPELINE_MAX_PARALLEL no
+        # Deployment deile-pipeline (issue #408). [p] ou [enter] nesta row
+        # abre prompt numérico/auto.
+        # ``cursor_row == len(entries) + 2`` aponta aqui.
+        max_parallel_idx = len(entries) + 2
+        highlight_mp = (self.cursor_row == max_parallel_idx
+                        and self.cursor_col == 0)
+        mp_current = self._read_max_parallel_env()
+        mp_txt = mp_current if mp_current else "(default: 2)"
+        mp_desc = "auto = réplicas claude-worker" if mp_current == "auto" else "DEILE_PIPELINE_MAX_PARALLEL"
+        if highlight_mp:
+            mp_txt = f"[reverse]{mp_txt}[/reverse]"
+        tbl.add_row("Max Parallel", mp_txt, mp_desc, "", "", "—", "env")
+
         # --- Compose: header + matrix + (picker?) + (status?) + hotkeys --
         parts: List[RenderableType] = [
             Text(status_text, style=status_style),
@@ -4354,6 +4373,10 @@ class DispatchMatrixView(View):
             title = "DESINSTALAR CLAUDE-WORKER?"
         elif kind == "scale_prompt":
             title = f"RÉPLICAS PARA '{stage}' (0-10)"
+        elif kind == "cleanup_confirm":
+            title = "CLEANUP ON-DEMAND — CONFIRMAR?"
+        elif kind == "max_parallel_prompt":
+            title = "MAX_PARALLEL DO PIPELINE (DEILE_PIPELINE_MAX_PARALLEL)"
         else:  # defensivo
             title = "AÇÃO"
 
@@ -4376,7 +4399,7 @@ class DispatchMatrixView(View):
             tbl.add_row(Text(marker, style="bold cyan"), Text(opt))
 
         # Modais de confirmação Y/N usam um prompt e atalhos Y/N visíveis;
-        # pickers de entrada numérica livre (timeout/retries) mostram buffer;
+        # pickers de entrada numérica livre (timeout/retries/max_parallel) mostram buffer;
         # pickers convencionais usam enter/esc.
         if kind in ("install_confirm", "switch_login_confirm",
                     "uninstall_confirm"):
@@ -4385,6 +4408,12 @@ class DispatchMatrixView(View):
             hint = Text("[Y] confirma   [N]/[esc] cancela",
                         style="dim cyan")
             body: RenderableType = Group(prompt, Text(""), tbl, hint)
+        elif kind == "cleanup_confirm":
+            # ``stage`` carrega o preview do que vai ser apagado.
+            prompt = Text(str(stage) if stage else "(sem itens a remover)", style="bold")
+            hint = Text("[Y] confirma cleanup   [N]/[esc] cancela",
+                        style="dim cyan")
+            body = Group(prompt, Text(""), hint)
         elif kind in ("timeout", "retries"):
             # Entrada numérica livre — ``options[0]`` é o buffer atual.
             buf = options[0] if options else ""
@@ -4392,6 +4421,16 @@ class DispatchMatrixView(View):
             unit_hint = " (segundos, > 0)" if kind == "timeout" else " (>= 0)"
             hint_line = Text(
                 f"[0-9] digita   [backspace] apaga   [enter] confirma   [esc] cancela{unit_hint}",
+                style="dim cyan",
+            )
+            body = Group(input_line, Text(""), hint_line)
+        elif kind == "max_parallel_prompt":
+            # ``options[0]`` é o buffer atual (número ou "auto").
+            buf = options[0] if options else ""
+            input_line = Text(f"› {buf}_", style="bold cyan")
+            hint_line = Text(
+                "[0-9] digita   [a] = 'auto' (replica count)   "
+                "[backspace] apaga   [enter] confirma   [esc] cancela",
                 style="dim cyan",
             )
             body = Group(input_line, Text(""), hint_line)
@@ -4454,14 +4493,23 @@ class DispatchMatrixView(View):
         if self.mode is not None:
             return self._handle_picker_key(key)
 
-        # Última linha editável é "Worker Scaling" (len+1; Global default = len).
-        max_row = len(self._stages()) + 1  # +1 para a linha "Worker Scaling"
+        # Última linha editável é "Max Parallel" (len+2; Global=len, Scaling=len+1).
+        # Issue #408 adicionou linha "Max Parallel" após "Worker Scaling".
+        max_row = len(self._stages()) + 2  # +2 = Worker Scaling + Max Parallel
 
         # --- back / quit --------------------------------------------------
         if key == "q" or key == "ESC":
             # Tasks futuras podem trocar para ``ActionResult.back()`` se o
             # painel mantiver stack — por ora, nav explícita ao dashboard.
             return ActionResult.nav("dashboard")
+
+        # --- [c] cleanup on-demand ----------------------------------------
+        if key == "c":
+            return self._open_cleanup_confirm()
+
+        # --- [p] editar max_parallel ---------------------------------------
+        if key == "p":
+            return self._open_max_parallel_prompt()
 
         # --- navegação row ------------------------------------------------
         if key in ("UP", "k"):
@@ -4484,8 +4532,12 @@ class DispatchMatrixView(View):
         if key in ("\r", "\n"):
             entries = self._entries()
             n_stages = len(entries)
-            global_idx = n_stages       # "Global default"
-            scaling_idx = n_stages + 1  # "Worker Scaling"
+            global_idx = n_stages           # "Global default"
+            scaling_idx = n_stages + 1      # "Worker Scaling"
+            max_parallel_idx = n_stages + 2  # "Max Parallel" (issue #408)
+            if self.cursor_row == max_parallel_idx:
+                # Linha "Max Parallel" → prompt numérico/auto (issue #408).
+                return self._open_max_parallel_prompt()
             if self.cursor_row == scaling_idx:
                 # Linha de scaling → prompt numérico de réplicas (Task 4).
                 # Cols 2/3 (timeout/retries) não se aplicam à scaling row.
@@ -5358,6 +5410,10 @@ class DispatchMatrixView(View):
             return self._handle_scale_prompt_key(key)
         if self.mode is not None and self.mode[0] in ("timeout", "retries"):
             return self._handle_numeric_prompt_key(key)
+        if self.mode is not None and self.mode[0] == "cleanup_confirm":
+            return self._handle_cleanup_confirm_key(key)
+        if self.mode is not None and self.mode[0] == "max_parallel_prompt":
+            return self._handle_max_parallel_prompt_key(key)
         if key == "ESC":
             self.mode = None
             self.picker_cursor = 0
@@ -5490,6 +5546,280 @@ class DispatchMatrixView(View):
             # Already handled inline in _handle_numeric_prompt_key.
             # No-op here; defensive against unexpected call paths.
             return
+
+    # --- cleanup on-demand (issue #408) ---------------------------------
+
+    def _get_cleanup_preview(self) -> str:
+        """Gera texto de preview do que seria removido pelo cleanup.
+
+        Lê via ``kubectl exec`` no primeiro pod claude-worker disponível.
+        Em modo demo ou sem kubectl → retorna mensagem explicativa.
+        """
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        if self.data is None:
+            return "[demo] sem cluster — cleanup simulado"
+        kubectl = kubectl_bin()
+        if kubectl is None:
+            return "kubectl não encontrado — preview indisponível"
+        # Encontra o primeiro pod claude-worker Running.
+        try:
+            result = subprocess.run(
+                [kubectl, "-n", ns, "get", "pods",
+                 "-l", "app=claude-worker",
+                 "--field-selector=status.phase=Running",
+                 "-o", "jsonpath={.items[0].metadata.name}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            pod_name = result.stdout.strip()
+        except Exception:  # noqa: BLE001
+            return "erro ao listar pods claude-worker"
+        if not pod_name:
+            return "nenhum pod claude-worker Running — cleanup via CronJob apenas"
+        # Executa dry-run do cleanup dentro do pod.
+        dry_run_cmd = (
+            "python3 -c \""
+            "import sys, os; sys.path.insert(0, '/app/infra/k8s'); "
+            "from claude_worker_server import startup_cleanup, _CLEANUP_RETENTION_DAYS; "
+            "import time, json; "
+            "from pathlib import Path; "
+            "root = Path(os.environ.get('DEILE_CLAUDE_WORKER_ROOT', '/home/claude/work')); "
+            "dirs = [d for d in root.iterdir() if d.is_dir() and d.name.isalnum() and len(d.name)==16] if root.is_dir() else []; "
+            "print(f'PVC root: {root}'); "
+            "print(f'Total workdirs: {len(dirs)}'); "
+            "\""
+        )
+        try:
+            result = subprocess.run(
+                [kubectl, "-n", ns, "exec", pod_name,
+                 "--", "sh", "-c", dry_run_cmd],
+                capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip() or "(sem output do pod)"
+            return f"exec falhou (rc={result.returncode}): {result.stderr.strip()[:200]}"
+        except Exception as exc:  # noqa: BLE001
+            return f"erro exec: {exc}"
+
+    def _open_cleanup_confirm(self) -> ActionResult:
+        """Abre modal de confirmação do cleanup on-demand com preview."""
+        preview = self._get_cleanup_preview()
+        self.mode = ("cleanup_confirm", preview, ["Sim (Y)", "Não (N)"])
+        self.picker_cursor = 1  # default: não
+        self.last_msg = ""
+        self.last_ok = None
+        return ActionResult.refresh()
+
+    def _handle_cleanup_confirm_key(self, key: str) -> ActionResult:
+        """Roteia Y/N no modal de cleanup."""
+        if key in ("Y", "y"):
+            self.mode = None
+            self.picker_cursor = 0
+            return self._run_cleanup_via_kubectl()
+        if key in ("N", "n", "ESC"):
+            self.mode = None
+            self.picker_cursor = 0
+            self.last_msg = "cleanup cancelado"
+            self.last_ok = None
+            return ActionResult.refresh()
+        if key in ("\r", "\n"):
+            return self._handle_cleanup_confirm_key(
+                "Y" if self.picker_cursor == 0 else "N"
+            )
+        if key in ("UP", "k", "DOWN", "j"):
+            _, _, options = self.mode  # type: ignore[misc]
+            n = len(options)
+            if n:
+                delta = -1 if key in ("UP", "k") else 1
+                self.picker_cursor = (self.picker_cursor + delta) % n
+            return ActionResult.refresh()
+        return ActionResult()
+
+    def _run_cleanup_via_kubectl(self) -> ActionResult:
+        """Executa cleanup real via kubectl exec no primeiro pod claude-worker."""
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        if self.data is None:
+            self.last_msg = "[demo] cleanup simulado (sem cluster)"
+            self.last_ok = False
+            return ActionResult.refresh()
+        kubectl = kubectl_bin()
+        if kubectl is None:
+            self.last_msg = "kubectl não encontrado — cleanup impossível"
+            self.last_ok = False
+            return ActionResult.refresh()
+        try:
+            result = subprocess.run(
+                [kubectl, "-n", ns, "get", "pods",
+                 "-l", "app=claude-worker",
+                 "--field-selector=status.phase=Running",
+                 "-o", "jsonpath={.items[0].metadata.name}"],
+                capture_output=True, text=True, timeout=10,
+            )
+            pod_name = result.stdout.strip()
+        except Exception as exc:  # noqa: BLE001
+            self.last_msg = f"erro ao listar pods: {exc}"
+            self.last_ok = False
+            return ActionResult.refresh()
+        if not pod_name:
+            self.last_msg = "nenhum pod claude-worker Running — cleanup indisponível"
+            self.last_ok = False
+            return ActionResult.refresh()
+        cleanup_cmd = (
+            "python3 -c \""
+            "import sys, os; sys.path.insert(0, '/app/infra/k8s'); "
+            "from claude_worker_server import startup_cleanup; "
+            "r = startup_cleanup(); "
+            "print(f\\\"leases={r[\\\"leases_removed\\\"]} workdirs={r[\\\"workdirs_removed\\\"]} freed={r[\\\"bytes_freed\\\"]}B errors={len(r[\\\"errors\\\"])}\\\"); "
+            "\""
+        )
+        try:
+            result = subprocess.run(
+                [kubectl, "-n", ns, "exec", pod_name,
+                 "--", "sh", "-c", cleanup_cmd],
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode == 0:
+                self.last_msg = f"cleanup OK: {result.stdout.strip()[:200]}"
+                self.last_ok = True
+            else:
+                self.last_msg = f"cleanup falhou: {result.stderr.strip()[:200]}"
+                self.last_ok = False
+        except Exception as exc:  # noqa: BLE001
+            self.last_msg = f"erro cleanup: {exc}"
+            self.last_ok = False
+        return ActionResult.refresh()
+
+    # --- max_parallel (issue #408) --------------------------------------
+
+    def _read_max_parallel_env(self) -> str:
+        """Lê DEILE_PIPELINE_MAX_PARALLEL atual do Deployment deile-pipeline.
+
+        Retorna string vazia se não conseguir ler (kubectl indisponível,
+        deployment não encontrado, env var não setada).
+        """
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        if self.data is None:
+            return ""
+        kubectl = kubectl_bin()
+        if kubectl is None:
+            return ""
+        try:
+            result = subprocess.run(
+                [kubectl, "-n", ns, "get", "deployment", "deile-pipeline",
+                 "-o",
+                 "jsonpath={.spec.template.spec.containers[0].env[?(@.name=='DEILE_PIPELINE_MAX_PARALLEL')].value}"],
+                capture_output=True, text=True, timeout=8,
+            )
+            return result.stdout.strip()
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _open_max_parallel_prompt(self) -> ActionResult:
+        """Abre modal de edição numérica do max_parallel."""
+        current = self._read_max_parallel_env() or ""
+        self.mode = ("max_parallel_prompt", None, [current])
+        self.picker_cursor = 0
+        self.last_msg = ""
+        self.last_ok = None
+        return ActionResult.refresh()
+
+    def _handle_max_parallel_prompt_key(self, key: str) -> ActionResult:
+        """Captura entrada numérica ou 'auto' para DEILE_PIPELINE_MAX_PARALLEL."""
+        _, stage, options = self.mode  # type: ignore[misc]
+        buf: str = options[0] if options else ""
+
+        if key == "ESC":
+            self.mode = None
+            self.picker_cursor = 0
+            self.last_msg = "edição de max_parallel cancelada"
+            self.last_ok = None
+            return ActionResult.refresh()
+
+        if key == "a":
+            # Atalho: seta valor "auto" (deriva de réplicas claude-worker).
+            buf = "auto"
+            self.mode = ("max_parallel_prompt", stage, [buf])
+            return ActionResult.refresh()
+
+        if key == "BACKSPACE" or key == "\x7f":
+            buf = buf[:-1]
+            self.mode = ("max_parallel_prompt", stage, [buf])
+            return ActionResult.refresh()
+
+        if key in ("\r", "\n"):
+            self.mode = None
+            self.picker_cursor = 0
+            if buf.strip() == "":
+                # Limpa o override (remove env var).
+                return self._apply_max_parallel(None)
+            return self._apply_max_parallel(buf.strip())
+
+        if key.isdigit():
+            buf += key
+            self.mode = ("max_parallel_prompt", stage, [buf])
+            return ActionResult.refresh()
+
+        return ActionResult()
+
+    def _apply_max_parallel(self, value: Optional[str]) -> ActionResult:
+        """Aplica DEILE_PIPELINE_MAX_PARALLEL no Deployment deile-pipeline.
+
+        ``value=None`` → remove o override (kubectl set env VAR-).
+        ``value="auto"`` → seta a string "auto" como sentinela.
+        ``value="N"`` → seta valor numérico.
+        """
+        ns = (self.data.context.namespace
+              if self.data is not None and getattr(self.data, "context", None)
+              else _NS_DEFAULT)
+        if self.data is None:
+            self.last_msg = f"[demo] max_parallel → {value!r} (sem cluster, no-op)"
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        kubectl = kubectl_bin()
+        if kubectl is None:
+            self.last_msg = "kubectl não encontrado — max_parallel não alterado"
+            self.last_ok = False
+            return ActionResult.refresh()
+
+        # Valida valor numérico (aceita "auto" e None como casos especiais).
+        if value is not None and value != "auto":
+            try:
+                n = int(value)
+                if n < 1:
+                    raise ValueError(f"valor deve ser >= 1, got {n}")
+            except ValueError as exc:
+                self.last_msg = f"valor inválido para max_parallel: {exc}"
+                self.last_ok = False
+                return ActionResult.refresh()
+
+        env_arg = (f"DEILE_PIPELINE_MAX_PARALLEL-"  # remove
+                   if value is None
+                   else f"DEILE_PIPELINE_MAX_PARALLEL={value}")
+        try:
+            result = subprocess.run(
+                [kubectl, "-n", ns, "set", "env",
+                 "deployment/deile-pipeline", env_arg],
+                capture_output=True, text=True, timeout=15,
+            )
+            if result.returncode == 0:
+                action = "removido (default: 2)" if value is None else f"→ {value!r}"
+                self.last_msg = f"DEILE_PIPELINE_MAX_PARALLEL {action}"
+                self.last_ok = True
+            else:
+                self.last_msg = (
+                    f"set env falhou: {result.stderr.strip()[:150]}"
+                )
+                self.last_ok = False
+        except Exception as exc:  # noqa: BLE001
+            self.last_msg = f"erro ao setar max_parallel: {exc}"
+            self.last_ok = False
+        return ActionResult.refresh()
 
 
 class StubView(View):
