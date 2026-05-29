@@ -281,6 +281,14 @@ def build_dispatch_payload(
     # via JSONL persistido no PVC. Pipeline resolve via DispatchLedger.
     resume_session_id: Optional[str] = None,
     prev_task_id: Optional[str] = None,
+    # --- Per-stage execution limits (issue #391) ----------------------------
+    # Opcionais e adicionados ao final — backward compat com worker antigo.
+    # ``timeout_s`` sobrescreve o DEILE_WORKER_TASK_TIMEOUT_S/
+    # DEILE_CLAUDE_WORKER_TASK_TIMEOUT_S do worker-side para ESTE dispatch.
+    # ``max_retries`` informa ao monitor loop o teto de tentativas antes de
+    # escalar para ~workflow:bloqueada.
+    timeout_s: Optional[int] = None,
+    max_retries: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Assemble the JSON body POSTed to ``POST /v1/dispatch``.
 
@@ -299,6 +307,8 @@ def build_dispatch_payload(
     no worker. São opcionais e omitidos do wire quando ``None`` — workers
     antigos que não conhecem estes campos continuam funcionando porque o
     cliente serializa via ``model_dump(exclude_none=True)``.
+
+    ``timeout_s`` / ``max_retries`` (issue #391) carregam limites por-stage.
     """
     payload: Dict[str, Any] = {
         "brief": brief,
@@ -329,6 +339,10 @@ def build_dispatch_payload(
         payload["resume_session_id"] = str(resume_session_id)
     if prev_task_id:
         payload["prev_task_id"] = str(prev_task_id)
+    if timeout_s is not None and isinstance(timeout_s, int) and timeout_s > 0:
+        payload["timeout_s"] = timeout_s
+    if max_retries is not None and isinstance(max_retries, int) and max_retries >= 0:
+        payload["max_retries"] = max_retries
     return payload
 
 

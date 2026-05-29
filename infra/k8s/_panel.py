@@ -74,6 +74,10 @@ from _panel_data import \
     set_pipeline_dispatch_stage as pd_set_pipeline_dispatch_stage
 from _panel_data import set_preferred_model as pd_set_preferred_model
 from _panel_data import set_stage_model as pd_set_stage_model
+from _panel_data import set_stage_timeout_s as pd_set_stage_timeout_s
+from _panel_data import reset_stage_timeout_s as pd_reset_stage_timeout_s
+from _panel_data import set_stage_retries as pd_set_stage_retries
+from _panel_data import reset_stage_retries as pd_reset_stage_retries
 from rich import box
 from rich.align import Align
 from rich.console import Console, Group, RenderableType
@@ -3774,7 +3778,8 @@ class DispatchMatrixView(View):
     refresh_s = 1.0
 
     HOTKEYS = (
-        "[↑/↓] linha   [←/→] coluna   [enter] editar   [r] reset   "
+        "[↑/↓] linha   [←/→] coluna (Worker/Model/Timeout/Retries)   "
+        "[enter] editar   [r] reset   "
         "[L] switch claude login   [I] install   [U] uninstall   [q] back   "
         "[s]caling row: enter digita réplicas (0-10)"
     )
@@ -3817,13 +3822,15 @@ class DispatchMatrixView(View):
         # cursor_row ∈ [0, N] — N inclusive corresponde à linha "Global
         # default" no fim da matriz.
         self.cursor_row: int = 0
-        # cursor_col ∈ {0, 1} — 0 = Worker, 1 = Model. As colunas Stage e
-        # Source não são editáveis (label estático + metadado read-only).
+        # cursor_col ∈ {0, 1, 2, 3} — 0=Worker, 1=Model, 2=Timeout, 3=Retries.
+        # As colunas Stage e Source não são editáveis (label estático + metadado).
         self.cursor_col: int = 0
         # --- Picker modal state (Task 19). ``None`` = browsing.
         # Forma: ``(kind, stage_or_None, options)`` onde ``kind`` é:
         #   * "worker"        — picker de worker para um stage específico
         #   * "model"         — picker de model para um stage específico
+        #   * "timeout"       — entrada numérica de timeout (s) por stage
+        #   * "retries"       — entrada numérica de max retries por stage
         #   * "global_worker" — picker de dispatch_mode (global)
         #   * "global_model"  — picker de DEILE_PREFERRED_MODEL (global)
         # ``stage_or_None`` é o nome do stage para per-stage pickers, ou
@@ -4009,36 +4016,57 @@ class DispatchMatrixView(View):
         tbl.add_column("Stage", style="bold cyan")
         tbl.add_column("Worker")
         tbl.add_column("Model")
+        tbl.add_column("Timeout (s)")
+        tbl.add_column("Max retries")
         tbl.add_column("Source", style="dim")
 
         for i, entry in enumerate(entries):
             highlight_w = (i == self.cursor_row and self.cursor_col == 0)
             highlight_m = (i == self.cursor_row and self.cursor_col == 1)
+            highlight_t = (i == self.cursor_row and self.cursor_col == 2)
+            highlight_r = (i == self.cursor_row and self.cursor_col == 3)
 
             worker_cell = (f"[reverse]{entry.worker}[/reverse]"
                            if highlight_w else entry.worker)
             model_txt = entry.model or "(default)"
             model_cell = (f"[reverse]{model_txt}[/reverse]"
                           if highlight_m else model_txt)
-            tbl.add_row(entry.stage, worker_cell, model_cell, entry.source)
+            timeout_txt = (str(getattr(entry, "timeout_s", None) or "default"))
+            timeout_cell = (f"[reverse]{timeout_txt}[/reverse]"
+                            if highlight_t else timeout_txt)
+            retries_txt = (str(getattr(entry, "max_retries", None))
+                           if getattr(entry, "max_retries", None) is not None
+                           else "default")
+            retries_cell = (f"[reverse]{retries_txt}[/reverse]"
+                            if highlight_r else retries_txt)
+            tbl.add_row(entry.stage, worker_cell, model_cell,
+                        timeout_cell, retries_cell, entry.source)
 
         # Separador visual entre stages e a linha "Global default".
-        tbl.add_row("─" * 12, "─" * 14, "─" * 28, "─" * 8, style="dim")
+        tbl.add_row("─" * 12, "─" * 14, "─" * 28, "─" * 10, "─" * 10, "─" * 8,
+                    style="dim")
 
         # Linha "Global default" — ``cursor_row == len(entries)`` aponta
         # aqui (mas só dentro dos limites de ``handle_key``).
         global_idx = len(entries)
-        highlight_gw = (self.cursor_row == global_idx
-                        and self.cursor_col == 0)
-        highlight_gm = (self.cursor_row == global_idx
-                        and self.cursor_col == 1)
+        highlight_gw = (self.cursor_row == global_idx and self.cursor_col == 0)
+        highlight_gm = (self.cursor_row == global_idx and self.cursor_col == 1)
+        highlight_gt = (self.cursor_row == global_idx and self.cursor_col == 2)
+        highlight_gr = (self.cursor_row == global_idx and self.cursor_col == 3)
         global_w_txt = "(DEILE_PIPELINE_DISPATCH_MODE)"
         global_m_txt = "(DEILE_PIPELINE_MODEL)"
+        global_t_txt = "(pipeline_claude_timeout)"
+        global_r_txt = "(pipeline_default_max_retries)"
         if highlight_gw:
             global_w_txt = f"[reverse]{global_w_txt}[/reverse]"
         if highlight_gm:
             global_m_txt = f"[reverse]{global_m_txt}[/reverse]"
-        tbl.add_row("Global default", global_w_txt, global_m_txt, "env")
+        if highlight_gt:
+            global_t_txt = f"[reverse]{global_t_txt}[/reverse]"
+        if highlight_gr:
+            global_r_txt = f"[reverse]{global_r_txt}[/reverse]"
+        tbl.add_row("Global default", global_w_txt, global_m_txt,
+                    global_t_txt, global_r_txt, "env")
 
         # Linha "Worker Scaling" — edita réplicas de deile-worker / claude-worker
         # via prompt numérico [enter] (issue #309 fase 3 Task 4).
@@ -4052,7 +4080,7 @@ class DispatchMatrixView(View):
             scale_w_txt = f"[reverse]{scale_w_txt}[/reverse]"
         if highlight_sm:
             scale_m_txt = f"[reverse]{scale_m_txt}[/reverse]"
-        tbl.add_row("Worker Scaling", scale_w_txt, scale_m_txt, "kubectl")
+        tbl.add_row("Worker Scaling", scale_w_txt, scale_m_txt, "", "", "kubectl")
 
         # --- Compose: header + matrix + (picker?) + (status?) + hotkeys --
         parts: List[RenderableType] = [
@@ -4082,6 +4110,10 @@ class DispatchMatrixView(View):
             title = f"ESCOLHA WORKER PARA STAGE '{stage}'"
         elif kind == "model":
             title = f"ESCOLHA MODEL PARA STAGE '{stage}'"
+        elif kind == "timeout":
+            title = f"TIMEOUT (s) PARA STAGE '{stage}' (0 = usar default)"
+        elif kind == "retries":
+            title = f"MAX RETRIES PARA STAGE '{stage}'"
         elif kind == "global_worker":
             title = "ESCOLHA DISPATCH MODE GLOBAL (DEILE_PIPELINE_DISPATCH_MODE)"
         elif kind == "global_model":
@@ -4207,7 +4239,10 @@ class DispatchMatrixView(View):
             self.cursor_col = max(0, self.cursor_col - 1)
             return ActionResult.refresh()
         if key in ("RIGHT", "l"):
-            self.cursor_col = min(1, self.cursor_col + 1)
+            # 4 colunas editáveis: 0=Worker, 1=Model, 2=Timeout, 3=Retries.
+            # Worker Scaling row só tem col 0 e 1.
+            max_col = 1 if self.cursor_row == (len(self._stages()) + 1) else 3
+            self.cursor_col = min(max_col, self.cursor_col + 1)
             return ActionResult.refresh()
 
         # --- [enter]: abre picker contextual ------------------------------
@@ -4219,16 +4254,28 @@ class DispatchMatrixView(View):
             if self.cursor_row == scaling_idx:
                 # Linha de scaling → prompt numérico de réplicas (Task 4).
                 return self._open_scaling_prompt()
-            # Row na linha "Global default" → picker global.
+            # Row na linha "Global default" → picker global (só worker/model).
             if self.cursor_row == global_idx:
                 if self.cursor_col == 0:
                     return self._open_global_worker_picker()
-                return self._open_global_model_picker()
+                if self.cursor_col == 1:
+                    return self._open_global_model_picker()
+                # cols 2/3 (Timeout/Retries) no Global row são read-only hint
+                self.last_msg = (
+                    "Timeout/Retries globais: editar via settings.json ou "
+                    "env vars DEILE_PIPELINE_TIMEOUT_S_*/DEILE_PIPELINE_RETRIES_*"
+                )
+                self.last_ok = None
+                return ActionResult.refresh()
             # Row dentro das stages → picker per-stage.
             entry = entries[self.cursor_row]
             if self.cursor_col == 0:
                 return self._open_worker_picker(entry)
-            return self._open_model_picker(entry)
+            if self.cursor_col == 1:
+                return self._open_model_picker(entry)
+            if self.cursor_col == 2:
+                return self._open_timeout_picker(entry)
+            return self._open_retries_picker(entry)
 
         # --- [r] reset da célula corrente -------------------------------
         if key == "r":
@@ -4325,16 +4372,51 @@ class DispatchMatrixView(View):
         self.picker_cursor = 0
         return ActionResult.refresh()
 
+    def _open_timeout_picker(self, entry) -> ActionResult:
+        """Abre picker per-stage de timeout em segundos (col 2 numa stage row).
+
+        Oferece valores comuns + opção de default. Aceita entrada numérica.
+        """
+        opts = [
+            "(default — remover override)",
+            "300",
+            "600",
+            "900",
+            "1200",
+            "1800",
+            "3600",
+        ]
+        self.mode = ("timeout", entry.stage, opts)
+        self.picker_cursor = 0
+        return ActionResult.refresh()
+
+    def _open_retries_picker(self, entry) -> ActionResult:
+        """Abre picker per-stage de max retries (col 3 numa stage row)."""
+        opts = [
+            "(default — remover override)",
+            "0",
+            "1",
+            "2",
+            "3",
+            "5",
+            "10",
+        ]
+        self.mode = ("retries", entry.stage, opts)
+        self.picker_cursor = 0
+        return ActionResult.refresh()
+
     # --- [r] reset cell --------------------------------------------------
 
     def _reset_current_cell(self) -> ActionResult:
         """Clear do override da célula corrente — volta ao fallback chain.
 
         Roteia conforme (cursor_row, cursor_col):
-          - Stage row + col 0 (Worker) → set_pipeline_dispatch_stage(stage, None)
-          - Stage row + col 1 (Model)  → clear_stage_model(stage)
+          - Stage row + col 0 (Worker)  → set_pipeline_dispatch_stage(stage, None)
+          - Stage row + col 1 (Model)   → clear_stage_model(stage)
+          - Stage row + col 2 (Timeout) → reset_stage_timeout_s(stage)
+          - Stage row + col 3 (Retries) → reset_stage_retries(stage)
           - Global row + col 0 (Worker) → clear_pipeline_dispatch_mode()
-          - Global row + col 1 (Model)  → no-op com hint (sem helper hoje)
+          - Global row + col 1+ → no-op com hint
 
         Cache do StageDispatchProvider é invalidado depois — próximo render
         mostra o valor novo.
@@ -4355,13 +4437,17 @@ class DispatchMatrixView(View):
             stage = entry.stage
             if self.cursor_col == 0:
                 ok, msg = pd_set_pipeline_dispatch_stage(stage, None, namespace=ns)
-            else:
+            elif self.cursor_col == 1:
                 ok, msg = pd_clear_stage_model(stage)
+            elif self.cursor_col == 2:
+                ok, msg = pd_reset_stage_timeout_s(stage)
+            else:  # col 3
+                ok, msg = pd_reset_stage_retries(stage)
         else:  # Global default row
             if self.cursor_col == 0:
                 ok, msg = pd_clear_pipeline_dispatch_mode(namespace=ns)
             else:
-                ok, msg = (None, "clear de DEILE_PIPELINE_MODEL global ainda não suportado")
+                ok, msg = (None, "clear de configuração global: editar settings.json diretamente")
 
         self.last_ok = ok
         self.last_msg = msg
@@ -5055,6 +5141,38 @@ class DispatchMatrixView(View):
             ok, msg = pd_set_preferred_model(
                 "deile-worker", selected, namespace=ns,
             )
+            self.last_ok = ok
+            self.last_msg = msg
+            return
+
+        # --- per-stage timeout ------------------------------------------
+        if kind == "timeout":
+            if selected.startswith("(default"):
+                ok, msg = pd_reset_stage_timeout_s(stage)
+            else:
+                try:
+                    seconds = int(selected)
+                except (ValueError, TypeError):
+                    self.last_ok = False
+                    self.last_msg = f"valor inválido: {selected!r}"
+                    return
+                ok, msg = pd_set_stage_timeout_s(stage, seconds)
+            self.last_ok = ok
+            self.last_msg = msg
+            return
+
+        # --- per-stage retries ------------------------------------------
+        if kind == "retries":
+            if selected.startswith("(default"):
+                ok, msg = pd_reset_stage_retries(stage)
+            else:
+                try:
+                    count = int(selected)
+                except (ValueError, TypeError):
+                    self.last_ok = False
+                    self.last_msg = f"valor inválido: {selected!r}"
+                    return
+                ok, msg = pd_set_stage_retries(stage, count)
             self.last_ok = ok
             self.last_msg = msg
             return

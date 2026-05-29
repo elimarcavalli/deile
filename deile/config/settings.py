@@ -143,6 +143,44 @@ def _to_optional_model_slug(value: Any) -> Optional[str]:
     return stripped
 
 
+def _to_optional_positive_int(value: Any) -> Optional[int]:
+    """Coerce to a positive int (> 0) or None (issue #391 — per-stage timeout).
+
+    ``None`` and empty/whitespace string collapse to ``None`` (no override).
+    Non-int-convertible or non-positive values raise — ``apply_overrides``
+    catches the exception and keeps the previous (default) value.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    if isinstance(value, bool):
+        raise TypeError("expected int, got bool")
+    iv = int(value)
+    if iv <= 0:
+        raise ValueError(f"value must be > 0, got {iv}")
+    return iv
+
+
+def _to_optional_nonneg_int(value: Any) -> Optional[int]:
+    """Coerce to a non-negative int (>= 0) or None (issue #391 — per-stage retries).
+
+    ``None`` and empty/whitespace string collapse to ``None`` (no override).
+    Non-int-convertible or negative values raise — ``apply_overrides``
+    catches the exception and keeps the previous (default) value.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    if isinstance(value, bool):
+        raise TypeError("expected int, got bool")
+    iv = int(value)
+    if iv < 0:
+        raise ValueError(f"value must be >= 0, got {iv}")
+    return iv
+
+
 def _to_optional_dispatcher(value: Any) -> Optional[str]:
     """Strict converter for ``pipeline.dispatchers.<stage>`` entries (issue #309).
 
@@ -237,6 +275,18 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     "pipeline.dispatchers.implement":  ("pipeline_dispatcher_implement",  _to_optional_dispatcher),
     "pipeline.dispatchers.pr_review":  ("pipeline_dispatcher_pr_review",  _to_optional_dispatcher),
     "pipeline.dispatchers.follow_ups": ("pipeline_dispatcher_follow_ups", _to_optional_dispatcher),
+    # Per-stage timeout override (issue #391) — see dispatch_resolver.
+    "pipeline.timeouts_s.classify":   ("pipeline_timeout_s_classify",   _to_optional_positive_int),
+    "pipeline.timeouts_s.refine":     ("pipeline_timeout_s_refine",     _to_optional_positive_int),
+    "pipeline.timeouts_s.implement":  ("pipeline_timeout_s_implement",  _to_optional_positive_int),
+    "pipeline.timeouts_s.pr_review":  ("pipeline_timeout_s_pr_review",  _to_optional_positive_int),
+    "pipeline.timeouts_s.follow_ups": ("pipeline_timeout_s_follow_ups", _to_optional_positive_int),
+    # Per-stage retries override (issue #391) — see dispatch_resolver.
+    "pipeline.retries.classify":   ("pipeline_retries_classify",   _to_optional_nonneg_int),
+    "pipeline.retries.refine":     ("pipeline_retries_refine",     _to_optional_nonneg_int),
+    "pipeline.retries.implement":  ("pipeline_retries_implement",  _to_optional_nonneg_int),
+    "pipeline.retries.pr_review":  ("pipeline_retries_pr_review",  _to_optional_nonneg_int),
+    "pipeline.retries.follow_ups": ("pipeline_retries_follow_ups", _to_optional_nonneg_int),
     # Sub-DEILEs paralelos (issue #257)
     "subagent.runner": ("subagent_runner", lambda v: str(v).strip().lower()),
     "subagent.max_parallel": ("subagent_max_parallel", _to_pos_int),
@@ -452,6 +502,26 @@ class Settings:
     pipeline_dispatcher_implement: Optional[str] = None
     pipeline_dispatcher_pr_review: Optional[str] = None
     pipeline_dispatcher_follow_ups: Optional[str] = None
+
+    # Pipeline per-stage timeout override (issue #391) — CLI persistence layer.
+    # Overrides the global timeout (pipeline_claude_timeout for claude stages,
+    # hard-coded 900s for deile stages) for individual stages. ``None`` = use
+    # global default. Cluster path uses DEILE_PIPELINE_TIMEOUT_S_<STAGE> env.
+    pipeline_timeout_s_classify: Optional[int] = None
+    pipeline_timeout_s_refine: Optional[int] = None
+    pipeline_timeout_s_implement: Optional[int] = None
+    pipeline_timeout_s_pr_review: Optional[int] = None
+    pipeline_timeout_s_follow_ups: Optional[int] = None
+
+    # Pipeline per-stage retries override (issue #391) — CLI persistence layer.
+    # Overrides the global default max retries for individual stages.
+    # ``None`` = use global default. Cluster path uses
+    # DEILE_PIPELINE_RETRIES_<STAGE> env.
+    pipeline_retries_classify: Optional[int] = None
+    pipeline_retries_refine: Optional[int] = None
+    pipeline_retries_implement: Optional[int] = None
+    pipeline_retries_pr_review: Optional[int] = None
+    pipeline_retries_follow_ups: Optional[int] = None
 
     # Sub-DEILEs paralelos em sessão CLI (issue #257)
     # `subagent_runner`        — "local" (default; in-process via asyncio.gather de
@@ -1059,6 +1129,22 @@ _ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any]], ...] = (
     ("DEILE_PIPELINE_DISPATCH_IMPLEMENT",    "pipeline_dispatcher_implement",  _to_optional_dispatcher),
     ("DEILE_PIPELINE_DISPATCH_PR_REVIEW",    "pipeline_dispatcher_pr_review",  _to_optional_dispatcher),
     ("DEILE_PIPELINE_DISPATCH_FOLLOW_UPS",   "pipeline_dispatcher_follow_ups", _to_optional_dispatcher),
+    # Per-stage timeout override (issue #391) — cluster path. Operates em
+    # paridade com pipeline.timeouts_s.<stage> em settings.json. Validator
+    # ``_to_optional_positive_int`` rejeita valores <= 0.
+    ("DEILE_PIPELINE_TIMEOUT_S_CLASSIFY",    "pipeline_timeout_s_classify",    _to_optional_positive_int),
+    ("DEILE_PIPELINE_TIMEOUT_S_REFINE",      "pipeline_timeout_s_refine",      _to_optional_positive_int),
+    ("DEILE_PIPELINE_TIMEOUT_S_IMPLEMENT",   "pipeline_timeout_s_implement",   _to_optional_positive_int),
+    ("DEILE_PIPELINE_TIMEOUT_S_PR_REVIEW",   "pipeline_timeout_s_pr_review",   _to_optional_positive_int),
+    ("DEILE_PIPELINE_TIMEOUT_S_FOLLOW_UPS",  "pipeline_timeout_s_follow_ups",  _to_optional_positive_int),
+    # Per-stage retries override (issue #391) — cluster path. Operates em
+    # paridade com pipeline.retries.<stage> em settings.json. Validator
+    # ``_to_optional_nonneg_int`` rejeita valores negativos.
+    ("DEILE_PIPELINE_RETRIES_CLASSIFY",      "pipeline_retries_classify",      _to_optional_nonneg_int),
+    ("DEILE_PIPELINE_RETRIES_REFINE",        "pipeline_retries_refine",        _to_optional_nonneg_int),
+    ("DEILE_PIPELINE_RETRIES_IMPLEMENT",     "pipeline_retries_implement",     _to_optional_nonneg_int),
+    ("DEILE_PIPELINE_RETRIES_PR_REVIEW",     "pipeline_retries_pr_review",     _to_optional_nonneg_int),
+    ("DEILE_PIPELINE_RETRIES_FOLLOW_UPS",    "pipeline_retries_follow_ups",    _to_optional_nonneg_int),
 )
 
 

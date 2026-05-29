@@ -2370,6 +2370,154 @@ def clear_stage_model(stage: str, timeout: float = 15.0) -> tuple:
     return True, f"{env_var} unset ({msg})"
 
 
+# ===== Per-stage timeout/retries (issue #391) ================================
+
+_STAGE_TIMEOUT_ENV_VARS: tuple = (
+    ("classify",    "DEILE_PIPELINE_TIMEOUT_S_CLASSIFY"),
+    ("refine",      "DEILE_PIPELINE_TIMEOUT_S_REFINE"),
+    ("implement",   "DEILE_PIPELINE_TIMEOUT_S_IMPLEMENT"),
+    ("pr_review",   "DEILE_PIPELINE_TIMEOUT_S_PR_REVIEW"),
+    ("follow_ups",  "DEILE_PIPELINE_TIMEOUT_S_FOLLOW_UPS"),
+)
+
+_STAGE_RETRIES_ENV_VARS: tuple = (
+    ("classify",    "DEILE_PIPELINE_RETRIES_CLASSIFY"),
+    ("refine",      "DEILE_PIPELINE_RETRIES_REFINE"),
+    ("implement",   "DEILE_PIPELINE_RETRIES_IMPLEMENT"),
+    ("pr_review",   "DEILE_PIPELINE_RETRIES_PR_REVIEW"),
+    ("follow_ups",  "DEILE_PIPELINE_RETRIES_FOLLOW_UPS"),
+)
+
+# Stage timeouts and retries are written to deile-pipeline (same as models).
+_STAGE_TIMEOUT_RETRIES_DEPLOYMENT = "deile-pipeline"
+
+
+def _timeout_env_var_for_stage(stage: str) -> Optional[str]:
+    """Return ``DEILE_PIPELINE_TIMEOUT_S_<STAGE>`` for a canonical stage, else None."""
+    return next((env for s, env in _STAGE_TIMEOUT_ENV_VARS if s == stage), None)
+
+
+def _retries_env_var_for_stage(stage: str) -> Optional[str]:
+    """Return ``DEILE_PIPELINE_RETRIES_<STAGE>`` for a canonical stage, else None."""
+    return next((env for s, env in _STAGE_RETRIES_ENV_VARS if s == stage), None)
+
+
+def set_stage_timeout_s(stage: str, seconds: int, timeout: float = 15.0) -> tuple:
+    """Pin a per-stage timeout override on ``deile-pipeline`` (issue #391).
+
+    Uses ``kubectl set env`` to write ``DEILE_PIPELINE_TIMEOUT_S_<STAGE>=<seconds>``
+    on the ``deile-pipeline`` Deployment. Returns ``(ok, msg)``.
+    """
+    env_var = _timeout_env_var_for_stage(stage)
+    if env_var is None:
+        allowed = ", ".join(s for s, _ in _STAGE_TIMEOUT_ENV_VARS)
+        return False, f"stage '{stage}' inválido — esperado um de: {allowed}"
+    if not isinstance(seconds, int) or seconds <= 0:
+        return False, f"seconds deve ser inteiro > 0, recebido: {seconds!r}"
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return False, "kubectl não encontrado"
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", NS, "set", "env",
+             f"deploy/{_STAGE_TIMEOUT_RETRIES_DEPLOYMENT}",
+             f"{env_var}={seconds}"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"falha ao executar kubectl: {exc}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+        return False, err
+    msg = (proc.stdout or "rollout disparado").strip()
+    return True, f"{env_var}={seconds} ({msg})"
+
+
+def reset_stage_timeout_s(stage: str, timeout: float = 15.0) -> tuple:
+    """Remove a per-stage timeout override on ``deile-pipeline`` (issue #391).
+
+    Uses ``kubectl set env ... <VAR>-`` (trailing dash = unset). Returns ``(ok, msg)``.
+    """
+    env_var = _timeout_env_var_for_stage(stage)
+    if env_var is None:
+        return False, f"stage '{stage}' inválido"
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return False, "kubectl não encontrado"
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", NS, "set", "env",
+             f"deploy/{_STAGE_TIMEOUT_RETRIES_DEPLOYMENT}",
+             f"{env_var}-"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"falha ao executar kubectl: {exc}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+        return False, err
+    msg = (proc.stdout or "rollout disparado").strip()
+    return True, f"{env_var} unset ({msg})"
+
+
+def set_stage_retries(stage: str, count: int, timeout: float = 15.0) -> tuple:
+    """Pin a per-stage max retries override on ``deile-pipeline`` (issue #391).
+
+    Uses ``kubectl set env`` to write ``DEILE_PIPELINE_RETRIES_<STAGE>=<count>``
+    on the ``deile-pipeline`` Deployment. Returns ``(ok, msg)``.
+    """
+    env_var = _retries_env_var_for_stage(stage)
+    if env_var is None:
+        allowed = ", ".join(s for s, _ in _STAGE_RETRIES_ENV_VARS)
+        return False, f"stage '{stage}' inválido — esperado um de: {allowed}"
+    if not isinstance(count, int) or count < 0:
+        return False, f"count deve ser inteiro >= 0, recebido: {count!r}"
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return False, "kubectl não encontrado"
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", NS, "set", "env",
+             f"deploy/{_STAGE_TIMEOUT_RETRIES_DEPLOYMENT}",
+             f"{env_var}={count}"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"falha ao executar kubectl: {exc}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+        return False, err
+    msg = (proc.stdout or "rollout disparado").strip()
+    return True, f"{env_var}={count} ({msg})"
+
+
+def reset_stage_retries(stage: str, timeout: float = 15.0) -> tuple:
+    """Remove a per-stage retries override on ``deile-pipeline`` (issue #391).
+
+    Uses ``kubectl set env ... <VAR>-`` (trailing dash = unset). Returns ``(ok, msg)``.
+    """
+    env_var = _retries_env_var_for_stage(stage)
+    if env_var is None:
+        return False, f"stage '{stage}' inválido"
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return False, "kubectl não encontrado"
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", NS, "set", "env",
+             f"deploy/{_STAGE_TIMEOUT_RETRIES_DEPLOYMENT}",
+             f"{env_var}-"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"falha ao executar kubectl: {exc}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+        return False, err
+    msg = (proc.stdout or "rollout disparado").strip()
+    return True, f"{env_var} unset ({msg})"
+
+
 # ===== Pipeline dispatch mode (issue #309) ==================================
 #
 # O ``PipelineMonitor`` lê ``settings.pipeline_dispatch_mode`` no boot e instancia
