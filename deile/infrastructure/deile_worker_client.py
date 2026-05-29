@@ -313,6 +313,8 @@ def build_dispatch_payload(
     no worker. São opcionais e omitidos do wire quando ``None`` — workers
     antigos que não conhecem estes campos continuam funcionando porque o
     cliente serializa via ``model_dump(exclude_none=True)``.
+
+    ``timeout_s`` / ``max_retries`` (issue #391) carregam limites por-stage.
     """
     payload: Dict[str, Any] = {
         "brief": brief,

@@ -530,6 +530,7 @@ class Settings:
     # from the formerly hard-coded value of 3. None collapses to built-in 3.
     pipeline_default_max_retries: Optional[int] = None
 
+
     # Sub-DEILEs paralelos em sessão CLI (issue #257)
     # `subagent_runner`        — "local" (default; in-process via asyncio.gather de
     #                            DeileAgent.process_input_stream em sessões limpas)

@@ -3776,7 +3776,8 @@ class DispatchMatrixView(View):
     refresh_s = 1.0
 
     HOTKEYS = (
-        "[↑/↓] linha   [←/→] coluna   [enter] editar   [r] reset   "
+        "[↑/↓] linha   [←/→] coluna (Worker/Model/Timeout/Retries)   "
+        "[enter] editar   [r] reset   "
         "[L] switch claude login   [I] install   [U] uninstall   [q] back   "
         "[s]caling row: enter digita réplicas (0-10)   "
         "colunas: 0=Worker 1=Model 2=Timeout 3=Retries"
@@ -4112,6 +4113,10 @@ class DispatchMatrixView(View):
             title = f"ESCOLHA WORKER PARA STAGE '{stage}'"
         elif kind == "model":
             title = f"ESCOLHA MODEL PARA STAGE '{stage}'"
+        elif kind == "timeout":
+            title = f"TIMEOUT (s) PARA STAGE '{stage}' (0 = usar default)"
+        elif kind == "retries":
+            title = f"MAX RETRIES PARA STAGE '{stage}'"
         elif kind == "global_worker":
             title = "ESCOLHA DISPATCH MODE GLOBAL (DEILE_PIPELINE_DISPATCH_MODE)"
         elif kind == "global_model":
@@ -4269,11 +4274,19 @@ class DispatchMatrixView(View):
                     self.last_ok = None
                     return ActionResult.refresh()
                 return self._open_scaling_prompt()
-            # Row na linha "Global default" → picker global.
+            # Row na linha "Global default" → picker global (só worker/model).
             if self.cursor_row == global_idx:
                 if self.cursor_col == 0:
                     return self._open_global_worker_picker()
-                return self._open_global_model_picker()
+                if self.cursor_col == 1:
+                    return self._open_global_model_picker()
+                # cols 2/3 (Timeout/Retries) no Global row são read-only hint
+                self.last_msg = (
+                    "Timeout/Retries globais: editar via settings.json ou "
+                    "env vars DEILE_PIPELINE_TIMEOUT_S_*/DEILE_PIPELINE_RETRIES_*"
+                )
+                self.last_ok = None
+                return ActionResult.refresh()
             # Row dentro das stages → picker per-stage.
             entry = entries[self.cursor_row]
             if self.cursor_col == 0:
@@ -4406,10 +4419,12 @@ class DispatchMatrixView(View):
         """Clear do override da célula corrente — volta ao fallback chain.
 
         Roteia conforme (cursor_row, cursor_col):
-          - Stage row + col 0 (Worker) → set_pipeline_dispatch_stage(stage, None)
-          - Stage row + col 1 (Model)  → clear_stage_model(stage)
+          - Stage row + col 0 (Worker)  → set_pipeline_dispatch_stage(stage, None)
+          - Stage row + col 1 (Model)   → clear_stage_model(stage)
+          - Stage row + col 2 (Timeout) → reset_stage_timeout_s(stage)
+          - Stage row + col 3 (Retries) → reset_stage_retries(stage)
           - Global row + col 0 (Worker) → clear_pipeline_dispatch_mode()
-          - Global row + col 1 (Model)  → no-op com hint (sem helper hoje)
+          - Global row + col 1+ → no-op com hint
 
         Cache do StageDispatchProvider é invalidado depois — próximo render
         mostra o valor novo.
