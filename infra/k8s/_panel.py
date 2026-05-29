@@ -59,6 +59,8 @@ import _panel_demo as demo  # noqa: E402
 from _panel_data import \
     NS as _NS_DEFAULT  # noqa: F401  # PR #315 — multi-namespace
 from _panel_data import _fmt_age  # noqa: F401
+from _panel_data import _fmt_cpu_display, _fmt_mem_display, _pct  # noqa: F401
+from _panel_data import EndpointInfo  # noqa: F401
 from _panel_data import kubectl_bin  # noqa: F401
 from _panel_data import BackgroundRefresher, PanelData  # noqa: F401
 from _panel_data import \
@@ -1577,6 +1579,14 @@ class PodWatchView(View):
         "shell":    "deile-shell",
     }
 
+    # Roles com Service associado (issue #394): usados para decidir se a
+    # linha ENDPOINT deve aparecer no header.  Roles ausentes (pipeline,
+    # shell) não têm Service → linha omitida.
+    _ROLE_TO_SERVICE = {
+        "worker": "deile-worker",
+        "bot":    "deilebot",
+    }
+
     def __init__(self, data: Optional[PanelData] = None):
         self.data = data
         self.pod_name: str = ""
@@ -1641,6 +1651,11 @@ class PodWatchView(View):
             return Text(f"pod `{self.pod_name}` não encontrado.", style="red")
         wstate = self.data.workers.get().get(self.pod_name) \
             if self.pod_role == "worker" else None
+        # Fetch live metrics (graceful: empty dict when metrics-server absent).
+        _raw_metrics = self.data.pod_metrics.get() if hasattr(self.data, "pod_metrics") else {}
+        metrics_map = _raw_metrics if isinstance(_raw_metrics, dict) else {}
+        live_cpu, live_mem = metrics_map.get(pod.name, (None, None))
+
         lines = [
             Text.assemble(
                 ("name: ", "dim"), (pod.name, "bold"),
@@ -1659,6 +1674,67 @@ class PodWatchView(View):
                 ("   node: ", "dim"), (pod.node or "?", "dim"),
             ),
         ]
+
+        # RESOURCES line (issue #394) — shown for all k8s pods.
+        # Extract typed fields defensively: tests may use MagicMock for pod.
+        _mem_lim = pod.mem_limit_bytes if isinstance(pod.mem_limit_bytes, int) else None
+        _cpu_lim = pod.cpu_limit_millicores if isinstance(pod.cpu_limit_millicores, int) else None
+        _oom_count = pod.oom_killed_count if isinstance(pod.oom_killed_count, int) else 0
+        _last_oom = pod.last_oom_at if isinstance(pod.last_oom_at, datetime) else None
+
+        mem_pct = _pct(live_mem, _mem_lim)
+        cpu_pct = _pct(live_cpu, _cpu_lim)
+
+        def _resource_style(pct: Optional[float]) -> str:
+            if pct is None:
+                return "bold green"
+            if pct >= 85:
+                return "bold red"
+            if pct >= 60:
+                return "bold yellow"
+            return "bold green"
+
+        mem_used_str = _fmt_mem_display(live_mem)
+        mem_lim_str = _fmt_mem_display(_mem_lim)
+        cpu_used_str = _fmt_cpu_display(live_cpu)
+        cpu_lim_str = _fmt_cpu_display(_cpu_lim)
+        mem_pct_str = f" ({mem_pct:.1f}%)" if mem_pct is not None else ""
+        cpu_pct_str = f" ({cpu_pct:.1f}%)" if cpu_pct is not None else ""
+        mem_style = _resource_style(mem_pct) if live_mem is not None else "dim"
+        cpu_style = _resource_style(cpu_pct) if live_cpu is not None else "dim"
+
+        oom_style = "bold red" if _oom_count > 0 else "dim green"
+        if _oom_count > 0 and _last_oom is not None:
+            now_utc = datetime.now(timezone.utc)
+            oom_ago_s = (now_utc - _last_oom).total_seconds()
+            oom_str = (f"last OOM {_fmt_age(oom_ago_s)} ago "
+                       f"(×{_oom_count})")
+        elif _oom_count > 0:
+            oom_str = f"×{_oom_count} OOM"
+        else:
+            oom_str = "★ no OOM history"
+
+        lines.append(Text.assemble(
+            ("RESOURCES: ", "dim"),
+            ("mem ", "dim"),
+            (f"{mem_used_str}/{mem_lim_str}{mem_pct_str}", mem_style),
+            ("  cpu ", "dim"),
+            (f"{cpu_used_str}/{cpu_lim_str}{cpu_pct_str}", cpu_style),
+            ("   ", ""),
+            (oom_str, oom_style),
+        ))
+
+        # ENDPOINT line: only for pods with an associated Service.
+        svc_name = self._ROLE_TO_SERVICE.get(pod.role)
+        if svc_name is not None and hasattr(self.data, "endpoints"):
+            ep_info = self.data.endpoints.get()
+            if isinstance(ep_info, EndpointInfo) and not ep_info.is_ready(svc_name, pod.name):
+                lines.append(Text.assemble(
+                    ("ENDPOINT: ", "dim"),
+                    (f"NOT in Service endpoints "
+                     f"(kubectl get endpoints {svc_name})", "bold red"),
+                ))
+
         if wstate is not None:
             lines.append(Text.assemble(
                 ("worker: ", "dim"),
@@ -1774,17 +1850,17 @@ class PodWatchView(View):
 
     def render(self, app: "PanelApp") -> RenderableType:
         layout = Layout()
-        # ``size=7`` acomoda 4 linhas de header + bordas do Panel + título
-        # ([1] name/role/status + [2] uptime/restarts/ready/node + [3]
-        # worker/last activity + [4] current task — issue #309 fase 2).
-        # Workers idle ou pods não-worker mostram menos linhas; o Panel
-        # auto-encolhe sem corte porque o size é teto, não piso.
+        # ``size=9`` acomoda até 6 linhas de header + bordas do Panel + título
+        # ([1] name/role/status + [2] uptime/restarts/ready/node +
+        # [3] RESOURCES + [4] ENDPOINT (conditional) +
+        # [5] worker/last activity + [6] current task).
+        # Pods sem worker ou sem ENDPOINT mostram menos linhas.
         layout.split_column(
             Layout(_head_panel(self.title, app), name="head", size=4),
             Layout(Panel(self._header_body(),
                          title="[bold]POD[/bold]", title_align="left",
                          border_style="cyan"),
-                   name="info", size=7),
+                   name="info", size=9),
             Layout(self._log_panel(), name="log"),
             Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
         )
