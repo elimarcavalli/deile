@@ -103,6 +103,22 @@ _SHORT_LABELS = {
 # mais antigos são apagados para o diretório não crescer indefinidamente.
 _SNAPSHOT_RETAIN = 50
 
+# Ordem de prioridade dos estados de workflow para sort_mode="status".
+# Valores menores aparecem primeiro; estados ausentes ficam por último (99).
+_SORT_WORKFLOW_ORDER: Dict[str, int] = {
+    "em_implementacao": 0,
+    "em_revisao": 1,
+    "revisada": 2,
+    "em_pr": 3,
+    "nova": 4,
+    "em_refinamento": 5,
+    "em_arquitetura": 6,
+    "decomposta": 7,
+    "aguardando_stakeholder": 8,
+    "bloqueada": 9,
+}
+_SORT_MODES = ("recent", "number", "status")
+
 
 # ===== key reader ===========================================================
 
@@ -417,6 +433,27 @@ def _activity_from_data(data: Optional[PanelData], limit: int = 8) -> List[Activ
     return rows
 
 
+def _last_activity_caption(data: Optional[PanelData]) -> Optional[str]:
+    """Retorna string legível do evento mais recente, ex: '23s ago — #360 → em_pr'.
+
+    Combina eventos do pipeline e locais (mesma fonte de `_activity_from_data`).
+    Retorna None quando não há eventos para não poluir o rodapé.
+    """
+    if data is None:
+        return None
+    pool: List[Any] = list(data.pipeline.get().events)
+    if data.local_logs is not None:
+        pool.extend(data.local_logs.get().events)
+    if not pool:
+        return None
+    ev = max(pool, key=lambda e: e.ts)
+    age_s = (datetime.now(timezone.utc) - ev.ts).total_seconds()
+    label = ev.detail[:40] if ev.detail else ev.action
+    if ev.target:
+        return f"{_fmt_age(age_s)} ago — {ev.target} → {label}"
+    return f"{_fmt_age(age_s)} ago — {ev.actor} {label}"
+
+
 # ===== pod adapter para a tabela ============================================
 
 @dataclass
@@ -491,7 +528,7 @@ def _local_process_rows(data: Optional[PanelData]) -> List[PodRow]:
     return rows
 
 
-def _pod_rows(data: Optional[PanelData]) -> List[PodRow]:
+def _pod_rows(data: Optional[PanelData], sort_mode: str = "recent") -> List[PodRow]:
     """Converte o estado dos providers em linhas da tabela de pods."""
     if data is None:
         return [
@@ -501,24 +538,26 @@ def _pod_rows(data: Optional[PanelData]) -> List[PodRow]:
         ]
     workers = data.workers.get()
     ps = data.pipeline.get()
-    rows: List[PodRow] = []
+    # Pares (age_s para sort, row) — age_s None significa "sem dado" (vai pro fim).
+    pairs: List[Any] = []
     for p in data.pods.get():
         # Last-activity humano por role.
         if p.role == "worker":
             ws = workers.get(p.name)
-            last = _fmt_age(ws.last_activity_s) + " ago" if ws else "—"
+            age_s: Optional[float] = ws.last_activity_s if ws else None
+            last = _fmt_age(age_s) + " ago" if ws else "—"
             doing = ws.last_substantive_body[:32] if ws and ws.last_substantive_body \
                 else ("ocupado" if ws and ws.busy else "idle")
             busy = bool(ws and ws.busy)
             icon = "⚡" if busy else "●"
         elif p.role == "pipeline":
-            last = (_fmt_age(ps.last_action_age_s) + " ago"
-                    if ps.last_action_age_s is not None else "—")
+            age_s = ps.last_action_age_s
+            last = (_fmt_age(age_s) + " ago" if age_s is not None else "—")
             doing = ps.last_action_summary[:48] or "idle"
-            busy = (ps.last_action_age_s is not None
-                    and ps.last_action_age_s < 60)
+            busy = (age_s is not None and age_s < 60)
             icon = "⚡" if busy else "●"
         else:
+            age_s = None
             last = "—"
             doing = "—"
             busy = False
@@ -528,13 +567,25 @@ def _pod_rows(data: Optional[PanelData]) -> List[PodRow]:
         if p.status == "Running" and not p.ready:
             ready_label = "NotReady"
 
-        rows.append(PodRow(
+        row = PodRow(
             icon=icon, name=p.name, role=p.role,
             status=ready_label, age=_fmt_age(p.age_s),
             restarts=str(p.restarts), last_activity=last,
             doing_now=doing, busy=busy,
-        ))
-    return rows
+        )
+        pairs.append((age_s, row))
+
+    if sort_mode == "recent":
+        # Menor age_s = mais recente; None vai pro fim.
+        pairs.sort(key=lambda t: (t[0] is None, t[0] or 0.0))
+    elif sort_mode == "number":
+        pairs.sort(key=lambda t: t[1].name)
+    elif sort_mode == "status":
+        # Running primeiro; demais por nome como desempate.
+        _pri = {"Running": 0, "NotReady": 1}
+        pairs.sort(key=lambda t: (_pri.get(t[1].status, 2), t[1].name))
+
+    return [row for _, row in pairs]
 
 
 # ===== renderers reaproveitáveis ============================================
@@ -594,9 +645,16 @@ def _head_panel(view_title: str, app: "PanelApp") -> Panel:
     return Panel(Group(*pieces), border_style="cyan", box=box.HEAVY)
 
 
-def _footer_panel(hotkeys: str) -> Panel:
-    """Rodapé com a linha de hotkeys da view ativa."""
-    return Panel(Text(hotkeys, style="dim"), border_style="dim", box=box.SIMPLE)
+def _footer_panel(hotkeys: str, last_activity: Optional[str] = None) -> Panel:
+    """Rodapé com a linha de hotkeys e, opcionalmente, o indicador de última atividade."""
+    if last_activity:
+        content: Any = Group(
+            Text(hotkeys, style="dim"),
+            Text(f"Last activity: {last_activity}", style="dim"),
+        )
+    else:
+        content = Text(hotkeys, style="dim")
+    return Panel(content, border_style="dim", box=box.SIMPLE)
 
 
 # ===== views ================================================================
@@ -614,14 +672,17 @@ class DashboardView(View):
     title = "Dashboard"
     refresh_s = 1.0    # render é ~3ms; conteúdo refresca conforme TTL do provider
 
-    HOTKEYS = (
-        "[1]Pod watch  [2]Pipeline  [3]Issues/PRs  [4]Logs split  "
-        "[5]Tokens  [n]otifier  [a]ctions  [m]odel/runtime  "
-        "[d]ispatch (workers & models)  [?]help  [q]uit"
-    )
-
     def __init__(self, data: Optional[PanelData] = None):
         self.data = data
+        self.sort_mode: str = "recent"
+
+    @property
+    def HOTKEYS(self) -> str:
+        return (
+            "[1]Pod watch  [2]Pipeline  [3]Issues/PRs  [4]Logs split  "
+            "[5]Tokens  [n]otifier  [a]ctions  [m]odel/runtime  "
+            f"[d]ispatch (workers & models)  [s]ort:{self.sort_mode}  [?]help  [q]uit"
+        )
 
     def render(self, app: "PanelApp") -> RenderableType:
         layout = Layout()
@@ -645,11 +706,13 @@ class DashboardView(View):
             ))
         else:
             children.append(Layout(self._pods_panel(), name="pods", size=10))
+        last_act = _last_activity_caption(self.data)
         children.extend([
             Layout(name="middle", size=8),
             Layout(self._activity_panel(), name="activity"),
             Layout(name="bottom", size=5),
-            Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
+            Layout(_footer_panel(self.HOTKEYS, last_act), name="footer",
+                   size=4 if last_act else 3),
         ])
         layout.split_column(*children)
         if has_locals and k8s_on:
@@ -670,7 +733,7 @@ class DashboardView(View):
     # --- panels ---
 
     def _pods_panel(self) -> Panel:
-        rows = _pod_rows(self.data)
+        rows = _pod_rows(self.data, sort_mode=self.sort_mode)
         tbl = Table(box=box.SIMPLE_HEAD, expand=True, pad_edge=False)
         tbl.add_column(" ", width=2, no_wrap=True)
         tbl.add_column("pod", style="bold")
@@ -894,6 +957,10 @@ class DashboardView(View):
         }
         if key in nav:
             return ActionResult.nav(nav[key])
+        if key == "s":
+            idx = _SORT_MODES.index(self.sort_mode)
+            self.sort_mode = _SORT_MODES[(idx + 1) % len(_SORT_MODES)]
+            return ActionResult.refresh()
         if key == "?":
             return ActionResult.nav("help")
         return ActionResult()
@@ -1958,6 +2025,7 @@ class PipelineTimelineView(View):
             Text(("├" + "─" * (self.HIST_BUCKETS - 2) + "┤"), style="dim"),
             Text(f"{'-24h':<{self.HIST_BUCKETS - 4}}now", style="dim"),
         )
+        last_act = _last_activity_caption(self.data)
         layout = Layout()
         layout.split_column(
             Layout(_head_panel(self.title, app), name="head", size=4),
@@ -1966,7 +2034,8 @@ class PipelineTimelineView(View):
                          title="[bold]EVENTS (mais recentes em cima)[/bold]",
                          title_align="left", border_style="green"),
                    name="events"),
-            Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
+            Layout(_footer_panel(self.HOTKEYS, last_act), name="footer",
+                   size=4 if last_act else 3),
         )
         layout["middle"].split_row(
             Layout(Panel(Group(*stats_lines),
@@ -1996,15 +2065,21 @@ class IssuesPRsView(View):
     title = "Issues & PRs"
     refresh_s = 1.0
 
-    HOTKEYS = ("[a] all   [i] só issues   [p] só PRs   [b] só bloqueadas   "
-               "[m] minhas   [↑/↓] navega   [enter] abrir URL   [esc] volta")
-
     def __init__(self, data: Optional[PanelData] = None):
         self.data = data
         self.filter: str = "all"
         self.cursor: int = 0
+        self.sort_mode: str = "recent"
         # Sem nome hardcoded: tenta env GH_USER → `gh api user` → vazio.
         self.my_login: str = self._resolve_login()
+
+    @property
+    def HOTKEYS(self) -> str:
+        return (
+            f"[a] all   [i] só issues   [p] só PRs   [b] só bloqueadas   "
+            f"[m] minhas   [s]ort:{self.sort_mode}   [↑/↓] navega   "
+            f"[enter] abrir URL   [esc] volta"
+        )
 
     @staticmethod
     def _resolve_login() -> str:
@@ -2029,7 +2104,8 @@ class IssuesPRsView(View):
         if self.data is None:
             return [], []
         snap = self.data.github.get()
-        issues, prs = snap.issues, snap.prs
+        issues: List[Any] = list(snap.issues)
+        prs: List[Any] = list(snap.prs)
         if self.filter == "i":
             prs = []
         elif self.filter == "p":
@@ -2040,6 +2116,20 @@ class IssuesPRsView(View):
         elif self.filter == "m":
             issues = [it for it in issues if self.my_login in it.assignees]
             prs = [pr for pr in prs if self.my_login in pr.assignees]
+        # Aplica sort_mode (estado local da view — não global).
+        if self.sort_mode == "recent":
+            # updated_at desc; None vai pro fim.
+            _key_r = lambda it: (it.updated_at is None,  # noqa: E731
+                                 -(it.updated_at.timestamp() if it.updated_at else 0))
+            issues.sort(key=_key_r)
+            prs.sort(key=_key_r)
+        elif self.sort_mode == "number":
+            issues.sort(key=lambda it: it.number)
+            prs.sort(key=lambda it: it.number)
+        elif self.sort_mode == "status":
+            _key_s = lambda it: _SORT_WORKFLOW_ORDER.get(it.workflow or "", 99)  # noqa: E731
+            issues.sort(key=_key_s)
+            prs.sort(key=_key_s)
         return issues, prs
 
     def _flat(self):
@@ -2100,13 +2190,15 @@ class IssuesPRsView(View):
             ),
             border_style="dim",
         )
+        last_act = _last_activity_caption(self.data)
         layout = Layout()
         layout.split_column(
             Layout(_head_panel(self.title, app), name="head", size=4),
             Layout(filter_panel, name="filter", size=3),
             Layout(self._build_table(issues, "Issues"), name="issues"),
             Layout(self._build_table(prs, "PRs"), name="prs"),
-            Layout(_footer_panel(self.HOTKEYS), name="footer", size=3),
+            Layout(_footer_panel(self.HOTKEYS, last_act), name="footer",
+                   size=4 if last_act else 3),
         )
         return layout
 
@@ -2114,6 +2206,11 @@ class IssuesPRsView(View):
         flat = self._flat()
         if key in ("a", "i", "p", "b", "m"):
             self.filter = key
+            self.cursor = 0
+            return ActionResult.refresh()
+        if key == "s":
+            idx = _SORT_MODES.index(self.sort_mode)
+            self.sort_mode = _SORT_MODES[(idx + 1) % len(_SORT_MODES)]
             self.cursor = 0
             return ActionResult.refresh()
         n = len(flat)
