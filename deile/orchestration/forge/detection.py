@@ -119,12 +119,15 @@ def _probe_host_sync(host: str) -> Optional[ForgeKind]:
 
 
 def _check_gitlab_endpoint(host: str) -> Optional[ForgeKind]:
-    """Probe ``https://<host>/api/v4/version`` and return :data:`ForgeKind.GITLAB`
-    on HTTP 200, else ``None``. Never raises."""
+    """Probe ``https://<host>/api/v<version>/version`` and return :data:`ForgeKind.GITLAB`
+    on HTTP 200, else ``None``. API version comes from ``forge.gitlab_api_version`` setting.
+    Never raises."""
     import urllib.error
     import urllib.request
+    from deile.config.settings import get_settings
+    version = get_settings().forge_gitlab_api_version
     try:
-        req = urllib.request.Request(f"https://{host}/api/v4/version", method="GET")
+        req = urllib.request.Request(f"https://{host}/api/v{version}/version", method="GET")
         with urllib.request.urlopen(req, timeout=3) as resp:
             if resp.status == 200:
                 return ForgeKind.GITLAB
