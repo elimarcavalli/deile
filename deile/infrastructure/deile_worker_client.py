@@ -570,9 +570,18 @@ class DeileWorkerClient:
             ) from exc
 
         if resp.status_code >= 400:
-            err = (data.get("error") if isinstance(data, dict) else None) or {}
-            code = err.get("code") or "WORKER_ERROR"
-            msg = err.get("message") or f"HTTP {resp.status_code}"
+            err_raw = data.get("error") if isinstance(data, dict) else None
+            err = err_raw if isinstance(err_raw, dict) else {}
+            code = (
+                err.get("code")
+                or (data.get("error_code") if isinstance(data, dict) else None)
+                or "WORKER_ERROR"
+            )
+            msg = (
+                err.get("message")
+                or (err_raw if isinstance(err_raw, str) else None)
+                or f"HTTP {resp.status_code}"
+            )
             raise WorkerDispatchError(
                 f"{msg} (request_id={request_id})", error_code=code
             )
@@ -713,9 +722,18 @@ class DeileWorkerClient:
             ) from exc
 
         if resp.status_code >= 400:
-            err = (data.get("error") if isinstance(data, dict) else None) or {}
-            code = err.get("code") or "WORKER_BAD_REQUEST"
-            msg = err.get("message") or f"HTTP {resp.status_code}"
+            err_raw = data.get("error") if isinstance(data, dict) else None
+            err = err_raw if isinstance(err_raw, dict) else {}
+            code = (
+                err.get("code")
+                or (data.get("error_code") if isinstance(data, dict) else None)
+                or "WORKER_BAD_REQUEST"
+            )
+            msg = (
+                err.get("message")
+                or (err_raw if isinstance(err_raw, str) else None)
+                or f"HTTP {resp.status_code}"
+            )
             raise WorkerDispatchError(msg, error_code=code)
         if not isinstance(data, dict):
             raise WorkerDispatchError(
