@@ -14,6 +14,7 @@ right forge. When a caller does not pass an explicit :class:`ForgeConfig`
 default GitHub configuration on ``github.com`` so the rendered text matches
 the legacy byte-exact GH output.
 """
+# Brief unificado pr_unified — refactor #45 / PR #411
 
 from __future__ import annotations
 
