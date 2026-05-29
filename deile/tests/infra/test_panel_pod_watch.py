@@ -793,6 +793,10 @@ class TestPodWatchViewClaudeWorkerHeader:
 
         pod = self._make_pod("claude-worker-0", "claude-worker")
         view.data.pods.get.return_value = [pod]
+        # claude_workers.get() must return a plain dict so that wstate resolves
+        # to None (idle) — otherwise MagicMock.get() chains produce MagicMock
+        # values that cause TypeError inside Text.assemble.
+        view.data.claude_workers.get.return_value = {}
 
         mock_status = pd.ClaudeWorkerPodStatus(
             lease=None, disk=None, claude_processes=0, anthropic_quota=None,
