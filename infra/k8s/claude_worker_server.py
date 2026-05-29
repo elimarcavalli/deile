@@ -466,7 +466,7 @@ async def _bearer_auth_mw(request: web.Request, handler):
     exigem ``Authorization: Bearer <token>`` comparado em constant-time
     (``hmac.compare_digest``) para evitar timing-attack na descoberta.
     """
-    if request.path == "/v1/health":
+    if request.path in ("/v1/health", "/v1/auth/start", "/v1/auth/status"):
         return await handler(request)
     expected = request.app["auth_token"]
     got = request.headers.get("Authorization", "")
@@ -1139,6 +1139,112 @@ def _count_claude_processes() -> int:
 
 
 # --------------------------------------------------------------------------- #
+# In-pod OAuth broker (issue #335)
+#
+# Alternative to _oauth_server.py: exposes /v1/auth/start and /v1/auth/status
+# directly in the existing claude_worker_server process (port 8767). Operates
+# via the same kubectl port-forward tunnel used for regular dispatch.
+#
+# Security: /v1/auth/* are unauthenticated intentionally — they are called
+# before any credential exists. The security boundary is kubectl port-forward.
+# --------------------------------------------------------------------------- #
+
+
+class _OAuthBrokerState:
+    """Estado de um fluxo OAuth in-pod em andamento (singleton por processo)."""
+
+    def __init__(self) -> None:
+        self.status: str = "idle"
+        self.oauth_url: Optional[str] = None
+        self.callback_port: Optional[int] = None
+        self.email: Optional[str] = None
+        self.error: Optional[str] = None
+        self.started_at: float = 0.0
+        self._lock: threading.Lock = threading.Lock()
+
+    def reset(self) -> None:
+        with self._lock:
+            self.status = "idle"
+            self.oauth_url = None
+            self.callback_port = None
+            self.email = None
+            self.error = None
+            self.started_at = 0.0
+
+
+_oauth_broker = _OAuthBrokerState()
+
+_CLAUDE_OAUTH_URL_RE = re.compile(r"https://(?:claude\.ai|anthropic\.com)/[^\s'\">]+")
+_REDIRECT_PORT_RE = re.compile(r"redirect_uri=http://(?:localhost|127\.0\.0\.1):(\d+)")
+
+
+def _run_in_pod_oauth(state: _OAuthBrokerState) -> None:
+    """Background thread: executa ``claude auth login`` capturando URL OAuth."""
+    creds_path = _creds_path()
+    with state._lock:
+        state.status = "pending"
+        state.started_at = time.time()
+
+    env = {**os.environ, "BROWSER": "", "DISPLAY": ""}
+    try:
+        proc = subprocess.Popen(
+            ["claude", "auth", "login"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=env,
+        )
+    except FileNotFoundError:
+        with state._lock:
+            state.status = "error"
+            state.error = "claude binary not found in PATH"
+        return
+
+    captured_url: Optional[str] = None
+    for line in (proc.stdout or []):
+        line = line.rstrip()
+        logger.info("[in-pod-oauth] %s", line)
+        if not captured_url:
+            m = _CLAUDE_OAUTH_URL_RE.search(line)
+            if m:
+                captured_url = m.group()
+                port_m = _REDIRECT_PORT_RE.search(captured_url)
+                callback_port: Optional[int] = None
+                if port_m:
+                    try:
+                        callback_port = int(port_m.group(1))
+                    except ValueError:
+                        pass
+                with state._lock:
+                    state.oauth_url = captured_url
+                    state.callback_port = callback_port
+
+    proc.wait()
+
+    if proc.returncode == 0:
+        email: Optional[str] = None
+        if creds_path.exists():
+            try:
+                creds_data = json.loads(creds_path.read_text(encoding="utf-8"))
+                oauth_data = creds_data.get("claudeAiOauth") if isinstance(creds_data, dict) else None
+                email = (creds_data or {}).get("email")
+                if not email and isinstance(oauth_data, dict):
+                    email = oauth_data.get("email")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[in-pod-oauth] failed to read credentials.json: %s", exc)
+        _refresh_oauth_with_lock(creds_path)
+        with state._lock:
+            state.status = "complete"
+            state.email = email
+    else:
+        with state._lock:
+            if state.status == "pending":
+                state.status = "error"
+                state.error = f"claude auth login exited with code {proc.returncode}"
+
+
+# --------------------------------------------------------------------------- #
 # Handlers
 # --------------------------------------------------------------------------- #
 
@@ -1158,6 +1264,87 @@ async def health_handler(request: web.Request) -> web.Response:
             status=500,
         )
     return web.json_response({"status": "ok", "claude_binary": claude_bin})
+
+
+async def auth_start_handler(request: web.Request) -> web.Response:
+    """``GET /v1/auth/start`` — inicia fluxo OAuth in-pod (issue #335).
+
+    Lança ``claude auth login`` em background thread com ``BROWSER=''``,
+    captura a URL OAuth do stdout e retorna para o operador abrir no browser
+    via ``kubectl port-forward``. Alternativa ao ``_oauth_server.py`` standalone.
+
+    **Unauthenticated**: chamado antes de qualquer credencial existir.
+    Security boundary = kubectl port-forward (só o operador com acesso
+    kubectl ao cluster consegue alcançar este endpoint).
+
+    Passe ``?reset=1`` para cancelar e reiniciar um fluxo em andamento.
+    """
+    reset = request.query.get("reset", "").lower() in ("1", "true", "yes")
+
+    with _oauth_broker._lock:
+        if reset and _oauth_broker.status == "pending":
+            _oauth_broker.status = "error"
+            _oauth_broker.error = "cancelled by ?reset=1"
+        if _oauth_broker.status == "pending":
+            return web.json_response({
+                "status": "pending",
+                "oauth_url": _oauth_broker.oauth_url,
+                "callback_port": _oauth_broker.callback_port,
+                "error": None,
+                "tip": "OAuth already in progress; poll /v1/auth/status",
+            })
+        if _oauth_broker.status == "complete":
+            return web.json_response({
+                "status": "complete",
+                "oauth_url": _oauth_broker.oauth_url,
+                "callback_port": _oauth_broker.callback_port,
+                "email": _oauth_broker.email,
+                "error": None,
+            })
+
+    _oauth_broker.reset()
+    t = threading.Thread(
+        target=_run_in_pod_oauth, args=(_oauth_broker,), daemon=True,
+    )
+    t.start()
+
+    deadline = time.time() + 20.0
+    while time.time() < deadline:
+        with _oauth_broker._lock:
+            if _oauth_broker.oauth_url or _oauth_broker.status in ("error", "complete"):
+                break
+        await asyncio.sleep(0.25)
+
+    with _oauth_broker._lock:
+        return web.json_response({
+            "status": _oauth_broker.status,
+            "oauth_url": _oauth_broker.oauth_url,
+            "callback_port": _oauth_broker.callback_port,
+            "error": _oauth_broker.error,
+            "tip": (
+                "Open oauth_url in your browser; callback goes through "
+                "kubectl port-forward to this pod"
+            ) if _oauth_broker.oauth_url else (
+                "URL not yet captured — retry in a few seconds or check pod logs"
+            ),
+        })
+
+
+async def auth_status_handler(request: web.Request) -> web.Response:
+    """``GET /v1/auth/status`` — status do fluxo OAuth in-pod.
+
+    **Unauthenticated** — mesma razão de ``/v1/auth/start``.
+    Poll até ``status == "complete"`` ou ``"error"``.
+    """
+    with _oauth_broker._lock:
+        return web.json_response({
+            "status": _oauth_broker.status,
+            "oauth_url": _oauth_broker.oauth_url,
+            "callback_port": _oauth_broker.callback_port,
+            "email": _oauth_broker.email,
+            "error": _oauth_broker.error,
+            "started_at": _oauth_broker.started_at,
+        })
 
 
 async def pod_status_handler(request: web.Request) -> web.Response:
@@ -2196,6 +2383,8 @@ def build_app(auth_token: Optional[str] = None) -> web.Application:
     )
     app["auth_token"] = auth_token or _read_auth_token()
     app.router.add_get("/v1/health", health_handler)
+    app.router.add_get("/v1/auth/start", auth_start_handler)
+    app.router.add_get("/v1/auth/status", auth_status_handler)
     app.router.add_get("/v1/pod-status", pod_status_handler)
     app.router.add_post("/v1/dispatch", dispatch_handler)
     app.router.add_get("/v1/progress/{task_id}", progress_handler)

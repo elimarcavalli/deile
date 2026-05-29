@@ -1765,3 +1765,124 @@ def test_anthropic_quota_capture_middleware_stores_latest_header(
     )
     snap2 = claude_worker_module._get_quota_snapshot()
     assert snap2.tokens_remaining == 50000
+
+
+# ---------------------------------------------------------------------------
+# In-pod OAuth broker endpoints (issue #335)
+# ---------------------------------------------------------------------------
+
+
+async def test_auth_start_requires_no_bearer_token(claude_worker_module, monkeypatch):
+    """/v1/auth/start e /v1/auth/status são unauthenticated."""
+    import subprocess as _sp  # noqa: PLC0415
+
+    def fake_popen(cmd, *args, **kwargs):
+        raise FileNotFoundError("claude not found")
+
+    monkeypatch.setattr(claude_worker_module.subprocess, "Popen", fake_popen)
+    claude_worker_module._oauth_broker.reset()
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        # Sem Bearer header — deve passar (unauthenticated por design)
+        resp_start = await client.get("/v1/auth/start")
+        assert resp_start.status == 200
+
+        resp_status = await client.get("/v1/auth/status")
+        assert resp_status.status == 200
+
+        # Outros endpoints ainda exigem Bearer
+        resp_dispatch = await client.post("/v1/dispatch", json={})
+        assert resp_dispatch.status == 401
+
+
+async def test_auth_status_returns_idle_initially(claude_worker_module):
+    """/v1/auth/status retorna idle quando nenhum fluxo foi iniciado."""
+    claude_worker_module._oauth_broker.reset()
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/auth/status")
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["status"] == "idle"
+        assert body["oauth_url"] is None
+
+
+async def test_auth_start_returns_error_when_claude_not_found(
+    claude_worker_module, monkeypatch,
+):
+    """/v1/auth/start retorna error se claude binary não está no PATH."""
+    import subprocess as _sp  # noqa: PLC0415
+
+    def fake_popen(cmd, *args, **kwargs):
+        if cmd and cmd[0] == "claude":
+            raise FileNotFoundError("claude not found")
+        return _sp.Popen(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(claude_worker_module.subprocess, "Popen", fake_popen)
+    claude_worker_module._oauth_broker.reset()
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/auth/start")
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["status"] == "error"
+        assert body.get("error") is not None
+
+
+async def test_auth_start_captures_oauth_url_from_claude_output(
+    claude_worker_module, monkeypatch,
+):
+    """/v1/auth/start captura URL OAuth impressa pelo claude auth login."""
+    import io                   # noqa: PLC0415
+    import subprocess as _sp    # noqa: PLC0415
+
+    fake_url = (
+        "https://claude.ai/auth/login?state=abc&code_challenge=xyz"
+        "&redirect_uri=http://localhost:54321/callback"
+    )
+
+    class FakeProc:
+        returncode = 0
+        stdout = io.StringIO(
+            f"Opening browser...\nIf not opened, visit:\n{fake_url}\n"
+        )
+        def wait(self): pass
+
+    def fake_popen(cmd, *args, **kwargs):
+        if cmd and cmd[0] == "claude":
+            return FakeProc()
+        return _sp.Popen(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(claude_worker_module.subprocess, "Popen", fake_popen)
+    claude_worker_module._oauth_broker.reset()
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/auth/start")
+        assert resp.status == 200
+        body = await resp.json()
+
+    assert body.get("oauth_url") == fake_url, f"URL não capturada; body={body}"
+    assert body.get("callback_port") == 54321, f"Porta não detectada; body={body}"
+    assert body.get("status") in ("pending", "complete")
+
+
+def test_oauth_broker_state_reset(claude_worker_module):
+    """_OAuthBrokerState.reset() limpa todos os campos."""
+    state = claude_worker_module._OAuthBrokerState()
+    state.status = "complete"
+    state.oauth_url = "https://example.com"
+    state.email = "test@example.com"
+    state.error = "some error"
+    state.started_at = 9999.0
+
+    state.reset()
+
+    assert state.status == "idle"
+    assert state.oauth_url is None
+    assert state.email is None
+    assert state.error is None
+    assert state.started_at == 0.0
