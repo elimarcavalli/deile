@@ -204,3 +204,49 @@ class TestContentType:
         result = await _cmd().execute(_ctx())
         rendered = _render(result.content)
         assert len(rendered) > 50
+
+
+class TestIssue412:
+    """Acceptance criteria for issue #412 — /version shows current DEILE version.
+
+    Verifies the three checkable criteria:
+    1. Output contains the product name (DEILE) followed by the version read
+       from deile.__version__ — no hardcoded duplicate.
+    2. Command lives in deile/commands/builtin/ and follows the SlashCommand pattern.
+    3. Tests in deile/tests/commands/ confirm the behavior (this class).
+    """
+
+    async def test_output_shows_deile_and_version(self):
+        """Rendered output contains 'DEILE' and the version from __version__.py."""
+        result = await _cmd().execute(_ctx())
+        assert result.success
+        rendered = _render(result.content)
+        assert "DEILE" in rendered
+        assert version_mod.__version__ in rendered
+
+    async def test_version_and_title_appear_together(self):
+        """'DEILE v<X.Y.Z>' appears together in the output — matches desired format."""
+        result = await _cmd().execute(_ctx())
+        rendered = _render(result.content)
+        assert f"DEILE v{version_mod.__version__}" in rendered
+
+    async def test_version_not_hardcoded_in_command(self):
+        """The command module must not hardcode the version string."""
+        import inspect
+        from deile.commands.builtin import version_command
+        source = inspect.getsource(version_command)
+        assert version_mod.__version__ not in source, (
+            f"Version {version_mod.__version__!r} is hardcoded in version_command.py — "
+            "it must be read from deile.__version__ only."
+        )
+
+    async def test_command_is_slash_command_subclass(self):
+        """VersionCommand follows the SlashCommand/DirectCommand pattern."""
+        from deile.commands.base import DirectCommand
+        cmd = _cmd()
+        assert isinstance(cmd, DirectCommand)
+
+    async def test_command_registered_as_version(self):
+        """Command name is 'version' so users invoke it as /version."""
+        cmd = _cmd()
+        assert cmd.name == "version"
