@@ -39,11 +39,19 @@ def _clear_env(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch):
-    """Each test starts with a fresh Settings singleton and clean env."""
+    """Each test starts with a fresh Settings singleton and clean env.
+
+    Also resets logging.disable() — some tests in the suite call it without
+    restoring, which silences WARNING records and breaks caplog assertions
+    (known suite-wide issue, documented in test_file_context_truncation.py).
+    """
     _clear_env(monkeypatch)
     reset_settings()
+    _saved_disable = logging.root.manager.disable
+    logging.disable(logging.NOTSET)
     yield
     reset_settings()
+    logging.disable(_saved_disable)
 
 
 # ---------------------------------------------------------------------------
