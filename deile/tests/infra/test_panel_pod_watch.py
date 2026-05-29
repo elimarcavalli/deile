@@ -638,6 +638,7 @@ class TestPodWatchViewCurrentTask:
         wstate = pd.WorkerState(pod_name=view.pod_name, busy=busy,
                                 current_task=current_task)
         view.data.workers.get.return_value = {view.pod_name: wstate}
+        view.data.claude_workers = None
         return view
 
     def _render_to_text(self, view: "panel.PodWatchView") -> str:
@@ -656,9 +657,9 @@ class TestPodWatchViewCurrentTask:
         )
         view = self._setup_view_with_pod(current_task=ct, busy=True)
         out = self._render_to_text(view)
-        assert "current task:" in out
+        # Updated: header now shows WORK: instead of "current task:"
+        assert "WORK:" in out
         assert "#309" in out
-        assert "implement" in out  # stage
         assert "auto/issue-309" in out  # branch
 
     def test_busy_worker_with_pr_shows_pr_prefix(self):
@@ -669,18 +670,18 @@ class TestPodWatchViewCurrentTask:
         view = self._setup_view_with_pod(current_task=ct, busy=True)
         out = self._render_to_text(view)
         assert "PR#291" in out
-        assert "pr_review" in out
 
     def test_idle_worker_shows_dash(self):
         view = self._setup_view_with_pod(current_task=None, busy=False)
         out = self._render_to_text(view)
-        assert "current task:" in out
+        # Updated: header now shows WORK: instead of "current task:"
+        assert "WORK:" in out
         # Estado idle — não menciona um número de issue/PR
         assert "idle" in out.lower()
 
     def test_non_worker_pod_has_no_current_task_line(self):
         """Pods que não são worker (bot, pipeline, shell) não tem
-        ``wstate`` no dict de workers — a linha "current task:" NÃO
+        ``wstate`` no dict de workers — a linha WORK NÃO
         aparece (mantém compat visual com pipeline/bot/shell)."""
         view = panel.PodWatchView(data=MagicMock())
         view.pod_role = "pipeline"  # não-worker
@@ -696,8 +697,9 @@ class TestPodWatchViewCurrentTask:
         view.data.pods.get.return_value = [pod]
         # workers.get() devolve {} (sem este pod).
         view.data.workers.get.return_value = {}
+        view.data.claude_workers = None
         out = self._render_to_text(view)
-        assert "current task:" not in out
+        assert "WORK:" not in out
 
     def test_target_label_is_forge_agnostic(self):
         """O renderer não distingue GitHub de GitLab — usa o vocabulário
@@ -741,6 +743,7 @@ class TestPodWatchViewRenderSize:
             view.pod_name: pd.WorkerState(pod_name=view.pod_name,
                                           busy=True, current_task=ct),
         }
+        view.data.claude_workers = None
         app = MagicMock()
         app.pause = False  # _head_panel pode consultar
         # Mock _head_panel direto pra não depender do PanelApp completo.
@@ -755,4 +758,5 @@ class TestPodWatchViewRenderSize:
         console.print(layout)
         out = console.export_text()
         assert "#309" in out
-        assert "current task:" in out
+        # Updated: header now shows WORK: instead of "current task:"
+        assert "WORK:" in out

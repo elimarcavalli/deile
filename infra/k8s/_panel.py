@@ -1639,8 +1639,13 @@ class PodWatchView(View):
         pod = next((p for p in self.data.pods.get() if p.name == self.pod_name), None)
         if pod is None:
             return Text(f"pod `{self.pod_name}` não encontrado.", style="red")
-        wstate = self.data.workers.get().get(self.pod_name) \
-            if self.pod_role == "worker" else None
+        if self.pod_role == "worker":
+            wstate = self.data.workers.get().get(self.pod_name)
+        elif self.pod_role == "claude-worker":
+            wstate = (self.data.claude_workers.get().get(self.pod_name)
+                      if self.data.claude_workers is not None else None)
+        else:
+            wstate = None
         lines = [
             Text.assemble(
                 ("name: ", "dim"), (pod.name, "bold"),
@@ -1668,41 +1673,74 @@ class PodWatchView(View):
                 (_fmt_age(wstate.last_activity_s) + " ago"
                  if wstate.last_activity_s is not None else "—", "bold"),
             ))
-            # "Current task" — issue/PR/MR/workflow que o worker está
-            # atendendo no momento (issue #309 fase 2 follow-up). Fonte
-            # de verdade: linha estruturada ``dispatch_started`` emitida
-            # pelo :func:`infra.k8s.worker_server.dispatch_handler` e
-            # parseada pelo :class:`WorkerProvider`. Forge-agnóstico: o
-            # ``target_label`` do CurrentTask devolve ``#N``/``PR#N``/
-            # ``mention …`` independentemente de GitHub ou GitLab — o
-            # vocabulário PR↔MR é abstraído upstream (ver Decisão #42).
-            # Quando idle ou worker antigo sem logs estruturados, mostra
-            # ``—`` (mesmo padrão das outras células do header).
+            # WORK line — replaces the old "current task:" block (issue #396).
+            # Shows what the worker is doing right now, enriched with LLM model
+            # and start time.  Forge-agnostic: target_label returns #N/PR#N/
+            # mention … regardless of GitHub or GitLab (Decisão #42).
             ct = wstate.current_task
             if ct is not None:
-                task_parts: List[Any] = [
-                    ("current task: ", "dim"),
+                work_parts: List[Any] = [
+                    ("WORK: ", "bold"),
                     (ct.target_label, "bold magenta"),
                 ]
-                if ct.stage:
-                    task_parts.extend([
-                        ("   stage: ", "dim"),
-                        (ct.stage, "bold"),
-                    ])
                 if ct.branch:
-                    task_parts.extend([
-                        ("   branch: ", "dim"),
+                    work_parts.extend([
+                        (" (", "dim"),
                         (ct.branch, "dim italic"),
+                        (")", "dim"),
                     ])
-                task_parts.extend([
-                    ("   running: ", "dim"),
-                    (_fmt_age(ct.elapsed_s), "bold"),
+                work_parts.extend([
+                    (" | started ", "dim"),
+                    (_fmt_age(ct.elapsed_s) + " ago", "bold"),
                 ])
-                lines.append(Text.assemble(*task_parts))
+                if ct.model:
+                    work_parts.extend([
+                        (" | model ", "dim"),
+                        (ct.model, "bold cyan"),
+                    ])
+                lines.append(Text.assemble(*work_parts))
             else:
                 lines.append(Text.assemble(
-                    ("current task: ", "dim"),
+                    ("WORK: ", "bold"),
                     ("— (idle)", "dim"),
+                ))
+            # LAST_COMPLETED line — omitted when no completed task in log buffer.
+            lc = wstate.last_completed
+            if lc is not None:
+                outcome = lc.outcome.upper()
+                if outcome in {"APPROVE", "OK", "DONE"}:
+                    outcome_style = "bold green"
+                elif outcome in {"REJECT", "FAIL", "ERROR"}:
+                    outcome_style = "bold red"
+                else:
+                    outcome_style = "dim"
+                # Build target label for the completed task via a temporary
+                # CurrentTask (reuses the existing target_label logic).
+                from _panel_data import CurrentTask as _CT  # noqa: PLC0415
+                _ct_tmp = _CT(
+                    task_id=lc.task_id, channel_id=lc.channel_id,
+                    started_ts=lc.finished_ts,
+                    stage=lc.stage, action_kind=lc.action_kind,
+                    issue_number=lc.issue_number,
+                )
+                if lc.cost_usd is not None:
+                    cost_str = f"${lc.cost_usd:.2f}"
+                    cost_style = "bold"
+                else:
+                    cost_str = "$? (ledger unavailable)"
+                    cost_style = "dim"
+                finished_z = lc.finished_ts.strftime("%Y-%m-%dT%H:%M:%SZ")
+                lines.append(Text.assemble(
+                    ("LAST_COMPLETED: ", "bold"),
+                    (_ct_tmp.target_label, "magenta"),
+                    (" → ", "dim"),
+                    (outcome, outcome_style),
+                    (" | ", "dim"),
+                    (_fmt_age(lc.duration_s), "bold"),
+                    (" | ", "dim"),
+                    (cost_str, cost_style),
+                    (" | ", "dim"),
+                    (finished_z, "dim"),
                 ))
         return Group(*lines)
 

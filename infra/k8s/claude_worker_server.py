@@ -1076,6 +1076,18 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     model_slug = payload.get("preferred_model")
     resume_session_id = payload.get("resume_session_id")
     prev_task_id = payload.get("prev_task_id")
+    # Pipeline-context fields (issue #396) — forwarded by the pipeline so
+    # the PodWatchView panel can surface "what is this claude-worker doing"
+    # in the WORK/LAST_COMPLETED header. Same wire contract as worker_server.
+    _channel_id = str(payload.get("channel_id") or "").strip()
+    _issue_number_raw = payload.get("issue_number")
+    _issue_number: Optional[int]
+    try:
+        _issue_number = int(_issue_number_raw) if _issue_number_raw is not None else None
+        if _issue_number is not None and _issue_number < 1:
+            _issue_number = None
+    except (TypeError, ValueError):
+        _issue_number = None
     # Per-stage timeout override (issue #391). When set, overrides
     # DEILE_CLAUDE_WORKER_TASK_TIMEOUT_S for this dispatch only.
     dispatch_timeout_s: Optional[int] = None
@@ -1250,6 +1262,22 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         preamble = _render_preamble(stage, branch, task_id)
         full_prompt = preamble + "\n\n---\n\n" + brief
 
+    # Structured dispatch marker consumed by WorkerProvider in the panel
+    # (issue #396). Mirrors worker_server.py format so PodWatchView can
+    # show WORK/LAST_COMPLETED for claude-worker pods as well.
+    _dispatch_parts = [f"task={task_id}"]
+    if _channel_id:
+        _dispatch_parts.append(f"channel={_channel_id}")
+    if stage:
+        _dispatch_parts.append(f"stage={stage}")
+    if _issue_number is not None:
+        _dispatch_parts.append(f"issue={_issue_number}")
+    if branch:
+        _dispatch_parts.append(f"branch={branch}")
+    if claude_model:
+        _dispatch_parts.append(f"model={claude_model}")
+    logger.info("dispatch_started %s", " ".join(_dispatch_parts))
+
     # Mecanismo 2 — Lease: garante que NUNCA dois pods trabalhem no mesmo
     # workspace simultaneamente. Adquirido ANTES do spawn; liberado no finally.
     lease = await _acquire_lease(workspace)
@@ -1408,6 +1436,9 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     elif not ok and claude_result["is_error"] and claude_result["result"]:
         # Falha não-auth reportada pelo claude — propaga o erro pra pipeline.
         response["error"] = claude_result["result"][:500]
+
+    # Terminal marker for the panel — pairs with dispatch_started (issue #396).
+    logger.info("dispatch_completed task=%s ok=%s", task_id, ok)
 
     # Libera heartbeat + lease antes de responder (lease liberado apenas aqui
     # no caminho feliz; o caminho de exceção já liberou no handler acima).

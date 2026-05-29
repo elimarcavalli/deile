@@ -611,6 +611,8 @@ _ROLE_BY_APP = {
     "deile-worker":   "worker",
     "deilebot":       "bot",
     "deile-shell":    "shell",
+    # issue #396: claude-worker pods are now observable in PodWatchView
+    "claude-worker":  "claude-worker",
 }
 
 
@@ -914,6 +916,7 @@ class CurrentTask:
     action_kind: Optional[str] = None
     issue_number: Optional[int] = None
     branch: Optional[str] = None
+    model: Optional[str] = None
 
     @property
     def target_label(self) -> str:
@@ -958,6 +961,31 @@ class CurrentTask:
 
 
 @dataclass
+class LastCompletedTask:
+    """Snapshot da última task finalizada num pod worker (issue #396).
+
+    Populada pelo :class:`WorkerProvider` quando ele vê um
+    ``dispatch_completed`` para o qual existe um ``dispatch_started``
+    pareado em ``live_tasks``. Contém duração (calculada de
+    ``started_ts → finished_ts``), outcome normalizado e custo USD
+    (resolvido contra :class:`CostsProvider` por ``session_id``, ou
+    ``None`` quando o ledger não tem entrada para esta task).
+
+    Forge-agnóstica: reutiliza ``issue_number`` / ``stage`` /
+    ``action_kind`` do :class:`CurrentTask` correspondente.
+    """
+    task_id: str
+    channel_id: str
+    finished_ts: datetime
+    outcome: str            # "DONE" | "FAIL" | "APPROVE" | "REJECT" | etc.
+    duration_s: float
+    cost_usd: Optional[float]   # None = ledger unavailable
+    stage: Optional[str] = None
+    action_kind: Optional[str] = None
+    issue_number: Optional[int] = None
+
+
+@dataclass
 class WorkerState:
     """Estado deduzido do log de um pod worker."""
     pod_name: str
@@ -971,6 +999,9 @@ class WorkerState:
     # ativo (ainda não cobre todos os workers em deploy, então ``None`` é
     # o caminho silencioso de compatibilidade).
     current_task: Optional[CurrentTask] = None
+    # Última task finalizada (issue #396). ``None`` quando o log de até
+    # TAIL_LINES não contém nenhum ``dispatch_completed`` pareado.
+    last_completed: Optional[LastCompletedTask] = None
 
     @property
     def last_activity_s(self) -> Optional[float]:
@@ -995,7 +1026,8 @@ _DISPATCH_STARTED_RE = re.compile(
     r"dispatch_started\s+(?P<kv>.+)$", re.IGNORECASE,
 )
 _DISPATCH_COMPLETED_RE = re.compile(
-    r"dispatch_completed\s+task=(?P<task_id>[a-f0-9]+)\b", re.IGNORECASE,
+    r"dispatch_completed\s+task=(?P<task_id>[a-f0-9]+)(?P<rest>[^\n]*)$",
+    re.IGNORECASE,
 )
 _KV_RE = re.compile(r"(\w+)=(\S+)")
 # Pipeline channel naming convention (see implementer.py:_dispatch /
@@ -1016,12 +1048,15 @@ class WorkerProvider(_KubectlProviderMixin):
 
     def __init__(self, ttl_s: float = 2.0,
                  namespace: str = NS, worker_deploy: str = "deile-worker",
-                 enabled: bool = True):
+                 enabled: bool = True,
+                 costs: Optional["CostsProvider"] = None):
         # 2s: N `kubectl logs` (1 por worker) — só roda em background.
         self._kubectl = kubectl_bin()
         self._namespace = namespace
         self._worker_deploy = worker_deploy
         self._enabled = enabled
+        # Optional: resolve cost_usd for LastCompletedTask (issue #396).
+        self._costs = costs
         self._cache: Cache[Dict[str, WorkerState]] = Cache(
             ttl_s, self._fetch, fallback={},
         )
@@ -1088,7 +1123,38 @@ class WorkerProvider(_KubectlProviderMixin):
             # genérico porque ambos casam com "dispatch" no body.
             m_done = _DISPATCH_COMPLETED_RE.search(ll.body)
             if m_done:
-                live_tasks.pop(m_done.group("task_id"), None)
+                tid = m_done.group("task_id")
+                started_task = live_tasks.pop(tid, None)
+                if started_task is not None:
+                    # Build LastCompletedTask from the paired started entry.
+                    kv_done = dict(_KV_RE.findall(m_done.group("rest")))
+                    ok_raw = kv_done.get("ok", "")
+                    outcome_raw = (kv_done.get("outcome")
+                                   or kv_done.get("status")
+                                   or ("DONE"
+                                       if ok_raw.lower() in {"true", "1"}
+                                       else "FAIL"))
+                    duration_s = max(
+                        0.0,
+                        (ll.ts - started_task.started_ts).total_seconds(),
+                    )
+                    cost_usd: Optional[float] = None
+                    if self._costs is not None:
+                        try:
+                            cost_usd = self._costs.get_task_cost(tid)
+                        except Exception:
+                            pass
+                    state.last_completed = LastCompletedTask(
+                        task_id=tid,
+                        channel_id=started_task.channel_id,
+                        finished_ts=ll.ts,
+                        outcome=outcome_raw,
+                        duration_s=duration_s,
+                        cost_usd=cost_usd,
+                        stage=started_task.stage,
+                        action_kind=started_task.action_kind,
+                        issue_number=started_task.issue_number,
+                    )
                 # Não é uma "atividade nova" — apenas o término de uma
                 # task já contabilizada via ``dispatch_started``; pular o
                 # restante do bookkeeping evita inflar last_substantive_ts
@@ -1099,7 +1165,7 @@ class WorkerProvider(_KubectlProviderMixin):
                 kv = dict(_KV_RE.findall(m_start.group("kv")))
                 tid = kv.get("task", "")
                 ch = kv.get("channel", "")
-                if tid and ch:
+                if tid:
                     issue_num: Optional[int]
                     try:
                         issue_num = int(kv["issue"]) if "issue" in kv else None
@@ -1111,6 +1177,7 @@ class WorkerProvider(_KubectlProviderMixin):
                         action_kind=kv.get("kind"),
                         issue_number=issue_num,
                         branch=kv.get("branch"),
+                        model=kv.get("model"),
                     )
                 # ``dispatch_started`` é atividade substantiva — atualiza
                 # last_substantive_ts/body também, para o cálculo de
@@ -1449,6 +1516,32 @@ class CostsProvider:
         finally:
             conn.close()
         return snap
+
+    def get_task_cost(self, task_id: str) -> Optional[float]:
+        """Total cost in USD for a specific task (session_id = ``worker_<task_id>``).
+
+        Returns ``None`` when the DB is absent, unreadable, or has no matching
+        session — the caller should treat ``None`` as "ledger unavailable".
+        """
+        if not self._db_path.is_file():
+            return None
+        session_id = f"worker_{task_id}"
+        try:
+            conn = sqlite3.connect(
+                f"file:{self._db_path}?mode=ro", uri=True, timeout=1.0,
+            )
+        except sqlite3.OperationalError:
+            return None
+        try:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(cost_usd), 0) FROM usage_records WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row and row[0]:
+            return float(row[0])
+        return None
 
 
 # ===== Model providers ======================================================
@@ -4406,6 +4499,9 @@ class PanelData:
     # exibir contagem de DEILE instances no header. Opcional — quando
     # ausente, o painel só mostra a tabela LOCAL PROCESSES.
     local_registry: Optional["LocalRegistryProvider"] = None
+    # WorkerProvider for the ``claude-worker`` deployment (issue #396).
+    # ``None`` when the pod is not deployed (panel still renders without error).
+    claude_workers: Optional[WorkerProvider] = None
 
     @classmethod
     def from_context(cls, context: RuntimeContext) -> "PanelData":
@@ -4442,7 +4538,8 @@ class PanelData:
                                       enabled=k8s_on),
             workers=WorkerProvider(namespace=context.namespace,
                                    worker_deploy=context.worker_deploy,
-                                   enabled=k8s_on),
+                                   enabled=k8s_on,
+                                   costs=CostsProvider(db_path=context.usage_db)),
             # `context.repo` pode vir vazio se o operador construiu o
             # ctx direto (sem `.detect()`) — resolve no fallback global.
             # forge_kind do contexto (lido do deployment do NS) decide se
@@ -4487,6 +4584,12 @@ class PanelData:
             local_audit=local_audit,
             local_instances=local_instances,
             local_registry=local_registry,
+            claude_workers=WorkerProvider(
+                namespace=context.namespace,
+                worker_deploy="claude-worker",
+                enabled=k8s_on,
+                costs=CostsProvider(db_path=context.usage_db),
+            ),
         )
 
     @classmethod
@@ -4500,11 +4603,11 @@ class PanelData:
                 self.costs, self.models, self.current_model,
                 self.stage_models, self.dispatch_mode, self.stage_dispatch,
                 self.notifier)
-        locals_ = tuple(p for p in (self.local_processes, self.local_logs,
-                                    self.local_audit, self.local_instances,
-                                    self.local_registry)
-                        if p is not None)
-        return base + locals_
+        optionals = tuple(p for p in (self.local_processes, self.local_logs,
+                                      self.local_audit, self.local_instances,
+                                      self.local_registry, self.claude_workers)
+                          if p is not None)
+        return base + optionals
 
     def force_refresh_all(self) -> None:
         """Hotkey [r]: marca todos os caches como vencidos sem bloquear.
