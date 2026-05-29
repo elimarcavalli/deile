@@ -1107,6 +1107,203 @@ def _find_active_lease(root: Path) -> Optional[dict]:
     return best
 
 
+# --------------------------------------------------------------------------- #
+# PVC workspace auto-cleanup (Decisão #46)
+# --------------------------------------------------------------------------- #
+#
+# O PVC ``/home/claude/work`` acumula um diretório por task_id. Sem
+# limpeza, ele inchou para 122 workdirs / 1.9GB em produção. O cleanup
+# legacy só roda no shutdown e nunca é executado em SIGKILL/OOM.
+#
+# Política:
+#   * Startup hook: varre uma vez ao iniciar o servidor.
+#   * Periodic task: a cada hora (configurável via env).
+#   * Threshold trigger: quando o uso total passa de 1 GB, aplica modo
+#     agressivo (10 min de TTL em vez de 30 min).
+#
+# Critério de remoção: o workspace é considerado abandonado quando
+# ``.lease.json`` está ausente OU o ``heartbeat_at`` está mais velho que
+# ``stale_threshold_s``. Workdirs com lease vivo nunca são tocados.
+
+#: TTL padrão (30 min) — workdir sem heartbeat há mais que isso é stale.
+_WORKSPACE_STALE_TTL_S: int = int(
+    os.environ.get("DEILE_CLAUDE_WORKER_WORKSPACE_STALE_TTL_S", "1800"),
+)
+
+#: TTL agressivo (10 min) — aplicado quando o uso total estoura o cap.
+_WORKSPACE_AGGRESSIVE_TTL_S: int = int(
+    os.environ.get("DEILE_CLAUDE_WORKER_WORKSPACE_AGGRESSIVE_TTL_S", "600"),
+)
+
+#: Cap de uso do PVC em bytes (default 1 GB). Acima deste valor, o cleanup
+#: usa o TTL agressivo. ``0`` desativa o trigger por tamanho.
+_WORKSPACE_AGGRESSIVE_BYTES: int = int(
+    os.environ.get("DEILE_CLAUDE_WORKER_WORKSPACE_CAP_BYTES", str(1024 * 1024 * 1024)),
+)
+
+#: Intervalo entre execuções periódicas (default 1 h).
+_WORKSPACE_CLEANUP_INTERVAL_S: float = float(
+    os.environ.get("DEILE_CLAUDE_WORKER_WORKSPACE_CLEANUP_INTERVAL_S", "3600"),
+)
+
+
+def _workspace_total_bytes(root: Path) -> int:
+    """Estimativa rápida do tamanho total ocupado pela árvore de workdirs.
+
+    Usa ``os.walk`` + ``st_size`` em vez de ``du -sb`` para não depender de
+    um binário externo. Erros de I/O por entrada individual são ignorados
+    (best-effort — o cleanup nunca deve abortar por um arquivo inacessível).
+    """
+    total = 0
+    try:
+        for dirpath, _dirs, files in os.walk(root):
+            for f in files:
+                try:
+                    total += os.stat(os.path.join(dirpath, f)).st_size
+                except OSError:
+                    continue
+    except OSError:
+        return total
+    return total
+
+
+def _workspace_is_stale(workspace: Path, *, threshold_s: int, now: float) -> bool:
+    """True se ``workspace`` é candidato a remoção.
+
+    Critério (em ordem de precedência):
+      * ``.lease.json`` presente e ``heartbeat_at`` mais velho que
+        ``threshold_s`` → stale (pod morreu sem cleanup).
+      * ``.lease.json`` ausente: fallback no ``st_mtime`` do diretório
+        (não removemos workdirs recém-criados que ainda não tiveram o
+        primeiro heartbeat — evita race no startup do worker).
+      * Erro de I/O → não remove (conservador).
+    """
+    lease = workspace / ".lease.json"
+    try:
+        st = lease.stat()
+    except FileNotFoundError:
+        # Sem lease: usa o mtime do próprio workdir como aproximação de
+        # atividade — workdir recém-criado por um dispatch que ainda não
+        # iniciou o heartbeat NÃO deve ser removido.
+        try:
+            ws_st = workspace.stat()
+        except OSError:
+            return False
+        return (now - ws_st.st_mtime) >= threshold_s
+    except OSError:
+        # Permissão negada / erro de I/O — não removemos por segurança.
+        return False
+    # ``heartbeat_at`` é a fonte de verdade; se o arquivo está fresco
+    # (st_mtime recente) mas o JSON aponta um heartbeat antigo, vale o JSON.
+    try:
+        data = json.loads(lease.read_text(encoding="utf-8"))
+        hb = float(data.get("heartbeat_at", st.st_mtime))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return True
+    return (now - hb) >= threshold_s
+
+
+def _remove_workspace_tree(workspace: Path) -> int:
+    """Remove ``workspace`` recursivamente. Retorna bytes liberados (best-effort)."""
+    import shutil as _sh  # local import (top-level só importa quando precisa)
+    bytes_freed = 0
+    try:
+        for dirpath, _dirs, files in os.walk(workspace):
+            for f in files:
+                try:
+                    bytes_freed += os.stat(os.path.join(dirpath, f)).st_size
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    try:
+        _sh.rmtree(workspace, ignore_errors=True)
+    except OSError as exc:  # pragma: no cover — rmtree(ignore_errors) já tolera
+        logger.warning("rmtree falhou para %s: %s", workspace, exc)
+    return bytes_freed
+
+
+def _cleanup_stale_workspaces(
+    root: Path, *, threshold_s: Optional[int] = None,
+) -> dict:
+    """Varre ``root`` e remove workdirs stale.
+
+    Args:
+        root: raiz do PVC (tipicamente ``/home/claude/work``).
+        threshold_s: TTL em segundos. ``None`` resolve dinamicamente entre
+            o TTL padrão e o agressivo via :data:`_WORKSPACE_AGGRESSIVE_BYTES`.
+
+    Returns:
+        dict com contadores ``inspected``, ``removed``, ``bytes_freed`` e
+        ``threshold_s`` efetivamente aplicado (útil para audit).
+    """
+    summary = {
+        "inspected": 0, "removed": 0, "bytes_freed": 0,
+        "threshold_s": threshold_s or _WORKSPACE_STALE_TTL_S,
+    }
+    try:
+        children = list(root.iterdir())
+    except OSError as exc:
+        logger.warning("workspace cleanup: cannot list root %s: %s", root, exc)
+        return summary
+
+    if threshold_s is None:
+        # Modo automático: aplica TTL agressivo se o uso passou do cap.
+        used = _workspace_total_bytes(root)
+        if _WORKSPACE_AGGRESSIVE_BYTES > 0 and used > _WORKSPACE_AGGRESSIVE_BYTES:
+            threshold_s = _WORKSPACE_AGGRESSIVE_TTL_S
+            logger.warning(
+                "workspace cleanup: uso=%d bytes > cap=%d — aplicando TTL "
+                "agressivo (%ds)", used, _WORKSPACE_AGGRESSIVE_BYTES, threshold_s,
+            )
+        else:
+            threshold_s = _WORKSPACE_STALE_TTL_S
+        summary["threshold_s"] = threshold_s
+
+    now = time.time()
+    for child in children:
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        # Só remove diretórios que parecem task_id (path-traversal containment).
+        if not _TASK_ID_RE.fullmatch(child.name):
+            continue
+        summary["inspected"] += 1
+        if not _workspace_is_stale(child, threshold_s=threshold_s, now=now):
+            continue
+        bytes_freed = _remove_workspace_tree(child)
+        summary["removed"] += 1
+        summary["bytes_freed"] += bytes_freed
+        logger.info(
+            "workspace cleanup removed task_id=%s bytes=%d threshold_s=%d",
+            child.name, bytes_freed, threshold_s,
+        )
+    if summary["removed"]:
+        logger.info(
+            "workspace cleanup summary: inspected=%d removed=%d freed=%d bytes "
+            "(threshold=%ds)",
+            summary["inspected"], summary["removed"], summary["bytes_freed"],
+            threshold_s,
+        )
+    return summary
+
+
+async def _workspace_cleanup_loop(root: Path) -> None:
+    """Task asyncio que roda :func:`_cleanup_stale_workspaces` periodicamente.
+
+    Tolerante a erros: qualquer exceção é loggada e o loop continua.
+    Cancelamento (shutdown) propaga via ``asyncio.CancelledError``.
+    """
+    while True:
+        try:
+            await asyncio.sleep(_WORKSPACE_CLEANUP_INTERVAL_S)
+        except asyncio.CancelledError:
+            raise
+        try:
+            await asyncio.to_thread(_cleanup_stale_workspaces, root)
+        except Exception as exc:  # noqa: BLE001 — loop nunca morre
+            logger.warning("workspace cleanup loop: %s", exc)
+
+
 def _count_claude_processes() -> int:
     """Count running claude processes via psutil (preferred) or pgrep fallback."""
     try:
@@ -1365,31 +1562,39 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 "session_id": session_id,
             }, status=409)
 
-        # Issue #347 follow-up — TOKEN BUDGET CHECK: se a sessão anterior
-        # consumiu > threshold, resume custaria muito (claude re-injeta TODA
-        # a história). Em vez disso devolve 413 explícito; pipeline pode
-        # decidir entre compact OU fallback fresh.
+        # Decisão #46 — Resume sob demanda: quando o resume é tentado e a
+        # sessão JSONL acumulada passou de 100K tokens, ABANDONAR o resume
+        # e PROMOVER fresh dispatch automaticamente. Antes rejeitávamos com
+        # 413 (RESUME_BUDGET_EXCEEDED), o que parava trabalho — agora apenas
+        # registramos a métrica e seguimos como fresh dispatch (novo task_id,
+        # novo session_id, workdir fresco). O brief unified já lê
+        # ``.deile-progress.md`` no PASSO 0, então o agente recupera o
+        # contexto natural sem dependência do JSONL gigante.
         budget_limit = int(os.environ.get(
-            "DEILE_CLAUDE_RESUME_TOKEN_BUDGET", "500000",
+            "DEILE_CLAUDE_RESUME_TOKEN_BUDGET", "100000",
         ))
         if budget_limit > 0:
             jsonl_tokens = _estimate_session_tokens(session_id, workspace)
             if jsonl_tokens > budget_limit:
                 logger.warning(
-                    "resume %s rejeitado: session JSONL acumulou %d tokens "
-                    "(threshold=%d). Pipeline deve compact ou fallback fresh.",
+                    "resume %s session JSONL acumulou %d tokens "
+                    "(>threshold=%d). Promovendo automaticamente para fresh "
+                    "dispatch (brief unified lê .deile-progress.md no PASSO 0).",
                     session_id, jsonl_tokens, budget_limit,
                 )
-                return web.json_response({
-                    "ok": False,
-                    "error_code": "RESUME_BUDGET_EXCEEDED",
-                    "error": (
-                        f"sessão acumulou {jsonl_tokens} tokens (>{budget_limit}). "
-                        f"Resume custaria caro. Pipeline pode fallback pra fresh."
-                    ),
-                    "tokens_in_session": jsonl_tokens,
-                    "budget_limit": budget_limit,
-                }, status=413)
+                # Promove para fresh: novo task_id, novo session_id, novo workdir.
+                # Mantém branch e demais campos do payload.
+                is_resume = False
+                task_id = secrets.token_hex(8)
+                session_id = str(uuid.uuid4())
+                workspace = root / task_id
+                workspace.mkdir(parents=True, exist_ok=True)
+                attempt = 1
+                logger.info(
+                    "fresh-after-budget task_id=%s session=%s stage=%s "
+                    "model=%s branch=%s",
+                    task_id, session_id, stage, claude_model, branch,
+                )
 
         # Issue #347 follow-up — GIT PULL no workdir reaproveitado pra que
         # claude veja os commits novos do operador. Best-effort: se falhar
@@ -2195,6 +2400,36 @@ def build_app(auth_token: Optional[str] = None) -> web.Application:
         client_max_size=512 * 1024,
     )
     app["auth_token"] = auth_token or _read_auth_token()
+
+    # Decisão #46 — workspace cleanup: startup hook + periodic task.
+    # Garante que o PVC nunca acumula workdirs órfãos mesmo quando o pod
+    # foi SIGKILLado (e o cleanup legacy do shutdown não rodou).
+    _cleanup_root = Path(
+        os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work")
+    )
+
+    async def _on_startup(_app: web.Application) -> None:
+        try:
+            await asyncio.to_thread(_cleanup_stale_workspaces, _cleanup_root)
+        except Exception as exc:  # noqa: BLE001 — startup nunca falha por isso
+            logger.warning("startup workspace cleanup raised: %s", exc)
+        _app["_workspace_cleanup_task"] = asyncio.create_task(
+            _workspace_cleanup_loop(_cleanup_root),
+            name="workspace-cleanup",
+        )
+
+    async def _on_cleanup(_app: web.Application) -> None:
+        task = _app.get("_workspace_cleanup_task")
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+
+    app.on_startup.append(_on_startup)
+    app.on_cleanup.append(_on_cleanup)
+
     app.router.add_get("/v1/health", health_handler)
     app.router.add_get("/v1/pod-status", pod_status_handler)
     app.router.add_post("/v1/dispatch", dispatch_handler)
