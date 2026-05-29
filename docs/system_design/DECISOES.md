@@ -571,3 +571,5 @@
 | Decisão "Modifica #X" | Vá lá e ATUALIZE a #X — nunca crie nova decisão referenciando outra |
 | Texto desatualizado | Se o design mudou, o texto da decisão muda junto |
 | Decisão = contagem | Contagens pertencem ao documento dono em [`00-VISAO-GERAL.md`](00-VISAO-GERAL.md) |
+
+<!-- test push for caso push novo do refactor consciousness — to be reverted -->
