@@ -350,6 +350,58 @@ def _kubectl_sync_bearer_token(*, namespace: str) -> bool:
     return True
 
 
+def _force_clear_pvc_creds(*, namespace: str) -> bool:
+    """Apaga ``credentials.json`` do PVC ``claude-worker-home``.
+
+    Usado pelo flow ``claude-login --switch`` para vencer a idempotência do
+    initContainer ``bootstrap-creds`` (Nível 1 — auto-renew). Sem isso, um
+    switch de conta NÃO substituiria o token no PVC quando o token velho
+    (PVC) tem ``expiresAt`` maior que o novo (Secret após reset).
+
+    Best-effort: se o pod não está no ar (cluster fresco, primeira instalação),
+    o ``kubectl exec`` falha silenciosamente — o init container vai criar o
+    arquivo a partir do Secret no próximo rollout (que é o que queremos).
+
+    Returns ``True`` quando a operação foi bem sucedida ou o pod ausente
+    (estados aceitáveis); ``False`` apenas em erros inesperados de kubectl
+    além de "pod not found".
+    """
+    try:
+        result = subprocess.run(
+            ["kubectl", "-n", namespace, "exec", "deploy/claude-worker",
+             "-c", "claude-worker", "--",
+             "rm", "-f", "/home/claude/.claude/credentials.json"],
+            capture_output=True, text=True, check=False, timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning(
+            "force-clear PVC creds: timeout — pode estar em rollout. "
+            "Continuando (init container resolve no próximo boot)",
+        )
+        return True
+    except FileNotFoundError:
+        logger.warning("kubectl não encontrado — skip force-clear")
+        return True
+    if result.returncode == 0:
+        logger.info(
+            "PVC credentials.json apagado para garantir bootstrap fresco "
+            "do Secret no próximo rollout (--switch)",
+        )
+        return True
+    err = (result.stderr or "").lower()
+    # Pod sem deployment ainda: aceitável (cluster fresco). Em outros erros,
+    # apenas logamos e seguimos — o objetivo de pré-clear é PROATIVO; falha
+    # aqui só significa que o init vai cair no path "secret-newer" via mtime.
+    if "not found" in err or "no pods" in err or "no resources found" in err:
+        logger.info("force-clear PVC: pod ausente (cluster fresco) — skip")
+        return True
+    logger.warning(
+        "force-clear PVC creds falhou (não-fatal): %s",
+        (result.stderr or "").strip()[:200],
+    )
+    return False
+
+
 def _kubectl_apply_manifests(*, namespace: str) -> bool:
     """Apply manifests 47 (allowed-repos ConfigMap), 49 (PVC),
     50 (Deployment+Service), 40 (NetworkPolicy update).
@@ -373,6 +425,11 @@ def _kubectl_apply_manifests(*, namespace: str) -> bool:
         manifests_dir / "47-claude-worker-allowed-repos.yaml",
         manifests_dir / "49-claude-worker-pvc.yaml",
         manifests_dir / "50-claude-worker-deployment.yaml",
+        # CronJob de renovação proativa do OAuth (Nível 2 — auto-renew).
+        # ServiceAccount + Role + RoleBinding + CronJob convivem nesse YAML;
+        # apply é idempotente. Falhas do CronJob NÃO derrubam o bootstrap
+        # do claude-worker; o pod sobe sem ele em caso de erro RBAC.
+        manifests_dir / "51-claude-credentials-renew-cron.yaml",
         manifests_dir / "40-network-policy.yaml",
     ]
     for f in files:
@@ -458,6 +515,11 @@ def uninstall_claude_worker(*, namespace: str = "deile") -> ClaudeLoginResult:
         ("secret", "claude-credentials"),
         ("secret", "claude-worker-bearer"),
         ("configmap", "claude-worker-allowed-repos"),
+        # Nível 2 (auto-renew CronJob) — recursos do manifest 51.
+        ("cronjob", "claude-credentials-renew"),
+        ("rolebinding", "claude-creds-renewer"),
+        ("role", "claude-creds-renewer"),
+        ("serviceaccount", "claude-creds-renewer"),
     ]
     failures = []
     for kind, name in resources:
@@ -593,6 +655,16 @@ def bootstrap_claude_worker(
                 "permissões do Keychain ou re-rode `claude auth login`."
             ),
         )
+
+    # 1b. Switch de conta — limpa o credentials.json do PVC ANTES de rolar.
+    # O initContainer ``bootstrap-creds`` (manifest 50) agora preserva o PVC
+    # quando o token in-PVC é mais recente que o Secret (Nível 1 — auto-renew
+    # idempotente). Como ``--switch`` PRECISA substituir o token in-PVC pelo
+    # do Secret (conta nova), forçamos a limpeza explicita. Best-effort: se
+    # o pod não está vivo (cluster fresco), o init copia normalmente; falha
+    # de exec NÃO bloqueia o login.
+    if force_relogin:
+        _force_clear_pvc_creds(namespace=namespace)
 
     # 2. Secret
     if not _kubectl_apply_secret(creds, namespace=namespace):
