@@ -1,0 +1,94 @@
+# CronJob de garbage collection do PVC claude-worker-home (issue #408).
+#
+# Executa 1× por dia, monta o mesmo PVC que o claude-worker usa, e chama
+# startup_cleanup() via python -c direto na imagem deile-stack:local.
+#
+# Critérios de remoção (mesmos do startup hook):
+#   - lease stale (TTL expirado + PID morto)
+#   - workdir sem session JSONL (claude nunca rodou)
+#   - workdir com last_modified anterior ao cutoff de retenção (default 7 dias)
+#
+# Variáveis relevantes:
+#   DEILE_CLAUDE_CLEANUP_RETENTION_DAYS   default: 7
+#   DEILE_CLAUDE_WORKER_ROOT              default: /home/claude/work
+#   DEILE_CLAUDE_LEASE_TTL_S              default: 30
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: claude-worker-cleanup
+  namespace: deile
+  labels:
+    app: claude-worker-cleanup
+    role: deile
+spec:
+  schedule: "0 3 * * *"        # 03:00 UTC diariamente (carga baixa)
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  concurrencyPolicy: Forbid     # sem sobreposição se o job anterior demorar
+  jobTemplate:
+    spec:
+      ttlSecondsAfterFinished: 86400   # limpa o Job object após 1 dia
+      template:
+        metadata:
+          labels:
+            app: claude-worker-cleanup
+            role: deile
+        spec:
+          restartPolicy: OnFailure
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            fsGroupChangePolicy: "OnRootMismatch"
+            seccompProfile: { type: RuntimeDefault }
+          containers:
+            - name: cleanup
+              image: deile-stack:local
+              imagePullPolicy: Never
+              command: ["python3", "-c"]
+              args:
+                - |
+                  import sys, os
+                  sys.path.insert(0, "/app/infra/k8s")
+                  import logging
+                  logging.basicConfig(
+                      level="INFO",
+                      format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+                      stream=sys.stdout,
+                  )
+                  from claude_worker_server import startup_cleanup
+                  result = startup_cleanup()
+                  print(
+                      f"cleanup done: leases={result['leases_removed']} "
+                      f"workdirs={result['workdirs_removed']} "
+                      f"freed={result['bytes_freed']}B "
+                      f"errors={len(result['errors'])}"
+                  )
+                  if result['errors']:
+                      for e in result['errors']:
+                          print(f"  error: {e}", file=sys.stderr)
+                  sys.exit(1 if result['errors'] else 0)
+              env:
+                - { name: DEILE_CLAUDE_WORKER_ROOT, value: "/home/claude/work" }
+                - { name: DEILE_CLAUDE_CLEANUP_RETENTION_DAYS, value: "7" }
+                - { name: DEILE_CLAUDE_LEASE_TTL_S, value: "30" }
+              volumeMounts:
+                - { name: claude-home, mountPath: /home/claude }
+              resources:
+                requests: { cpu: "50m", memory: "64Mi" }
+                limits:   { cpu: "500m", memory: "256Mi" }
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                runAsUser: 10001
+                runAsGroup: 10001
+                capabilities: { drop: ["ALL"] }
+                seccompProfile: { type: RuntimeDefault }
+          volumes:
+            - name: claude-home
+              persistentVolumeClaim:
+                claimName: claude-worker-home

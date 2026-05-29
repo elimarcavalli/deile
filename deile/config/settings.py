@@ -1207,9 +1207,11 @@ _ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any]], ...] = (
     # Global timeout/retries defaults (issue #391).
     ("DEILE_PIPELINE_DEILE_TIMEOUT",         "pipeline_deile_timeout",         _to_optional_pos_int),
     ("DEILE_PIPELINE_DEFAULT_MAX_RETRIES",   "pipeline_default_max_retries",   _to_optional_nonneg_int),
-    # Pipeline max_parallel (issue #408) — caps concurrent implement dispatches.
-    # Cluster path: kubectl set env deploy/deile-pipeline DEILE_PIPELINE_MAX_PARALLEL=N
-    ("DEILE_PIPELINE_MAX_PARALLEL",          "pipeline_max_parallel",          _int_floor(1)),
+    # Max parallel dispatches (issue #408) — cluster path. Panel TUI writes
+    # via ``kubectl set env deploy/deile-pipeline``. The special value "auto"
+    # instructs the pipeline to derive the limit from claude-worker replicas.
+    # Numeric strings are validated via ``_int_floor(1)``; "auto" is kept as-is.
+    ("DEILE_PIPELINE_MAX_PARALLEL",          "pipeline_max_parallel",          _to_pos_int),
 )
 
 
