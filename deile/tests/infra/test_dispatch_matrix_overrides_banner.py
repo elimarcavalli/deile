@@ -43,6 +43,12 @@ def _stub_panel_data(monkeypatch):
         stub.BackgroundRefresher = MagicMock
         stub.PanelData = MagicMock
         stub._fmt_age = lambda *a, **kw: ""
+        stub._fmt_cpu_display = lambda *a, **kw: ""
+        stub._fmt_mem_display = lambda *a, **kw: ""
+        stub._pct = lambda *a, **kw: None
+        stub.EndpointInfo = MagicMock
+        stub.set_stage_cost_cap_usd = MagicMock(return_value=(True, "ok"))
+        stub.reset_stage_cost_cap_usd = MagicMock(return_value=(True, "ok"))
         stub._audit_dispatch_mode_change = MagicMock()
         stub._audit_security_policy_change = MagicMock()
         stub.clear_pipeline_dispatch_mode = MagicMock(return_value=(True, "ok"))
