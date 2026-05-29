@@ -147,10 +147,24 @@ def next_after(expression: str, after: datetime, *, max_iterations: int = 525600
     """
     if after.tzinfo is None:
         after = after.replace(tzinfo=timezone.utc)
+    # Parse once outside the loop — avoids tokenizing the expression on every
+    # iteration (up to 525,600 calls for rare expressions like "0 0 1 1 *").
+    minute_set, hour_set, dom_set, mon_set, dow_set = parse(expression)
+    dom_restricted = len(dom_set) != 31
+    dow_restricted = len(dow_set) != 7
     # Round up to the next minute boundary (crons fire on minute boundaries).
     candidate = (after + timedelta(minutes=1)).replace(second=0, microsecond=0)
     for _ in range(max_iterations):
-        if matches(expression, candidate):
+        cron_dow = (candidate.weekday() + 1) % 7
+        dom_match = candidate.day in dom_set
+        dow_match = cron_dow in dow_set
+        date_ok = (dom_match or dow_match) if (dom_restricted and dow_restricted) else (dom_match and dow_match)
+        if (
+            candidate.minute in minute_set
+            and candidate.hour in hour_set
+            and candidate.month in mon_set
+            and date_ok
+        ):
             return candidate
         candidate += timedelta(minutes=1)
     raise CronExpressionError(

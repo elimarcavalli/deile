@@ -19,6 +19,11 @@ metadata:
   labels:
     app: deile
 data:
+  # Issue #355 — chave lida pelo initContainer bootstrap-repo do manifest 46
+  # via configMapKeyRef. Operadores GitLab: mudem para "gitlab" aqui e
+  # re-apliquem + reiniciem deile-pipeline. Operadores GitHub: valor padrão
+  # "github" já é o fallback no script do initContainer (${DEILE_FORGE_KIND:-github}).
+  forge.kind: github
   pipeline-settings.json: |
     {
       "pipeline": {

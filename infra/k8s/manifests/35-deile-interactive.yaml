@@ -58,8 +58,22 @@ spec:
             # deile-runtime-config (manifest 47) — substitui
             # DEILE_BOT_APPROVAL_AUTO depreciada (issue #111).
             - { name: DEILE_SETTINGS_FILE, value: "/etc/deile/settings.json" }
+            # Issue #355 — permite que /panel leia o pipeline-status Bearer via
+            # arquivo (mesmo padrão do pipeline pod). pipeline_status_server
+            # _read_auth_token() lê PIPELINE_STATUS_BEARER_TOKEN do Secret
+            # montado em /run/secrets/pipeline-status/. A env var aqui aponta
+            # o caminho pro cliente do painel TUI (panel_command.py:63 lê
+            # DEILE_PIPELINE_STATUS_AUTH_TOKEN; _read_auth_token lê
+            # DEILE_PIPELINE_STATUS_AUTH_TOKEN_FILE como fallback).
+            - name: DEILE_PIPELINE_STATUS_AUTH_TOKEN_FILE
+              value: /run/secrets/pipeline-status/PIPELINE_STATUS_BEARER_TOKEN
           volumeMounts:
             - { name: deile-secrets, mountPath: /run/secrets/deile, readOnly: true }
+            # Issue #355 — monta pipeline-status-bearer para que /panel leia
+            # o token sem variável de ambiente em plaintext.
+            - name: pipeline-status-bearer
+              mountPath: /run/secrets/pipeline-status
+              readOnly: true
             - { name: home, mountPath: /home/deile }
             - { name: tmp,  mountPath: /tmp }
             # bot-config provides the clonable_repos allowlist to the wrapper.
@@ -86,6 +100,14 @@ spec:
             seccompProfile: { type: RuntimeDefault }
       volumes:
         - { name: deile-secrets, secret: { secretName: deile-secrets, defaultMode: 288 } }
+        # Issue #355 — optional: true garante que o shell sobe normalmente
+        # mesmo se o operador ainda não criou o Secret. defaultMode 0o400 =
+        # 256 (read-only pelo user 10001; sem group/world access).
+        - name: pipeline-status-bearer
+          secret:
+            secretName: pipeline-status-bearer
+            optional: true
+            defaultMode: 256
         - name: bot-config
           configMap:
             name: bot-config
