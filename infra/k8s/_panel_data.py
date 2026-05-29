@@ -3150,6 +3150,7 @@ def set_stage_timeout(
 
 def set_stage_retries(
     stage: str, max_retries: Optional[int], *,
+    allow_zero: bool = False,
     namespace: str = NS, timeout: float = 15.0,
 ) -> tuple:
     """Pin ``DEILE_PIPELINE_RETRIES_<STAGE>=<max_retries>`` em ``deile-pipeline``.
@@ -3157,6 +3158,13 @@ def set_stage_retries(
     Args:
         stage: canonical stage name (one of PIPELINE_STAGES).
         max_retries: non-negative int or None (clear the override).
+            **Zero requer ``allow_zero=True`` explícito** — historicamente
+            alguém confundiu zero com "default" e bloqueou o pipeline no
+            primeiro fail. Zero é semanticamente "fail-fast, sem retry":
+            pode ser desejável mas exige confirmação.
+        allow_zero: quando ``True``, aceita ``max_retries=0`` como
+            valor legítimo. Default ``False`` (rejeita zero com mensagem
+            clara). Não afeta ``None`` (clear) nem inteiros positivos.
         namespace: K8s namespace.
         timeout: subprocess timeout for kubectl.
 
@@ -3172,6 +3180,18 @@ def set_stage_retries(
 
     if max_retries is not None and max_retries < 0:
         return False, f"max_retries deve ser >= 0, got {max_retries}"
+
+    if max_retries == 0 and not allow_zero:
+        _audit_timeout_retries_change(
+            stage, "max_retries", 0, result="denied",
+            detail="zero rejeitado sem allow_zero — fail-fast precisa de confirmação",
+            namespace=namespace,
+        )
+        return False, (
+            "max_retries=0 = fail-fast (primeira falha bloqueia o stage). "
+            "Para confirmar, digite '0!' no painel (force). "
+            "Para usar o default, deixe vazio."
+        )
 
     env_var = f"DEILE_PIPELINE_RETRIES_{stage.upper()}"
     kubectl = kubectl_bin()

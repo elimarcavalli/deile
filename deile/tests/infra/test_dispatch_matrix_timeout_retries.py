@@ -117,17 +117,18 @@ def _make_view():
     return DispatchMatrixView(data=None)
 
 
-def test_cursor_col_max_is_3():
+def test_cursor_col_max_is_4():
+    """Após #392 (cost cap col), a coluna máxima virou 4."""
     view = _make_view()
-    # Navigate right 10 times — should clamp at 3
+    # Navigate right 10 times — should clamp at 4
     for _ in range(10):
         view.handle_key("RIGHT", None)
-    assert view.cursor_col == 3
+    assert view.cursor_col == 4
 
 
 def test_cursor_col_min_is_0():
     view = _make_view()
-    view.cursor_col = 3
+    view.cursor_col = 4
     for _ in range(10):
         view.handle_key("LEFT", None)
     assert view.cursor_col == 0
@@ -238,19 +239,67 @@ def test_numeric_prompt_enter_with_value_calls_helper(monkeypatch):
     assert view.mode is None
 
 
-def test_numeric_prompt_retries_zero_is_valid(monkeypatch):
-    """Retries=0 should not raise invalid value error."""
+def test_numeric_prompt_retries_zero_calls_with_allow_zero_false(monkeypatch):
+    """Retries=0 (sem '!') deve chamar set_stage_retries com allow_zero=False
+    — a camada _panel_data rejeita e devolve mensagem clara."""
     view = _make_view()
     view.mode = ("retries", "implement", ["0"])
     view.data = MagicMock()
     view.data.context.namespace = "deile"
-    import _panel_data as _pd
-    orig = _pd.set_stage_retries
-    _pd.set_stage_retries = MagicMock(return_value=(True, "ok"))
-    view._handle_numeric_prompt_key("\r")
-    _pd.set_stage_retries = orig
+    import _panel as panel_mod
+    captured = {}
+    def fake_set(stage, value, *, allow_zero=False, namespace="deile"):
+        captured["allow_zero"] = allow_zero
+        captured["value"] = value
+        return False, "max_retries=0 = fail-fast..."
+    orig = panel_mod.pd_set_stage_retries
+    panel_mod.pd_set_stage_retries = fake_set
+    try:
+        view._handle_numeric_prompt_key("\r")
+    finally:
+        panel_mod.pd_set_stage_retries = orig
     assert view.mode is None
-    assert view.last_ok is not False or view.last_msg != "retries deve ser >= 0"
+    assert captured == {"allow_zero": False, "value": 0}
+    assert view.last_ok is False
+
+
+def test_numeric_prompt_retries_zero_bang_forces(monkeypatch):
+    """Retries=0! (com bang) chama set_stage_retries com allow_zero=True."""
+    view = _make_view()
+    view.mode = ("retries", "implement", ["0!"])
+    view.data = MagicMock()
+    view.data.context.namespace = "deile"
+    import _panel as panel_mod
+    captured = {}
+    def fake_set(stage, value, *, allow_zero=False, namespace="deile"):
+        captured["allow_zero"] = allow_zero
+        captured["value"] = value
+        return True, "DEILE_PIPELINE_RETRIES_IMPLEMENT=0 (...)"
+    orig = panel_mod.pd_set_stage_retries
+    panel_mod.pd_set_stage_retries = fake_set
+    try:
+        view._handle_numeric_prompt_key("\r")
+    finally:
+        panel_mod.pd_set_stage_retries = orig
+    assert view.mode is None
+    assert captured == {"allow_zero": True, "value": 0}
+    assert view.last_ok is True
+
+
+def test_numeric_prompt_bang_key_appends_to_retries_buffer():
+    """A tecla '!' é aceita no buffer de retries (e somente em retries)."""
+    view = _make_view()
+    view.mode = ("retries", "implement", ["0"])
+    view._handle_numeric_prompt_key("!")
+    assert view.mode[2] == ["0!"]
+
+
+def test_numeric_prompt_bang_key_ignored_in_timeout():
+    """A tecla '!' é ignorada no buffer de timeout (não tem semântica force)."""
+    view = _make_view()
+    view.mode = ("timeout", "implement", ["60"])
+    view._handle_numeric_prompt_key("!")
+    assert view.mode[2] == ["60"]
 
 
 def test_numeric_prompt_timeout_zero_is_invalid():
