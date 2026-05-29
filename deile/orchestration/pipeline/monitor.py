@@ -196,6 +196,7 @@ def build_default_pipeline_config(*, use_pid_lock: bool = True) -> PipelineConfi
         # ``DispatchLedger`` + ``--resume <session-id>`` no claude CLI.
         # Hoje o resume vale pra QUALQUER dispatch_mode (resolve em runtime
         # via DispatchLedger). Só o operator decide via setting.
+        mention_handle=settings.forge_bot_login,
         enable_resume=bool(settings.pipeline_resume_enabled),
         resume_interval=int(settings.pipeline_resume_interval),
         resume_max_attempts=int(settings.pipeline_resume_max_attempts),

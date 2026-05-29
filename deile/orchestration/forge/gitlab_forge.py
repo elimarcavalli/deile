@@ -54,6 +54,38 @@ logger = logging.getLogger(__name__)
 # 100 is the hard cap GitLab enforces server-side.
 _PER_PAGE = 100
 
+# Flags passed to ``glab api`` that consume the *next* argument as their value.
+# Used by :func:`_rewrite_gl_api_args` to locate the endpoint positional arg.
+_GL_API_VALUE_FLAGS = frozenset({
+    "-X", "--method", "-f", "--field", "--raw-field",
+    "-H", "--header", "-q", "--jq", "-F", "--form",
+})
+
+
+def _rewrite_gl_api_args(host: str, version: str, args: tuple) -> tuple:
+    """Rewrite the endpoint in a ``glab api`` args tuple to a full versioned URL.
+
+    Walks ``args[1:]`` (everything after ``"api"``) and replaces the first
+    positional arg (the REST endpoint) with
+    ``https://<host>/api/v<version>/<endpoint>`` so that ``glab`` does not
+    silently apply its own ``/api/v4/`` default.
+    """
+    rest = list(args[1:])
+    skip_next = False
+    for i, arg in enumerate(rest):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in _GL_API_VALUE_FLAGS:
+            skip_next = True
+            continue
+        if arg.startswith("-"):
+            continue
+        if not arg.startswith(("https://", "http://")):
+            rest[i] = f"https://{host}/api/v{version}/{arg}"
+        break
+    return ("api", *rest)
+
 
 def _pages_for_limit(limit: int) -> int:
     """Return ``ceil(limit / _PER_PAGE)``, at least 1.
@@ -119,6 +151,24 @@ class GitLabForge(ForgeClient):
                 project_path=path,
                 cli_path=cli,
             ))
+
+    # ------------------------------------------------------------------
+    # Subprocess plumbing — versioned API override
+    # ------------------------------------------------------------------
+
+    async def _run(self, *args: str) -> Tuple[int, str, str]:
+        """Override base _run to rewrite relative API endpoints to full versioned URLs.
+
+        When ``forge.gitlab_api_version`` differs from the default ``"4"``,
+        ``glab api <relative-path>`` would silently use ``/api/v4/`` regardless.
+        This override intercepts every ``glab api`` call and rewrites the
+        endpoint to the full URL so glab uses the configured version.
+        """
+        from deile.config.settings import get_settings
+        version = get_settings().forge_gitlab_api_version
+        if version != "4" and args and args[0] == "api":
+            args = _rewrite_gl_api_args(self._config.host, version, args)
+        return await super()._run(*args)
 
     # ------------------------------------------------------------------
     # REST plumbing helpers

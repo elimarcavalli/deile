@@ -55,6 +55,38 @@ _ISSUE_JSON_FIELDS = "number,title,url,labels,body,state,author"
 _PR_JSON_FIELDS = "number,title,url,labels,headRefName,baseRefName,state,isDraft"
 
 
+# Flags passed to ``gh api`` that consume the *next* argument as their value.
+# Used by :func:`_rewrite_gh_api_args` to locate the endpoint positional arg.
+_GH_API_VALUE_FLAGS = frozenset({
+    "-X", "--method", "--jq", "--template", "--input",
+})
+
+
+def _rewrite_gh_api_args(host: str, prefix: str, args: tuple) -> tuple:
+    """Rewrite the endpoint in a ``gh api`` args tuple to a full URL with *prefix*.
+
+    Used for GHES deployments whose API lives at a non-default path (e.g.
+    ``api/v4`` instead of the standard ``api/v3``).  ``gh`` hardcodes the
+    ``/api/v3/`` prefix for GHES; this override lets the operator configure a
+    different prefix via ``forge.github_api_prefix``.
+    """
+    rest = list(args[1:])
+    skip_next = False
+    for i, arg in enumerate(rest):
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in _GH_API_VALUE_FLAGS:
+            skip_next = True
+            continue
+        if arg.startswith("-"):
+            continue
+        if not arg.startswith(("https://", "http://")):
+            rest[i] = f"https://{host}/{prefix}/{arg}"
+        break
+    return ("api", *rest)
+
+
 # Legacy alias kept for callers that ``except GhCommandError``. Subclasses
 # ForgeCommandError so the typed-error hierarchy stays clean.
 class GhCommandError(ForgeCommandError):
@@ -157,6 +189,26 @@ class GitHubForge(ForgeClient):
                 cli_path=cli,
             )
             super().__init__(config)
+
+    # ------------------------------------------------------------------
+    # Subprocess plumbing — versioned API override for GHES
+    # ------------------------------------------------------------------
+
+    async def _run(self, *args: str) -> Tuple[int, str, str]:
+        """Override base _run to rewrite relative API endpoints for GHES.
+
+        When ``forge.github_api_prefix`` is set to a non-default value (i.e.
+        not ``"api"``) and the target host is not ``github.com``, ``gh api``
+        would use the hardcoded ``/api/v3/`` prefix instead of the configured
+        one.  This override rewrites the endpoint to a full URL so ``gh`` uses
+        the operator-supplied prefix.
+        """
+        from deile.config.settings import get_settings
+        prefix = get_settings().forge_github_api_prefix
+        host = self._config.host
+        if host != "github.com" and prefix != "api" and args and args[0] == "api":
+            args = _rewrite_gh_api_args(host, prefix, args)
+        return await super()._run(*args)
 
     # ------------------------------------------------------------------
     # Issues
