@@ -736,8 +736,8 @@ class WorkerImplementer(PipelineImplementer):
         payload_kwargs: Dict[str, Any] = dict(
             brief=brief, channel_id=channel_id, persona=persona, wait=not nowait,
             preferred_model=preferred_model, stage=stage, branch=branch,
-            timeout_s=resolve_stage_timeout_s(stage),
-            max_retries=resolve_stage_max_retries(stage),
+            timeout_s=resolve_stage_timeout_s(stage) if stage else None,
+            max_retries=resolve_stage_max_retries(stage) if stage else None,
         )
         if resume_meta:
             # Apenas os 2 campos públicos vão pro wire (resto é interno: _*).
