@@ -1546,3 +1546,153 @@ async def test_observability_endpoints_require_bearer(
         ):
             resp = await client.get(path)
             assert resp.status == 401, f"{path} did not require bearer"
+
+
+# --------------------------------------------------------------------------- #
+# Issue #395 — /v1/pod-status
+# --------------------------------------------------------------------------- #
+
+
+async def test_pod_status_endpoint_returns_lease_when_active(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Active lease.json with recent heartbeat → lease dict is returned."""
+    import time as _time
+
+    # Create a fake workspace with a live lease.
+    task_id = "aabbccdd11223344"
+    workspace = tmp_path / task_id
+    workspace.mkdir()
+    now = _time.time()
+    lease_data = {
+        "pod": "claude-worker-0",
+        "pid": 42,
+        "task_id": task_id,
+        "extra_secret": "should-not-appear",
+        "started_at": now - 10,
+        "heartbeat_at": now - 2,
+    }
+    (workspace / ".lease.json").write_text(
+        __import__("json").dumps(lease_data), encoding="utf-8"
+    )
+
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setenv("DEILE_CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setattr(claude_worker_module, "_count_claude_processes", lambda: 1)
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/pod-status", headers=_AUTH_HEADERS)
+        assert resp.status == 200
+        body = await resp.json()
+    assert body["lease"] is not None
+    assert body["lease"]["task_id"] == task_id
+    assert body["lease"]["pid"] == 42
+    assert "heartbeat_at" in body["lease"]
+    assert body["claude_processes"] == 1
+    assert "disk" in body
+    assert "ts" in body
+
+
+async def test_pod_status_endpoint_returns_null_lease_when_idle(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """No lease.json in workspace → lease is null (pod is idle)."""
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setenv("DEILE_CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setattr(claude_worker_module, "_count_claude_processes", lambda: 0)
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/pod-status", headers=_AUTH_HEADERS)
+        assert resp.status == 200
+        body = await resp.json()
+    assert body["lease"] is None
+    assert body["claude_processes"] == 0
+
+
+async def test_pod_status_endpoint_returns_null_lease_when_heartbeat_stale(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Lease with expired heartbeat (> TTL) → treated as dead, returns null."""
+    import time as _time
+
+    task_id = "deadbeef00112233"
+    workspace = tmp_path / task_id
+    workspace.mkdir()
+    ttl = claude_worker_module._LEASE_TTL_S
+    stale_data = {
+        "pod": "old-pod",
+        "pid": 99,
+        "heartbeat_at": _time.time() - ttl - 60,  # well past TTL
+    }
+    (workspace / ".lease.json").write_text(
+        __import__("json").dumps(stale_data), encoding="utf-8"
+    )
+
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setenv("DEILE_CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setattr(claude_worker_module, "_count_claude_processes", lambda: 0)
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/pod-status", headers=_AUTH_HEADERS)
+        assert resp.status == 200
+        body = await resp.json()
+    assert body["lease"] is None, "stale lease should be treated as idle"
+
+
+async def test_pod_status_endpoint_redacts_lease_payload(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """Only task_id, heartbeat_at, pid are exposed — no extra fields leak."""
+    import time as _time
+
+    task_id = "1122334455667788"
+    workspace = tmp_path / task_id
+    workspace.mkdir()
+    now = _time.time()
+    lease_data = {
+        "pod": "claude-worker-0",
+        "pid": 77,
+        "started_at": now - 5,
+        "heartbeat_at": now - 1,
+        "secret_prompt": "DO NOT LEAK",
+        "credentials": "also-secret",
+    }
+    (workspace / ".lease.json").write_text(
+        __import__("json").dumps(lease_data), encoding="utf-8"
+    )
+
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setenv("DEILE_CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setattr(claude_worker_module, "_count_claude_processes", lambda: 1)
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/pod-status", headers=_AUTH_HEADERS)
+        assert resp.status == 200
+        body = await resp.json()
+    lease = body["lease"]
+    assert lease is not None
+    allowed_keys = {"task_id", "heartbeat_at", "pid"}
+    assert set(lease.keys()) <= allowed_keys, (
+        f"Lease exposed extra fields: {set(lease.keys()) - allowed_keys}"
+    )
+    assert "secret_prompt" not in lease
+    assert "credentials" not in lease
+    assert "pod" not in lease
+    assert "started_at" not in lease
+
+
+async def test_pod_status_endpoint_requires_bearer(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """/v1/pod-status requires Bearer auth — no anonymous access."""
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setenv("DEILE_CLAUDE_HOME", str(tmp_path))
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/pod-status")  # no auth header
+        assert resp.status == 401
