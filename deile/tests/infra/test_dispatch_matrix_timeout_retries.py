@@ -302,6 +302,19 @@ def test_numeric_prompt_bang_key_ignored_in_timeout():
     assert view.mode[2] == ["60"]
 
 
+def test_numeric_prompt_bang_key_idempotent():
+    """Pressionar '!' várias vezes não acumula — evita ``"0!!"`` que parsaria
+    como inteiro inválido. Feedback do review na PR #407."""
+    view = _make_view()
+    view.mode = ("retries", "implement", ["0"])
+    view._handle_numeric_prompt_key("!")
+    assert view.mode[2] == ["0!"]
+    view._handle_numeric_prompt_key("!")
+    assert view.mode[2] == ["0!"]  # segundo '!' ignorado
+    view._handle_numeric_prompt_key("!")
+    assert view.mode[2] == ["0!"]  # terceiro '!' ignorado
+
+
 def test_numeric_prompt_timeout_zero_is_invalid():
     """Timeout=0 should show error (not call kubectl)."""
     view = _make_view()

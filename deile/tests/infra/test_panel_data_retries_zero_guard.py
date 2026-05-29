@@ -24,10 +24,15 @@ if _INFRA_K8S not in sys.path:
 
 @pytest.fixture
 def fresh_panel_data(monkeypatch):
-    """Garante carregamento real do módulo `_panel_data`, sem stub mínimo de
-    sibling tests. Remove stubs prévios se sobreviveram do
-    ``test_dispatch_matrix_timeout_retries.py``."""
-    sys.modules.pop("_panel_data", None)
+    """Garante carregamento real do módulo ``_panel_data``, sem stub mínimo de
+    sibling tests. Usa ``monkeypatch.delitem`` para que ``sys.modules`` seja
+    **restaurado automaticamente no teardown** — caso contrário o módulo
+    real ficaria cacheado em ``sys.modules`` e arquivos vizinhos (cujo
+    fixture autouse só injeta o stub quando ``"_panel_data" not in
+    sys.modules``) passariam a ver o módulo real, quebrando 17 testes em
+    batch. Bug identificado por @deile-one no review da PR #407.
+    """
+    monkeypatch.delitem(sys.modules, "_panel_data", raising=False)
     import importlib
     pd = importlib.import_module("_panel_data")
     return pd

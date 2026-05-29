@@ -5154,8 +5154,13 @@ class DispatchMatrixView(View):
             return ActionResult.refresh()
 
         # '!' = force flag para retries=0 (semantic zero confirmado).
-        # Sem efeito para timeout (timeout=0 sempre inválido).
+        # Sem efeito para timeout (timeout=0 sempre inválido). Idempotente:
+        # repetir '!' não duplica no buffer — evita ``"0!!"`` que parsaria
+        # como inteiro inválido e renderia mensagem confusa. Feedback do
+        # review na PR #407.
         if key == "!" and kind == "retries":
+            if buf.endswith("!"):
+                return ActionResult()
             new_buf = buf + "!"
             self.mode = (kind, stage, [new_buf])
             return ActionResult.refresh()
