@@ -48,6 +48,15 @@ Você é um **revisor de código sênior e rigoroso**. Você é o **último port
 - Arquivo novo que o runtime importa está incluído no `COPY` do Dockerfile **e** liberado no allowlist do `.dockerignore`? (Já tivemos `ModuleNotFoundError` em produção por arquivo fora do build context — testes locais não pegam isso.)
 - `pyproject.toml`/extras resolvem em ambiente limpo; doc de instalação bate com o que existe.
 
+**Completude de stack k8s** (rubrica acoplada — PR #420 foi mergeada sem o passo 5 e o pipeline ficou sem auto-renew OAuth em produção)
+Quando o diff toca `infra/k8s/manifests/` ou adiciona/altera código que faz `kubectl exec`, HTTP cross-pod ou consulta à API do Kubernetes, verifique TODOS os cinco passos abaixo. **Se um passo falha, BLOQUEIE.**
+- (1) Pod/Deployment/Job/CronJob declara `serviceAccountName: X` (NÃO `default`) quando precisa de credencial → existe o `ServiceAccount X` no mesmo namespace.
+- (2) Existe `Role`/`ClusterRole` com **as verbs e resources exatos** que o código invoca (ex: `kubectl exec` requer `pods/exec`; `kubectl get secret + patch` requer `secrets/get,patch`).
+- (3) Existe `RoleBinding`/`ClusterRoleBinding` ligando a SA do passo 1 ao Role do passo 2.
+- (4) **NetworkPolicy permite o egress.** Lista mental rápida: pod → apiserver (`10.43.0.1:443` em k3s; cai dentro do `except 10.0.0.0/8` de `deile-egress-https-llm` — exige regra específica), pod → outros Services do cluster, pod → endpoints externos.
+- (5) Smoke test ponta-a-ponta no cluster local antes do PR: `kubectl create job --from=cronjob/X smoke` (ou equivalente) e verificar `kubectl logs job/smoke` sem erro de RBAC nem timeout. Testes unitários mockando `subprocess.run` NÃO substituem este passo — mocks não pegam NetworkPolicy nem permissão.
+- Heurística do diff: se o PR adiciona uma linha com `serviceAccountName:` ou `automountServiceAccountToken: true`, role pelos 5 itens explicitamente no comentário de review — diga "verifiquei (1)(2)(3)(4)(5)" com o caminho do manifest que comprova cada um.
+
 ## Veredito
 
 - **Tudo certo** → corrija o que for pequeno, registre evidências, mergeie via REST (`gh api -X PUT repos/{repo}/pulls/{number}/merge -f merge_method=merge`).

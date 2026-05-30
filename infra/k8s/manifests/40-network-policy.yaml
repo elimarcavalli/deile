@@ -304,3 +304,34 @@ spec:
     - to: []
       ports:
         - { protocol: TCP, port: 443 }
+---
+# ---- pipeline + claude-creds-renewer egress: kube-apiserver --------------------
+# Fix do gap do PR #420 (Decisão #46 auto-renew): o pipeline pod e o CronJob
+# `claude-credentials-renew` invocam `kubectl exec` para ler/escrever credenciais
+# OAuth dentro do claude-worker pod. Esse `kubectl exec` precisa falar TCP/443 com
+# o kube-apiserver (ClusterIP 10.43.0.1 em k3s/Rancher Desktop).
+#
+# A regra `deile-egress-https-llm` (acima) permite egress 443 para o mundo MAS
+# EXCEPT 10.0.0.0/8 — e o Service CIDR do k3s (10.43.0.0/16) cai dentro desse
+# bloco bloqueado. Sem esta NetworkPolicy específica, `kubectl exec` falha com
+# `dial tcp 10.43.0.1:443: connect: connection timed out` e o auto-renew
+# (Decisão #46) degrada para o caminho de bloqueio que exige renew manual.
+#
+# Service CIDR em outros clusters: EKS=172.20.0.0/16, GKE/AKS varia. Ajustar
+# o `cidr` abaixo conforme o cluster alvo (k3s/Rancher Desktop usa 10.43/16).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: creds-renewer-egress-to-kube-api
+  namespace: deile
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app, operator: In, values: [deile-pipeline, claude-creds-renewer] }
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 10.43.0.0/16
+      ports:
+        - { protocol: TCP, port: 443 }
