@@ -32,6 +32,7 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from shutil import which
@@ -1235,6 +1236,9 @@ def _parse_claude_login_flags(extra: List[str]) -> Dict[str, object]:
       * ``--from-env-only``                -> ``from_env_only=True``
         (fail-fast se CLAUDE_OAUTH_ACCESS_TOKEN não estiver setado; implica
         ``interactive=False``)
+      * ``--in-pod``                       -> ``in_pod=True``
+        (issue #335 — OAuth zero-touch via servidor HTTP dentro do pod;
+        não requer claude CLI no host)
 
     Devolve ``{"_error": msg}`` se vier flag desconhecida. ``--namespace``
     é resolvido pelo flag global ``-n``/``--namespace`` (via ``_ns(args)``)
@@ -1244,6 +1248,7 @@ def _parse_claude_login_flags(extra: List[str]) -> Dict[str, object]:
         "force_relogin": False,
         "interactive": True,
         "from_env_only": False,
+        "in_pod": False,
     }
     for token in extra:
         if token in ("--switch", "--force-relogin"):
@@ -1256,8 +1261,213 @@ def _parse_claude_login_flags(extra: List[str]) -> Dict[str, object]:
             parsed["from_env_only"] = True
             parsed["interactive"] = False  # implica non-interactive
             continue
+        if token == "--in-pod":
+            parsed["in_pod"] = True
+            continue
         return {"_error": f"flag desconhecido: `{token}`"}
     return parsed
+
+
+def _k8s_in_pod_claude_login(ns: str) -> int:
+    """Implementa ``claude-login --in-pod`` (issue #335).
+
+    Fluxo zero-touch — sem claude CLI no host:
+
+    1. Aplica manifests + Secret placeholder para o pod subir.
+    2. Inicia o servidor OAuth em ``_oauth_server.py`` dentro do pod via
+       ``kubectl exec``.
+    3. Abre ``kubectl port-forward deploy/claude-worker 9876:9876`` em
+       background.
+    4. Imprime instruções para o operador abrir o browser.
+    5. Faz polling em ``/auth/status`` até autenticação completar.
+    6. Lê as credentials do PVC via ``kubectl exec cat`` e atualiza o Secret.
+    7. Rollout restart para o initContainer copiar as credentials reais.
+    8. Aguarda rollout.
+
+    Nota: o mecanismo de redirect_uri precisa ser validado contra o
+    servidor OAuth da Anthropic (issue #335 — exploratória).
+    """
+    _OAUTH_PORT = 9876
+    _POLL_INTERVAL = 5  # segundos entre polls de /auth/status
+    _TIMEOUT = 600       # 10 min — OAuth interativo pode demorar
+
+    sys.path.insert(0, str(HERE))
+    try:
+        from _claude_install import (  # noqa: PLC0415
+            ClaudeLoginResult,
+            _kubectl_apply_manifests,
+            _kubectl_apply_secret,
+            _kubectl_sync_bearer_token,
+            _kubectl_wait_rollout,
+        )
+    finally:
+        sys.path.pop(0)
+
+    ui.section("k8s claude-login --in-pod")
+    ui.info(f"namespace={ns}, porta OAuth={_OAUTH_PORT}")
+
+    # 1. Placeholder Secret para o pod conseguir subir (initContainer não falha
+    #    por Secret ausente). O token real é escrito no PVC pelo OAuth in-pod;
+    #    o Secret é atualizado após o OAuth completar (passo 6).
+    placeholder = {"claudeAiOauth": {"accessToken": "placeholder-in-pod-oauth-pending"}}
+    ui.info("Aplicando Secret placeholder (aguarde OAuth in-pod para o real)...")
+    if not _kubectl_apply_secret(placeholder, namespace=ns):
+        ui.err("Falha ao aplicar Secret placeholder — aborting")
+        return 1
+
+    ui.info("Sincronizando bearer token...")
+    if not _kubectl_sync_bearer_token(namespace=ns):
+        ui.err("Falha ao sincronizar claude-worker-bearer — aborting")
+        return 1
+
+    ui.info("Aplicando manifests (PVC, Deployment, NetworkPolicy)...")
+    if not _kubectl_apply_manifests(namespace=ns):
+        ui.err("Falha ao aplicar manifests — aborting")
+        return 1
+
+    # 2. Aguarda pod ficar Running (pode demorar 30–60s; não exigimos Ready
+    #    porque o initContainer copiou placeholder — healthcheck pode falhar).
+    ui.info("Aguardando pod claude-worker ficar Running (até 120s)...")
+    _OAUTH_SERVER_SCRIPT = "/app/infra/k8s/_oauth_server.py"
+    pod_ready = False
+    for _ in range(24):  # 24 × 5s = 120s
+        try:
+            chk = subprocess.run(
+                ["kubectl", "-n", ns, "get", "deploy/claude-worker",
+                 "-o", "jsonpath={.status.readyReplicas}"],
+                capture_output=True, text=True, check=False, timeout=10,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            break
+        if (chk.stdout or "").strip() not in ("", "0", None):
+            pod_ready = True
+            break
+        # Pod não pronto ainda — espera e tenta de novo
+        _wait_s = 5
+        time.sleep(_wait_s)
+
+    # Even if healthcheck isn't passing, pod might be running enough for exec.
+    # We try to start the server regardless and let kubectl exec report errors.
+
+    # 3. Inicia _oauth_server.py no pod em background (kubectl exec em daemon thread).
+    ui.info(f"Iniciando servidor OAuth no pod ({_OAUTH_SERVER_SCRIPT})...")
+    oauth_proc: Optional[subprocess.Popen] = None  # type: ignore[type-arg]
+
+    def _start_server() -> None:
+        nonlocal oauth_proc
+        try:
+            oauth_proc = subprocess.Popen(
+                ["kubectl", "-n", ns, "exec", "deploy/claude-worker",
+                 "-c", "claude-worker", "--",
+                 "python3", _OAUTH_SERVER_SCRIPT],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True,
+            )
+            if oauth_proc.stdout:
+                for line in oauth_proc.stdout:
+                    pass  # consume output so pipe doesn't block
+        except Exception:
+            pass
+
+    server_thread = threading.Thread(target=_start_server, daemon=True)
+    server_thread.start()
+    time.sleep(3)  # dá tempo ao servidor de ligar
+
+    # 4. port-forward 9876 em background.
+    ui.info(f"Iniciando kubectl port-forward deploy/claude-worker {_OAUTH_PORT}:{_OAUTH_PORT}...")
+    try:
+        pf_proc = subprocess.Popen(
+            ["kubectl", "-n", ns, "port-forward", "deploy/claude-worker",
+             f"{_OAUTH_PORT}:{_OAUTH_PORT}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        ui.err("kubectl não encontrado no PATH")
+        return 1
+
+    time.sleep(2)  # aguarda port-forward estabelecer
+
+    ui.ok(
+        f"\nAcesse no seu browser:  http://localhost:{_OAUTH_PORT}/auth/start\n"
+        "Complete o OAuth no browser. Este processo aguardará até autenticar "
+        f"(timeout {_TIMEOUT}s)."
+    )
+
+    # 5. Polling /auth/status até autenticar ou timeout.
+    import urllib.error    # noqa: PLC0415
+    import urllib.request  # noqa: PLC0415
+    authenticated = False
+    elapsed = 0
+    while elapsed < _TIMEOUT:
+        time.sleep(_POLL_INTERVAL)
+        elapsed += _POLL_INTERVAL
+        try:
+            with urllib.request.urlopen(
+                f"http://localhost:{_OAUTH_PORT}/auth/status", timeout=5
+            ) as resp:
+                data = json.loads(resp.read())
+            if data.get("authenticated"):
+                authenticated = True
+                email = data.get("email") or "conta desconhecida"
+                ui.ok(f"OAuth concluído! Conta: {email}")
+                break
+        except Exception:
+            pass  # servidor ainda iniciando ou port-forward instável
+        ui.info(f"  aguardando OAuth... ({elapsed}s / {_TIMEOUT}s)")
+
+    pf_proc.terminate()  # encerra port-forward
+
+    if not authenticated:
+        ui.err("Timeout aguardando OAuth in-pod. Tente novamente com --in-pod.")
+        return 1
+
+    # 6. Lê credentials do PVC via kubectl exec e atualiza o Secret real.
+    ui.info("Lendo credentials do PVC...")
+    try:
+        cat = subprocess.run(
+            ["kubectl", "-n", ns, "exec", "deploy/claude-worker",
+             "-c", "claude-worker", "--",
+             "cat", "/home/claude/.claude/credentials.json"],
+            capture_output=True, text=True, check=False, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        ui.err(f"Falha ao ler credentials do PVC: {exc}")
+        return 1
+
+    if cat.returncode != 0 or not cat.stdout.strip():
+        ui.err("Credentials não encontradas no PVC após OAuth — aborting")
+        return 1
+
+    try:
+        creds = json.loads(cat.stdout)
+    except json.JSONDecodeError as exc:
+        ui.err(f"Credentials do PVC não são JSON válido: {exc}")
+        return 1
+
+    ui.info("Atualizando Secret claude-credentials com credentials reais...")
+    if not _kubectl_apply_secret(creds, namespace=ns):
+        ui.err("Falha ao aplicar Secret com credentials reais")
+        return 1
+
+    # 7. Rollout restart (pod carrega novo Secret via initContainer no próximo
+    #    boot; initContainer vai ver PVC mais novo que Secret e preservar).
+    ui.info("Rollout restart do claude-worker...")
+    try:
+        subprocess.run(
+            ["kubectl", "-n", ns, "rollout", "restart", "deployment/claude-worker"],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        ui.err(f"Falha no rollout restart: {exc}")
+        return 1
+
+    # 8. Aguarda rollout.
+    if not _kubectl_wait_rollout(namespace=ns):
+        ui.err("claude-worker não ficou Ready após rollout")
+        return 1
+
+    ui.ok("claude-worker pronto (--in-pod).")
+    return 0
 
 
 def k8s_claude_login(args: dict) -> int:
@@ -1269,6 +1479,8 @@ def k8s_claude_login(args: dict) -> int:
     credentials não estiverem presentes (não chama ``claude login``).
     Use ``--from-env-only`` para falhar-rápido se ``CLAUDE_OAUTH_ACCESS_TOKEN``
     não estiver setado (implica ``--no-interactive``; zero-touch para CI/CD).
+    Use ``--in-pod`` para OAuth zero-touch via servidor HTTP dentro do pod
+    (issue #335 — sem claude CLI no host, útil para Rancher remoto / CI).
 
     Issue #309 fase 2/3 — delega o trabalho pesado a
     ``infra/k8s/_claude_install.bootstrap_claude_worker``.
@@ -1277,11 +1489,16 @@ def k8s_claude_login(args: dict) -> int:
     if "_error" in flags:
         ui.err(str(flags["_error"]))
         ui.info(
-            "flags válidos: --switch (--force-relogin), --no-interactive, --from-env-only"
+            "flags válidos: --switch (--force-relogin), --no-interactive,"
+            " --from-env-only, --in-pod"
         )
         return 64
 
     ns = _ns(args)
+
+    # --in-pod: delega para fluxo dedicado (issue #335)
+    if bool(flags.get("in_pod")):
+        return _k8s_in_pod_claude_login(ns=ns)
 
     # Import tardio: ``_claude_install`` só é necessário neste verb e em
     # operações do painel (DispatchMatrixView). Outros verbs não pagam
@@ -1905,7 +2122,8 @@ _K8S_ACTIONS = [
     ("test", "rodar o Job one-shot deile-oneshot"),
     ("clone", "clone <owner/repo> — clona um repo no deile-shell"),
     ("claude-login",
-     "instalar claude-worker no cluster (flags: --switch, --no-interactive, --from-env-only)"),
+     "instalar claude-worker no cluster (flags: --switch, --no-interactive,"
+     " --from-env-only, --in-pod)"),
     ("claude-renew",
      "renovar OAuth do claude-worker (lightweight: Secret + restart, sem manifests)"),
     ("down", "APAGAR o namespace e TODOS os dados"),

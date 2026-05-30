@@ -717,6 +717,65 @@ def bootstrap_claude_worker(
 
 
 # --------------------------------------------------------------------------- #
+# bootstrap_claude_worker_in_pod — partial bootstrap para o fluxo --in-pod
+# (issue #335). Sem OAuth do host: aplica Secret placeholder + manifests para
+# que o pod suba. O fluxo OAuth real é conduzido in-pod.
+# --------------------------------------------------------------------------- #
+
+
+def bootstrap_claude_worker_in_pod(
+    *,
+    namespace: str = "deile",
+    placeholder_token: str = "placeholder-in-pod-oauth-pending",
+) -> ClaudeLoginResult:
+    """Partial bootstrap para o modo ``k8s claude-login --in-pod`` (issue #335).
+
+    Aplica um Secret ``claude-credentials`` com token placeholder para que
+    o pod suba sem credentials reais. O OAuth in-pod escreverá as credentials
+    reais no PVC; o Secret é atualizado após o OAuth completar.
+
+    Etapas:
+    1. Aplica Secret ``claude-credentials`` com token placeholder.
+    2. Sincroniza ``claude-worker-bearer`` (igual ao bootstrap normal).
+    3. Aplica manifests 47/49/50/51/40.
+    4. **Não aguarda rollout** — o caller gerencia a espera pelo pod Running.
+
+    Returns:
+        :class:`ClaudeLoginResult` com ``deployment_applied=True`` se todos
+        os manifests foram aplicados; ``rollout_ready=False`` sempre (rollout
+        não é aguardado neste fluxo).
+    """
+    placeholder = {"claudeAiOauth": {"accessToken": placeholder_token}}
+
+    if not _kubectl_apply_secret(placeholder, namespace=namespace):
+        return ClaudeLoginResult(
+            ok=False,
+            error="--in-pod: failed to apply placeholder claude-credentials Secret",
+        )
+
+    if not _kubectl_sync_bearer_token(namespace=namespace):
+        return ClaudeLoginResult(
+            ok=False,
+            secret_applied=True,
+            error="--in-pod: failed to sync claude-worker-bearer token",
+        )
+
+    if not _kubectl_apply_manifests(namespace=namespace):
+        return ClaudeLoginResult(
+            ok=False,
+            secret_applied=True,
+            error="--in-pod: failed to apply claude-worker manifests",
+        )
+
+    return ClaudeLoginResult(
+        ok=True,
+        secret_applied=True,
+        deployment_applied=True,
+        rollout_ready=False,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # renew_claude_worker — lightweight token refresh (sem manifests, sem rollout
 # completo). Endpoint pra resolver expiração frequente do OAuth Claude (~8h)
 # sem ter que rodar o ``bootstrap_claude_worker`` inteiro de novo.

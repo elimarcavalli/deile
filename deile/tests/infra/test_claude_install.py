@@ -677,3 +677,73 @@ def test_renew_uses_env_var_credentials_when_present(claude_install_module,
     assert result.ok is True
     # Token da env var foi propagado ao Secret.
     assert captured["creds"]["claudeAiOauth"]["accessToken"] == "sk-from-env-12345"
+
+
+# ---------------------------------------------------------------------------
+# bootstrap_claude_worker_in_pod — issue #335
+# ---------------------------------------------------------------------------
+
+
+def test_bootstrap_in_pod_applies_placeholder_credentials(claude_install_module):
+    """``bootstrap_claude_worker_in_pod`` aplica Secret placeholder + manifests."""
+    captured = {}
+
+    def fake_apply_secret(creds, *, namespace):
+        captured["creds"] = creds
+        captured["ns"] = namespace
+        return True
+
+    with patch.object(claude_install_module, "_kubectl_apply_secret",
+                      side_effect=fake_apply_secret), \
+         patch.object(claude_install_module, "_kubectl_sync_bearer_token",
+                      return_value=True), \
+         patch.object(claude_install_module, "_kubectl_apply_manifests",
+                      return_value=True):
+        result = claude_install_module.bootstrap_claude_worker_in_pod(
+            namespace="deile-test",
+        )
+
+    assert result.ok is True
+    assert result.secret_applied is True
+    assert result.deployment_applied is True
+    assert result.rollout_ready is False
+    token = captured["creds"]["claudeAiOauth"]["accessToken"]
+    assert token, "placeholder token deve ser não-vazio"
+    assert captured["ns"] == "deile-test"
+
+
+def test_bootstrap_in_pod_fails_on_secret_error(claude_install_module):
+    """Falha no apply do Secret placeholder propagada como ok=False."""
+    with patch.object(claude_install_module, "_kubectl_apply_secret",
+                      return_value=False):
+        result = claude_install_module.bootstrap_claude_worker_in_pod()
+
+    assert result.ok is False
+    assert result.error is not None
+
+
+def test_bootstrap_in_pod_fails_on_bearer_sync_error(claude_install_module):
+    """Falha no sync do bearer retorna secret_applied=True, ok=False."""
+    with patch.object(claude_install_module, "_kubectl_apply_secret",
+                      return_value=True), \
+         patch.object(claude_install_module, "_kubectl_sync_bearer_token",
+                      return_value=False):
+        result = claude_install_module.bootstrap_claude_worker_in_pod()
+
+    assert result.ok is False
+    assert result.secret_applied is True
+
+
+def test_bootstrap_in_pod_fails_on_manifest_error(claude_install_module):
+    """Falha nos manifests propagada com deployment_applied=False."""
+    with patch.object(claude_install_module, "_kubectl_apply_secret",
+                      return_value=True), \
+         patch.object(claude_install_module, "_kubectl_sync_bearer_token",
+                      return_value=True), \
+         patch.object(claude_install_module, "_kubectl_apply_manifests",
+                      return_value=False):
+        result = claude_install_module.bootstrap_claude_worker_in_pod()
+
+    assert result.ok is False
+    assert result.secret_applied is True
+    assert result.deployment_applied is False
