@@ -250,6 +250,17 @@ class GitHubForge(ForgeClient):
             log_label="list_issues_assigned_to",
         )
 
+    async def list_open_issues(self, *, limit: int = 1000) -> List[IssueRef]:
+        return await self._list_refs(
+            "issue", "list",
+            "--repo", self.repo,
+            "--state", "open",
+            "--limit", str(limit),
+            "--json", _ISSUE_JSON_FIELDS,
+            factory=IssueRef.from_gh_json,
+            log_label="list_open_issues",
+        )
+
     async def list_unclassified_issues(self, *, limit: int = 100) -> List[IssueRef]:
         """Return open issues with no pipeline label (no ``~*``).
 

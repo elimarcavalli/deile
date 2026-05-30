@@ -381,6 +381,18 @@ class ForgeClient(ABC):
     async def list_unclassified_issues(self, *, limit: int = 100) -> List[IssueRef]: ...
 
     @abstractmethod
+    async def list_open_issues(self, *, limit: int = 1000) -> List[IssueRef]:
+        """Return every open issue in the project, regardless of labels.
+
+        Mirrors :meth:`list_open_prs` for the issue side. Used by surfaces
+        that need a full inventory of open work (e.g. the ``/backlog`` slash
+        command's aggregate counts) — the existing helpers do not fit:
+        ``list_issues_with_label`` filters to one label, and
+        ``list_unclassified_issues`` returns only labelless issues (the
+        complement of what is wanted here).
+        """
+
+    @abstractmethod
     async def create_issue(
         self,
         title: str,
