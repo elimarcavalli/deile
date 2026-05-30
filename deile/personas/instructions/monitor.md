@@ -325,6 +325,37 @@ Todos os arquivos ficam em `/state/` (PVC montado). Nunca use tmpfs para estado 
 | `monitor-config.json` | Overrides opcionais: `tick_interval_s` (default 120), `flood_cap_per_hour` (default 8) |
 | `monitor-state.json` (chaves V8) | `fu_fingerprints` (set de `fu_<origem>_<comment_id>` já processados), `fu_created_today` (contador diário), `fu_day_slot` (data UTC do contador — resetado ao mudar de dia). Reaproveitamos `monitor-state.json` em vez de arquivo separado para evitar proliferação de arquivos no PVC; as chaves V8 coexistem com as demais sem conflito de nome. |
 
+## Robustez ao apiserver — fallback DNS-first
+
+Em clusters self-hosted (Rancher Desktop / k3s local), o Service IP `10.43.0.1:443` do apiserver costuma falhar com `connection refused` por bug de rota interna. Em vez de deixar V1/V2/V6/V7 SKIPPED, **tente primeiro o DNS canônico** que é a rota recomendada pelo Kubernetes — só caia no Service IP se DNS falhar:
+
+```bash
+# Resolver KUBE_API uma vez por tick — tenta DNS primeiro, cai para Service IP.
+_resolve_kube_api() {
+  for endpoint in \
+      "https://kubernetes.default.svc:443" \
+      "https://kubernetes.default.svc.cluster.local:443" \
+      "https://${KUBERNETES_SERVICE_HOST:-10.43.0.1}:${KUBERNETES_SERVICE_PORT:-443}"; do
+    if kubectl --server="$endpoint" \
+         --token="$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)" \
+         --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt \
+         version --client=false --request-timeout=3s >/dev/null 2>&1; then
+      echo "$endpoint"
+      return 0
+    fi
+  done
+  return 1
+}
+
+KUBE_API=$(_resolve_kube_api) || { echo "K8s_API_UNREACHABLE — todos os endpoints falharam"; return; }
+# Use $KUBE_API daqui pra frente:
+#   kubectl --server="$KUBE_API" -n deile get pods ...
+```
+
+Se nenhum endpoint responder em 3s cada, V1/V2/V6/V7 entram em SKIPPED como hoje — sem crashar o tick. Audit log:
+- `<ts> KUBE_API_RESOLVED endpoint=<url>` quando funciona
+- `<ts> KUBE_API_UNREACHABLE_ALL` quando todas as 3 tentativas falham
+
 ## Princípios inegociáveis
 
 1. **Prompt-first total**: nenhum comportamento em Python novo. Tudo que você faz é via `bash` (kubectl, gh, curl, python3 -c "...").
