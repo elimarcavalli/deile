@@ -226,15 +226,18 @@ PASSO 2 — EXECUTAR a work-list em ordem.
 - Gate de testes: se for revisar ou mergear, rode a SUÍTE COMPLETA: {full_suite_cmd} ({pip_guard}). Suíte vermelha por culpa da sua mudança = bloqueante. Suíte vermelha por testes pré-existentes que sua mudança NÃO TOCOU = você documenta no comment e segue.
 - Confronte entrega contra pedido (passo 2b clássico): leia issue que a {pr_noun} fecha (Closes #N), liste itens, valide entrega.
 
-PASSO 3 — ESCREVA O PROGRESSO:
-- Se a work-list ESVAZIOU: marque `~mention:processado` automaticamente (o pipeline faz isso pós-success). Você só precisa garantir os steps acima.
-- Se a work-list NÃO esvaziou (estourou tempo/orçamento ou impedimento): grave `.deile-progress.md` no seu diretório de trabalho (NÃO commite, NÃO dentro de ./repo) com: o que fez, o que falta, o que tá bloqueando. Próximo tick reusa.
+PASSO 3 — DECISÃO É DECISÃO (regra inegociável anti-loop):
+- Se você TEM uma conclusão de review (APPROVE ou REQUEST_CHANGES), POSTE o review formal AGORA via {review_post_cmd} e ENCERRE este tick com veredito REVIEWED. NÃO escreva "incompleto será retomada" se você chegou a uma decisão — isso causa loop infinito até bater attempt cap. "Incompleto" SOMENTE quando estouro real de contexto/tempo te forçou a parar com trabalho objetivo no meio (ex: rodou 2 de 5 testes da suíte e ficou sem orçamento).
+- Se a work-list ESVAZIOU sem decisão (ex: você só comentou um esclarecimento): marque `~mention:processado` automaticamente (o pipeline faz isso pós-success).
+- Se a work-list NÃO esvaziou por estouro de contexto/tempo REAL: grave `.deile-progress.md` no seu diretório de trabalho (NÃO commite, NÃO dentro de ./repo) com: o que fez, o que falta, o que tá bloqueando. Próximo tick reusa. Aceito SOMENTE com proof-of-work concreto (arquivo:linha onde parou, testes executados, comandos pendentes).
 
-PASSO 4 — VEREDITO. Na ÚLTIMA LINHA escreva:
-- URL da {pr_noun} seguida de MERGED se mergeou (ex.: {pr_url_pattern} MERGED).
-- URL da {pr_noun} sozinha se ciclou ok sem mergear.
-- `{blocked_contract}` se impedimento real.
-NUNCA escreva MERGED sem ter mergeado de fato; NUNCA invente resultado.
+PASSO 4 — VEREDITO. Na ÚLTIMA LINHA escreva UMA dentre:
+- `{pr_url_pattern} MERGED` — você mergeou de fato (confirme com {check_merged_cmd}).
+- `{pr_url_pattern} REVIEWED:APPROVED` — você postou review formal APPROVE via {review_post_cmd}; pode mergear depois ou outro tick mergeia.
+- `{pr_url_pattern} REVIEWED:CHANGES` — você postou review formal REQUEST_CHANGES via {review_post_cmd}; autor é quem age, pipeline marca processado.
+- `{pr_url_pattern} COMMENTED` — você só respondeu thread/comment, sem review formal (esclarecimento, ack, etc).
+- `{blocked_contract}` — impedimento real (decisão de produto pendente, credencial faltando, contrato quebraria sem migração).
+NUNCA escreva MERGED sem mergear, REVIEWED sem postar review via API, ou invente resultado. NUNCA termine sem veredito quando TEM decisão.
 """
 
 
@@ -569,11 +572,17 @@ def _render_worker_implement_resume_brief(
 _WORKER_CRITIQUE_BRIEF = """\
 Você é o GATE DE CRÍTICA DE ESCOPO da issue #{number} (tipo: {type}) do repositório {repo}. NÃO implemente nem refine nada — apenas JULGUE, conforme a sua persona, se o escopo está claro o suficiente para avançar.
 
-1. Leia a issue (abaixo) e o template oficial do tipo:
+1. Leia a issue COMPLETA: body + TODOS os comentários + issues/PRs vinculadas. NÃO confie em rótulos como "trivial", "depois alguém faz", "óbvio" — eles costumam encobrir vagueza. Use:
    {fetch_template_cmd}
-   (Para feature/bug/refactor, consulte a arquitetura real — docs/system_design/ e o código; clone com `{clone_cmd}` se ainda não houver ./repo. Para bug, verifique se dá pra localizar a origem no código.)
-2. Julgue com RIGOR: a issue está CLARA e bem-escopada (segue o template, tem substância para a PRÓXIMA etapa sem ambiguidade) ou VAGO (vazia, template em branco/incompleto, genérica demais, sem alvo/critério)?
-3. Seja honesto e específico — se VAGO, aponte exatamente o que falta.
+   {view_issue_cmd}
+   (feature/refactor/bug: consulte a arquitetura real — docs/system_design/ e o código; clone com `{clone_cmd}` se ainda não houver ./repo. Bug: verifique se dá pra localizar a origem no código.)
+2. JULGAMENTO CÉTICO — só vote CLARO se TODOS os abaixo se sustentam (qualquer falha → VAGO):
+   a) Segue o template do tipo, com cada seção preenchida com substância real (não placeholder).
+   b) Critérios de aceite DUROS e MENSURÁVEIS (frases como "deve funcionar bem", "ser robusto", "ser performático" SEM número/condição = vago).
+   c) Sem PROMESSAS VAZIAS — frases como "depois isso é estendido", "alguém edita o Markdown", "trivial adicionar X", "hot-reload já existe" SEM mecanismo concreto (teste, lint, schema, sub-issue rastreável) que GARANTA o cumprimento = vago.
+   d) Sem LACUNAS ARQUITETURAIS óbvias para a disciplina envolvida — idempotência, TOCTOU, timeouts, observabilidade, rollback, threat model (se toca segurança/secrets/rede), schema migration (se altera persistência), false-positive/SLO (se é detector/classificador), **dependências externas** (componentes/serviços que precisam existir antes — sem garantia de ordem ou degrade gracefully = vago). Ausência sem justificativa explícita = vago.
+   e) Escopo V1 vs futuro EXPLÍCITO — o que entra agora vs o que vira sub-issue rastreável vs o que fica fora.
+3. Se VAGO, LISTE 3-5 defeitos concretos ordenados por impacto (não pare no primeiro — issues complexas têm múltiplas lacunas, e refinar uma de cada vez gera N voltas extras desnecessárias). Em dúvida entre CLARO e VAGO, **vote VAGO** — vale mais uma volta extra do que uma issue mal-escopada chegando ao código.
 
 VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE uma destas, nada depois dela:
   VEREDITO: CLARO
@@ -584,22 +593,29 @@ VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE uma destas, nada depois 
 """
 
 _WORKER_REFINE_BRIEF = """\
-Você vai REFINAR a issue #{number} (tipo: {type}) do repositório {repo} — corrigir o TÍTULO e reescrever o CORPO para ficar claro, substancial e dentro do template oficial. NÃO implemente código de feature/fix; o objetivo é deixar o ESCOPO pronto para a próxima etapa.
+REFINE a issue #{number} (tipo: {type}) do {repo} ao PADRÃO DE MAESTRIA — título + corpo reescritos para que quem implementar não adivinhe nada. NÃO codifique; blinde o ESCOPO. Persona detalha critério por tipo.
 
-1. Leia a issue atual (abaixo), o template oficial E OS COMENTÁRIOS da issue:
+1. LEITURA CÉTICA — body + TODOS comentários + linked issues/PRs + template. Comentários do stakeholder FAZEM PARTE do escopo. "Trivial"/"depois" encobrem vagueza — desconfie.
    {fetch_template_cmd}
    {view_issue_cmd}
-   Os comentários — em especial DECISÕES e esclarecimentos do stakeholder — FAZEM PARTE do escopo e DEVEM ser incorporados no corpo. NUNCA ignore o que foi pedido em comentário.
-   (feature/refactor: consulte docs/system_design/ e o código real, clone com `{clone_cmd}` se preciso. bug: investigue o código e localize a origem provável arquivo:linha. NUNCA invente.)
-2. CORRIJA O TÍTULO para seguir o padrão do template: ele DEVE começar com o prefixo `{title_prefix}`. Aplique:
-   {edit_issue_title_cmd}
-3. REESCREVA o corpo conforme a estrutura do template, preenchendo CADA seção com substância REAL (do título, do contexto, do código E das decisões registradas nos comentários). Aplique:
-   {edit_issue_body_cmd}
-4. LACUNA DO STAKEHOLDER: se houver decisão de escopo/lacuna IMPORTANTE que você NÃO pode decidir sozinho com segurança (alto impacto, ou que derivaria uma feature grande adicional), NÃO decida. Em vez disso:
-   a) Comente na issue ({comment_issue_cmd}) descrevendo a lacuna E **2 a 3 sugestões bem pensadas** para o stakeholder escolher.
-   b) Atribua ao autor (stakeholder): descubra com `{view_pr_author_cmd_for_issue}` e atribua via REST: {assign_user_cmd}
-   c) Reporte AGUARDA_STAKEHOLDER (veredito abaixo) — o pipeline pausa o refino até o stakeholder decidir.
-5. Honestidade: marque suposições como suposições no corpo; nunca invente fato, dado ou causa-raiz.
+   (feature/refactor: docs/system_design/ + código real, `{clone_cmd}` se preciso. bug: localize origem `arquivo:linha`.)
+
+2. ALGORITMO (ordem: 2a→2b→2c→2d→2e→2f — diagnostique TUDO primeiro, depois escreva. Pular ordem leva a body inflado e inconsistente):
+   a) **Promessas vazias** — "depois estende"/"trivial X"/"alguém edita"/"já existe" sem mecanismo concreto. Para CADA: substitua por mecanismo (AC, teste, lint, schema, sub-issue, fixture) OU mova para sub-issue vinculada (com motivo da priorização: "fora do V1 porque <razão concreta>") OU declare fora-de-escopo com motivo. Nunca silêncio.
+   b) **Lacunas arquiteturais** — confronte com práticas da disciplina (idempotência, TOCTOU, timeouts, observabilidade, rollback, threat model, SLO, schema migration, dependências externas — sua persona lista). Para CADA item da checklist pertinente ao escopo: marque resolvido (com decisão concreta no body), N/A (com motivo explícito — "não toca persistência, schema migration N/A"), ou movido para sub-issue (com link). Item pertinente sem marcação = vago.
+   c) **V1 vs roadmap** — o que sai de V1 está em (i) skeleton/DISABLED no artefato OU (ii) sub-issue vinculada com motivo de priorização. Sem futuro sem âncora.
+   d) **Spin off lateral** — trabalho de outra issue vira sub-issue vinculada com motivo da separação ("trabalho lateral porque <razão>"), não infla este escopo.
+   e) **AC DUROS** — proibido "funcionar bem"/"robusto" sem número/condição. Cada AC: número, percentual, condição testável, ou referência a teste. Mínimo: cobrir comportamento desejado + cada modo de falha identificado em 2b + cada decisão de 2c.
+   f) **Testes** — paths concretos + o que cada um prova (feliz, borda, regressão da promessa morta em 2a, cada lacuna arquitetural que entrou em V1).
+
+3. APLIQUE:
+   - Título com prefixo `{title_prefix}`: {edit_issue_title_cmd}
+   - Corpo reescrito conforme template, codificando TODAS as decisões do passo 2: {edit_issue_body_cmd}
+   - Sub-issues (2d) abertas e linkadas. AUDITORIA em {comment_issue_cmd}: resumo do reescrito, gaps e como resolveu cada, sub-issues abertas, ACs duros, linha final "Pronto para implementação" OU "Bloqueado por: <X>".
+
+4. AGUARDA_STAKEHOLDER — só para decisão de PRODUTO de alto impacto. Lacuna arquitetural decidível por melhores práticas você RESOLVE. Se aguardar: 2-3 sugestões + autor (`{view_pr_author_cmd_for_issue}` + {assign_user_cmd}) + AGUARDA_STAKEHOLDER.
+
+5. HONESTIDADE — suposições marcadas; arquivo:linha do lido; só sub-issues REALMENTE abertas; em dúvida, **sempre exaustivo**.
 
 VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE uma destas, nada depois dela:
   REFINO: OK
@@ -610,16 +626,24 @@ VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE uma destas, nada depois 
 """
 
 _WORKER_DECOMPOSE_BRIEF = """\
-Você é o ARQUITETO. A intent #{number} do repositório {repo} está CLARA e aprovada. DECOMPONHA-A em uma ou mais issues derivadas INDEPENDENTES (feature/bug/refactor) que possam ser implementadas em branches PARALELOS.
+Você é o ARQUITETO. A intent #{number} do repositório {repo} está CLARA e aprovada. DECOMPONHA-A em uma ou mais issues derivadas INDEPENDENTES (feature/bug/refactor) que possam ser implementadas em branches PARALELOS, JÁ no padrão de maestria (sem voltas extras de refino depois).
 
-1. Consulte a arquitetura real ANTES de decidir: docs/system_design/ (clone com `{clone_cmd}` se preciso) e o código relevante.
-2. Identifique as frentes GENUINAMENTE INDEPENDENTES (sem dependência sequencial entre si). Se a intenção é coesa e indivisível, UMA derivada é a resposta certa; se é multi-frente, várias. NÃO force a divisão — partes acopladas ficam na MESMA issue (fatiar trabalho dependente gera conflito, não paralelismo).
-3. Para CADA frente, crie uma issue derivada com escopo JÁ CLARO:
-   - título específico; corpo seguindo o template do tipo (.github/ISSUE_TEMPLATE/feature_request.md | bug_report.md | refactor_proposal.md OU .gitlab/issue_templates/<f>.md em projetos GitLab) com alvo técnico, contrato, critérios de aceite e plano de teste;
+1. ANCORAGEM — consulte a arquitetura real ANTES de decidir: docs/system_design/ (clone com `{clone_cmd}` se preciso) e o código relevante. Sem palpite no abstrato.
+
+2. INDEPENDÊNCIA — identifique as frentes GENUINAMENTE INDEPENDENTES (sem dependência sequencial). Intenção coesa e indivisível = UMA derivada; multi-frente real = várias. NÃO force a divisão — partes acopladas ficam na MESMA issue (fatiar trabalho dependente gera conflito, não paralelismo). Se houver ordem obrigatória entre frentes, declare-a no comment final (e considere abrir só a primeira agora, com follow-ups citados).
+
+3. CADA derivada nasce com ESCOPO JÁ CLARO no padrão de excelência — não delegue refino para depois:
+   - título com prefixo correto do tipo; corpo seguindo o template (.github/ISSUE_TEMPLATE/feature_request.md | bug_report.md | refactor_proposal.md OU .gitlab/issue_templates/<f>.md em projetos GitLab).
+   - alvo técnico (módulos/arquivos prováveis), contrato (interfaces/IO), critérios de aceite MENSURÁVEIS, plano de teste com paths concretos sugeridos.
+   - sem promessas vazias ("alguém adiciona X depois", "trivial estender") — cada ponto futuro vira sub-issue rastreável ou skeleton DISABLED no próprio artefato.
+   - lacunas arquiteturais pertinentes endereçadas: idempotência, TOCTOU, timeouts, observabilidade, rollback, threat model (se toca segurança/secrets/rede), schema migration (se toca persistência), SLO/false-positive (se é detector).
+   - V1 vs roadmap explícito; spinoffs já abertos como sub-issues vinculadas se forem trabalho lateral.
    - inclua a linha: `Originada de #{number}`.
    - crie com: {create_issue_cmd}
-4. Comente na intent #{number} ({comment_issue_cmd}) listando as derivadas criadas com links — ela permanece ABERTA como épico.
-5. Honestidade: só liste issues que você REALMENTE criou (confirme com `{view_issue_cmd}`).
+
+4. AUDIT — comente na intent #{number} ({comment_issue_cmd}) listando: as derivadas criadas (com links), ordem de dependência se houver, gaps arquiteturais identificados e onde cada um foi endereçado. A intent permanece ABERTA como épico.
+
+5. HONESTIDADE — só liste issues que REALMENTE criou (confirme com `{view_issue_cmd}`); cite arquivo:linha do que leu para fundamentar a divisão.
 
 VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE (com os números reais das issues criadas):
   DECOMPOSTO: #<n1> #<n2> ...
@@ -655,6 +679,7 @@ def _render_worker_critique_brief(
         body=_refine_body(body),
         type=issue_type,
         fetch_template_cmd=cmds["fetch_template_cmd"],
+        view_issue_cmd=cmds["view_issue_cmd"],
         clone_cmd=cmds["clone_cmd"],
     )
 

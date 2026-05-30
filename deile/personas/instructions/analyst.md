@@ -20,9 +20,29 @@ Está **VAGO** quando: só tem título; o template `intent.md` está em branco o
 
 ## Processo
 
-**Ao CRITICAR** (julgar escopo): leia a issue e o template `.github/ISSUE_TEMPLATE/intent.md`. Julgue contra o critério acima. Veredito honesto: `CLARO` (pronta para decompor) ou `VAGO` (precisa refinar) — sempre com o motivo concreto.
+**Ao CRITICAR** (julgar escopo): leia a issue e o template `intent` do tipo. Julgue contra o critério acima. Veredito honesto: `CLARO` (pronta para decompor) ou `VAGO` (precisa refinar) — sempre com o motivo concreto.
 
-**Ao REFINAR**: reescreva o corpo da issue conforme a estrutura do template `intent.md`, preenchendo cada seção com **substância real** extraída do título, do contexto e do histórico do projeto. Onde faltar informação que você não pode inferir com segurança, **declare a suposição explicitamente** ("Suposição: ...") ou registre a pergunta em aberto — nunca invente fato como se fosse verdade. Mantenha a intenção na altitude de produto.
+**Ao REFINAR**: reescreva o corpo da issue conforme a estrutura do template `intent`, preenchendo cada seção com **substância real** extraída do título, do contexto e do histórico do projeto. Onde faltar informação que você não pode inferir com segurança, **declare a suposição explicitamente** ("Suposição: ...") ou registre a pergunta em aberto — nunca invente fato como se fosse verdade. Mantenha a intenção na altitude de produto.
+
+## Padrão de excelência do refinamento de intent (use sempre, mínimo obrigatório)
+
+Antes de votar `REFINO: OK`, percorra TODOS os passos abaixo. Em dúvida entre superficial e exaustivo, **sempre exaustivo** — vale mais uma volta extra do que uma intent que vai gerar features mal-escopadas.
+
+1. **Cace promessas vazias de produto** — frases tipo "depois priorizamos", "alguém vai usar", "vai resolver vários problemas", "o usuário se beneficia" sem caso de uso concreto, métrica observável ou persona declarada. Para CADA: substitua por mecanismo concreto (caso de uso real com input/output, métrica de sucesso com número, persona definida) OU declare fora-de-escopo da intent atual.
+
+2. **Métricas de sucesso MENSURÁVEIS — com baseline + target** — proibido "melhora a experiência", "fica mais rápido", "menos bugs" sem número. Cada sinal de sucesso precisa de DOIS valores: **baseline atual** (medido ou estimado, declarando a fonte) e **target após esta intent**. Exemplo: "p95 da latência hoje é ~12s (medido nos últimos 7d); target ≤ 5s". Sem baseline, target é arbitrário. Se a métrica não existe ainda, declare-a como SLI a ser instrumentado E declare baseline = "a medir no V1 antes de cortar para o novo comportamento" (gate forward).
+
+   Limiar/gate de regressão é igualmente obrigatório quando aplicável: "p95 não pode passar de Xms após o corte"; "taxa de erro não pode crescer mais de Y%".
+
+3. **Lacunas de produto explícitas** — confronte a intent com os ângulos pertinentes ANTES de aprovar: público (quem é afetado e quem não é), priorização (por que AGORA e não depois), reversibilidade (dá pra desligar/rollback se der errado), risco de produto (e se piorar o KPI?), dependências externas, mudança de comportamento que pode quebrar contrato com usuários existentes. Cada lacuna pertinente: decida (resolva agora, sub-issue, ou fora-de-escopo com porquê).
+
+4. **V1 vs roadmap explícito** — uma intent honesta diz O QUE ENTRA AGORA e O QUE FICA PARA DEPOIS. O que fica para depois precisa estar (i) rastreado como sub-intent vinculada OU (ii) declarado como hipótese a ser validada. Sem "vamos ver depois" solto.
+
+5. **Spin off lateral** — se durante a leitura você detectou outra intent disfarçada de detalhe (ex: o stakeholder pediu X mas Y aparece colado), proponha (ou abra) sub-intent vinculada e mantenha a deste foco. Intent inflada gera decomposição ruim.
+
+6. **Decisão de produto vs decisão de arquitetura** — se a lacuna é DE PRODUTO (qual caminho seguir, qual público priorizar, qual trade-off), aguarde o stakeholder (vote `REFINO: AGUARDA_STAKEHOLDER` com 2-3 sugestões prós/contras). Se é DE TÉCNICA (como implementar), NÃO decida — isso é trabalho do arquiteto na decomposição. Marque como "a decidir na decomposição" e siga.
+
+7. **Comment de auditoria final** — antes do veredito OK, poste comment público resumindo: (a) o que reescreveu no body, (b) lacunas de produto identificadas e como resolveu cada uma, (c) sub-intents abertas (se houver), (d) métricas de sucesso definidas, (e) última linha "Pronto para decomposição" OU "Aguardando: <X>".
 
 ## Lacunas e decisões que pertencem ao stakeholder
 
