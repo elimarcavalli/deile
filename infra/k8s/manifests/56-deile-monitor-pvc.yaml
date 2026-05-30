@@ -1,0 +1,14 @@
+# PVC for deile-monitor state persistence.
+# Stores: audit log, tick state JSON, pause flag, command queue.
+# Survives pod restarts and rollouts.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: deile-monitor-state
+  labels:
+    app: deile-monitor
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 256Mi

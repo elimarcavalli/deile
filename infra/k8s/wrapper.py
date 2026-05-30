@@ -1102,10 +1102,117 @@ def _run_pipeline(passthrough: List[str]) -> int:
     return pipeline_main()
 
 
+def _run_monitor(passthrough: List[str]) -> int:
+    """deile-monitor mode: autonomous cluster supervisor running with the monitor persona.
+
+    One invocation = one tick. The Deployment wraps this call in a shell loop
+    that drives the cadence; this function bootstraps DEILE with the ``monitor``
+    persona and forwards ``passthrough`` (the tick prompt) to the CLI, which
+    runs in one-shot mode and exits when the turn finishes. The persona
+    (``deile/personas/instructions/monitor.md``) drives all behavior — no
+    Python logic is embedded here. Hot-reload of the persona is handled by the
+    existing ``watchdog`` mechanism.
+
+    Why one-shot per tick (not an in-process loop): the persona is the single
+    source of truth for cadence, vigias and actions; the shell loop in the
+    Deployment is the heartbeat. Each tick is a fresh DEILE process — state
+    persistence is via the PVC at ``/state`` (audit log, tick state JSON,
+    pause flag, command queue). This keeps the model purely prompt-first.
+
+    Security posture:
+      - Loads secrets from ``/run/secrets/deile`` (same Secret as deile-worker).
+      - Requires GITHUB_TOKEN for ``gh`` CLI calls (forge queries).
+      - Full tool whitelist (bash/file/find) — the prompt comes from the operator
+        (this file), not from any external untrusted source.
+      - Messaging tools are kept so the monitor can notify via ``curl`` calls to
+        the bot; ``dispatch_deile_task`` is dropped (monitor never dispatches work).
+    """
+    _harden_runtime_dirs()
+    loaded = _load_secret_files(Path("/run/secrets/deile"))
+    if not _has_llm_key(loaded):
+        print(
+            "wrapper(monitor): no *_API_KEY found under /run/secrets/deile — "
+            "monitor cannot bootstrap any LLM provider.",
+            file=sys.stderr,
+        )
+        return 78  # EX_CONFIG
+
+    has_gh = "GITHUB_TOKEN" in loaded or bool(os.environ.get("GITHUB_TOKEN"))
+    has_gl = (
+        "GITLAB_TOKEN" in loaded
+        or bool(os.environ.get("GITLAB_TOKEN"))
+        or "GL_TOKEN" in loaded
+        or bool(os.environ.get("GL_TOKEN"))
+    )
+    if not (has_gh or has_gl):
+        print(
+            "wrapper(monitor): no GITHUB_TOKEN or GITLAB_TOKEN under "
+            "/run/secrets/deile — the monitor cannot query the forge.",
+            file=sys.stderr,
+        )
+        return 78
+
+    _setup_forge_credentials()
+    _patch_deile_bootstrap()
+
+    # Drop dispatch_deile_task — the monitor never dispatches coding work
+    # (it only supervises). Keep bash/file/find for kubectl/gh/curl calls.
+    try:
+        _install_monitor_negative_whitelist()
+    except Exception as exc:  # noqa: BLE001 — refuse to start unsafe
+        print(f"wrapper(monitor): negative whitelist install failed: {exc}", file=sys.stderr)
+        return 78
+
+    # Run DEILE with the monitor persona. The persona drives the tick loop
+    # entirely via the prompt; wrapper only sets the starting persona.
+    os.environ.setdefault("DEILE_DEFAULT_PERSONA", "monitor")
+    sys.argv = ["deile", "--persona", "monitor", *passthrough]
+    from deile.cli import main as deile_main
+    return deile_main() or 0
+
+
+def _install_monitor_negative_whitelist() -> None:
+    """Drop dispatch_deile_task from the monitor agent.
+
+    The monitor supervises the cluster; it never dispatches coding tasks.
+    Keeping dispatch_deile_task would allow a compromised prompt to spawn
+    workers and consume LLM budget.
+    """
+    import asyncio as _asyncio
+
+    import deile.core.agent as agent_mod
+
+    DROP = {"dispatch_deile_task"}
+    original_init = agent_mod.DeileAgent.initialize
+
+    async def _harden(self, *args, **kwargs):
+        result = await original_init(self, *args, **kwargs)
+        registry = self.tool_registry
+        try:
+            tools = registry.list_all()
+        except Exception:
+            return result
+        dropped = []
+        for tool in tools:
+            if tool.name in DROP:
+                if registry.disable_tool(tool.name):
+                    dropped.append(tool.name)
+        if dropped:
+            print(
+                f"wrapper(monitor): negative whitelist active — "
+                f"dropped={sorted(dropped)}",
+                file=sys.stderr,
+            )
+        return result
+
+    if _asyncio.iscoroutinefunction(original_init):
+        agent_mod.DeileAgent.initialize = _harden
+
+
 def main(argv: List[str]) -> int:
     if len(argv) < 2:
         print(
-            "usage: wrapper.py {deile|bot|worker|claude-worker|pipeline} <args ...>",
+            "usage: wrapper.py {deile|bot|worker|claude-worker|pipeline|monitor} <args ...>",
             file=sys.stderr,
         )
         return 64  # EX_USAGE
@@ -1120,9 +1227,11 @@ def main(argv: List[str]) -> int:
         return _run_claude_worker(rest)
     if role == "pipeline":
         return _run_pipeline(rest)
+    if role == "monitor":
+        return _run_monitor(rest)
     print(
         f"wrapper: unknown role {role!r} "
-        "(expected 'deile' | 'bot' | 'worker' | 'claude-worker' | 'pipeline')",
+        "(expected 'deile' | 'bot' | 'worker' | 'claude-worker' | 'pipeline' | 'monitor')",
         file=sys.stderr,
     )
     return 64

@@ -1,0 +1,234 @@
+# deile-monitor — 24/7 cluster supervisor pod.
+#
+# Runs DEILE with the ``monitor`` persona (deile/personas/instructions/monitor.md).
+# Behavior is entirely prompt-driven: watchguards, thresholds, actions, and
+# notification channels are adjusted by editing monitor.md — no rebuild or
+# redeployment needed (hot-reload via watchdog).
+#
+# What it does:
+#   - Polls cluster state every 2 minutes (kubectl / gh via bash tool).
+#   - Detects orphaned issues, expired OAuth, failed jobs, pipeline anomalies.
+#   - Heals autonomously where safe (delete stale error pods, renew OAuth).
+#   - Notifies the human operator via deilebot when a decision is needed.
+#   - Responds to ad-hoc questions proxied by the bot.
+#
+# Security posture (mirrors deile-worker):
+#   - readOnlyRootFilesystem; writable: /state (PVC) and /tmp (emptyDir).
+#   - drop ALL caps; uid 10001; PSS restricted.
+#   - role=deile: inherits egress to bot:8765 and external 443 (LLM + gh).
+#   - ServiceAccount ``cluster-reader`` for kubectl read + pods/exec (OAuth renew).
+#   - NetworkPolicy: egress to kube-apiserver (kubectl), bot:8765 (notify),
+#     443 (LLM + gh); no inbound.
+#
+# Note on naming: ``deile/orchestration/pipeline/monitor.py`` is the *pipeline's*
+# internal tick monitor. This pod is a separate, independent cluster supervisor.
+# They are distinct; this pod's persona lives in personas/instructions/monitor.md.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deile-monitor
+  labels:
+    app: deile-monitor
+    role: deile   # inherits deile-egress-to-bot (8765) + deile-egress-https-llm (443)
+spec:
+  replicas: 1
+  strategy: { type: Recreate }  # single supervisor: never run two at once
+  selector:
+    matchLabels:
+      app: deile-monitor
+      role: deile
+  template:
+    metadata:
+      labels:
+        app: deile-monitor
+        role: deile
+    spec:
+      # cluster-reader SA grants: get/list/watch for pods, jobs, cronjobs, events
+      # + pods/exec for OAuth renewal via kubectl exec into claude-worker.
+      # Defined in this same manifest below.
+      serviceAccountName: deile-monitor-sa
+      automountServiceAccountToken: true
+      enableServiceLinks: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+
+      # Bootstrap the DEILE repo so the monitor has access to persona files
+      # (monitor.md lives in deile/personas/instructions/ which is on the PVC).
+      initContainers:
+        - name: bootstrap-repo
+          image: deile-stack:local
+          imagePullPolicy: Never
+          workingDir: /home/deile
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              REPO="${DEILE_PIPELINE_REPO:-elimarcavalli/deile}"
+              if [ -f /home/deile/.git/HEAD ]; then
+                echo "repo already present — fast-forward"
+                git fetch --depth=1 origin "$(git rev-parse --abbrev-ref HEAD)" || true
+                git reset --hard "@{u}" || true
+              else
+                echo "cloning $REPO"
+                GH_TOKEN_FILE=/run/secrets/deile/GITHUB_TOKEN
+                [ -f "$GH_TOKEN_FILE" ] && export GH_TOKEN="$(cat $GH_TOKEN_FILE)"
+                HOST="${DEILE_GITHUB_HOST:-github.com}"
+                git clone --depth=1 "https://x-access-token:${GH_TOKEN}@${HOST}/${REPO}.git" /home/deile
+              fi
+              echo "bootstrap-repo OK"
+          env:
+            - { name: DEILE_PIPELINE_REPO, value: "elimarcavalli/deile" }
+          volumeMounts:
+            - { name: deile-secrets, mountPath: /run/secrets/deile, readOnly: true }
+            - { name: home,          mountPath: /home/deile }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
+
+        - name: init-state-dir
+          image: deile-stack:local
+          imagePullPolicy: Never
+          command: ["/bin/sh", "-c", "mkdir -p /state/monitor-commands && echo 'state dir ready'"]
+          volumeMounts:
+            - { name: state, mountPath: /state }
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
+
+      containers:
+        - name: monitor
+          image: deile-stack:local
+          imagePullPolicy: Never
+          workingDir: /home/deile
+          # Tick driver: each invocation of wrapper.py monitor runs DEILE in
+          # one-shot mode (positional message → CLI exits after the turn). The
+          # shell loop is the heartbeat — between ticks the agent is gone, all
+          # state lives on the PVC at /state. This is the "prompt-first" model:
+          # the persona (monitor.md) defines WHAT a tick does; the shell loop
+          # defines WHEN. Tick interval is overridable at runtime via the
+          # DEILE_MONITOR_TICK_INTERVAL_S env var without rebuilding the image.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -u
+              MSG='Executar um tick do monitor seguindo monitor.md: leia /state/monitor-state.json, verifique kill-switch, rode as vigias em ordem, aja/notifique conforme regras, persista o estado. Saia ao final do tick (a infraestrutura agenda o próximo).'
+              while true; do
+                python3 /app/wrapper.py monitor "$MSG" || true
+                sleep "${DEILE_MONITOR_TICK_INTERVAL_S:-120}"
+              done
+          env:
+            - { name: HOME,                    value: /home/deile }
+            - { name: PYTHONUNBUFFERED,        value: "1" }
+            - { name: PYTHONDONTWRITEBYTECODE, value: "1" }
+            - { name: DEILE_DEFAULT_PERSONA,   value: monitor }
+            - { name: DEILE_BOT_ENDPOINT,      value: "http://deilebot:8765" }
+            - { name: DEILE_SETTINGS_FILE,     value: "/etc/deile/settings.json" }
+            # Repo the monitor inspects (gh CLI calls)
+            - { name: DEILE_PIPELINE_REPO,     value: "elimarcavalli/deile" }
+            # State directory (PVC mount — writable for tick state files)
+            - { name: DEILE_MONITOR_STATE_DIR, value: "/state" }
+            # Seconds between ticks (shell loop sleep). Default 120 = 2 min.
+            - { name: DEILE_MONITOR_TICK_INTERVAL_S, value: "120" }
+          volumeMounts:
+            - { name: deile-secrets, mountPath: /run/secrets/deile, readOnly: true }
+            - { name: home,          mountPath: /home/deile }
+            - { name: tmp,           mountPath: /tmp }
+            # PVC for persistent monitor state (audit log, tick state, pause flag)
+            - { name: state,         mountPath: /state }
+            # Runtime settings (same ConfigMap as pipeline/worker)
+            - name: runtime-config
+              mountPath: /etc/deile/settings.json
+              subPath: pipeline-settings.json
+              readOnly: true
+          resources:
+            requests: { cpu: "50m",  memory: "128Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            capabilities: { drop: ["ALL"] }
+            seccompProfile: { type: RuntimeDefault }
+
+      volumes:
+        - { name: deile-secrets, secret: { secretName: deile-secrets, defaultMode: 288 } }
+        - { name: home,          emptyDir: { sizeLimit: "256Mi" } }
+        - { name: tmp,           emptyDir: { sizeLimit: "128Mi" } }
+        # PVC for monitor state — survives restarts and rollouts.
+        # Create via: kubectl -n deile apply -f 56-deile-monitor-pvc.yaml
+        - { name: state,         persistentVolumeClaim: { claimName: deile-monitor-state } }
+        - name: runtime-config
+          configMap:
+            name: deile-runtime-config
+            defaultMode: 292  # 0o444
+---
+# ServiceAccount for the monitor pod.
+# Minimal RBAC: read cluster state + pods/exec for OAuth renewal.
+# automountServiceAccountToken is set to true here to match the podTemplate
+# (which also sets true). The monitor needs the token mounted so the in-pod
+# kubectl calls (autonomous OAuth renewal, pod cleanup) succeed.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: deile-monitor-sa
+  labels:
+    app: deile-monitor
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deile-monitor-role
+  labels:
+    app: deile-monitor
+rules:
+  # Read cluster state for watchguards
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events", "services"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+  # pods/exec: required for autonomous OAuth renewal via kubectl exec
+  # into claude-worker (same verb as claude-creds-renewer SA in manifest 51)
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  # Delete stale error pods (BackoffLimitExceeded cleanup)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deile-monitor-rolebinding
+  labels:
+    app: deile-monitor
+subjects:
+  - kind: ServiceAccount
+    name: deile-monitor-sa
+roleRef:
+  kind: Role
+  apiGroup: rbac.authorization.k8s.io
+  name: deile-monitor-role
