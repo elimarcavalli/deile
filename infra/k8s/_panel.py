@@ -990,22 +990,32 @@ class DashboardView(View):
                                style="dim"))
 
         # ---- Workers ----
+        # `busy` vive em WorkerState (deduzido do log via WorkerProvider),
+        # não em PodInfo. Reusamos `data.workers.get()` para o deile-worker;
+        # claude-worker hoje não tem provider de busy próprio, mostramos só
+        # count (FU: ver `data.claude_workers` em provider futuro).
         if self.data is not None:
             pods = self.data.pods.get()
-            deile_workers = [p for p in pods if p.role == "worker"]
-            claude_workers = [p for p in pods if p.role == "claude-worker"]
-            busy_deile = sum(1 for p in deile_workers if p.busy)
-            busy_claude = sum(1 for p in claude_workers if p.busy)
-            lines.append(Text.assemble(
+            deile_worker_pods = [p for p in pods if p.role == "worker"]
+            claude_worker_pods = [p for p in pods if p.role == "claude-worker"]
+            try:
+                worker_states = self.data.workers.get()
+                busy_deile = sum(1 for s in worker_states.values() if s.busy)
+            except Exception:  # noqa: BLE001 — defensivo, painel não pode crashar
+                busy_deile = 0
+            parts: List[tuple] = [
                 ("Workers: ", "dim"),
-                (f"{len(deile_workers)} deile", "bold"),
-                (f" ({busy_deile} ocupado)", "bold yellow" if busy_deile else "dim"),
+                (f"{len(deile_worker_pods)} deile", "bold"),
+            ]
+            if busy_deile:
+                parts.append((f" ({busy_deile} ocupado)", "bold yellow"))
+            parts.extend([
                 ("  ·  ", "dim"),
-                (f"{len(claude_workers)} claude", "bold"),
-                (f" ({busy_claude} ocupado)", "bold yellow" if busy_claude else "dim"),
-            ))
+                (f"{len(claude_worker_pods)} claude", "bold"),
+            ])
+            lines.append(Text.assemble(*parts))
         elif self.data is None:
-            lines.append(Text("Workers: 2 deile · 3 claude · idle 47%", style="dim"))
+            lines.append(Text("Workers: 2 deile · 3 claude", style="dim"))
 
         # ---- Forge / repo ----
         if self.data is not None:
