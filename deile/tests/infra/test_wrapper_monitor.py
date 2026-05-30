@@ -152,9 +152,11 @@ def test_run_monitor_starts_with_monitor_persona(wrapper_mod, tmp_path, monkeypa
 
     rc = wrapper_mod._run_monitor([])
     assert rc == 0
+    # Persona é selecionada via env var (o CLI deile não tem flag --persona).
     assert called.get("persona") == "monitor"
-    assert "--persona" in called.get("argv", [])
-    assert "monitor" in called.get("argv", [])
+    argv = called.get("argv", [])
+    assert argv[0] == "deile"
+    assert "--persona" not in argv  # garantia que removemos a flag inválida
 
     del sys.modules["deile.cli"]
 
@@ -189,8 +191,10 @@ def test_install_monitor_whitelist_drops_only_dispatch(wrapper_mod):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == "DROP":
                     if isinstance(node.value, ast.Set):
+                        # ast.Constant é a API moderna (Python 3.8+); .value substitui o .s
+                        # de ast.Str (deprecated em 3.12 e removido em 3.14).
                         drop_values = {
-                            elt.s for elt in node.value.elts
+                            elt.value for elt in node.value.elts
                             if isinstance(elt, ast.Constant)
                         }
     assert drop_values == {"dispatch_deile_task"}, (

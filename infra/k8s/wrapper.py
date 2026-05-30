@@ -1163,10 +1163,11 @@ def _run_monitor(passthrough: List[str]) -> int:
         print(f"wrapper(monitor): negative whitelist install failed: {exc}", file=sys.stderr)
         return 78
 
-    # Run DEILE with the monitor persona. The persona drives the tick loop
-    # entirely via the prompt; wrapper only sets the starting persona.
+    # Run DEILE with the monitor persona. The CLI does not accept --persona;
+    # persona selection is done via DEILE_DEFAULT_PERSONA env var (set above).
+    # Passthrough carries the one-shot message from the shell-loop heartbeat.
     os.environ.setdefault("DEILE_DEFAULT_PERSONA", "monitor")
-    sys.argv = ["deile", "--persona", "monitor", *passthrough]
+    sys.argv = ["deile", *passthrough]
     from deile.cli import main as deile_main
     return deile_main() or 0
 
