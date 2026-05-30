@@ -134,12 +134,16 @@ class DeploymentProfile:
             "46-deile-pipeline-deployment.yaml",
         )
         if self.name == "pipeline-only":
+            # Perfil minimalista: monitor é opt-in — o operador sobe depois com k8s up.
             return base
         if self.name == "claude-only":
             return base + (
                 "48-claude-worker-bearer-secret.yaml",
                 "49-claude-worker-pvc.yaml",
                 "50-claude-worker-deployment.yaml",
+                # PVC antes do Deployment que o monta (mesma regra do issue #404).
+                "56-deile-monitor-pvc.yaml",
+                "55-deile-monitor-deployment.yaml",
             )
         # full
         return (
@@ -154,6 +158,9 @@ class DeploymentProfile:
             "45-deile-worker-deployment.yaml",
             "46b-deile-pipeline-pvc.yaml",
             "46-deile-pipeline-deployment.yaml",
+            # PVC antes do Deployment que o monta (mesma regra do issue #404).
+            "56-deile-monitor-pvc.yaml",
+            "55-deile-monitor-deployment.yaml",
         )
 
 
@@ -1834,6 +1841,9 @@ def do_create_namespace(cfg: CreateNamespaceConfig) -> int:
         "45-deile-worker-deployment.yaml",
         "46b-deile-pipeline-pvc.yaml",
         "46-deile-pipeline-deployment.yaml",
+        # PVC antes do Deployment que o monta (mesma regra do issue #404).
+        "56-deile-monitor-pvc.yaml",
+        "55-deile-monitor-deployment.yaml",
     )
     for manifest in manifests_order:
         path = MANIFESTS / manifest

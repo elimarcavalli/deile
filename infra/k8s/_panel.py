@@ -691,9 +691,9 @@ class DashboardView(View):
     @property
     def HOTKEYS(self) -> str:
         return (
-            "[1]Pod watch  [2]Pipeline  [3]Issues/PRs  [4]Logs split  "
-            "[5]Tokens  [n]otifier  [a]ctions  [m]odel/runtime  "
-            f"[d]ispatch (workers & models)  [s]ort:{self.sort_mode}  [?]help  [q]uit"
+            "[1]Pods  [2]Pipeline  [3]Issues/PRs  [4]Logs  "
+            "[5]Tokens  [M]onitor  [n]otifier  [a]ctions  [m]odel/runtime  "
+            f"[d]ispatch  [s]ort:{self.sort_mode}  [?]help  [q]uit"
         )
 
     def render(self, app: "PanelApp") -> RenderableType:
@@ -702,27 +702,31 @@ class DashboardView(View):
         has_locals = bool(local_rows)
         k8s_on = (self.data is not None and self.data.context is not None
                   and self.data.context.k8s_available)
-        # Três layouts possíveis no slot superior:
-        # - híbrido (k8s + local): split lado a lado (PODS | LOCAL)
-        # - só local: LOCAL ocupa o slot inteiro (PODS estaria vazio)
-        # - só k8s (ou demo): PODS ocupa o slot inteiro (layout legado)
+        last_act = _last_activity_caption(self.data)
+        # Layout em 5 zonas verticais:
+        # head (4 linhas fixas) · pods (ratio=2, cresce com o cluster) ·
+        # middle (ratio=1, pipeline+alerts) · activity (ratio=2) ·
+        # health_pulse (ratio=1, substitui TOKENS & CUSTOS) · footer (3-4 fixas).
+        # Usar `ratio` em vez de `size=N` para PODS garante que o painel
+        # se adapte ao número de pods sem truncar (princípio 15 + Tarefa 3).
         children = [
             Layout(_head_panel(self.title, app), name="head", size=4),
         ]
         if has_locals and k8s_on:
-            children.append(Layout(name="top_row", size=10))
+            # Híbrido: split lado a lado no slot de pods.
+            children.append(Layout(name="top_row", ratio=2))
         elif has_locals:
             children.append(Layout(
                 self._local_processes_panel(local_rows),
-                name="local", size=10,
+                name="local", ratio=2,
             ))
         else:
-            children.append(Layout(self._pods_panel(), name="pods", size=10))
-        last_act = _last_activity_caption(self.data)
+            # Só k8s (ou demo): PODS ocupa o slot inteiro.
+            children.append(Layout(self._pods_panel(), name="pods", ratio=2))
         children.extend([
-            Layout(name="middle", size=8),
-            Layout(self._activity_panel(), name="activity"),
-            Layout(name="bottom", size=5),
+            Layout(name="middle", ratio=1),
+            Layout(self._activity_panel(), name="activity", ratio=2),
+            Layout(name="health_pulse", ratio=1),
             Layout(_footer_panel(self.HOTKEYS, last_act), name="footer",
                    size=4 if last_act else 3),
         ])
@@ -736,8 +740,8 @@ class DashboardView(View):
             Layout(self._pipeline_panel()),
             Layout(self._alerts_panel()),
         )
-        layout["bottom"].split_row(
-            Layout(self._tokens_panel()),
+        layout["health_pulse"].split_row(
+            Layout(self._health_pulse_panel()),
             Layout(self._decisions_panel()),
         )
         return layout
@@ -927,8 +931,10 @@ class DashboardView(View):
                      title_align="left", border_style="green")
 
     def _decisions_panel(self) -> Panel:
+        """Últimas 3 decisões do pipeline (reduzido de 5 para ceder espaço
+        ao widget HEALTH PULSE introduzido na Tarefa 3)."""
         if self.data is None:
-            items = list(demo.DECISIONS)
+            items = list(demo.DECISIONS)[:3]
         else:
             ps = self.data.pipeline.get()
             items = [(ev.target or "—", ev.detail)
@@ -938,12 +944,99 @@ class DashboardView(View):
             body: RenderableType = Text("· sem decisões recentes", style="dim")
         else:
             lines = [
-                Text.assemble((f"{ref}  ", "bold cyan"), (desc[:50], "dim"))
+                Text.assemble((f"{ref}  ", "bold cyan"), (desc[:40], "dim"))
                 for ref, desc in items
             ]
             body = Group(*lines)
         return Panel(body, title="[bold]ÚLTIMAS DECISÕES[/bold]",
                      title_align="left", border_style="blue")
+
+    def _health_pulse_panel(self) -> Panel:
+        """Widget compacto de saúde do cluster — substitui TOKENS & CUSTOS
+        no dashboard (Tarefa 3). TOKENS mantém view dedicada em [5].
+
+        Exibe:
+        - Status do deile-monitor (se instalado): próximo tick + anomalias
+        - Workers: contagem de pods por tipo + heurística de idle
+        - Forge: informação do repositório monitorado
+        - Se monitor ausente: hint de [M] para instalar
+        """
+        lines: List[RenderableType] = []
+
+        # ---- Monitor ----
+        if self.data is not None and self.data.context.k8s_available:
+            # Consulta lightweight: apenas a lista de pods do monitor.
+            # Evitamos um provider dedicado no dashboard; o provider completo
+            # fica em MonitorView. Aqui usamos pods.get() que já foi buscado.
+            pods = self.data.pods.get()
+            mon_pods = [p for p in pods if "deile-monitor" in p.name]
+            if mon_pods:
+                mp = mon_pods[0]
+                status_style = "bold green" if mp.status == "Running" else "bold yellow"
+                lines.append(Text.assemble(
+                    ("Monitor: ", "dim"),
+                    (mp.status, status_style),
+                    (f"  restarts:{mp.restarts}", "dim"),
+                    ("  [M] para detalhes", "dim"),
+                ))
+            else:
+                lines.append(Text.assemble(
+                    ("Monitor: ", "dim"),
+                    ("NÃO INSTALADO", "bold red"),
+                    ("  — pressione [M] para instalar", "dim"),
+                ))
+        elif self.data is None:
+            lines.append(Text("Monitor: running · tick em 87s · 2 anomalias",
+                               style="dim"))
+
+        # ---- Workers ----
+        if self.data is not None:
+            pods = self.data.pods.get()
+            deile_workers = [p for p in pods if p.role == "worker"]
+            claude_workers = [p for p in pods if p.role == "claude-worker"]
+            busy_deile = sum(1 for p in deile_workers if p.busy)
+            busy_claude = sum(1 for p in claude_workers if p.busy)
+            lines.append(Text.assemble(
+                ("Workers: ", "dim"),
+                (f"{len(deile_workers)} deile", "bold"),
+                (f" ({busy_deile} ocupado)", "bold yellow" if busy_deile else "dim"),
+                ("  ·  ", "dim"),
+                (f"{len(claude_workers)} claude", "bold"),
+                (f" ({busy_claude} ocupado)", "bold yellow" if busy_claude else "dim"),
+            ))
+        elif self.data is None:
+            lines.append(Text("Workers: 2 deile · 3 claude · idle 47%", style="dim"))
+
+        # ---- Forge / repo ----
+        if self.data is not None:
+            repo = self.data.context.repo or "—"
+            forge = (self.data.context.forge_kind or "github").upper()
+            lines.append(Text.assemble(
+                ("Forge: ", "dim"),
+                (forge, "bold magenta"),
+                (f"  {repo}", "dim"),
+            ))
+        else:
+            lines.append(Text("Forge: github.com · elimarcavalli/deile", style="dim"))
+
+        # ---- Tokens resumido (ponteiro para [5]) ----
+        if self.data is not None:
+            c = self.data.costs.get()
+            total_str = f"${c.total_24h:.2f}"
+            hour_str = f"${c.total_1h:.2f}/h"
+            lines.append(Text.assemble(
+                ("Tokens 24h: ", "dim"),
+                (total_str, "bold green"),
+                (f"  ·  1h: {hour_str}", "dim"),
+                ("  [5] detalhes", "dim"),
+            ))
+        else:
+            lines.append(Text("Tokens 24h: $11.40  ·  1h: $1.32  [5] detalhes",
+                               style="dim"))
+
+        body = Group(*lines) if lines else Text("· sem dados", style="dim")
+        return Panel(body, title="[bold]HEALTH PULSE[/bold]",
+                     title_align="left", border_style="green")
 
     # --- key ---
 
@@ -966,6 +1059,11 @@ class DashboardView(View):
             # única view. As views legadas continuam no código (não foram
             # deletadas) mas saíram do registry — limpeza fica para FU PR.
             "d": "dispatch-mode-matrix",
+            # [M] MAIÚSCULO → view dedicada do deile-monitor.
+            # [m] minúsculo continua sendo model-switcher (mapeado acima).
+            # O KeyReader distingue maiúsculo/minúsculo via termios cbreak —
+            # a distinção é natural e sem ambiguidade.
+            "M": "monitor-view",
         }
         if key in nav:
             return ActionResult.nav(nav[key])
@@ -4111,7 +4209,8 @@ class DispatchMatrixView(View):
         "[c] cleanup on-demand (preview + confirm)   "
         "[p] editar max_parallel (parallelism do pipeline)   "
         "colunas: 0=Worker 1=Model 2=Timeout 3=Retries 4=Cost cap (USD/run)   "
-        "retries=0 EXIGE confirmação: digite '0!' (fail-fast, sem retry)"
+        "retries=0 EXIGE confirmação: digite '0!' (fail-fast, sem retry)   "
+        "linha monitor: Worker=in-pod (não editável)  Model=DEILE_PREFERRED_MODEL do deile-monitor"
     )
 
     # Índice de row constante para a linha de scaling (após Global default).
@@ -4440,6 +4539,36 @@ class DispatchMatrixView(View):
             mp_txt = f"[reverse]{mp_txt}[/reverse]"
         tbl.add_row("Max Parallel", mp_txt, mp_desc, "", "", "—", "env")
 
+        # Separador visual antes da linha do monitor.
+        tbl.add_row("─" * 12, "─" * 14, "─" * 28, "─" * 10, "─" * 11, "─" * 12, "─" * 8,
+                    style="dim")
+
+        # Linha "monitor" — modelo aplicado ao Deployment deile-monitor.
+        # ``cursor_row == len(entries) + 3`` aponta aqui.
+        # Coluna Worker é sempre "— (in-pod)": o monitor roda em loop shell
+        # dentro do próprio pod e NÃO recebe dispatch externo. Bloqueamos
+        # a edição com tooltip no feedback quando o operador tentar.
+        monitor_idx = len(entries) + 3
+        highlight_mon_m = (self.cursor_row == monitor_idx and self.cursor_col == 1)
+        monitor_model = self._read_monitor_model_env()
+        mon_model_txt = monitor_model if monitor_model else "(default)"
+        mon_source = "env" if monitor_model else "(default)"
+        if highlight_mon_m:
+            mon_model_txt = f"[reverse]{mon_model_txt}[/reverse]"
+        # Worker column: literal não-editável (texto informativo).
+        mon_worker_txt = "— (in-pod)"
+        if self.cursor_row == monitor_idx and self.cursor_col == 0:
+            # Cursor na coluna Worker da linha monitor → mostra highlight
+            # mas bloqueia edição com mensagem no handler.
+            mon_worker_txt = f"[dim reverse]{mon_worker_txt}[/dim reverse]"
+        tbl.add_row(
+            Text("monitor", style="bold magenta"),
+            mon_worker_txt,
+            mon_model_txt,
+            "—", "—", "(no cap)",
+            mon_source,
+        )
+
         # --- Compose: header + (banner?) + matrix + (picker?) + (status?) + hotkeys --
         parts: List[RenderableType] = [
             Text(status_text, style=status_style),
@@ -4509,11 +4638,18 @@ class DispatchMatrixView(View):
                     line.append("  ")
                 line.append_text(bit)
             lines.append(line)
+        # Monitor model override (Tarefa 2 — linha monitor na matriz).
+        monitor_model = self._read_monitor_model_env()
+        if monitor_model:
+            line = Text("  monitor: ", style="bold magenta")
+            line.append(Text(f"model={monitor_model}", style="cyan"))
+            lines.append(line)
+
         if not lines:
             return None
         return Panel(
             Group(*lines),
-            title="[bold]OVERRIDES ATIVOS (per-stage)[/bold]",
+            title="[bold]OVERRIDES ATIVOS (per-stage + monitor)[/bold]",
             title_align="left",
             border_style="yellow",
             padding=(0, 1),
@@ -4672,9 +4808,9 @@ class DispatchMatrixView(View):
         if self.mode is not None:
             return self._handle_picker_key(key)
 
-        # Última linha editável é "Max Parallel" (len+2; Global=len, Scaling=len+1).
-        # Issue #408 adicionou linha "Max Parallel" após "Worker Scaling".
-        max_row = len(self._stages()) + 2  # +2 = Worker Scaling + Max Parallel
+        # Última linha editável é "monitor" (len+3).
+        # Global=len, Scaling=len+1, Max Parallel=len+2, Monitor=len+3.
+        max_row = len(self._stages()) + 3  # +3 = Global + Scaling + Max Parallel + Monitor
 
         # --- back / quit --------------------------------------------------
         if key == "q" or key == "ESC":
@@ -4714,6 +4850,22 @@ class DispatchMatrixView(View):
             global_idx = n_stages           # "Global default"
             scaling_idx = n_stages + 1      # "Worker Scaling"
             max_parallel_idx = n_stages + 2  # "Max Parallel" (issue #408)
+            monitor_idx = n_stages + 3       # "monitor" (in-pod, só Model editável)
+            if self.cursor_row == monitor_idx:
+                if self.cursor_col == 0:
+                    # Worker do monitor é sempre in-pod — não despacha externamente.
+                    self.last_msg = (
+                        "monitor roda in-pod (deile-monitor pod), "
+                        "não dispatcha externamente — Worker não é editável"
+                    )
+                    self.last_ok = None
+                    return ActionResult.refresh()
+                if self.cursor_col == 1:
+                    # Model do monitor → picker sobre Deployment deile-monitor.
+                    return self._open_monitor_model_picker()
+                self.last_msg = "timeout/retries/cost-cap não se aplicam ao monitor"
+                self.last_ok = None
+                return ActionResult.refresh()
             if self.cursor_row == max_parallel_idx:
                 # Linha "Max Parallel" → prompt numérico/auto (issue #408).
                 return self._open_max_parallel_prompt()
@@ -4847,6 +4999,36 @@ class DispatchMatrixView(View):
         self.picker_cursor = 0
         return ActionResult.refresh()
 
+    def _open_monitor_model_picker(self) -> ActionResult:
+        """Picker de DEILE_PREFERRED_MODEL para o Deployment deile-monitor.
+
+        Reusa a infra do picker de model da matriz — o apply chama
+        ``kubectl set env deploy/deile-monitor DEILE_PREFERRED_MODEL=<slug>``
+        em vez do deile-worker.
+        """
+        all_models = self._load_all_models()
+        opts = ["(limpar override)", *all_models]
+        self.mode = ("monitor_model", None, opts)
+        self.picker_cursor = 0
+        return ActionResult.refresh()
+
+    def _apply_monitor_model_clear(self, ns: str) -> tuple:
+        """Remove DEILE_PREFERRED_MODEL do Deployment deile-monitor."""
+        kubectl = kubectl_bin()
+        if kubectl is None:
+            return False, "kubectl não encontrado"
+        try:
+            r = subprocess.run(
+                [kubectl, "-n", ns, "set", "env",
+                 "deploy/deile-monitor", "DEILE_PREFERRED_MODEL-"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                return True, "DEILE_PREFERRED_MODEL removido do deile-monitor"
+            return False, (r.stderr or r.stdout or "erro")[:120]
+        except Exception as exc:  # noqa: BLE001
+            return False, str(exc)[:120]
+
     def _open_timeout_prompt(self, entry) -> ActionResult:
         """Abre prompt numérico de timeout_s para o stage da entry.
 
@@ -4926,6 +5108,13 @@ class DispatchMatrixView(View):
             else:
                 # col 4 = Cost cap reset (issue #392)
                 ok, msg = pd_reset_stage_cost_cap_usd(stage, namespace=ns)
+        elif self.cursor_row == n_stages + 3:  # Monitor row — só model é resetável
+            if self.cursor_col == 0:
+                ok, msg = (None, "Worker do monitor não é editável (in-pod)")
+            elif self.cursor_col == 1:
+                ok, msg = self._apply_monitor_model_clear(ns)
+            else:
+                ok, msg = (None, "timeout/retries/cost-cap não se aplicam ao monitor")
         elif self.cursor_row == n_stages + 2:  # Pipeline Parallelism row (issue #408)
             ok, msg = pd_set_pipeline_max_parallel(None, namespace=ns)
         elif self.cursor_row == n_stages + 1:  # Worker Scaling row — no reset
@@ -5742,6 +5931,33 @@ class DispatchMatrixView(View):
             self.last_msg = msg
             return
 
+        # --- monitor model (DEILE_PREFERRED_MODEL em deile-monitor) --------
+        if kind == "monitor_model":
+            if selected == "(limpar override)":
+                ok, msg = self._apply_monitor_model_clear(ns)
+            else:
+                kubectl = kubectl_bin()
+                if kubectl is None:
+                    ok, msg = False, "kubectl não encontrado"
+                else:
+                    try:
+                        r = subprocess.run(
+                            [kubectl, "-n", ns, "set", "env",
+                             "deploy/deile-monitor",
+                             f"DEILE_PREFERRED_MODEL={selected}"],
+                            capture_output=True, text=True, timeout=10,
+                        )
+                        if r.returncode == 0:
+                            ok, msg = True, f"monitor: DEILE_PREFERRED_MODEL={selected}"
+                        else:
+                            ok = False
+                            msg = (r.stderr or r.stdout or "erro")[:120]
+                    except Exception as exc:  # noqa: BLE001
+                        ok, msg = False, str(exc)[:120]
+            self.last_ok = ok
+            self.last_msg = msg
+            return
+
         # --- timeout / retries (handled by _handle_numeric_prompt_key;
         # this branch is a fallback in case _apply_picker_selection is called
         # directly without going through the numeric handler) ---------------
@@ -5922,6 +6138,32 @@ class DispatchMatrixView(View):
         except Exception:  # noqa: BLE001
             return ""
 
+    def _read_monitor_model_env(self) -> str:
+        """Lê DEILE_PREFERRED_MODEL atual do Deployment deile-monitor.
+
+        Retorna string vazia se a env não está setada (default do cluster),
+        kubectl indisponível ou deployment não encontrado.
+        """
+        if self.data is None:
+            return ""
+        ns = (self.data.context.namespace
+              if getattr(self.data, "context", None) is not None
+              else _NS_DEFAULT)
+        kubectl = kubectl_bin()
+        if kubectl is None:
+            return ""
+        try:
+            result = subprocess.run(
+                [kubectl, "-n", ns, "get", "deployment", "deile-monitor",
+                 "-o",
+                 "jsonpath={.spec.template.spec.containers[0].env"
+                 "[?(@.name=='DEILE_PREFERRED_MODEL')].value}"],
+                capture_output=True, text=True, timeout=8,
+            )
+            return result.stdout.strip()
+        except Exception:  # noqa: BLE001
+            return ""
+
     def _open_max_parallel_prompt(self) -> ActionResult:
         """Abre modal de edição numérica do max_parallel."""
         current = self._read_max_parallel_env() or ""
@@ -6068,18 +6310,19 @@ class HelpView(View):
         tbl.add_column("ação")
         rows = [
             ("1-5, a, m, d, n",  "drill em sub-view (no dashboard)"),
-            ("m",             "modelo do deployment (runtime)"),
-            ("d",             "pipeline stage configuration (workers & models por etapa)"),
-            ("↑/↓ ou j/k",    "navega em listas (picker, issues/PRs, modelos)"),
-            ("enter",         "seleciona o item destacado"),
-            ("esc",           "volta à view anterior (ou ao dashboard)"),
-            ("q",             "sai do painel"),
-            ("p",             "pause / resume refresh automático"),
-            ("+ / -",         "acelera / desacelera o refresh (×0.25 a ×4)"),
-            ("r",             "força refresh imediato (invalida caches)"),
-            ("s",             "snapshot: salva a tela atual em ~/.deile/snapshots/"),
-            (".",             "Pod Watch: abre o arquivo de log em editor (cursor/code/…)"),
-            ("?",             "esta tela"),
+            ("M",            "monitor-view: tela dedicada do deile-monitor (MAIÚSCULO)"),
+            ("m",            "model-switcher: modelo do deployment (minúsculo)"),
+            ("d",            "pipeline stage configuration (workers & models por etapa)"),
+            ("↑/↓ ou j/k",   "navega em listas (picker, issues/PRs, modelos)"),
+            ("enter",        "seleciona o item destacado"),
+            ("esc",          "volta à view anterior (ou ao dashboard)"),
+            ("q",            "sai do painel"),
+            ("p",            "pause / resume refresh automático"),
+            ("+ / -",        "acelera / desacelera o refresh (×0.25 a ×4)"),
+            ("r",            "força refresh imediato (invalida caches)"),
+            ("s",            "snapshot: salva a tela atual em ~/.deile/snapshots/"),
+            (".",            "Pod Watch: abre o arquivo de log em editor (cursor/code/…)"),
+            ("?",            "esta tela"),
         ]
         for k, v in rows:
             tbl.add_row(k, v)
@@ -6421,6 +6664,9 @@ class PanelApp:
 
 def _build_views(data: Optional[PanelData] = None) -> Dict[str, View]:
     """Registry das views. Próximas fases trocam os stubs por views reais."""
+    # Import local para evitar import circular no topo:
+    # _panel_monitor importa _panel_data e, indiretamente, _panel helpers.
+    from _panel_monitor import MonitorView  # noqa: PLC0415
     return {
         "dashboard": DashboardView(data=data),
         "help": HelpView(),
@@ -6442,6 +6688,9 @@ def _build_views(data: Optional[PanelData] = None) -> Dict[str, View]:
         # ``StageModelsView`` (#305, key ``stage-models``) — ambas saíram do
         # registry mas as classes ainda existem no módulo (FU cleanup).
         "dispatch-mode-matrix": DispatchMatrixView(data=data),
+        # Tela dedicada do deile-monitor (hotkey [M] MAIÚSCULO no dashboard).
+        # Separada em _panel_monitor.py para manter _panel.py gerenciável.
+        "monitor-view": MonitorView(data=data),
     }
 
 

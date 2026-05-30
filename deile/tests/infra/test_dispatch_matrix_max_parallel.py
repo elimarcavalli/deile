@@ -119,9 +119,10 @@ def test_navigation_down_reaches_max_parallel_row(view_demo, app_stub):
 
 
 def test_navigation_down_clamps_at_max_parallel_row(view_demo, app_stub):
-    """DOWN não ultrapassa N+2 (Max Parallel é a última linha)."""
+    """DOWN não ultrapassa N+3 (Monitor é a última linha, após Max Parallel)."""
     n_stages = len(view_demo._stages())
-    target = n_stages + 2
+    # Ordem: stages... Global(+0) Scaling(+1) MaxParallel(+2) Monitor(+3)
+    target = n_stages + 3
 
     for _ in range(30):
         view_demo.handle_key("DOWN", app_stub)

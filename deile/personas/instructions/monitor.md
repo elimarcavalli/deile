@@ -167,6 +167,96 @@ for p in pods:
 - Pipeline não Running/Ready: notifique IMEDIATAMENTE. Este é o coração do sistema.
 - Restarts > 3 nas últimas 1h: notifique com logs.
 
+### V8 — Promessas vazias de follow-up sem issue rastreada (P2 — ação autônoma)
+
+> Esta vigia é conservadora por design: prefere falso-negativo a falso-positivo. Revise periodicamente as issues criadas com `~origem:fu-monitor` e feche as irrelevantes — a heurística de regex é frágil contra prosa informal.
+
+Detecta comentários em issues fechadas e PRs mergeadas das últimas 24h que prometem trabalho futuro sem apontar para uma issue rastreada, e abre automaticamente uma issue de FU para cada caso não coberto.
+
+**Coleta de candidatos:**
+
+```bash
+# Issues fechadas nas últimas 24h (com URL de comentários para segundo passo)
+gh api -X GET "repos/$DEILE_PIPELINE_REPO/issues" \
+  -f state=closed \
+  -f sort=updated \
+  -f per_page=30 \
+  --jq '.[] | select((now - (.closed_at | fromdateiso8601)) < 86400)
+        | {number, title, body, comments_url}'
+
+# Comentários de cada issue candidata
+gh api "repos/$DEILE_PIPELINE_REPO/issues/<n>/comments" \
+  --jq '.[] | {id, body, user: .user.login, created_at}'
+
+# PRs mergeadas nas últimas 24h
+gh api -X GET "repos/$DEILE_PIPELINE_REPO/pulls" \
+  -f state=closed \
+  -f sort=updated \
+  -f per_page=30 \
+  --jq '.[] | select(.merged_at != null
+        and ((now - (.merged_at | fromdateiso8601)) < 86400))
+        | {number, title, body}'
+```
+
+**Padrões regex que indicam FU prometido** (case-insensitive, aplicar sobre body e cada comentário):
+
+```
+vou abrir (?:uma )?issue
+abrir(?:ei)? (?:uma )?issue
+follow[-\s]?up\s*:
+\bFU\s*:
+(?m)^[-*\s]*TODO\b
+fica para depois
+vai pra? issue (?:separada|nova)
+próxima (?:iteração|sessão)\b.*(?:vou|vamos|iremos|farei)
+não vou fazer isso aqui
+escopo separado
+```
+
+**Filtros anti-falso-positivo (aplicar em ordem):**
+
+1. **Autor do comentário** — se `comment.user.login` termina em `[bot]` ou coincide com `$DEILE_BOT_LOGIN`: ignorar.
+2. **Blocos de código** — ignorar matches em linhas dentro de ` ``` ` ... ` ``` ` ou indentadas com 4+ espaços.
+3. **Já rastreado** — se o snippet do match (±3 linhas) contém `#<n>` onde n é número de issue existente: não criar.
+4. **Similaridade de título** — checar issues abertas com título similar ao snippet (jaccard sobre palavras ≥ 0,6): se existe, não criar.
+
+**Ação autônoma — para cada FU não-rastreado:**
+
+```bash
+# Criar label de origem se ausente (idempotente)
+gh label create "~origem:fu-monitor" \
+  --color "0075ca" --description "Issue criada pelo V8 do deile-monitor" \
+  --repo "$DEILE_PIPELINE_REPO" 2>/dev/null || true
+
+# Criar a issue de FU
+gh api -X POST "repos/$DEILE_PIPELINE_REPO/issues" \
+  -f title="[FU] <primeira frase do snippet, max 80 chars>" \
+  -f body="Follow-up identificado automaticamente pelo deile-monitor (V8).
+
+**Origem:** #<n_origem> · comment <comment_id> (autor: <login>, em <created_at>)
+
+**Snippet do FU:**
+> <snippet original, max 5 linhas>
+
+**Contexto pertinente:**
+<título e estado da issue/PR de origem>
+
+---
+*Esta issue foi criada autonomamente. Refine, priorize ou feche se não for pertinente.*" \
+  -f "labels[]=~workflow:nova" \
+  -f "labels[]=~origem:fu-monitor"
+```
+
+- Logar no audit: `<iso-ts> CREATE_FU_ISSUE #<novo> from #<origem>/comment<id>`
+- Notificar P2 (1x por novo FU): `🔵 [DEILE-MONITOR] V8: criada #<novo> a partir de FU em #<origem>`
+
+**Fingerprint:** `fu_<n_origem>_<comment_id>` — garante idempotência cross-tick e cross-restart. Após criar a issue, salvar o fingerprint em `monitor-state.json` (chave `fu_fingerprints`: set de strings).
+
+**Limites hard:**
+
+- Máximo **3 issues de FU por tick** — se mais de 3 candidatos, priorizar os que mencionam P0/P1 no contexto da origem; o restante fica para o próximo tick.
+- Máximo **10 issues de FU por dia UTC** — rastreado em `monitor-state.json` (chave `fu_created_today` + `fu_day_slot` em formato `YYYY-MM-DD`). Reset automático quando `fu_day_slot != hoje`. Se atingido: logar `FLOOD_CAP_FU` no audit e encerrar V8 no tick corrente sem criar mais.
+
 ## Sistema de notificação
 
 ### Endpoint
@@ -233,6 +323,7 @@ Todos os arquivos ficam em `/state/` (PVC montado). Nunca use tmpfs para estado 
 | `monitor-commands/` | Diretório; cada arquivo = um comando pendente do bot (o bot escreve, o monitor lê e remove) |
 | `notify-user-id` | Discord user ID para receber DMs; ausente = log-only |
 | `monitor-config.json` | Overrides opcionais: `tick_interval_s` (default 120), `flood_cap_per_hour` (default 8) |
+| `monitor-state.json` (chaves V8) | `fu_fingerprints` (set de `fu_<origem>_<comment_id>` já processados), `fu_created_today` (contador diário), `fu_day_slot` (data UTC do contador — resetado ao mudar de dia). Reaproveitamos `monitor-state.json` em vez de arquivo separado para evitar proliferação de arquivos no PVC; as chaves V8 coexistem com as demais sem conflito de nome. |
 
 ## Princípios inegociáveis
 
