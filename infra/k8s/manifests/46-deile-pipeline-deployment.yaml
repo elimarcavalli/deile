@@ -172,6 +172,36 @@ spec:
             # Bearer token montado em /run/secrets/pipeline-status/.
             - { name: DEILE_PIPELINE_STATUS_HOST,    value: "0.0.0.0" }
             - { name: DEILE_PIPELINE_STATUS_PORT,    value: "8768" }
+            # Per-stage dispatcher routing (Decisão #43) — defaults definidos
+            # após validação empírica da sessão 2026-05-29: classify é leve e
+            # roda no deile-worker (deepseek barato); refine/implement/pr_review/
+            # follow_ups precisam de Claude (opus pra refinar requisitos, sonnet
+            # pra código). Sem esses defaults no manifest, `kubectl apply` zerava
+            # configurações in-flight (kubectl set env) e o dispatch caía no
+            # _DEFAULT_DISPATCHER=deile-worker para tudo, deixando os
+            # claude-worker pods ociosos. Operador pode override via painel TUI
+            # `[d]` (DispatchMatrixView) — o `kubectl set env` aplica patch
+            # incremental, mantém estes como base.
+            - { name: DEILE_PIPELINE_DISPATCH_MODE,        value: "deile-worker" }
+            - { name: DEILE_PIPELINE_DISPATCH_CLASSIFY,    value: "deile-worker" }
+            - { name: DEILE_PIPELINE_DISPATCH_REFINE,      value: "claude-worker" }
+            - { name: DEILE_PIPELINE_DISPATCH_IMPLEMENT,   value: "claude-worker" }
+            - { name: DEILE_PIPELINE_DISPATCH_PR_REVIEW,   value: "claude-worker" }
+            - { name: DEILE_PIPELINE_DISPATCH_FOLLOW_UPS,  value: "claude-worker" }
+            # Per-stage model overrides (Decisão #41). Mesma motivação acima:
+            # sem isso no manifest, `kubectl apply` zerava as escolhas do
+            # painel e o dispatch usava o modelo default global do worker
+            # (que pode não ser o ideal para o stage).
+            - { name: DEILE_PREFERRED_MODEL,               value: "deepseek:deepseek-v4-pro" }
+            - { name: DEILE_PIPELINE_MODEL_CLASSIFY,       value: "deepseek:deepseek-v4-pro" }
+            - { name: DEILE_PIPELINE_MODEL_REFINE,         value: "anthropic:claude-opus-4-7" }
+            - { name: DEILE_PIPELINE_MODEL_IMPLEMENT,      value: "anthropic:claude-sonnet-4-6" }
+            - { name: DEILE_PIPELINE_MODEL_PR_REVIEW,      value: "anthropic:claude-sonnet-4-6" }
+            - { name: DEILE_PIPELINE_MODEL_FOLLOW_UPS,     value: "anthropic:claude-sonnet-4-6" }
+            # Paralelismo: até 5 grupos simultâneos. claude-worker tem 3
+            # réplicas, deile-worker 2 réplicas → ~5 dispatches reais
+            # concorrentes antes da fila.
+            - { name: DEILE_PIPELINE_MAX_PARALLEL,         value: "5" }
           ports:
             - { name: status-api, containerPort: 8768, protocol: TCP }
           readinessProbe:
