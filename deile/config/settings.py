@@ -623,6 +623,10 @@ class Settings:
     # ``subagent.capture_buffer_max_bytes``.
     subagent_capture_buffer_max_bytes: int = 256 * 1024
 
+    # Kubernetes — namespace alvo para operações CLI (ex: /pods).
+    # Lido de DEILE_K8S_NAMESPACE; default "deile". Mesmo default do deploy.py.
+    k8s_namespace: str = "deile"
+
     # Cron
     cron_db_path: Optional[Path] = None
     cron_poll_interval: int = 30
@@ -962,6 +966,7 @@ _JSON_ONLY_FIELD_MAP: Dict[str, str] = {
     "forge.bot_login": "forge_bot_login",
     "forge.gitlab_api_version": "forge_gitlab_api_version",
     "forge.github_api_prefix": "forge_github_api_prefix",
+    "k8s.namespace": "k8s_namespace",
     "cron.db_path": "cron_db_path",
     "cron.poll_interval": "cron_poll_interval",
     # Sub-DEILEs paralelos (issue #257)
@@ -1171,6 +1176,8 @@ _ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any]], ...] = (
     ("DEILE_PIPELINE_DISPATCH_MODE",         "pipeline_dispatch_mode",         str),
     # Current knob — pipeline autostart.
     ("DEILE_PIPELINE_AUTOSTART",             "pipeline_autostart",             _env_bool),
+    # Kubernetes namespace — used by CLI commands like /pods (issue #414).
+    ("DEILE_K8S_NAMESPACE",                  "k8s_namespace",                  str),
     # Cron knobs (deprecated but kept — used by cron test isolation via monkeypatch)
     ("DEILE_CRON_DB_PATH",                   "cron_db_path",                   _resolved_path),
     ("DEILE_CRON_POLL_INTERVAL",             "cron_poll_interval",             int),
