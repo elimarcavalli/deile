@@ -165,6 +165,51 @@ class PipelineConfig:
     enable_refinement_gate: bool = False
 
 
+def _resolve_auto_max_parallel(namespace: str = "deile") -> Optional[int]:
+    """Read the current ``claude-worker`` replica count via kubectl.
+
+    Called when ``DEILE_PIPELINE_MAX_PARALLEL=auto`` is set so the pipeline
+    derives its concurrency ceiling from the actual number of worker pods
+    instead of a hardcoded value.  Returns ``None`` on any error (caller falls
+    back to the built-in default of 2).
+    """
+    import shutil
+    import subprocess
+
+    kubectl = shutil.which("kubectl")
+    if kubectl is None:
+        logger.warning(
+            "max_parallel=auto: kubectl not found on PATH; falling back to default"
+        )
+        return None
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", namespace, "get",
+             "deployment/claude-worker",
+             "-o", "jsonpath={.spec.replicas}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if proc.returncode != 0:
+            logger.warning(
+                "max_parallel=auto: kubectl exited %d; falling back to default. stderr=%r",
+                proc.returncode, proc.stderr[:200],
+            )
+            return None
+        raw = proc.stdout.strip()
+        if not raw.isdigit():
+            logger.warning(
+                "max_parallel=auto: unexpected replicas value %r; falling back to default",
+                raw,
+            )
+            return None
+        replicas = int(raw)
+        logger.info("max_parallel=auto: derived %d from claude-worker replicas", replicas)
+        return replicas
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logger.warning("max_parallel=auto: kubectl call failed (%s); falling back to default", exc)
+        return None
+
+
 def build_default_pipeline_config(*, use_pid_lock: bool = True) -> PipelineConfig:
     """Construct a :class:`PipelineConfig` from the default repo/path/settings.
 
@@ -173,6 +218,12 @@ def build_default_pipeline_config(*, use_pid_lock: bool = True) -> PipelineConfi
     surfaces cannot drift on how a default config is assembled. ``use_pid_lock``
     lets the ``/pipeline start --no-pid-lock`` flag route through this helper
     too instead of hand-building its own config.
+
+    When ``settings.pipeline_max_parallel == "auto"`` (set via
+    ``DEILE_PIPELINE_MAX_PARALLEL=auto`` or ``pipeline.max_parallel: auto``
+    in settings.json), ``max_parallel`` is derived from the current
+    ``claude-worker`` replica count via ``kubectl``.  Falls back to 2 if
+    kubectl is unavailable or the deployment cannot be read.
     """
     from deile.config.settings import get_settings
     from deile.orchestration.pipeline.constants import resolve_pipeline_repo
@@ -180,6 +231,15 @@ def build_default_pipeline_config(*, use_pid_lock: bool = True) -> PipelineConfi
 
     settings = get_settings()
     dispatch_mode = (settings.pipeline_dispatch_mode or "deile_worker").strip().lower()
+
+    # Resolve max_parallel: numeric setting → int directly; "auto" → kubectl.
+    _mp_raw = settings.pipeline_max_parallel
+    if _mp_raw == "auto":
+        _derived = _resolve_auto_max_parallel()
+        max_parallel = _derived if _derived is not None else 2
+    else:
+        max_parallel = int(_mp_raw)
+
     return PipelineConfig(
         repo=resolve_pipeline_repo(),
         base_repo_path=resolve_base_path(),
@@ -202,7 +262,7 @@ def build_default_pipeline_config(*, use_pid_lock: bool = True) -> PipelineConfi
         resume_max_attempts=int(settings.pipeline_resume_max_attempts),
         resume_budget=int(settings.pipeline_resume_budget),
         refine_max_attempts=int(settings.pipeline_refine_max_attempts),
-        max_parallel=int(settings.pipeline_max_parallel),
+        max_parallel=max_parallel,
         enable_refinement_gate=(not is_claude_mode(dispatch_mode)),
     )
 

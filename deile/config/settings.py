@@ -156,6 +156,26 @@ def _to_pos_int(value: Any) -> int:
     return iv
 
 
+def _to_pos_int_or_auto(value: Any) -> Any:
+    """Coerce to a positive int or the sentinel string ``"auto"``.
+
+    Used by ``DEILE_PIPELINE_MAX_PARALLEL`` and ``pipeline.max_parallel``:
+    a numeric string → int ≥ 1; the literal ``"auto"`` → kept as ``"auto"``
+    so the pipeline can derive ``max_parallel`` from ``claude-worker``
+    replica count at startup instead of a hardcoded ceiling.
+    Any other value raises so ``apply_overrides`` logs a warning and keeps
+    the previous value (int 2 default).
+    """
+    if isinstance(value, bool):
+        raise TypeError("expected int or 'auto', got bool")
+    if isinstance(value, str) and value.strip().lower() == "auto":
+        return "auto"
+    iv = int(value)
+    if iv < 1:
+        raise ValueError(f"value must be >= 1, got {iv}")
+    return iv
+
+
 # Per-stage pipeline model slug (issue #305): ``provider:model``. Mirrors
 # `_MODEL_SLUG_RE` in `deile/infrastructure/deile_worker_client.py` — keep in
 # sync (both validate the same wire/JSON format).
@@ -295,7 +315,7 @@ _OVERRIDE_HANDLERS: Dict[str, Tuple[str, Callable[[Any], Any]]] = {
     "pipeline.resume_budget": ("pipeline_resume_budget", _to_nonneg_int),
     # Refinement gate + parallel decomposition (issue #257)
     "pipeline.refine_max_attempts": ("pipeline_refine_max_attempts", _to_pos_int),
-    "pipeline.max_parallel": ("pipeline_max_parallel", _to_pos_int),
+    "pipeline.max_parallel": ("pipeline_max_parallel", _to_pos_int_or_auto),
     # Per-stage model override (issue #305) — see _MODEL_SLUG_RE / resolver.
     "pipeline.models.classify":   ("pipeline_model_classify",   _to_optional_model_slug),
     "pipeline.models.refine":     ("pipeline_model_refine",     _to_optional_model_slug),
@@ -1207,6 +1227,11 @@ _ENV_OVERRIDES: Tuple[Tuple[str, str, Callable[[str], Any]], ...] = (
     # Global timeout/retries defaults (issue #391).
     ("DEILE_PIPELINE_DEILE_TIMEOUT",         "pipeline_deile_timeout",         _to_optional_pos_int),
     ("DEILE_PIPELINE_DEFAULT_MAX_RETRIES",   "pipeline_default_max_retries",   _to_optional_nonneg_int),
+    # Max parallel dispatches (issue #408) — cluster path. Panel TUI writes
+    # via ``kubectl set env deploy/deile-pipeline``. The special value "auto"
+    # instructs the pipeline to derive the limit from claude-worker replicas.
+    # Numeric strings are validated via ``_to_pos_int_or_auto``; "auto" is kept as-is.
+    ("DEILE_PIPELINE_MAX_PARALLEL",          "pipeline_max_parallel",          _to_pos_int_or_auto),
 )
 
 

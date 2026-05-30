@@ -235,6 +235,17 @@ python3 infra/k8s/deploy.py k8s claude-login --no-interactive
 - Linha "Global default" no rodapé funciona como fallback (env vars `DEILE_PIPELINE_DISPATCH_MODE` + `DEILE_PIPELINE_MODEL`)
 - `[L]` switch claude-worker login (`force_relogin`); `[I]` install se ausente
 - `[enter]` em uma célula abre picker contextual; `[r]` reseta a célula
+- **`[c]` cleanup on-demand** — mostra preview (count + bytes) dos leases/workdirs a remover; `[Y]` confirma via `kubectl exec`, `[N]`/`ESC` cancela sem efeito
+- **`[p]` editar `max_parallel`** — abre prompt numérico; `[a]` seta sentinel `"auto"` (`DEILE_PIPELINE_MAX_PARALLEL=auto`); `[enter]` confirma, `[esc]` cancela
+
+### Env vars do claude-worker (issue #408)
+
+| Env var | Default | Uso |
+|---|---|---|
+| `DEILE_CLAUDE_CLEANUP_RETENTION_DAYS` | `7` | Dias de retenção dos workdirs (startup hook + CronJob). Workdirs sem sessão JSONL ou mais antigos que N dias são removidos. |
+| `DEILE_PIPELINE_MAX_PARALLEL` | `2` | Número máximo de dispatches simultâneos no pipeline. Aceita inteiro ≥ 1. Muda via `[p]` no painel (rollout do `deile-pipeline` sem rebuild). |
+
+**CronJob diário:** `claude-worker-cleanup` (03:00 UTC) — monta o PVC `claude-worker-home` e varre leases stale + workdirs abandonados. `kubectl get cronjobs -n deile` para verificar.
 
 ### Threat model resumido
 

@@ -3371,6 +3371,118 @@ def set_stage_retries(
     return True, f"{env_var}={max_retries} ({msg})"
 
 
+# ===== Pipeline max_parallel — issue #408 ===================================
+#
+# ``set_pipeline_max_parallel`` / ``get_pipeline_max_parallel`` / ``get_claude_worker_replicas``
+# expõem o knob DEILE_PIPELINE_MAX_PARALLEL para o painel TUI.
+# Deployment alvo: ``deile-pipeline`` (onde o pipeline monitor lê a env var).
+
+_MAX_PARALLEL_ENV_VAR = "DEILE_PIPELINE_MAX_PARALLEL"
+_MAX_PARALLEL_DEPLOYMENT = "deile-pipeline"
+
+
+def get_pipeline_max_parallel(*, namespace: str = NS,
+                               timeout: float = 10.0) -> Optional[int]:
+    """Lê o valor atual de ``DEILE_PIPELINE_MAX_PARALLEL`` do Deployment.
+
+    Retorna ``None`` se a var não estiver setada (usa o default do settings).
+    Best-effort: erros de kubectl retornam ``None``.
+    """
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return None
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", namespace, "get",
+             f"deployment/{_MAX_PARALLEL_DEPLOYMENT}",
+             "-o",
+             "jsonpath={.spec.template.spec.containers[0].env[*]}"
+             ],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if proc.returncode != 0:
+            return None
+        # Parse the env array text to find our var.
+        for kv in proc.stdout.split():
+            if kv.startswith(_MAX_PARALLEL_ENV_VAR + "="):
+                try:
+                    return int(kv.split("=", 1)[1])
+                except ValueError:
+                    return None
+        return None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def get_claude_worker_replicas(*, namespace: str = NS,
+                                timeout: float = 10.0) -> Optional[int]:
+    """Lê o número atual de réplicas do Deployment ``claude-worker``.
+
+    Retorna ``None`` quando kubectl falha ou o deployment não existe.
+    """
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return None
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", namespace, "get",
+             "deployment/claude-worker",
+             "-o", "jsonpath={.spec.replicas}"],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if proc.returncode != 0:
+            return None
+        raw = proc.stdout.strip()
+        return int(raw) if raw.isdigit() else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def set_pipeline_max_parallel(
+    value: Optional[int], *,
+    namespace: str = NS,
+    timeout: float = 15.0,
+) -> tuple:
+    """Set/unset ``DEILE_PIPELINE_MAX_PARALLEL`` em ``deile-pipeline``.
+
+    Args:
+        value: int >= 1 → pina o valor; None → remove a var (usa default).
+        namespace: K8s namespace.
+
+    Returns ``(ok, msg)``.
+    """
+    if value is not None and value < 1:
+        return False, f"max_parallel deve ser >= 1, got {value}"
+
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        return False, "kubectl não encontrado"
+
+    if value is None:
+        argv = [kubectl, "-n", namespace, "set", "env",
+                f"deploy/{_MAX_PARALLEL_DEPLOYMENT}",
+                f"{_MAX_PARALLEL_ENV_VAR}-"]
+    else:
+        argv = [kubectl, "-n", namespace, "set", "env",
+                f"deploy/{_MAX_PARALLEL_DEPLOYMENT}",
+                f"{_MAX_PARALLEL_ENV_VAR}={value}"]
+
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True,
+                              timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"falha ao executar kubectl: {exc}"
+
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+        return False, err
+
+    msg = (proc.stdout or "rollout disparado").strip()
+    if value is None:
+        return True, f"{_MAX_PARALLEL_ENV_VAR} unset → default ({msg})"
+    return True, f"{_MAX_PARALLEL_ENV_VAR}={value} ({msg})"
+
+
 # ===== Per-stage cost cap — issue #392 ======================================
 #
 # ``set_stage_cost_cap_usd`` / ``reset_stage_cost_cap_usd`` espelham

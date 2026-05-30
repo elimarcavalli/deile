@@ -1548,6 +1548,135 @@ async def test_observability_endpoints_require_bearer(
             assert resp.status == 401, f"{path} did not require bearer"
 
 
+# ============================================================================
+# Housekeeping / cleanup (issue #408)
+# ============================================================================
+
+
+def test_cleanup_scan_empty_root(claude_worker_module, tmp_path):
+    """_cleanup_scan on empty/missing directory returns empty lists."""
+    root = tmp_path / "work"
+    result = claude_worker_module._cleanup_scan(root, retention_days=7)
+    assert result["dead_leases"] == []
+    assert result["old_workdirs"] == []
+    assert result["empty_workdirs"] == []
+    assert result["total_candidate_bytes"] == 0
+
+
+def test_cleanup_scan_skips_active_lease(claude_worker_module, tmp_path,
+                                         monkeypatch):
+    """Active lease (fresh heartbeat) protects a workdir from cleanup."""
+    root = tmp_path / "work"
+    workdir = root / "aabb0011aabb0011"
+    workdir.mkdir(parents=True)
+    import time
+    lease = {
+        "pod": "p1", "pid": 99999,
+        "started_at": time.time(),
+        "heartbeat_at": time.time(),  # fresh
+    }
+    (workdir / ".lease.json").write_text(__import__("json").dumps(lease))
+    result = claude_worker_module._cleanup_scan(root, retention_days=7)
+    assert str(workdir) in result["active_workdirs"]
+    assert str(workdir) not in result["old_workdirs"]
+    assert str(workdir) not in result["empty_workdirs"]
+
+
+def test_cleanup_scan_detects_dead_lease(claude_worker_module, tmp_path):
+    """Expired lease + dead PID marked as dead_leases candidate."""
+    root = tmp_path / "work"
+    workdir = root / "ccdd0022ccdd0022"
+    workdir.mkdir(parents=True)
+    import time
+    import json
+    lease = {
+        "pod": "p1", "pid": 999999999,  # non-existent PID
+        "started_at": time.time() - 3600,
+        "heartbeat_at": time.time() - 3600,  # very old
+    }
+    (workdir / ".lease.json").write_text(json.dumps(lease))
+    result = claude_worker_module._cleanup_scan(root, retention_days=7)
+    lease_paths = [str(workdir / ".lease.json")]
+    assert any(lp in result["dead_leases"] for lp in lease_paths)
+
+
+def test_cleanup_scan_detects_empty_workdir(claude_worker_module, tmp_path,
+                                             monkeypatch):
+    """Workdir without session JSONL (no claude run) detected as empty."""
+    root = tmp_path / "work"
+    workdir = root / "eeff0033eeff0033"
+    workdir.mkdir(parents=True)
+    # No JSONL in projects dir → empty workdir
+    monkeypatch.setenv("HOME", str(tmp_path))
+    result = claude_worker_module._cleanup_scan(root, retention_days=365)
+    assert str(workdir) in result["empty_workdirs"]
+
+
+def test_do_cleanup_dry_run_deletes_nothing(claude_worker_module, tmp_path,
+                                             monkeypatch):
+    """dry_run=True returns scan but does NOT delete anything."""
+    root = tmp_path / "work"
+    workdir = root / "ff110044ff110044"
+    workdir.mkdir(parents=True)
+    (workdir / "somefile.txt").write_text("important")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    result = claude_worker_module._do_cleanup(root, retention_days=365,
+                                               dry_run=True)
+    assert result["dry_run"] is True
+    assert result["removed_leases"] == []
+    assert result["removed_workdirs"] == []
+    assert workdir.exists()  # not deleted
+
+
+async def test_cleanup_preview_endpoint(claude_worker_module, monkeypatch,
+                                         tmp_path):
+    """GET /v1/cleanup returns preview without deleting."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path / "work"))
+    (tmp_path / "work").mkdir()
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/cleanup", headers=_AUTH_HEADERS)
+        assert resp.status == 200
+        body = await resp.json()
+    assert body["dry_run"] is True
+    assert "dead_leases" in body
+    assert "old_workdirs" in body
+    assert "empty_workdirs" in body
+
+
+async def test_cleanup_execute_endpoint(claude_worker_module, monkeypatch,
+                                         tmp_path):
+    """POST /v1/cleanup executes cleanup and returns result."""
+    root = tmp_path / "work"
+    root.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(root))
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/v1/cleanup", headers=_AUTH_HEADERS)
+        assert resp.status == 200
+        body = await resp.json()
+    assert body["dry_run"] is False
+    assert "removed_leases" in body
+    assert "removed_workdirs" in body
+    assert "freed_bytes" in body
+
+
+async def test_cleanup_endpoints_require_bearer(claude_worker_module,
+                                                 monkeypatch, tmp_path):
+    """Cleanup endpoints respect bearer auth middleware."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        for method, path in (
+            ("GET", "/v1/cleanup"),
+            ("POST", "/v1/cleanup"),
+        ):
+            resp = await getattr(client, method.lower())(path)
+            assert resp.status == 401, f"{method} {path} should require bearer"
+
+
 # --------------------------------------------------------------------------- #
 # Issue #395 — /v1/pod-status
 # --------------------------------------------------------------------------- #
