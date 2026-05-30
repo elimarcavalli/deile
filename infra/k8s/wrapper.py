@@ -1105,10 +1105,19 @@ def _run_pipeline(passthrough: List[str]) -> int:
 def _run_monitor(passthrough: List[str]) -> int:
     """deile-monitor mode: autonomous cluster supervisor running with the monitor persona.
 
-    Starts DEILE with the ``monitor`` persona in an infinite loop. The persona
-    drives all behavior via ``deile/personas/instructions/monitor.md`` — no
+    One invocation = one tick. The Deployment wraps this call in a shell loop
+    that drives the cadence; this function bootstraps DEILE with the ``monitor``
+    persona and forwards ``passthrough`` (the tick prompt) to the CLI, which
+    runs in one-shot mode and exits when the turn finishes. The persona
+    (``deile/personas/instructions/monitor.md``) drives all behavior — no
     Python logic is embedded here. Hot-reload of the persona is handled by the
     existing ``watchdog`` mechanism.
+
+    Why one-shot per tick (not an in-process loop): the persona is the single
+    source of truth for cadence, vigias and actions; the shell loop in the
+    Deployment is the heartbeat. Each tick is a fresh DEILE process — state
+    persistence is via the PVC at ``/state`` (audit log, tick state JSON,
+    pause flag, command queue). This keeps the model purely prompt-first.
 
     Security posture:
       - Loads secrets from ``/run/secrets/deile`` (same Secret as deile-worker).

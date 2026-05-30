@@ -6,6 +6,8 @@ Covers:
 3. ``_run_monitor`` exits 78 when no LLM key is present.
 4. ``_run_monitor`` exits 78 when no forge token is present.
 5. ``_install_monitor_negative_whitelist`` drops only ``dispatch_deile_task``.
+6. Deployment 55-deile-monitor uses a shell-loop tick driver and exposes
+   ``DEILE_MONITOR_TICK_INTERVAL_S`` (no naked interactive CLI).
 """
 from __future__ import annotations
 
@@ -193,4 +195,81 @@ def test_install_monitor_whitelist_drops_only_dispatch(wrapper_mod):
                         }
     assert drop_values == {"dispatch_deile_task"}, (
         f"monitor DROP set should be exactly {{dispatch_deile_task}}, got {drop_values}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deployment manifest: tick driver
+# ---------------------------------------------------------------------------
+
+def _load_monitor_deployment():
+    """Parse 55-deile-monitor-deployment.yaml into a list of documents."""
+    import yaml
+    repo_root = Path(__file__).resolve().parents[3]
+    path = repo_root / "infra" / "k8s" / "manifests" / "55-deile-monitor-deployment.yaml"
+    docs = list(yaml.safe_load_all(path.read_text(encoding="utf-8")))
+    return [d for d in docs if d]
+
+
+def test_monitor_deployment_uses_shell_loop_tick_driver():
+    """The monitor pod must drive ticks via an explicit loop, not a bare CLI call.
+
+    Regression for issue raised in PR #430 reviews: an args of
+    ``["python3", "/app/wrapper.py", "monitor"]`` (no positional message and no
+    surrounding loop) drops into the interactive DEILE CLI, which on a pod
+    without TTY either blocks on stdin or exits immediately — neither runs the
+    tick loop described in monitor.md. The fix is a shell loop wrapping
+    one-shot DEILE invocations.
+    """
+    docs = _load_monitor_deployment()
+    deployment = next(d for d in docs if d.get("kind") == "Deployment")
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    command = container.get("command") or []
+    args = container.get("args") or []
+    joined = " ".join(command) + " " + " ".join(args)
+
+    # Must explicitly invoke a shell (otherwise there is no loop construct)
+    assert any("/bin/sh" in c or "/bin/bash" in c for c in command), (
+        f"monitor container must use a shell to drive the tick loop; "
+        f"got command={command!r}"
+    )
+    # Loop primitive and the wrapper invocation must both be present
+    assert "while" in joined and "sleep" in joined, (
+        "monitor args must contain a 'while ... sleep' loop (the tick driver); "
+        f"got args={args!r}"
+    )
+    assert "wrapper.py" in joined and "monitor" in joined, (
+        "monitor loop must invoke wrapper.py monitor each tick; "
+        f"got args={args!r}"
+    )
+    # Tick interval must be configurable at runtime via env (not baked in)
+    assert "DEILE_MONITOR_TICK_INTERVAL_S" in joined, (
+        "monitor loop must honor ${DEILE_MONITOR_TICK_INTERVAL_S} for runtime "
+        f"override; got args={args!r}"
+    )
+    env_names = {e["name"] for e in container.get("env", []) if "name" in e}
+    assert "DEILE_MONITOR_TICK_INTERVAL_S" in env_names, (
+        "monitor deployment must declare DEILE_MONITOR_TICK_INTERVAL_S in env "
+        f"(with a default); got env names={sorted(env_names)}"
+    )
+
+
+def test_monitor_serviceaccount_automount_aligns_with_pod():
+    """SA and podTemplate must agree on automountServiceAccountToken.
+
+    Both must allow the token (true) — the monitor's kubectl calls require it.
+    Divergent values (SA=false, pod=true) audit-confusingly even when the pod
+    spec wins; alignment removes the inconsistency.
+    """
+    docs = _load_monitor_deployment()
+    sa = next(d for d in docs if d.get("kind") == "ServiceAccount")
+    deployment = next(d for d in docs if d.get("kind") == "Deployment")
+    pod_spec = deployment["spec"]["template"]["spec"]
+    assert sa.get("automountServiceAccountToken") is True, (
+        "deile-monitor-sa must set automountServiceAccountToken: true to "
+        "match the podTemplate (which needs the token for kubectl calls)"
+    )
+    assert pod_spec.get("automountServiceAccountToken") is True, (
+        "podTemplate must set automountServiceAccountToken: true; the monitor "
+        "uses kubectl for OAuth renewal and pod cleanup"
     )

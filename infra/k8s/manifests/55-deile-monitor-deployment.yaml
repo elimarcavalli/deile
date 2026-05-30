@@ -115,7 +115,22 @@ spec:
           image: deile-stack:local
           imagePullPolicy: Never
           workingDir: /home/deile
-          args: ["python3", "/app/wrapper.py", "monitor"]
+          # Tick driver: each invocation of wrapper.py monitor runs DEILE in
+          # one-shot mode (positional message → CLI exits after the turn). The
+          # shell loop is the heartbeat — between ticks the agent is gone, all
+          # state lives on the PVC at /state. This is the "prompt-first" model:
+          # the persona (monitor.md) defines WHAT a tick does; the shell loop
+          # defines WHEN. Tick interval is overridable at runtime via the
+          # DEILE_MONITOR_TICK_INTERVAL_S env var without rebuilding the image.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -u
+              MSG='Executar um tick do monitor seguindo monitor.md: leia /state/monitor-state.json, verifique kill-switch, rode as vigias em ordem, aja/notifique conforme regras, persista o estado. Saia ao final do tick (a infraestrutura agenda o próximo).'
+              while true; do
+                python3 /app/wrapper.py monitor "$MSG" || true
+                sleep "${DEILE_MONITOR_TICK_INTERVAL_S:-120}"
+              done
           env:
             - { name: HOME,                    value: /home/deile }
             - { name: PYTHONUNBUFFERED,        value: "1" }
@@ -127,6 +142,8 @@ spec:
             - { name: DEILE_PIPELINE_REPO,     value: "elimarcavalli/deile" }
             # State directory (PVC mount — writable for tick state files)
             - { name: DEILE_MONITOR_STATE_DIR, value: "/state" }
+            # Seconds between ticks (shell loop sleep). Default 120 = 2 min.
+            - { name: DEILE_MONITOR_TICK_INTERVAL_S, value: "120" }
           volumeMounts:
             - { name: deile-secrets, mountPath: /run/secrets/deile, readOnly: true }
             - { name: home,          mountPath: /home/deile }
@@ -164,13 +181,16 @@ spec:
 ---
 # ServiceAccount for the monitor pod.
 # Minimal RBAC: read cluster state + pods/exec for OAuth renewal.
+# automountServiceAccountToken is set to true here to match the podTemplate
+# (which also sets true). The monitor needs the token mounted so the in-pod
+# kubectl calls (autonomous OAuth renewal, pod cleanup) succeed.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: deile-monitor-sa
   labels:
     app: deile-monitor
-automountServiceAccountToken: false
+automountServiceAccountToken: true
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
