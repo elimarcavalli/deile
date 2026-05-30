@@ -35,6 +35,7 @@ GET /health        → JSON ``{"ok": true}`` (readiness probe)
 """
 from __future__ import annotations
 
+import html as _html
 import http.server
 import json
 import os
@@ -229,7 +230,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return
         if error:
             self._html(
-                f"<p class='err'>❌ Erro: <pre>{error}</pre>"
+                f"<p class='err'>❌ Erro: <pre>{_html.escape(error)}</pre>"
                 "Reinicie o servidor e tente novamente.</p>",
                 code=500,
             )
@@ -253,11 +254,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         relay_url = _rewrite_redirect_uri(url, _PORT)
         self._html(
             "<p>Clique no link abaixo para autenticar:</p>"
-            f"<p><a href='{relay_url}'>{relay_url}</a></p>"
+            f"<p><a href='{_html.escape(relay_url)}'>{_html.escape(relay_url)}</a></p>"
             "<p>Após completar o OAuth no browser, "
             "<a href='/auth/status'>verifique o status</a>.</p>"
             "<p><small>URL original do claude CLI:"
-            f"<pre>{url}</pre></small></p>"
+            f"<pre>{_html.escape(url)}</pre></small></p>"
         )
 
     def _handle_callback(self, parsed: urllib.parse.ParseResult) -> None:

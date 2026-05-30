@@ -39,6 +39,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -1175,7 +1176,6 @@ class _OAuthBrokerState:
 _oauth_broker = _OAuthBrokerState()
 
 _CLAUDE_OAUTH_URL_RE = re.compile(r"https://(?:claude\.ai|anthropic\.com)/[^\s'\">]+")
-_REDIRECT_PORT_RE = re.compile(r"redirect_uri=http://(?:localhost|127\.0\.0\.1):(\d+)")
 
 
 def _run_in_pod_oauth(state: _OAuthBrokerState) -> None:
@@ -1209,13 +1209,17 @@ def _run_in_pod_oauth(state: _OAuthBrokerState) -> None:
             m = _CLAUDE_OAUTH_URL_RE.search(line)
             if m:
                 captured_url = m.group()
-                port_m = _REDIRECT_PORT_RE.search(captured_url)
                 callback_port: Optional[int] = None
-                if port_m:
-                    try:
-                        callback_port = int(port_m.group(1))
-                    except ValueError:
-                        pass
+                try:
+                    _qs = urllib.parse.parse_qs(urllib.parse.urlparse(captured_url).query)
+                    _redirect_list = _qs.get("redirect_uri", [])
+                    if _redirect_list:
+                        _decoded = urllib.parse.unquote(_redirect_list[0])
+                        _port_m = re.search(r"(?:localhost|127\.0\.0\.1):(\d+)", _decoded)
+                        if _port_m:
+                            callback_port = int(_port_m.group(1))
+                except (ValueError, AttributeError):
+                    pass
                 with state._lock:
                     state.oauth_url = captured_url
                     state.callback_port = callback_port

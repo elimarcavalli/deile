@@ -1870,6 +1870,46 @@ async def test_auth_start_captures_oauth_url_from_claude_output(
     assert body.get("status") in ("pending", "complete")
 
 
+async def test_auth_start_captures_callback_port_from_percent_encoded_url(
+    claude_worker_module, monkeypatch,
+):
+    """/v1/auth/start extrai callback_port mesmo com redirect_uri percent-encoded."""
+    import io                   # noqa: PLC0415
+    import subprocess as _sp    # noqa: PLC0415
+
+    # redirect_uri é percent-encoded como o claude CLI produz em produção
+    fake_url = (
+        "https://claude.ai/auth/login?state=abc&code_challenge=xyz"
+        "&redirect_uri=http%3A%2F%2Flocalhost%3A54321%2Fcallback"
+    )
+
+    class FakeProc:
+        returncode = 0
+        stdout = io.StringIO(
+            f"Opening browser...\nIf not opened, visit:\n{fake_url}\n"
+        )
+        def wait(self): pass
+
+    def fake_popen(cmd, *args, **kwargs):
+        if cmd and cmd[0] == "claude":
+            return FakeProc()
+        return _sp.Popen(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(claude_worker_module.subprocess, "Popen", fake_popen)
+    claude_worker_module._oauth_broker.reset()
+
+    app = claude_worker_module.build_app(auth_token="test-token")
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/v1/auth/start")
+        assert resp.status == 200
+        body = await resp.json()
+
+    assert body.get("oauth_url") == fake_url, f"URL não capturada; body={body}"
+    assert body.get("callback_port") == 54321, (
+        f"Porta não detectada com redirect_uri percent-encoded; body={body}"
+    )
+
+
 def test_oauth_broker_state_reset(claude_worker_module):
     """_OAuthBrokerState.reset() limpa todos os campos."""
     state = claude_worker_module._OAuthBrokerState()
