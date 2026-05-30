@@ -8,10 +8,96 @@ Also redirects the AuditLogger singleton to a per-session tmp directory so
 tests that exercise audit-emitting code (e.g. ``set_setting``,
 ``add_skills_path``) do not pollute ``~/.deile/logs/security_audit.log``
 on the developer's HOME (issue #125 reviewer finding).
+
+Issue #432: three additional autouse fixtures prevent ordering-dependent
+failures caused by leaked global state (os.environ, logging handlers,
+sys.stdio) across tests that do not use monkeypatch for cleanup.
 """
 from __future__ import annotations
 
+import logging
+import os
+import sys
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _snapshot_os_environ():
+    """Restore os.environ to its pre-test state after each test.
+
+    Prevents tests that mutate os.environ via direct assignment (not
+    monkeypatch) from leaking token variables such as GITHUB_TOKEN /
+    GITLAB_TOKEN / GL_TOKEN into subsequent tests, which would suppress the
+    expected WARNING in test_warns_when_no_tokens (issue #432).
+    """
+    saved = os.environ.copy()
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
+
+
+@pytest.fixture(autouse=True)
+def _clean_logging_handlers():
+    """Snapshot and restore logger handler/level/propagate state around each test.
+
+    caplog captures records by attaching a handler to the root logger and
+    relying on propagation. If a test adds handlers to a named logger, sets
+    propagate=False, or changes its effective level without cleanup, subsequent
+    tests using caplog.at_level(..., logger=name) receive 0 records even when
+    the code does emit — this is the root cause of the 7 TestTickSummary and
+    1 test_warns_when_no_tokens ordering failures (issue #432).
+    """
+    root = logging.root
+    root_handlers_before = root.handlers[:]
+    root_level_before = root.level
+
+    mgr = logging.Logger.manager
+    snapshot: dict = {}
+    for name, obj in list(mgr.loggerDict.items()):
+        if isinstance(obj, logging.Logger):
+            snapshot[name] = {
+                "handlers": obj.handlers[:],
+                "level": obj.level,
+                "propagate": obj.propagate,
+            }
+
+    yield
+
+    root.handlers[:] = root_handlers_before
+    root.level = root_level_before
+
+    for name, state in snapshot.items():
+        obj = mgr.loggerDict.get(name)
+        if isinstance(obj, logging.Logger):
+            obj.handlers[:] = state["handlers"]
+            obj.level = state["level"]
+            obj.propagate = state["propagate"]
+
+    for name, obj in list(mgr.loggerDict.items()):
+        if name not in snapshot and isinstance(obj, logging.Logger):
+            obj.handlers.clear()
+            obj.level = logging.NOTSET
+            obj.propagate = True
+
+
+@pytest.fixture(autouse=True)
+def _guard_sys_stdio():
+    """Restore sys.stdout/stderr/stdin to their pre-test values after each test.
+
+    SubAgentOrchestrator(capture_output=True) replaces sys.stdout during its
+    run and restores it in a finally block. If a test (or earlier fixture)
+    replaces sys.stdout without cleanup, test_renderer_task_awaited_before_
+    stdout_restore captures the wrong reference as saved_stdout and the
+    identity assertion fails (issue #432).
+    """
+    saved_stdout = sys.stdout
+    saved_stderr = sys.stderr
+    saved_stdin = sys.stdin
+    yield
+    sys.stdout = saved_stdout
+    sys.stderr = saved_stderr
+    sys.stdin = saved_stdin
 
 
 @pytest.fixture(autouse=True)
