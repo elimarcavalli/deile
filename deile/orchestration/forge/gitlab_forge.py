@@ -328,6 +328,20 @@ class GitLabForge(ForgeClient):
             return []
         return [IssueRef.from_gl_json(it) for it in items[:limit]]
 
+    async def list_open_issues(self, *, limit: int = 1000) -> List[IssueRef]:
+        items = await self._api_paginated(
+            f"projects/{self._project_ref}/issues",
+            params=["-f", "state=opened"],
+            max_pages=_pages_for_limit(limit),
+        )
+        result: List[IssueRef] = []
+        for it in items[:limit]:
+            try:
+                result.append(IssueRef.from_gl_json(it))
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning("skipping malformed GitLab issue: %s", exc)
+        return result
+
     async def list_unclassified_issues(self, *, limit: int = 100) -> List[IssueRef]:
         items = await self._api_paginated(
             f"projects/{self._project_ref}/issues",
