@@ -1013,7 +1013,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             return web.json_response(result)
         except asyncio.TimeoutError:
             _TASKS[task_id] = {**_TASKS[task_id], "ok": False, "error": "outer timeout"}
-            dlog.dispatch_failed(task=task_id, reason="outer_timeout", error_code="TASK_TIMEOUT")
+            dlog.dispatch_failed(task=task_id, reason="outer_timeout", error_code="OUTER_TIMEOUT")
             return web.json_response(_TASKS[task_id], status=504)
     else:
         # Fire-and-forget — caller polls /v1/result/{id}
@@ -1043,7 +1043,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                     "task_id": task_id, "ok": False,
                     "error": f"{type(exc).__name__}: {exc}",
                 }
-                dlog.dispatch_failed(task=task_id, reason=type(exc).__name__, error_code="INTERNAL_ERROR")
+                dlog.dispatch_failed(task=task_id, reason=type(exc).__name__, error_code="RUNTIME_EXCEPTION")
         # B2 (PR #295 review): guarda strong ref para a task em background.
         # asyncio mantém apenas weak refs internamente; sem o set + callback,
         # o GC pode coletar a task antes de ela completar.

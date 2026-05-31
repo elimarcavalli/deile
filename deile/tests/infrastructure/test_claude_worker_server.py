@@ -2059,3 +2059,59 @@ def test_oauth_broker_state_reset(claude_worker_module):
     assert state.email is None
     assert state.error is None
     assert state.started_at == 0.0
+
+
+@pytest.mark.asyncio
+async def test_dispatch_409_lease_conflict_emits_dispatch_failed(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """AC #435 §2 — 409 lease conflict é caminho terminal; precisa emitir
+    ``dispatch.failed`` para o painel limpar ``current_task`` (senão fica
+    preso quando duas réplicas brigam pelo mesmo workspace).
+    """
+    import logging
+
+    # Lease acquisition always fails (simulates other replica holding it).
+    async def fake_acquire(workspace):
+        return None
+
+    monkeypatch.setattr(claude_worker_module, "_acquire_lease", fake_acquire)
+    monkeypatch.setattr("shutil.which", lambda b: "/usr/local/bin/claude")
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    # Capture deile.dispatch records.
+    records: list[logging.LogRecord] = []
+
+    class _H(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    lg = logging.getLogger("deile.dispatch")
+    h = _H()
+    lg.addHandler(h)
+    old_level = lg.level
+    lg.setLevel(logging.DEBUG)
+    try:
+        app = claude_worker_module.build_app(auth_token="test-token")
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
+                "brief": "test",
+                "channel_id": "auto/issue-1",
+                "preferred_model": "anthropic:claude-sonnet-4-6",
+                "stage": "implement",
+                "issue_number": 1,
+                "branch": "auto/issue-1",
+            })
+            assert resp.status == 409
+            body = await resp.json()
+            assert body.get("error_code") == "TASK_ALREADY_RUNNING"
+    finally:
+        lg.removeHandler(h)
+        lg.setLevel(old_level)
+
+    msgs = [r.getMessage() for r in records]
+    failed = [m for m in msgs if m.startswith("dispatch.failed ")]
+    assert len(failed) == 1, f"expected exactly one dispatch.failed, got {msgs}"
+    assert "error_code=TASK_ALREADY_RUNNING" in failed[0]
+    assert "reason=lease_conflict" in failed[0]

@@ -2113,6 +2113,15 @@ async def dispatch_handler(request: web.Request) -> web.Response:
             "nesta task). task_id=%s stage=%s",
             workspace, task_id, stage,
         )
+        # AC #435 §2 — 409 lease conflict é um dos 5 caminhos terminais
+        # do dispatch e precisa emitir ``dispatch.failed`` pra o painel
+        # liberar ``current_task`` (senão fica preso quando duas réplicas
+        # brigam pelo mesmo workspace).
+        dlog.dispatch_failed(
+            task=task_id,
+            reason="lease_conflict",
+            error_code="TASK_ALREADY_RUNNING",
+        )
         return web.json_response({
             "ok": False,
             "error_code": "TASK_ALREADY_RUNNING",
