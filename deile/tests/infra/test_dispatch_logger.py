@@ -343,3 +343,159 @@ class TestPanelDataRegexCompat:
         assert state.current_task is None
         assert state.last_completed is not None
         assert state.last_completed.outcome == "FAIL"
+
+
+# ---------------------------------------------------------------------------
+# AC §9b — format integrity: values stay single-token and bounded
+# ---------------------------------------------------------------------------
+
+class TestFormatIntegrity:
+    def test_newline_in_value_becomes_literal_backslash_n(self):
+        with _capture_records("deile.dispatch") as records:
+            dlog.dispatch_received(
+                task="aabb1122",
+                channel="ch",
+                branch="feat/with\nnewline",
+            )
+        msg = records[0].getMessage()
+        assert "\n" not in msg.split("\n", 1)[0] or msg.count("\n") == 0
+        assert "branch=feat/with\\nnewline" in msg
+
+    def test_carriage_return_in_value_also_normalized(self):
+        with _capture_records("deile.dispatch") as records:
+            dlog.dispatch_received(
+                task="t", channel="ch", branch="a\rb\r\nc",
+            )
+        msg = records[0].getMessage()
+        assert "\r" not in msg
+        assert "branch=a\\nb\\nc" in msg
+
+    def test_whitespace_in_value_collapsed_to_underscore(self):
+        with _capture_records("deile.dispatch") as records:
+            dlog.dispatch_received(
+                task="t", channel="ch", branch="feat/with space and more",
+            )
+        msg = records[0].getMessage()
+        # Parser uses (\w+)=(\S+) so the value must be a single token.
+        assert "branch=feat/with_space_and_more" in msg
+
+    def test_value_truncated_to_80_chars(self):
+        long = "x" * 200
+        with _capture_records("deile.dispatch") as records:
+            dlog.dispatch_received(task="t", channel="ch", branch=long)
+        msg = records[0].getMessage()
+        # Find the branch= segment and check its value length
+        seg = [p for p in msg.split() if p.startswith("branch=")][0]
+        value = seg.split("=", 1)[1]
+        assert len(value) == 80
+
+    def test_parser_kv_regex_survives_sanitized_value(self):
+        """The whole point of AC §9b — line stays parseable after weird input."""
+        import re as _re
+        kv = _re.compile(r"(\w+)=(\S+)")
+        with _capture_records("deile.dispatch") as records:
+            dlog.dispatch_received(
+                task="aabb1122",
+                channel="pipeline-issue-309",
+                branch="feat/scary\nbranch with spaces",
+                issue=309,
+            )
+        msg = records[0].getMessage()
+        kv_pairs = dict(kv.findall(msg))
+        # All four keys recovered correctly.
+        assert kv_pairs["task"] == "aabb1122"
+        assert kv_pairs["channel"] == "pipeline-issue-309"
+        assert kv_pairs["issue"] == "309"
+        assert "scary" in kv_pairs["branch"]
+
+
+# ---------------------------------------------------------------------------
+# AC §9a — fail-soft: observability never crashes a dispatch
+# ---------------------------------------------------------------------------
+
+class TestFailSoft:
+    def test_emit_swallows_exceptions_from_logging(self):
+        """If the underlying handler raises, _emit must NOT propagate."""
+        with patch.object(dlog._logger, "info", side_effect=RuntimeError("boom")):
+            # Must not raise.
+            dlog.dispatch_received(task="t", channel="ch")
+            dlog.dispatch_completed(task="t", ok=True)
+            dlog.dispatch_failed(task="t", reason="x")
+
+    def test_emit_swallows_exception_from_str(self):
+        class Bad:
+            def __str__(self):
+                raise RuntimeError("bad __str__")
+
+        # Must not raise.
+        dlog._emit("test.event", weird=Bad())
+
+
+# ---------------------------------------------------------------------------
+# AC §8 — redaction: secrets never reach kubectl logs
+# ---------------------------------------------------------------------------
+
+class TestRedaction:
+    @pytest.mark.parametrize("value,must_not_contain", [
+        ("Bearer abc123def456ghi789", "abc123def456ghi789"),
+        ("token=verysecrettoken12345", "verysecrettoken12345"),
+        ("api_key=mysupersecretkey", "mysupersecretkey"),
+        ("api-key:abcdefghij1234567890", "abcdefghij1234567890"),
+        ("authorization=Bearer xyz", "xyz"),
+        ("ghp_abcdefghij1234567890klmnopqrst", "ghp_abcdefghij1234567890klmnopqrst"),
+        ("glpat-abcdefghij1234567890", "glpat-abcdefghij1234567890"),
+        ("sk-abcdefghij1234567890abcdef", "sk-abcdefghij1234567890abcdef"),
+    ])
+    def test_secret_pattern_replaced_with_placeholder(self, value, must_not_contain):
+        with _capture_records("deile.dispatch") as records:
+            dlog.dispatch_received(task="t", channel="ch", branch=value)
+        msg = records[0].getMessage()
+        assert must_not_contain not in msg
+        assert "<redacted>" in msg
+
+    def test_clean_values_pass_through(self):
+        """Innocuous strings must NOT be over-redacted."""
+        with _capture_records("deile.dispatch") as records:
+            dlog.dispatch_received(
+                task="aabb1122",
+                channel="pipeline-issue-309",
+                branch="auto/issue-309",
+                model_requested="anthropic:claude-opus-4-8",
+            )
+        msg = records[0].getMessage()
+        assert "<redacted>" not in msg
+        assert "branch=auto/issue-309" in msg
+        assert "model_requested=anthropic:claude-opus-4-8" in msg
+
+
+# ---------------------------------------------------------------------------
+# init_logging configures deile.dispatch independently (bug #1)
+# ---------------------------------------------------------------------------
+
+class TestDispatchLoggerSurvivesWarningLevel:
+    def test_dispatch_lines_emitted_even_when_root_at_warning(self, tmp_path, monkeypatch):
+        """AC §6 — DEILE_LOG_LEVEL=WARNING must NOT silence dispatch.*"""
+        from deile.log_mgmt import init_logging
+
+        # Isolate log dir so this test doesn't pollute the host.
+        monkeypatch.setenv("DEILE_LOG_DIR", str(tmp_path))
+        monkeypatch.setenv("DEILE_POD_NAME", "test-pod")
+
+        # Reset deile.dispatch handlers so each test starts clean.
+        lg = logging.getLogger("deile.dispatch")
+        for h in list(lg.handlers):
+            lg.removeHandler(h)
+        lg.setLevel(logging.NOTSET)
+
+        init_logging(pod_name="test-pod", level="WARNING")
+
+        # After init, deile.dispatch must be at INFO regardless of root level.
+        assert lg.level == logging.INFO
+        assert lg.propagate is False
+        # Has at least one handler attached (idempotent marker).
+        assert any(getattr(h, "_deile_dispatch_marker", False) for h in lg.handlers)
+
+        # Calling init_logging again must NOT duplicate the dispatch handler.
+        init_logging(pod_name="test-pod", level="WARNING")
+        marked = [h for h in lg.handlers if getattr(h, "_deile_dispatch_marker", False)]
+        assert len(marked) == 1, f"dispatch handler not idempotent (got {len(marked)})"

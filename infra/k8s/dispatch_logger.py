@@ -16,6 +16,7 @@ mirrored in ``_DISPATCH_STARTED_RE`` / ``_DISPATCH_COMPLETED_RE`` there.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Optional
 
@@ -24,6 +25,48 @@ _logger = logging.getLogger("deile.dispatch")
 # Health-probe throttle: path -> last-logged epoch (float seconds).
 _probe_last: dict[str, float] = {}
 _PROBE_THROTTLE_S: float = 30.0
+
+# Format integrity (AC §9b) — keep values single-token & bounded so the
+# panel parser ``_KV_RE = (\w+)=(\S+)`` in _panel_data.py keeps working
+# even when callers pass branch/reason strings with whitespace, newlines
+# or arbitrary user content.
+_MAX_VALUE_LEN = 80
+_WHITESPACE_RE = re.compile(r"[ \t]+")
+
+# Redaction (AC §8) — values that look like tokens / bearers / api keys
+# must NEVER hit ``kubectl logs`` in clear. Patterns match common shapes
+# emitted by accidental forwarding of headers/env/branch names.
+_REDACT_PATTERNS = (
+    re.compile(r"(?i)\b(bearer)\s+\S+"),
+    re.compile(r"(?i)\b(token|api[_-]?key|apikey|secret|password|passwd|pwd|authorization)\s*[:=]\s*\S+"),
+    re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"),  # GitHub PAT classic
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{50,}\b"),  # GitHub PAT fine-grained
+    re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),  # GitLab PAT (decision #42)
+    re.compile(r"\b(?:gldt|glptt|glsoat)-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),  # OpenAI / Anthropic prefix
+)
+
+
+def _redact(value: str) -> str:
+    for pat in _REDACT_PATTERNS:
+        value = pat.sub("<redacted>", value)
+    return value
+
+
+def _sanitize(value) -> str:
+    """Normalize a value into a single whitespace-free token bounded at 80 chars.
+
+    Applied in order: stringify → redact secrets → replace CR/LF with ``\\n``
+    literal → collapse runs of horizontal whitespace into ``_`` → truncate to
+    :data:`_MAX_VALUE_LEN` (post-redaction).
+    """
+    s = str(value)
+    s = _redact(s)
+    s = s.replace("\r\n", "\\n").replace("\n", "\\n").replace("\r", "\\n")
+    s = _WHITESPACE_RE.sub("_", s)
+    if len(s) > _MAX_VALUE_LEN:
+        s = s[:_MAX_VALUE_LEN]
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -34,14 +77,19 @@ def _emit(event: str, **kv) -> None:
     """Emit one structured log line: ``event key=v key=v …``
 
     None values are silently dropped so callers can always pass optional
-    kwargs and the wire stays clean.
+    kwargs and the wire stays clean. Values are sanitized (redaction +
+    format integrity) and the whole call is fail-soft — observability
+    must never crash a dispatch (AC §9a).
     """
-    parts = [event]
-    for k, v in kv.items():
-        if v is None:
-            continue
-        parts.append(f"{k}={v}")
-    _logger.info(" ".join(parts))
+    try:
+        parts = [event]
+        for k, v in kv.items():
+            if v is None:
+                continue
+            parts.append(f"{k}={_sanitize(v)}")
+        _logger.info(" ".join(parts))
+    except Exception:  # noqa: BLE001 — observability is best-effort
+        pass
 
 
 # ---------------------------------------------------------------------------
