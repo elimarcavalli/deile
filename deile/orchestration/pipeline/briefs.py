@@ -195,6 +195,7 @@ PASSO 1 — WORK-LIST (do estado, não do trigger):
 - comment dirigido a mim sem resposta → atender o pedido
 - sou assignee + APPROVED + threads ok + CI verde → MERGEAR
 - reviewer só, HEAD igual → comentar curto "já APPROVED em <sha>, sem novidade"
+- **autor==`{gh_login}` (sou eu) + meu_review_atual.body contém "REQUEST_CHANGES" OU "CHANGES" → IMPLEMENTAR**: tratar este tick como `implement-resume`. Ler o último review meu (`gh api repos/{repo}/pulls/{number}/reviews | last`), extrair os achados, escrever code que atende OU comentar justificando por que cada achado é fora-de-escopo/inválido. NUNCA re-revisar a mesma HEAD pedindo as mesmas mudanças — isso é o loop infinito que bate attempt cap. O ciclo é: review-pede → próximo tick implementa OU justifica → review aprova.
 
 REGRA — execute o pedido SEMPRE (não importa o autor):
 - {pr_noun} está OPEN → push direto na própria branch.
