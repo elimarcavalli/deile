@@ -573,7 +573,7 @@ DEILE segue arquitetura por camadas, com registries para artefatos extensíveis 
 
 | Provider   | Modelos disponíveis                                              |
 |------------|------------------------------------------------------------------|
-| Anthropic  | `claude-opus-4-7`, `claude-sonnet-4-6`, `claude-haiku-4-5`      |
+| Anthropic  | `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`      |
 | OpenAI     | `gpt-5.3-codex`, `gpt-5.4`, `gpt-5.4-mini`                      |
 | Gemini     | `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, outros      |
 | DeepSeek   | `deepseek-v4-pro`, `deepseek-v4-flash`, `deepseek-reasoner`     |

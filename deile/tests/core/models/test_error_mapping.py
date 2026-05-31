@@ -104,10 +104,10 @@ def _always_auth(_exc):
 def test_build_error_envelope_dict_body():
     exc = _FakeExc("bad key", status_code=401, body={"error": "x"},
                    request_id="req_9")
-    env = build_error_envelope(exc, "anthropic", "claude-opus-4-7", _always_auth)
+    env = build_error_envelope(exc, "anthropic", "claude-opus-4-8", _always_auth)
     assert isinstance(env, ProviderErrorEnvelope)
     assert env.provider_id == "anthropic"
-    assert env.model_id == "claude-opus-4-7"
+    assert env.model_id == "claude-opus-4-8"
     assert env.error_type == "auth"
     assert env.http_status == 401
     assert env.raw_json == {"error": "x"}

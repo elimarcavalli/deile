@@ -138,7 +138,7 @@ class TestDispatchMatrixReasoningColumn:
     def test_picker_options_contextual(self):
         import _panel as P
         v = P.DispatchMatrixView(data=None)
-        claude = v._reasoning_picker_options(worker="claude-worker", model="anthropic:claude-opus-4-7")
+        claude = v._reasoning_picker_options(worker="claude-worker", model="anthropic:claude-opus-4-8")
         assert claude[1:] == ["low", "medium", "high", "xhigh", "max", "ultracode", "auto"]
         openai = v._reasoning_picker_options(worker="deile-worker", model="openai:gpt-5.4")
         assert "none" in openai and "xhigh" in openai

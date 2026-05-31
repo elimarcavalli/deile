@@ -2502,7 +2502,7 @@ _STAGE_ENV_VARS: tuple = (
 #: result into ``DispatchPayload.preferred_model`` sent to claude-worker /
 #: deile-worker. Writing these env vars to ``deile-worker`` instead is silent
 #: cost amplifier: the override is invisible to the resolver, so the worker /
-#: claude-worker fall back to OAuth default (Opus 4.7 = $5/$25 per 1M tokens).
+#: claude-worker fall back to OAuth default (Opus 4.8 = $5/$25 per 1M tokens).
 #: Bug found 2026-05-27 — user configured sonnet-4-6 in the panel and got Opus.
 _STAGE_DEPLOYMENT = "deile-pipeline"
 
@@ -3813,7 +3813,7 @@ class StageDispatchEntry:
     - ``stage`` — canonical stage name (one of :data:`PIPELINE_STAGES`).
     - ``worker`` — qual worker pod receberá o dispatch deste stage:
       ``deile-worker`` (default) ou ``claude-worker``.
-    - ``model`` — slug do modelo (ex.: ``anthropic:claude-opus-4-7``) ou
+    - ``model`` — slug do modelo (ex.: ``anthropic:claude-opus-4-8``) ou
       ``None`` quando nenhum override per-stage nem global está setado.
     - ``source`` — ``"env"`` quando o WORKER veio de
       ``DEILE_PIPELINE_DISPATCH_<STAGE>`` (override específico do stage),

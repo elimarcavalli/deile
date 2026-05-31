@@ -51,7 +51,7 @@ def test_router_select_average_under_1ms():
     """Average select latency should be well under 1ms (target: sub-50ms RNF)."""
     policy = RoutingPolicy(
         "perf_test",
-        {ModelTier.TIER_1: ["anthropic:claude-opus-4-7", "openai:gpt-4o"]},
+        {ModelTier.TIER_1: ["anthropic:claude-opus-4-8", "openai:gpt-4o"]},
     )
     cb = CircuitBreaker()
     router = TierRouter(MagicMock(), policy, cb)

@@ -24,7 +24,7 @@ def repo(tmp_path):
 def _make_record(**overrides) -> UsageRecord:
     defaults = dict(
         provider_id="anthropic",
-        model_id="claude-opus-4-7",
+        model_id="claude-opus-4-8",
         tier="tier_1",
         session_id="sess-abc",
         prompt_tokens=100,
@@ -185,7 +185,7 @@ class TestRecordFromProvider:
 
         await repo.record_from_provider(
             provider_id="anthropic",
-            model_id="claude-opus-4-7",
+            model_id="claude-opus-4-8",
             tier=FakeTier(),
             session_id="sess-err",
             usage=FakeUsage(),

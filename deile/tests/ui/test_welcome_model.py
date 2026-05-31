@@ -37,7 +37,7 @@ def _session(forced_model: str | None) -> SimpleNamespace:
 @pytest.mark.unit
 def test_resolve_provider_model_prefers_session_forced_model_over_config():
     """Modelo forçado na sessão tem precedência sobre o default da config."""
-    ui = _make_ui_with_default("anthropic:claude-opus-4-7")
+    ui = _make_ui_with_default("anthropic:claude-opus-4-8")
     session = _session("openai:gpt-5.3")
     provider, model = ui._resolve_provider_model(session)
     assert provider == "OpenAI"
@@ -47,11 +47,11 @@ def test_resolve_provider_model_prefers_session_forced_model_over_config():
 @pytest.mark.unit
 def test_resolve_provider_model_falls_back_to_config_when_session_has_no_override():
     """Sem forced_model na sessão, usa o default da config."""
-    ui = _make_ui_with_default("anthropic:claude-opus-4-7")
+    ui = _make_ui_with_default("anthropic:claude-opus-4-8")
     session = _session(None)
     provider, model = ui._resolve_provider_model(session)
     assert provider == "Anthropic"
-    assert model == "claude-opus-4-7"
+    assert model == "claude-opus-4-8"
 
 
 @pytest.mark.unit
@@ -66,7 +66,7 @@ def test_resolve_provider_model_handles_none_session():
 @pytest.mark.unit
 def test_resolve_provider_model_forced_without_provider_separator():
     """forced_model sem ":" cai no fallback "—"."""
-    ui = _make_ui_with_default("anthropic:claude-opus-4-7")
+    ui = _make_ui_with_default("anthropic:claude-opus-4-8")
     session = _session("custom-bare-name")
     provider, model = ui._resolve_provider_model(session)
     assert provider == "—"
@@ -76,11 +76,11 @@ def test_resolve_provider_model_forced_without_provider_separator():
 @pytest.mark.unit
 def test_show_welcome_renders_session_model_in_panel():
     """End-to-end: show_welcome(session) imprime o forced_model no banner."""
-    ui = _make_ui_with_default("anthropic:claude-opus-4-7")
+    ui = _make_ui_with_default("anthropic:claude-opus-4-8")
     session = _session("deepseek:deepseek-chat")
     ui.show_welcome(session)
     output = ui.console.file.getvalue()
     assert "DeepSeek" in output
     assert "deepseek-chat" in output
     # Garantia: o modelo da config (que NÃO foi o último selecionado) não vaza no banner.
-    assert "claude-opus-4-7" not in output
+    assert "claude-opus-4-8" not in output

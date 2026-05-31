@@ -56,7 +56,7 @@ def test_pop_removes_kwarg_and_returns_native_body():
 
 @pytest.mark.unit
 def test_anthropic_maps_to_output_config():
-    p = _StubProvider("anthropic", "claude-opus-4-7")
+    p = _StubProvider("anthropic", "claude-opus-4-8")
     assert p._pop_reasoning_extra_body({"reasoning_effort": "max"}) == {
         "output_config": {"effort": "max"}
     }
@@ -64,7 +64,7 @@ def test_anthropic_maps_to_output_config():
 
 @pytest.mark.unit
 def test_no_effort_returns_empty():
-    p = _StubProvider("anthropic", "claude-opus-4-7")
+    p = _StubProvider("anthropic", "claude-opus-4-8")
     assert p._pop_reasoning_extra_body({}) == {}
     assert p._pop_reasoning_extra_body({"reasoning_effort": None}) == {}
 

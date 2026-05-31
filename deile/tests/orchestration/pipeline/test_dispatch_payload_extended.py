@@ -41,7 +41,7 @@ def test_full_payload_with_new_fields():
     p = DispatchPayload(
         brief="implement #309",
         channel_id="auto/issue-309",
-        preferred_model="anthropic:claude-opus-4-7",
+        preferred_model="anthropic:claude-opus-4-8",
         stage="implement",
         action_kind="implement",
         issue_number=309,
@@ -122,7 +122,7 @@ def test_build_dispatch_payload_forwards_new_fields():
     p = build_dispatch_payload(
         brief="test brief",
         channel_id="auto/issue-309",
-        preferred_model="anthropic:claude-opus-4-7",
+        preferred_model="anthropic:claude-opus-4-8",
         stage="implement",
         action_kind="implement",
         issue_number=309,
@@ -132,7 +132,7 @@ def test_build_dispatch_payload_forwards_new_fields():
     assert p["action_kind"] == "implement"
     assert p["issue_number"] == 309
     assert p["branch"] == "auto/issue-309"
-    assert p["preferred_model"] == "anthropic:claude-opus-4-7"
+    assert p["preferred_model"] == "anthropic:claude-opus-4-8"
     # Campos antigos preservados (regression guard).
     assert p["brief"] == "test brief"
     assert p["channel_id"] == "auto/issue-309"

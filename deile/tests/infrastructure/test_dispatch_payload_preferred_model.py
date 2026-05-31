@@ -68,9 +68,9 @@ class TestBuildDispatchPayload:
     def test_adds_preferred_model_when_truthy(self):
         p = build_dispatch_payload(
             brief="x", channel_id="c",
-            preferred_model="anthropic:claude-opus-4-7",
+            preferred_model="anthropic:claude-opus-4-8",
         )
-        assert p["preferred_model"] == "anthropic:claude-opus-4-7"
+        assert p["preferred_model"] == "anthropic:claude-opus-4-8"
 
     def test_omits_preferred_model_when_none(self):
         # Drop the key so ``model_dump(exclude_none=True)`` keeps the payload

@@ -694,8 +694,8 @@ class TestModelsProvider:
             "version: 1\n"
             "models:\n"
             "  - provider_id: anthropic\n"
-            "    model_id: claude-opus-4-7\n"
-            "    display_name: Claude Opus 4.7\n"
+            "    model_id: claude-opus-4-8\n"
+            "    display_name: Claude Opus 4.8\n"
             "    tier: tier_1\n"
             "    label: flagship\n"
             "    pricing:\n"
@@ -718,13 +718,13 @@ class TestModelsProvider:
         models = prov.get(force=True)
         assert len(models) == 2
         slugs = [m.slug for m in models]
-        assert "anthropic:claude-opus-4-7" in slugs
+        assert "anthropic:claude-opus-4-8" in slugs
         assert "openai:gpt-5.4" in slugs
 
     def test_pricing_extracted(self, tmp_path):
         prov = pd.ModelsProvider(yaml_path=self._yaml(tmp_path), ttl_s=0.0)
         models = {m.slug: m for m in prov.get(force=True)}
-        assert models["anthropic:claude-opus-4-7"].input_cost_per_1m == 5.0
+        assert models["anthropic:claude-opus-4-8"].input_cost_per_1m == 5.0
         assert models["openai:gpt-5.4"].output_cost_per_1m == 15.0
 
     def test_missing_yaml_falls_back_empty(self, tmp_path):
@@ -744,7 +744,7 @@ class TestCurrentModelProvider:
                                 "env": [
                                     {"name": "OTHER", "value": "x"},
                                     {"name": "DEILE_PREFERRED_MODEL",
-                                     "value": "anthropic:claude-opus-4-7"},
+                                     "value": "anthropic:claude-opus-4-8"},
                                 ],
                             },
                         ],
@@ -753,7 +753,7 @@ class TestCurrentModelProvider:
             },
         }
         assert pd.CurrentModelProvider._extract(sample) \
-            == "anthropic:claude-opus-4-7"
+            == "anthropic:claude-opus-4-8"
 
     def test_missing_env_returns_none(self):
         sample = {"spec": {"template": {"spec": {
@@ -794,7 +794,7 @@ class TestSetPreferredModel:
     def test_no_kubectl_returns_false(self, monkeypatch):
         monkeypatch.setattr(pd, "kubectl_bin", lambda: None)
         ok, msg = pd.set_preferred_model("deile-worker",
-                                         "anthropic:claude-opus-4-7")
+                                         "anthropic:claude-opus-4-8")
         assert ok is False
         assert "kubectl" in msg
 
@@ -840,7 +840,7 @@ class TestSetPreferredModel:
         mock_proc = MagicMock(returncode=0, stdout="ok\n", stderr="")
         with patch("subprocess.run", return_value=mock_proc):
             ok, _ = pd.set_preferred_model(
-                "deile-worker", "anthropic:claude-opus-4-7",
+                "deile-worker", "anthropic:claude-opus-4-8",
             )
         assert ok is True
 
@@ -1213,7 +1213,7 @@ class TestPanelDataFromContext:
         with patch("subprocess.run", side_effect=_fake_run):
             ok, _ = pd.set_preferred_model(
                 "deile-worker",
-                "anthropic:claude-opus-4-7",
+                "anthropic:claude-opus-4-8",
                 namespace="my-namespace",
             )
         assert ok is True
@@ -1518,11 +1518,11 @@ class TestLocalInstancesProvider:
         rt.mkdir()
         _write_state(rt, "cli-llm", pid=12345,
                      kind="llm_call", detail="completion",
-                     model="anthropic:claude-opus-4-7")
+                     model="anthropic:claude-opus-4-8")
         monkeypatch.setattr(pd, "_pid_alive", lambda p: True)
         provider = pd.LocalInstancesProvider(runtime_dir=rt)
         snap = provider.get()[12345]
-        assert snap.doing_now_label == "llm: anthropic:claude-opus-4-7"
+        assert snap.doing_now_label == "llm: anthropic:claude-opus-4-8"
 
     def test_runtime_dir_env_override(self, tmp_path, monkeypatch):
         rt = tmp_path / "custom-run"
@@ -1725,7 +1725,7 @@ class TestPanelShowsPerPidAction:
             current_action_kind="llm_call",
             current_action_detail="completion",
             current_action_started_at=now,
-            current_action_model="anthropic:claude-opus-4-7",
+            current_action_model="anthropic:claude-opus-4-8",
             stats_tokens_in=0, stats_tokens_out=0, stats_cost_usd=0.0,
             stats_turns=0, stats_tool_calls=0, stats_errors=0,
             stale=False,
@@ -1748,7 +1748,7 @@ class TestPanelShowsPerPidAction:
         # Por PID: 28117 → tool, 16694 → llm.
         by_pid = {r.name: r.doing_now for r in rows}
         assert "tool: execute_bash" in by_pid["local-deile#28117"]
-        assert "llm: anthropic:claude-opus-4-7" in by_pid["local-deile#16694"]
+        assert "llm: anthropic:claude-opus-4-8" in by_pid["local-deile#16694"]
 
     def test_falls_back_to_log_state_when_no_snapshot(self, monkeypatch):
         """PID sem state file (compat com processos legacy) → fallback log."""
@@ -1891,7 +1891,7 @@ class TestStageDispatchProvider:
         from _panel_data import StageDispatchProvider
         payloads = {
             "deployment/deile-pipeline": _deployment_with_env({
-                "DEILE_PIPELINE_MODEL_IMPLEMENT": "anthropic:claude-opus-4-7",
+                "DEILE_PIPELINE_MODEL_IMPLEMENT": "anthropic:claude-opus-4-8",
                 "DEILE_PIPELINE_MODEL": "anthropic:claude-sonnet-4-6",
             }),
             "deployment/deile-worker": _deployment_with_env({}),
@@ -1904,7 +1904,7 @@ class TestStageDispatchProvider:
                 for e in StageDispatchProvider().get_all_stages(force=True)
             }
         # implement: per-stage env wins.
-        assert by_stage["implement"].model == "anthropic:claude-opus-4-7"
+        assert by_stage["implement"].model == "anthropic:claude-opus-4-8"
         # refine: cai no global DEILE_PIPELINE_MODEL.
         assert by_stage["refine"].model == "anthropic:claude-sonnet-4-6"
 
@@ -1930,7 +1930,7 @@ class TestStageDispatchProvider:
         payloads = {
             "deployment/deile-pipeline": _deployment_with_env({
                 "DEILE_PIPELINE_DISPATCH_IMPLEMENT": "claude-worker",
-                "DEILE_PIPELINE_MODEL_IMPLEMENT": "anthropic:claude-opus-4-7",
+                "DEILE_PIPELINE_MODEL_IMPLEMENT": "anthropic:claude-opus-4-8",
             }),
             "deployment/deile-worker": _deployment_with_env({}),
         }
@@ -1942,7 +1942,7 @@ class TestStageDispatchProvider:
                 for e in StageDispatchProvider().get_all_stages(force=True)
             }
         assert by_stage["implement"].worker == "claude-worker"
-        assert by_stage["implement"].model == "anthropic:claude-opus-4-7"
+        assert by_stage["implement"].model == "anthropic:claude-opus-4-8"
         assert by_stage["implement"].source == "env"
 
     def test_canonicalizes_legacy_worker_aliases(self):

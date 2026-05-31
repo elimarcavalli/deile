@@ -4246,7 +4246,7 @@ class DispatchMatrixView(View):
     # mas garante que o picker sempre tenha opções para o operador
     # escolher (ex.: em CI sem yaml acessível ou em demo sem cluster).
     _MODELS_FALLBACK_STATIC = (
-        "anthropic:claude-opus-4-7",
+        "anthropic:claude-opus-4-8",
         "anthropic:claude-sonnet-4-6",
         "anthropic:claude-haiku-4-5",
         "openai:gpt-4",

@@ -136,10 +136,10 @@ class TestApplyEnvOverrides:
         assert s.debug_enabled is True  # env var ativa
 
     def test_deile_preferred_model_applies(self, monkeypatch):
-        monkeypatch.setenv("DEILE_PREFERRED_MODEL", "anthropic:claude-opus-4-7")
+        monkeypatch.setenv("DEILE_PREFERRED_MODEL", "anthropic:claude-opus-4-8")
         s = Settings()
         _apply_env_overrides(s)
-        assert s.preferred_model == "anthropic:claude-opus-4-7"  # env var ativa
+        assert s.preferred_model == "anthropic:claude-opus-4-8"  # env var ativa
 
     def test_deile_vision_model_applies(self, monkeypatch):
         monkeypatch.setenv("DEILE_VISION_MODEL", "custom-vision-v1")

@@ -25,7 +25,7 @@ class ModelHandle:
     """Immutable descriptor for one model in the catalog."""
 
     provider_id: str           # "anthropic" | "openai" | "deepseek" | "gemini"
-    model_id: str              # e.g. "claude-opus-4-7"
+    model_id: str              # e.g. "claude-opus-4-8"
     tier: ModelTier
     pricing: ModelPricing
     context_window: int
