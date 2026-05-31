@@ -681,6 +681,19 @@ class ForgeClient(ABC):
         Cached in ``self._config.default_branch`` after the first call.
         """
 
+    async def branch_exists(self, name: str) -> bool:
+        """Return True if ``name`` is a live ref on the remote, False otherwise.
+
+        Defensive default: returns ``True`` so that subclasses which do not
+        implement this never mark a PR as orphan-by-deleted-branch. Concrete
+        forges override with an authoritative API call.
+
+        Used by the pipeline to detect PRs whose head branch was force-deleted
+        on the remote — those PRs cannot be reviewed/merged and should be
+        flagged ``~workflow:bloqueada`` (Mistério #4 defensive guard).
+        """
+        return True
+
     # ------------------------------------------------------------------
     # Internal — subclasses implement label creation per forge
     # ------------------------------------------------------------------

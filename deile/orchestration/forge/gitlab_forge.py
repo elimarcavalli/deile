@@ -31,6 +31,7 @@ import asyncio
 import json
 import logging
 import re
+import urllib.parse
 from datetime import datetime, timezone
 from typing import Iterable, List, Literal, Optional, Tuple
 
@@ -1326,6 +1327,32 @@ class GitLabForge(ForgeClient):
         # The project lookup also caches the default branch as a side effect.
         await self._resolve_project_id()
         return self._config.default_branch or "main"
+
+    async def branch_exists(self, name: str) -> bool:
+        """Return True iff the branch ref exists on the GitLab project.
+
+        Uses ``glab api projects/<id>/repository/branches/<name>`` — non-zero
+        return code (404 or other) means "absent or unreachable", which we
+        treat as authoritatively absent only when the response is empty
+        (fail-open on other errors so a transient API hiccup never flags a
+        healthy MR as orphan).
+        """
+        if not name:
+            return False
+        encoded_name = urllib.parse.quote(name, safe="")
+        rc, _, _ = await self._run(
+            "api",
+            f"projects/{self._config.encoded_project_path}/repository/branches/{encoded_name}",
+            "--silent",
+        )
+        if rc == 0:
+            return True
+        # Distinguish 404 (definitive absence) from other failures.
+        rc2, body, _ = await self._run(
+            "api",
+            f"projects/{self._config.encoded_project_path}/repository/branches/{encoded_name}",
+        )
+        return "404" not in (body or "")[:200].lower().split("\n", 1)[0]
 
 
 def _is_before(iso_str: str, cursor: datetime) -> bool:

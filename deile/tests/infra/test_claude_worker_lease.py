@@ -220,6 +220,99 @@ class TestHeartbeatLoop:
 
 
 # ---------------------------------------------------------------------------
+# Mistério #3 — claude_pid no lease: distingue "lease vivo por heartbeat" de
+# "subprocess claude rodando agora".
+# ---------------------------------------------------------------------------
+
+
+class TestClaudePidInLease:
+    @pytest.mark.unit
+    async def test_update_lease_claude_pid_sets_field(self, tmp_path: Path):
+        """``_update_lease_claude_pid(pid)`` grava ``claude_pid`` no lease."""
+        workspace = tmp_path / "ws-pid"
+        workspace.mkdir()
+        _make_lease(workspace)
+        lease_path = workspace / ".lease.json"
+
+        await cws._update_lease_claude_pid(lease_path, 12345)
+        data = json.loads(lease_path.read_text())
+        assert data["claude_pid"] == 12345
+        # Wrapper ``pid`` é preservado (não some no merge).
+        assert "pid" in data
+
+    @pytest.mark.unit
+    async def test_update_lease_claude_pid_none_removes_field(self, tmp_path: Path):
+        """``_update_lease_claude_pid(None)`` remove ``claude_pid`` do lease."""
+        workspace = tmp_path / "ws-pid-clear"
+        workspace.mkdir()
+        _make_lease(workspace)
+        lease_path = workspace / ".lease.json"
+
+        await cws._update_lease_claude_pid(lease_path, 12345)
+        await cws._update_lease_claude_pid(lease_path, None)
+        data = json.loads(lease_path.read_text())
+        assert "claude_pid" not in data
+
+    @pytest.mark.unit
+    async def test_update_lease_missing_file_does_not_raise(self, tmp_path: Path):
+        """Se o lease desapareceu, atualizar é best-effort e não levanta."""
+        await cws._update_lease_claude_pid(tmp_path / "missing.json", 99)
+
+    @pytest.mark.unit
+    async def test_find_active_lease_exposes_claude_running_true(
+        self, tmp_path: Path,
+    ):
+        """``_find_active_lease`` reporta ``claude_running=True`` para PID vivo."""
+        root = tmp_path / "root"
+        root.mkdir()
+        workspace = root / ("a" * 16)
+        workspace.mkdir()
+        _make_lease(workspace)
+        await cws._update_lease_claude_pid(workspace / ".lease.json", os.getpid())
+
+        lease = await asyncio.to_thread(cws._find_active_lease, root)
+        assert lease is not None
+        assert lease["task_id"] == "a" * 16
+        assert lease["claude_pid"] == os.getpid()
+        assert lease["claude_running"] is True
+
+    @pytest.mark.unit
+    async def test_find_active_lease_exposes_claude_running_false(
+        self, tmp_path: Path,
+    ):
+        """PID de um processo morto → ``claude_running=False`` (mistério #3)."""
+        root = tmp_path / "root"
+        root.mkdir()
+        workspace = root / ("b" * 16)
+        workspace.mkdir()
+        _make_lease(workspace)
+        # PID muito alto que (com altíssima probabilidade) NÃO existe.
+        await cws._update_lease_claude_pid(workspace / ".lease.json", 2_000_001)
+
+        lease = await asyncio.to_thread(cws._find_active_lease, root)
+        assert lease is not None
+        assert lease["claude_pid"] == 2_000_001
+        assert lease["claude_running"] is False
+
+    @pytest.mark.unit
+    async def test_find_active_lease_claude_running_false_when_field_missing(
+        self, tmp_path: Path,
+    ):
+        """Lease antigo sem ``claude_pid`` → ``claude_running=False``."""
+        root = tmp_path / "root"
+        root.mkdir()
+        workspace = root / ("c" * 16)
+        workspace.mkdir()
+        _make_lease(workspace)
+        # NÃO chama _update_lease_claude_pid — simula lease legacy.
+
+        lease = await asyncio.to_thread(cws._find_active_lease, root)
+        assert lease is not None
+        assert lease.get("claude_pid") is None
+        assert lease["claude_running"] is False
+
+
+# ---------------------------------------------------------------------------
 # Mecanismo 1 — OAuth: _refresh_oauth_with_lock
 # ---------------------------------------------------------------------------
 
