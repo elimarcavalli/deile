@@ -50,24 +50,13 @@ _BLOCKED_CONTRACT = "BLOQUEADO: <motivo concreto>"
 # Nota: os valores de _PIP_GUARD e _FULL_SUITE_CMD são embutidos diretamente para
 # evitar conflito de placeholder com o str.format() do _render_brief (single-pass).
 _IMPACT_TEST_STRATEGY = (
-    "TESTES — análise de impacto (NÃO rode a suíte completa; isso é tarefa do revisor):\n"
-    "   a) Liste os arquivos que você criou/editou:\n"
-    "        git diff --name-only HEAD\n"
-    "   b) Para CADA arquivo `deile/X/Y/z.py` editado, identifique os testes impactados:\n"
-    "      • Testes diretos (mesmo módulo/subpacote):\n"
-    "          ls deile/tests/X/Y/test_z.py deile/tests/X/Y/test_*.py 2>/dev/null\n"
-    "      • Testes que importam o módulo editado:\n"
-    '          grep -rln "from deile.X.Y" deile/tests/ 2>/dev/null\n'
-    "      • Se tocou `deile/orchestration/pipeline/` → inclua `deile/tests/orchestration/pipeline/`\n"
-    "      • Se tocou `deile/orchestration/forge/` → inclua `deile/tests/orchestration/pipeline/`\n"
-    "      • Se tocou `deile/tools/` → inclua `deile/tests/tools/`\n"
-    "      • Se tocou `deile/core/` ou `deile/config/` → inclua testes de cada subpacote afetado\n"
-    "      • Se tocou `infra/k8s/` (ex: claude_worker_server.py) → inclua `deile/tests/infrastructure/`\n"
-    "   c) Construa a lista completa e rode: `python3 -m pytest <lista_de_testes_impactados> -p no:cov -q`\n"
-    "      " + _PIP_GUARD + ". Itere até verde.\n"
-    "   d) Se a lista impactada for vazia (ex: mudou só um YAML de config ou Markdown):\n"
-    "      rode apenas os testes do módulo mais próximo como sanity-check.\n"
-    "   NUNCA rode `" + _FULL_SUITE_CMD + "` (suíte inteira) — o revisor fará isso no gate de merge."
+    "TESTES — análise de impacto (NÃO rode a suíte completa; revisor faz isso):\n"
+    "   a) `git diff --name-only HEAD` → lista do que editou.\n"
+    "   b) Para cada arquivo `deile/X/Y/z.py`: rode `deile/tests/X/Y/test_*.py` + "
+    "qualquer `grep -rln \"from deile.X.Y\" deile/tests/`. Mesma regra por subpacote.\n"
+    "   c) Comando: `python3 -m pytest <lista_de_testes_impactados> -p no:cov -q`. "
+    + _PIP_GUARD + ". Itere até verde.\n"
+    "   NUNCA rode `" + _FULL_SUITE_CMD + "` (suíte inteira) — é tarefa do revisor."
 )
 
 _BRIEF_CONSTANTS: dict[str, Any] = {
@@ -158,24 +147,16 @@ def _inject_view_issue_template(params: dict[str, Any], number: int) -> None:
 
 
 _WORKER_IMPLEMENT_BRIEF = """\
-Implemente a issue #{number} do repositório {repo} e abra uma {pr_noun} — execute de verdade, não simule nem invente.
+Implemente a issue #{number} de {repo} e abra uma {pr_noun}. Execute de verdade — não invente URL nem diga "concluído" sem a {pr_noun} existir.
 
-Passo a passo:
-1. Trabalhe na subpasta ./repo do seu diretório atual. Se ./repo não existir, rode: {clone_cmd}
-   Se já existir, entre nela e rode: git fetch origin && git checkout {main} && git reset --hard origin/{main}
-2. Dentro de ./repo, crie e dê checkout no branch {branch} a partir de {main}.
-3. ANTES de codar, leia os comentários da issue: {view_issue_cmd} — decisões e esclarecimentos do stakeholder ali FAZEM PARTE do escopo (o corpo pode não conter tudo). Implemente a feature descrita na issue abaixo E o que os comentários decidiram. Crie/edite os arquivos necessários e ADICIONE testes cobrindo todos os casos.
+1. ./repo: se não existir → `{clone_cmd}`; se existir → `git fetch origin && git checkout {main} && git reset --hard origin/{main}`.
+2. Crie branch `{branch}` a partir de `{main}`.
+3. Leia comentários da issue (`{view_issue_cmd}`) — decisões do stakeholder FAZEM PARTE do escopo. Implemente o pedido + testes.
 4. {impact_test_strategy}
-5. Faça commit atômico e `git push -u origin {branch}`.
-6. ABRA A {pr_noun} (passo OBRIGATÓRIO — sem {pr_noun} a tarefa NÃO está concluída):
-   {create_pr_cmd}
-7. CONFIRME que a {pr_noun} existe antes de responder:
-   {check_pr_cmd}
-   (se não retornar URL, a {pr_noun} NÃO foi criada — volte ao passo 6 e crie de fato.)
-8. NÃO faça force-push. NÃO altere nada fora de ./repo.
-9. Na ÚLTIMA LINHA da resposta final, escreva SOMENTE a URL da {pr_noun} confirmada no passo 7 (ex.: {pr_url_pattern}). Nada depois dela.
-
-DEFINITION OF DONE: existe uma {pr_noun} aberta cuja URL você confirmou via {forge_cli}. Se push/{forge_cli}/testes falharem, reporte o erro REAL — NUNCA invente uma URL nem diga "concluído" sem a {pr_noun} existir.
+5. Commit atômico + `git push -u origin {branch}`.
+6. Abra a {pr_noun} (OBRIGATÓRIO): `{create_pr_cmd}`.
+7. Confirme: `{check_pr_cmd}` — se não retornar URL, volte ao passo 6.
+8. NÃO force-push. NÃO altere nada fora de ./repo. ÚLTIMA LINHA = URL da {pr_noun} (ex: {pr_url_pattern}).
 
 === Issue #{number}: {title} ===
 {body}
@@ -189,55 +170,47 @@ DEFINITION OF DONE: existe uma {pr_noun} aberta cuja URL você confirmou via {fo
 # coberto pelo PASSO 0 lendo ``.deile-progress.md``; merge só acontece quando
 # o autor sou eu E meu review atual está APPROVED E threads ok E suíte verde.
 _WORKER_PR_BRIEF = """\
-Você é membro do time de desenvolvimento do {repo}. Foi acordado por algum trigger na {pr_noun} #{number}. NÃO IMPORTA qual trigger — abra a {pr_noun} e descubra o que precisa ser feito a partir do ESTADO REAL dela.
+{pr_noun} #{number} de {repo}. Descubra o que fazer pelo ESTADO REAL da {pr_noun}, não pelo trigger.
 
-CHECKPOINT OBRIGATÓRIO (vale pra QUALQUER worker): a execução é FALHA se você terminar sem ter postado pelo menos UM comentário visível na {pr_noun} via {comment_pr_cmd}.
+CHECKPOINT OBRIGATÓRIO: execução é FALHA sem 1+ comentário visível via {comment_pr_cmd}.
 
-PASSO 0 — DESCOBERTA DE ESTADO (não pule):
-1. Clone se preciso ({clone_cmd}), faça checkout: {checkout_pr_cmd}.
-2. Se existir `.deile-progress.md` no SEU diretório de trabalho (um nível acima de ./repo), LEIA-O — é a sua TODO da tentativa anterior. Continue de onde parou.
-3. Leia o ESTADO da {pr_noun} via REST:
+PASSO 0 — Checkout + estado:
+1. Clone se preciso ({clone_cmd}); `{checkout_pr_cmd}`.
+2. Leia `.deile-progress.md` no diretório de trabalho (um nível acima de ./repo) — TODO da tentativa anterior. Continue de onde parou.
+3. Estado da {pr_noun} via REST (use o forge correto — gh OU glab):
    gh api repos/{repo}/pulls/{number} --jq '{{author:.user.login, assignees:[.assignees[].login], requested_reviewers:[.requested_reviewers[].login], head_sha:.head.sha, mergeable:.mergeable}}'
    gh api repos/{repo}/pulls/{number}/reviews --jq '[.[] | select(.user.login == "{gh_login}")] | sort_by(.submitted_at) | last'
-   gh api repos/{repo}/issues/{number}/comments --jq '.[] | {{author:.user.login, body, created_at}}'
-4. Calcule:
-   - meu_papel = {{{{autor: author == "{gh_login}", assignee: "{gh_login}" in assignees, reviewer: "{gh_login}" in requested_reviewers}}}}
-   - meu_review_atual = último review meu cujo commit_id == head_sha (None se nenhum)
-   - threads_abertas = threads de review sem resposta sua nem resolvidas
-   - comments_dirigidos_a_mim_sem_resposta = comments contendo "@{gh_login}" (humano OU auto) cuja última reply do thread NÃO é minha (tem que ter consciência dos dois — seu próprio comment auto-mencionado conta se ainda não foi atendido)
+4. Calcule: meu_papel (autor/assignee/reviewer com "{gh_login}"); meu_review_atual (commit_id == head_sha); threads_abertas; comment dirigido a mim sem resposta.
 
-PASSO 1 — MONTE SUA WORK-LIST a partir do estado (não dos triggers):
-□ HEAD mudou desde meu_review_atual E sou reviewer/assignee → revisar
-□ thread aberta dirigida a mim → responder/resolver
-□ comment dirigido a mim sem resposta → atender o pedido específico
-□ sou assignee + meu_review_atual.state == APPROVED + threads ok + CI verde → MERGEAR
-□ sou reviewer só, review feita, HEAD igual → comentar curto "já APPROVED em <sha>, sem novidade"
+PASSO 1 — WORK-LIST (do estado, não do trigger):
+- HEAD novo + sou reviewer/assignee → revisar
+- thread aberta dirigida a mim → responder/resolver
+- comment dirigido a mim sem resposta → atender o pedido
+- sou assignee + APPROVED + threads ok + CI verde → MERGEAR
+- reviewer só, HEAD igual → comentar curto "já APPROVED em <sha>, sem novidade"
 
-REGRA DE EXECUÇÃO (independente do autor, humano ou eu) — execute o pedido SEMPRE:
-- Se a {pr_noun} está OPEN → faça push direto na própria branch da {pr_noun}.
-- Se a {pr_noun} está MERGED ou CLOSED → abra uma branch nova derivada (nome sugerido: `auto/<branch-original>-followup-<short-sha>`), atualizada com {main}, execute o pedido, abra uma NOVA {pr_noun} mencionando a anterior por número (`Closes #{number} follow-up`).
-- NUNCA deixe um pedido pendente nem ignore um trigger só porque o autor é outro humano — você é membro do time.
+REGRA — execute o pedido SEMPRE (não importa o autor):
+- {pr_noun} está OPEN → push direto na própria branch.
+- {pr_noun} está MERGED/CLOSED → branch nova derivada (`auto/<orig>-followup-<sha>`) a partir de `{main}`, NOVA {pr_noun} mencionando a anterior (`Closes #{number} follow-up`).
 
-PASSO 2 — EXECUTAR a work-list em ordem.
-- NÃO se auto-mencione no corpo de NENHUM comment/review (anti-eco — sua identidade é deduzida do .user.login).
-- Para review: use {review_post_cmd} com APPROVE ou REQUEST_CHANGES.
-- Para merge: {merge_cmd} (fallback: {merge_fallback_cmd}). Confirme: {check_merged_cmd}.
-- Para comment: {comment_pr_cmd}.
-- Gate de testes: se for revisar ou mergear, rode a SUÍTE COMPLETA: {full_suite_cmd} ({pip_guard}). Suíte vermelha por culpa da sua mudança = bloqueante. Suíte vermelha por testes pré-existentes que sua mudança NÃO TOCOU = você documenta no comment e segue.
-- Confronte entrega contra pedido (passo 2b clássico): leia issue que a {pr_noun} fecha (Closes #N), liste itens, valide entrega.
+PASSO 2 — Executar a work-list:
+- NÃO se auto-mencione (anti-eco — identidade vem do `.user.login`).
+- Review: `{review_post_cmd}` (APPROVE/REQUEST_CHANGES). Merge: `{merge_cmd}` (fallback `{merge_fallback_cmd}`); confirme `{check_merged_cmd}`. Comment: `{comment_pr_cmd}`.
+- Para revisar/mergear: rode a SUÍTE COMPLETA `{full_suite_cmd}` ({pip_guard}). Vermelha por sua mudança = bloqueante; vermelha por testes pré-existentes intocados = documenta e segue.
+- Confronte entrega vs issue (Closes #N).
 
-PASSO 3 — DECISÃO É DECISÃO (regra inegociável anti-loop):
-- Se você TEM uma conclusão de review (APPROVE ou REQUEST_CHANGES), POSTE o review formal AGORA via {review_post_cmd} e ENCERRE este tick com veredito REVIEWED. NÃO escreva "incompleto será retomada" se você chegou a uma decisão — isso causa loop infinito até bater attempt cap. "Incompleto" SOMENTE quando estouro real de contexto/tempo te forçou a parar com trabalho objetivo no meio (ex: rodou 2 de 5 testes da suíte e ficou sem orçamento).
-- Se a work-list ESVAZIOU sem decisão (ex: você só comentou um esclarecimento): marque `~mention:processado` automaticamente (o pipeline faz isso pós-success).
-- Se a work-list NÃO esvaziou por estouro de contexto/tempo REAL: grave `.deile-progress.md` no seu diretório de trabalho (NÃO commite, NÃO dentro de ./repo) com: o que fez, o que falta, o que tá bloqueando. Próximo tick reusa. Aceito SOMENTE com proof-of-work concreto (arquivo:linha onde parou, testes executados, comandos pendentes).
+PASSO 3 — Decisão é decisão (anti-loop):
+- TEM conclusão → poste review formal e ENCERRE com veredito. NÃO escreva "incompleto" se chegou a decidir.
+- Work-list ESVAZIOU → pipeline marca `~mention:processado`.
+- Trabalho REAL pendente por estouro → grave `.deile-progress.md` (NÃO commite, NÃO dentro de ./repo) com: feito, falta, bloqueio, arquivo:linha.
 
-PASSO 4 — VEREDITO. Na ÚLTIMA LINHA escreva UMA dentre:
-- `{pr_url_pattern} MERGED` — você mergeou de fato (confirme com {check_merged_cmd}).
-- `{pr_url_pattern} REVIEWED:APPROVED` — você postou review formal APPROVE via {review_post_cmd}; pode mergear depois ou outro tick mergeia.
-- `{pr_url_pattern} REVIEWED:CHANGES` — você postou review formal REQUEST_CHANGES via {review_post_cmd}; autor é quem age, pipeline marca processado.
-- `{pr_url_pattern} COMMENTED` — você só respondeu thread/comment, sem review formal (esclarecimento, ack, etc).
-- `{blocked_contract}` — impedimento real (decisão de produto pendente, credencial faltando, contrato quebraria sem migração).
-NUNCA escreva MERGED sem mergear, REVIEWED sem postar review via API, ou invente resultado. NUNCA termine sem veredito quando TEM decisão.
+PASSO 4 — ÚLTIMA LINHA:
+- `{pr_url_pattern} MERGED` — mergeado de fato (`{check_merged_cmd}`).
+- `{pr_url_pattern} REVIEWED:APPROVED` — review APPROVE postada.
+- `{pr_url_pattern} REVIEWED:CHANGES` — review REQUEST_CHANGES postada.
+- `{pr_url_pattern} COMMENTED` — só comentário, sem review formal.
+- `{blocked_contract}` — impedimento real.
+NUNCA invente resultado. NUNCA termine sem veredito quando TEM decisão.
 """
 
 
@@ -250,48 +223,38 @@ NUNCA escreva MERGED sem mergear, REVIEWED sem postar review via API, ou invente
 # updated journal before it stops.
 
 _WORKER_IMPLEMENT_RESUME_BRIEF = """\
-RETOMADA da issue #{number} do repositório {repo} — uma tentativa ANTERIOR já começou este trabalho. NÃO recomece do zero, NÃO descarte nada.
+RETOMADA da issue #{number} de {repo}. Há trabalho parcial em ./repo — NÃO recomece. NÃO rode `git reset --hard`. NÃO apague untracked.
 
-Passo a passo:
-1. Trabalhe na subpasta ./repo do seu diretório atual (ela JÁ existe com o trabalho parcial). NÃO rode `git reset --hard`, NÃO recrie a branch, NÃO apague arquivos não rastreados — eles são o progresso da tentativa anterior.
-2. Faça checkout no branch {branch} se ainda não estiver nele (ele já existe localmente): git checkout {branch}
-3. RECONSTRUA O CONTEXTO antes de qualquer edição:
-   a) Leia o journal de progresso da tentativa anterior (o que já fiz / o que falta / decisões / bloqueios):
+1. `git checkout {branch}` (existe localmente).
+2. Reconstrua contexto:
 {progress_block}
-   b) Veja o diff acumulado em relação a {main}: git diff {main}...HEAD ; e também: git diff HEAD
-   c) LEIA TODOS os arquivos não rastreados (untracked) e os modificados — eles contêm o trabalho parcial: git status --porcelain ; depois leia cada arquivo listado.
-4. CONTINUE a implementação de onde parou. Crie/edite o que falta e garanta testes cobrindo todos os casos.
-5. {impact_test_strategy}
-6. Faça commit normal (SEM force-push) e `git push -u origin {branch}`.
-7. ABRA A {pr_noun} (OBRIGATÓRIO — sem {pr_noun} a tarefa NÃO está concluída):
-   {create_pr_cmd}
-   (Se já existe uma {pr_noun} para {branch}, apenas confirme-a: {check_pr_cmd})
-8. ANTES DE PARAR (concluindo OU pausando de novo), ATUALIZE o journal `.deile-progress.md` no diretório de trabalho (NÃO dentro de ./repo, e NÃO commite): registre o que fez, o que falta, decisões-chave e qualquer bloqueio.
-9. Se um IMPEDIMENTO REAL impedir continuar (falta credencial/segredo, dependência impossível, decisão de produto pendente), escreva numa linha começando com `{blocked_contract}` — só você sabe disso; o pipeline respeita isso e para de retomar.
-10. Na ÚLTIMA LINHA: a URL da {pr_noun} confirmada (ex.: {pr_url_pattern}), ou, se bloqueado, a linha `{blocked_contract}`. Nada depois dela.
-
-DEFINITION OF DONE: existe uma {pr_noun} aberta cuja URL você confirmou via {forge_cli}. NUNCA invente URL nem diga "concluído" sem a {pr_noun} existir.
+   `git diff {main}...HEAD` + `git diff HEAD` + `git status --porcelain` (leia cada arquivo listado).
+3. Continue de onde parou. Edite o que falta + testes.
+4. {impact_test_strategy}
+5. Commit + `git push -u origin {branch}`.
+6. Abra a {pr_noun} (OBRIGATÓRIO): `{create_pr_cmd}` (ou confirme existente: `{check_pr_cmd}`).
+7. ANTES de parar, atualize `.deile-progress.md` no diretório de trabalho (NÃO commite, NÃO em ./repo): feito, falta, decisões, bloqueios.
+8. Impedimento real → linha `{blocked_contract}`. Última linha = URL da {pr_noun} (ex: {pr_url_pattern}) OU `{blocked_contract}`.
 
 === Issue #{number}: {title} ===
 {body}
 """
 
 _WORKER_MENTION_BRIEF = """\
-Você foi acionado por {trigger_summary} no repositório {repo}.
+Acionado por {trigger_summary} em {repo}.
 
-Contexto completo dos gatilhos detectados:
+Gatilhos:
 {trigger_details}
 
-Ação esperada:
+Ação:
 {expected_action}
 
-IMPORTANTE:
-- Se for um ASSIGNEE em uma issue SEM {pr_noun} aberta, implemente a issue completa (use o fluxo normal de implementação: branch + commit + teste + {pr_noun}).
-- Se for um ASSIGNEE em uma issue que JÁ TEM {pr_noun} aberta, verifique se a {pr_noun} cobre tudo da issue. Se não cobrir, faça checkout do branch da {pr_noun} e continue a implementação.
-- Se for REQUESTED REVIEWER, faça review completa (arquitetura, DRY, KISS, SOLID, clean code) + teste + corrija o que precisar + commit + push + comente as evidências + merge.
-- Se for MENTION em comentário, responda diretamente ao que foi pedido. Se o comentário está numa {pr_noun}, trabalhe no branch da {pr_noun}.
-- Poste SEMPRE a resposta ou evidências como comentário no {forge_name}.
-- Na ÚLTIMA LINHA, escreva a URL relevante ({pr_noun}, issue, etc).
+Regras:
+- ASSIGNEE em issue sem {pr_noun} → implemente (branch + commit + testes + {pr_noun}).
+- ASSIGNEE em issue com {pr_noun} → checkout branch da {pr_noun} e continue se faltar algo.
+- REQUESTED REVIEWER → review (SOLID/DRY/KISS) + testes + corrigir + push + comentar evidências + merge.
+- MENTION em comentário → responda ao pedido; se for em {pr_noun}, trabalhe no branch dela.
+- Sempre poste resposta/evidências como comentário ({forge_name}). ÚLTIMA LINHA = URL relevante.
 """
 
 # Shared mention-rendering helpers (issue #253). The worker brief and the Claude
@@ -570,55 +533,49 @@ def _render_worker_implement_resume_brief(
 # Each brief ends with a strict last-line VERDICT the pipeline parses.
 
 _WORKER_CRITIQUE_BRIEF = """\
-Você é o GATE DE CRÍTICA DE ESCOPO da issue #{number} (tipo: {type}) do repositório {repo}. NÃO implemente nem refine nada — apenas JULGUE, conforme a sua persona, se o escopo está claro o suficiente para avançar.
+GATE DE CRÍTICA da issue #{number} (tipo: {type}) de {repo}. NÃO implemente. Apenas JULGUE se o escopo está claro.
 
-1. Leia a issue COMPLETA: body + TODOS os comentários + issues/PRs vinculadas. NÃO confie em rótulos como "trivial", "depois alguém faz", "óbvio" — eles costumam encobrir vagueza. Use:
-   {fetch_template_cmd}
-   {view_issue_cmd}
-   (feature/refactor/bug: consulte a arquitetura real — docs/system_design/ e o código; clone com `{clone_cmd}` se ainda não houver ./repo. Bug: verifique se dá pra localizar a origem no código.)
-2. JULGAMENTO CÉTICO — só vote CLARO se TODOS os abaixo se sustentam (qualquer falha → VAGO):
-   a) Segue o template do tipo, com cada seção preenchida com substância real (não placeholder).
-   b) Critérios de aceite DUROS e MENSURÁVEIS (frases como "deve funcionar bem", "ser robusto", "ser performático" SEM número/condição = vago).
-   c) Sem PROMESSAS VAZIAS — frases como "depois isso é estendido", "alguém edita o Markdown", "trivial adicionar X", "hot-reload já existe" SEM mecanismo concreto (teste, lint, schema, item no checklist de UMA sub-issue agregada de follow-ups) que GARANTA o cumprimento = vago.
-   d) Sem LACUNAS ARQUITETURAIS óbvias para a disciplina envolvida — idempotência, TOCTOU, timeouts, observabilidade, rollback, threat model (se toca segurança/secrets/rede), schema migration (se altera persistência), false-positive/SLO (se é detector/classificador), **dependências externas** (componentes/serviços que precisam existir antes — sem garantia de ordem ou degrade gracefully = vago). Ausência sem justificativa explícita = vago.
-   e) Escopo V1 vs futuro EXPLÍCITO — o que entra agora vs o que vira item no checklist de UMA sub-issue agregada de follow-ups (regra anti-flood: nunca N sub-issues por gap) vs o que fica fora.
-3. Se VAGO, LISTE 3-5 defeitos concretos ordenados por impacto (não pare no primeiro — issues complexas têm múltiplas lacunas, e refinar uma de cada vez gera N voltas extras desnecessárias). Em dúvida entre CLARO e VAGO, **vote VAGO** — vale mais uma volta extra do que uma issue mal-escopada chegando ao código.
+1. Leia issue + comentários + linked: `{view_issue_cmd}` (template: `{fetch_template_cmd}`; clone se preciso: `{clone_cmd}`). Para bug: localize origem `arquivo:linha`.
+2. CLARO só se TODOS:
+   a) Segue template, sem placeholder vazio.
+   b) Critérios de aceite MENSURÁVEIS (número/condição testável; "bem/robusto/performático" = vago).
+   c) Sem promessas vazias ("trivial X depois") sem mecanismo concreto (teste/lint/schema/sub-issue de follow-ups).
+   d) Sem lacunas arquiteturais óbvias (idempotência, TOCTOU, timeouts, observabilidade, rollback, threat model, schema migration, SLO, dependências externas).
+   e) V1 vs roadmap EXPLÍCITO — o que entra agora vs item em UMA sub-issue agregada (anti-flood).
+3. Se VAGO, liste 3-5 defeitos por impacto. Em dúvida → VAGO.
 
-VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE uma destas, nada depois dela:
+ÚLTIMA LINHA (somente uma):
   VEREDITO: CLARO
-  VEREDITO: VAGO: <o que falta, em uma frase concreta>
+  VEREDITO: VAGO: <o que falta>
 
 === Issue #{number} (tipo: {type}): {title} ===
 {body}
 """
 
 _WORKER_REFINE_BRIEF = """\
-REFINE a issue #{number} (tipo: {type}) do {repo} ao PADRÃO DE MAESTRIA — título + corpo reescritos para que quem implementar não adivinhe nada. NÃO codifique; blinde o ESCOPO. Persona detalha critério por tipo.
+REFINE a issue #{number} (tipo: {type}) de {repo}. Reescreva título + body. NÃO codifique.
 
-1. LEITURA CÉTICA — body + TODOS comentários + linked issues/PRs + template. Comentários do stakeholder FAZEM PARTE do escopo. "Trivial"/"depois" encobrem vagueza — desconfie.
-   {fetch_template_cmd}
-   {view_issue_cmd}
-   (feature/refactor: docs/system_design/ + código real, `{clone_cmd}` se preciso. bug: localize origem `arquivo:linha`.)
+1. Leia issue + comentários + linked + template: `{view_issue_cmd}` / `{fetch_template_cmd}` (clone se preciso: `{clone_cmd}`).
 
-2. ALGORITMO (ordem: 2a→2b→2c→2d→2e→2f — diagnostique TUDO primeiro, depois escreva. Pular ordem leva a body inflado e inconsistente):
-   a) **Promessas vazias** — "depois estende"/"trivial X"/"alguém edita"/"já existe" sem mecanismo concreto. Para CADA: substitua por mecanismo (AC, teste, lint, schema, item no checklist da sub-issue agregada de follow-ups, fixture) OU declare fora-de-escopo com motivo. Nunca silêncio.
-   b) **Lacunas arquiteturais** — confronte com práticas da disciplina (idempotência, TOCTOU, timeouts, observabilidade, rollback, threat model, SLO, schema migration, dependências externas — sua persona lista). Para CADA item da checklist pertinente ao escopo: marque resolvido (com decisão concreta no body), N/A (com motivo explícito — "não toca persistência, schema migration N/A"), ou movido para a sub-issue agregada de follow-ups (regra anti-flood — ver passo 3). Item pertinente sem marcação = vago.
-   c) **V1 vs roadmap** — o que sai de V1 está em (i) skeleton/DISABLED no artefato OU (ii) **UMA sub-issue agregada de follow-ups desta issue-mãe**, com checklist markdown (`- [ ]` por item) cobrindo TODOS os adiamentos identificados. NÃO abra N sub-issues por gap — abra UMA e agregue. Sem futuro sem âncora.
-   d) **Spin off lateral** — trabalho de outra issue identificado durante o refino entra na MESMA sub-issue agregada de follow-ups do passo 2c (mais um item do checklist), não infla este escopo nem vira sub-issue separada.
-   e) **AC DUROS** — proibido "funcionar bem"/"robusto" sem número/condição. Cada AC: número, percentual, condição testável, ou referência a teste. Mínimo: cobrir comportamento desejado + cada modo de falha identificado em 2b + cada decisão de 2c.
-   f) **Testes** — paths concretos + o que cada um prova (feliz, borda, regressão da promessa morta em 2a, cada lacuna arquitetural que entrou em V1).
+2. Diagnóstico (ordem 2a→2f):
+   a) Promessas vazias ("trivial X depois", "alguém edita") → substitua por mecanismo concreto (AC, teste, lint, schema, item no checklist da sub-issue de follow-ups) ou declare fora-de-escopo.
+   b) Lacunas arquiteturais (idempotência, TOCTOU, timeouts, observabilidade, rollback, threat model, SLO, schema migration, dependências externas) → resolva, marque N/A com motivo, ou jogue na sub-issue de follow-ups.
+   c) V1 vs roadmap: o que adia vira skeleton/DISABLED no código OU item em UMA sub-issue agregada de follow-ups (`- [ ]` por item).
+   d) Spinoffs laterais entram no checklist da MESMA sub-issue (não vira sub-issue separada).
+   e) ACs DUROS — número, percentual, condição testável. Cobre comportamento + falhas de 2b + decisões de 2c.
+   f) Testes: paths concretos + o que cada um prova.
 
-3. APLIQUE — REGRA ANTI-FLOOD (V1 inegociável): cada issue-mãe pode gerar no MÁXIMO UMA sub-issue agregada de follow-ups, com checklist markdown (`- [ ]` por gap). Split em N sub-issues SÓ é permitido se você JUSTIFICAR explicitamente no comment de auditoria que cada gap tem escopo de PR independente (tocam módulos disjuntos, testes diferentes, ordem de merge não-importa). Default: agregar. Em dúvida: agregar. Cada sub-issue extra passa por refine+critique+implement+review e custa um ciclo inteiro do pipeline.
-   - Título com prefixo `{title_prefix}`: {edit_issue_title_cmd}
-   - Corpo reescrito conforme template, codificando TODAS as decisões do passo 2: {edit_issue_body_cmd}
-   - No MÁXIMO UMA sub-issue agregada de follow-ups (com checklist agregando todos os items dos passos 2a/2b/2c/2d que foram adiados), criada via {create_issue_cmd} com `Originada de #{number}` no body. Se split em múltiplas for genuinamente necessário, justifique célula por célula no comment de auditoria.
-   - AUDITORIA em {comment_issue_cmd}: resumo do reescrito, gaps e como resolveu cada, sub-issue agregada de follow-ups aberta (link), ACs duros, JUSTIFICATIVA do split se houver mais de uma, linha final "Pronto para implementação" OU "Bloqueado por: <X>".
+3. APLIQUE — REGRA ANTI-FLOOD: MÁXIMO UMA sub-issue agregada de follow-ups por issue-mãe. Split só com JUSTIFICATIVA explícita (módulos disjuntos, testes diferentes, ordem livre). Default: agregar.
+   - Título prefixo `{title_prefix}`: `{edit_issue_title_cmd}`
+   - Body reescrito: `{edit_issue_body_cmd}`
+   - Sub-issue de follow-ups (se houver adiamento): `{create_issue_cmd}` com `Originada de #{number}`.
+   - Auditoria em `{comment_issue_cmd}`: gaps resolvidos, link da sub-issue, ACs duros, justificativa de split (se houver), "Pronto para implementação" ou "Bloqueado por: <X>".
 
-4. AGUARDA_STAKEHOLDER — só para decisão de PRODUTO de alto impacto. Lacuna arquitetural decidível por melhores práticas você RESOLVE. Se aguardar: 2-3 sugestões + autor (`{view_pr_author_cmd_for_issue}` + {assign_user_cmd}) + AGUARDA_STAKEHOLDER.
+4. AGUARDA_STAKEHOLDER — só para decisão de PRODUTO de alto impacto. 2-3 sugestões + autor (`{view_pr_author_cmd_for_issue}` + `{assign_user_cmd}`).
 
-5. HONESTIDADE — suposições marcadas; arquivo:linha do lido; só sub-issue agregada REALMENTE aberta (e split justificado se houver); em dúvida, **sempre exaustivo** (mas anti-flood permanece — exaustividade NÃO autoriza multiplicar issues).
+5. Cite `arquivo:linha` do que leu. Só liste sub-issue REALMENTE aberta.
 
-VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE uma destas, nada depois dela:
+ÚLTIMA LINHA (somente uma):
   REFINO: OK
   REFINO: AGUARDA_STAKEHOLDER
 
@@ -627,43 +584,25 @@ VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE uma destas, nada depois 
 """
 
 _WORKER_DECOMPOSE_BRIEF = """\
-Você é o ARQUITETO. A intent #{number} do repositório {repo} está CLARA e aprovada. DECOMPONHA-A em UMA ou — se rigorosamente justificável — poucas issues derivadas INDEPENDENTES (feature/bug/refactor) que possam ser implementadas em branches PARALELOS, JÁ no padrão de maestria (sem voltas extras de refino depois).
+ARQUITETO. Intent #{number} de {repo} está CLARA. Decomponha em derivadas INDEPENDENTES, no padrão de maestria.
 
-## REGRA ANTI-FLOOD (V1 inegociável — leia ANTES de criar qualquer derivada)
+REGRA ANTI-FLOOD (V1 inegociável): cada derivada custa refine+critique+implement+review. DEFAULT: AGREGAR em UMA derivada com checklist (`- [ ]` por item). Split SÓ se cada derivada tem PR independente (módulos disjuntos, testes diferentes, ordem livre). Em dúvida: agregar.
 
-Cada issue derivada que você abrir passa por refine + critique + implement + review no pipeline (3-7min de claude-worker × tokens xhigh/ultracode cada estágio). Decompor uma intent em 4 sub-issues quando elas cabem em UMA com checklist agregada **quadruplica o custo** sem ganho proporcional.
+Exemplo:
+  BOM (default):      "4 frentes A/B/C/D no módulo M → UMA derivada com checklist."
+  SPLIT JUSTIFICADO:  "A/B no módulo M, C/D no módulo N (disjuntos) → derivada #X e #Y."
 
-> **Default agressivo: AGREGAR em UMA derivada com checklist markdown** (`- [ ]` por item de escopo). Split em N derivadas SÓ é permitido se você JUSTIFICAR explicitamente que cada derivada tem **escopo de PR independente** — tocam módulos disjuntos, testes diferentes, ordem de merge não-importa. Em dúvida: AGREGAR. Quando achar que precisa de 3-4 derivadas, pergunte-se: "esses gaps cabem no mesmo PR?". Se "sim" ou "talvez": agregue. Se "não, claramente módulos disjuntos": split.
+Algoritmo:
+1. Ancore na arquitetura real (`docs/system_design/`, código; clone: `{clone_cmd}`).
+2. Liste items de escopo → DEFAULT: UMA derivada com checklist. Split só com prova de independência.
+3. Cada derivada nasce no padrão (sem refino depois):
+   - título com prefixo do tipo; body conforme template (`.github/ISSUE_TEMPLATE/*` ou `.gitlab/issue_templates/*`).
+   - alvo técnico, contrato, ACs MENSURÁVEIS, paths de teste.
+   - checklist `- [ ]` por item; lacunas arquiteturais pertinentes endereçadas; V1 vs roadmap explícito.
+   - linha `Originada de #{number}`. Comando: `{create_issue_cmd}`.
+4. Audit na intent: `{comment_issue_cmd}` com derivadas criadas, ordem de dependência, justificativa do split se houver.
 
-Exemplos:
-
-```
-RUIM (proibido):    "A intent tem 4 frentes: A, B, C, D — vou abrir #X, #Y, #Z, #W."
-BOM (default):      "A intent tem 4 frentes: A, B, C, D. Abro #X com checklist agregando A/B/C/D — todas tocam módulo M e cabem num PR."
-SPLIT JUSTIFICADO:  "A intent tem 4 frentes. A/B tocam módulo M; C/D tocam módulo N — não relacionados. Abro #X (A+B em M) e #Y (C+D em N) — dois PRs paralelos."
-```
-
-## Algoritmo de decomposição
-
-1. ANCORAGEM — consulte a arquitetura real ANTES de decidir: docs/system_design/ (clone com `{clone_cmd}` se preciso) e o código relevante. Sem palpite no abstrato.
-
-2. AGREGAÇÃO PRIMEIRO — liste os items de escopo da intent. Por DEFAULT eles vão pra UMA derivada com checklist. Só considere split se identificar **independência genuína de PR** (módulos disjuntos sem sobreposição de arquivos, testes diferentes, sem dependência sequencial nem mesma migração de schema/lib utility). Partes acopladas ficam JUNTAS na MESMA derivada — fatiar trabalho dependente gera conflito, não paralelismo. Se houver ordem obrigatória entre items, declare no comment final (e considere começar só pela primeira frente agora, com follow-ups no checklist da MESMA derivada).
-
-3. CADA derivada nasce com ESCOPO JÁ CLARO no padrão de excelência — não delegue refino para depois:
-   - título com prefixo correto do tipo; corpo seguindo o template (.github/ISSUE_TEMPLATE/feature_request.md | bug_report.md | refactor_proposal.md OU .gitlab/issue_templates/<f>.md em projetos GitLab).
-   - alvo técnico (módulos/arquivos prováveis), contrato (interfaces/IO), critérios de aceite MENSURÁVEIS, plano de teste com paths concretos sugeridos.
-   - **checklist markdown** agregando TODOS os items de escopo coesos daquela derivada (`- [ ]` por item).
-   - sem promessas vazias ("alguém adiciona X depois", "trivial estender") — cada ponto futuro vira item no checklist de UMA sub-issue de follow-ups (NÃO N sub-issues) ou skeleton DISABLED no próprio artefato.
-   - lacunas arquiteturais pertinentes endereçadas: idempotência, TOCTOU, timeouts, observabilidade, rollback, threat model (se toca segurança/secrets/rede), schema migration (se toca persistência), SLO/false-positive (se é detector).
-   - V1 vs roadmap explícito; spinoffs laterais agregados em UMA sub-issue de follow-ups (regra anti-flood) ou inline no checklist se cabem no mesmo PR.
-   - inclua a linha: `Originada de #{number}`.
-   - crie com: {create_issue_cmd}
-
-4. AUDIT — comente na intent #{number} ({comment_issue_cmd}) listando: as derivadas criadas (com links), ordem de dependência se houver, gaps arquiteturais identificados e onde cada um foi endereçado, **JUSTIFICATIVA do split se você abriu mais de UMA derivada** (cite módulos disjuntos / testes diferentes / por que não cabem num PR). A intent permanece ABERTA como épico.
-
-5. HONESTIDADE — só liste issues que REALMENTE criou (confirme com `{view_issue_cmd}`); cite arquivo:linha do que leu para fundamentar a divisão; se split, prove a independência de PR.
-
-VEREDITO (regra dura): na ÚLTIMA LINHA escreva SOMENTE (com os números reais das issues criadas):
+ÚLTIMA LINHA:
   DECOMPOSTO: #<n1> #<n2> ...
 
 === Intent #{number}: {title} ===

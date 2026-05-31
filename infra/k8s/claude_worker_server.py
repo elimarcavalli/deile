@@ -2249,6 +2249,14 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     if reasoning_effort:
         # Já coagido a um valor aceito pelo CLI ([a-z] puro) por _coerce_claude_effort.
         cmd.extend(["--effort", reasoning_effort])
+    # Cost cap por dispatch (PR cost-reduction): claude CLI mata o turn quando
+    # o custo previsto da próxima chamada estouraria o cap. Default 8 USD por
+    # dispatch — substitui a sangria histórica de $27/sessão observada em
+    # pr_review (issue: 209 tool calls, 53M cache reads, $27.68 numa única PR).
+    # Configurável via env var; ``0`` ou vazio = sem cap (back-compat).
+    max_budget = os.environ.get("DEILE_CLAUDE_MAX_BUDGET_USD", "8").strip()
+    if max_budget and max_budget != "0":
+        cmd.extend(["--max-budget-usd", max_budget])
     cmd.append(full_prompt)
 
     timeout = dispatch_timeout_s if dispatch_timeout_s is not None else int(
