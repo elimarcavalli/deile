@@ -198,6 +198,18 @@ spec:
             - { name: DEILE_PIPELINE_MODEL_IMPLEMENT,      value: "anthropic:claude-sonnet-4-6" }
             - { name: DEILE_PIPELINE_MODEL_PR_REVIEW,      value: "anthropic:claude-sonnet-4-6" }
             - { name: DEILE_PIPELINE_MODEL_FOLLOW_UPS,     value: "anthropic:claude-sonnet-4-6" }
+            # Per-stage reasoning effort (mesma motivação dos models): baked
+            # default flipável live pelo painel [d] (coluna Reasoning). Vocabulário
+            # Claude Code para anthropic/claude-worker (low|medium|high|xhigh|max|
+            # ultracode|auto); específico por provider no deile-worker. "high" ≈
+            # default da API anthropic (preserva comportamento); classify dialado
+            # pra baixo por ser tarefa leve. Ver deile/core/models/reasoning.py.
+            - { name: DEILE_REASONING_EFFORT,             value: "high" }
+            - { name: DEILE_PIPELINE_REASONING_CLASSIFY,   value: "low" }
+            - { name: DEILE_PIPELINE_REASONING_REFINE,     value: "high" }
+            - { name: DEILE_PIPELINE_REASONING_IMPLEMENT,  value: "high" }
+            - { name: DEILE_PIPELINE_REASONING_PR_REVIEW,  value: "high" }
+            - { name: DEILE_PIPELINE_REASONING_FOLLOW_UPS, value: "medium" }
             # Paralelismo: até 5 grupos simultâneos. claude-worker tem 3
             # réplicas, deile-worker 2 réplicas → ~5 dispatches reais
             # concorrentes antes da fila.

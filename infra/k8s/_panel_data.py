@@ -2506,6 +2506,27 @@ _STAGE_ENV_VARS: tuple = (
 #: Bug found 2026-05-27 — user configured sonnet-4-6 in the panel and got Opus.
 _STAGE_DEPLOYMENT = "deile-pipeline"
 
+#: Per-stage reasoning-effort env vars (espelha _STAGE_ENV_VARS). Escritos no
+#: mesmo Deployment ``deile-pipeline`` (o resolver ``resolve_stage_reasoning``
+#: roda ali e injeta em ``DispatchPayload.preferred_reasoning``).
+_STAGE_REASONING_ENV_VARS: tuple = (
+    ("classify",    "DEILE_PIPELINE_REASONING_CLASSIFY"),
+    ("refine",      "DEILE_PIPELINE_REASONING_REFINE"),
+    ("implement",   "DEILE_PIPELINE_REASONING_IMPLEMENT"),
+    ("pr_review",   "DEILE_PIPELINE_REASONING_PR_REVIEW"),
+    ("follow_ups",  "DEILE_PIPELINE_REASONING_FOLLOW_UPS"),
+)
+#: Esforço global (fallback de todas as etapas). Lido pelo resolver e pelo CLI.
+_GLOBAL_REASONING_ENV_VAR = "DEILE_REASONING_EFFORT"
+#: União dos níveis válidos — espelha ``KNOWN_EFFORTS`` em
+#: ``deile/core/models/reasoning.py`` (mantido local pois o painel roda de
+#: ``infra/k8s/`` sem o pacote ``deile`` no path). Tudo ``[a-z]`` puro → seguro
+#: no argv do kubectl (sem metacaractere de shell).
+_VALID_REASONING_EFFORTS: frozenset = frozenset({
+    "low", "medium", "high", "xhigh", "max", "ultracode", "auto",
+    "none", "off", "minimal",
+})
+
 
 @dataclass(frozen=True)
 class StageModelEntry:
@@ -2760,6 +2781,124 @@ def clear_stage_model(stage: str, timeout: float = 15.0) -> tuple:
         stage, None, result="completed", detail=msg,
     )
     return True, f"{env_var} unset ({msg})"
+
+
+# ── Reasoning effort (espelha set/clear_stage_model) ───────────────────────
+
+
+def _audit_reasoning_change(env_var: str, level: Optional[str], *,
+                            result: str, detail: str, namespace: str = NS) -> None:
+    """Emite ``AuditEvent(SECURITY_POLICY_CHANGED)`` para escrita de reasoning.
+
+    Mesma envelope de :func:`_audit_stage_model_change` (paridade nos dashboards).
+    """
+    try:
+        from deile.security.audit_logger import (  # noqa: PLC0415
+            AuditEventType, SeverityLevel, get_audit_logger)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("audit logger indisponível para reasoning: %s", exc)
+        return
+    severity = (SeverityLevel.INFO
+                if result in ("allowed", "completed", "cancelled")
+                else SeverityLevel.WARNING)
+    try:
+        get_audit_logger().log_event(
+            event_type=AuditEventType.SECURITY_POLICY_CHANGED,
+            severity=severity,
+            actor="panel:set_reasoning",
+            resource=f"deployment:{namespace}/{_STAGE_DEPLOYMENT}:{env_var}",
+            action="kubectl_set_env" if level else "kubectl_unset_env",
+            result=result,
+            details={"env_var": env_var, "level": level or "", "detail": detail[:200]},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("falha emitindo AuditEvent (reasoning): %s", exc)
+
+
+def _reasoning_env_var_for_stage(stage: str) -> Optional[str]:
+    """Return ``DEILE_PIPELINE_REASONING_<STAGE>`` para uma stage canônica."""
+    return next((env for s, env in _STAGE_REASONING_ENV_VARS if s == stage), None)
+
+
+def _kubectl_set_env(env_var: str, value: Optional[str], timeout: float,
+                     audit_level: Optional[str], *, namespace: str = NS) -> tuple:
+    """Executa ``kubectl set env deploy/deile-pipeline <VAR>=<value>`` (ou unset).
+
+    ``value=None`` → unset (sufixo ``-``). Retorna ``(ok, msg)``. Emite audit.
+    Único ponto de I/O kubectl para reasoning (per-stage + global compartilham).
+    ``namespace`` honra a seleção do painel (paridade com set_stage_timeout/retries).
+    """
+    kubectl = kubectl_bin()
+    if kubectl is None:
+        _audit_reasoning_change(env_var, audit_level, result="failed",
+                                detail="kubectl não encontrado", namespace=namespace)
+        return False, "kubectl não encontrado"
+    arg = f"{env_var}={value}" if value is not None else f"{env_var}-"
+    _audit_reasoning_change(env_var, audit_level, result="allowed",
+                            detail=f"executando kubectl set env {arg}", namespace=namespace)
+    try:
+        proc = subprocess.run(
+            [kubectl, "-n", namespace, "set", "env", f"deploy/{_STAGE_DEPLOYMENT}", arg],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        _audit_reasoning_change(env_var, audit_level, result="failed",
+                                detail=f"subprocess: {exc}", namespace=namespace)
+        return False, f"falha ao executar kubectl: {exc}"
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "kubectl set env falhou").strip()
+        _audit_reasoning_change(env_var, audit_level, result="failed",
+                                detail=f"rc={proc.returncode} {err}", namespace=namespace)
+        return False, err
+    msg = (proc.stdout or "rollout disparado").strip()
+    _audit_reasoning_change(env_var, audit_level, result="completed", detail=msg,
+                            namespace=namespace)
+    suffix = f"={value}" if value is not None else " unset"
+    return True, f"{env_var}{suffix} ({msg})"
+
+
+def set_stage_reasoning(stage: str, level: str, timeout: float = 15.0,
+                        *, namespace: str = NS) -> tuple:
+    """Fixa o reasoning effort por etapa em ``deile-pipeline``. Returns ``(ok, msg)``.
+
+    Valida ``level`` contra :data:`_VALID_REASONING_EFFORTS` ANTES do argv —
+    todos ``[a-z]`` puro, sem risco de injection. Espelha :func:`set_stage_model`.
+    """
+    env_var = _reasoning_env_var_for_stage(stage)
+    if env_var is None:
+        allowed = ", ".join(s for s, _ in _STAGE_REASONING_ENV_VARS)
+        return False, f"stage '{stage}' inválido — esperado um de: {allowed}"
+    norm = (level or "").strip().lower() if isinstance(level, str) else ""
+    if norm not in _VALID_REASONING_EFFORTS:
+        return False, (f"nível '{level}' inválido — esperado um de: "
+                       f"{', '.join(sorted(_VALID_REASONING_EFFORTS))}")
+    return _kubectl_set_env(env_var, norm, timeout, norm, namespace=namespace)
+
+
+def clear_stage_reasoning(stage: str, timeout: float = 15.0,
+                          *, namespace: str = NS) -> tuple:
+    """Remove o override de reasoning por etapa. Returns ``(ok, msg)``."""
+    env_var = _reasoning_env_var_for_stage(stage)
+    if env_var is None:
+        return False, f"stage '{stage}' inválido"
+    return _kubectl_set_env(env_var, None, timeout, None, namespace=namespace)
+
+
+def set_global_reasoning(level: str, timeout: float = 15.0,
+                         *, namespace: str = NS) -> tuple:
+    """Fixa o reasoning effort GLOBAL (``DEILE_REASONING_EFFORT``). ``(ok, msg)``."""
+    norm = (level or "").strip().lower() if isinstance(level, str) else ""
+    if norm not in _VALID_REASONING_EFFORTS:
+        return False, (f"nível '{level}' inválido — esperado um de: "
+                       f"{', '.join(sorted(_VALID_REASONING_EFFORTS))}")
+    return _kubectl_set_env(_GLOBAL_REASONING_ENV_VAR, norm, timeout, norm,
+                            namespace=namespace)
+
+
+def clear_global_reasoning(timeout: float = 15.0, *, namespace: str = NS) -> tuple:
+    """Remove o override de reasoning global. Returns ``(ok, msg)``."""
+    return _kubectl_set_env(_GLOBAL_REASONING_ENV_VAR, None, timeout, None,
+                            namespace=namespace)
 
 
 # ===== Pipeline dispatch mode (issue #309) ==================================
@@ -3696,6 +3835,10 @@ class StageDispatchEntry:
     timeout_s: Optional[int] = None
     max_retries: Optional[int] = None
     cost_cap_usd: Optional[str] = None
+    #: Esforço de raciocínio efetivo (per-stage override OU global), ou None.
+    #: Lido de ``DEILE_PIPELINE_REASONING_<STAGE>`` com fallback ao global
+    #: ``DEILE_REASONING_EFFORT`` — paridade com o folding do ``model``.
+    reasoning: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -3857,6 +4000,9 @@ class StageDispatchProvider(_KubectlProviderMixin):
         # com ``StageModelsProvider``).
         global_model = (worker_env.get("DEILE_PIPELINE_MODEL")
                         or worker_env.get("DEILE_PREFERRED_MODEL") or None)
+        # Esforço global (fallback de todas as etapas) — lido do mesmo Deployment.
+        global_reasoning = (pipeline_env.get(_GLOBAL_REASONING_ENV_VAR)
+                            or "").strip() or None
 
         result: List[StageDispatchEntry] = []
         for stage in PIPELINE_STAGES:
@@ -3907,10 +4053,16 @@ class StageDispatchProvider(_KubectlProviderMixin):
                 f"DEILE_PIPELINE_COST_CAP_USD_{stage.upper()}"
             )
             cost_cap_usd = (cost_cap_raw or "").strip() or None
+            # Reasoning chain: per-stage env → global env → None (paridade com model).
+            stage_reasoning_raw = pipeline_env.get(
+                f"DEILE_PIPELINE_REASONING_{stage.upper()}"
+            )
+            reasoning = ((stage_reasoning_raw or "").strip()
+                         or global_reasoning or None)
             result.append(StageDispatchEntry(
                 stage, worker, model, source,
                 timeout_s=timeout_s, max_retries=max_retries,
-                cost_cap_usd=cost_cap_usd,
+                cost_cap_usd=cost_cap_usd, reasoning=reasoning,
             ))
         return result
 

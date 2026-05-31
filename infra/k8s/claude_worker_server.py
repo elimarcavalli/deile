@@ -812,6 +812,72 @@ async def run_subprocess_with_progress(
 #: só aceita ``anthropic:*`` — outros providers são rejeitados em 400.
 _ANTHROPIC_SLUG_RE = re.compile(r"^anthropic:(.+)$")
 
+#: Níveis que o ``claude`` CLI aceita via ``--effort`` (print mode) — verificado
+#: empiricamente contra o binário: ``low|medium|high|xhigh|max`` (qualquer outro
+#: valor faz o commander sair com erro ANTES de qualquer chamada de API). NÃO
+#: inclui ``ultracode``/``auto``: esses são do vocabulário interativo (slash
+#: ``/effort``) e o flag ``--effort`` os REJEITA. O vocabulário Claude Code
+#: completo (com ultracode/auto) vive em ``CLAUDE_CODE_EFFORTS`` no pacote
+#: ``deile`` — aqui só os aceitos pelo CLI. Tudo ``[a-z]`` puro (sem metacaractere
+#: de shell no argv). :func:`_coerce_claude_effort` traduz ultracode→xhigh e
+#: auto→(omitir) antes de montar o argv.
+_VALID_CLAUDE_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
+
+
+def _coerce_claude_effort(raw: Optional[str]) -> Optional[str]:
+    """Traduz um nível de reasoning para um valor aceito por ``claude --effort``.
+
+    - ``None``/vazio/``auto`` → ``None`` (omite o flag; claude usa o default).
+    - ``ultracode`` → ``xhigh``: ultracode = xhigh + palavra "workflow" no prompt
+      (modo interativo); em ``-p`` replicamos só o esforço — ``xhigh`` é o nível
+      correto (``max`` é um tier acima separado).
+    - ``low|medium|high|xhigh|max`` → passa direto.
+    - qualquer outro (ex.: ``off``/``none``/``minimal`` de uma config trocada) →
+      ``None`` com warning (fail-open; nunca passa valor inválido pro argv, o que
+      faria ``claude -p`` sair com erro e a dispatch falhar 100%).
+    """
+    if raw is None:
+        return None
+    v = str(raw).strip().lower()
+    if not v or v == "auto":
+        return None
+    if v == "ultracode":
+        return "xhigh"
+    if v in _VALID_CLAUDE_EFFORTS:
+        return v
+    logger.warning(
+        "claude-worker: effort %r não é aceito por 'claude --effort' "
+        "(esperado %s) — omitido", v, sorted(_VALID_CLAUDE_EFFORTS),
+    )
+    return None
+
+
+def _is_ultracode(raw: Optional[str]) -> bool:
+    """``True`` quando o effort pedido é exatamente ``ultracode``.
+
+    Ultracode no Claude Code = ``xhigh`` + orquestração dynamic-workflow "de
+    pé". O ``--effort`` cobre o ``xhigh`` (via :func:`_coerce_claude_effort`);
+    a segunda metade — opt-in no Workflow tool — não tem flag de CLI: o binário
+    detecta o keyword ``workflow``/``workflows`` no prompt. Esta função sinaliza
+    quando injetar :data:`_ULTRACODE_PREAMBLE` para reproduzir o preset em ``-p``.
+    """
+    return raw is not None and str(raw).strip().lower() == "ultracode"
+
+
+#: Preâmbulo injetado no prompt quando o effort pedido é ``ultracode``. Carrega
+#: o keyword ``workflow`` que o ``claude`` CLI usa para opt-in no Workflow tool
+#: (orquestração multi-agente). Requer Dynamic Workflows habilitado na conta
+#: OAuth do pod — se estiver off, o CLI ignora o keyword (sem quebrar o
+#: dispatch). Para edições triviais o agente segue direto; o fan-out só vale
+#: quando a tarefa se beneficia.
+_ULTRACODE_PREAMBLE = (
+    "ULTRACODE: para tarefas substanciais, orquestre via workflow multi-agente "
+    "(decomponha o problema, paralelize as frentes independentes e verifique "
+    "adversarialmente os achados antes de concluir) em vez de resolver tudo "
+    "numa única linha de raciocínio. Para edições triviais ou mecânicas, siga "
+    "direto sem fan-out.\n\n---\n\n"
+)
+
 
 # --------------------------------------------------------------------------- #
 # Session metadata persistence (issue #309 fase 3.5 — resume support)
@@ -1812,6 +1878,15 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     model_slug = payload.get("preferred_model")
     resume_session_id = payload.get("resume_session_id")
     prev_task_id = payload.get("prev_task_id")
+    # Reasoning effort por etapa → ``claude --effort``. Traduzido para um valor
+    # que o CLI aceita (ultracode→xhigh, auto→omitir); inválido vira None (fail-open).
+    # O painel oferece o vocabulário Claude Code completo; a tradução acontece aqui.
+    _raw_reasoning = payload.get("preferred_reasoning")
+    reasoning_effort = _coerce_claude_effort(_raw_reasoning)
+    # Ultracode = xhigh (já no --effort) + keyword "workflow" no prompt para
+    # opt-in no Workflow tool. Capturado do raw ANTES do coercion (que colapsa
+    # ultracode→xhigh e perderia a distinção).
+    is_ultracode = _is_ultracode(_raw_reasoning)
     # Pipeline-context fields (issue #396) — forwarded by the pipeline so
     # the PodWatchView panel can surface "what is this claude-worker doing"
     # in the WORK/LAST_COMPLETED header. Same wire contract as worker_server.
@@ -2006,6 +2081,12 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         preamble = _render_preamble(stage, branch, task_id)
         full_prompt = preamble + "\n\n---\n\n" + brief
 
+    # Ultracode: prefixa o keyword "workflow" para o CLI opt-in no Workflow tool
+    # (multi-agente). Funciona em fresh e resume; se Dynamic Workflows estiver
+    # off na conta, o CLI ignora o keyword sem quebrar o dispatch.
+    if is_ultracode:
+        full_prompt = _ULTRACODE_PREAMBLE + full_prompt
+
     # Structured dispatch marker consumed by WorkerProvider in the panel
     # (issue #396). Mirrors worker_server.py format so PodWatchView can
     # show WORK/LAST_COMPLETED for claude-worker pods as well.
@@ -2020,6 +2101,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         _dispatch_parts.append(f"branch={branch}")
     if claude_model:
         _dispatch_parts.append(f"model={claude_model}")
+    if reasoning_effort:
+        _dispatch_parts.append(f"effort={reasoning_effort}")
     logger.info("dispatch_started %s", " ".join(_dispatch_parts))
 
     # Mecanismo 2 — Lease: garante que NUNCA dois pods trabalhem no mesmo
@@ -2060,6 +2143,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         "stage": stage,
         "branch": branch,
         "model": claude_model,
+        "reasoning_effort": reasoning_effort,
+        "ultracode": is_ultracode,
         "started_at": int(time.time()),
         "attempt": attempt,
         "prev_task_id": prev_task_id if is_resume else None,
@@ -2084,6 +2169,9 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         cmd.extend(["--session-id", session_id])
     if claude_model:
         cmd.extend(["--model", claude_model])
+    if reasoning_effort:
+        # Já coagido a um valor aceito pelo CLI ([a-z] puro) por _coerce_claude_effort.
+        cmd.extend(["--effort", reasoning_effort])
     cmd.append(full_prompt)
 
     timeout = dispatch_timeout_s if dispatch_timeout_s is not None else int(

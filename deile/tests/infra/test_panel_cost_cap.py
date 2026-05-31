@@ -228,7 +228,7 @@ class TestDispatchMatrixViewCostCapCol:
         view = self._make_view()
         app = MagicMock()
 
-        console = Console()
+        console = Console(width=160)
         with console.capture() as cap:
             console.print(view.render(app))
         output = cap.get()
@@ -240,7 +240,7 @@ class TestDispatchMatrixViewCostCapCol:
 
         view = self._make_view(cost_cap_usd=None)
         app = MagicMock()
-        console = Console()
+        console = Console(width=160)
         with console.capture() as cap:
             console.print(view.render(app))
         output = cap.get()
@@ -252,34 +252,31 @@ class TestDispatchMatrixViewCostCapCol:
 
         view = self._make_view(cost_cap_usd="5.00")
         app = MagicMock()
-        console = Console()
+        console = Console(width=160)
         with console.capture() as cap:
             console.print(view.render(app))
         output = cap.get()
         assert "$5.00" in output
 
-    def test_cursor_col_max_is_two(self):
-        """RIGHT key can advance to col 2 but no further."""
+    def test_cursor_col_max_is_five(self):
+        """RIGHT advances up to col 5 (Reasoning) and clamps there."""
         import _panel as panel_mod  # noqa: PLC0415
 
         view = self._make_view()
         view.cursor_col = 0
         app = MagicMock()
 
-        view.handle_key("RIGHT", app)
-        assert view.cursor_col == 1
-        view.handle_key("RIGHT", app)
-        assert view.cursor_col == 2
-        view.handle_key("RIGHT", app)  # should clamp at 2
-        assert view.cursor_col == 2
+        for _ in range(10):
+            view.handle_key("RIGHT", app)
+        assert view.cursor_col == 5  # clamps at the Reasoning column
 
     def test_reset_col_2_calls_reset_cost_cap(self):
-        """[r] on col 2 calls reset_stage_cost_cap_usd."""
+        """[r] on the cost-cap col (4) calls reset_stage_cost_cap_usd."""
         import _panel as panel_mod  # noqa: PLC0415
 
         view = self._make_view()
         view.cursor_row = 0
-        view.cursor_col = 2
+        view.cursor_col = 4  # cost cap column
 
         # Stub data with context
         mock_data = MagicMock()
@@ -298,12 +295,12 @@ class TestDispatchMatrixViewCostCapCol:
         mock_reset.assert_called_once_with("implement", namespace="deile")
 
     def test_enter_col_2_opens_cost_cap_picker(self):
-        """[enter] on col 2 opens the cost_cap_usd picker modal."""
+        """[enter] on the cost-cap col (4) opens the cost_cap_usd picker modal."""
         import _panel as panel_mod  # noqa: PLC0415
 
         view = self._make_view(cost_cap_usd="5.00")
         view.cursor_row = 0
-        view.cursor_col = 2
+        view.cursor_col = 4  # cost cap column
         view.data = None  # demo mode
         app = MagicMock()
 
@@ -318,7 +315,7 @@ class TestDispatchMatrixViewCostCapCol:
 
         view = self._make_view()
         view.cursor_row = 0
-        view.cursor_col = 2
+        view.cursor_col = 4  # cost cap column
         mock_data = MagicMock()
         mock_data.context.namespace = "deile"
         view.data = mock_data

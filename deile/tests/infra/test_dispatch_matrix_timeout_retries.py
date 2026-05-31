@@ -117,13 +117,13 @@ def _make_view():
     return DispatchMatrixView(data=None)
 
 
-def test_cursor_col_max_is_4():
-    """Após #392 (cost cap col), a coluna máxima virou 4."""
+def test_cursor_col_max_is_5():
+    """Após a coluna Reasoning (Decisão #47), a coluna máxima virou 5."""
     view = _make_view()
-    # Navigate right 10 times — should clamp at 4
+    # Navigate right 10 times — should clamp at 5 (0=Worker..5=Reasoning)
     for _ in range(10):
         view.handle_key("RIGHT", None)
-    assert view.cursor_col == 4
+    assert view.cursor_col == 5
 
 
 def test_cursor_col_min_is_0():

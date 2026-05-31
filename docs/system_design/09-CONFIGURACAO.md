@@ -226,6 +226,8 @@ O daemon em si vive em `elimarcavalli/deilebot` e tem extras próprios (`discord
 | `DEILE_PIPELINE_RESUME_MAX_ATTEMPTS` | Teto de tentativas por item antes do fluxo de bloqueio (`>= 1`) | `10` |
 | `DEILE_PIPELINE_RESUME_BUDGET` | Teto de wall-clock acumulado (s) entre tentativas (`0` = sem teto) | `0` |
 | `DEILE_PREFERRED_MODEL` | Modelo preferido (soft) — usado para fixar o worker num modelo (ex.: `deepseek:deepseek-v4-pro`) | nenhum |
+| `DEILE_REASONING_EFFORT` | Esforço de raciocínio global (soft) — `low\|medium\|high\|xhigh\|max\|ultracode\|auto` p/ anthropic/claude; específico por provider no deile-worker. Lido pelo DEILE CLI e como fallback do pipeline. Ver `deile/core/models/reasoning.py` | nenhum |
+| `DEILE_PIPELINE_REASONING_<STAGE>` | Esforço de raciocínio por etapa (`classify`/`refine`/`implement`/`pr_review`/`follow_ups`) — repassado em `DispatchPayload.preferred_reasoning`; provider traduz, claude-worker → `claude --effort` | herda `DEILE_REASONING_EFFORT` |
 
 > Estas variáveis mapeiam para chaves em `~/.deile/settings.json` (`pipeline.dispatch_mode`, `pipeline.resume_*`, `model.preferred`); usar as env vars ainda funciona mas emite *deprecation warning* pedindo para mover ao `settings.json`. Defaults a nível de `PipelineConfig` (não env): `mention_handle` (`@deile-one`) e `enable_review_human_prs` (`false` — se `true`, triagem/review reivindicam PRs de branch alheio; ver Decisões #32/#33).
 

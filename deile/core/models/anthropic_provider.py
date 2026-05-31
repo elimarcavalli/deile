@@ -151,6 +151,13 @@ class AnthropicProvider(ModelProvider):
         }
         if system:
             create_kwargs["system"] = self._system_blocks(system)
+        # Reasoning effort → output_config.effort via extra_body (best-effort).
+        # ATENÇÃO: aqui o create() faz ``**create_kwargs, **kwargs`` — então
+        # fundimos em ``kwargs['extra_body']`` (não em create_kwargs) para não
+        # gerar colisão de keyword caso o caller já tenha passado extra_body.
+        _extra_reasoning = self._pop_reasoning_extra_body(kwargs)
+        if _extra_reasoning:
+            kwargs["extra_body"] = {**(kwargs.get("extra_body") or {}), **_extra_reasoning}
 
         # Issue #303 fase 4 — span deile.llm.call. CM cai em no-op quando OTLP off.
         with self._llm_span() as _span:
@@ -203,6 +210,9 @@ class AnthropicProvider(ModelProvider):
         final_text = ""
         guard = make_guard(session_id=str(kwargs.get("session_id", "")) or None)
         loop_aborted = False
+        # Reasoning effort resolvido UMA vez (o pop evita repetir o consumo de
+        # kwargs no loop); aplicado a cada iteração via extra_body. Best-effort.
+        _reasoning_extra = self._pop_reasoning_extra_body(kwargs)
 
         for iteration in range(DEFAULT_MAX_TOOL_ITERATIONS):
             create_kwargs: Dict[str, Any] = {
@@ -214,6 +224,7 @@ class AnthropicProvider(ModelProvider):
                 create_kwargs["system"] = self._system_blocks(system)
             if anthropic_tools:
                 create_kwargs["tools"] = anthropic_tools
+            self._apply_reasoning_extra_body(create_kwargs, _reasoning_extra)
 
             # Issue #303 fase 4 — 1 iteração = 1 deile.llm.call span.
             with self._llm_span() as _it_span:
@@ -355,6 +366,10 @@ class AnthropicProvider(ModelProvider):
             create_kwargs["system"] = self._system_blocks(system)
         if tools:
             create_kwargs["tools"] = [t.to_anthropic_tool() for t in tools]
+        # Reasoning effort → output_config.effort via extra_body (best-effort).
+        self._apply_reasoning_extra_body(
+            create_kwargs, self._pop_reasoning_extra_body(kwargs)
+        )
 
         # Per-tool-use accumulator: index → (id, name, json_args_text)
         pending_tool_uses: Dict[int, Dict[str, Any]] = {}

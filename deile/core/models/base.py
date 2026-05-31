@@ -252,6 +252,42 @@ class ModelProvider(ABC):
             return system_instruction.rstrip() + "\n\n" + runtime_block
         return runtime_block
 
+    # ------------------------------------------------------------------
+    # Reasoning effort (esforço de raciocínio) — fonte de verdade do
+    # mapeamento em ``deile/core/models/reasoning.py``. Os providers que usam
+    # ``extra_body`` (anthropic / openai / deepseek) chamam estes helpers; o
+    # gemini constrói ``ThinkingConfig`` diretamente. Tudo best-effort: um
+    # nível desconhecido ou erro de import NUNCA quebra o turno.
+    # ------------------------------------------------------------------
+
+    def _pop_reasoning_extra_body(self, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        """Pop ``reasoning_effort`` de *kwargs* e devolve o ``extra_body`` nativo.
+
+        Retorna ``{}`` quando não há override (auto, nível não suportado pelo
+        provider/modelo, ou erro). Pop garante que o kwarg não vaze para o SDK.
+        """
+        try:
+            effort = kwargs.pop("reasoning_effort", None)
+            if not effort:
+                return {}
+            from deile.core.models.reasoning import \
+                request_overrides  # noqa: PLC0415
+            return request_overrides(self.provider_id, self.model_name, effort)
+        except Exception as exc:  # noqa: BLE001 — reasoning nunca quebra o turno
+            logger.debug("reasoning extra_body skipped (%s): %s", self.provider_id, exc)
+            return {}
+
+    @staticmethod
+    def _apply_reasoning_extra_body(
+        create_kwargs: Dict[str, Any], extra: Dict[str, Any]
+    ) -> None:
+        """Funde *extra* em ``create_kwargs['extra_body']`` (preserva o existente)."""
+        if not extra:
+            return
+        merged = dict(create_kwargs.get("extra_body") or {})
+        merged.update(extra)
+        create_kwargs["extra_body"] = merged
+
     async def chat_with_tools(
         self,
         messages: List[ModelMessage],
