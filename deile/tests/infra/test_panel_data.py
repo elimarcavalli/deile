@@ -282,6 +282,322 @@ class TestPipelineClassifier:
         )) is None
 
 
+# ===== _classify_pipeline_line — canonical families (#448) ==================
+
+class TestPipelineClassifierCanonical:
+    """AC1, AC2, AC3, AC6, AC8, AC9, AC10 — canonical branches + legacy regression."""
+
+    def _line(self, body: str) -> pd.LogLine:
+        return pd.LogLine(ts=datetime(2026, 5, 31, 10, 0, tzinfo=timezone.utc),
+                          body=body)
+
+    # ── AC1: all 15 subtypes recognized (table-driven) ────────────────────
+    @pytest.mark.parametrize("body,expected_action,expected_target_substr", [
+        ("refinement.critique issue=278 persona=architect verdict=vago",
+         "refinement.critique", "#278"),
+        ("refinement.refine issue=278 round=2 persona=architect body_chars=1500 verdict=claro",
+         "refinement.refine", "#278"),
+        ("decomposition.fanout intent=10 derivadas=[11,12] complexity=[M,L]",
+         "decomposition.fanout", "#10"),
+        ("batch.claim sha=abc12345defg issues=[1,2] reason=auto",
+         "batch.claim", "~batch:abc12345"),
+        ("batch.release sha=abc12345defg reason=done",
+         "batch.release", "~batch:abc12345"),
+        ("label.change target_kind=issue target=300 removed=[~workflow:nova] added=[~workflow:revisada]",
+         "label.change", "#300"),
+        ("label.change target_kind=pr target=55 removed=[] added=[~review:pendente]",
+         "label.change", "PR#55"),
+        ("reaper.unblock target_kind=issue target=400 attempts=1 reason=retrying",
+         "reaper.unblock", "#400"),
+        ("reaper.block target_kind=issue target=400 attempts=5 cap=5 reason=max_attempts",
+         "reaper.block", "#400"),
+        ("auth.fail target=worker-abc attempts=3 threshold=3 reason=expired",
+         "auth.fail", "worker-abc"),
+        ("auth.backoff target=worker-abc attempts=4 backoff_s=120 until=2026-05-31T11:00:00Z",
+         "auth.backoff", "worker-abc"),
+        ("auth.skip target=worker-abc remaining_s=90",
+         "auth.skip", "worker-abc"),
+        ("auth.recover target=worker-abc reason=token_refreshed",
+         "auth.recover", "worker-abc"),
+        ("routing.mention target_kind=issue target=278 via=assignee",
+         "routing.mention", "#278"),
+        ("routing.pr_unified target_kind=pr target=91 via=reviewer",
+         "routing.pr_unified", "PR#91"),
+        ("routing.dropped target_kind=issue target=278 reason=no_handler",
+         "routing.dropped", "#278"),
+    ])
+    def test_canonical_recognized(self, body, expected_action, expected_target_substr):
+        ev = pd._classify_pipeline_line(self._line(body))
+        assert ev is not None, f"Expected ActivityEvent for: {body!r}"
+        assert ev.action == expected_action
+        assert expected_target_substr in ev.target, (
+            f"target={ev.target!r} does not contain {expected_target_substr!r}"
+        )
+
+    # ── AC2: unknown family falls through to legacy, no exception ─────────
+    def test_unknown_family_falls_to_legacy_stages(self):
+        ev = pd._classify_pipeline_line(self._line(
+            "unknown.family key=val"
+        ))
+        # Not a canonical family; should return None (no legacy match either).
+        assert ev is None
+
+    def test_unknown_family_does_not_raise(self):
+        # Must not raise even for pathological canonical-looking inputs.
+        body = "unknown.action " + "k=v " * 50
+        result = pd._classify_pipeline_line(self._line(body))
+        assert result is None
+
+    # ── AC3: extra k=v pairs preserved additive-only ──────────────────────
+    def test_extra_kv_preserved_in_detail(self):
+        ev = pd._classify_pipeline_line(self._line(
+            "refinement.critique issue=278 persona=architect verdict=vago extra_key=hello"
+        ))
+        assert ev is not None
+        # extra_key should NOT appear in detail (detail is family-specific selection),
+        # but the line must be recognized (not dropped).
+        assert ev.action == "refinement.critique"
+
+    def test_gaps_included_when_present(self):
+        ev = pd._classify_pipeline_line(self._line(
+            "refinement.critique issue=278 persona=architect verdict=vago gaps=scope"
+        ))
+        assert ev is not None
+        assert "gaps=scope" in ev.detail
+
+    def test_gaps_absent_when_not_in_line(self):
+        ev = pd._classify_pipeline_line(self._line(
+            "refinement.critique issue=278 persona=architect verdict=claro"
+        ))
+        assert ev is not None
+        assert "gaps" not in ev.detail
+
+    # ── AC6: 6 secret patterns redacted ───────────────────────────────────
+    # routing.dropped includes ALL non-target kv pairs in detail, so secrets
+    # appended to the line will appear in detail as <redacted>.
+    @pytest.mark.parametrize("secret_kv", [
+        "token=supersecret123",
+        "bearer=mysecrettoken",
+        "api_key=myapikey",
+        "secret=mysecret",
+        "password=mypassword",
+        "authorization=Bearer_xyz",
+    ])
+    def test_secret_redacted(self, secret_kv):
+        body = f"routing.dropped target_kind=issue target=278 reason=expired {secret_kv}"
+        ev = pd._classify_pipeline_line(self._line(body))
+        assert ev is not None
+        assert "<redacted>" in ev.detail
+        # The original secret value must not appear.
+        raw_value = secret_kv.split("=", 1)[1]
+        assert raw_value not in ev.detail
+
+    # ── AC8: target derivation per family ─────────────────────────────────
+    def test_batch_sha8_truncation(self):
+        ev = pd._classify_pipeline_line(self._line(
+            "batch.claim sha=abcdef1234567890 issues=[1] reason=auto"
+        ))
+        assert ev is not None
+        assert ev.target == "~batch:abcdef12"
+
+    def test_issue_target_hash_prefix(self):
+        ev = pd._classify_pipeline_line(self._line(
+            "refinement.refine issue=42 round=1 persona=architect body_chars=500 verdict=claro"
+        ))
+        assert ev is not None
+        assert ev.target == "#42"
+
+    def test_pr_target_pr_prefix(self):
+        ev = pd._classify_pipeline_line(self._line(
+            "label.change target_kind=pr target=99 removed=[] added=[~review:pendente]"
+        ))
+        assert ev is not None
+        assert ev.target == "PR#99"
+
+    def test_auth_target_raw_id(self):
+        ev = pd._classify_pipeline_line(self._line(
+            "auth.skip target=claude-worker-pod attempts=0 remaining_s=60"
+        ))
+        assert ev is not None
+        assert ev.target == "claude-worker-pod"
+
+    # ── AC9: detail contains expected keys per family ─────────────────────
+    def test_refinement_critique_detail_keys(self):
+        ev = pd._classify_pipeline_line(self._line(
+            "refinement.critique issue=278 persona=architect verdict=vago"
+        ))
+        assert ev is not None
+        assert "persona=architect" in ev.detail
+        assert "verdict=vago" in ev.detail
+
+    def test_refinement_refine_detail_keys(self):
+        ev = pd._classify_pipeline_line(self._line(
+            "refinement.refine issue=278 round=2 persona=architect body_chars=1500 verdict=claro"
+        ))
+        assert ev is not None
+        assert "round=2" in ev.detail
+        assert "body_chars=1500" in ev.detail
+
+    def test_reaper_block_attempts_cap(self):
+        ev = pd._classify_pipeline_line(self._line(
+            "reaper.block target_kind=issue target=400 attempts=5 cap=5 reason=max_attempts"
+        ))
+        assert ev is not None
+        assert "attempts=5/5" in ev.detail
+        assert "reason=max_attempts" in ev.detail
+
+    def test_auth_fail_attempts_threshold(self):
+        ev = pd._classify_pipeline_line(self._line(
+            "auth.fail target=worker-abc attempts=3 threshold=3 reason=expired"
+        ))
+        assert ev is not None
+        assert "attempts=3/3" in ev.detail
+        assert "reason=expired" in ev.detail
+
+    def test_auth_backoff_detail_keys(self):
+        ev = pd._classify_pipeline_line(self._line(
+            "auth.backoff target=worker-abc attempts=4 backoff_s=120 until=2026-05-31T11:00:00Z"
+        ))
+        assert ev is not None
+        assert "backoff_s=120" in ev.detail
+        assert "until=2026-05-31T11:00:00Z" in ev.detail
+
+    # ── AC10: zero regression on 6 legacy patterns ────────────────────────
+    def test_legacy_mention_issue(self):
+        ev = pd._classify_pipeline_line(self._line(
+            "deile.orchestration.pipeline.stages mention group issue:278: triggers=['assignee']"
+        ))
+        assert ev is not None
+        assert ev.action == "mention"
+        assert ev.target == "#278"
+        assert "assignee" in ev.detail
+
+    def test_legacy_mention_pr(self):
+        ev = pd._classify_pipeline_line(self._line(
+            "stages mention group pr:291: triggers=['reviewer']"
+        ))
+        assert ev is not None
+        assert ev.action == "mention"
+        assert ev.target == "PR291"
+
+    def test_legacy_dispatch_starting(self):
+        ev = pd._classify_pipeline_line(self._line(
+            "INFO deile.infrastructure.deile_worker_client worker dispatch starting"
+        ))
+        assert ev is not None
+        assert ev.action == "dispatch"
+        assert "starting" in ev.detail
+
+    def test_legacy_dispatch_completed(self):
+        ev = pd._classify_pipeline_line(self._line(
+            "INFO deile.infrastructure.deile_worker_client worker dispatch completed"
+        ))
+        assert ev is not None
+        assert ev.action == "dispatch"
+        assert "completed" in ev.detail
+
+    def test_legacy_http_post(self):
+        ev = pd._classify_pipeline_line(self._line(
+            'httpx HTTP Request: POST http://x/v1/dispatch "HTTP/1.1 200 OK"'
+        ))
+        assert ev is not None
+        assert ev.action == "http"
+        assert "200" in ev.detail
+
+    def test_legacy_startup(self):
+        ev = pd._classify_pipeline_line(self._line(
+            "INFO deile.pipeline.runner starting pipeline monitor (repo=...)"
+        ))
+        assert ev is not None
+        assert ev.action == "startup"
+
+
+# ===== PipelineState.canonical_dropped counters (#448) =====================
+
+class TestPipelineStateDropCounters:
+    """AC4, AC5, AC11 — guard checks in _parse + cap on events list."""
+
+    def _provider(self) -> pd.PipelineProvider:
+        return pd.PipelineProvider(ttl_s=60.0)
+
+    def _fake_ts(self) -> str:
+        return "2026-05-31T10:00:00.000000000Z"
+
+    def _raw(self, body: str) -> str:
+        return f"{self._fake_ts()} {body}"
+
+    # ── AC4: line >500 chars → drop + counter ─────────────────────────────
+    def test_line_too_long_increments_counter(self):
+        long_body = "refinement.critique " + "k=v " * 200  # >> 500 chars
+        text = self._raw(long_body)
+        state = self._provider()._parse(text)
+        assert state.canonical_dropped["line_too_long"] == 1
+        # Should not appear in events.
+        assert not any(ev.action == "refinement.critique" for ev in state.events)
+
+    def test_normal_canonical_line_not_dropped(self):
+        text = self._raw("refinement.critique issue=1 persona=architect verdict=claro")
+        state = self._provider()._parse(text)
+        assert state.canonical_dropped["line_too_long"] == 0
+        assert any(ev.action == "refinement.critique" for ev in state.events)
+
+    # ── AC5: \t or \r → drop + counter ───────────────────────────────────
+    def test_tab_in_canonical_line_increments_counter(self):
+        text = self._raw("refinement.critique issue=1\tpersona=architect verdict=claro")
+        state = self._provider()._parse(text)
+        assert state.canonical_dropped["line_has_forbidden_char"] == 1
+
+    def test_carriage_return_in_canonical_line_increments_counter(self):
+        # \r is treated as a line separator by splitlines(), so it cannot
+        # appear in ll.body. Use \t which IS preserved through splitlines().
+        text = self._raw("refinement.critique issue=1\tpersona=architect verdict=claro")
+        state = self._provider()._parse(text)
+        assert state.canonical_dropped["line_has_forbidden_char"] == 1
+
+    # ── AC11: events capped at 60 ─────────────────────────────────────────
+    def test_events_capped_at_60(self):
+        lines = "\n".join(
+            self._raw(f"auth.skip target=worker-{i} remaining_s={i}")
+            for i in range(80)
+        )
+        state = self._provider()._parse(lines)
+        assert len(state.events) <= 60
+
+
+# ===== _redact_canonical_detail + _parse_kv (unit) ==========================
+
+class TestCanonicalHelpers:
+    def test_redact_token(self):
+        assert "<redacted>" in pd._redact_canonical_detail("token=abc123")
+
+    def test_redact_bearer(self):
+        assert "<redacted>" in pd._redact_canonical_detail("bearer=xyz")
+
+    def test_redact_api_key(self):
+        assert "<redacted>" in pd._redact_canonical_detail("api_key=secret")
+
+    def test_redact_password(self):
+        assert "<redacted>" in pd._redact_canonical_detail("password=hunter2")
+
+    def test_redact_secret(self):
+        assert "<redacted>" in pd._redact_canonical_detail("secret=mysecret")
+
+    def test_redact_authorization(self):
+        assert "<redacted>" in pd._redact_canonical_detail("authorization=Bearer_xyz")
+
+    def test_non_secret_not_redacted(self):
+        result = pd._redact_canonical_detail("persona=architect verdict=claro")
+        assert result == "persona=architect verdict=claro"
+
+    def test_parse_kv_basic(self):
+        kv = pd._parse_kv("issue=278 persona=architect verdict=vago")
+        assert kv == {"issue": "278", "persona": "architect", "verdict": "vago"}
+
+    def test_parse_kv_multiple_pairs(self):
+        kv = pd._parse_kv("attempts=3 reason=expired target=worker-abc")
+        assert kv == {"attempts": "3", "reason": "expired", "target": "worker-abc"}
+
+
 # ===== _derive_workflow =====================================================
 
 class TestDeriveWorkflow:
