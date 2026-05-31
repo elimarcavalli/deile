@@ -329,6 +329,38 @@ async def _acquire_lease(workspace: Path) -> Optional[dict]:
     return await asyncio.to_thread(_write_and_confirm)
 
 
+async def _update_lease_claude_pid(lease_path: Path, claude_pid: Optional[int]) -> None:
+    """Set/clear ``claude_pid`` on the lease — the PID of the spawned ``claude -p``
+    subprocess (NOT the wrapper server process, which lives in ``pid``).
+
+    Without this field, ``mtime`` of ``.lease.json`` is whatever the heartbeat
+    task last wrote (always recent while the server is up) and the ``pid`` is
+    just the wrapper — an observer cannot tell whether a real ``claude``
+    workload is still running. With it, ``claude_pid is not None and pid_alive
+    (claude_pid)`` is the ground truth for "claude is actively working on this
+    workdir". Best-effort: a missing/unwritable lease is logged and ignored —
+    the dispatch is the source of truth, the lease is just an observability
+    aid.
+    """
+    def _update() -> None:
+        try:
+            content = json.loads(lease_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if claude_pid is None:
+            content.pop("claude_pid", None)
+        else:
+            content["claude_pid"] = int(claude_pid)
+        try:
+            tmp = lease_path.with_suffix(".json.pid_tmp")
+            tmp.write_text(json.dumps(content), encoding="utf-8")
+            tmp.rename(lease_path)
+        except OSError as exc:
+            logger.warning("lease claude_pid update failed for %s: %s", lease_path, exc)
+
+    await asyncio.to_thread(_update)
+
+
 async def _release_lease(lease_path: Path) -> None:
     """Remove o arquivo de lease. Idempotente: FileNotFoundError é ignorado."""
     def _unlink() -> None:
@@ -749,6 +781,7 @@ async def run_subprocess_with_progress(
     cwd: Path,
     task_id: str,
     timeout: int,
+    lease_path: Optional[Path] = None,
 ) -> SubprocessResult:
     """Spawn de ``claude -p`` com persistência de stdout/stderr para o PVC.
 
@@ -757,6 +790,13 @@ async def run_subprocess_with_progress(
     ``/v1/progress/{task_id}`` (Task 14) para snapshot mid-flight no painel
     TUI. Em timeout, devolvemos ``returncode=124`` (convenção do ``coreutils
     timeout``) com mensagem em ``stderr``.
+
+    Quando ``lease_path`` é informado, gravamos ``claude_pid`` no lease assim
+    que o subprocess é spawnado e limpamos ao terminar — isso permite que um
+    observador (painel, ``kubectl exec``) distinga "lease vivo por heartbeat"
+    de "claude rodando agora" sem ter que varrer ``/proc`` (gotcha do
+    Mistério #3 — o lease é mantido vivo pela heartbeat task do servidor
+    mesmo quando o subprocess do claude já terminou).
     """
     start = time.monotonic()
 
@@ -774,6 +814,9 @@ async def run_subprocess_with_progress(
         stderr=asyncio.subprocess.PIPE,
     )
 
+    if lease_path is not None:
+        await _update_lease_claude_pid(lease_path, proc.pid)
+
     try:
         stdout_b, stderr_b = await asyncio.wait_for(
             proc.communicate(), timeout=timeout,
@@ -781,6 +824,8 @@ async def run_subprocess_with_progress(
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
+        if lease_path is not None:
+            await _update_lease_claude_pid(lease_path, None)
         duration = time.monotonic() - start
         return SubprocessResult(
             returncode=124, stdout="",
@@ -791,6 +836,9 @@ async def run_subprocess_with_progress(
     duration = time.monotonic() - start
     stdout = stdout_b.decode("utf-8", "replace")
     stderr = stderr_b.decode("utf-8", "replace")
+
+    if lease_path is not None:
+        await _update_lease_claude_pid(lease_path, None)
 
     # Persiste para o ``/v1/progress`` (Task 14) — best-effort; falha em
     # escrita NÃO derruba o dispatch (o cliente já recebeu o resultado).
@@ -1316,8 +1364,17 @@ def _parse_claude_json_output(stdout: str) -> dict:
 def _find_active_lease(root: Path) -> Optional[dict]:
     """Return the most recent alive lease found under *root*/<task_id>/.lease.json.
 
-    Security: exposes only task_id, heartbeat_at, pid — never the full
-    lease payload (no pod name, no prompts, nothing injectable).
+    Security: exposes only task_id, heartbeat_at, pid, claude_pid e
+    claude_running — never the full lease payload (no pod name, no prompts,
+    nothing injectable).
+
+    ``claude_pid``/``claude_running`` distinguish "lease alive (heartbeat
+    fresh)" from "claude subprocess actually running":
+    - ``claude_pid`` is the PID of the spawned ``claude -p`` (None when no
+      subprocess is in flight).
+    - ``claude_running`` is True iff that PID is currently alive.
+    Without these the observer cannot tell — the heartbeat task keeps the
+    lease's mtime fresh long after the subprocess exits.
     """
     now = time.time()
     best: Optional[dict] = None
@@ -1339,10 +1396,16 @@ def _find_active_lease(root: Path) -> Optional[dict]:
             hb = float(data.get("heartbeat_at", 0))
             if (now - hb) < _LEASE_TTL_S and hb > best_hb:
                 best_hb = hb
+                claude_pid = data.get("claude_pid")
+                claude_running = bool(
+                    claude_pid and _pid_alive(int(claude_pid))
+                )
                 best = {
                     "task_id": child.name,
                     "heartbeat_at": hb,
                     "pid": data.get("pid"),
+                    "claude_pid": claude_pid,
+                    "claude_running": claude_running,
                 }
         except (OSError, json.JSONDecodeError, ValueError):
             continue
@@ -1795,16 +1858,22 @@ async def pod_status_handler(request: web.Request) -> web.Response:
     """``GET /v1/pod-status`` — introspection of this pod's own runtime state.
 
     Returns a snapshot of:
-    - ``lease``:           active lease (task_id, heartbeat_at, pid) or null when idle.
+    - ``lease``:           active lease (task_id, heartbeat_at, pid,
+                           ``claude_pid``, ``claude_running``) or null when idle.
+                           ``pid`` is the wrapper server (always alive while
+                           the pod is up); ``claude_pid``/``claude_running``
+                           are the ground truth for a live ``claude -p``
+                           subprocess.
     - ``disk``:            PVC usage via shutil.disk_usage (no subprocess).
     - ``claude_processes``: count of running claude processes.
     - ``anthropic_quota``: last captured rate-limit tokens-remaining + timestamp,
                            or null if never observed.
     - ``ts``:              unix timestamp of this response.
 
-    Security: ``lease`` exposes ONLY task_id, heartbeat_at, and pid — no
-    prompt content, no credentials, nothing that could serve as an injection
-    vector.  Bearer auth required (same middleware as all other endpoints).
+    Security: ``lease`` exposes ONLY task_id, heartbeat_at, pid, claude_pid
+    and claude_running — no prompt content, no credentials, nothing that
+    could serve as an injection vector.  Bearer auth required (same
+    middleware as all other endpoints).
     """
     root = Path(os.environ.get("DEILE_CLAUDE_WORKER_ROOT", "/home/claude/work"))
     disk_mount = os.environ.get("DEILE_CLAUDE_HOME", "/home/claude")
@@ -2204,6 +2273,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     try:
         result = await run_subprocess_with_progress(
             cmd, cwd=workspace, task_id=task_id, timeout=timeout,
+            lease_path=workspace / ".lease.json",
         )
     except Exception as exc:
         logger.exception("dispatch failed task_id=%s", task_id)

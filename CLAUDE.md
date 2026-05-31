@@ -128,6 +128,16 @@ $K -n deile rollout status deployment/deile-pipeline --timeout=180s
 $K -n deile exec -it deploy/deile-shell -- python3 /app/wrapper.py deile   # interactive REPL in-cluster
 ```
 
+### Observability gotchas — what you see is NOT always reality
+
+The cluster has three traps that make a remote operator misread state:
+
+1. **`ps` was missing — fixed by installing `procps` in the image.** Earlier images shipped without `procps`, so `kubectl exec ... -- ps -ef` returned empty even with healthy processes. After rebuild, `ps`/`pgrep` work normally. If you hit an older image (pre-rebuild), use `cat /proc/*/cmdline | tr '\0' ' '; echo` directly — `/proc` is always mounted with the host PIDNS visible inside the container.
+
+2. **Pipeline logs are quiet when idle.** `kubectl logs deploy/deile-pipeline --tail=60` may look empty, but it is **not** silent in absolute terms — the monitor only emits per-poll-tick output and the rest is health probes that get evicted from short tails. Use `--tail=500` (or `--since=10m`) when investigating; the actual line you want is usually older than `--tail=60`. Pipeline buffering is unbuffered (`PYTHONUNBUFFERED=1` + tini reaps zombies properly), so a true silence-with-RUNNING state would mean either the process is deadlocked (rare) or you cut your tail too aggressively.
+
+3. **`.lease.json` mtime is NOT a liveness signal for `claude -p`.** The wrapper server runs a heartbeat task that re-writes `heartbeat_at` every 5 s while the pod is alive — independent of whether any `claude -p` subprocess is actually running. The lease's `pid` field is the **wrapper** PID (usually 1 or 7), not the claude subprocess. As of this PR, every active dispatch also writes a separate `claude_pid` field plus the `_find_active_lease` payload reports `claude_running` (`True` iff that `claude_pid` is currently alive). Always trust `claude_running` (or `pgrep -a claude`) — never the lease mtime.
+
 ### Roles & ports
 
 | Pod | Port | Role |
