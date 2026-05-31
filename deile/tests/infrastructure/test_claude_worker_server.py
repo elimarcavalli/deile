@@ -267,10 +267,12 @@ async def test_dispatch_response_shape(
     — contrato consumido pelo ``deile-pipeline`` e pelo painel TUI."""
     import json as _json
     async def fake_run(args, *, cwd, task_id, timeout):
-        # Com --output-format json, stdout é UM JSON object (resultado final).
+        # Com --output-format stream-json, stdout é NDJSON; o evento "result"
+        # é o último e é o que _parse_claude_json_output extrai.
         out = _json.dumps({
-            "is_error": False, "result": "ok", "session_id": "abc-123",
-            "total_cost_usd": 0.05, "duration_ms": 42000, "num_turns": 3,
+            "type": "result", "is_error": False, "result": "ok",
+            "session_id": "abc-123", "total_cost_usd": 0.05,
+            "duration_ms": 42000, "num_turns": 3,
         })
         return claude_worker_module.SubprocessResult(
             returncode=0, stdout=out, stderr="", duration_seconds=42.0,
@@ -639,14 +641,16 @@ async def test_dispatch_persists_session_metadata(
 async def test_dispatch_passes_session_id_flag_to_claude(
     claude_worker_module, monkeypatch, tmp_path,
 ):
-    """Fresh dispatch passa ``--session-id <uuid>`` e ``--output-format json``
-    pro claude CLI. Resume dispatch usa ``-r <session_id>`` em vez."""
+    """Fresh dispatch passa ``--session-id <uuid>`` e ``--output-format stream-json``
+    + ``--verbose`` pro claude CLI. Resume dispatch usa ``-r <session_id>`` em vez."""
     import json as _json
     captured = {}
 
     async def fake_run(args, *, cwd, task_id, timeout):
         captured["args"] = list(args)
-        out = _json.dumps({"is_error": False, "result": "ok", "session_id": "x"})
+        out = _json.dumps({"type": "result", "is_error": False, "result": "ok",
+                           "session_id": "x", "total_cost_usd": 0.0,
+                           "duration_ms": 0, "num_turns": 1})
         return claude_worker_module.SubprocessResult(0, out, "", 1.0)
 
     monkeypatch.setattr(claude_worker_module, "run_subprocess_with_progress", fake_run)
@@ -668,7 +672,8 @@ async def test_dispatch_passes_session_id_flag_to_claude(
     assert args[sid_idx + 1] == body["session_id"]
     assert "--output-format" in args
     fmt_idx = args.index("--output-format")
-    assert args[fmt_idx + 1] == "json"
+    assert args[fmt_idx + 1] == "stream-json"
+    assert "--verbose" in args
     # fresh dispatch NÃO usa -r.
     assert "-r" not in args
 
@@ -2115,3 +2120,261 @@ async def test_dispatch_409_lease_conflict_emits_dispatch_failed(
     assert len(failed) == 1, f"expected exactly one dispatch.failed, got {msgs}"
     assert "error_code=TASK_ALREADY_RUNNING" in failed[0]
     assert "reason=lease_conflict" in failed[0]
+
+
+# --------------------------------------------------------------------------- #
+# Issue #442: StreamState — stream-json incremental parser
+# --------------------------------------------------------------------------- #
+
+
+def test_stream_state_ingest_assistant_increments_turn_and_tokens(
+    claude_worker_module,
+):
+    """``assistant`` event increments turn counter and accumulates token usage."""
+    state = claude_worker_module.StreamState()
+    event = {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "usage": {"input_tokens": 150, "output_tokens": 80},
+            "content": [],
+        },
+    }
+    state.ingest(event)
+    assert state.turn == 1
+    assert state.tokens_in == 150
+    assert state.tokens_out == 80
+
+
+def test_stream_state_ingest_multiple_turns_accumulates(claude_worker_module):
+    """Multiple ``assistant`` events accumulate turn count and tokens."""
+    state = claude_worker_module.StreamState()
+    for i in range(3):
+        state.ingest({
+            "type": "assistant",
+            "message": {
+                "usage": {"input_tokens": 100, "output_tokens": 50},
+                "content": [],
+            },
+        })
+    assert state.turn == 3
+    assert state.tokens_in == 300
+    assert state.tokens_out == 150
+
+
+def test_stream_state_ingest_tracks_last_tool_use(claude_worker_module):
+    """Tool use blocks inside ``assistant`` content update ``tool_last``."""
+    state = claude_worker_module.StreamState()
+    state.ingest({
+        "type": "assistant",
+        "message": {
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+            "content": [
+                {"type": "tool_use", "name": "bash", "id": "t1"},
+                {"type": "tool_use", "name": "read_file", "id": "t2"},
+            ],
+        },
+    })
+    # Last tool_use block wins.
+    assert state.tool_last == "read_file"
+
+
+def test_stream_state_ingest_result_event_populates_final_fields(
+    claude_worker_module,
+):
+    """``result`` event populates is_error, result, total_cost_usd, etc."""
+    state = claude_worker_module.StreamState()
+    state.ingest({
+        "type": "result",
+        "is_error": False,
+        "result": "STATUS: SUCCESS",
+        "session_id": "sess-abc",
+        "total_cost_usd": 0.137,
+        "num_turns": 5,
+        "duration_ms": 60000,
+    })
+    assert state.is_error is False
+    assert state.result == "STATUS: SUCCESS"
+    assert state.session_id == "sess-abc"
+    assert state.total_cost_usd == 0.137
+    assert state.num_turns == 5
+    assert state._has_result is True
+
+
+def test_stream_state_default_is_error_true_before_result(claude_worker_module):
+    """Before any ``result`` event, ``is_error`` defaults to True (conservative)."""
+    state = claude_worker_module.StreamState()
+    assert state.is_error is True
+    assert state._has_result is False
+
+
+def test_stream_state_ingest_system_init_captures_session_id(claude_worker_module):
+    """``system/init`` event populates ``session_id`` early (before result event)."""
+    state = claude_worker_module.StreamState()
+    state.ingest({
+        "type": "system",
+        "subtype": "init",
+        "session_id": "early-session-id",
+    })
+    assert state.session_id == "early-session-id"
+
+
+def test_stream_state_non_json_rolling_buffer_caps_at_8kib(claude_worker_module):
+    """Non-JSON buffer evicts oldest lines when cap (8 KiB) is exceeded."""
+    state = claude_worker_module.StreamState()
+    # Add lines totaling > 8 KiB.
+    line = "x" * 1000 + "\n"  # ~1 KiB per line
+    for _ in range(10):
+        state.add_non_json(line)
+    assert state._non_json_bytes <= 8 * 1024
+    # The buffer should still have content.
+    assert len(state.non_json_tail) > 0
+
+
+def test_stream_state_to_final_dict_shape(claude_worker_module):
+    """``to_final_dict`` matches the shape of ``_parse_claude_json_output``."""
+    state = claude_worker_module.StreamState()
+    state.ingest({
+        "type": "result",
+        "is_error": False,
+        "result": "done",
+        "session_id": "sid-xyz",
+        "total_cost_usd": 0.05,
+        "num_turns": 2,
+        "duration_ms": 10000,
+    })
+    d = state.to_final_dict()
+    assert d["is_error"] is False
+    assert d["result"] == "done"
+    assert d["session_id"] == "sid-xyz"
+    assert d["total_cost_usd"] == 0.05
+    assert d["num_turns"] == 2
+    assert "duration_ms" in d
+
+
+# --------------------------------------------------------------------------- #
+# Issue #442: cross-format equivalence fixture
+# Verifies that stream-json NDJSON and legacy json produce the same final
+# fields when processed by _parse_claude_json_output.
+# --------------------------------------------------------------------------- #
+
+
+def test_cross_format_equivalence_stream_json_vs_json(claude_worker_module):
+    """Fields from ``--output-format stream-json`` NDJSON match those from
+    ``--output-format json`` single-object output via ``_parse_claude_json_output``.
+
+    This is the fixture the issue calls for: same is_error, result,
+    session_id, total_cost_usd, num_turns regardless of which format the
+    CLI was invoked with.
+    """
+    parse = claude_worker_module._parse_claude_json_output
+
+    # --- stream-json format (NDJSON: multiple events, result is last) ---
+    stream_json_stdout = "\n".join([
+        '{"type":"system","subtype":"init","session_id":"sess-42","cwd":"/work"}',
+        '{"type":"assistant","message":{"usage":{"input_tokens":200,"output_tokens":100},"content":[]}}',
+        '{"type":"user","message":{"role":"user","content":"ok"}}',
+        '{"type":"result","is_error":false,"result":"Review completed",'
+        '"session_id":"sess-42","total_cost_usd":0.21,"num_turns":3,"duration_ms":30000}',
+    ])
+
+    # --- legacy json format (single JSON object on stdout) ---
+    json_stdout = (
+        '{"is_error":false,"result":"Review completed",'
+        '"session_id":"sess-42","total_cost_usd":0.21,"num_turns":3,"duration_ms":30000}'
+    )
+
+    result_stream = parse(stream_json_stdout)
+    result_json = parse(json_stdout)
+
+    # Core fields must be identical.
+    for field in ("is_error", "result", "session_id", "total_cost_usd", "num_turns"):
+        assert result_stream[field] == result_json[field], (
+            f"Mismatch for field '{field}': "
+            f"stream-json={result_stream[field]!r} vs json={result_json[field]!r}"
+        )
+
+
+def test_cross_format_equivalence_with_is_error_true(claude_worker_module):
+    """Cross-format equivalence for error case (is_error=true)."""
+    parse = claude_worker_module._parse_claude_json_output
+
+    stream_json_stdout = "\n".join([
+        '{"type":"system","subtype":"init","session_id":"err-sess"}',
+        '{"type":"result","is_error":true,"result":"Not logged in",'
+        '"session_id":"err-sess","total_cost_usd":0.0,"num_turns":1,"duration_ms":100}',
+    ])
+    json_stdout = (
+        '{"is_error":true,"result":"Not logged in",'
+        '"session_id":"err-sess","total_cost_usd":0.0,"num_turns":1,"duration_ms":100}'
+    )
+
+    result_stream = parse(stream_json_stdout)
+    result_json = parse(json_stdout)
+
+    for field in ("is_error", "result", "session_id", "total_cost_usd", "num_turns"):
+        assert result_stream[field] == result_json[field]
+
+
+async def test_run_subprocess_with_progress_uses_incremental_reader(
+    claude_worker_module, monkeypatch, tmp_path,
+):
+    """``run_subprocess_with_progress`` reads stdout line-by-line and parses
+    NDJSON events, returning the concatenated stdout in the result."""
+    import asyncio as _asyncio
+
+    # Simulate a subprocess that emits stream-json NDJSON line-by-line.
+    ndjson_lines = [
+        '{"type":"system","subtype":"init","session_id":"sid-streaming"}\n',
+        '{"type":"assistant","message":{"usage":{"input_tokens":50,"output_tokens":25},"content":[]}}\n',
+        '{"type":"result","is_error":false,"result":"done","session_id":"sid-streaming",'
+        '"total_cost_usd":0.01,"num_turns":1,"duration_ms":5000}\n',
+    ]
+
+    class _FakeProc:
+        returncode = 0
+
+        class _FakeStream:
+            def __init__(self, lines):
+                self._lines = [l.encode() for l in lines] + [b""]
+
+            async def readline(self):
+                return self._lines.pop(0) if self._lines else b""
+
+            async def read(self, n):
+                return b""
+
+        def __init__(self):
+            self.stdout = self._FakeStream(ndjson_lines)
+            self.stderr = self._FakeStream([])
+
+        async def wait(self):
+            pass
+
+    monkeypatch.setenv("DEILE_CLAUDE_WORKER_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        claude_worker_module.asyncio,
+        "create_subprocess_exec",
+        lambda *a, **kw: _make_coro(_FakeProc()),
+    )
+
+    async def _make_coro(v):
+        return v
+
+    monkeypatch.setattr(
+        claude_worker_module.asyncio,
+        "create_subprocess_exec",
+        lambda *a, **kw: _make_coro(_FakeProc()),
+    )
+
+    result = await claude_worker_module.run_subprocess_with_progress(
+        ["claude", "-p"],
+        cwd=tmp_path,
+        task_id="abcdef0123456789",
+        timeout=60,
+    )
+
+    # All NDJSON lines are concatenated in stdout.
+    assert "sid-streaming" in result.stdout
+    assert result.returncode == 0
+    assert result.duration_seconds >= 0
