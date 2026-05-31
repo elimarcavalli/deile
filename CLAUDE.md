@@ -172,6 +172,7 @@ A configuração do DEILE vive em **5 lugares distintos** que coexistem. Saber q
 | **Pipeline resume** | `DEILE_PIPELINE_RESUME_ENABLED/INTERVAL/MAX_ATTEMPTS/BUDGET` (issue #254) | pipeline | DEPRECATED → settings.json (`pipeline.resume_*`) |
 | **Dispatch routing** | `DEILE_PIPELINE_DISPATCH_MODE` (global) + `_CLASSIFY/REFINE/IMPLEMENT/PR_REVIEW/FOLLOW_UPS` (per-stage, issue #309 fase 2) | pipeline | manifest 46 / painel `[d]` |
 | **Models per-stage** | `DEILE_PREFERRED_MODEL` (global) + `DEILE_PIPELINE_MODEL_<STAGE>` (per-stage, issue #305) | pipeline → worker | manifest 46 / painel `[d]` |
+| **Reasoning per-stage** | `DEILE_REASONING_EFFORT` (global) + `DEILE_PIPELINE_REASONING_<STAGE>` (per-stage) | pipeline → worker (provider traduz; claude-worker → `claude --effort`) | manifest 46 / painel `[d]` coluna Reasoning / `/reasoning` no CLI |
 | **Subagents paralelos** | `DEILE_SUBAGENT_RUNNER`, `_MAX_PARALLEL`, `_BUDGET_S`, `_POLL_INTERVAL_S`, `_CAPTURE_BUFFER_MAX_BYTES` (issue #257) | qualquer DEILE invocando `dispatch_parallel_subagents` | DEPRECATED → settings.json |
 | **Loop guard** | `DEILE_LOOP_GUARD_DISABLE/MAX_CALLS/REPEAT_THRESHOLD/WINDOW_SIZE/WINDOW_THRESHOLD/NO_PROGRESS`, `DEILE_MAX_TOOL_ITERATIONS` | core agent | DEPRECATED → settings.json |
 | **Cron** | `DEILE_CRON_DB_PATH`, `DEILE_CRON_POLL_INTERVAL`, `DEILE_CRON_AUTOSTART` | só `deilebot` (cron roda lá) | manifest 20 + DEPRECATED → settings.json |

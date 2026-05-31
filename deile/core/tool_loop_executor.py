@@ -144,11 +144,16 @@ class ToolLoopExecutor:
         system_instruction: Optional[str] = None,
         working_directory: str = ".",
         session_data: Optional[Dict[str, Any]] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> AsyncIterator[UnifiedStreamEvent]:
         """Stream the full tool-loop end-to-end.
 
         Yields every event the provider emits, plus ``TOOL_RESULT`` events
         produced by this executor for each tool the registry runs.
+
+        ``reasoning_effort`` (quando setado) é repassado a
+        ``provider.generate_stream`` em cada iteração; cada provider traduz o
+        nível para o parâmetro nativo (best-effort). ``None`` = default do provider.
         """
         history = list(messages)
         # Per-turn loop detector. Defensive against the model spinning on
@@ -176,6 +181,7 @@ class ToolLoopExecutor:
                 history,
                 system_instruction=system_instruction,
                 tools=tools,
+                reasoning_effort=reasoning_effort,
             )
             cascade_key = "await_first_token" if iteration == 0 else "await_next_response"
             cascade_ctx: Dict[str, Any] = (

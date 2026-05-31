@@ -35,6 +35,7 @@ from .agent_autonomous import AgentAutonomousMixin
 from .agent_streaming import AgentStreamingMixin
 from .context_manager import ContextManager
 from .intent_analyzer import get_intent_analyzer
+from .models.reasoning import resolve_session_reasoning
 from .models.router import ModelRouter
 from .proactive_analyzer import (ProactiveAction, ProactiveAnalyzer,
                                  get_proactive_analyzer)
@@ -1237,7 +1238,8 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
 
                 chat = await model_provider.create_chat_session(
                     session_id=session.session_id,
-                    system_instruction=system_instruction
+                    system_instruction=system_instruction,
+                    reasoning_effort=resolve_session_reasoning(session),
                 )
 
                 message_content: Any = user_input
@@ -1381,6 +1383,7 @@ class DeileAgent(AgentStreamingMixin, AgentAutonomousMixin):
                             tools=tools,
                             system_instruction=system_instruction,
                             session_id=session.session_id,
+                            reasoning_effort=resolve_session_reasoning(session),
                         )
                         _self_record_circuit(model_provider.provider_id, success=True)
                         last_error = None
