@@ -1,5 +1,12 @@
 """Worker/Claude brief templates and renderers for the autonomous pipeline.
 
+⚠ CRITICAL: QUALQUER mudança nestes briefs exige (a) teste de regressão
+asserting substrings críticas (`CHECKPOINT OBRIGATÓRIO`, `SUÍTE COMPLETA`,
+`anti-eco`, `.deile-progress.md`, `DECISÃO É DECISÃO`, `REGRA ANTI-FLOOD`,
+`execute o pedido SEMPRE`), (b) comparação A/B do custo médio por sessão
+antes/depois (PR #469 reduziu de $27 → ~$5-8/sessão), (c) validação
+empírica em PR real antes de mergear.
+
 These are the imperative PT-BR prompts the pipeline sends to the executing
 agent — the long-running ``deile-worker`` Pod (markdown briefs) or the legacy
 ``claude -p`` path (plain-prose prompt).
@@ -197,9 +204,10 @@ PASSO 2 — Executar a work-list:
 - NÃO se auto-mencione (anti-eco — identidade vem do `.user.login`).
 - Review: `{review_post_cmd}` (APPROVE/REQUEST_CHANGES). Merge: `{merge_cmd}` (fallback `{merge_fallback_cmd}`); confirme `{check_merged_cmd}`. Comment: `{comment_pr_cmd}`.
 - Para revisar/mergear: rode a SUÍTE COMPLETA `{full_suite_cmd}` ({pip_guard}). Vermelha por sua mudança = bloqueante; vermelha por testes pré-existentes intocados = documenta e segue.
-- Confronte entrega vs issue (Closes #N).
+- Se PR fecha issue (`Closes #N` no body): leia `gh issue view N` e confronte entrega vs requisito.
+- Se PR toca `briefs.py`/`*_brief*.py`: rode `pytest deile/tests/orchestration/pipeline/test_briefs* -v` E `grep -E 'CHECKPOINT|SUÍTE COMPLETA|anti-eco|gh pr comment|.deile-progress.md' deile/orchestration/pipeline/briefs.py` — invariantes ausentes = REQUEST_CHANGES cirúrgico.
 
-PASSO 3 — Decisão é decisão (anti-loop):
+**PASSO 3 — DECISÃO É DECISÃO** (anti-loop, regra inegociável):
 - TEM conclusão → poste review formal e ENCERRE com veredito. NÃO escreva "incompleto" se chegou a decidir.
 - Work-list ESVAZIOU → pipeline marca `~mention:processado`.
 - Trabalho REAL pendente por estouro → grave `.deile-progress.md` (NÃO commite, NÃO dentro de ./repo) com: feito, falta, bloqueio, arquivo:linha.
@@ -223,7 +231,7 @@ NUNCA invente resultado. NUNCA termine sem veredito quando TEM decisão.
 # updated journal before it stops.
 
 _WORKER_IMPLEMENT_RESUME_BRIEF = """\
-RETOMADA da issue #{number} de {repo}. Há trabalho parcial em ./repo — NÃO recomece. NÃO rode `git reset --hard`. NÃO apague untracked.
+RETOMADA da issue #{number} de {repo}. Há trabalho parcial em ./repo — NÃO recomece. NÃO rode `git reset --hard`. NÃO apague untracked. `.deile-progress.md` é INTOCÁVEL — leia, atualize, NUNCA delete.
 
 1. `git checkout {branch}` (existe localmente).
 2. Reconstrua contexto:
@@ -586,7 +594,7 @@ REFINE a issue #{number} (tipo: {type}) de {repo}. Reescreva título + body. NÃ
 _WORKER_DECOMPOSE_BRIEF = """\
 ARQUITETO. Intent #{number} de {repo} está CLARA. Decomponha em derivadas INDEPENDENTES, no padrão de maestria.
 
-REGRA ANTI-FLOOD (V1 inegociável): cada derivada custa refine+critique+implement+review. DEFAULT: AGREGAR em UMA derivada com checklist (`- [ ]` por item). Split SÓ se cada derivada tem PR independente (módulos disjuntos, testes diferentes, ordem livre). Em dúvida: agregar.
+REGRA ANTI-FLOOD (V1 inegociável — auditável em PR #466): cada derivada custa refine+critique+implement+review (~$3-30 por ciclo). DEFAULT AGRESSIVO: AGREGAR em UMA derivada com checklist (`- [ ]` por item). Split SÓ se cada derivada tem PR independente (módulos disjuntos, testes diferentes, ordem livre). Em dúvida: agregar. Justifique split no comment de auditoria.
 
 Exemplo:
   BOM (default):      "4 frentes A/B/C/D no módulo M → UMA derivada com checklist."
