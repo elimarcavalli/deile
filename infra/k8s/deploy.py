@@ -208,69 +208,14 @@ def _capture(cmd: List[str], timeout: float = 30.0) -> Optional[str]:
 
 
 def _apply_apiserver_egress_netpol(kubectl: str, ns: str) -> None:
-    """Estreita a NetworkPolicy de egress ao kube-apiserver para o endpoint real.
+    """Wrapper fino sobre :func:`_netpol.apply_apiserver_egress_netpol`.
 
-    NetworkPolicy filtra o IP de destino *pós-DNAT* — o endpoint real do
-    apiserver — e não o ClusterIP do Service ``kubernetes`` (10.43.0.1 em k3s).
-    Por isso liberar só o Service CIDR (10.43.0.0/16) nunca casa com o pacote;
-    o ``kubectl exec`` do auto-renew morre em ``connection refused``. O endpoint
-    real varia por cluster (k3s: ``node:6443``; EKS/GKE: ``master:443``), então
-    descobrimos em runtime via ``endpoints/kubernetes`` e estreitamos o egress
-    para o(s) IP(s) ``/32`` + a(s) porta(s) real(is).
-
-    Best-effort: se a descoberta falhar, o manifest 40 já carrega um fallback
-    RFC1918 (443 + 6443) que cobre qualquer cluster — apenas mais amplo.
+    A lógica é compartilhada (``infra/k8s/_netpol.py``) com os demais caminhos
+    que aplicam o manifest 40 (``_setup.py``, ``_claude_install.py``); aqui só
+    pluga a UI do ``deploy.py``.
     """
-    raw = _capture([kubectl, "get", "endpoints", "kubernetes",
-                    "-n", "default", "-o", "json"])
-    ips: List[str] = []
-    ports: List[int] = []
-    if raw:
-        try:
-            data = json.loads(raw)
-            for subset in data.get("subsets", []) or []:
-                ips.extend(a["ip"] for a in subset.get("addresses", []) or [] if a.get("ip"))
-                ports.extend(p["port"] for p in subset.get("ports", []) or [] if p.get("port"))
-        except (ValueError, KeyError, TypeError):
-            ips, ports = [], []
-    ips = sorted(set(ips))
-    ports = sorted(set(ports))
-    if not ips or not ports:
-        ui.warn("endpoints/kubernetes vazio — mantendo fallback RFC1918 do manifest 40")
-        return
-
-    to_block = "\n".join(f"        - ipBlock: {{ cidr: {ip}/32 }}" for ip in ips)
-    ports_block = "\n".join(f"        - {{ protocol: TCP, port: {p} }}" for p in ports)
-    manifest = (
-        "apiVersion: networking.k8s.io/v1\n"
-        "kind: NetworkPolicy\n"
-        "metadata:\n"
-        "  name: creds-renewer-egress-to-kube-api\n"
-        f"  namespace: {ns}\n"
-        "spec:\n"
-        "  podSelector:\n"
-        "    matchExpressions:\n"
-        "      - { key: app, operator: In, values: [deile-pipeline, claude-creds-renewer, deile-monitor] }\n"
-        "  policyTypes: [\"Egress\"]\n"
-        "  egress:\n"
-        "    - to:\n"
-        f"{to_block}\n"
-        "      ports:\n"
-        f"{ports_block}\n"
-    )
-    try:
-        proc = subprocess.run(
-            [kubectl, "apply", "-n", ns, "-f", "-"],
-            input=manifest, text=True, capture_output=True, cwd=str(ROOT),
-        )
-    except OSError as exc:
-        ui.warn(f"netpol apiserver-egress não aplicada: {exc}")
-        return
-    if proc.returncode == 0:
-        ui.info("netpol apiserver-egress estreitada para "
-                f"{', '.join(ips)} :{','.join(map(str, ports))}")
-    else:
-        ui.warn(f"netpol apiserver-egress não aplicada: {(proc.stderr or '').strip()}")
+    from _netpol import apply_apiserver_egress_netpol  # noqa: PLC0415
+    apply_apiserver_egress_netpol(kubectl, ns, info=ui.info, warn=ui.warn)
 
 
 def read_env() -> Dict[str, str]:
@@ -802,6 +747,10 @@ def k8s_start(args: dict) -> int:
     for dep in K8S_DEPLOYMENTS:
         _run([kubectl, "-n", ns, "scale", f"deployment/{dep}", "--replicas=1"],
              stdout=subprocess.DEVNULL)
+    # Re-estreita a egress policy do apiserver: o IP do node pode ter mudado
+    # enquanto a stack estava parada (ex.: reboot da VM Rancher) — sem isto o
+    # /32 ficaria stale e o auto-renew voltaria a `connection refused`.
+    _apply_apiserver_egress_netpol(kubectl, ns)
     ui.ok("deployments religados (scale → 1).")
     return 0
 
@@ -838,6 +787,9 @@ def k8s_restart(args: dict) -> int:
     for dep in K8S_DEPLOYMENTS:
         _run([kubectl, "-n", ns, "rollout", "restart", f"deployment/{dep}"],
              stdout=subprocess.DEVNULL)
+    # Re-estreita a egress policy do apiserver (endpoint pode ter mudado desde
+    # o último `up`); barato e idempotente, mantém o /32 fresco.
+    _apply_apiserver_egress_netpol(kubectl, ns)
     ui.ok("rollout restart disparado.")
     return 0
 

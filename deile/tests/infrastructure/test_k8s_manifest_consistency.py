@@ -25,6 +25,8 @@ Quando este teste falhar, NÃO mude o teste para passar. Mude o manifest.
 
 from __future__ import annotations
 
+import ipaddress
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,17 @@ MANIFEST_DIR = Path(__file__).resolve().parents[3] / "infra" / "k8s" / "manifest
 # (EKS/GKE/AKS). NetworkPolicy filtra o IP/porta pós-DNAT (endpoint real), não
 # o ClusterIP — por isso aceitamos qualquer ipBlock RFC1918 nessas portas.
 APISERVER_PORTS = frozenset({443, 6443})
+
+# Nome da egress policy do apiserver (fallback estático no manifest 40 +
+# override de runtime no `deploy.py`/`_netpol.py`, mesmo nome de propósito).
+_APISERVER_POLICY_NAME = "creds-renewer-egress-to-kube-api"
+
+# Importa a FONTE ÚNICA do selector de pods do módulo de runtime, para o
+# teste-guarda de paridade manifest↔runtime (sem stub: _netpol só usa stdlib).
+_INFRA_K8S = MANIFEST_DIR.parent
+if str(_INFRA_K8S) not in sys.path:
+    sys.path.insert(0, str(_INFRA_K8S))
+from _netpol import APISERVER_EGRESS_APPS, POLICY_NAME  # noqa: E402
 
 
 def _load_all_docs() -> list[dict[str, Any]]:
@@ -203,4 +216,84 @@ def test_kubectl_exec_pods_have_apiserver_egress(docs: list[dict[str, Any]]) -> 
         "          - ipBlock: { cidr: 172.16.0.0/12 }\n"
         "          - ipBlock: { cidr: 192.168.0.0/16 }\n"
         "        ports: [{ protocol: TCP, port: 443 }, { protocol: TCP, port: 6443 }]"
+    )
+
+
+def _apiserver_policy(docs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for d in docs:
+        if (
+            d.get("kind") == "NetworkPolicy"
+            and (d.get("metadata", {}) or {}).get("name") == _APISERVER_POLICY_NAME
+        ):
+            return d
+    return None
+
+
+def test_apiserver_egress_selector_matches_runtime() -> None:
+    """Regra 4 — selector do fallback (manifest 40) == fonte única do runtime.
+
+    O ``deploy.py``/``_netpol.py`` estreita a egress policy do apiserver
+    SOBRESCREVENDO-A pelo mesmo nome (``creds-renewer-egress-to-kube-api``) —
+    overwrite-by-name é o que de fato estreita, já que NetworkPolicy é aditiva.
+    Logo o ``podSelector`` renderizado em runtime (lista
+    ``_netpol.APISERVER_EGRESS_APPS``) DEVE casar exatamente com o do fallback
+    estático no manifest 40. Se divergirem, um pod ganharia egress no fallback
+    amplo mas o perderia no /32 (ou vice-versa) conforme qual verbo rodou por
+    último — bug silencioso de postura inconsistente. Este teste é a trava.
+    """
+    assert POLICY_NAME == _APISERVER_POLICY_NAME, (
+        f"_netpol.POLICY_NAME ({POLICY_NAME!r}) divergiu do nome esperado "
+        f"({_APISERVER_POLICY_NAME!r}) — overwrite-by-name deixaria de estreitar."
+    )
+    policy = _apiserver_policy(_load_all_docs())
+    assert policy is not None, (
+        f"NetworkPolicy '{_APISERVER_POLICY_NAME}' (fallback) ausente do "
+        "manifest 40 — sem ela `kubectl apply -f` cru perde o egress ao apiserver."
+    )
+    expr = (policy.get("spec", {}).get("podSelector", {}) or {}).get("matchExpressions") or []
+    manifest_apps: set[str] = set()
+    for e in expr:
+        if e.get("key") == "app" and e.get("operator") == "In":
+            manifest_apps.update(e.get("values") or [])
+    assert manifest_apps == set(APISERVER_EGRESS_APPS), (
+        f"Selector do fallback no manifest 40 ({sorted(manifest_apps)}) divergiu "
+        f"de _netpol.APISERVER_EGRESS_APPS ({sorted(APISERVER_EGRESS_APPS)}). "
+        "Mantenha os dois em sincronia: o override de runtime usa a constante "
+        "Python; o fallback estático usa o YAML. Editar um sem o outro deixa "
+        "pods com egress inconsistente entre os dois caminhos."
+    )
+
+
+def test_apiserver_egress_fallback_is_private() -> None:
+    """Regra 5 — todo ipBlock do fallback estático está em range privado.
+
+    O fallback é amplo de propósito (cobre o endpoint real de qualquer cluster),
+    mas NÃO pode ser irrestrito: um ``0.0.0.0/0`` (ou qualquer range público)
+    daria a esses pods egress ao mundo nas portas 443/6443 — o oposto da
+    intenção. Exige que cada CIDR seja sub-rede de um range RFC1918.
+    """
+    private_nets = [
+        ipaddress.ip_network("10.0.0.0/8"),
+        ipaddress.ip_network("172.16.0.0/12"),
+        ipaddress.ip_network("192.168.0.0/16"),
+    ]
+    policy = _apiserver_policy(_load_all_docs())
+    assert policy is not None, "fallback policy ausente do manifest 40"
+    offenders: list[str] = []
+    for rule in policy.get("spec", {}).get("egress") or []:
+        for to in rule.get("to") or []:
+            cidr = (to.get("ipBlock") or {}).get("cidr")
+            if not cidr:
+                continue
+            try:
+                net = ipaddress.ip_network(cidr)
+            except ValueError:
+                offenders.append(f"{cidr} (CIDR inválido)")
+                continue
+            if not any(net.subnet_of(p) for p in private_nets):
+                offenders.append(cidr)
+    assert not offenders, (
+        f"ipBlock(s) não-privado(s) no fallback do apiserver: {offenders}. "
+        "O fallback deve liberar apenas ranges RFC1918 (10/8, 172.16/12, "
+        "192.168/16) — nunca 0.0.0.0/0 nem espaço público."
     )
