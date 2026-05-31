@@ -12,7 +12,7 @@ from deile.core.models.errors import (ProviderErrorEnvelope,
 def envelope():
     return ProviderErrorEnvelope(
         provider_id="anthropic",
-        model_id="claude-opus-4-7",
+        model_id="claude-opus-4-8",
         error_type="auth",
         message="Invalid API key",
         http_status=401,
@@ -25,7 +25,7 @@ def envelope():
 def test_envelope_to_display_dict(envelope):
     d = envelope.to_display_dict()
     assert d["provider"] == "anthropic"
-    assert d["model"] == "claude-opus-4-7"
+    assert d["model"] == "claude-opus-4-8"
     assert d["error_type"] == "auth"
     assert d["http_status"] == 401
     assert d["request_id"] == "req_123"

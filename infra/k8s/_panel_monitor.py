@@ -84,7 +84,7 @@ _PAUSE_DURATIONS = ["30m", "1h", "2h", "custom"]
 
 # Modelos fallback quando ModelsProvider não carregou (sem catálogo YAML).
 _MODELS_FALLBACK = (
-    "anthropic:claude-opus-4-7",
+    "anthropic:claude-opus-4-8",
     "anthropic:claude-sonnet-4-6",
     "anthropic:claude-haiku-4-5",
     "openai:gpt-4",

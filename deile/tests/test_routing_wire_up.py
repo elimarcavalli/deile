@@ -87,7 +87,7 @@ class TestModelRouterTierDelegation:
         mock_provider = _make_provider("anthropic")
 
         # Build a TierRouter that returns mock_provider for TIER_1
-        policy = RoutingPolicy("test", {ModelTier.TIER_1: ["anthropic:claude-opus-4-7"]})
+        policy = RoutingPolicy("test", {ModelTier.TIER_1: ["anthropic:claude-opus-4-8"]})
         cb = CircuitBreaker()
         tier_router = TierRouter(MagicMock(), policy, cb)
         tier_router.register_provider(mock_provider)

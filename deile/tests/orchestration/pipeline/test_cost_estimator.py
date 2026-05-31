@@ -57,7 +57,7 @@ class TestStageCostEstimatorFallback:
         pp = _make_pricing_provider("0.000003", "0.000015")
         estimator = StageCostEstimator(repo, pp)
 
-        cost = estimator.estimate_run_cost("implement", "anthropic:claude-opus-4-7")
+        cost = estimator.estimate_run_cost("implement", "anthropic:claude-opus-4-8")
 
         fallback_in, fallback_out = _FALLBACK_TOKENS["implement"]
         expected = (
@@ -168,7 +168,7 @@ class TestStageCostEstimatorPricingFallback:
         estimator = StageCostEstimator(repo, pp)
 
         # Should not raise; falls back to heuristic.
-        cost = estimator.estimate_run_cost("implement", "anthropic:claude-opus-4-7")
+        cost = estimator.estimate_run_cost("implement", "anthropic:claude-opus-4-8")
 
         fallback_in, fallback_out = _FALLBACK_TOKENS["implement"]
         expected = (

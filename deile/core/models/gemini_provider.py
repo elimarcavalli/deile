@@ -238,8 +238,31 @@ class GeminiProvider(ModelProvider):
         # Chat sessions cache (per session_id)
         self._chat_sessions = {}
     
+    def _thinking_config_for(self, effort: Optional[str]) -> Optional[Any]:
+        """Constrói ``types.ThinkingConfig`` para o *effort*, ou ``None``.
+
+        Defensivo: a família 3.x usa ``thinking_level`` (campo mais novo, pode
+        não existir em SDKs antigos). Qualquer erro de construção (campo ausente,
+        valor inválido) cai em ``None`` (sem thinking explícito) — fail-open,
+        nunca quebra o turno. Mapeamento em :mod:`deile.core.models.reasoning`.
+        """
+        if not effort:
+            return None
+        try:
+            from deile.core.models.reasoning import gemini_thinking_kwargs
+            tk = gemini_thinking_kwargs(self.model_name, effort)
+            if not tk:
+                return None
+            from google.genai import types as _gtypes
+            return _gtypes.ThinkingConfig(**tk)
+        except Exception as exc:  # noqa: BLE001 — reasoning nunca quebra o turno
+            logger.debug("gemini thinking_config skipped: %s", exc)
+            return None
+
     def _create_generation_config(self, tools: Optional[List[Tool]] = None, **kwargs) -> GenerateContentConfig:
         """Cria configuração para geração de conteúdo"""
+        # Reasoning effort (best-effort) — extraído antes de filtrar params.
+        _reasoning_effort = kwargs.pop("reasoning_effort", None)
         config_params = {**self.generation_config, **kwargs}
         
         # Remove parâmetros que não são suportados pelo novo SDK
@@ -264,11 +287,15 @@ class GeminiProvider(ModelProvider):
             
             tools_wrapper = [{"function_declarations": function_declarations}]
         
-        return GenerateContentConfig(
+        _gcc_kwargs: Dict[str, Any] = dict(
             tools=tools_wrapper,  # Wrapped no formato correto
             automatic_function_calling=afc_config,
-            **filtered_params
+            **filtered_params,
         )
+        _tc = self._thinking_config_for(_reasoning_effort)
+        if _tc is not None:
+            _gcc_kwargs["thinking_config"] = _tc
+        return GenerateContentConfig(**_gcc_kwargs)
     
     def _get_tools_for_generate_content(self) -> Optional[List]:
         """Obtém tools no formato correto para generate_content (não Tool objects, mas FunctionDeclaration)"""
@@ -511,6 +538,7 @@ class GeminiProvider(ModelProvider):
             chat = await self.create_chat_session(
                 session_id=_session_key,
                 system_instruction=sys_instr,
+                reasoning_effort=kwargs.get("reasoning_effort"),
             )
             try:
                 response = await asyncio.to_thread(chat.send_message, user_msg)
@@ -713,7 +741,8 @@ class GeminiProvider(ModelProvider):
     # sem convergir para uma resposta final.
     MAX_TOOL_ITERATIONS = DEFAULT_MAX_TOOL_ITERATIONS
 
-    async def create_chat_session(self, session_id: str, system_instruction: Optional[str] = None) -> Any:
+    async def create_chat_session(self, session_id: str, system_instruction: Optional[str] = None,
+                                  reasoning_effort: Optional[str] = None) -> Any:
         """Cria ou retorna chat session existente para session_id.
 
         Usa function calling MANUAL: o SDK recebe FunctionDeclarations completos
@@ -737,13 +766,17 @@ class GeminiProvider(ModelProvider):
             # AFC desligada: o controle do loop fica em chat_with_tools.
             afc_config = AutomaticFunctionCallingConfig(disable=True)
 
-            config = types.GenerateContentConfig(
+            _cfg_kwargs: Dict[str, Any] = dict(
                 tools=tools_param,
                 automatic_function_calling=afc_config,
                 system_instruction=system_instruction,
                 temperature=self.generation_config.get('temperature', 0.1),
-                max_output_tokens=self.generation_config.get('max_output_tokens', 16384)
+                max_output_tokens=self.generation_config.get('max_output_tokens', 16384),
             )
+            _tc = self._thinking_config_for(reasoning_effort)
+            if _tc is not None:
+                _cfg_kwargs["thinking_config"] = _tc
+            config = types.GenerateContentConfig(**_cfg_kwargs)
 
             chat = self.client.chats.create(
                 model=self.model_name,
@@ -902,6 +935,7 @@ class GeminiProvider(ModelProvider):
         chat = await self.create_chat_session(
             session_id=_session_key,
             system_instruction=sys_instr,
+            reasoning_effort=kwargs.get("reasoning_effort"),
         )
         try:
             text, tool_results, usage = await self._gemini_chat_with_tools(

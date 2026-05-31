@@ -61,9 +61,9 @@ class TestResolveStageModel:
 
     def test_set_stage_returns_override(self, monkeypatch):
         monkeypatch.setenv("DEILE_PIPELINE_MODEL_IMPLEMENT",
-                           "anthropic:claude-opus-4-7")
+                           "anthropic:claude-opus-4-8")
         reset_settings()
-        assert resolve_stage_model("implement") == "anthropic:claude-opus-4-7"
+        assert resolve_stage_model("implement") == "anthropic:claude-opus-4-8"
         # Other stages stay None — override is per-stage, not global.
         assert resolve_stage_model("classify") is None
         assert resolve_stage_model("refine") is None

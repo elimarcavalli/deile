@@ -537,6 +537,7 @@ async def _run_task(
     *,
     resume_ctx: Optional[Dict[str, Any]] = None,
     preferred_model: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     task_timeout_s: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Body of a single dispatch — only one runs at a time (lock).
@@ -642,6 +643,22 @@ async def _run_task(
                     logger.warning(
                         "task %s: could not pin preferred_model=%s: %s",
                         task_id, preferred_model, exc,
+                    )
+            # Per-stage reasoning effort (espelha preferred_model). O agente lê
+            # context_data["reasoning_effort"] e cada provider traduz para o
+            # parâmetro nativo (output_config.effort / reasoning_effort /
+            # thinking_config) com fail-open. Per-task: não vaza entre dispatches.
+            if reasoning_effort and session is not None:
+                try:
+                    session.context_data["reasoning_effort"] = reasoning_effort
+                    logger.info(
+                        "task %s: pinning reasoning_effort=%s for this turn",
+                        task_id, reasoning_effort,
+                    )
+                except (AttributeError, TypeError) as exc:
+                    logger.warning(
+                        "task %s: could not pin reasoning_effort=%s: %s",
+                        task_id, reasoning_effort, exc,
                     )
             prompt = _build_prompt(brief, workdir, history or "")
 
@@ -907,6 +924,11 @@ async def dispatch_handler(request: web.Request) -> web.Response:
     preferred_model = body.get("preferred_model")
     if preferred_model is not None:
         preferred_model = str(preferred_model).strip() or None
+    # Per-turn reasoning effort — present only on pipeline dispatches with a
+    # per-stage/global reasoning configured. Empty collapses to None.
+    reasoning_effort = body.get("preferred_reasoning")
+    if reasoning_effort is not None:
+        reasoning_effort = str(reasoning_effort).strip() or None
     # Resume context — present only on pipeline dispatches (issue #254).
     resume_ctx = _parse_resume_ctx(body)
     # Pipeline-context fields (issue #309 fase 2). Optional and forge-agnostic;
@@ -975,6 +997,8 @@ async def dispatch_handler(request: web.Request) -> web.Response:
         parts.append(f"branch={branch}")
     if preferred_model:
         parts.append(f"model={preferred_model}")
+    if reasoning_effort:
+        parts.append(f"effort={reasoning_effort}")
     logger.info("dispatch_started %s", " ".join(parts))
 
     wait_for_result = bool(body.get("wait_for_result", True))
@@ -985,6 +1009,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 _run_task(task_id, brief, channel_id, user_message_id, persona,
                           attachments, history, resume_ctx=resume_ctx,
                           preferred_model=preferred_model,
+                          reasoning_effort=reasoning_effort,
                           task_timeout_s=dispatch_timeout_s),
                 timeout=_outer_timeout,
             )
@@ -1011,6 +1036,7 @@ async def dispatch_handler(request: web.Request) -> web.Response:
                 _TASKS[task_id] = await _run_task(task_id, brief, channel_id, user_message_id, persona,
                                                   attachments, history, resume_ctx=resume_ctx,
                                                   preferred_model=preferred_model,
+                                                  reasoning_effort=reasoning_effort,
                                                   task_timeout_s=dispatch_timeout_s)
                 logger.info(
                     "dispatch_completed task=%s ok=%s",

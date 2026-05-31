@@ -205,7 +205,7 @@ async def test_streaming_renderer_prints_rich_renderable_verbatim():
     table = Table(title="Available Models", show_header=True)
     table.add_column("Provider")
     table.add_column("Model ID")
-    table.add_row("anthropic", "claude-opus-4-7")
+    table.add_row("anthropic", "claude-opus-4-8")
     table.add_row("openai", "gpt-5")
 
     events = [
@@ -225,7 +225,7 @@ async def test_streaming_renderer_prints_rich_renderable_verbatim():
     # Rich Table characters survived: title, header, both rows.
     assert "Available Models" in output
     assert "Provider" in output and "Model ID" in output
-    assert "anthropic" in output and "claude-opus-4-7" in output
+    assert "anthropic" in output and "claude-opus-4-8" in output
     assert "openai" in output and "gpt-5" in output
     # And — critically — the box-drawing chars Rich uses for tables are
     # present, proving the table was rendered by Rich (not split into

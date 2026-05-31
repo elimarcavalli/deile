@@ -40,9 +40,9 @@ def mock_data_with_claude():
         StageDispatchEntry("refine", "deile-worker",
                            "anthropic:sonnet", "env"),
         StageDispatchEntry("implement", "claude-worker",
-                           "anthropic:claude-opus-4-7", "env"),
+                           "anthropic:claude-opus-4-8", "env"),
         StageDispatchEntry("pr_review", "claude-worker",
-                           "anthropic:claude-opus-4-7", "env"),
+                           "anthropic:claude-opus-4-8", "env"),
         StageDispatchEntry("follow_ups", "deile-worker", None, "default"),
     ]
     data.stage_dispatch.get_claude_worker_status.return_value = (
@@ -98,8 +98,8 @@ def test_view_renders_5_stages(mock_data_with_claude):
     assert "deile-worker" in text
 
     # Pelo menos um model slug visível.
-    assert ("anthropic:claude-opus-4-7" in text
-            or "claude-opus-4-7" in text)
+    assert ("anthropic:claude-opus-4-8" in text
+            or "claude-opus-4-8" in text)
 
 
 def test_view_shows_claude_worker_ready_in_header(mock_data_with_claude):

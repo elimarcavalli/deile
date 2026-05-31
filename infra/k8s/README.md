@@ -763,7 +763,7 @@ pipeline que é `Recreate`).
 ╭─ MODELOS DISPONÍVEIS ──────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │         slug                                     display                          tier        label        $/1M in   $/1M out  │
 │  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────  │
-│  ▶      anthropic:claude-opus-4-7                Claude Opus 4.7                  tier_1      flagship       $5.00     $25.00  │
+│  ▶      anthropic:claude-opus-4-8                Claude Opus 4.8                  tier_1      flagship       $5.00     $25.00  │
 │         anthropic:claude-sonnet-4-6  ●           Claude Sonnet 4.6                tier_2      balanced       $3.00     $15.00  │
 │         anthropic:claude-haiku-4-5               Claude Haiku 4.5                 tier_3      fast           $1.00      $5.00  │
 │         openai:gpt-5.4                           GPT-5.4                          tier_2      balanced       $2.50     $15.00  │
