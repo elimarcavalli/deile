@@ -850,122 +850,6 @@ class ActivityEvent:
         return local.strftime("%H:%M %z")
 
 
-# ── Canonical families emitted by deile-pipeline (#438) ─────────────────────
-# Format: "<family>.<subtype> key=value key=value ..."
-# The canonical prefix is lower-case word.word followed by a space.
-_CANONICAL_PREFIX_RE = re.compile(r"^([a-z]+\.[a-z_]+) (.*)", re.DOTALL)
-_KV_RE = re.compile(r'(\w+)=("(?:[^"\\]|\\.)*"|\S+)')
-_REDACT_RE = re.compile(
-    r'(?i)\b(token|bearer|api[_\-]key|secret|password|authorization)=\S+'
-)
-_CANONICAL_FAMILIES: frozenset = frozenset({
-    "refinement.critique", "refinement.refine",
-    "decomposition.fanout",
-    "batch.claim", "batch.release",
-    "label.change",
-    "reaper.unblock", "reaper.block",
-    "auth.fail", "auth.backoff", "auth.skip", "auth.recover",
-    "routing.mention", "routing.pr_unified", "routing.dropped",
-})
-_CANONICAL_MAX_BODY = 500
-
-
-def _redact_canonical_detail(detail: str) -> str:
-    return _REDACT_RE.sub(lambda m: m.group(1) + "=<redacted>", detail)
-
-
-def _parse_kv(tail: str) -> "Dict[str, str]":
-    return {m.group(1): m.group(2).strip('"') for m in _KV_RE.finditer(tail)}
-
-
-def _canonical_target(family: str, kv: "Dict[str, str]") -> str:
-    """Derive ActivityEvent.target from the canonical family and parsed kv."""
-    def _issue_or_pr(num: str, kind: str) -> str:
-        return f"PR#{num}" if kind.lower() in ("pr", "pull_request") else f"#{num}"
-
-    if family in ("refinement.critique", "refinement.refine"):
-        return f"#{kv.get('issue', '')}" if kv.get("issue") else ""
-    if family == "decomposition.fanout":
-        val = kv.get("intent", "")
-        return f"#{val}" if val else ""
-    if family in ("batch.claim", "batch.release"):
-        sha = kv.get("sha", "")
-        return f"~batch:{sha[:8]}" if sha else ""
-    if family in ("label.change", "reaper.unblock", "reaper.block"):
-        num = kv.get("target", "")
-        kind = kv.get("target_kind", "issue")
-        return _issue_or_pr(num, kind) if num else ""
-    if family.startswith("auth."):
-        return kv.get("target", "")
-    if family in ("routing.mention", "routing.pr_unified", "routing.dropped"):
-        num = kv.get("target", "")
-        kind = kv.get("target_kind", "issue")
-        return _issue_or_pr(num, kind) if num else ""
-    return ""
-
-
-def _canonical_detail(family: str, kv: "Dict[str, str]") -> str:
-    """Build the detail string for the given canonical family."""
-    def _pick(*keys: str) -> str:
-        parts = []
-        for k in keys:
-            v = kv.get(k)
-            if v is not None:
-                parts.append(f"{k}={v}")
-        return " ".join(parts)
-
-    if family == "refinement.critique":
-        base = _pick("persona", "verdict")
-        gaps = kv.get("gaps")
-        return f"{base} gaps={gaps}" if gaps else base
-    if family == "refinement.refine":
-        return _pick("round", "persona", "body_chars", "verdict")
-    if family == "decomposition.fanout":
-        return _pick("derivadas", "complexity")
-    if family == "batch.claim":
-        return _pick("issues", "reason")
-    if family == "batch.release":
-        return _pick("reason")
-    if family == "label.change":
-        return _pick("removed", "added")
-    if family == "reaper.unblock":
-        return _pick("attempts", "reason")
-    if family == "reaper.block":
-        cap = kv.get("cap")
-        attempts = kv.get("attempts", "")
-        suffix = f"{attempts}/{cap}" if cap else attempts
-        reason = kv.get("reason", "")
-        parts = []
-        if suffix:
-            parts.append(f"attempts={suffix}")
-        if reason:
-            parts.append(f"reason={reason}")
-        return " ".join(parts)
-    if family == "auth.fail":
-        thr = kv.get("threshold", kv.get("thr"))
-        attempts = kv.get("attempts", "")
-        suffix = f"{attempts}/{thr}" if thr else attempts
-        reason = kv.get("reason", "")
-        parts = []
-        if suffix:
-            parts.append(f"attempts={suffix}")
-        if reason:
-            parts.append(f"reason={reason}")
-        return " ".join(parts)
-    if family == "auth.backoff":
-        return _pick("attempts", "backoff_s", "until")
-    if family == "auth.skip":
-        return _pick("remaining_s")
-    if family == "auth.recover":
-        return _pick("reason")
-    if family in ("routing.mention", "routing.pr_unified", "routing.dropped"):
-        # Include all non-target/non-target_kind kv pairs for context.
-        parts = [f"{k}={v}" for k, v in kv.items()
-                 if k not in ("target", "target_kind")]
-        return " ".join(parts)
-    return ""
-
-
 # ── Legacy regexes (unchanged) ────────────────────────────────────────────────
 _DISPATCH_START_RE = re.compile(r"worker dispatch starting", re.IGNORECASE)
 _DISPATCH_DONE_RE = re.compile(r"worker dispatch completed", re.IGNORECASE)
@@ -1286,20 +1170,14 @@ class PipelineState:
     dispatches_24h: int = 0
     mentions_24h: int = 0
     events: List[ActivityEvent] = field(default_factory=list)
-    canonical_dropped: dict = field(default_factory=lambda: {
-        "line_too_long": 0,
-        "line_has_forbidden_char": 0,
-        "parse_partial": 0,
-    })
-    raw_lines: int = 0
-    # Counters for canonical lines that were dropped before classification.
     canonical_dropped: "Dict[str, int]" = field(
         default_factory=lambda: {
             "line_too_long": 0,
             "line_has_forbidden_char": 0,
-            "malformed_kv": 0,
+            "parse_partial": 0,
         }
     )
+    raw_lines: int = 0
 
     @property
     def running_for_s(self) -> Optional[float]:

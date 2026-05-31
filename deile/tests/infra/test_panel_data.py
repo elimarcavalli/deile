@@ -311,7 +311,7 @@ class TestPipelineClassifierCanonical:
          "reaper.unblock", "#400"),
         ("reaper.block target_kind=issue target=400 attempts=5 cap=5 reason=max_attempts",
          "reaper.block", "#400"),
-        ("auth.fail target=worker-abc attempts=3 threshold=3 reason=expired",
+        ("auth.fail target=worker-abc attempts=3 thr=3 reason=expired",
          "auth.fail", "worker-abc"),
         ("auth.backoff target=worker-abc attempts=4 backoff_s=120 until=2026-05-31T11:00:00Z",
          "auth.backoff", "worker-abc"),
@@ -448,7 +448,7 @@ class TestPipelineClassifierCanonical:
 
     def test_auth_fail_attempts_threshold(self):
         ev = pd._classify_pipeline_line(self._line(
-            "auth.fail target=worker-abc attempts=3 threshold=3 reason=expired"
+            "auth.fail target=worker-abc attempts=3 thr=3 reason=expired"
         ))
         assert ev is not None
         assert "attempts=3/3" in ev.detail
@@ -564,7 +564,7 @@ class TestPipelineStateDropCounters:
         assert len(state.events) <= 60
 
 
-# ===== _redact_canonical_detail + _parse_kv (unit) ==========================
+# ===== _redact_canonical_detail (unit) ======================================
 
 class TestCanonicalHelpers:
     def test_redact_token(self):
@@ -588,14 +588,6 @@ class TestCanonicalHelpers:
     def test_non_secret_not_redacted(self):
         result = pd._redact_canonical_detail("persona=architect verdict=claro")
         assert result == "persona=architect verdict=claro"
-
-    def test_parse_kv_basic(self):
-        kv = pd._parse_kv("issue=278 persona=architect verdict=vago")
-        assert kv == {"issue": "278", "persona": "architect", "verdict": "vago"}
-
-    def test_parse_kv_multiple_pairs(self):
-        kv = pd._parse_kv("attempts=3 reason=expired target=worker-abc")
-        assert kv == {"attempts": "3", "reason": "expired", "target": "worker-abc"}
 
 
 # ===== _derive_workflow =====================================================
