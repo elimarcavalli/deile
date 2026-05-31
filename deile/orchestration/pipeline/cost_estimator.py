@@ -167,7 +167,7 @@ class StageCostEstimator:
         Args:
             stage: canonical stage name (classify/refine/implement/
                 pr_review/follow_ups).
-            model_slug: provider:model string (e.g. ``anthropic:claude-opus-4-7``).
+            model_slug: provider:model string (e.g. ``anthropic:claude-opus-4-8``).
             payload_size_tokens: estimated token count of the dispatch payload;
                 overrides the historical prompt-token average when > 0.
 

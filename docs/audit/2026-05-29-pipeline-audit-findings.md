@@ -1,6 +1,6 @@
 # Auditoria do Pipeline DEILE — 29/mai/2026
 
-> **Auditor**: Opus 4.7 (sessão paralela à correção dos 7 bugs conhecidos pelo Opus #1 em `feat/pipeline-resilience-fixes`).
+> **Auditor**: Opus 4.8 (sessão paralela à correção dos 7 bugs conhecidos pelo Opus #1 em `feat/pipeline-resilience-fixes`).
 > **Escopo**: `deile/orchestration/pipeline/`, `deile/orchestration/forge/`, `infra/k8s/{claude_worker_server,worker_server,deploy}.py`, `deile/infrastructure/deile_worker_client.py`.
 > **Método**: leitura linear + grep direcionado por padrões de risco (race, except genérico, shell injection, sync I/O em async, leaks de token, comparações de identidade).
 

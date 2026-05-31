@@ -25,7 +25,7 @@ def _make_provider(monkeypatch):
 
     handle = ModelHandle(
         provider_id="anthropic",
-        model_id="claude-opus-4-7",
+        model_id="claude-opus-4-8",
         tier=ModelTier.TIER_1,
         pricing=ModelPricing(input_per_1m_usd=15.0, output_per_1m_usd=75.0),
         context_window=200_000,

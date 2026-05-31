@@ -44,13 +44,13 @@ providers:
 
 models:
   # === ANTHROPIC ===
-  # Context window 1M aplica-se a Opus 4.7, Opus 4.6 e Sonnet 4.6 (standard pricing).
+  # Context window 1M aplica-se a Opus 4.8, Opus 4.6 e Sonnet 4.6 (standard pricing).
   # Haiku 4.5 permanece em 200k. Todos suportam vision.
   - provider_id: anthropic
-    model_id: claude-opus-4-7
+    model_id: claude-opus-4-8
     tier: tier_1
     label: flagship
-    display_name: Claude Opus 4.7
+    display_name: Claude Opus 4.8
     pricing: { input_per_1m_usd: 5.00, output_per_1m_usd: 25.00, cached_input_per_1m_usd: 0.50 }
     context_window: 1000000
     capabilities: [function_calling, streaming, caching, vision, adaptive_thinking]
@@ -202,7 +202,7 @@ models:
 
 policies:
   task_optimized:
-    tier_1: [anthropic:claude-opus-4-7, gemini:gemini-3.1-pro-preview, gemini:gemini-2.5-pro, openai:gpt-5.5, deepseek:deepseek-v4-pro]
+    tier_1: [anthropic:claude-opus-4-8, gemini:gemini-3.1-pro-preview, gemini:gemini-2.5-pro, openai:gpt-5.5, deepseek:deepseek-v4-pro]
     tier_2: [anthropic:claude-sonnet-4-6, gemini:gemini-3.5-flash, gemini:gemini-3-flash-preview, openai:gpt-5.4, deepseek:deepseek-v4-pro]
     tier_3: [gemini:gemini-3.1-flash-lite, gemini:gemini-2.5-flash, gemini:gemini-2.5-flash-lite, anthropic:claude-haiku-4-5, openai:gpt-5.4-mini, deepseek:deepseek-v4-flash]
     tier_4: [deepseek:deepseek-v4-flash, openai:gpt-5.4-nano, openai:gpt-5.4-mini]

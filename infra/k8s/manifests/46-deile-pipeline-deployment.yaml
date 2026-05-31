@@ -194,7 +194,7 @@ spec:
             # (que pode não ser o ideal para o stage).
             - { name: DEILE_PREFERRED_MODEL,               value: "deepseek:deepseek-v4-pro" }
             - { name: DEILE_PIPELINE_MODEL_CLASSIFY,       value: "deepseek:deepseek-v4-pro" }
-            - { name: DEILE_PIPELINE_MODEL_REFINE,         value: "anthropic:claude-opus-4-7" }
+            - { name: DEILE_PIPELINE_MODEL_REFINE,         value: "anthropic:claude-opus-4-8" }
             - { name: DEILE_PIPELINE_MODEL_IMPLEMENT,      value: "anthropic:claude-sonnet-4-6" }
             - { name: DEILE_PIPELINE_MODEL_PR_REVIEW,      value: "anthropic:claude-sonnet-4-6" }
             - { name: DEILE_PIPELINE_MODEL_FOLLOW_UPS,     value: "anthropic:claude-sonnet-4-6" }

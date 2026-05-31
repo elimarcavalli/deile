@@ -94,14 +94,14 @@ class TestStageModelsProvider:
                    return_value=_deployment_json_with_env({
                        "DEILE_PREFERRED_MODEL": "deepseek:deepseek-v4-pro",
                        "DEILE_PIPELINE_MODEL_IMPLEMENT":
-                           "anthropic:claude-opus-4-7",
+                           "anthropic:claude-opus-4-8",
                    })), \
              patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"):
             by_stage = {e.stage: e for e in
                         StageModelsProvider().get(force=True)}
         # Override wins on implement.
-        assert by_stage["implement"].override == "anthropic:claude-opus-4-7"
-        assert by_stage["implement"].effective == "anthropic:claude-opus-4-7"
+        assert by_stage["implement"].override == "anthropic:claude-opus-4-8"
+        assert by_stage["implement"].effective == "anthropic:claude-opus-4-8"
         assert by_stage["implement"].is_fallback is False
         # Refine falls back to global.
         assert by_stage["refine"].override is None
@@ -137,7 +137,7 @@ class TestSetStageModel:
         from _panel_data import set_stage_model
         with patch("_panel_data.kubectl_bin", return_value=None):
             ok, msg = set_stage_model("implement",
-                                      "anthropic:claude-opus-4-7")
+                                      "anthropic:claude-opus-4-8")
         assert ok is False
         assert "kubectl" in msg.lower()
 
@@ -148,7 +148,7 @@ class TestSetStageModel:
              patch("_panel_data.subprocess.run",
                    return_value=fake_proc) as mock_run:
             ok, msg = set_stage_model("implement",
-                                      "anthropic:claude-opus-4-7")
+                                      "anthropic:claude-opus-4-8")
         assert ok is True
         argv = mock_run.call_args[0][0]
         assert argv[0] == "/fake/kubectl"
@@ -157,7 +157,7 @@ class TestSetStageModel:
         # via resolve_stage_model). Gravar no worker era silent cost amplifier.
         assert "deploy/deile-pipeline" in argv
         # The env-var name must be the canonical one (uppercase, no typo).
-        assert "DEILE_PIPELINE_MODEL_IMPLEMENT=anthropic:claude-opus-4-7" \
+        assert "DEILE_PIPELINE_MODEL_IMPLEMENT=anthropic:claude-opus-4-8" \
             in argv
 
     def test_nonzero_returncode_surfaces_stderr(self):
@@ -167,7 +167,7 @@ class TestSetStageModel:
         with patch("_panel_data.kubectl_bin", return_value="/fake/kubectl"), \
              patch("_panel_data.subprocess.run", return_value=fake_proc):
             ok, msg = set_stage_model("implement",
-                                      "anthropic:claude-opus-4-7")
+                                      "anthropic:claude-opus-4-8")
         assert ok is False
         assert "forbidden" in msg
 

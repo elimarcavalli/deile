@@ -58,18 +58,18 @@ class TestVocabulary:
 @pytest.mark.unit
 class TestAnthropicMapping:
     def test_opus_supports_all_levels(self):
-        assert R.request_overrides("anthropic", "claude-opus-4-7", "xhigh") == {"output_config": {"effort": "xhigh"}}
-        assert R.request_overrides("anthropic", "claude-opus-4-7", "max") == {"output_config": {"effort": "max"}}
+        assert R.request_overrides("anthropic", "claude-opus-4-8", "xhigh") == {"output_config": {"effort": "xhigh"}}
+        assert R.request_overrides("anthropic", "claude-opus-4-8", "max") == {"output_config": {"effort": "max"}}
 
     def test_sonnet_has_no_xhigh_falls_back_to_max(self):
         assert R.request_overrides("anthropic", "claude-sonnet-4-6", "xhigh") == {"output_config": {"effort": "max"}}
         assert R.request_overrides("anthropic", "claude-sonnet-4-6", "high") == {"output_config": {"effort": "high"}}
 
     def test_ultracode_maps_to_max(self):
-        assert R.request_overrides("anthropic", "claude-opus-4-7", "ultracode") == {"output_config": {"effort": "max"}}
+        assert R.request_overrides("anthropic", "claude-opus-4-8", "ultracode") == {"output_config": {"effort": "max"}}
 
     def test_auto_omits(self):
-        assert R.request_overrides("anthropic", "claude-opus-4-7", "auto") == {}
+        assert R.request_overrides("anthropic", "claude-opus-4-8", "auto") == {}
 
     def test_haiku_has_no_effort_param(self):
         assert R.request_overrides("anthropic", "claude-haiku-4-5", "high") == {}

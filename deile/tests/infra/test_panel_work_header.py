@@ -118,7 +118,7 @@ class TestWorkerProviderExtractsModel:
         prov = _build_provider()
         text = "\n".join([
             f"{_ts(10)} dispatch_started task=old1old1old1 "
-            f"channel=pipeline-issue-100 model=anthropic:claude-opus-4-7",
+            f"channel=pipeline-issue-100 model=anthropic:claude-opus-4-8",
             f"{_ts(8)} dispatch_completed task=old1old1old1 ok=True",
             f"{_ts(5)} dispatch_started task=new1new1new1 "
             f"channel=pipeline-issue-396 model=anthropic:claude-sonnet-4-6",

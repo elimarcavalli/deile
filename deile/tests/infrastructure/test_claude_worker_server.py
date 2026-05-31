@@ -213,7 +213,7 @@ async def test_dispatch_rejects_non_anthropic_model(claude_worker_module, monkey
 async def test_dispatch_translates_model_slug(
     claude_worker_module, monkeypatch, tmp_path,
 ):
-    """Slug ``anthropic:claude-opus-4-7`` vira ``--model claude-opus-4-7`` na call.
+    """Slug ``anthropic:claude-opus-4-8`` vira ``--model claude-opus-4-8`` na call.
 
     O prefixo ``anthropic:`` é convenção interna do DEILE; o CLI ``claude``
     espera só a parte após os dois pontos. Também garante que o invocador
@@ -236,7 +236,7 @@ async def test_dispatch_translates_model_slug(
         resp = await client.post("/v1/dispatch", headers=_AUTH_HEADERS, json={
             "brief": "implement #1",
             "channel_id": "auto/issue-1",
-            "preferred_model": "anthropic:claude-opus-4-7",
+            "preferred_model": "anthropic:claude-opus-4-8",
             "stage": "implement",
             "issue_number": 1,
             "branch": "auto/issue-1",
@@ -248,7 +248,7 @@ async def test_dispatch_translates_model_slug(
     assert "-p" in args
     assert "--model" in args
     model_idx = args.index("--model")
-    assert args[model_idx + 1] == "claude-opus-4-7"
+    assert args[model_idx + 1] == "claude-opus-4-8"
     assert "--permission-mode" in args
     perm_idx = args.index("--permission-mode")
     assert args[perm_idx + 1] == "bypassPermissions"
@@ -1065,7 +1065,7 @@ def test_is_claude_process_alive_finds_match(claude_worker_module, monkeypatch, 
 # Com 3 réplicas de claude-worker + Service round-robin, ``_is_claude_process_alive``
 # scaneava só o /proc local do pod que recebia a request. Quando claude rodava
 # em outra réplica, retornava False enganosamente → pipeline disparava RESUME
-# pensando que estava morto → triple-dispatch de Opus 4.7 paralelos.
+# pensando que estava morto → triple-dispatch de Opus 4.8 paralelos.
 # Fix: fallback pra mtime do JSONL na PVC compartilhada.
 def test_is_claude_alive_falls_back_to_jsonl_mtime_when_proc_does_not_see_it(
     claude_worker_module, monkeypatch, tmp_path,

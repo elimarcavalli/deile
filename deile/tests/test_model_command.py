@@ -97,10 +97,10 @@ class TestModelCurrent:
     async def test_current_shows_forced_model(self):
         cmd = ModelCommand()
         ctx = _make_context("current")
-        ctx.session.context_data = {"forced_model": "anthropic:claude-opus-4-7"}
+        ctx.session.context_data = {"forced_model": "anthropic:claude-opus-4-8"}
         result = await cmd.execute(ctx)
         assert result.success
-        assert result.metadata.get("forced") == "anthropic:claude-opus-4-7"
+        assert result.metadata.get("forced") == "anthropic:claude-opus-4-8"
 
 
 # ---------------------------------------------------------------------------
@@ -111,16 +111,16 @@ class TestModelUse:
     @pytest.mark.asyncio
     async def test_use_forces_model(self):
         cmd = ModelCommand()
-        ctx = _make_context("use anthropic:claude-opus-4-7")
+        ctx = _make_context("use anthropic:claude-opus-4-8")
         result = await cmd.execute(ctx)
         assert result.success
-        assert ctx.session.context_data.get("forced_model") == "anthropic:claude-opus-4-7"
+        assert ctx.session.context_data.get("forced_model") == "anthropic:claude-opus-4-8"
 
     @pytest.mark.asyncio
     async def test_use_auto_clears_forced(self):
         cmd = ModelCommand()
         ctx = _make_context("use auto")
-        ctx.session.context_data = {"forced_model": "anthropic:claude-opus-4-7"}
+        ctx.session.context_data = {"forced_model": "anthropic:claude-opus-4-8"}
         result = await cmd.execute(ctx)
         assert result.success
         assert "forced_model" not in ctx.session.context_data
@@ -128,7 +128,7 @@ class TestModelUse:
     @pytest.mark.asyncio
     async def test_use_denies_changes_when_model_override_locked(self):
         cmd = ModelCommand()
-        ctx = _make_context("use anthropic:claude-opus-4-7")
+        ctx = _make_context("use anthropic:claude-opus-4-8")
         ctx.session.context_data = {
             "forced_model": "deepseek:deepseek-v4-pro",
             "model_override_locked": True,
@@ -185,11 +185,11 @@ class TestModelUse:
         # Wire a real providers dict containing only the flagship
         flagship = SimpleNamespace(
             provider_id="anthropic",
-            model_name="claude-opus-4-7",
+            model_name="claude-opus-4-8",
             provider_name="anthropic",
         )
         ctx.agent = SimpleNamespace(
-            model_router=SimpleNamespace(providers={"anthropic:claude-opus-4-7": flagship})
+            model_router=SimpleNamespace(providers={"anthropic:claude-opus-4-8": flagship})
         )
         result = await cmd.execute(ctx)
         assert result.success is False
@@ -274,7 +274,7 @@ class TestModelCost:
 
         repo = UsageRepository(db_path=tmp_path / "test.db")
         repo.record(UsageRecord(
-            provider_id="anthropic", model_id="claude-opus-4-7",
+            provider_id="anthropic", model_id="claude-opus-4-8",
             tier="tier_1", session_id="my-sess",
             cost_usd=0.10,
         ))
@@ -358,10 +358,10 @@ class TestModelSelect:
         """
         sel = _StubSelector(supported=True, choice=None)
         cmd = ModelCommand(selector=sel)
-        ctx = _make_context("select anthropic:claude-opus-4-7")
+        ctx = _make_context("select anthropic:claude-opus-4-8")
         result = await cmd.execute(ctx)
         assert result.success
-        assert ctx.session.context_data.get("forced_model") == "anthropic:claude-opus-4-7"
+        assert ctx.session.context_data.get("forced_model") == "anthropic:claude-opus-4-8"
         # Picker must NOT have been opened — interactive selector untouched.
         assert len(sel.calls) == 0
 

@@ -270,7 +270,7 @@ async def test_slash_command_with_rich_renderable_content(configured_agent, tmp_
     table.add_column("Provider")
     table.add_column("Model")
     table.add_row("openai", "gpt-4o")
-    table.add_row("anthropic", "claude-opus-4-7")
+    table.add_row("anthropic", "claude-opus-4-8")
 
     response = AgentResponse(
         content=table, status=AgentStatus.IDLE, execution_time=0.01,
