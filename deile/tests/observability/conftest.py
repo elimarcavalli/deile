@@ -27,8 +27,8 @@ def otel_sdk_available() -> bool:
 @pytest.fixture(autouse=True)
 def _reset_singletons(monkeypatch):
     """Reseta singletons + limpa envs OTLP antes/depois de cada teste."""
-    from deile.observability import (reset_metrics, reset_observability_config,
-                                     reset_tracer)
+    from deile.observability import (reset_dispatch_export, reset_metrics,
+                                     reset_observability_config, reset_tracer)
 
     for env in (
         "DEILE_OTLP_ENDPOINT",
@@ -37,17 +37,21 @@ def _reset_singletons(monkeypatch):
         "DEILE_OTLP_SERVICE_NAME",
         "DEILE_OTLP_SAMPLE_RATIO",
         "DEILE_OBSERVABILITY_DISABLED",
+        "DEILE_ROLE",
+        "HOSTNAME",
     ):
         monkeypatch.delenv(env, raising=False)
     reset_tracer()
     reset_metrics()
     reset_observability_config()
+    reset_dispatch_export()
     try:
         yield
     finally:
         reset_tracer()
         reset_metrics()
         reset_observability_config()
+        reset_dispatch_export()
 
 
 @pytest.fixture
