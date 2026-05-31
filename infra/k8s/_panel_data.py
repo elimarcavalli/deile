@@ -980,24 +980,261 @@ _STAGES_RE = re.compile(
 )
 _STARTUP_RE = re.compile(r"starting pipeline monitor", re.IGNORECASE)
 
+_CANONICAL_FAMILIES = frozenset({
+    "refinement.critique", "refinement.refine",
+    "decomposition.fanout",
+    "batch.claim", "batch.release",
+    "label.change",
+    "reaper.unblock", "reaper.block",
+    "auth.fail", "auth.backoff", "auth.skip", "auth.recover",
+    "routing.mention", "routing.pr_unified", "routing.dropped",
+})
+_CANONICAL_LINE_RE = re.compile(
+    r"^(?P<fam>(?:refinement|decomposition|batch|label|reaper|auth|routing)\.[a-z_]+)\s+(?P<kv>.+)$"
+)
+_KV_TOKEN_RE = re.compile(r"(\w+)=('[^']*'|\[[^\]]*\]|\S+)")
+_REDACT_RE = re.compile(
+    r"(?i)\b(token|bearer|api[-_]?key|secret|password|authorization)\s*[=:]\s*\S+"
+)
+
+
+def _redact_canonical_detail(s: str) -> str:
+    return _REDACT_RE.sub(lambda m: f"{m.group(1)}=<redacted>", s)
+
+
+def _parse_canonical_kv(body: str) -> Optional[tuple]:
+    m = _CANONICAL_LINE_RE.match(body)
+    if not m or m.group("fam") not in _CANONICAL_FAMILIES:
+        return None
+    kv: dict = {}
+    for k, v in _KV_TOKEN_RE.findall(m.group("kv")):
+        if v.startswith("'") and v.endswith("'"):
+            v = v[1:-1]
+        kv[k] = v
+    return m.group("fam"), kv
+
 
 def _classify_pipeline_line(ll: LogLine) -> Optional[ActivityEvent]:
     """Reduz uma linha bruta a um ActivityEvent semântico, se reconhecida."""
     body = ll.body
-    # ── Canonical branch (must be first — short-circuits legacy regexes) ──
-    m_canon = _CANONICAL_PREFIX_RE.match(body)
-    if m_canon:
-        family = m_canon.group(1)
-        if family in _CANONICAL_FAMILIES:
-            tail = m_canon.group(2)
-            kv = _parse_kv(tail)
-            target = _canonical_target(family, kv)
-            detail = _redact_canonical_detail(_canonical_detail(family, kv))
-            return ActivityEvent(
-                ts=ll.ts, actor="pipeline", action=family,
-                target=target, detail=detail,
-            )
-    # ── Legacy patterns ───────────────────────────────────────────────────
+    # --- canonical families (#438) — matched FIRST to avoid legacy backtracking ---
+    parsed = _parse_canonical_kv(body)
+    if parsed is not None:
+        fam, kv = parsed
+        detail = ""
+        target = ""
+        partial = False
+
+        if fam == "refinement.critique":
+            issue = kv.get("issue", "")
+            target = f"#{issue}" if issue else ""
+            if not issue:
+                partial = True
+            persona = kv.get("persona", "")
+            verdict = kv.get("verdict", "")
+            detail = f"persona={persona} verdict={verdict}"
+            if "gaps" in kv:
+                detail += f" gaps={kv['gaps']}"
+            extras = {k: v for k, v in kv.items()
+                      if k not in ("issue", "persona", "verdict", "gaps")}
+            for k, v in extras.items():
+                detail += f" {k}={v}"
+
+        elif fam == "refinement.refine":
+            issue = kv.get("issue", "")
+            target = f"#{issue}" if issue else ""
+            if not issue:
+                partial = True
+            r = kv.get("round", "")
+            persona = kv.get("persona", "")
+            body_chars = kv.get("body_chars", "")
+            verdict = kv.get("verdict", "")
+            detail = f"round={r} persona={persona} body_chars={body_chars} verdict={verdict}"
+            extras = {k: v for k, v in kv.items()
+                      if k not in ("issue", "round", "persona", "body_chars", "verdict")}
+            for k, v in extras.items():
+                detail += f" {k}={v}"
+
+        elif fam == "decomposition.fanout":
+            intent = kv.get("intent", "")
+            target = f"#{intent}" if intent else ""
+            if not intent:
+                partial = True
+            derivadas = kv.get("derivadas", "")
+            complexity = kv.get("complexity", "")
+            detail = f"derivadas={derivadas} complexity={complexity}"
+            extras = {k: v for k, v in kv.items()
+                      if k not in ("intent", "derivadas", "complexity")}
+            for k, v in extras.items():
+                detail += f" {k}={v}"
+
+        elif fam == "batch.claim":
+            sha = kv.get("sha", "")
+            target = f"~batch:{sha[:8]}" if sha else ""
+            if not sha:
+                partial = True
+            issues = kv.get("issues", "")
+            reason = kv.get("reason", "")
+            detail = f"issues={issues} reason={reason}"
+            extras = {k: v for k, v in kv.items()
+                      if k not in ("sha", "issues", "reason")}
+            for k, v in extras.items():
+                detail += f" {k}={v}"
+
+        elif fam == "batch.release":
+            sha = kv.get("sha", "")
+            target = f"~batch:{sha[:8]}" if sha else ""
+            if not sha:
+                partial = True
+            reason = kv.get("reason", "")
+            detail = f"reason={reason}"
+            extras = {k: v for k, v in kv.items()
+                      if k not in ("sha", "reason")}
+            for k, v in extras.items():
+                detail += f" {k}={v}"
+
+        elif fam == "label.change":
+            kind = kv.get("target_kind", "")
+            num = kv.get("target", "")
+            if kind and num:
+                target = f"PR#{num}" if kind == "pr" else f"#{num}"
+            else:
+                partial = True
+            removed = kv.get("removed", "")
+            added = kv.get("added", "")
+            detail = f"removed={removed} added={added}"
+            extras = {k: v for k, v in kv.items()
+                      if k not in ("target_kind", "target", "removed", "added")}
+            for k, v in extras.items():
+                detail += f" {k}={v}"
+
+        elif fam == "reaper.unblock":
+            kind = kv.get("target_kind", "")
+            num = kv.get("target", "")
+            if kind and num:
+                target = f"PR#{num}" if kind == "pr" else f"#{num}"
+            else:
+                partial = True
+            attempts = kv.get("attempts", "")
+            reason = kv.get("reason", "")
+            detail = f"attempts={attempts} reason={reason}"
+            extras = {k: v for k, v in kv.items()
+                      if k not in ("target_kind", "target", "attempts", "reason")}
+            for k, v in extras.items():
+                detail += f" {k}={v}"
+
+        elif fam == "reaper.block":
+            kind = kv.get("target_kind", "")
+            num = kv.get("target", "")
+            if kind and num:
+                target = f"PR#{num}" if kind == "pr" else f"#{num}"
+            else:
+                partial = True
+            attempts = kv.get("attempts", "")
+            cap = kv.get("cap", "")
+            reason = kv.get("reason", "")
+            detail = f"attempts={attempts}/{cap} reason={reason}"
+            extras = {k: v for k, v in kv.items()
+                      if k not in ("target_kind", "target", "attempts", "cap", "reason")}
+            for k, v in extras.items():
+                detail += f" {k}={v}"
+
+        elif fam == "auth.fail":
+            target = kv.get("target", "")
+            if not target:
+                partial = True
+            attempts = kv.get("attempts", "")
+            thr = kv.get("thr", "")
+            reason = kv.get("reason", "")
+            detail = f"attempts={attempts}/{thr} reason={reason}"
+            extras = {k: v for k, v in kv.items()
+                      if k not in ("target", "attempts", "thr", "reason")}
+            for k, v in extras.items():
+                detail += f" {k}={v}"
+
+        elif fam == "auth.backoff":
+            target = kv.get("target", "")
+            if not target:
+                partial = True
+            attempts = kv.get("attempts", "")
+            backoff_s = kv.get("backoff_s", "")
+            until = kv.get("until", "")
+            detail = f"attempts={attempts} backoff_s={backoff_s} until={until}"
+            extras = {k: v for k, v in kv.items()
+                      if k not in ("target", "attempts", "backoff_s", "until")}
+            for k, v in extras.items():
+                detail += f" {k}={v}"
+
+        elif fam == "auth.skip":
+            target = kv.get("target", "")
+            if not target:
+                partial = True
+            remaining_s = kv.get("remaining_s", "")
+            detail = f"remaining_s={remaining_s}"
+            extras = {k: v for k, v in kv.items()
+                      if k not in ("target", "remaining_s")}
+            for k, v in extras.items():
+                detail += f" {k}={v}"
+
+        elif fam == "auth.recover":
+            target = kv.get("target", "")
+            if not target:
+                partial = True
+            reason = kv.get("reason", "")
+            detail = f"reason={reason}"
+            extras = {k: v for k, v in kv.items()
+                      if k not in ("target", "reason")}
+            for k, v in extras.items():
+                detail += f" {k}={v}"
+
+        elif fam == "routing.mention":
+            kind = kv.get("target_kind", "")
+            num = kv.get("target", "")
+            if kind and num:
+                target = f"PR#{num}" if kind == "pr" else f"#{num}"
+            else:
+                partial = True
+            action = kv.get("action", "")
+            detail = f"action={action}"
+            extras = {k: v for k, v in kv.items()
+                      if k not in ("target_kind", "target", "action")}
+            for k, v in extras.items():
+                detail += f" {k}={v}"
+
+        elif fam == "routing.pr_unified":
+            num = kv.get("target", "")
+            target = f"PR#{num}" if num else ""
+            if not num:
+                partial = True
+            role = kv.get("role", "")
+            detail = f"role={role} mode=pr_unified"
+            extras = {k: v for k, v in kv.items()
+                      if k not in ("target", "role")}
+            for k, v in extras.items():
+                detail += f" {k}={v}"
+
+        elif fam == "routing.dropped":
+            kind = kv.get("target_kind", "")
+            num = kv.get("target", "")
+            if kind and num:
+                target = f"PR#{num}" if kind == "pr" else f"#{num}"
+            else:
+                partial = True
+            reason = kv.get("reason", "")
+            detail = f"reason={reason}"
+            extras = {k: v for k, v in kv.items()
+                      if k not in ("target_kind", "target", "reason")}
+            for k, v in extras.items():
+                detail += f" {k}={v}"
+
+        if partial:
+            detail = (detail.strip() + " [parse_partial]").strip()
+        detail = _redact_canonical_detail(detail.strip())
+        return ActivityEvent(
+            ts=ll.ts, actor="pipeline", action=fam, target=target, detail=detail,
+        )
+    # --- legacy vocabulary ---
+
     m = _MENTION_RE.search(body)
     if m:
         kind = m.group(1).lower()
@@ -1049,6 +1286,11 @@ class PipelineState:
     dispatches_24h: int = 0
     mentions_24h: int = 0
     events: List[ActivityEvent] = field(default_factory=list)
+    canonical_dropped: dict = field(default_factory=lambda: {
+        "line_too_long": 0,
+        "line_has_forbidden_char": 0,
+        "parse_partial": 0,
+    })
     raw_lines: int = 0
     # Counters for canonical lines that were dropped before classification.
     canonical_dropped: "Dict[str, int]" = field(
@@ -1140,16 +1382,17 @@ class PipelineProvider(_KubectlProviderMixin):
             ll = _parse_log_line(raw)
             if ll is None:
                 continue
-            # Guard checks for canonical lines: drop before classification and
-            # track the reason in state.canonical_dropped.
-            if _CANONICAL_PREFIX_RE.match(ll.body):
-                if '\t' in ll.body or '\r' in ll.body:
-                    state.canonical_dropped["line_has_forbidden_char"] += 1
-                    continue
-                if len(ll.body) > _CANONICAL_MAX_BODY:
-                    state.canonical_dropped["line_too_long"] += 1
-                    continue
+            # Canonical schema validation (rules 3 and 4 of #438)
+            if len(ll.body) > 500:
+                state.canonical_dropped["line_too_long"] += 1
+                continue
+            if "\t" in ll.body or "\r" in ll.body:
+                state.canonical_dropped["line_has_forbidden_char"] += 1
+                continue
+
             ev = _classify_pipeline_line(ll)
+            if ev is not None and "[parse_partial]" in ev.detail:
+                state.canonical_dropped["parse_partial"] += 1
             if ev is None:
                 continue
             if ev.action == "startup":
